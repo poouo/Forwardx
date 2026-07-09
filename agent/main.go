@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.141"
+var Version = "2.2.142"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -61,7 +61,25 @@ const agentEventStreamReconnectMinDelay = 3 * time.Second
 const agentEventStreamReconnectMaxDelay = 30 * time.Second
 const actionBacklogKeepaliveInterval = 10 * time.Second
 const actionQueueCapacity = 4096
-const actionWorkerConcurrency = 4
+
+// actionWorkerConcurrency 是动作队列的并发 worker 数。每个 worker 从共享队列取活，
+// 并按 actionSerialKey（端口/规则/隧道粒度）加串行锁：同一端口的动作永远串行执行
+// （保证正确性），不同端口的动作可并发。规则数达 500~1000+ 时，固定 4 个 worker 会成为
+// 批量下发的瓶颈，故按 CPU 核数自适应放大，上限 16，避免在小核机器上过度并发。
+var actionWorkerConcurrency = resolveActionWorkerConcurrency()
+
+func resolveActionWorkerConcurrency() int {
+	cores := runtime.NumCPU()
+	workers := cores * 2
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	return workers
+}
+
 const actionQueueBacklogLogThreshold = 50
 const actionQueueSlowWaitThreshold = 3 * time.Second
 const actionSlowHandleThreshold = 15 * time.Second
@@ -115,6 +133,8 @@ var runtimePanelURL atomic.Value
 var actionQueue = make(chan actionJob, actionQueueCapacity)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
+var desiredRunningRuleMu sync.Mutex
+var desiredRunningRulesByPort = map[int]runningRule{}
 var iperf3Mu sync.Mutex
 var iperf3Server *iperf3Process
 var dnsWatchMu sync.Mutex
@@ -1697,6 +1717,7 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	state := applyHeartbeatState(resp)
 	dnsWatchChanged := updateDNSWatch(state.DNSWatch)
+	rememberDesiredRunningRules(state.RunningRules)
 	pendingActionPorts := map[string]bool{}
 	actionDone := make([]<-chan struct{}, 0, len(resp.Actions)+len(desiredStateActions(resp.DesiredState)))
 	for _, a := range desiredStateActions(resp.DesiredState) {
@@ -2548,6 +2569,14 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 	if a.Op != "remove" || a.RuleID <= 0 || a.SourcePort <= 0 || strings.TrimSpace(a.StatusType) == "tunnel" {
 		return false
 	}
+	if desired, ok := desiredRunningRuleForPort(a.SourcePort); ok && desired.RuleID > 0 {
+		if desired.RuleID != a.RuleID {
+			logf("skip stale remove for desired reassigned port=%d removeRule=%d desiredRule=%d forwardType=%s", a.SourcePort, a.RuleID, desired.RuleID, a.ForwardType)
+			return true
+		}
+		logf("skip stale remove for desired running port=%d rule=%d removeTunnel=%d desiredTunnel=%d forwardType=%s", a.SourcePort, a.RuleID, a.TunnelID, desired.TunnelID, a.ForwardType)
+		return true
+	}
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
 	localRuleTunnelID := readRuleTunnelIDByPort(port)
@@ -2560,6 +2589,29 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 	}
 	logf("skip stale remove for reassigned port=%d removeRule=%d currentRule=%d forwardType=%s", a.SourcePort, a.RuleID, localRuleID, a.ForwardType)
 	return true
+}
+
+func rememberDesiredRunningRules(rules []runningRule) {
+	next := map[int]runningRule{}
+	for _, r := range rules {
+		if r.RuleID <= 0 || r.SourcePort <= 0 {
+			continue
+		}
+		next[r.SourcePort] = r
+	}
+	desiredRunningRuleMu.Lock()
+	desiredRunningRulesByPort = next
+	desiredRunningRuleMu.Unlock()
+}
+
+func desiredRunningRuleForPort(port int) (runningRule, bool) {
+	if port <= 0 {
+		return runningRule{}, false
+	}
+	desiredRunningRuleMu.Lock()
+	defer desiredRunningRuleMu.Unlock()
+	r, ok := desiredRunningRulesByPort[port]
+	return r, ok
 }
 
 func cleanupKernelForwardPortBeforeApply(a action) {

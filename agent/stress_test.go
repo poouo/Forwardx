@@ -41,6 +41,44 @@ func TestAgentCommTransientErrorClassification(t *testing.T) {
 	}
 }
 
+func TestSkipStaleRemoveWhenDesiredRuleStillRuns(t *testing.T) {
+	rememberDesiredRunningRules([]runningRule{{
+		RuleID:      47,
+		TunnelID:    3,
+		SourcePort:  10090,
+		ForwardType: "gost",
+		TargetIP:    "203.0.113.10",
+		TargetPort:  31470,
+		Protocol:    "both",
+	}})
+	defer rememberDesiredRunningRules(nil)
+
+	staleRemove := action{
+		StatusType:  "rule",
+		RuleID:      47,
+		TunnelID:    0,
+		Op:          "remove",
+		ForwardType: "gost",
+		SourcePort:  10090,
+		Protocol:    "both",
+	}
+	if !shouldSkipRemoveForReassignedPort(staleRemove) {
+		t.Fatal("expected stale tunnel=0 remove to be skipped while desired tunnel=3 rule is still running")
+	}
+
+	reassignedRemove := staleRemove
+	reassignedRemove.RuleID = 46
+	if !shouldSkipRemoveForReassignedPort(reassignedRemove) {
+		t.Fatal("expected stale remove from previous rule to be skipped while the port is desired by another rule")
+	}
+
+	realRemove := staleRemove
+	realRemove.SourcePort = 10091
+	if shouldSkipRemoveForReassignedPort(realRemove) {
+		t.Fatal("unexpected skip for remove outside the desired running rule set")
+	}
+}
+
 func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 	if os.Getenv("FORWARDX_AGENT_STRESS") != "1" {
 		t.Skip("set FORWARDX_AGENT_STRESS=1 to run the 3000-rule Agent stress test")
@@ -156,6 +194,8 @@ func resetAgentStressState() {
 	protectedActionPortMu.Lock()
 	protectedActionPorts = map[string]int{}
 	protectedActionPortMu.Unlock()
+
+	rememberDesiredRunningRules(nil)
 
 	actionSerialMu.Lock()
 	actionSerialLocks = map[string]*actionSerialLock{}

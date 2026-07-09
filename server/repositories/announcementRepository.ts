@@ -7,19 +7,7 @@ const CURRENT_DEVELOPER_UPGRADE_ANNOUNCEMENT: {
   targetVersion: string;
   title: string;
   content: string;
-} | null = {
-  targetVersion: "2.3.221",
-  title: "开发者公告：转发规则创建方式调整",
-  content: [
-    "这次版本把转发入口拆得更清楚了：新增规则时，不再建议直接挂在主机上随手建普通转发，而是先选已经建好的「端口转发」「隧道转发」「端口转发链」或「转发组」。",
-    "",
-    "老规则升级后会继续尽量兼容，不会因为这次更新马上失效。但为了后续版本更稳，也方便排查问题，建议管理员抽空把还在用旧方式创建的规则逐步迁到新的转发资源上。",
-    "",
-    "简单说：普通端口先建「端口转发」再让规则引用；多节点路径用「端口转发链」；多入口、自动切换这类场景用「转发组」或「入口组」。后面的版本可能会减少对老旧配置方式的兼容，建议这次升级后顺手整理一下。",
-    "",
-    "这次转发相关的调整不算小，如果升级后发现哪里不对，或者有使用上的建议，可以优先到群组里反馈，通常回复和修复都会快一些。GitHub 上提交的问题和需求也会看，只是不会一直盯着；如果想尽快处理，建议直接在群组里说，或者通过 TG 机器人联系我。",
-  ].join("\n"),
-};
+} | null = null;
 
 function normalizeAnnouncementVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");

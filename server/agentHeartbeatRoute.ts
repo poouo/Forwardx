@@ -57,6 +57,12 @@ const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentRuntimeSyncActionCache = new Map<number, { signature: string; sentAt: number }>();
+// 孤儿端口迟滞：hostId -> (port -> 连续判定为孤儿的心跳次数)。
+// 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
+// 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
+// 否则会与 apply 形成 apply→remove→apply 抖动死循环。
+const agentOrphanPortStreakCache = new Map<number, Map<number, number>>();
+const AGENT_ORPHAN_REMOVE_MIN_STREAK = 3;
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
 const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
@@ -272,6 +278,23 @@ export function invalidateAgentDesiredStateCache(hostId: number) {
   agentDesiredStateSendCache.delete(id);
   agentLocalRuntimeStateCache.delete(id);
   agentRuntimeSyncActionCache.delete(id);
+  agentOrphanPortStreakCache.delete(id);
+}
+
+/**
+ * 取得某主机的"孤儿端口迟滞计数"Map（port -> 连续判定为孤儿的心跳次数），不存在则创建。
+ * 迟滞语义：一个上报端口的 ruleId 若属于面板已知的本机启用规则（稳定身份），
+ * 即便本轮运行态推导没把它算进 expectedRulePorts，也很可能只是瞬时缺口，
+ * 必须连续 AGENT_ORPHAN_REMOVE_MIN_STREAK 轮都判孤儿才真正拆除；一旦重新匹配上规则即清零。
+ */
+function getOrphanPortStreaks(hostId: number): Map<number, number> {
+  const id = Number(hostId);
+  let streaks = agentOrphanPortStreakCache.get(id);
+  if (!streaks) {
+    streaks = new Map<number, number>();
+    agentOrphanPortStreakCache.set(id, streaks);
+  }
+  return streaks;
 }
 
 function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssuedAt: number) {
@@ -338,15 +361,18 @@ function actionPortKey(action: any) {
   return "";
 }
 
-function dropStalePortRemoveActions(actions: any[]) {
+function dropStalePortRemoveActions(actions: any[], protectedRulePorts = new Set<string>()) {
   const applyPorts = new Set(
     actions
       .filter((action: any) => action?.op === "apply")
       .map(actionPortKey)
       .filter(Boolean),
   );
-  if (applyPorts.size === 0) return actions;
-  return actions.filter((action: any) => !(action?.op === "remove" && applyPorts.has(actionPortKey(action))));
+  return actions.filter((action: any) => {
+    if (action?.op !== "remove") return true;
+    const key = actionPortKey(action);
+    return !(key && (applyPorts.has(key) || protectedRulePorts.has(key)));
+  });
 }
 
 function actionMayAffectSharedRuntime(action: any) {
@@ -2679,6 +2705,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const hasReportedRuntimeState = !!reportedRuntimeState;
     const localRulesByPort = new Map<number, AgentLocalRuntimeRuleState>();
     const localTunnelsByPort = new Map<number, AgentLocalRuntimeTunnelState>();
+    const protectedRuleRemoveActionKeys = new Set<string>();
     for (const item of reportedRuntimeState?.rules || []) {
       if (Number(item.port) > 0) localRulesByPort.set(Number(item.port), item);
     }
@@ -2730,6 +2757,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && localTextCompatible(local.targetIp, processTarget(rule))
         && localNumberCompatible(local.targetPort, rule.targetPort)
         && localProtocolCompatible(local.protocol, rule.protocol);
+    };
+    const protectActiveRulePort = (rule: any, port = Number(rule?.sourcePort || 0)) => {
+      const ruleId = Number(rule?.id || 0);
+      if (ruleId <= 0 || port <= 0 || rule?.pendingDelete) return;
+      protectedRuleRemoveActionKeys.add(actionPortKey({
+        statusType: "rule",
+        ruleId,
+        sourcePort: port,
+      }));
     };
     const localTunnelMatches = (tunnelId: number, expectedForwardType: string, port: number) => {
       if (!hasReportedRuntimeState || port <= 0) return true;
@@ -3098,6 +3134,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : rule.forwardType;
       if (rule.isEnabled && expectedRulePort > 0) {
         expectedRulePorts.add(expectedRulePort);
+        protectActiveRulePort(rule, expectedRulePort);
       }
       const shouldRepairLocalRule = rule.isEnabled
         && expectedRulePort > 0
@@ -3787,6 +3824,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
       for (const trafficPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
         if (!trafficPort) continue;
+        protectActiveRulePort(rule, trafficPort);
         addRunningRule({
           ruleId: rule.id,
           tunnelId: tunnel ? Number(tunnel.id) : 0,
@@ -3804,6 +3842,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
       for (const trafficPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
         if (!trafficPort) continue;
+        protectActiveRulePort(rule, trafficPort);
         addRunningRule({
           ruleId: rule.id,
           tunnelId: tunnel ? Number(tunnel.id) : 0,
@@ -3872,12 +3911,42 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           tunnelActionPorts.add(port);
         }
       }
+      // 稳定身份护栏：一个上报端口的 ruleId 若属于面板已知、启用、未删除的规则
+      // （无论本机自有还是跨主机隧道 entry/exit/hop 规则），说明该端口很可能是合法的，
+      // 只是本轮运行态推导（如出口端口计算）出现了瞬时缺口。对这类端口施加迟滞：
+      // 必须连续多轮心跳都判为孤儿才真正拆除，杜绝与 apply 形成抖动死循环。
+      const knownEnabledRuleIds = new Set<number>();
+      for (const rule of agentAllRules as any[]) {
+        if (!rule || rule.pendingDelete || !rule.isEnabled) continue;
+        const ruleId = Number(rule.id || 0);
+        if (ruleId > 0) knownEnabledRuleIds.add(ruleId);
+      }
+      const orphanStreaks = getOrphanPortStreaks(Number(host.id));
+      const seenOrphanPorts = new Set<number>();
       for (const localRule of localRulesByPort.values()) {
         const port = Number(localRule.port || 0);
         if (port <= 0 || expectedRulePorts.has(port) || ruleActionPorts.has(port)) continue;
+        const reportedRuleId = Number(localRule.ruleId || 0);
+        const guarded = reportedRuleId > 0 && knownEnabledRuleIds.has(reportedRuleId);
+        if (guarded) {
+          seenOrphanPorts.add(port);
+          const streak = (orphanStreaks.get(port) || 0) + 1;
+          orphanStreaks.set(port, streak);
+          if (streak < AGENT_ORPHAN_REMOVE_MIN_STREAK) {
+            appendPanelLog("info", `[AgentReconcile] host=${host.id} port=${port} rule=${reportedRuleId} suspected-orphan streak=${streak}/${AGENT_ORPHAN_REMOVE_MIN_STREAK}; defer removal (identity known, likely transient runtime gap)`);
+            continue;
+          }
+          appendPanelLog("warn", `[AgentReconcile] host=${host.id} port=${port} rule=${reportedRuleId} orphan confirmed after ${streak} heartbeats; removing`);
+        }
         actions.push(buildGenericLocalRuleRemovalAction(localRule));
         ruleActionPorts.add(port);
+        orphanStreaks.delete(port);
       }
+      // 端口一旦重新匹配上规则（不再进入上面的孤儿分支），清零其迟滞计数。
+      for (const port of Array.from(orphanStreaks.keys())) {
+        if (!seenOrphanPorts.has(port)) orphanStreaks.delete(port);
+      }
+      if (orphanStreaks.size === 0) agentOrphanPortStreakCache.delete(Number(host.id));
       for (const localTunnel of localTunnelsByPort.values()) {
         const port = Number(localTunnel.port || 0);
         if (port <= 0 || expectedTunnelPorts.has(port) || tunnelActionPorts.has(port)) continue;
@@ -4056,7 +4125,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
-    const effectiveActions = dropStalePortRemoveActions(actions);
+    const effectiveActions = dropStalePortRemoveActions(actions, protectedRuleRemoveActionKeys);
     const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);
     const ruleByIdForDesired = new Map((rules as any[]).map((rule: any) => [Number(rule.id), rule]));
     const desiredKnownRunning = (action: any) => {
