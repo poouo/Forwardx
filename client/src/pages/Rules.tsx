@@ -5647,7 +5647,7 @@ function RulesContent() {
   );
 
   const renderTableRuleDailyTraffic = (rule: any) => (
-    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-xs">
+    <div className="flex min-w-0 flex-col items-start gap-0.5 whitespace-nowrap text-xs leading-4">
       {renderRuleDailyTrafficValue(rule, "in")}
       {renderRuleDailyTrafficValue(rule, "out")}
     </div>
@@ -5900,8 +5900,8 @@ function RulesContent() {
           <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
         </TableCell>
         <TableCell className="px-3 py-2">{renderTableRuleTotalTraffic(rule)}</TableCell>
-        <TableCell className="px-3 py-2">{renderTableRuleDailyTraffic(rule)}</TableCell>
-        <TableCell className="px-3 py-2">{renderTableRuleLatency(rule)}</TableCell>
+        <TableCell className="overflow-hidden px-3 py-2">{renderTableRuleDailyTraffic(rule)}</TableCell>
+        <TableCell className="overflow-hidden px-3 py-2">{renderTableRuleLatency(rule)}</TableCell>
         <TableCell className="px-3 py-2">
           <div className="flex justify-center">
             {renderRuleEnabledSwitch(rule)}
