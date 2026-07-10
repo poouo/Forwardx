@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
+import {
+  DEFAULT_LATENCY_TIME_RANGE_HOURS,
+  filterLatencySeriesByTimeRange,
+  latencyTimeRangeLabel,
+  LatencyTimeRangeSelect,
+  type LatencyTimeRangeHours,
+} from "@/components/LatencyTimeRangeSelect";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -81,6 +88,7 @@ function TcpingDetailDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
+  const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const methodLabel = probeMethod === "ping" ? "Ping" : "TCPing";
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
@@ -90,6 +98,10 @@ function TcpingDetailDialog({
   const rawSeriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
+  const rangedSeriesData = useMemo(
+    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
+    [seriesData, timeRangeHours],
+  );
   const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
 
   useEffect(() => {
@@ -97,15 +109,15 @@ function TcpingDetailDialog({
   }, [data, ruleId]);
 
   const rawChartData = useMemo<TcpingChartPoint[]>(() => {
-    if (!seriesData || seriesData.length === 0) return [];
-    return seriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => ({
+    if (!rangedSeriesData.length) return [];
+    return rangedSeriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => ({
       label: formatTcpingTime(d.recordedAt),
       fullLabel: formatTcpingTime(d.recordedAt),
       latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
       chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
-  }, [seriesData]);
+  }, [rangedSeriesData]);
 
   const chartData = useMemo<TcpingChartPoint[]>(() => {
     if (!peakCutEnabled) return rawChartData;
@@ -138,10 +150,13 @@ function TcpingDetailDialog({
                 {isForwardChain ? "转发链路延迟" : `转发链路延迟 (${methodLabel})`} - {ruleName}
               </DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
-                {isForwardChain ? "最近 24 小时链路汇总延迟和丢包。" : "最近 24 小时延迟和丢包。"}
+                {isForwardChain ? `最近 ${latencyTimeRangeLabel(timeRangeHours)} 链路汇总延迟和丢包。` : `最近 ${latencyTimeRangeLabel(timeRangeHours)} 延迟和丢包。`}
               </DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
+            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
+              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+            </div>
           </div>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">

@@ -779,7 +779,11 @@ func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndp
 			break
 		}
 		attempted[index] = true
-		addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port)))
+		udpPort := endpoint.UDPPort
+		if udpPort <= 0 {
+			udpPort = endpoint.Port
+		}
+		addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(endpoint.Host, strconv.Itoa(udpPort)))
 		if err != nil {
 			lastErr = err
 			selector.markFailure(index, err)

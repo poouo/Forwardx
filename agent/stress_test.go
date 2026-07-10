@@ -228,6 +228,8 @@ func resetAgentStressState() {
 
 	dnsWatchMu.Lock()
 	dnsWatchSnapshot = map[string][]string{}
+	dnsWatchCandidates = map[string]dnsWatchCandidate{}
+	dnsWatchRetiredSnapshots = map[string]dnsWatchRetiredSnapshot{}
 	pendingDNSChanges = nil
 	dnsWatchMu.Unlock()
 }

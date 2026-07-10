@@ -1346,7 +1346,13 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     tunnelExitPort = Number(existing?.tunnelExitPort || 0) || null;
     if (!tunnelExitPort) {
       const exit = await getHostById(Number(tunnel.exitHostId));
-      tunnelExitPort = await findAvailableTunnelExitPort(Number(tunnel.exitHostId), (exit as any)?.portRangeStart, (exit as any)?.portRangeEnd);
+      tunnelExitPort = await findAvailableTunnelExitPort(
+        Number(tunnel.exitHostId),
+        (exit as any)?.portRangeStart,
+        (exit as any)?.portRangeEnd,
+        [],
+        [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean),
+      );
       if (!tunnelExitPort) throw new Error("Tunnel exit agent has no available port");
     }
   }

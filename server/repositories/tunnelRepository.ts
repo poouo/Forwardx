@@ -374,19 +374,29 @@ export async function findAvailableTunnelExitPort(
   });
   const usedRuleConds: any[] = [
     eq(forwardRules.hostId, exitHostId),
+    eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ];
   if (excludeRulesSql) usedRuleConds.push(excludeRulesSql);
   const usedRulePorts = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedRuleConds));
   const usedTunnelPorts = await db.select({ port: tunnels.listenPort }).from(tunnels).where(eq(tunnels.exitHostId, exitHostId));
+  const usedTunnelMimicPorts = await db.select({ port: tunnels.mimicPort }).from(tunnels).where(eq(tunnels.exitHostId, exitHostId));
   const usedExtraTunnelPorts = await db.select({ port: tunnelExitNodes.listenPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, exitHostId));
+  const usedExtraTunnelMimicPorts = await db.select({ port: tunnelExitNodes.mimicPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, exitHostId));
+  const usedHopPorts = await db.select({ port: tunnelHops.listenPort }).from(tunnelHops).where(eq(tunnelHops.hostId, exitHostId));
+  const usedHopMimicPorts = await db.select({ port: tunnelHops.mimicPort }).from(tunnelHops).where(eq(tunnelHops.hostId, exitHostId));
   const usedExitConds: any[] = [
+    eq(tunnels.exitHostId, exitHostId),
+    eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ];
   if (excludeRulesSql) usedExitConds.push(excludeRulesSql);
-  const usedExitPorts = await db.select({ port: forwardRules.tunnelExitPort }).from(forwardRules).where(and(...usedExitConds));
+  const usedExitPorts = await db.select({ port: forwardRules.tunnelExitPort })
+    .from(forwardRules)
+    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
+    .where(and(...usedExitConds));
   const usedMappedExitConds: any[] = [eq(forwardRuleTunnelExits.exitHostId, exitHostId)];
   if (excludeMappingsSql) usedMappedExitConds.push(excludeMappingsSql);
   const usedMappedExitPorts = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort }).from(forwardRuleTunnelExits).where(and(...usedMappedExitConds));
@@ -397,7 +407,11 @@ export async function findAvailableTunnelExitPort(
   });
   usedRulePorts.forEach((r: any) => used.add(Number(r.port)));
   usedTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedTunnelMimicPorts.forEach((r: any) => used.add(Number(r.port)));
   usedExtraTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedExtraTunnelMimicPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedHopPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedHopMimicPorts.forEach((r: any) => used.add(Number(r.port)));
   usedExitPorts.forEach((r: any) => {
     if (r.port != null) used.add(Number(r.port));
   });
@@ -410,10 +424,128 @@ export async function findAvailableTunnelExitPort(
 export async function isTunnelListenPortUsed(exitHostId: number, listenPort: number, excludeTunnelId?: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
-  const rows = await db.select({ id: tunnels.id }).from(tunnels).where(and(eq(tunnels.exitHostId, exitHostId), eq(tunnels.listenPort, listenPort)));
-  const extraRows = await db.select({ tunnelId: tunnelExitNodes.tunnelId }).from(tunnelExitNodes).where(and(eq(tunnelExitNodes.hostId, exitHostId), eq(tunnelExitNodes.listenPort, listenPort)));
+  const rows = await db.select({ id: tunnels.id }).from(tunnels).where(and(
+    eq(tunnels.exitHostId, exitHostId),
+    sql`(${tunnels.listenPort} = ${listenPort} OR ${tunnels.mimicPort} = ${listenPort})`,
+  ));
+  const extraRows = await db.select({ tunnelId: tunnelExitNodes.tunnelId }).from(tunnelExitNodes).where(and(
+    eq(tunnelExitNodes.hostId, exitHostId),
+    sql`(${tunnelExitNodes.listenPort} = ${listenPort} OR ${tunnelExitNodes.mimicPort} = ${listenPort})`,
+  ));
+  const hopRows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(and(
+    eq(tunnelHops.hostId, exitHostId),
+    sql`(${tunnelHops.listenPort} = ${listenPort} OR ${tunnelHops.mimicPort} = ${listenPort})`,
+  ));
   return rows.some((row: any) => row.id !== excludeTunnelId)
-    || extraRows.some((row: any) => row.tunnelId !== excludeTunnelId);
+    || extraRows.some((row: any) => row.tunnelId !== excludeTunnelId)
+    || hopRows.some((row: any) => row.tunnelId !== excludeTunnelId);
+}
+
+const mimicPortAllocationLocks = new Map<number, Promise<{
+  tunnel: any;
+  hops: any[];
+  exitNodes: any[];
+  changed: boolean;
+}>>();
+
+async function allocateTunnelMimicPort(hostId: number, reservedPorts: number[]) {
+  const host = await getHostById(hostId) as any;
+  if (!host) return 0;
+  return await findAvailableTunnelExitPort(
+    hostId,
+    host.portRangeStart,
+    host.portRangeEnd,
+    reservedPorts,
+  ) ?? 0;
+}
+
+export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[] = [], exitNodesInput: any[] = []) {
+  const tunnelId = Number(tunnelInput?.id || 0);
+  if (tunnelId <= 0) {
+    return { tunnel: tunnelInput, hops: hopsInput, exitNodes: exitNodesInput, changed: false };
+  }
+  const existing = mimicPortAllocationLocks.get(tunnelId);
+  if (existing) return existing;
+  const work = (async () => {
+    const db = await getDb();
+    if (!db) return { tunnel: tunnelInput, hops: hopsInput, exitNodes: exitNodesInput, changed: false };
+    const tunnel = { ...tunnelInput };
+    const hops = hopsInput.map((hop) => ({ ...hop }));
+    const exitNodes = exitNodesInput.map((node) => ({ ...node }));
+    const reservedByHost = new Map<number, number[]>();
+    let changed = false;
+    const reserve = (hostId: number, ...ports: unknown[]) => {
+      const current = reservedByHost.get(hostId) || [];
+      for (const value of ports) {
+        const port = Number(value || 0);
+        if (port > 0 && !current.includes(port)) current.push(port);
+      }
+      reservedByHost.set(hostId, current);
+      return current;
+    };
+    const ensurePort = async (hostId: number, listenPort: number, currentPort: unknown) => {
+      const current = Number(currentPort || 0);
+      const reserved = reserve(hostId, listenPort, current);
+      if (current > 0 && current !== listenPort) return current;
+      const allocated = await allocateTunnelMimicPort(hostId, reserved);
+      if (allocated > 0) reserve(hostId, allocated);
+      return allocated;
+    };
+
+    if (hops.length >= 2) {
+      for (let index = 1; index < hops.length; index++) {
+        const hop = hops[index];
+        const hostId = Number(hop.hostId || 0);
+        const listenPort = Number(hop.listenPort || 0);
+        if (hostId <= 0 || listenPort <= 0) continue;
+        const mimicPort = await ensurePort(hostId, listenPort, hop.mimicPort);
+        if (mimicPort <= 0) throw new Error(`主机 ${hostId} 已无可用的 mimic UDP 线路端口`);
+        if (Number(hop.mimicPort || 0) !== mimicPort) {
+          await db.update(tunnelHops).set({ mimicPort } as any).where(eq(tunnelHops.id, Number(hop.id)));
+          hop.mimicPort = mimicPort;
+          changed = true;
+        }
+        if (index === hops.length - 1 && Number(tunnel.mimicPort || 0) !== mimicPort) {
+          await db.update(tunnels).set({ mimicPort, updatedAt: nowDate() } as any).where(eq(tunnels.id, tunnelId));
+          tunnel.mimicPort = mimicPort;
+          changed = true;
+        }
+      }
+    } else {
+      const hostId = Number(tunnel.exitHostId || 0);
+      const listenPort = Number(tunnel.listenPort || 0);
+      if (hostId > 0 && listenPort > 0) {
+        const mimicPort = await ensurePort(hostId, listenPort, tunnel.mimicPort);
+        if (mimicPort <= 0) throw new Error(`出口 Agent ${hostId} 已无可用的 mimic UDP 线路端口`);
+        if (Number(tunnel.mimicPort || 0) !== mimicPort) {
+          await db.update(tunnels).set({ mimicPort, updatedAt: nowDate() } as any).where(eq(tunnels.id, tunnelId));
+          tunnel.mimicPort = mimicPort;
+          changed = true;
+        }
+      }
+    }
+
+    for (const node of exitNodes) {
+      if (node?.isEnabled === false) continue;
+      const hostId = Number(node.hostId || 0);
+      const listenPort = Number(node.listenPort || 0);
+      if (hostId <= 0 || listenPort <= 0) continue;
+      const mimicPort = await ensurePort(hostId, listenPort, node.mimicPort);
+      if (mimicPort <= 0) throw new Error(`负载出口 Agent ${hostId} 已无可用的 mimic UDP 线路端口`);
+      if (Number(node.mimicPort || 0) !== mimicPort) {
+        await db.update(tunnelExitNodes).set({ mimicPort, updatedAt: nowDate() } as any).where(eq(tunnelExitNodes.id, Number(node.id)));
+        node.mimicPort = mimicPort;
+        changed = true;
+      }
+    }
+    return { tunnel, hops, exitNodes, changed };
+  })();
+  mimicPortAllocationLocks.set(tunnelId, work);
+  try {
+    return await work;
+  } finally {
+    if (mimicPortAllocationLocks.get(tunnelId) === work) mimicPortAllocationLocks.delete(tunnelId);
+  }
 }
 
 export async function updateTunnelRunningStatus(id: number, isRunning: boolean) {
@@ -477,6 +609,22 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
   }
   const r = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(...conds));
   if ((Number(r[0]?.count) || 0) > 0) return true;
+  const primaryExitConds: any[] = [
+    eq(tunnels.exitHostId, hostId),
+    eq(forwardRules.tunnelExitPort, sourcePort),
+    eq(forwardRules.isForwardGroupTemplate, false),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ];
+  if (excludedIds.length > 0) {
+    primaryExitConds.push(sql`${forwardRules.id} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`);
+  }
+  if (protocolCond) primaryExitConds.push(protocolCond);
+  const primaryExitRows = await db.select({ count: sqlCountAll() })
+    .from(forwardRules)
+    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
+    .where(and(...primaryExitConds));
+  if ((Number(primaryExitRows[0]?.count) || 0) > 0) return true;
   const exitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, hostId),
     eq(forwardRuleTunnelExits.tunnelExitPort, sourcePort),
@@ -489,7 +637,22 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
     .from(forwardRuleTunnelExits)
     .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
     .where(and(...exitConds));
-  return (Number(exitRows[0]?.count) || 0) > 0;
+  if ((Number(exitRows[0]?.count) || 0) > 0) return true;
+  const tunnelRows = await db.select({ id: tunnels.id }).from(tunnels).where(and(
+    eq(tunnels.exitHostId, hostId),
+    sql`(${tunnels.listenPort} = ${sourcePort} OR ${tunnels.mimicPort} = ${sourcePort})`,
+  ));
+  if (tunnelRows.length > 0) return true;
+  const extraRows = await db.select({ id: tunnelExitNodes.id }).from(tunnelExitNodes).where(and(
+    eq(tunnelExitNodes.hostId, hostId),
+    sql`(${tunnelExitNodes.listenPort} = ${sourcePort} OR ${tunnelExitNodes.mimicPort} = ${sourcePort})`,
+  ));
+  if (extraRows.length > 0) return true;
+  const hopRows = await db.select({ id: tunnelHops.id }).from(tunnelHops).where(and(
+    eq(tunnelHops.hostId, hostId),
+    sql`(${tunnelHops.listenPort} = ${sourcePort} OR ${tunnelHops.mimicPort} = ${sourcePort})`,
+  ));
+  return hopRows.length > 0;
 }
 
 /** 在主机端口区间内找一个未被占用的随机端口 */
@@ -512,6 +675,17 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
   const protocolCond = protocolConflictCondition(protocol);
   if (protocolCond) usedConds.push(protocolCond);
   const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedConds));
+  const usedPrimaryExitConds: any[] = [
+    eq(tunnels.exitHostId, hostId),
+    eq(forwardRules.isForwardGroupTemplate, false),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ];
+  if (protocolCond) usedPrimaryExitConds.push(protocolCond);
+  const usedPrimaryExitRows = await db.select({ port: forwardRules.tunnelExitPort })
+    .from(forwardRules)
+    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
+    .where(and(...usedPrimaryExitConds));
   const exitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, hostId),
   ];
@@ -520,7 +694,23 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
     .from(forwardRuleTunnelExits)
     .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
     .where(and(...exitConds));
-  const usedPorts = new Set<number>([...usedRows, ...usedExitRows].map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port)));
+  const usedTunnelPorts = await db.select({ port: tunnels.listenPort }).from(tunnels).where(eq(tunnels.exitHostId, hostId));
+  const usedTunnelMimicPorts = await db.select({ port: tunnels.mimicPort }).from(tunnels).where(eq(tunnels.exitHostId, hostId));
+  const usedExtraTunnelPorts = await db.select({ port: tunnelExitNodes.listenPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId));
+  const usedExtraTunnelMimicPorts = await db.select({ port: tunnelExitNodes.mimicPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId));
+  const usedHopPorts = await db.select({ port: tunnelHops.listenPort }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
+  const usedHopMimicPorts = await db.select({ port: tunnelHops.mimicPort }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
+  const usedPorts = new Set<number>([
+    ...usedRows,
+    ...usedPrimaryExitRows,
+    ...usedExitRows,
+    ...usedTunnelPorts,
+    ...usedTunnelMimicPorts,
+    ...usedExtraTunnelPorts,
+    ...usedExtraTunnelMimicPorts,
+    ...usedHopPorts,
+    ...usedHopMimicPorts,
+  ].map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port) && port > 0));
   return pickAvailablePort(policy, usedPorts, { start: 10000, end: 65535 });
 }
 
@@ -555,6 +745,7 @@ export async function replaceTunnelExitNodes(tunnelId: number, nodes: Array<Omit
       seq: Number(node.seq),
       hostId: Number(node.hostId),
       listenPort: Number(node.listenPort),
+      mimicPort: Number((node as any).mimicPort || 0),
       connectHost: node.connectHost ?? null,
       isEnabled: node.isEnabled !== false,
     } as any);
@@ -573,6 +764,7 @@ export async function getTunnelExitEndpoints(tunnel: any) {
     exitNodeId: 0,
     hostId: Number(tunnel?.exitHostId || 0),
     listenPort: Number(tunnel?.listenPort || 0),
+    mimicPort: Number(tunnel?.mimicPort || 0),
     connectHost: String(tunnel?.connectHost || "").trim() || null,
     primary: true,
     isEnabled: true,
@@ -585,6 +777,7 @@ export async function getTunnelExitEndpoints(tunnel: any) {
       exitNodeId: Number(node.id),
       hostId: Number(node.hostId),
       listenPort: Number(node.listenPort),
+      mimicPort: Number(node.mimicPort || 0),
       connectHost: String(node.connectHost || "").trim() || null,
       primary: false,
       isEnabled: node.isEnabled !== false,
@@ -702,6 +895,7 @@ export async function reconcileForwardRuleTunnelExits(rule: any, tunnel: any) {
   const existing = await getForwardRuleTunnelExits(ruleId);
   const existingByNodeId = new Map<number, any>();
   const existingBySeq = new Map<number, any>();
+  const reservedPorts: number[] = [];
   for (const row of existing as any[]) {
     existingByNodeId.set(Number(row.exitNodeId), row);
     existingBySeq.set(Number(row.exitSeq), row);
@@ -712,9 +906,16 @@ export async function reconcileForwardRuleTunnelExits(rule: any, tunnel: any) {
     let tunnelExitPort = Number(existingRow?.tunnelExitPort || 0);
     if (!tunnelExitPort) {
       const exitHost = await getHostById(Number(endpoint.hostId));
-      tunnelExitPort = await findAvailableTunnelExitPort(Number(endpoint.hostId), (exitHost as any)?.portRangeStart, (exitHost as any)?.portRangeEnd) ?? 0;
+      tunnelExitPort = await findAvailableTunnelExitPort(
+        Number(endpoint.hostId),
+        (exitHost as any)?.portRangeStart,
+        (exitHost as any)?.portRangeEnd,
+        reservedPorts,
+        [ruleId],
+      ) ?? 0;
       if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
     }
+    reservedPorts.push(tunnelExitPort);
     nextRows.push({
       tunnelId,
       exitNodeId: Number(endpoint.exitNodeId),
@@ -741,7 +942,7 @@ export async function reconcileTunnelRuleExitMappings(tunnelId: number) {
   }
 }
 
-export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number; connectHost?: string | null }[]) {
+export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number; mimicPort?: number; connectHost?: string | null }[]) {
   const db = await getDb();
   if (!db || hops.length === 0) return;
   // Delete existing hops first
@@ -753,6 +954,7 @@ export async function createTunnelHops(tunnelId: number, hops: { hostId: number;
       seq: i,
       hostId: hops[i].hostId,
       listenPort: hops[i].listenPort,
+      mimicPort: Number(hops[i].mimicPort || 0),
       connectHost: hops[i].connectHost ?? null,
     });
   }

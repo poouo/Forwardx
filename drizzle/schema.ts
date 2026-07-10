@@ -428,6 +428,7 @@ export const tunnels = table("tunnels", {
   certKeyPem: text("certKeyPem"),
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
+  mimicPort: int("mimicPort").notNull().default(0),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),
   trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
   portRangeStart: int("portRangeStart"),
@@ -466,6 +467,7 @@ export const tunnelExitNodes = table("tunnel_exit_nodes", {
   seq: int("seq").notNull(),
   hostId: int("hostId").notNull(),
   listenPort: int("listenPort").notNull(),
+  mimicPort: int("mimicPort").notNull().default(0),
   connectHost: text("connectHost"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
@@ -480,6 +482,7 @@ export const tunnelHops = table("tunnel_hops", {
   seq: int("seq").notNull(),
   hostId: int("hostId").notNull(),
   listenPort: int("listenPort").notNull().default(0),
+  mimicPort: int("mimicPort").notNull().default(0),
   connectHost: text("connectHost"),
 });
 export type TunnelHop = typeof tunnelHops.$inferSelect;

@@ -1,9 +1,10 @@
 package main
 
 type exitEndpoint struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
-	Key  string `json:"key,omitempty"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	UDPPort int    `json:"udpPort,omitempty"`
+	Key     string `json:"key,omitempty"`
 }
 
 type config struct {
@@ -11,9 +12,11 @@ type config struct {
 	TunnelID                 int            `json:"tunnelId"`
 	RuleID                   int            `json:"ruleId"`
 	ListenPort               int            `json:"listenPort"`
+	UDPListenPort            int            `json:"udpListenPort,omitempty"`
 	Protocol                 string         `json:"protocol"`
 	ExitHost                 string         `json:"exitHost"`
 	ExitPort                 int            `json:"exitPort"`
+	UDPExitPort              int            `json:"udpExitPort,omitempty"`
 	Exits                    []exitEndpoint `json:"exits,omitempty"`
 	TargetIP                 string         `json:"targetIp"`
 	TargetPort               int            `json:"targetPort"`
@@ -36,6 +39,7 @@ type config struct {
 	Token                    string         `json:"token"`
 	RelayExitHost            string         `json:"relayExitHost,omitempty"`
 	RelayExitPort            int            `json:"relayExitPort,omitempty"`
+	UDPRelayExitPort         int            `json:"udpRelayExitPort,omitempty"`
 	RelayKey                 string         `json:"relayKey,omitempty"`
 	DNSGeneration            int            `json:"dnsGeneration,omitempty"`
 }

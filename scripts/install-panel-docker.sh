@@ -264,7 +264,24 @@ write_database_config_to_volume() {
   if [ -z "${DATABASE_CONFIG_JSON:-}" ]; then
     return
   fi
-  printf "%s\n" "$DATABASE_CONFIG_JSON" | docker run --rm -i -v "${PROJECT_NAME}_forwardx-data:/data" busybox sh -c 'umask 077; cat > /data/database.json'
+  ensure_data_volume
+  printf "%s\n" "$DATABASE_CONFIG_JSON" | docker run --rm -i -v "$(data_volume_name):/data" busybox sh -c 'umask 077; cat > /data/database.json'
+}
+
+data_volume_name() {
+  printf "%s_forwardx-data" "$PROJECT_NAME"
+}
+
+ensure_data_volume() {
+  local volume_name
+  volume_name="$(data_volume_name)"
+  if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+    return
+  fi
+  docker volume create \
+    --label "com.docker.compose.project=${PROJECT_NAME}" \
+    --label "com.docker.compose.volume=forwardx-data" \
+    "$volume_name" >/dev/null
 }
 
 load_existing_env() {
@@ -425,7 +442,8 @@ services:
 
 volumes:
   forwardx-data:
-    driver: local
+    name: ${COMPOSE_PROJECT_NAME:-forwardx}_forwardx-data
+    external: true
 EOF
 }
 
@@ -506,6 +524,7 @@ start_panel() {
   fi
   assert_target_image_ready "$image"
   remove_existing_panel_containers
+  ensure_data_volume
   compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" up -d --remove-orphans forwardx
 }
 
@@ -551,7 +570,7 @@ uninstall_panel() {
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
   rm -rf "$APP_DIR"
-  docker volume rm "${PROJECT_NAME}_forwardx-data" 2>/dev/null || true
+  docker volume rm "$(data_volume_name)" 2>/dev/null || true
   echo "[DONE] ForwardX Docker panel uninstalled"
 }
 

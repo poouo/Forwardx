@@ -9,7 +9,23 @@ import (
 	"time"
 )
 
-const maxPendingDNSChanges = 512
+const (
+	maxPendingDNSChanges        = 512
+	dnsChangeConfirmations      = 3
+	dnsChangeConfirmationWindow = 10 * time.Second
+	dnsRollbackHoldDown         = 5 * time.Minute
+)
+
+type dnsWatchCandidate struct {
+	IPs           []string
+	Confirmations int
+	FirstSeen     time.Time
+}
+
+type dnsWatchRetiredSnapshot struct {
+	IPs        []string
+	ReplacedAt time.Time
+}
 
 func takePendingDNSChanges() []dnsChangeReport {
 	dnsWatchMu.Lock()
@@ -32,6 +48,14 @@ func queuePendingDNSChanges(changes []dnsChangeReport) {
 }
 
 func updateDNSWatch(items []dnsWatchItem) bool {
+	return updateDNSWatchWithLookupAt(items, lookupDNSWatchIPs, time.Now())
+}
+
+func updateDNSWatchWithLookup(items []dnsWatchItem, lookup func(string) []string) bool {
+	return updateDNSWatchWithLookupAt(items, lookup, time.Now())
+}
+
+func updateDNSWatchWithLookupAt(items []dnsWatchItem, lookup func(string) []string, now time.Time) bool {
 	watched := map[string]string{}
 	watchedItems := map[string][]dnsWatchItem{}
 	for _, item := range items {
@@ -47,7 +71,7 @@ func updateDNSWatch(items []dnsWatchItem) bool {
 
 	resolved := map[string][]string{}
 	for key, host := range watched {
-		if ips := lookupDNSWatchIPs(host); len(ips) > 0 {
+		if ips := lookup(host); len(ips) > 0 {
 			resolved[key] = ips
 		}
 	}
@@ -61,38 +85,85 @@ func updateDNSWatch(items []dnsWatchItem) bool {
 			nextSnapshot[key] = append([]string(nil), oldIPs...)
 		}
 	}
+	nextRetiredSnapshots := map[string]dnsWatchRetiredSnapshot{}
+	for key, retired := range dnsWatchRetiredSnapshots {
+		if _, ok := watched[key]; ok && len(retired.IPs) > 0 && now.Sub(retired.ReplacedAt) < dnsRollbackHoldDown {
+			nextRetiredSnapshots[key] = dnsWatchRetiredSnapshot{
+				IPs:        append([]string(nil), retired.IPs...),
+				ReplacedAt: retired.ReplacedAt,
+			}
+		}
+	}
 
+	nextCandidates := map[string]dnsWatchCandidate{}
 	var reports []dnsChangeReport
+	pendingConfirmation := false
 	for key, host := range watched {
 		ips := resolved[key]
 		if len(ips) == 0 {
 			continue
 		}
 		oldIPs, hadOld := dnsWatchSnapshot[key]
+		if !hadOld || len(oldIPs) == 0 {
+			nextSnapshot[key] = append([]string(nil), ips...)
+			continue
+		}
+		if sameStringSlice(oldIPs, ips) {
+			nextSnapshot[key] = append([]string(nil), oldIPs...)
+			continue
+		}
+		if retired, ok := nextRetiredSnapshots[key]; ok && sameStringSlice(retired.IPs, ips) {
+			nextSnapshot[key] = append([]string(nil), oldIPs...)
+			continue
+		}
+
+		// Recursive DNS caches can briefly alternate between the retired and
+		// current DDNS value. Keep serving the stable snapshot until the new
+		// answer has remained consistent across both polls and elapsed time.
+		candidate := dnsWatchCandidates[key]
+		if sameStringSlice(candidate.IPs, ips) {
+			candidate.Confirmations++
+		} else {
+			candidate = dnsWatchCandidate{
+				IPs:           append([]string(nil), ips...),
+				Confirmations: 1,
+				FirstSeen:     now,
+			}
+		}
+		if candidate.Confirmations < dnsChangeConfirmations || now.Sub(candidate.FirstSeen) < dnsChangeConfirmationWindow {
+			nextCandidates[key] = candidate
+			pendingConfirmation = true
+			nextSnapshot[key] = append([]string(nil), oldIPs...)
+			continue
+		}
+
 		nextSnapshot[key] = append([]string(nil), ips...)
-		if hadOld && len(oldIPs) > 0 && !sameStringSlice(oldIPs, ips) {
-			refs := watchedItems[key]
-			if len(refs) == 0 {
-				refs = []dnsWatchItem{{Host: host}}
-			}
-			for _, item := range refs {
-				reports = append(reports, dnsChangeReport{
-					Host:  host,
-					Scope: item.Scope,
-					RefID: item.RefID,
-					Old:   append([]string(nil), oldIPs...),
-					New:   append([]string(nil), ips...),
-				})
-			}
+		nextRetiredSnapshots[key] = dnsWatchRetiredSnapshot{
+			IPs:        append([]string(nil), oldIPs...),
+			ReplacedAt: now,
+		}
+		refs := watchedItems[key]
+		if len(refs) == 0 {
+			refs = []dnsWatchItem{{Host: host}}
+		}
+		for _, item := range refs {
+			reports = append(reports, dnsChangeReport{
+				Host:  host,
+				Scope: item.Scope,
+				RefID: item.RefID,
+				Old:   append([]string(nil), oldIPs...),
+				New:   append([]string(nil), ips...),
+			})
 		}
 	}
 
 	dnsWatchSnapshot = nextSnapshot
+	dnsWatchCandidates = nextCandidates
+	dnsWatchRetiredSnapshots = nextRetiredSnapshots
 	if len(reports) > 0 {
 		appendPendingDNSChangesLocked(reports)
-		return true
 	}
-	return false
+	return pendingConfirmation || len(reports) > 0
 }
 
 func appendPendingDNSChangesLocked(changes []dnsChangeReport) {

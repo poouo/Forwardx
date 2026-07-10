@@ -151,13 +151,16 @@ func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint) *exitE
 	seen := map[string]bool{}
 	add := func(endpoint exitEndpoint) {
 		endpoint.Host = strings.TrimSpace(endpoint.Host)
+		if endpoint.UDPPort <= 0 {
+			endpoint.UDPPort = endpoint.Port
+		}
 		if endpoint.Key == "" {
 			endpoint.Key = fallback.Key
 		}
-		if endpoint.Host == "" || endpoint.Port <= 0 || endpoint.Port > 65535 {
+		if endpoint.Host == "" || endpoint.Port <= 0 || endpoint.Port > 65535 || endpoint.UDPPort <= 0 || endpoint.UDPPort > 65535 {
 			return
 		}
-		key := endpoint.Host + ":" + strconv.Itoa(endpoint.Port) + ":" + endpoint.Key
+		key := endpoint.Host + ":" + strconv.Itoa(endpoint.Port) + ":" + strconv.Itoa(endpoint.UDPPort) + ":" + endpoint.Key
 		if seen[key] {
 			return
 		}
@@ -292,9 +295,20 @@ func formatEndpointList(selector *exitEndpointSelector) string {
 	defer selector.mu.Unlock()
 	parts := make([]string, 0, len(selector.endpoints))
 	for _, endpoint := range selector.endpoints {
-		parts = append(parts, endpoint.Host+":"+strconv.Itoa(endpoint.Port))
+		part := endpoint.Host + ":" + strconv.Itoa(endpoint.Port)
+		if endpoint.UDPPort != endpoint.Port {
+			part += "/udp:" + strconv.Itoa(endpoint.UDPPort)
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ",")
+}
+
+func udpListenPort(cfg config) int {
+	if cfg.UDPListenPort > 0 {
+		return cfg.UDPListenPort
+	}
+	return cfg.ListenPort
 }
 
 func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
@@ -351,17 +365,20 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 	log.Printf(
-		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v limits=maxConnections:%d,maxIPs:%d,limitIn:%d,limitOut:%d",
+		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d udpListen=:%d protocol=%s exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v limits=maxConnections:%d,maxIPs:%d,limitIn:%d,limitOut:%d",
 		fxpRuntimeVersion,
 		cfg.Role,
 		cfg.TunnelID,
 		cfg.RuleID,
 		cfg.ListenPort,
+		cfg.UDPListenPort,
 		cfg.Protocol,
 		cfg.ExitHost,
 		cfg.ExitPort,
+		cfg.UDPExitPort,
 		cfg.RelayExitHost,
 		cfg.RelayExitPort,
+		cfg.UDPRelayExitPort,
 		cfg.TargetIP,
 		cfg.TargetPort,
 		cfg.ProxyProtocolReceive,
@@ -472,7 +489,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
-	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, Key: cfg.Key})
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, UDPPort: cfg.UDPExitPort, Key: cfg.Key})
 	inLimiter := newLimiter(cfg.LimitIn)
 	outLimiter := newLimiter(cfg.LimitOut)
 	if selector.count() > 1 {
@@ -497,16 +514,17 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	if protocolHas(cfg, "udp") {
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(cfg.ListenPort))
+		port := udpListenPort(cfg)
+		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
 		if err != nil {
 			return err
 		}
 		udpConn, err := net.ListenUDP("udp", addr)
 		if err != nil {
-			return fmt.Errorf("entry udp listen :%d: %w", cfg.ListenPort, err)
+			return fmt.Errorf("entry udp listen :%d: %w", port, err)
 		}
 		tuneUDPConn(udpConn, "entry", fxpUDPListenBufferBytes)
-		log.Printf("entry udp listening on :%d tunnel=%d rule=%d", cfg.ListenPort, cfg.TunnelID, cfg.RuleID)
+		log.Printf("entry udp listening on :%d tunnel=%d rule=%d", port, cfg.TunnelID, cfg.RuleID)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1197,16 +1215,17 @@ func runExit(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	if protocolHas(cfg, "udp") {
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(cfg.ListenPort))
+		port := udpListenPort(cfg)
+		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
 		if err != nil {
 			return err
 		}
 		udpConn, err := net.ListenUDP("udp", addr)
 		if err != nil {
-			return fmt.Errorf("exit udp listen :%d: %w", cfg.ListenPort, err)
+			return fmt.Errorf("exit udp listen :%d: %w", port, err)
 		}
 		tuneUDPConn(udpConn, "exit", fxpUDPListenBufferBytes)
-		log.Printf("exit udp listening on :%d tunnel=%d", cfg.ListenPort, cfg.TunnelID)
+		log.Printf("exit udp listening on :%d tunnel=%d", port, cfg.TunnelID)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1392,7 +1411,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayKey == "" {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
-	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, Key: cfg.RelayKey})
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, UDPPort: cfg.UDPRelayExitPort, Key: cfg.RelayKey})
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	if selector.count() > 1 {
@@ -1417,16 +1436,21 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	if protocolHas(cfg, "udp") {
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(cfg.ListenPort))
+		port := udpListenPort(cfg)
+		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
 		if err != nil {
 			return err
 		}
 		udpConn, err := net.ListenUDP("udp", addr)
 		if err != nil {
-			return fmt.Errorf("relay udp listen :%d: %w", cfg.ListenPort, err)
+			return fmt.Errorf("relay udp listen :%d: %w", port, err)
 		}
 		tuneUDPConn(udpConn, "relay", fxpUDPListenBufferBytes)
-		log.Printf("relay udp listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+		downstreamPort := cfg.UDPRelayExitPort
+		if downstreamPort <= 0 {
+			downstreamPort = cfg.RelayExitPort
+		}
+		log.Printf("relay udp listening on :%d tunnel=%d next=%s:%d", port, cfg.TunnelID, cfg.RelayExitHost, downstreamPort)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
