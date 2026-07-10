@@ -119,6 +119,8 @@ export const pluginsRouter = router({
       enabled: z.boolean(),
       hostIds: z.array(z.number().int().positive()).max(512),
       assetPaths: z.array(z.string().trim().min(1).max(240)).max(96),
+      operation: z.string().trim().max(80).optional(),
+      fieldValues: z.record(z.unknown()).optional(),
       note: z.string().max(500).optional(),
     }))
     .mutation(async ({ input }) => {
@@ -127,6 +129,8 @@ export const pluginsRouter = router({
         hostIds: input.hostIds,
         assetPaths: input.assetPaths,
         mode: "sync-files",
+        operation: input.operation,
+        fieldValues: input.fieldValues,
         note: input.note,
       });
     }),

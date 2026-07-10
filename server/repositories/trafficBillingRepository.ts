@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   balanceTransactions,
+  forwardGroups,
   forwardRules,
   hosts,
   trafficBillingConfigs,
@@ -16,16 +17,17 @@ import {
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { getSetting, setSetting } from "./settingsRepository";
 import { getUserById } from "./userRepository";
+import { formatTrafficMultiplier, normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 
 const GB_BYTES = 1024 ** 3;
 const MILLI_CENTS_PER_CENT = 1000;
 const BILLING_DENOMINATOR = 100n * BigInt(MILLI_CENTS_PER_CENT);
 const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER = "traffic-billing-rule-usage-v1";
 
-export type TrafficBillingResourceType = "host" | "tunnel";
+export type TrafficBillingResourceType = "host" | "tunnel" | "forward_group";
 
 function normalizeMultiplier(value: number) {
-  return Math.max(1, Math.min(3000, Math.round(Number(value) || 100)));
+  return normalizeTrafficMultiplier(value);
 }
 
 function normalizePrice(value: number) {
@@ -61,8 +63,74 @@ function effectiveAmountCentsForBytes(bytes: number, pricePerGbMilliCents: numbe
   return Number(numerator / (BigInt(GB_BYTES) * BILLING_DENOMINATOR));
 }
 
+function isTrafficBillingResourceType(value: unknown): value is TrafficBillingResourceType {
+  return value === "host" || value === "tunnel" || value === "forward_group";
+}
+
+function forwardGroupBillingKind(group: any) {
+  const mode = String(group?.groupMode || "failover");
+  if (mode === "port") return "端口转发";
+  if (mode === "chain") return "转发链";
+  if (mode === "entry") return "入口组";
+  if (mode === "exit") return "出口组";
+  if (group?.groupType === "tunnel") return "隧道转发组";
+  return "转发组";
+}
+
 function trafficBillingResourceLabel(resourceType: TrafficBillingResourceType) {
-  return resourceType === "host" ? "主机" : "隧道";
+  if (resourceType === "host") return "历史主机";
+  if (resourceType === "tunnel") return "隧道转发";
+  return "转发资源";
+}
+
+async function getBillingResourceMultiplier(resourceType: TrafficBillingResourceType, resourceId: number, fallback = 100) {
+  const db = await getDb();
+  if (!db) return normalizeMultiplier(fallback);
+  if (resourceType === "tunnel") {
+    const rows = await db.select({ trafficMultiplier: tunnels.trafficMultiplier }).from(tunnels).where(eq(tunnels.id, resourceId)).limit(1);
+    return normalizeMultiplier(Number((rows[0] as any)?.trafficMultiplier || fallback));
+  }
+  if (resourceType === "forward_group") {
+    const rows = await db.select({ trafficMultiplier: forwardGroups.trafficMultiplier }).from(forwardGroups).where(eq(forwardGroups.id, resourceId)).limit(1);
+    return normalizeMultiplier(Number((rows[0] as any)?.trafficMultiplier || fallback));
+  }
+  return normalizeMultiplier(fallback);
+}
+
+async function assertBillingResourceExists(resourceType: TrafficBillingResourceType, resourceId: number) {
+  const db = await getDb();
+  if (!db) return;
+  if (resourceType === "host") {
+    const rows = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.id, resourceId)).limit(1);
+    if (!rows[0]) throw new Error("主机资源不存在");
+    return;
+  }
+  if (resourceType === "tunnel") {
+    const rows = await db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.id, resourceId)).limit(1);
+    if (!rows[0]) throw new Error("隧道资源不存在");
+    return;
+  }
+  const rows = await db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.id, resourceId)).limit(1);
+  if (!rows[0]) throw new Error("转发资源不存在");
+}
+
+export function trafficBillingResourceCandidatesForRule(rule: any) {
+  const candidates: Array<{ resourceType: TrafficBillingResourceType; resourceId: number }> = [];
+  const forwardGroupId = Number(rule?.forwardGroupId || 0);
+  const tunnelId = Number(rule?.tunnelId || 0);
+  const hostId = Number(rule?.hostId || 0);
+  if (forwardGroupId > 0) candidates.push({ resourceType: "forward_group", resourceId: forwardGroupId });
+  if (tunnelId > 0) candidates.push({ resourceType: "tunnel", resourceId: tunnelId });
+  if (hostId > 0) candidates.push({ resourceType: "host", resourceId: hostId });
+  return candidates;
+}
+
+export async function findTrafficBillingResourceForRule(rule: any) {
+  for (const candidate of trafficBillingResourceCandidatesForRule(rule)) {
+    const config = await findTrafficBillingConfig(candidate.resourceType, candidate.resourceId);
+    if (config) return { ...candidate, config };
+  }
+  return null;
 }
 
 async function getHistoricalRuleTrafficBytes(ruleId: number) {
@@ -88,7 +156,7 @@ export async function backfillTrafficBillingRuleUsageFromStats() {
     const userId = Number(usage?.userId || 0);
     const resourceType = String(usage?.resourceType || "") as TrafficBillingResourceType;
     const resourceId = Number(usage?.resourceId || 0);
-    if (userId <= 0 || resourceId <= 0 || (resourceType !== "host" && resourceType !== "tunnel")) continue;
+    if (userId <= 0 || resourceId <= 0 || !isTrafficBillingResourceType(resourceType)) continue;
 
     const existingRows = await db
       .select({ ruleId: trafficBillingRuleUsage.ruleId })
@@ -102,8 +170,10 @@ export async function backfillTrafficBillingRuleUsageFromStats() {
     if (resourceType === "host") {
       ruleConditions.push(eq(forwardRules.hostId, resourceId));
       ruleConditions.push(sql`(${forwardRules.tunnelId} IS NULL OR ${forwardRules.tunnelId} = 0)`);
-    } else {
+    } else if (resourceType === "tunnel") {
       ruleConditions.push(eq(forwardRules.tunnelId, resourceId));
+    } else {
+      ruleConditions.push(eq(forwardRules.forwardGroupId, resourceId));
     }
     const ruleRows = await db
       .select({ id: forwardRules.id })
@@ -141,35 +211,76 @@ export async function listTrafficBillingConfigs() {
   const db = await getDb();
   if (!db) return [];
   const configs = await db.select().from(trafficBillingConfigs).orderBy(desc(trafficBillingConfigs.updatedAt));
-  const [hostRows, tunnelRows] = await Promise.all([
+  const [hostRows, tunnelRows, forwardGroupRows] = await Promise.all([
     db.select({ id: hosts.id, name: hosts.name }).from(hosts),
-    db.select({ id: tunnels.id, name: tunnels.name }).from(tunnels),
+    db.select({ id: tunnels.id, name: tunnels.name, trafficMultiplier: tunnels.trafficMultiplier, mode: tunnels.mode }).from(tunnels),
+    db.select({
+      id: forwardGroups.id,
+      name: forwardGroups.name,
+      groupType: forwardGroups.groupType,
+      groupMode: forwardGroups.groupMode,
+      trafficMultiplier: forwardGroups.trafficMultiplier,
+    }).from(forwardGroups),
   ]);
   const hostNames = new Map(hostRows.map((host: any) => [Number(host.id), host.name]));
-  const tunnelNames = new Map(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel.name]));
+  const tunnelById = new Map(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel]));
+  const forwardGroupById = new Map(forwardGroupRows.map((group: any) => [Number(group.id), group]));
   return configs.map((config: any) => ({
     ...config,
     pricePerGbMilliCents: configPriceMilliCents(config),
-    resourceName: config.resourceType === "host"
-      ? hostNames.get(Number(config.resourceId)) || `主机 #${config.resourceId}`
-      : tunnelNames.get(Number(config.resourceId)) || `隧道 #${config.resourceId}`,
+    ...(() => {
+      const resourceId = Number(config.resourceId);
+      if (config.resourceType === "host") {
+        return {
+          resourceName: hostNames.get(resourceId) || `主机 #${config.resourceId}`,
+          resourceKind: "历史主机",
+          resourceMissing: !hostNames.has(resourceId),
+          configuredMultiplier: normalizeMultiplier(Number(config.multiplier || 100)),
+          multiplier: normalizeMultiplier(Number(config.multiplier || 100)),
+          multiplierText: formatTrafficMultiplier(config.multiplier),
+        };
+      }
+      if (config.resourceType === "forward_group") {
+        const group = forwardGroupById.get(resourceId);
+        const multiplier = normalizeMultiplier(Number(group?.trafficMultiplier || config.multiplier || 100));
+        return {
+          resourceName: group?.name || `转发资源 #${config.resourceId}`,
+          resourceKind: group ? forwardGroupBillingKind(group) : "转发资源",
+          resourceMissing: !group,
+          configuredMultiplier: normalizeMultiplier(Number(config.multiplier || 100)),
+          multiplier,
+          multiplierText: formatTrafficMultiplier(multiplier),
+        };
+      }
+      const tunnel = tunnelById.get(resourceId);
+      const multiplier = normalizeMultiplier(Number(tunnel?.trafficMultiplier || config.multiplier || 100));
+      return {
+        resourceName: tunnel?.name || `隧道 #${config.resourceId}`,
+        resourceKind: "隧道转发",
+        resourceMissing: !tunnel,
+        configuredMultiplier: normalizeMultiplier(Number(config.multiplier || 100)),
+        multiplier,
+        multiplierText: formatTrafficMultiplier(multiplier),
+      };
+    })(),
   }));
 }
 
 export async function getUserTrafficBillingPermissions(userId: number) {
   const db = await getDb();
-  if (!db) return { hostIds: [], tunnelIds: [] };
+  if (!db) return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
   const rows = await db.select().from(userTrafficBillingPermissions).where(eq(userTrafficBillingPermissions.userId, userId));
   return {
     hostIds: rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)),
     tunnelIds: rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)),
+    forwardGroupIds: rows.filter((row: any) => row.resourceType === "forward_group").map((row: any) => Number(row.resourceId)),
   };
 }
 
 export async function getUserUsableTrafficBillingResourceIds(userId: number) {
-  if (!(await isTrafficBillingEnabled())) return { hostIds: [], tunnelIds: [] };
+  if (!(await isTrafficBillingEnabled())) return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
   const db = await getDb();
-  if (!db) return { hostIds: [], tunnelIds: [] };
+  if (!db) return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
   const permittedRows = await db
     .select({
       resourceType: userTrafficBillingPermissions.resourceType,
@@ -197,16 +308,18 @@ export async function getUserUsableTrafficBillingResourceIds(userId: number) {
   return {
     hostIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)))),
     tunnelIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)))),
+    forwardGroupIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "forward_group").map((row: any) => Number(row.resourceId)))),
   };
 }
 
-export async function setUserTrafficBillingPermissions(userId: number, hostIds: number[], tunnelIds: number[]) {
+export async function setUserTrafficBillingPermissions(userId: number, hostIds: number[], tunnelIds: number[], forwardGroupIds: number[] = []) {
   const db = await getDb();
   if (!db) return;
   await db.delete(userTrafficBillingPermissions).where(eq(userTrafficBillingPermissions.userId, userId));
   const rows = [
     ...Array.from(new Set(hostIds.map(Number).filter((id) => id > 0))).map((resourceId) => ({ userId, resourceType: "host", resourceId })),
     ...Array.from(new Set(tunnelIds.map(Number).filter((id) => id > 0))).map((resourceId) => ({ userId, resourceType: "tunnel", resourceId })),
+    ...Array.from(new Set(forwardGroupIds.map(Number).filter((id) => id > 0))).map((resourceId) => ({ userId, resourceType: "forward_group", resourceId })),
   ];
   if (rows.length > 0) await db.insert(userTrafficBillingPermissions).values(rows as any);
 }
@@ -236,10 +349,19 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
   const resourceType = String((data as any).resourceType || "") as TrafficBillingResourceType;
   const resourceId = Number((data as any).resourceId || 0);
   const id = Number((data as any).id || 0);
-  if (resourceType !== "host" && resourceType !== "tunnel") throw new Error("资源类型无效");
+  if (!isTrafficBillingResourceType(resourceType)) throw new Error("资源类型无效");
   if (resourceId <= 0) throw new Error("资源无效");
+  await assertBillingResourceExists(resourceType, resourceId);
+  const existingById = id > 0
+    ? (await db.select().from(trafficBillingConfigs).where(eq(trafficBillingConfigs.id, id)).limit(1))[0]
+    : null;
   const pricePerGbMilliCents = normalizePriceMilliCents(
     Number((data as any).pricePerGbMilliCents || 0) || normalizePrice(Number((data as any).pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT,
+  );
+  const multiplier = await getBillingResourceMultiplier(
+    resourceType,
+    resourceId,
+    Number((data as any).multiplier || (existingById as any)?.multiplier || 100),
   );
   const payload = {
     resourceType,
@@ -249,14 +371,13 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
     description: String((data as any).description || "").trim() || null,
     pricePerGbCents: Math.floor(pricePerGbMilliCents / MILLI_CENTS_PER_CENT),
     pricePerGbMilliCents,
-    multiplier: normalizeMultiplier(Number((data as any).multiplier || 100)),
+    multiplier,
     updatedAt: nowDate(),
   };
   if (id > 0) {
-    const byId = await db.select().from(trafficBillingConfigs).where(eq(trafficBillingConfigs.id, id)).limit(1);
-    if (!byId[0]) throw new Error("计费配置不存在");
+    if (!existingById) throw new Error("计费配置不存在");
     await db.update(trafficBillingConfigs).set(payload as any).where(eq(trafficBillingConfigs.id, id));
-    return { ...byId[0], ...payload };
+    return { ...existingById, ...payload };
   }
   const existing = await db.select().from(trafficBillingConfigs).where(and(
     eq(trafficBillingConfigs.resourceType, resourceType),
@@ -362,7 +483,7 @@ export async function billTrafficUsage(input: {
   const previousBytes = Number(usage?.totalBytes || 0);
   const totalBytes = previousBytes + input.bytes;
   const previousBilledGb = Number(usage?.billedGb || 0);
-  const multiplier = normalizeMultiplier(Number(config.multiplier || 100));
+  const multiplier = await getBillingResourceMultiplier(input.resourceType, input.resourceId, Number(config.multiplier || 100));
   const ruleUsage = ruleUsageRows[0] as any;
   const hasAnyRuleUsage = ruleUsage
     ? true
@@ -472,14 +593,14 @@ export async function settleTrafficBillingRuleOnDelete(input: {
     if (!usage || usage.settled) continue;
     const resourceType = String(usage.resourceType || input.resourceType) as TrafficBillingResourceType;
     const resourceId = Number(usage.resourceId || input.resourceId);
-    const config = resourceType === "host" || resourceType === "tunnel"
+    const config = isTrafficBillingResourceType(resourceType)
       ? await findTrafficBillingConfig(resourceType, resourceId)
       : null;
     const pricePerGbMilliCents = configPriceMilliCents(config);
     const totalBytes = Math.max(0, Number(usage.totalBytes || 0));
     const billedBytes = Math.max(0, Number(usage.billedGb || 0)) * GB_BYTES;
     const remainingBytes = Math.max(0, totalBytes - billedBytes);
-    const multiplier = normalizeMultiplier(Number(config?.multiplier || 100));
+    const multiplier = await getBillingResourceMultiplier(resourceType, resourceId, Number(config?.multiplier || 100));
     const amountCents = config && pricePerGbMilliCents > 0
       ? effectiveAmountCentsForBytes(remainingBytes, pricePerGbMilliCents, multiplier)
       : 0;

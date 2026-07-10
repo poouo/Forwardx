@@ -79,7 +79,7 @@ async function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null) {
   const groupId = Number(rule?.forwardGroupId || 0);
   if (groupId > 0) {
     const group = await db.getForwardGroupById(groupId) as any;
-    if (String(group?.groupMode || "failover") === "chain") {
+    if (group && ["port", "chain", "failover"].includes(String(group?.groupMode || "failover"))) {
       return normalizeTrafficMultiplier(group?.trafficMultiplier);
     }
   }
@@ -355,13 +355,10 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           bytesOut,
           stat.connections || 0,
         );
-        const billingResource = tunnelId > 0
-          ? { resourceType: "tunnel" as const, resourceId: tunnelId }
-          : { resourceType: "host" as const, resourceId: Number(rule.hostId) };
-        const billingConfig = trafficBillingEnabled
-          ? await db.findTrafficBillingConfig(billingResource.resourceType, billingResource.resourceId)
+        const billingResource = trafficBillingEnabled
+          ? await db.findTrafficBillingResourceForRule(rule)
           : null;
-        if (billingConfig) {
+        if (billingResource?.config) {
           const user = await db.getUserById(Number(rule.userId));
           if (user && Number((user as any).balanceCents || 0) <= 0) {
             console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
@@ -373,7 +370,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             userId: Number(rule.userId),
             ruleId: Number(rule.id),
             bytes: ruleBytes,
-            ...billingResource,
+            resourceType: billingResource.resourceType,
+            resourceId: billingResource.resourceId,
           });
           if (billed && billed.balanceAfterCents < 0) {
             console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);

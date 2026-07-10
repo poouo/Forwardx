@@ -204,14 +204,15 @@ export const usersRouter = router({
         userId: z.number(),
         hostIds: z.array(z.number()),
         tunnelIds: z.array(z.number()),
+        forwardGroupIds: z.array(z.number()).optional().default([]),
       }))
       .mutation(async ({ input, ctx }) => {
-        await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds);
+        await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds, input.forwardGroupIds);
         const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
         if (recovery.restored) {
           await refreshUserForwardEndpoints(input.userId, "traffic-billing-permission-forward-restored");
         }
-        console.info(`[Users] Updated traffic billing permissions userId=${input.userId} hosts=${input.hostIds.length} tunnels=${input.tunnelIds.length} ${actorLabel(ctx)}`);
+        console.info(`[Users] Updated traffic billing permissions userId=${input.userId} hosts=${input.hostIds.length} tunnels=${input.tunnelIds.length} forwardGroups=${input.forwardGroupIds.length} ${actorLabel(ctx)}`);
         return { success: true, forwardAccessRestored: recovery.restored };
       }),
     getTunnelPermissions: adminProcedure

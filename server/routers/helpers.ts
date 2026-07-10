@@ -49,7 +49,7 @@ export async function requireTunnelUseAccess(ctx: { user: { id: number; role: st
 
 export async function requireTrafficBillingAccessIfConfigured(
   ctx: { user: { id: number; role: string } },
-  resourceType: "host" | "tunnel",
+  resourceType: "host" | "tunnel" | "forward_group",
   resourceId: number,
 ) {
   if (ctx.user.role === "admin") return false;
@@ -58,9 +58,9 @@ export async function requireTrafficBillingAccessIfConfigured(
   if (!config) return false;
   const hasPermission = await db.checkUserTrafficBillingPermission(ctx.user.id, resourceType, resourceId);
   if (!hasPermission) {
-    throw new Error(resourceType === "host"
-      ? "您没有使用该主机流量计费资源的权限，请联系管理员授权"
-      : "您没有使用该隧道流量计费资源的权限，请联系管理员授权");
+    if (resourceType === "host") throw new Error("您没有使用该主机流量计费资源的权限，请联系管理员授权");
+    if (resourceType === "tunnel") throw new Error("您没有使用该隧道流量计费资源的权限，请联系管理员授权");
+    throw new Error("您没有使用该转发计费资源的权限，请联系管理员授权");
   }
   return true;
 }

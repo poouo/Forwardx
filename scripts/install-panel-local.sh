@@ -498,7 +498,7 @@ download_panel_bundle() {
   fi
 
   mkdir -p "$APP_DIR"
-  rm -rf "$APP_DIR/dist" "$APP_DIR/client" "$APP_DIR/drizzle" "$APP_DIR/scripts"
+  rm -rf "$APP_DIR/dist" "$APP_DIR/client" "$APP_DIR/drizzle" "$APP_DIR/plugins" "$APP_DIR/scripts"
   rm -f "$APP_DIR/package.json" "$APP_DIR/pnpm-lock.yaml" "$APP_DIR/pnpm-workspace.yaml"
 
   if ! tar -xzf "$archive" -C "$APP_DIR"; then

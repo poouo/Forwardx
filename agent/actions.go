@@ -588,7 +588,7 @@ func actionProtectedPort(a action) string {
 	if !validActionPort(a.SourcePort) || strings.TrimSpace(a.StatusType) == "runtime" {
 		return ""
 	}
-	return fmt.Sprintf("%d", a.SourcePort)
+	return actionPortProtocolKey(a.SourcePort, a.Protocol)
 }
 
 func validActionPort(port int) bool {

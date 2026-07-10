@@ -2,33 +2,34 @@
   "schemaVersion": 1,
   "id": "china-region-whitelist",
   "name": "ForwardX 中国区域白名单",
-  "version": "0.1.0",
-  "description": "为 ForwardX 面板适配的中国区域白名单数据插件，可选择主机并同步到 Agent 本地。",
+  "version": "0.2.0",
+  "description": "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
+  "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。\n\n安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 面板和 Agent 下发的非交互使用方式。",
   "author": "poouo",
   "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
-  "releaseDate": "2026-07-09",
-  "updatedAt": "2026-07-09",
-  "changelog": "首个插件版本，提供 ForwardX 内置中国区域白名单数据，并支持在插件内选择主机生效。",
-  "tags": ["whitelist", "china-region", "data"],
+  "releaseDate": "2026-07-10",
+  "updatedAt": "2026-07-10",
+  "changelog": "补齐白名单脚本能力，支持主机配置生成、预演、应用、状态查看、清理规则和完整数据下发。",
+  "tags": ["whitelist", "china-region", "firewall", "agent"],
   "license": "Unknown",
   "homepage": "https://github.com/poouo/Forwardx",
   "repository": "https://github.com/poouo/Forwardx",
   "features": [
     {
-      "title": "白名单数据",
-      "description": "提供面板内置维护的中国区域 IP、域名、云服务和区域标识数据。"
+      "title": "区域白名单",
+      "description": "支持全国 CN 或按省份选择入站白名单。"
     },
     {
-      "title": "在线刷新",
-      "description": "安装后可从 ForwardX 内置插件目录刷新数据资产。"
+      "title": "端口策略",
+      "description": "支持为指定端口或端口范围设置独立白名单。"
     },
     {
-      "title": "本地下载",
-      "description": "同步后的文件可在插件资产中预览和下载。"
+      "title": "Agent 下发",
+      "description": "面板生成配置后由 Agent 同步脚本、数据和规则操作。"
     },
     {
-      "title": "主机同步",
-      "description": "在插件使用页选择主机和文件后，Agent 会同步到主机本地目录。"
+      "title": "规则预演",
+      "description": "应用前可以先输出将执行的 nftables/iptables 命令。"
     }
   ],
   "permissions": ["data:whitelist"],
@@ -38,10 +39,12 @@
       "id": "sync-to-hosts",
       "type": "host-asset-sync",
       "storageKey": "chinaRegionWhitelistUsage",
-      "title": "主机白名单同步",
-      "description": "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /etc/forwardx/plugins/china-region-whitelist。",
-      "enableLabel": "启用同步",
+      "title": "中国区域白名单",
+      "description": "选择主机和白名单配置后，Agent 会同步完整插件脚本与数据，并按选择执行对应操作。",
+      "enableLabel": "启用",
       "targetDirectory": "/etc/forwardx/plugins/china-region-whitelist",
+      "assetMode": "all-plugin-assets",
+      "preserveAssetPaths": true,
       "disabledTitle": "插件未启用",
       "disabledDescription": "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。",
       "hostSelector": {
@@ -53,20 +56,139 @@
         "clearLabel": "清空"
       },
       "assetSelector": {
-        "title": "同步内容",
-        "description": "按需选择要写入主机本地目录的数据文件。",
-        "selectedLabel": "已选",
-        "emptyText": "还没有可同步文件，请先到“动作”里刷新白名单数据。",
-        "clearLabel": "清空"
+        "hidden": true
       },
+      "operationSelector": {
+        "label": "执行方式",
+        "defaultValue": "sync",
+        "options": [
+          {
+            "value": "sync",
+            "label": "仅同步配置",
+            "description": "只把脚本、数据和配置写入主机，不修改防火墙。"
+          },
+          {
+            "value": "dry-run",
+            "label": "预演规则",
+            "description": "输出将要执行的规则命令，适合正式应用前检查。"
+          },
+          {
+            "value": "apply",
+            "label": "应用规则",
+            "description": "按当前配置应用白名单规则，并尽量配置开机恢复。"
+          },
+          {
+            "value": "status",
+            "label": "查看状态",
+            "description": "查看当前 nftables、ipset、iptables 和持久化配置状态。"
+          },
+          {
+            "value": "clear",
+            "label": "清理规则",
+            "description": "清理该插件创建的防火墙规则和持久化配置。"
+          },
+          {
+            "value": "update-asn",
+            "label": "更新 ASN",
+            "description": "重新同步已配置 ASN 的前缀并恢复规则。"
+          }
+        ]
+      },
+      "fields": [
+        {
+          "key": "region-codes",
+          "label": "全局白名单区域",
+          "type": "multi-select",
+          "description": "全国 CN 会使用国家级中国大陆 CIDR；也可以改为按省份选择。",
+          "required": true,
+          "defaultValue": ["CN"],
+          "options": [
+            { "value": "CN", "label": "全国（中国大陆 CN）" },
+            { "value": "110000", "label": "北京市" },
+            { "value": "120000", "label": "天津市" },
+            { "value": "130000", "label": "河北省" },
+            { "value": "140000", "label": "山西省" },
+            { "value": "150000", "label": "内蒙古自治区" },
+            { "value": "210000", "label": "辽宁省" },
+            { "value": "220000", "label": "吉林省" },
+            { "value": "230000", "label": "黑龙江省" },
+            { "value": "310000", "label": "上海市" },
+            { "value": "320000", "label": "江苏省" },
+            { "value": "330000", "label": "浙江省" },
+            { "value": "340000", "label": "安徽省" },
+            { "value": "350000", "label": "福建省" },
+            { "value": "360000", "label": "江西省" },
+            { "value": "370000", "label": "山东省" },
+            { "value": "410000", "label": "河南省" },
+            { "value": "420000", "label": "湖北省" },
+            { "value": "430000", "label": "湖南省" },
+            { "value": "440000", "label": "广东省" },
+            { "value": "450000", "label": "广西壮族自治区" },
+            { "value": "460000", "label": "海南省" },
+            { "value": "500000", "label": "重庆市" },
+            { "value": "510000", "label": "四川省" },
+            { "value": "520000", "label": "贵州省" },
+            { "value": "530000", "label": "云南省" },
+            { "value": "540000", "label": "西藏自治区" },
+            { "value": "610000", "label": "陕西省" },
+            { "value": "620000", "label": "甘肃省" },
+            { "value": "630000", "label": "青海省" },
+            { "value": "640000", "label": "宁夏回族自治区" },
+            { "value": "650000", "label": "新疆维吾尔自治区" }
+          ]
+        },
+        {
+          "key": "asns",
+          "label": "额外 ASN 白名单",
+          "type": "textarea",
+          "description": "多个 ASN 可用空格、逗号或换行分隔，例如 AS16509 AS14061。",
+          "placeholder": "AS16509"
+        },
+        {
+          "key": "port-policies",
+          "label": "端口优先白名单",
+          "type": "textarea",
+          "description": "端口策略优先于全局白名单，支持省份、ASN、IPv4 或 CIDR。",
+          "placeholder": "22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省"
+        },
+        {
+          "key": "forward-mode",
+          "label": "DNAT/FORWARD 托管",
+          "type": "select",
+          "defaultValue": "all",
+          "options": [
+            { "value": "all", "label": "托管所有 DNAT 入站转发" },
+            { "value": "none", "label": "只限制本机入站" },
+            { "value": "selected", "label": "只托管指定接口" }
+          ]
+        },
+        {
+          "key": "forward-ifaces",
+          "label": "指定接口",
+          "type": "text",
+          "description": "当上方选择“只托管指定接口”时填写，例如 tun0 wg0。",
+          "placeholder": "tun0 wg0"
+        },
+        {
+          "key": "firewall-backend",
+          "label": "防火墙后端",
+          "type": "select",
+          "defaultValue": "auto",
+          "options": [
+            { "value": "auto", "label": "自动选择" },
+            { "value": "nft", "label": "nftables" },
+            { "value": "iptables", "label": "iptables/ipset" }
+          ]
+        }
+      ],
       "noteField": {
         "label": "备注",
-        "placeholder": "例如：同步到国内入口主机，供后续规则或脚本读取"
+        "placeholder": "例如：限制入口机只允许国内访问"
       },
       "footer": {
-        "title": "当前方式：同步文件到主机本地目录。",
-        "description": "保存后，目标主机下次 Agent 心跳会收到更新。",
-        "submitLabel": "保存使用配置"
+        "title": "保存后会随 Agent 心跳下发到主机。",
+        "description": "默认执行方式是仅同步配置；需要正式生效时选择“应用规则”后再保存。",
+        "submitLabel": "保存并下发"
       }
     }
   ],
@@ -81,9 +203,9 @@
   "actions": [
     {
       "id": "refresh-whitelist-source",
-      "label": "刷新白名单数据",
-      "type": "data.whitelist.refresh",
-      "description": "从 ForwardX 内置插件目录重新同步 data 目录中的白名单文件。",
+      "label": "刷新插件数据",
+      "type": "data.asset.refresh",
+      "description": "从插件源重新同步 data 目录中的数据文件。",
       "confirmRequired": true
     }
   ],
@@ -94,39 +216,77 @@
       "contentType": "text/markdown;charset=utf-8"
     },
     {
-      "path": "data/country/CN.txt",
-      "label": "中国大陆 IPv4 白名单",
-      "description": "按国家维度维护的中国大陆 IPv4 CIDR 数据，适合给主机脚本或规则生成器读取。",
-      "contentType": "text/plain;charset=utf-8"
+      "path": "install.sh",
+      "label": "原始安装脚本",
+      "contentType": "text/x-shellscript;charset=utf-8"
     },
     {
-      "path": "data/domains/china-sites.txt",
-      "label": "常用国内域名白名单",
-      "description": "常见国内站点和服务域名，用于域名级白名单匹配或自定义脚本处理。",
-      "contentType": "text/plain;charset=utf-8"
+      "path": "bootstrap.sh",
+      "label": "拉取入口脚本",
+      "contentType": "text/x-shellscript;charset=utf-8"
     },
     {
-      "path": "data/asn/cloud-services.txt",
-      "label": "国内云服务 ASN",
-      "description": "常见云服务商 ASN 标识，便于在主机侧结合网络工具生成策略。",
-      "contentType": "text/plain;charset=utf-8"
+      "path": "forwardx-agent-run.sh",
+      "label": "ForwardX Agent 非交互运行入口",
+      "contentType": "text/x-shellscript;charset=utf-8"
     },
     {
-      "path": "data/regions/CN-mainland.txt",
-      "label": "中国区域标识",
-      "description": "按区域维度整理的 CN 及省级标识，供插件或脚本做区域分组。",
-      "contentType": "text/plain;charset=utf-8"
+      "path": "tools/firewall_lib.sh",
+      "label": "防火墙函数库",
+      "contentType": "text/x-shellscript;charset=utf-8"
+    },
+    {
+      "path": "tools/region_tool.py",
+      "label": "区域工具",
+      "contentType": "text/x-python;charset=utf-8"
+    },
+    {
+      "path": "tools/prepare_data.py",
+      "label": "数据准备工具",
+      "contentType": "text/x-python;charset=utf-8"
     }
   ],
   "data": {
-    "type": "china-region-whitelist",
+    "type": "generic",
     "repository": "https://github.com/poouo/Forwardx",
     "branch": "main",
     "files": [
+      "data/asn/AS16509.txt",
+      "data/cncity.md",
       "data/country/CN.txt",
-      "data/domains/china-sites.txt",
-      "data/asn/cloud-services.txt",
-      "data/regions/CN-mainland.txt"
+      "data/regions.json",
+      "data/regions.tsv",
+      "data/regions/110000.txt",
+      "data/regions/120000.txt",
+      "data/regions/130000.txt",
+      "data/regions/140000.txt",
+      "data/regions/150000.txt",
+      "data/regions/210000.txt",
+      "data/regions/220000.txt",
+      "data/regions/230000.txt",
+      "data/regions/310000.txt",
+      "data/regions/320000.txt",
+      "data/regions/330000.txt",
+      "data/regions/340000.txt",
+      "data/regions/350000.txt",
+      "data/regions/360000.txt",
+      "data/regions/370000.txt",
+      "data/regions/410000.txt",
+      "data/regions/420000.txt",
+      "data/regions/430000.txt",
+      "data/regions/440000.txt",
+      "data/regions/450000.txt",
+      "data/regions/460000.txt",
+      "data/regions/500000.txt",
+      "data/regions/510000.txt",
+      "data/regions/520000.txt",
+      "data/regions/530000.txt",
+      "data/regions/540000.txt",
+      "data/regions/610000.txt",
+      "data/regions/620000.txt",
+      "data/regions/630000.txt",
+      "data/regions/640000.txt",
+      "data/regions/650000.txt"
     ]
   }
 }

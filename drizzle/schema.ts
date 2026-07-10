@@ -859,14 +859,14 @@ export type InsertBalanceTransaction = typeof balanceTransactions.$inferInsert;
 
 export const trafficBillingConfigs = table("traffic_billing_configs", {
   id: serial("id"),
-  resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel
+  resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel | forward_group
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),
   requiresPermission: boolean("requiresPermission").notNull().default(false),
   description: text("description"),
   pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
   pricePerGbMilliCents: bigint("pricePerGbMilliCents", { mode: "number" }).notNull().default(0),
-  multiplier: int("multiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 30x = 3000
+  multiplier: int("multiplier").notNull().default(100), // snapshot from linked resource, 0.01x = 1, 1x = 100, 50x = 5000
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
 });

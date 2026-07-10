@@ -11,6 +11,7 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
+import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -336,7 +337,7 @@ export default function Store() {
                             </CardTitle>
                             <CardDescription className="mt-2">余额可用时可直接在转发规则中使用。</CardDescription>
                           </div>
-                          <Badge variant="outline">{config.resourceType === "host" ? "主机" : "隧道"}</Badge>
+                          <Badge variant="outline">{config.resourceKind || (config.resourceType === "host" ? "历史主机" : config.resourceType === "tunnel" ? "隧道转发" : "转发资源")}</Badge>
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-4">
@@ -349,7 +350,7 @@ export default function Store() {
                           <>
                             <div className="grid gap-2 text-sm text-muted-foreground">
                               <div>基础单价：{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
-                              <div>倍率：{(Number(config.multiplier || 100) / 100).toFixed(2)}x</div>
+                              <div>倍率：{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
                               <div>资源编号：#{config.resourceId}</div>
                               <div>使用方式：创建转发规则时选择该资源，按实际计费流量从余额扣费</div>
                             </div>

@@ -59,11 +59,11 @@ const agentActionBatchCache = new Map<number, { signature: string; issuedAt: num
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentRuntimeSyncActionCache = new Map<number, { signature: string; sentAt: number }>();
 const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
-// 孤儿端口迟滞：hostId -> (port -> 连续判定为孤儿的心跳次数)。
+// 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
 // 否则会与 apply 形成 apply→remove→apply 抖动死循环。
-const agentOrphanPortStreakCache = new Map<number, Map<number, number>>();
+const agentOrphanPortStreakCache = new Map<number, Map<string, number>>();
 const AGENT_ORPHAN_REMOVE_MIN_STREAK = 3;
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
@@ -329,11 +329,11 @@ async function resetAgentRuntimeStateForRecovery(hostId: number, reason: string)
  * 即便本轮运行态推导没把它算进 expectedRulePorts，也很可能只是瞬时缺口，
  * 必须连续 AGENT_ORPHAN_REMOVE_MIN_STREAK 轮都判孤儿才真正拆除；一旦重新匹配上规则即清零。
  */
-function getOrphanPortStreaks(hostId: number): Map<number, number> {
+function getOrphanPortStreaks(hostId: number): Map<string, number> {
   const id = Number(hostId);
   let streaks = agentOrphanPortStreakCache.get(id);
   if (!streaks) {
-    streaks = new Map<number, number>();
+    streaks = new Map<string, number>();
     agentOrphanPortStreakCache.set(id, streaks);
   }
   return streaks;
@@ -401,6 +401,19 @@ function shouldSendPluginSyncAction(hostId: number, action: any, now: number) {
   return false;
 }
 
+function runtimePortProtocolKey(portValue: unknown, protocol: unknown) {
+  const port = Number(portValue || 0);
+  if (port <= 0) return "";
+  return `${port}:${normalizeForwardRuleProtocol(protocol, "both")}`;
+}
+
+function ruleRuntimeIdentityKey(ruleIdValue: unknown, portValue: unknown, protocol: unknown) {
+  const ruleId = Number(ruleIdValue || 0);
+  const portKey = runtimePortProtocolKey(portValue, protocol);
+  if (ruleId <= 0 || !portKey) return "";
+  return `${ruleId}:${portKey}`;
+}
+
 function actionPortKey(action: any) {
   const port = Number(action?.sourcePort || 0);
   if (port <= 0) return "";
@@ -408,7 +421,7 @@ function actionPortKey(action: any) {
   const ruleId = Number(action?.ruleId || 0);
   const tunnelId = Number(action?.tunnelId || 0);
   if (ruleId > 0 || statusType === "rule") {
-    return `rule-port:${port}`;
+    return `rule-port:${runtimePortProtocolKey(port, action?.protocol)}`;
   }
   if (tunnelId > 0 || statusType === "tunnel") {
     return `tunnel:${tunnelId}:${port}`;
@@ -474,8 +487,57 @@ function realmTomlString(value: unknown) {
   return JSON.stringify(String(value ?? ""));
 }
 
-function realmConfigPathForPort(port: unknown) {
-  return `${REALM_CONFIG_DIR}/forwardx-realm-${Number(port) || 0}.toml`;
+function serviceProtocolSuffix(protocol: unknown) {
+  return normalizeForwardRuleProtocol(protocol, "both");
+}
+
+function realmServiceNameForPort(port: unknown, protocol: unknown) {
+  return `forwardx-realm-${serviceProtocolSuffix(protocol)}-${Number(port) || 0}`;
+}
+
+function legacyRealmServiceNameForPort(port: unknown) {
+  return `forwardx-realm-${Number(port) || 0}`;
+}
+
+function realmConfigPathForPort(port: unknown, protocol: unknown) {
+  return `${REALM_CONFIG_DIR}/${realmServiceNameForPort(port, protocol)}.toml`;
+}
+
+function legacyRealmConfigPathForPort(port: unknown) {
+  return `${REALM_CONFIG_DIR}/${legacyRealmServiceNameForPort(port)}.toml`;
+}
+
+function legacyRealmCleanupCmds(port: unknown, protocol: unknown) {
+  const normalized = normalizeForwardRuleProtocol(protocol, "both");
+  if (normalized === "udp") return [];
+  const serviceName = legacyRealmServiceNameForPort(port);
+  const configPath = legacyRealmConfigPathForPort(port);
+  return [
+    removeManagedServiceCmd(serviceName),
+    killByPatternCmd(`[r]ealm .*${configPath}`),
+    `rm -f ${shQuote(configPath)} ${shQuote(`${configPath}.sha256`)} 2>/dev/null || true`,
+  ];
+}
+
+function socatServiceNameForPort(port: unknown, protocol: unknown) {
+  return `forwardx-socat-${serviceProtocolSuffix(protocol)}-${Number(port) || 0}`;
+}
+
+function legacySocatServiceNameForPort(port: unknown) {
+  return `forwardx-socat-${Number(port) || 0}`;
+}
+
+function legacySocatCleanupCmds(port: unknown, protocol: unknown) {
+  const normalized = normalizeForwardRuleProtocol(protocol, "both");
+  if (normalized === "udp") return [];
+  return [removeManagedServiceCmd(legacySocatServiceNameForPort(port))];
+}
+
+function socatKillByProtocolCmd(port: unknown, protocol: unknown) {
+  const normalized = normalizeForwardRuleProtocol(protocol, "both");
+  if (normalized === "both") return killByPatternCmd(`[s]ocat.*LISTEN:${Number(port) || 0}`);
+  const protoUpper = normalized === "udp" ? "UDP" : "TCP";
+  return killByPatternCmd(`[s]ocat.*${protoUpper}[46]?-LISTEN:${Number(port) || 0}`);
 }
 
 function realmGuardConfigPathForPort(port: unknown) {
@@ -496,7 +558,7 @@ function udpOverTcpEnabled(rule: any, tunnel: any) {
   return !!rule
     && !!tunnel
     && isForwardXTunnelMode(tunnel)
-    && !!(rule as any).udpOverTcp
+    && (!!(rule as any).udpOverTcp || !!(tunnel as any).udpOverTcp)
     && isForwardRuleProtocolUdpEnabled(rule?.protocol);
 }
 
@@ -811,6 +873,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         const config = [
           "log.verbosity = info",
+          "link_type = eth",
+          "use_libxdp = false",
+          "max_window = false",
           "xdp_mode = skb",
           ...filters.map((filter) => `filter = ${filter}`),
           "",
@@ -820,6 +885,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `if ! command -v mimic >/dev/null 2>&1; then echo "[mimic] mimic is not installed; install mimic and mimic-dkms to use UDP camouflage"; exit 1; fi`,
           `mkdir -p ${shQuote(MIMIC_CONFIG_DIR)}`,
           `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(configPath)}`,
+          `echo "[mimic] sync ${shQuote(networkInterface)} filters=${filters.length}"`,
           `modprobe mimic 2>/dev/null || true`,
           restartManagedServiceIfConfigChangedCmd(serviceName, configPath),
         );
@@ -2608,7 +2674,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const guardRules: any[] = [];
     const addRunningRule = (rule: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
       if (!rule.ruleId || !rule.sourcePort) return;
-      const key = `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`;
+      const key = ruleRuntimeIdentityKey(rule.ruleId, rule.sourcePort, rule.protocol);
       if (runningRuleSeen.has(key)) return;
       runningRuleSeen.add(key);
       runningRules.push(rule);
@@ -2655,8 +2721,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         };
       }
       if (rule.forwardType === "realm") {
-        const svcName = `forwardx-realm-${rule.sourcePort}`;
-        const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
+        const svcName = realmServiceNameForPort(rule.sourcePort, rule.protocol);
+        const realmConfigPath = realmConfigPathForPort(rule.sourcePort, rule.protocol);
         return {
           ruleId: rule.id,
           op: "remove",
@@ -2669,6 +2735,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           commands: [
             removeManagedServiceCmd(svcName),
             killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
+            ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
             `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
             ...cleanupGuardBackendCmds(rule),
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
@@ -2686,10 +2753,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(removeManagedServiceCmd(svcTcp));
           removeCmds.push(removeManagedServiceCmd(svcUdp));
         } else {
-          const svcName = `forwardx-socat-${rule.sourcePort}`;
+          const svcName = socatServiceNameForPort(rule.sourcePort, rule.protocol);
           removeCmds.push(removeManagedServiceCmd(svcName));
+          removeCmds.push(...legacySocatCleanupCmds(rule.sourcePort, rule.protocol));
         }
-        removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
+        removeCmds.push(socatKillByProtocolCmd(rule.sourcePort, rule.protocol));
         removeCmds.push(...cleanupGuardBackendCmds(rule));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
         removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
@@ -2771,11 +2839,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const reportedRuntimeState = localRuntimeState.state;
     const hasReportedRuntimeState = !!reportedRuntimeState;
+    const reportedLocalRules = Array.isArray(reportedRuntimeState?.rules) ? reportedRuntimeState.rules : [];
     const localRulesByPort = new Map<number, AgentLocalRuntimeRuleState>();
     const localTunnelsByPort = new Map<number, AgentLocalRuntimeTunnelState>();
     const protectedRuleRemoveActionKeys = new Set<string>();
-    for (const item of reportedRuntimeState?.rules || []) {
-      if (Number(item.port) > 0) localRulesByPort.set(Number(item.port), item);
+    for (const item of reportedLocalRules) {
+      const port = Number(item.port || 0);
+      if (port > 0 && !localRulesByPort.has(port)) localRulesByPort.set(port, item);
     }
     for (const item of reportedRuntimeState?.tunnels || []) {
       if (Number(item.port) > 0) localTunnelsByPort.set(Number(item.port), item);
@@ -2787,7 +2857,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && service.hasWork
         && !service.active
       ));
-    const expectedRulePorts = new Set<number>();
+    const expectedRulePorts = new Set<string>();
+    const expectedRuleIdentityKeys = new Set<string>();
     const expectedTunnelPorts = new Set<number>();
     const forwardTypeCompatible = (local: unknown, expected: unknown) => {
       const localValue = String(local || "").trim();
@@ -2814,9 +2885,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!localValue || !expectedValue) return true;
       return normalizeForwardRuleProtocol(localValue) === normalizeForwardRuleProtocol(expectedValue);
     };
+    const findLocalRuleState = (port: number, protocol: unknown, ruleId?: number) => {
+      const normalizedProtocol = normalizeForwardRuleProtocol(protocol, "both");
+      const candidates = reportedLocalRules.filter((local: AgentLocalRuntimeRuleState) => Number(local.port || 0) === Number(port || 0));
+      const exact = candidates.find((local: AgentLocalRuntimeRuleState) => (
+        (ruleId === undefined || Number(local.ruleId || 0) === Number(ruleId || 0))
+        && localProtocolCompatible(local.protocol, normalizedProtocol)
+      ));
+      return exact || candidates.find((local: AgentLocalRuntimeRuleState) => localProtocolCompatible(local.protocol, normalizedProtocol)) || localRulesByPort.get(port);
+    };
     const localRuleMatches = (rule: any, expectedForwardType: string, port: number) => {
       if (!hasReportedRuntimeState || port <= 0) return true;
-      const local = localRulesByPort.get(port);
+      const local = findLocalRuleState(port, rule.protocol, Number(rule.id));
       return !!local
         && local.ready !== false
         && Number(local.ruleId || 0) === Number(rule.id)
@@ -2833,6 +2913,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         statusType: "rule",
         ruleId,
         sourcePort: port,
+        protocol: rule.protocol,
       }));
     };
     const localTunnelMatches = (tunnelId: number, expectedForwardType: string, port: number) => {
@@ -2907,7 +2988,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!hasReportedRuntimeState) return true;
       const port = Number(rule?.sourcePort || 0);
       if (port <= 0) return true;
-      const local = localRulesByPort.get(port);
+      const local = findLocalRuleState(port, rule.protocol, Number(rule?.id || 0));
       if (!local) return true;
       if (isKernelForwardRule(rule)) return true;
       return Number(local.ruleId || 0) === Number(rule?.id || 0);
@@ -3201,7 +3282,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? "nginx-tunnel"
         : rule.forwardType;
       if (rule.isEnabled && expectedRulePort > 0) {
-        expectedRulePorts.add(expectedRulePort);
+        expectedRulePorts.add(runtimePortProtocolKey(expectedRulePort, rule.protocol));
+        expectedRuleIdentityKeys.add(ruleRuntimeIdentityKey(rule.id, expectedRulePort, rule.protocol));
         protectActiveRulePort(rule, expectedRulePort);
       }
       const shouldRepairLocalRule = rule.isEnabled
@@ -3419,8 +3501,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: cmds,
           });
         } else if (rule.forwardType === "realm") {
-          const svcName = `forwardx-realm-${rule.sourcePort}`;
-          const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
+          const svcName = realmServiceNameForPort(rule.sourcePort, rule.protocol);
+          const realmConfigPath = realmConfigPathForPort(rule.sourcePort, rule.protocol);
           const realmRemote = endpointHostPort(processTarget(rule), rule.targetPort);
           const realmConfig = [
             "[log]",
@@ -3475,6 +3557,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             unit,
             preCommands: [
               ...cleanupGuardBackendCmds(rule),
+              ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
               `mkdir -p ${shQuote(REALM_CONFIG_DIR)}`,
               `printf '%s' '${realmConfigB64}' | base64 -d > ${shQuote(realmConfigPath)}`,
             ],
@@ -3487,7 +3570,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "socat") {
           // socat 转发：用户态进程，通过 systemd 管理
-          const svcName = `forwardx-socat-${rule.sourcePort}`;
           const socatPreCmds: string[] = [
             ...cleanupGuardBackendCmds(rule),
             `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
@@ -3558,6 +3640,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const protoUpper = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "UDP" : "TCP";
             const listenProto = protoUpper === "UDP" ? "UDP6" : "TCP6";
             const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`;
+            const singleSvcName = socatServiceNameForPort(rule.sourcePort, rule.protocol);
             const unit = [
               "[Unit]",
               `Description=ForwardX socat ${rule.protocol} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -3586,8 +3669,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
-              preCommands: socatPreCmds,
-              svcName,
+              preCommands: [
+                ...socatPreCmds,
+                ...legacySocatCleanupCmds(rule.sourcePort, rule.protocol),
+              ],
+              svcName: singleSvcName,
               unit,
               postCommands: socatPostCmds,
               failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
@@ -3731,8 +3817,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const removeAction = await buildDisabledRuleRemovalAction(rule);
           if (removeAction) actions.push(removeAction);
         } else if (rule.forwardType === "realm") {
-          const svcName = `forwardx-realm-${rule.sourcePort}`;
-          const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
+          const svcName = realmServiceNameForPort(rule.sourcePort, rule.protocol);
+          const realmConfigPath = realmConfigPathForPort(rule.sourcePort, rule.protocol);
           actions.push({
             ruleId: rule.id,
             op: "remove",
@@ -3745,6 +3831,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: [
               removeManagedServiceCmd(svcName),
               killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
+              ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
               ...cleanupGuardBackendCmds(rule),
               `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
               // 清理 conntrack 流量状态文件
@@ -3762,10 +3849,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             removeCmds.push(removeManagedServiceCmd(svcTcp));
             removeCmds.push(removeManagedServiceCmd(svcUdp));
           } else {
-            const svcName = `forwardx-socat-${rule.sourcePort}`;
+            const svcName = socatServiceNameForPort(rule.sourcePort, rule.protocol);
             removeCmds.push(removeManagedServiceCmd(svcName));
+            removeCmds.push(...legacySocatCleanupCmds(rule.sourcePort, rule.protocol));
           }
-          removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
+          removeCmds.push(socatKillByProtocolCmd(rule.sourcePort, rule.protocol));
           removeCmds.push(...cleanupGuardBackendCmds(rule));
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
@@ -3962,10 +4050,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     for (const runningRule of runningRules) {
       const port = Number(runningRule.sourcePort || 0);
-      if (port > 0) expectedRulePorts.add(port);
+      if (port > 0) expectedRulePorts.add(runtimePortProtocolKey(port, runningRule.protocol));
+      if (port > 0) expectedRuleIdentityKeys.add(ruleRuntimeIdentityKey(runningRule.ruleId, port, runningRule.protocol));
     }
     if (hasReportedRuntimeState) {
-      const ruleActionPorts = new Set<number>();
+      const ruleActionPorts = new Set<string>();
       const tunnelActionPorts = new Set<number>();
       for (const action of actions) {
         const port = Number(action?.sourcePort || 0);
@@ -3974,7 +4063,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const ruleId = Number(action?.ruleId || 0);
         const tunnelId = Number(action?.tunnelId || 0);
         if (ruleId > 0 || statusType === "rule") {
-          ruleActionPorts.add(port);
+          ruleActionPorts.add(runtimePortProtocolKey(port, action?.protocol));
         } else if (tunnelId > 0 || statusType === "tunnel") {
           tunnelActionPorts.add(port);
         }
@@ -3990,29 +4079,34 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (ruleId > 0) knownEnabledRuleIds.add(ruleId);
       }
       const orphanStreaks = getOrphanPortStreaks(Number(host.id));
-      const seenOrphanPorts = new Set<number>();
-      for (const localRule of localRulesByPort.values()) {
+      const seenOrphanKeys = new Set<string>();
+      for (const localRule of reportedLocalRules) {
         const port = Number(localRule.port || 0);
-        if (port <= 0 || expectedRulePorts.has(port) || ruleActionPorts.has(port)) continue;
+        if (port <= 0) continue;
+        const localRuntimeKey = runtimePortProtocolKey(port, localRule.protocol || "both");
         const reportedRuleId = Number(localRule.ruleId || 0);
+        const localIdentityKey = ruleRuntimeIdentityKey(reportedRuleId, port, localRule.protocol || "both");
+        const expectedIdentity = !!localIdentityKey && expectedRuleIdentityKeys.has(localIdentityKey);
+        if (expectedIdentity || (!reportedRuleId && expectedRulePorts.has(localRuntimeKey)) || ruleActionPorts.has(localRuntimeKey)) continue;
         const guarded = reportedRuleId > 0 && knownEnabledRuleIds.has(reportedRuleId);
+        const orphanKey = localIdentityKey || `unknown:${localRuntimeKey}`;
         if (guarded) {
-          seenOrphanPorts.add(port);
-          const streak = (orphanStreaks.get(port) || 0) + 1;
-          orphanStreaks.set(port, streak);
+          seenOrphanKeys.add(orphanKey);
+          const streak = (orphanStreaks.get(orphanKey) || 0) + 1;
+          orphanStreaks.set(orphanKey, streak);
           if (streak < AGENT_ORPHAN_REMOVE_MIN_STREAK) {
-            appendPanelLog("info", `[AgentReconcile] host=${host.id} port=${port} rule=${reportedRuleId} suspected-orphan streak=${streak}/${AGENT_ORPHAN_REMOVE_MIN_STREAK}; defer removal (identity known, likely transient runtime gap)`);
+            appendPanelLog("info", `[AgentReconcile] host=${host.id} port=${port} protocol=${normalizeForwardRuleProtocol(localRule.protocol, "both")} rule=${reportedRuleId} suspected-orphan streak=${streak}/${AGENT_ORPHAN_REMOVE_MIN_STREAK}; defer removal (identity known, likely transient runtime gap)`);
             continue;
           }
-          appendPanelLog("warn", `[AgentReconcile] host=${host.id} port=${port} rule=${reportedRuleId} orphan confirmed after ${streak} heartbeats; removing`);
+          appendPanelLog("warn", `[AgentReconcile] host=${host.id} port=${port} protocol=${normalizeForwardRuleProtocol(localRule.protocol, "both")} rule=${reportedRuleId} orphan confirmed after ${streak} heartbeats; removing`);
         }
         actions.push(buildGenericLocalRuleRemovalAction(localRule));
-        ruleActionPorts.add(port);
-        orphanStreaks.delete(port);
+        ruleActionPorts.add(localRuntimeKey);
+        orphanStreaks.delete(orphanKey);
       }
       // 端口一旦重新匹配上规则（不再进入上面的孤儿分支），清零其迟滞计数。
-      for (const port of Array.from(orphanStreaks.keys())) {
-        if (!seenOrphanPorts.has(port)) orphanStreaks.delete(port);
+      for (const orphanKey of Array.from(orphanStreaks.keys())) {
+        if (!seenOrphanKeys.has(orphanKey)) orphanStreaks.delete(orphanKey);
       }
       if (orphanStreaks.size === 0) agentOrphanPortStreakCache.delete(Number(host.id));
       for (const localTunnel of localTunnelsByPort.values()) {
@@ -4247,10 +4341,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }));
     const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
     if (!deferActionsForLocalState) {
-      const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
+      const runningRuleKeys = new Set(runningRules.map((rule: any) => ruleRuntimeIdentityKey(rule.ruleId, rule.sourcePort, rule.protocol)));
       for (const action of normalizedActions) {
         if (action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
-        const key = `${Number(action.ruleId)}:${Number(action.sourcePort)}`;
+        const key = ruleRuntimeIdentityKey(action.ruleId, action.sourcePort, action.protocol);
         if (runningRuleKeys.has(key)) continue;
         addRunningRule({
           ruleId: Number(action.ruleId),

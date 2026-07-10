@@ -30,6 +30,7 @@ type DevResources = {
   groups: {
     entryGroupId: number;
     exitGroupId: number;
+    portForwardGroupId: number;
     failoverGroupId: number;
     chainGroupId: number;
     apiFailoverGroupId: number;
@@ -1064,6 +1065,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
       latency: 31,
     },
   ];
+  let portForwardGroupId = 0;
   for (const group of portForwardGroups) {
     const groupId = await insertAndGetId("forward_groups", {
       userId: adminId,
@@ -1087,6 +1089,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
       createdAt: nowDate(),
       updatedAt: nowDate(),
     });
+    if (!portForwardGroupId) portForwardGroupId = groupId;
     await addForwardGroupMembers(groupId, [{ hostId: group.hostId, latency: group.latency }]);
   }
 
@@ -1319,6 +1322,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     groups: {
       entryGroupId,
       exitGroupId,
+      portForwardGroupId,
       failoverGroupId,
       chainGroupId,
       apiFailoverGroupId,
@@ -1911,11 +1915,11 @@ async function seedUserState(
     updatedAt: nowDate(),
   });
   await insertAndGetId("traffic_billing_configs", {
-    resourceType: "host",
-    resourceId: hostIds[1],
+    resourceType: "forward_group",
+    resourceId: resources.groups.portForwardGroupId,
     enabled: true,
     requiresPermission: true,
-    description: "Bill premium host traffic in the dev panel",
+    description: "Bill port-forward resource traffic in the dev panel",
     pricePerGbCents: 180,
     pricePerGbMilliCents: 180_000,
     multiplier: 100,
@@ -1924,7 +1928,7 @@ async function seedUserState(
   });
   for (const permission of [
     { userId: usersSeed.activeUserId, resourceType: "tunnel", resourceId: resources.tunnels.primaryTunnelId },
-    { userId: usersSeed.activeUserId, resourceType: "host", resourceId: hostIds[1] },
+    { userId: usersSeed.activeUserId, resourceType: "forward_group", resourceId: resources.groups.portForwardGroupId },
     { userId: usersSeed.pausedUserId, resourceType: "tunnel", resourceId: resources.tunnels.primaryTunnelId },
   ]) {
     await insertAndGetId("user_traffic_billing_permissions", {
@@ -1944,8 +1948,8 @@ async function seedUserState(
   });
   await insertAndGetId("traffic_billing_usage", {
     userId: usersSeed.activeUserId,
-    resourceType: "host",
-    resourceId: hostIds[1],
+    resourceType: "forward_group",
+    resourceId: resources.groups.portForwardGroupId,
     totalBytes: Math.round(7 * 1024 ** 3),
     billedGb: 7,
     pendingMilliCents: 0,

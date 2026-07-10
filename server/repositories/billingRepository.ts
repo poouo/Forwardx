@@ -961,7 +961,7 @@ export async function recoverUserForwardAccessIfEligible(
   const limits = await getEffectiveUserPlanLimits(userId);
   const billingResources = await getUserUsableTrafficBillingResourceIds(userId);
   const effectiveLimits = mergeManualAndPlanLimits(user, limits);
-  const hasTrafficBillingResource = billingResources.hostIds.length > 0 || billingResources.tunnelIds.length > 0;
+  const hasTrafficBillingResource = billingResources.hostIds.length > 0 || billingResources.tunnelIds.length > 0 || billingResources.forwardGroupIds.length > 0;
   const hasTrafficBillingBalance = Number((user as any).balanceCents || 0) > 0;
   if (pauseReason === "traffic_billing_balance" && hasTrafficBillingResource && !hasTrafficBillingBalance) {
     return {

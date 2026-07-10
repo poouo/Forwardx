@@ -14,6 +14,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { Coins, Gauge, LayoutGrid, List, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -117,9 +119,17 @@ function MobileInfoRow({
   );
 }
 
-type BillingResourceType = "host" | "tunnel";
+type BillingResourceType = "host" | "tunnel" | "forward_group";
+type BillingResourceCategory = "port" | "tunnel" | "chain" | "group" | "legacy_host";
 type BillingConfigViewMode = "card" | "table";
 const BILLING_CONFIG_VIEW_MODE_STORAGE_KEY = "forwardx.trafficBilling.configs.viewMode";
+const BILLING_RESOURCE_CATEGORY_ITEMS: Array<{ value: Exclude<BillingResourceCategory, "legacy_host">; label: string; description: string }> = [
+  { value: "port", label: "端口转发", description: "链路管理中的端口转发资源" },
+  { value: "tunnel", label: "隧道转发", description: "已创建的隧道资源" },
+  { value: "chain", label: "转发链", description: "端口转发链资源" },
+  { value: "group", label: "转发组", description: "转发组资源" },
+];
+const LEGACY_HOST_RESOURCE_CATEGORY_ITEM = { value: "legacy_host" as const, label: "历史主机", description: "旧版本主机计费资源" };
 
 function getStoredBillingConfigViewMode(): BillingConfigViewMode {
   if (typeof window === "undefined") return "card";
@@ -142,24 +152,149 @@ function storeBillingConfigViewMode(viewMode: BillingConfigViewMode) {
 
 type BillingConfigForm = {
   id?: number;
+  resourceCategory: BillingResourceCategory;
   resourceType: BillingResourceType;
   resourceId: string;
+  resourceName: string;
   description: string;
   price: string;
-  multiplier: string;
   enabled: boolean;
   requiresPermission: boolean;
 };
 
 const defaultBillingConfigForm = (): BillingConfigForm => ({
-  resourceType: "host",
+  resourceCategory: "port",
+  resourceType: "forward_group",
   resourceId: "",
+  resourceName: "",
   description: "",
   price: "",
-  multiplier: "1",
   enabled: true,
   requiresPermission: false,
 });
+
+function forwardGroupMode(group: any) {
+  const mode = String(group?.groupMode || "failover");
+  return ["port", "chain", "failover", "entry", "exit"].includes(mode) ? mode : "failover";
+}
+
+function forwardGroupTypeText(group: any) {
+  const mode = forwardGroupMode(group);
+  if (mode === "port") return "端口转发";
+  if (mode === "chain") return "转发链";
+  if (mode === "entry") return "入口组";
+  if (mode === "exit") return "出口组";
+  if (group?.groupType === "tunnel") return "隧道转发组";
+  return "转发组";
+}
+
+function resourceCategoryForConfig(config: any, forwardGroups: any[]): BillingResourceCategory {
+  if (config?.resourceType === "host") return "legacy_host";
+  if (config?.resourceType === "tunnel") return "tunnel";
+  const group = forwardGroups.find((item: any) => Number(item.id) === Number(config?.resourceId));
+  const mode = forwardGroupMode(group || { groupMode: config?.resourceKind === "端口转发" ? "port" : config?.resourceKind === "转发链" ? "chain" : "failover" });
+  if (mode === "port") return "port";
+  if (mode === "chain") return "chain";
+  return "group";
+}
+
+function resourceTypeForCategory(category: BillingResourceCategory): BillingResourceType {
+  if (category === "legacy_host") return "host";
+  if (category === "tunnel") return "tunnel";
+  return "forward_group";
+}
+
+function getResourceDisplayName(category: BillingResourceCategory, item: any) {
+  if (!item) return "";
+  if (category === "tunnel") return item.name || `隧道 #${item.id}`;
+  if (category === "legacy_host") return item.name || `主机 #${item.id}`;
+  return item.name || `${forwardGroupTypeText(item)} #${item.id}`;
+}
+
+function billingResourceSearchText(category: BillingResourceCategory, item: any, hosts: any[]) {
+  if (category === "tunnel") {
+    return [
+      getResourceDisplayName(category, item),
+      getTunnelRouteText(item, hosts),
+      item?.mode,
+      formatTrafficMultiplier(item?.trafficMultiplier),
+      item?.id,
+    ].filter(Boolean).join(" / ");
+  }
+  if (category === "legacy_host") {
+    return [getResourceDisplayName(category, item), item?.ip, item?.ipv4, item?.ipv6, item?.id].filter(Boolean).join(" / ");
+  }
+  return [
+    getResourceDisplayName(category, item),
+    forwardGroupTypeText(item),
+    formatTrafficMultiplier(item?.trafficMultiplier),
+    item?.members?.length ? `${item.members.length} 成员` : "",
+    item?.id,
+  ].filter(Boolean).join(" / ");
+}
+
+function renderStatusDot(tone: "online" | "warning" | "offline") {
+  const className = tone === "online"
+    ? "bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)]"
+    : tone === "warning"
+    ? "bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.18)]"
+    : "bg-muted-foreground/35";
+  return <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${className}`} aria-hidden="true" />;
+}
+
+function billingResourceStatusTone(category: BillingResourceCategory, item: any): "online" | "warning" | "offline" {
+  if (!item || item.missing) return "offline";
+  if (category === "tunnel") {
+    if (item.isRunning) return "online";
+    if (item.isEnabled) return "warning";
+    return "offline";
+  }
+  if (category === "legacy_host") return item.isOnline ? "online" : "offline";
+  if (item.isEnabled === false) return "offline";
+  if (String(item.lastStatus || "").toLowerCase() === "error") return "offline";
+  if (item.latestLatencyIsTimeout) return "warning";
+  return "online";
+}
+
+function BillingResourceOption({
+  category,
+  item,
+  hosts,
+  compact = false,
+  singleLine = false,
+}: {
+  category: BillingResourceCategory;
+  item: any;
+  hosts: any[];
+  compact?: boolean;
+  singleLine?: boolean;
+}) {
+  const name = getResourceDisplayName(category, item);
+  const kind = category === "tunnel" ? String(item?.mode || "").toUpperCase() || "隧道" : category === "legacy_host" ? "历史主机" : forwardGroupTypeText(item);
+  const meta = category === "tunnel"
+    ? getTunnelRouteText(item, hosts)
+    : category === "legacy_host"
+    ? [item?.ip, item?.ipv4, item?.ipv6].filter(Boolean).join(" / ")
+    : item?.members?.length ? `${item.members.length} 成员` : kind;
+  const multiplier = category === "legacy_host" ? null : formatTrafficMultiplier(item?.trafficMultiplier ?? 100);
+  return (
+    <div className={cn("flex min-w-0 items-center gap-2", compact ? "py-0" : "py-1")}>
+      {renderStatusDot(billingResourceStatusTone(category, item))}
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">{name}</span>
+          <span className="shrink-0 rounded border border-border/60 bg-background/70 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">{kind}</span>
+          {multiplier ? (
+            <span className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-emerald-700 dark:text-emerald-300">
+              {multiplier}
+            </span>
+          ) : null}
+        </div>
+        {!singleLine && meta ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{meta}</p> : null}
+      </div>
+    </div>
+  );
+}
 
 function BillingConfigCard({
   config,
@@ -187,9 +322,9 @@ function BillingConfigCard({
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-        <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
+        <MobileInfoRow label="类型">{config.resourceKind || (config.resourceType === "host" ? "历史主机" : config.resourceType === "tunnel" ? "隧道转发" : "转发资源")} #{config.resourceId}</MobileInfoRow>
         <MobileInfoRow label="单价">{formatPricePerGb(config)} / GB</MobileInfoRow>
-        <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
+        <MobileInfoRow label="倍率">{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</MobileInfoRow>
         <MobileInfoRow label="权限">
           <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
             {config.requiresPermission ? "需要授权" : "公开可用"}
@@ -217,6 +352,7 @@ export default function TrafficBillingConfigManager({
   const utils = trpc.useUtils();
   const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
   const { data: tunnels = [] } = trpc.tunnels.listAll.useQuery();
+  const { data: forwardGroups = [] } = trpc.forwardGroups.list.useQuery();
   const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
   const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -224,11 +360,19 @@ export default function TrafficBillingConfigManager({
   const [configViewMode, setConfigViewMode] = useState<BillingConfigViewMode>(() => getStoredBillingConfigViewMode());
   const lastCreateRequestKey = useRef(createRequestKey);
 
-  const resources = configForm.resourceType === "host" ? hosts : tunnels;
-  const resourceLabel = (item: any) => {
-    if (configForm.resourceType === "host") return `${item.name} #${item.id}`;
-    return `${item.name} / ${getTunnelRouteText(item, hosts)} / ${String(item.mode || "").toUpperCase()} #${item.id}`;
-  };
+  const portForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "port");
+  const chainForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "chain");
+  const standardForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "failover");
+  const resources = configForm.resourceCategory === "tunnel"
+    ? tunnels
+    : configForm.resourceCategory === "chain"
+    ? chainForwardGroups
+    : configForm.resourceCategory === "group"
+    ? standardForwardGroups
+    : configForm.resourceCategory === "legacy_host"
+    ? hosts
+    : portForwardGroups;
+  const selectedResource = resources.find((item: any) => Number(item.id) === Number(configForm.resourceId));
   const totalCharged = Number(summary?.totalAmountCents || 0);
   const totalGb = Number(summary?.totalBilledGb || 0);
 
@@ -278,13 +422,15 @@ export default function TrafficBillingConfigManager({
   }, [createRequestKey]);
 
   const openEdit = (config: any) => {
+    const resourceCategory = resourceCategoryForConfig(config, forwardGroups);
     setConfigForm({
       id: Number(config.id),
-      resourceType: config.resourceType === "tunnel" ? "tunnel" : "host",
+      resourceCategory,
+      resourceType: config.resourceType === "forward_group" ? "forward_group" : config.resourceType === "tunnel" ? "tunnel" : "host",
       resourceId: String(config.resourceId || ""),
+      resourceName: String(config.resourceName || ""),
       description: String(config.description || ""),
       price: formatPriceInput(pricePerGbMilliCents(config)),
-      multiplier: String((Number(config.multiplier || 100) / 100).toFixed(2)).replace(/\.00$/, ""),
       enabled: config.enabled !== false,
       requiresPermission: !!config.requiresPermission,
     });
@@ -294,19 +440,17 @@ export default function TrafficBillingConfigManager({
   const handleSave = () => {
     const id = Number(configForm.resourceId);
     const pricePerGbMilliCents = Math.round(Number(configForm.price || 0) * MILLI_CENTS_PER_YUAN);
-    const multiplierValue = Math.round(Number(configForm.multiplier || 1) * 100);
     if (!id) return toast.error("请选择资源");
     if (pricePerGbMilliCents < MIN_PRICE_PER_GB_MILLI_CENTS) return toast.error("单价最低 0.001/GB");
-    if (multiplierValue < 1 || multiplierValue > 3000) return toast.error("倍率必须在 0.01 - 30 之间");
+    const resourceType = resourceTypeForCategory(configForm.resourceCategory);
     saveConfig.mutate({
       id: configForm.id,
-      resourceType: configForm.resourceType,
+      resourceType,
       resourceId: id,
       enabled: configForm.enabled,
       requiresPermission: configForm.requiresPermission,
       description: configForm.description.trim() || undefined,
       pricePerGbMilliCents,
-      multiplier: multiplierValue,
     });
   };
 
@@ -445,10 +589,11 @@ export default function TrafficBillingConfigManager({
                             <div className="flex items-center gap-2">
                               {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
                               <span>{config.resourceName}</span>
+                              <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || "转发资源"}</Badge>
                             </div>
                           </TableCell>
                           <TableCell>{formatPricePerGb(config)} / GB</TableCell>
-                          <TableCell>{(Number(config.multiplier || 100) / 100).toFixed(2)}x</TableCell>
+                          <TableCell>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</TableCell>
                           <TableCell>
                             <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
                               {config.requiresPermission ? "需要授权" : "公开可用"}
@@ -478,40 +623,103 @@ export default function TrafficBillingConfigManager({
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-3xl sm:max-h-[90svh]">
+        <DialogContent className="max-w-2xl sm:max-h-[90svh]">
           <DialogHeader>
             <DialogTitle>{configForm.id ? "编辑计费资源" : "新增计费资源"}</DialogTitle>
-            <DialogDescription>设置计费资源、单价倍率和使用权限。</DialogDescription>
+            <DialogDescription>选择链路资源并设置流量单价，倍率使用资源自身配置。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>类型</Label>
-              <Select
-                value={configForm.resourceType}
-                onValueChange={(value: BillingResourceType) => setConfigForm((current) => ({ ...current, resourceType: value, resourceId: "" }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="host">主机</SelectItem><SelectItem value="tunnel">隧道</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>资源</Label>
-              <Select value={configForm.resourceId} onValueChange={(resourceId) => setConfigForm((current) => ({ ...current, resourceId }))}>
-                <SelectTrigger><SelectValue placeholder="选择资源" /></SelectTrigger>
-                <SelectContent>
-                  {resources.map((item: any) => (
-                    <SelectItem key={item.id} value={String(item.id)}>{resourceLabel(item)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid gap-3 sm:col-span-2 sm:grid-cols-[11rem_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <Label>资源类型</Label>
+                <Select
+                  value={configForm.resourceCategory}
+                  onValueChange={(value) => {
+                    const resourceCategory = value as BillingResourceCategory;
+                    setConfigForm((current) => ({
+                      ...current,
+                      resourceCategory,
+                      resourceType: resourceTypeForCategory(resourceCategory),
+                      resourceId: "",
+                      resourceName: "",
+                    }));
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="资源类型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {configForm.resourceCategory === "legacy_host" ? (
+                      <SelectItem value="legacy_host" textValue={LEGACY_HOST_RESOURCE_CATEGORY_ITEM.label} disabled>
+                        <span className="truncate text-sm font-medium">{LEGACY_HOST_RESOURCE_CATEGORY_ITEM.label}</span>
+                      </SelectItem>
+                    ) : null}
+                    {BILLING_RESOURCE_CATEGORY_ITEMS.map((item) => (
+                      <SelectItem key={item.value} value={item.value} textValue={item.label}>
+                        <span className="truncate text-sm font-medium">{item.label}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-2">
+                <Label>资源</Label>
+              {configForm.resourceCategory === "legacy_host" ? (
+                <div className="flex h-10 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-3">
+                  <BillingResourceOption
+                    category="legacy_host"
+                    item={selectedResource || { id: configForm.resourceId, name: configForm.resourceName || `主机 #${configForm.resourceId}`, missing: true }}
+                    hosts={hosts}
+                    compact
+                    singleLine
+                  />
+                </div>
+              ) : (
+                <Select
+                  value={configForm.resourceId}
+                  onValueChange={(resourceId) => {
+                    const resource = resources.find((item: any) => Number(item.id) === Number(resourceId));
+                    setConfigForm((current) => ({
+                      ...current,
+                      resourceId,
+                      resourceName: resource ? getResourceDisplayName(current.resourceCategory, resource) : "",
+                    }));
+                  }}
+                  disabled={resources.length === 0}
+                >
+                  <SelectTrigger className="min-w-0">
+                    <SelectValue placeholder={resources.length > 0 ? "选择资源" : "暂无可选择资源"} />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {resources.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">暂无可选择资源</div>
+                    ) : resources.map((item: any) => (
+                      <SelectItem
+                        key={item.id}
+                        value={String(item.id)}
+                        textValue={billingResourceSearchText(configForm.resourceCategory, item, hosts)}
+                      >
+                        <BillingResourceOption category={configForm.resourceCategory} item={item} hosts={hosts} compact singleLine />
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              </div>
             </div>
             <div className="space-y-2">
               <Label>单价 / GB</Label>
               <Input type="number" min={0.001} step="0.001" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder="例如 0.001" />
             </div>
             <div className="space-y-2">
-              <Label>倍率</Label>
-              <Input type="number" min={0.01} max={30} step="0.01" value={configForm.multiplier} onChange={(e) => setConfigForm((current) => ({ ...current, multiplier: e.target.value }))} />
+              <Label>链路倍率</Label>
+              <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/20 px-3 text-sm">
+                {selectedResource && configForm.resourceCategory !== "legacy_host"
+                  ? formatTrafficMultiplier(selectedResource.trafficMultiplier ?? 100)
+                  : configForm.resourceCategory === "legacy_host"
+                  ? "沿用旧配置"
+                  : "选择资源后显示"}
+              </div>
             </div>
             <div className="space-y-2 sm:col-span-2">
               <Label>说明</Label>

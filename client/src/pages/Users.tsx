@@ -307,10 +307,12 @@ function UsersContent() {
   const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
   const [trafficBillingHostIds, setTrafficBillingHostIds] = useState<number[]>([]);
   const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
+  const [trafficBillingForwardGroupIds, setTrafficBillingForwardGroupIds] = useState<number[]>([]);
   const [addAllowedForwardGroupId, setAddAllowedForwardGroupId] = useState("");
   const [addAllowedTunnelId, setAddAllowedTunnelId] = useState("");
   const [addBillingHostId, setAddBillingHostId] = useState("");
   const [addBillingTunnelId, setAddBillingTunnelId] = useState("");
+  const [addBillingForwardGroupId, setAddBillingForwardGroupId] = useState("");
   const { data: allHosts } = trpc.hosts.listAll.useQuery();
   const { data: allTunnels } = trpc.tunnels.listAll.useQuery();
   const { data: allForwardGroups } = trpc.forwardGroups.list.useQuery();
@@ -378,6 +380,7 @@ function UsersContent() {
     if (userTrafficBillingPerms) {
       setTrafficBillingHostIds([...(userTrafficBillingPerms.hostIds || [])]);
       setTrafficBillingTunnelIds([...(userTrafficBillingPerms.tunnelIds || [])]);
+      setTrafficBillingForwardGroupIds([...(userTrafficBillingPerms.forwardGroupIds || [])]);
     }
   }, [userTrafficBillingPerms]);
 
@@ -835,10 +838,12 @@ function UsersContent() {
     setAllowedTunnelIds([]);
     setTrafficBillingHostIds([]);
     setTrafficBillingTunnelIds([]);
+    setTrafficBillingForwardGroupIds([]);
     setAddAllowedForwardGroupId("");
     setAddAllowedTunnelId("");
     setAddBillingHostId("");
     setAddBillingTunnelId("");
+    setAddBillingForwardGroupId("");
     setShowTrafficSettings(true);
   };
 
@@ -888,6 +893,7 @@ function UsersContent() {
       userId: trafficUserId,
       hostIds: trafficBillingHostIds,
       tunnelIds: trafficBillingTunnelIds,
+      forwardGroupIds: trafficBillingForwardGroupIds,
     });
   };
 
@@ -917,6 +923,13 @@ function UsersContent() {
     if (!Number.isFinite(tunnelId)) return;
     setTrafficBillingTunnelIds(prev => (prev.includes(tunnelId) ? prev : [...prev, tunnelId]));
     setAddBillingTunnelId("");
+  };
+
+  const addTrafficBillingForwardGroup = (value: string) => {
+    const forwardGroupId = Number(value);
+    if (!Number.isFinite(forwardGroupId)) return;
+    setTrafficBillingForwardGroupIds(prev => (prev.includes(forwardGroupId) ? prev : [...prev, forwardGroupId]));
+    setAddBillingForwardGroupId("");
   };
 
   const handleRecharge = () => {
@@ -1004,6 +1017,7 @@ function UsersContent() {
   const tunnelRouteText = (tunnel: any) => getTunnelRouteText(tunnel, allHosts);
   const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
+  const billableForwardGroupIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "forward_group" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const normalizeForwardGroupModeForAuth = (group: any | null | undefined) => {
     const mode = String(group?.groupMode || "failover");
     return mode === "port" || mode === "chain" || mode === "failover" ? mode : "other";
@@ -1028,6 +1042,9 @@ function UsersContent() {
   const billableTunnels = (allTunnels || []).filter((t: any) => billableTunnelIds.has(Number(t.id)));
   const availableBillingTunnels = billableTunnels.filter((t: any) => !trafficBillingTunnelIds.includes(Number(t.id)));
   const selectedBillingTunnels = billableTunnels.filter((t: any) => trafficBillingTunnelIds.includes(Number(t.id)));
+  const billableForwardGroups = authForwardGroups.filter((group: any) => billableForwardGroupIds.has(Number(group.id)));
+  const availableBillingForwardGroups = billableForwardGroups.filter((group: any) => !trafficBillingForwardGroupIds.includes(Number(group.id)));
+  const selectedBillingForwardGroups = billableForwardGroups.filter((group: any) => trafficBillingForwardGroupIds.includes(Number(group.id)));
 
   const renderAccountEnabledControl = (u: any, compact = false) => {
     const enabled = u.accountEnabled !== false;
@@ -2362,12 +2379,62 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">流量计费主机</Label>
+                  <Label className="text-sm font-medium">流量计费转发资源</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingForwardGroupIds.length} 个</Badge>
+                </div>
+                <Select value={addBillingForwardGroupId} onValueChange={addTrafficBillingForwardGroup} disabled={!availableBillingForwardGroups.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableBillingForwardGroups.length ? "选择要授权的计费转发资源" : "暂无可添加计费转发资源"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableBillingForwardGroups.map((group: any) => (
+                      <SelectItem key={group.id} value={String(group.id)}>
+                        {group.name || `转发资源 #${group.id}`} · {forwardGroupAuthLabel(group)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedBillingForwardGroups.length > 0 ? (
+                  <AutoAnimateContainer className="space-y-2">
+                    {selectedBillingForwardGroups.map((group: any) => (
+                      <div key={group.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{group.name || `转发资源 #${group.id}`}</span>
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{forwardGroupAuthLabel(group)}</Badge>
+                          </div>
+                          <p className="truncate text-[10px] text-muted-foreground">
+                            {(group.members || []).length ? `${group.members.length} 成员` : "链路管理资源"}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setTrafficBillingForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </AutoAnimateContainer>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权计费转发资源，可从上方选择添加。
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label className="text-sm font-medium">历史计费主机</Label>
                   <Badge variant="outline" className="text-[10px]">{trafficBillingHostIds.length} 台</Badge>
                 </div>
                 <Select value={addBillingHostId} onValueChange={addTrafficBillingHost} disabled={!availableBillingHosts.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableBillingHosts.length ? "选择要授权计费的主机" : "暂无可添加计费主机"} />
+                    <SelectValue placeholder={availableBillingHosts.length ? "选择要授权的历史计费主机" : "暂无可添加历史计费主机"} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableBillingHosts.map((h: any) => (
@@ -2400,7 +2467,7 @@ function UsersContent() {
                   </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权计费主机，可从上方选择添加。
+                    暂未授权历史计费主机。
                   </p>
                 )}
               </div>

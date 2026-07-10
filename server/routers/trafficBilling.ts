@@ -3,20 +3,20 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 
-const resourceTypeSchema = z.enum(["host", "tunnel"]);
+const resourceTypeSchema = z.enum(["host", "tunnel", "forward_group"]);
 
 export const trafficBillingRouter = router({
   status: protectedProcedure.query(async ({ ctx }) => {
     const [summary, usableResourceIds] = await Promise.all([
       db.getTrafficBillingSummary(ctx.user.id),
       ctx.user.role === "admin"
-        ? Promise.resolve({ hostIds: [], tunnelIds: [] })
+        ? Promise.resolve({ hostIds: [], tunnelIds: [], forwardGroupIds: [] })
         : db.getUserUsableTrafficBillingResourceIds(ctx.user.id),
     ]);
     return {
       ...summary,
       usableResourceIds,
-      hasUsableResources: usableResourceIds.hostIds.length > 0 || usableResourceIds.tunnelIds.length > 0,
+      hasUsableResources: usableResourceIds.hostIds.length > 0 || usableResourceIds.tunnelIds.length > 0 || usableResourceIds.forwardGroupIds.length > 0,
     };
   }),
 
@@ -55,11 +55,11 @@ export const trafficBillingRouter = router({
       description: z.string().trim().max(500).optional(),
       pricePerGbCents: z.number().int().min(0).max(100_000_000).optional(),
       pricePerGbMilliCents: z.number().int().min(0).max(100_000_000_000).optional(),
-      multiplier: z.number().int().min(1).max(3000),
+      multiplier: z.number().int().min(1).max(5000).optional(),
     }))
     .mutation(async ({ input }) => {
       const config = await db.upsertTrafficBillingConfig(input as any);
-      appendPanelLog("info", `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} priceMilli=${input.pricePerGbMilliCents ?? 0} multiplier=${input.multiplier} requiresPermission=${input.requiresPermission}`);
+      appendPanelLog("info", `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} priceMilli=${input.pricePerGbMilliCents ?? 0} requiresPermission=${input.requiresPermission}`);
       return config;
     }),
 

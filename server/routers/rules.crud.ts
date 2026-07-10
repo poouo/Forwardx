@@ -1,5 +1,6 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
+import { isIP } from "node:net";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
@@ -225,6 +226,57 @@ function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | nu
   return String(input || "").trim();
 }
 
+function normalizeAddressToken(value: unknown) {
+  return String(value || "")
+    .trim()
+    .replace(/^\[(.*)\]$/, "$1")
+    .replace(/\.$/, "")
+    .toLowerCase();
+}
+
+function isLoopbackAddress(value: unknown) {
+  const target = normalizeAddressToken(value);
+  if (!target) return false;
+  if (target === "localhost" || target === "ip6-localhost") return true;
+  if (target === "0.0.0.0" || target === "::" || target === "0:0:0:0:0:0:0:0") return true;
+  if (target === "::1" || target === "0:0:0:0:0:0:0:1") return true;
+  if (isIP(target) === 4) return target.startsWith("127.");
+  return false;
+}
+
+function hostAddressTokens(host: any) {
+  return new Set(
+    [
+      host?.ip,
+      host?.ipv4,
+      host?.ipv6,
+      host?.entryIp,
+      host?.tunnelEntryIp,
+      host?.ddnsDomain,
+    ]
+      .map(normalizeAddressToken)
+      .filter(Boolean),
+  );
+}
+
+function assertNoDirectSelfForwardLoop(options: {
+  host?: any;
+  sourcePort: number;
+  targetIp: unknown;
+  targetPort: number;
+  tunnelId?: number | null;
+}) {
+  const sourcePort = Number(options.sourcePort || 0);
+  const targetPort = Number(options.targetPort || 0);
+  if (sourcePort <= 0 || sourcePort !== targetPort) return;
+  if (Number(options.tunnelId || 0) > 0) return;
+  const target = normalizeAddressToken(options.targetIp);
+  if (!target) return;
+  if (isLoopbackAddress(target) || hostAddressTokens(options.host).has(target)) {
+    throw new Error(`禁止将本机 ${sourcePort} 端口转发回自身同端口，这会造成转发死循环`);
+  }
+}
+
 function normalizeLockedForwardType(value: unknown) {
   const parsed = forwardTypeSchema.safeParse(String(value || ""));
   return parsed.success ? parsed.data : "iptables";
@@ -331,7 +383,12 @@ async function requireTrafficBillingBalanceForRule(userId: number, isTrafficBill
 }
 
 async function isForwardGroupTrafficBillingRule(group: any, userId: number) {
-  if (!group || String((group as any).groupMode || "failover") === "chain") return false;
+  if (!group) return false;
+  const groupId = Number((group as any).id || 0);
+  if (groupId > 0) {
+    const groupConfig = await db.findTrafficBillingConfig("forward_group", groupId);
+    if (groupConfig) return true;
+  }
   const members = Array.isArray((group as any).members) ? (group as any).members : [];
   for (const member of members) {
     if (!member?.isEnabled) continue;
@@ -373,12 +430,15 @@ async function assertRulePortWithinEntryPolicy(options: {
 }
 
 async function settleTrafficBillingForDeletedRule(rule: any) {
-  const tunnelId = Number(rule?.tunnelId || 0);
+  const billingResource = await db.findTrafficBillingResourceForRule(rule);
+  const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
+  const resource = billingResource || fallback;
+  if (!resource) return null;
   const billed = await db.settleTrafficBillingRuleOnDelete({
     userId: Number(rule.userId),
     ruleId: Number(rule.id),
-    resourceType: tunnelId > 0 ? "tunnel" : "host",
-    resourceId: tunnelId > 0 ? tunnelId : Number(rule.hostId),
+    resourceType: resource.resourceType,
+    resourceId: resource.resourceId,
   });
   if (billed && Number(billed.balanceAfterCents) < 0) {
     await db.setUserForwardAccess(Number(rule.userId), false, "traffic_billing_balance");
@@ -470,7 +530,7 @@ export const crudRulesRouter = router({
             throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
           }
         }
-        const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort });
+        const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort, protocol: input.protocol });
         const isForwardChain = (group as any).groupMode === "chain";
         const isPortGroup = (group as any).groupMode === "port";
         if (ctx.user.role !== "admin") {
@@ -480,6 +540,16 @@ export const crudRulesRouter = router({
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
         const forwardType = lockedForwardTypeForGroup(group, input.forwardType);
         const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
+        if (!isForwardChain && !groupIsTunnel) {
+          const host = await db.getHostById(hostId);
+          assertNoDirectSelfForwardLoop({
+            host,
+            sourcePort,
+            targetIp: input.targetIp,
+            targetPort: input.targetPort,
+            tunnelId: null,
+          });
+        }
         const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
         const groupSupportsFailover = !isForwardChain && input.protocol === "tcp" && forwardType === "gost" && (!groupIsTunnel || groupTunnelSupportsFailover);
         const createFailoverEnabled = groupSupportsFailover ? input.failoverEnabled : false;
@@ -634,7 +704,7 @@ export const crudRulesRouter = router({
           randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
           randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
         }
-        const randomPort = await db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd);
+        const randomPort = await db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd, input.protocol);
         if (!randomPort) throw new Error("该主机端口区间内已无可用端口");
         sourcePort = randomPort;
       } else {
@@ -642,7 +712,7 @@ export const crudRulesRouter = router({
           throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
         }
         // 检查端口是否已被占用
-        const used = await db.isPortUsedOnHost(input.hostId, sourcePort);
+        const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
         if (used) {
           throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
         }
@@ -651,6 +721,14 @@ export const crudRulesRouter = router({
       const gostRelayHost = null;
       const gostRelayPort = null;
       let tunnelExitPort: number | null = null;
+
+      assertNoDirectSelfForwardLoop({
+        host,
+        sourcePort,
+        targetIp: input.targetIp,
+        targetPort: input.targetPort,
+        tunnelId,
+      });
 
       if (tunnelId) {
         const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, tunnelId)).tunnel;
@@ -803,8 +881,18 @@ export const crudRulesRouter = router({
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }
-          const used = await db.isPortUsedOnHost(nextHostId, nextSourcePort, excludeRuleIds);
+          const used = await db.isPortUsedOnHost(nextHostId, nextSourcePort, excludeRuleIds, nextProtocol);
           if (used) throw new Error(`Port ${nextSourcePort} is already used`);
+          if (!nextTunnelId) {
+            const host = await db.getHostById(nextHostId);
+            assertNoDirectSelfForwardLoop({
+              host,
+              sourcePort: nextSourcePort,
+              targetIp: input.targetIp ?? (rule as any).targetIp,
+              targetPort: Number(input.targetPort ?? (rule as any).targetPort),
+              tunnelId: nextTunnelId,
+            });
+          }
 
           let tunnelExitPort: number | null = null;
           if (nextTunnelId) {
@@ -890,6 +978,7 @@ export const crudRulesRouter = router({
         }
         const group = await db.validateForwardGroupRuleConfig(activeGroupId, {
           sourcePort: input.sourcePort ?? rule.sourcePort,
+          protocol: input.protocol ?? (rule as any).protocol,
           excludeTemplateRuleId: rule.id,
         });
         const isForwardChain = (group as any).groupMode === "chain";
@@ -914,6 +1003,16 @@ export const crudRulesRouter = router({
         });
         await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: null });
         const activeHostId = await db.getForwardGroupDefaultHostId(activeGroupId);
+        if (!isForwardChain && !groupIsTunnel) {
+          const host = await db.getHostById(activeHostId);
+          assertNoDirectSelfForwardLoop({
+            host,
+            sourcePort: Number(input.sourcePort ?? (rule as any).sourcePort),
+            targetIp: input.targetIp ?? (rule as any).targetIp,
+            targetPort: Number(input.targetPort ?? (rule as any).targetPort),
+            tunnelId: null,
+          });
+        }
         const data: any = {
           ...input,
           ...(groupChanged || isForwardChain || isPortGroup || !nextMainBackupEnabled ||
@@ -995,6 +1094,7 @@ export const crudRulesRouter = router({
         }
         const group = await db.validateForwardGroupRuleConfig(groupId, {
           sourcePort,
+          protocol: input.protocol ?? (rule as any).protocol,
           excludeTemplateRuleId: rule.id,
         });
         const isForwardChain = (group as any).groupMode === "chain";
@@ -1015,6 +1115,16 @@ export const crudRulesRouter = router({
         });
         await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: null });
         const hostId = await db.getForwardGroupDefaultHostId(groupId);
+        if (!isForwardChain && (group as any).groupType !== "tunnel") {
+          const host = await db.getHostById(hostId);
+          assertNoDirectSelfForwardLoop({
+            host,
+            sourcePort,
+            targetIp: input.targetIp ?? (rule as any).targetIp,
+            targetPort: Number(input.targetPort ?? (rule as any).targetPort),
+            tunnelId: null,
+          });
+        }
         const data: any = {
           name: input.name ?? (rule as any).name,
           hostId,
@@ -1139,7 +1249,18 @@ export const crudRulesRouter = router({
       }
 
       const nextSourcePortForRule = input.sourcePort ?? rule.sourcePort;
+      if (!nextTunnelIdForRule) {
+        const host = await db.getHostById(nextHostIdForRule);
+        assertNoDirectSelfForwardLoop({
+          host,
+          sourcePort: nextSourcePortForRule,
+          targetIp: input.targetIp ?? (rule as any).targetIp,
+          targetPort: Number(input.targetPort ?? (rule as any).targetPort),
+          tunnelId: nextTunnelIdForRule,
+        });
+      }
       const shouldCheckSourcePort = input.sourcePort !== undefined
+        || input.protocol !== undefined
         || Number(nextHostIdForRule) !== Number(rule.hostId)
         || Number(nextTunnelIdForRule || 0) !== Number((rule as any).tunnelId || 0);
       if (shouldCheckSourcePort) {
@@ -1166,7 +1287,7 @@ export const crudRulesRouter = router({
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }
-          const used = await db.isPortUsedOnHost(nextHostIdForRule, nextSourcePortForRule, rule.id);
+          const used = await db.isPortUsedOnHost(nextHostIdForRule, nextSourcePortForRule, rule.id, nextProtocolForRule);
           if (used) {
             throw new Error(`端口 ${nextSourcePortForRule} 已被其他规则占用`);
           }
@@ -1304,7 +1425,7 @@ export const crudRulesRouter = router({
           tunnelId: nextTunnelIdForRule,
           tunnel: selectedTunnelForRule,
         });
-        const used = await db.isPortUsedOnHost(nextHostIdForRule, sourcePort, rule.id);
+        const used = await db.isPortUsedOnHost(nextHostIdForRule, sourcePort, rule.id, nextProtocolForRule);
         if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;
         (data as any).disabledByTunnel = false;
@@ -1449,6 +1570,7 @@ export const crudRulesRouter = router({
           const groupId = Number((rule as any).forwardGroupId || 0);
           const group = await db.validateForwardGroupRuleConfig(groupId, {
             sourcePort: rule.sourcePort,
+            protocol: (rule as any).protocol,
             excludeTemplateRuleId: rule.id,
           });
           const isForwardChain = (group as any).groupMode === "chain";
@@ -1503,7 +1625,7 @@ export const crudRulesRouter = router({
             throw new Error("套餐已到期，请续费后再启用规则");
           }
         }
-        const used = await db.isPortUsedOnHost(rule.hostId, rule.sourcePort, rule.id);
+        const used = await db.isPortUsedOnHost(rule.hostId, rule.sourcePort, rule.id, (rule as any).protocol);
         if (used) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
         await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
       } else {

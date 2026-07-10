@@ -9,6 +9,7 @@ const randomPortInputSchema = z.object({
   tunnelId: z.number().nullable().optional(),
   forwardGroupId: z.number().optional(),
   excludeRuleId: z.number().optional(),
+  protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
 });
 
 export const portsRulesRouter = router({
@@ -18,6 +19,7 @@ export const portsRulesRouter = router({
       tunnelId: z.number().nullable().optional(),
       sourcePort: z.number().min(1).max(65535),
       excludeRuleId: z.number().optional(),
+      protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
     }))
     .query(async ({ input, ctx }) => {
       let policy = portPolicyFrom(null);
@@ -57,7 +59,7 @@ export const portsRulesRouter = router({
             ...((await db.getForwardGroupChildRulesForTemplate(input.excludeRuleId)) as any[]).map((rule: any) => Number(rule.id)),
           ]
         : [];
-      const used = await db.isPortUsedOnHost(input.hostId, input.sourcePort, excludeRuleIds);
+      const used = await db.isPortUsedOnHost(input.hostId, input.sourcePort, excludeRuleIds, input.protocol);
       return { used };
     }),
   randomPort: protectedProcedure
@@ -73,7 +75,7 @@ export const portsRulesRouter = router({
           if (!hasPermission) throw new Error("无权使用该转发组");
           planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
         }
-        const port = await db.findAvailableForwardGroupPort(input.forwardGroupId, input.excludeRuleId, planRange);
+        const port = await db.findAvailableForwardGroupPort(input.forwardGroupId, input.excludeRuleId, planRange, input.protocol);
         if (!port) throw new Error("转发组成员端口区间内已无共同可用端口");
         return { port };
       }
@@ -95,7 +97,7 @@ export const portsRulesRouter = router({
           rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
         }
       }
-      const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd);
+      const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd, input.protocol);
       if (!port) throw new Error("该主机端口区间内已无可用端口");
       return { port };
     }),

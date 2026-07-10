@@ -6,9 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,7 +23,6 @@ import {
   CheckCircle2,
   Download,
   ExternalLink,
-  FileCode2,
   Github,
   Loader2,
   PackagePlus,
@@ -53,8 +54,21 @@ type PluginUsageDraft = {
   enabled: boolean;
   hostIds: number[];
   assetPaths: string[];
+  operation: string;
+  fieldValues: Record<string, unknown>;
   note: string;
 };
+type PluginUsageField = {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "boolean" | "select" | "multi-select";
+  description?: string;
+  placeholder?: string;
+  defaultValue?: string | boolean | string[];
+  options?: Array<{ label: string; value: string }>;
+  required?: boolean;
+};
+type PluginSection = "usage" | "manage" | "store";
 
 const pluginHostAssetSyncMaxBytes = 1024 * 1024;
 
@@ -62,53 +76,16 @@ const defaultPluginUsage: PluginUsageDraft = {
   enabled: false,
   hostIds: [],
   assetPaths: [],
+  operation: "",
+  fieldValues: {},
   note: "",
 };
 
-const defaultUploadExample = `{
-  "manifest": {
-    "id": "demo-tools",
-    "name": "演示插件",
-    "version": "0.1.0",
-    "description": "一个声明式插件示例",
-    "author": "ForwardX",
-    "updatedAt": "2026-07-09",
-    "features": [
-      { "title": "说明页", "description": "在插件详情内展示 Markdown 页面。" },
-      { "title": "设置项", "description": "提供可保存的插件配置。" }
-    ],
-    "tags": ["demo", "page"],
-    "changelog": "初始演示版本。",
-    "permissions": ["ui:page"],
-    "extensionPoints": ["sidebar.page"],
-    "settingsSchema": [
-      {
-        "key": "title",
-        "label": "展示标题",
-        "type": "text",
-        "defaultValue": "Hello ForwardX"
-      }
-    ],
-    "pages": [
-      {
-        "id": "home",
-        "title": "说明页",
-        "contentType": "markdown",
-        "assetPath": "README.md"
-      }
-    ],
-    "actions": [
-      {
-        "id": "ping",
-        "label": "运行测试动作",
-        "type": "noop"
-      }
-    ]
-  },
-  "assets": {
-    "README.md": "# 演示插件\\n这是一个不会执行脚本的插件页面。"
-  }
-}`;
+const PLUGIN_SECTIONS: SlidingTabItem<PluginSection>[] = [
+  { value: "usage", label: "插件使用", icon: Puzzle },
+  { value: "manage", label: "插件管理", icon: Boxes },
+  { value: "store", label: "插件商店", icon: PackagePlus },
+];
 
 function pluginStatusLabel(status?: string) {
   if (status === "enabled") return "已启用";
@@ -117,9 +94,10 @@ function pluginStatusLabel(status?: string) {
 }
 
 function pluginStatusClass(status?: string) {
-  if (status === "enabled") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-  if (status === "error") return "border-destructive/25 bg-destructive/10 text-destructive";
-  return "border-border/60 bg-muted/30 text-muted-foreground";
+  const base = "shrink-0 whitespace-nowrap px-2 text-[11px] leading-none";
+  if (status === "enabled") return `${base} border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300`;
+  if (status === "error") return `${base} border-destructive/25 bg-destructive/10 text-destructive`;
+  return `${base} border-border/60 bg-muted/30 text-muted-foreground`;
 }
 
 function pluginSourceLabel(sourceType?: string) {
@@ -182,6 +160,34 @@ function normalizeSettingDraftValue(field: PluginSettingField, value: unknown) {
 function renderPluginPageHtml(content: string, type?: string) {
   if (type === "text") return { __html: textToHtml(content || "") };
   return { __html: renderMixedHtml(content || "") };
+}
+
+function buildStoreDetailMarkdown(item: any) {
+  const explicit = String(item?.detailsMarkdown || item?.detailMarkdown || item?.longDescription || "").trim();
+  if (explicit) return explicit;
+
+  const lines: string[] = [];
+  const description = String(item?.description || "").trim();
+  if (description) lines.push(description);
+
+  const features = Array.isArray(item?.features) ? item.features : [];
+  if (features.length) {
+    if (lines.length) lines.push("");
+    for (const feature of features) {
+      const title = String(feature?.title || "").trim();
+      const detail = String(feature?.description || "").trim();
+      if (!title && !detail) continue;
+      lines.push(`- ${title ? `**${title}**` : "功能"}${detail ? `：${detail}` : ""}`);
+    }
+  }
+
+  const changelog = String(item?.changelog || "").trim();
+  if (changelog) {
+    if (lines.length) lines.push("");
+    lines.push(`更新说明：${changelog}`);
+  }
+
+  return lines.join("\n") || "这个插件暂未提供详细介绍。";
 }
 
 function PluginLogo({ logo, name, className }: { logo?: string; name?: string; className?: string }) {
@@ -279,6 +285,129 @@ function PluginSettingInput({
   );
 }
 
+function usageFieldDefaultValue(field: PluginUsageField) {
+  if (field.defaultValue !== undefined) return field.defaultValue;
+  if (field.type === "boolean") return false;
+  if (field.type === "multi-select") return [];
+  if (field.type === "select") return field.options?.[0]?.value || "";
+  return "";
+}
+
+function normalizeUsageFieldDraftValue(field: PluginUsageField, value: unknown) {
+  if (field.type === "boolean") return value === true;
+  if (field.type === "multi-select") return Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
+  return value === undefined || value === null ? "" : String(value);
+}
+
+function PluginUsageFieldInput({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: PluginUsageField;
+  value: unknown;
+  disabled?: boolean;
+  onChange: (value: unknown) => void;
+}) {
+  if (field.type === "boolean") {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/60 p-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{field.label}</p>
+          {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+        </div>
+        <Switch checked={value === true} onCheckedChange={onChange} disabled={disabled} />
+      </div>
+    );
+  }
+
+  if (field.type === "select") {
+    return (
+      <div className="space-y-2">
+        <Label>{field.label}</Label>
+        <Select value={String(value || "")} onValueChange={onChange} disabled={disabled}>
+          <SelectTrigger>
+            <SelectValue placeholder={field.placeholder || "请选择"} />
+          </SelectTrigger>
+          <SelectContent>
+            {(field.options || []).map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+      </div>
+    );
+  }
+
+  if (field.type === "multi-select") {
+    const selected = Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <Label>{field.label}</Label>
+            {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
+          </div>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">已选 {selected.length}</span>
+        </div>
+        <div className="grid max-h-56 gap-2 overflow-auto rounded-lg border border-border/40 bg-background/60 p-2 sm:grid-cols-2">
+          {(field.options || []).map((option) => {
+            const active = selected.includes(option.value);
+            return (
+              <button
+                key={option.value}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(toggleStringItem(selected, option.value))}
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-sm transition-colors",
+                  active ? "border-primary/40 bg-primary/5 text-primary" : "border-border/40 hover:bg-muted/50",
+                )}
+              >
+                <span className="truncate">{option.label}</span>
+                {active && <CheckCircle2 className="h-4 w-4 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <div className="space-y-2">
+        <Label>{field.label}</Label>
+        <Textarea
+          value={String(value || "")}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.placeholder}
+          disabled={disabled}
+          className="min-h-28 resize-y"
+        />
+        {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label>{field.label}</Label>
+      <Input
+        value={String(value || "")}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={field.placeholder}
+        disabled={disabled}
+      />
+      {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+    </div>
+  );
+}
+
 export default function Plugins() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
@@ -294,12 +423,14 @@ export default function Plugins() {
     enabled: publicInfo?.pluginsEnabled === true,
   });
   const [selectedPluginId, setSelectedPluginId] = useState("");
+  const [activeSection, setActiveSection] = useState<PluginSection>("usage");
   const [githubRepository, setGithubRepository] = useState("");
   const [githubBranch, setGithubBranch] = useState("main");
   const [githubManifestPath, setGithubManifestPath] = useState("");
+  const [customInstallOpen, setCustomInstallOpen] = useState(false);
+  const [storeDetailItem, setStoreDetailItem] = useState<any | null>(null);
   const [uploadContent, setUploadContent] = useState("");
   const [uploadFileName, setUploadFileName] = useState("");
-  const [uploadEncoding, setUploadEncoding] = useState<"text" | "base64">("text");
   const [settingDraft, setSettingDraft] = useState<Record<string, unknown>>({});
   const [usageDraft, setUsageDraft] = useState<PluginUsageDraft>(defaultPluginUsage);
   const [activePageId, setActivePageId] = useState("");
@@ -316,6 +447,13 @@ export default function Plugins() {
   const pluginUsageViews = Array.isArray(selectedManifest.usageViews) ? selectedManifest.usageViews : [];
   const hostAssetSyncUsageView = pluginUsageViews.find((view: any) => view?.type === "host-asset-sync");
   const hasUsageView = !!hostAssetSyncUsageView;
+  const usageFields = (hostAssetSyncUsageView?.fields || []) as PluginUsageField[];
+  const usageOperationOptions = Array.isArray(hostAssetSyncUsageView?.operationSelector?.options)
+    ? hostAssetSyncUsageView.operationSelector.options
+    : [];
+  const usageAssetMode = hostAssetSyncUsageView?.assetMode === "all-plugin-assets" ? "all-plugin-assets" : "selected-assets";
+  const usageUsesAllAssets = usageAssetMode === "all-plugin-assets";
+  const usageAssetSelectorHidden = usageUsesAllAssets || hostAssetSyncUsageView?.assetSelector?.hidden === true;
 
   const { data: assets = [], isLoading: assetsLoading } = trpc.plugins.assets.useQuery(
     { pluginId: selectedPlugin?.pluginId || "" },
@@ -348,6 +486,7 @@ export default function Plugins() {
     onSuccess: async (plugin) => {
       toast.success("插件已安装");
       setSelectedPluginId((plugin as any)?.pluginId || "");
+      setStoreDetailItem(null);
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "安装失败"),
@@ -359,6 +498,7 @@ export default function Plugins() {
       setSelectedPluginId((plugin as any)?.pluginId || "");
       setGithubRepository("");
       setGithubManifestPath("");
+      setCustomInstallOpen(false);
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "安装失败"),
@@ -370,7 +510,8 @@ export default function Plugins() {
       setSelectedPluginId((plugin as any)?.pluginId || "");
       setUploadContent("");
       setUploadFileName("");
-      setUploadEncoding("text");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setCustomInstallOpen(false);
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "上传失败"),
@@ -461,10 +602,20 @@ export default function Plugins() {
       return;
     }
     const usage = (pluginUsage as any)?.usage;
+    const savedFieldValues = usage?.fieldValues && typeof usage.fieldValues === "object" ? usage.fieldValues : {};
+    const nextFieldValues: Record<string, unknown> = {};
+    for (const field of usageFields) {
+      nextFieldValues[field.key] = normalizeUsageFieldDraftValue(
+        field,
+        savedFieldValues[field.key] !== undefined ? savedFieldValues[field.key] : usageFieldDefaultValue(field),
+      );
+    }
     setUsageDraft({
       enabled: !!usage?.enabled,
       hostIds: Array.isArray(usage?.hostIds) ? usage.hostIds.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0) : [],
       assetPaths: Array.isArray(usage?.assetPaths) ? usage.assetPaths.map((item: unknown) => String(item || "")).filter(Boolean) : [],
+      operation: String(usage?.operation || hostAssetSyncUsageView?.operationSelector?.defaultValue || usageOperationOptions[0]?.value || ""),
+      fieldValues: nextFieldValues,
       note: String(usage?.note || ""),
     });
   }, [hasUsageView, (pluginUsage as any)?.usage?.updatedAt, selectedPlugin?.pluginId, hostAssetSyncUsageView?.id]);
@@ -507,13 +658,13 @@ export default function Plugins() {
   const handleUploadInstall = () => {
     const content = uploadContent.trim();
     if (!content) {
-      toast.error("请粘贴或选择插件包");
+      toast.error("请选择插件压缩包");
       return;
     }
     installFromUpload.mutate({
       content,
       fileName: uploadFileName || undefined,
-      encoding: uploadEncoding,
+      encoding: "base64",
     });
   };
 
@@ -531,19 +682,23 @@ export default function Plugins() {
     if (!file) return;
     const lowerName = file.name.toLowerCase();
     const isArchive = lowerName.endsWith(".zip") || lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz");
-    if (file.size > (isArchive ? 5 * 1024 * 1024 : 1024 * 1024)) {
-      toast.error(isArchive ? "插件压缩包不能超过 5MB" : "插件 JSON 不能超过 1MB");
+    if (!isArchive) {
+      toast.error("请上传 .zip、.tar.gz 或 .tgz 插件包");
+      setUploadFileName("");
+      setUploadContent("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("插件压缩包不能超过 5MB");
+      setUploadFileName("");
+      setUploadContent("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
     setUploadFileName(file.name);
-    if (isArchive) {
-      setUploadEncoding("base64");
-      setUploadContent(await fileToBase64(file));
-      toast.success("插件压缩包已读取");
-      return;
-    }
-    setUploadEncoding("text");
-    setUploadContent(await file.text());
+    setUploadContent(await fileToBase64(file));
+    toast.success("插件压缩包已读取");
   };
 
   const handleSaveSettings = async () => {
@@ -568,20 +723,33 @@ export default function Plugins() {
       toast.error("请选择至少一台生效主机");
       return;
     }
-    if (usageDraft.enabled && usageDraft.assetPaths.length === 0) {
+    if (usageDraft.enabled && !usageUsesAllAssets && usageDraft.assetPaths.length === 0) {
       toast.error("请选择至少一个白名单文件");
       return;
     }
-    if (usageDraft.enabled && selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes) {
+    if (usageDraft.enabled && !usageUsesAllAssets && selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes) {
       toast.error(`同步文件总大小不能超过 ${formatBytes(pluginHostAssetSyncMaxBytes)}`);
       return;
+    }
+    if (usageDraft.enabled) {
+      for (const field of usageFields) {
+        if (!field.required) continue;
+        const value = usageDraft.fieldValues[field.key];
+        const empty = Array.isArray(value) ? value.length === 0 : String(value ?? "").trim() === "";
+        if (empty) {
+          toast.error(`请填写 ${field.label}`);
+          return;
+        }
+      }
     }
     saveUsageMutation.mutate({
       pluginId: selectedPlugin.pluginId,
       usageViewId: hostAssetSyncUsageView.id,
       enabled: usageDraft.enabled,
       hostIds: usageDraft.hostIds,
-      assetPaths: usageDraft.assetPaths,
+      assetPaths: usageUsesAllAssets ? [] : usageDraft.assetPaths,
+      operation: usageDraft.operation || usageOperationOptions[0]?.value || undefined,
+      fieldValues: usageDraft.fieldValues,
       note: usageDraft.note,
     });
   };
@@ -628,7 +796,263 @@ export default function Plugins() {
   const usageAssets = ((pluginUsage as any)?.assets || []) as any[];
   const selectedUsageAssets = usageAssets.filter((asset) => usageDraft.assetPaths.includes(String(asset.path || "")));
   const selectedUsageAssetsSize = selectedUsageAssets.reduce((sum, asset) => sum + Number(asset.size || 0), 0);
-  const usageSizeExceeded = selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes;
+  const usageSizeExceeded = !usageUsesAllAssets && selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes;
+  const renderUsagePanel = () => {
+    if (!selectedPlugin) {
+      return (
+        <div className="rounded-xl border border-dashed border-border/60 p-8 text-center text-sm text-muted-foreground">
+          先从左侧选择一个插件。
+        </div>
+      );
+    }
+    if (!hasUsageView) {
+      return (
+        <div className="rounded-xl border border-dashed border-border/60 p-8 text-center">
+          <div className="mx-auto mb-3 flex justify-center">
+            <PluginLogo logo={selectedManifest.logo} name={selectedPlugin.name} />
+          </div>
+          <p className="font-medium">{selectedPlugin.name || selectedPlugin.pluginId}</p>
+          <p className="mt-2 text-sm text-muted-foreground">这个插件暂未提供独立使用界面，可到“插件管理”查看说明、设置或动作。</p>
+        </div>
+      );
+    }
+    if (pluginUsageLoading) {
+      return <DataSectionLoading label="正在加载使用配置" minHeight="min-h-[220px]" />;
+    }
+    return (
+      <>
+        <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-base font-medium">{hostAssetSyncUsageView?.title || "主机使用配置"}</p>
+              {(hostAssetSyncUsageView?.description || hostAssetSyncUsageView?.targetDirectory) && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {hostAssetSyncUsageView?.description || `选中的文件会同步到目标主机的 ${hostAssetSyncUsageView?.targetDirectory}。`}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 rounded-full border border-border/40 bg-background/70 px-3 py-2">
+              <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
+              <Switch
+                checked={usageDraft.enabled}
+                onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
+              />
+            </div>
+          </div>
+          {selectedPlugin.status !== "enabled" && (
+            <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。"}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+
+        {(usageOperationOptions.length > 0 || usageFields.length > 0) && (
+          <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+            {usageOperationOptions.length > 0 && (
+              <div className="mb-4 space-y-2">
+                <Label>{hostAssetSyncUsageView?.operationSelector?.label || "执行方式"}</Label>
+                <Select
+                  value={usageDraft.operation || usageOperationOptions[0]?.value || ""}
+                  onValueChange={(operation) => setUsageDraft((current) => ({ ...current, operation }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="请选择" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {usageOperationOptions.map((option: any) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {(hostAssetSyncUsageView?.operationSelector?.description || usageOperationOptions.find((option: any) => option.value === usageDraft.operation)?.description) && (
+                  <p className="text-xs text-muted-foreground">
+                    {usageOperationOptions.find((option: any) => option.value === usageDraft.operation)?.description || hostAssetSyncUsageView?.operationSelector?.description}
+                  </p>
+                )}
+              </div>
+            )}
+            {usageFields.length > 0 && (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {usageFields.map((field) => (
+                  <PluginUsageFieldInput
+                    key={field.key}
+                    field={field}
+                    value={usageDraft.fieldValues[field.key]}
+                    disabled={saveUsageMutation.isPending}
+                    onChange={(value) => setUsageDraft((current) => ({
+                      ...current,
+                      fieldValues: { ...current.fieldValues, [field.key]: value },
+                    }))}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className={cn("grid gap-4", usageAssetSelectorHidden ? "xl:grid-cols-1" : "xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]")}>
+          <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-medium">{hostAssetSyncUsageView?.hostSelector?.title || "生效主机"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {hostAssetSyncUsageView?.hostSelector?.selectedLabel || "已选"} {usageDraft.hostIds.length} 台
+                </p>
+                {hostAssetSyncUsageView?.hostSelector?.description && (
+                  <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.hostSelector.description}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setUsageDraft((current) => ({
+                    ...current,
+                    hostIds: usageHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
+                  }))}
+                >
+                  {hostAssetSyncUsageView?.hostSelector?.selectAllLabel || "全选"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setUsageDraft((current) => ({ ...current, hostIds: [] }))}
+                >
+                  {hostAssetSyncUsageView?.hostSelector?.clearLabel || "清空"}
+                </Button>
+              </div>
+            </div>
+            <div className="max-h-72 space-y-2 overflow-auto pr-1">
+              {usageHosts.length ? usageHosts.map((host) => {
+                const hostId = Number(host.id);
+                const active = usageDraft.hostIds.includes(hostId);
+                return (
+                  <button
+                    key={host.id}
+                    type="button"
+                    onClick={() => setUsageDraft((current) => ({
+                      ...current,
+                      hostIds: toggleNumberItem(current.hostIds, hostId),
+                    }))}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
+                      active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-background/60 hover:bg-muted/40",
+                    )}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", host.isOnline ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</p>
+                        <p className="truncate text-xs text-muted-foreground">{host.ip || "-"}</p>
+                      </div>
+                    </div>
+                    {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
+                  </button>
+                );
+              }) : (
+                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
+                  {hostAssetSyncUsageView?.hostSelector?.emptyText || "暂无可选主机"}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!usageAssetSelectorHidden && <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-medium">{hostAssetSyncUsageView?.assetSelector?.title || "同步内容"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {hostAssetSyncUsageView?.assetSelector?.selectedLabel || "已选"} {usageDraft.assetPaths.length} 个文件，
+                  <span className={cn(usageSizeExceeded && "text-destructive")}>
+                    {formatBytes(selectedUsageAssetsSize)}
+                  </span>
+                  / {formatBytes(pluginHostAssetSyncMaxBytes)}
+                </p>
+                {hostAssetSyncUsageView?.assetSelector?.description && (
+                  <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.assetSelector.description}</p>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setUsageDraft((current) => ({ ...current, assetPaths: [] }))}
+              >
+                {hostAssetSyncUsageView?.assetSelector?.clearLabel || "清空"}
+              </Button>
+            </div>
+            <div className="max-h-72 space-y-2 overflow-auto pr-1">
+              {usageAssets.length ? usageAssets.map((asset) => {
+                const path = String(asset.path || "");
+                const active = usageDraft.assetPaths.includes(path);
+                return (
+                  <button
+                    key={path}
+                    type="button"
+                    onClick={() => setUsageDraft((current) => ({
+                      ...current,
+                      assetPaths: toggleStringItem(current.assetPaths, path),
+                    }))}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
+                      active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-background/60 hover:bg-muted/40",
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{asset.label || path}</p>
+                      {asset.description && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{asset.description}</p>}
+                      <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{path} · {formatBytes(asset.size || 0)}</p>
+                    </div>
+                    {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
+                  </button>
+                );
+              }) : (
+                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
+                  {hostAssetSyncUsageView?.assetSelector?.emptyText || "还没有可同步文件，请先到“动作”里刷新插件资产"}
+                </div>
+              )}
+            </div>
+            {usageSizeExceeded && (
+              <p className="text-xs text-destructive">
+                当前选择超过 Agent 单次同步限制，请减少文件数量后保存。
+              </p>
+            )}
+          </div>}
+        </div>
+
+        <div className="space-y-2">
+          <Label>{hostAssetSyncUsageView?.noteField?.label || "备注"}</Label>
+          <Textarea
+            value={usageDraft.note}
+            onChange={(event) => setUsageDraft((current) => ({ ...current, note: event.target.value }))}
+            placeholder={hostAssetSyncUsageView?.noteField?.placeholder || "例如：说明这个配置会用在哪些主机或脚本里"}
+            className="min-h-20"
+          />
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-background/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-muted-foreground">
+            <p>{hostAssetSyncUsageView?.footer?.title || "当前方式：同步文件到主机本地目录。"}</p>
+            <p className="mt-1">{hostAssetSyncUsageView?.footer?.description || "保存后，目标主机下次 Agent 心跳会收到更新。"}</p>
+          </div>
+          <Button
+            className="gap-2"
+            onClick={handleSaveUsage}
+            disabled={saveUsageMutation.isPending || usageSizeExceeded}
+          >
+            {saveUsageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
+            {hostAssetSyncUsageView?.footer?.submitLabel || "保存使用配置"}
+          </Button>
+        </div>
+      </>
+    );
+  };
 
   if (publicInfo?.pluginsEnabled !== true) {
     return (
@@ -649,86 +1073,158 @@ export default function Plugins() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">插件</h1>
-            <p className="text-sm text-muted-foreground">安装、更新和调试插件能力。</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">插件</h1>
+            <p className="mt-1 text-sm text-muted-foreground">安装、更新和调试插件能力。</p>
           </div>
+          <Button className="w-full gap-2 sm:w-auto" onClick={() => setCustomInstallOpen(true)}>
+            <Upload className="h-4 w-4" />
+            自定义安装
+          </Button>
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+        <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as PluginSection)} className="space-y-4">
+          <SlidingTabsList items={PLUGIN_SECTIONS} activeValue={activeSection} ariaLabel="插件管理" minItemWidthRem={7.5} />
+        </Tabs>
+
+        {activeSection === "usage" && (
+          <div className="grid gap-4 xl:grid-cols-[minmax(260px,0.55fr)_minmax(0,1.45fr)]">
+            <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Puzzle className="h-4 w-4 text-primary" />
+                  插件列表
+                </CardTitle>
+                <CardDescription>选择插件后在右侧使用它提供的功能。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {pluginsLoading ? (
+                  <DataSectionLoading label="正在加载插件" minHeight="min-h-[160px]" />
+                ) : plugins.length ? (
+                  plugins.map((plugin: PluginRow) => {
+                    const active = selectedPlugin?.pluginId === plugin.pluginId;
+                    const manifest = getPluginManifest(plugin);
+                    return (
+                      <button
+                        key={plugin.pluginId}
+                        type="button"
+                        onClick={() => setSelectedPluginId(plugin.pluginId)}
+                        className={cn(
+                          "flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors",
+                          active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-muted/20 hover:bg-muted/35",
+                        )}
+                      >
+                        <PluginLogo logo={manifest.logo} name={plugin.name} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center justify-between gap-2">
+                            <p className="min-w-0 flex-1 truncate text-sm font-medium">{plugin.name || plugin.pluginId}</p>
+                            <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
+                              {pluginStatusLabel(plugin.status)}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{plugin.description || plugin.pluginId}</p>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
+                    还没有安装插件
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+              <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 gap-3">
+                  {selectedPlugin && <PluginLogo logo={selectedManifest.logo} name={selectedPlugin.name} />}
+                  <div className="min-w-0">
+                    <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+                      {selectedPlugin?.name || "插件使用"}
+                    </CardTitle>
+                    <CardDescription>{selectedPlugin?.description || "安装插件后可在这里使用插件功能。"}</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {renderUsagePanel()}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {activeSection === "store" && (
+        <div className="grid gap-4">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <PackagePlus className="h-4 w-4 text-primary" />
                 插件商店
               </CardTitle>
-              <CardDescription>从 GitHub 获取，一键安装。</CardDescription>
+              <CardDescription>查看插件详情，或直接一键安装。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {storeLoading ? (
                 <DataSectionLoading label="正在加载商店" minHeight="min-h-[120px]" />
               ) : storeItems.length ? (
-                storeItems.map((item: any) => {
-                  const installed = installedIds.has(item.id);
-                  return (
-                    <div key={item.id} className="rounded-xl border border-border/40 bg-muted/20 p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex min-w-0 gap-3">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {storeItems.map((item: any) => {
+                    const installed = installedIds.has(item.id);
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setStoreDetailItem(item)}
+                        className="group flex min-h-[17rem] flex-col rounded-2xl border border-border/40 bg-muted/20 p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:bg-muted/30 hover:shadow-lg hover:shadow-primary/5"
+                      >
+                        <div className="flex items-start justify-between gap-3">
                           <PluginLogo logo={item.logo} name={item.name} />
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-medium">{item.name}</p>
-                              {item.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
-                              <Badge variant="outline">{item.category}</Badge>
-                              {installed && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
-                            </div>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
-                              开发者：{item.author || "ForwardX"} · v{item.version || "0.0.0"} · 更新：{formatDateText(item.updatedAt)}
-                            </p>
-                            <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
-                            {Array.isArray(item.features) && item.features.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {item.features.slice(0, 3).map((feature: any) => (
-                                  <Badge key={feature.title} variant="outline" className="bg-background/60">
-                                    {feature.title}
-                                  </Badge>
-                                ))}
-                              </div>
-                            )}
-                            {Array.isArray(item.tags) && item.tags.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {item.tags.slice(0, 5).map((tag: string) => (
-                                  <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                                    #{tag}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            <a
-                              href={item.repository}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                            >
-                              <Github className="h-3.5 w-3.5" />
-                              {item.repository}
-                            </a>
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            {item.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                            {installed && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
                           </div>
                         </div>
-                        <Button
-                          className="w-full gap-2 sm:w-auto"
-                          variant={installed ? "outline" : "default"}
-                          onClick={() => installFromStore.mutate({ id: item.id })}
-                          disabled={installFromStore.isPending}
-                        >
-                          {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                          {installed ? "重新安装" : "安装"}
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })
+                        <div className="mt-4 min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-base font-semibold">{item.name}</p>
+                            <Badge variant="outline">{item.category}</Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {item.author || "ForwardX"} · v{item.version || "0.0.0"} · {formatDateText(item.updatedAt)}
+                          </p>
+                          <p className="mt-3 line-clamp-3 text-sm leading-6 text-muted-foreground">{item.description}</p>
+                          {Array.isArray(item.features) && item.features.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {item.features.slice(0, 3).map((feature: any) => (
+                                <Badge key={feature.title} variant="outline" className="bg-background/60">
+                                  {feature.title}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/40 pt-3">
+                          <span className="text-xs text-muted-foreground">点击查看详情</span>
+                          <Button
+                            size="sm"
+                            className="gap-2"
+                            variant={installed ? "outline" : "default"}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              installFromStore.mutate({ id: item.id });
+                            }}
+                            disabled={installFromStore.isPending}
+                          >
+                            {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                            {installed ? "重装" : "安装"}
+                          </Button>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
                   暂无商店插件
@@ -736,96 +1232,152 @@ export default function Plugins() {
               )}
             </CardContent>
           </Card>
+        </div>
+        )}
 
-          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Upload className="h-4 w-4 text-primary" />
+        <Dialog open={customInstallOpen} onOpenChange={setCustomInstallOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Upload className="h-5 w-5" />
                 自定义安装
-              </CardTitle>
-              <CardDescription>支持 GitHub 仓库或 JSON 插件包。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Tabs defaultValue="github" className="space-y-4">
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="github">GitHub</TabsTrigger>
-                  <TabsTrigger value="upload">上传</TabsTrigger>
-                </TabsList>
-                <TabsContent value="github" className="space-y-3">
-                  <div className="space-y-2">
-                    <Label>仓库地址</Label>
-                    <Input
-                      value={githubRepository}
-                      onChange={(event) => setGithubRepository(event.target.value)}
-                      placeholder="https://github.com/owner/repo"
-                    />
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>分支</Label>
-                      <Input value={githubBranch} onChange={(event) => setGithubBranch(event.target.value)} placeholder="main" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Manifest 路径</Label>
-                      <Input value={githubManifestPath} onChange={(event) => setGithubManifestPath(event.target.value)} placeholder="forwardx-plugin.json" />
-                    </div>
-                  </div>
-                  <Button className="w-full gap-2" onClick={handleGithubInstall} disabled={installFromGithub.isPending}>
-                    {installFromGithub.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
-                    从 GitHub 安装
-                  </Button>
-                </TabsContent>
-                <TabsContent value="upload" className="space-y-3">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="application/json,.json,.zip,.tar.gz,.tgz,application/zip,application/gzip"
-                    className="hidden"
-                    onChange={(event) => handleFileSelect(event.target.files?.[0])}
+              </DialogTitle>
+              <DialogDescription>支持 GitHub 仓库或插件压缩包。</DialogDescription>
+            </DialogHeader>
+            <Tabs defaultValue="github" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="github">GitHub</TabsTrigger>
+                <TabsTrigger value="upload">上传</TabsTrigger>
+              </TabsList>
+              <TabsContent value="github" className="space-y-4">
+                <div className="space-y-2">
+                  <Label>仓库地址</Label>
+                  <Input
+                    value={githubRepository}
+                    onChange={(event) => setGithubRepository(event.target.value)}
+                    placeholder="https://github.com/owner/repo"
                   />
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <Button variant="outline" className="gap-2" onClick={() => fileInputRef.current?.click()}>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>分支</Label>
+                    <Input value={githubBranch} onChange={(event) => setGithubBranch(event.target.value)} placeholder="main" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Manifest 路径</Label>
+                    <Input value={githubManifestPath} onChange={(event) => setGithubManifestPath(event.target.value)} placeholder="forwardx-plugin.json" />
+                  </div>
+                </div>
+                <Button className="w-full gap-2" onClick={handleGithubInstall} disabled={installFromGithub.isPending}>
+                  {installFromGithub.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+                  从 GitHub 安装
+                </Button>
+              </TabsContent>
+              <TabsContent value="upload" className="space-y-4">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip,.tar.gz,.tgz,application/zip,application/gzip"
+                  className="hidden"
+                  onChange={(event) => handleFileSelect(event.target.files?.[0])}
+                />
+                <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 p-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">上传插件压缩包</p>
+                      <p className="mt-1 text-xs text-muted-foreground">支持 .zip、.tar.gz、.tgz，包内需包含 forwardx-plugin.json。</p>
+                    </div>
+                    <Button variant="outline" className="shrink-0 gap-2" onClick={() => fileInputRef.current?.click()}>
                       <Upload className="h-4 w-4" />
                       选择插件包
                     </Button>
-                    <Button
-                      variant="ghost"
-                      className="gap-2"
-                      onClick={() => {
-                        setUploadEncoding("text");
-                        setUploadFileName("");
-                        setUploadContent(defaultUploadExample);
-                      }}
-                    >
-                      <FileCode2 className="h-4 w-4" />
-                      填入示例
-                    </Button>
                   </div>
                   {uploadFileName && (
-                    <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    <div className="mt-4 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-sm text-muted-foreground">
                       已选择：{uploadFileName}
                     </div>
                   )}
-                  <Textarea
-                    value={uploadContent}
-                    onChange={(event) => {
-                      setUploadEncoding("text");
-                      setUploadFileName("");
-                      setUploadContent(event.target.value);
-                    }}
-                    placeholder="粘贴插件 JSON，或选择 .zip/.tar.gz 插件包"
-                    className="min-h-56 font-mono text-xs leading-5"
-                  />
-                  <Button className="w-full gap-2" onClick={handleUploadInstall} disabled={installFromUpload.isPending}>
-                    {installFromUpload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                    上传安装
-                  </Button>
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-        </div>
+                </div>
+                <Button className="w-full gap-2" onClick={handleUploadInstall} disabled={installFromUpload.isPending || !uploadContent.trim()}>
+                  {installFromUpload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  上传安装
+                </Button>
+              </TabsContent>
+            </Tabs>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCustomInstallOpen(false)} disabled={installFromGithub.isPending || installFromUpload.isPending}>
+                关闭
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
+        <Dialog open={!!storeDetailItem} onOpenChange={(open) => !open && setStoreDetailItem(null)}>
+          <DialogContent className="sm:max-w-2xl">
+            {storeDetailItem && (
+              <>
+                <DialogHeader>
+                  <div className="flex min-w-0 items-start gap-3">
+                    <PluginLogo logo={storeDetailItem.logo} name={storeDetailItem.name} />
+                    <div className="min-w-0">
+                      <DialogTitle className="flex flex-wrap items-center gap-2">
+                        {storeDetailItem.name}
+                        {storeDetailItem.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                        {installedIds.has(storeDetailItem.id) && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
+                      </DialogTitle>
+                      <DialogDescription className="mt-1">
+                        开发者：{storeDetailItem.author || "ForwardX"} · v{storeDetailItem.version || "0.0.0"} · 更新：{formatDateText(storeDetailItem.updatedAt)}
+                      </DialogDescription>
+                    </div>
+                  </div>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+                    <div
+                      className="prose prose-sm max-w-none text-sm leading-7 text-muted-foreground dark:prose-invert prose-p:my-2 prose-ul:my-2 prose-li:my-1 prose-code:rounded prose-code:bg-background/70 prose-code:px-1 prose-code:py-0.5 prose-code:text-foreground prose-strong:text-foreground"
+                      dangerouslySetInnerHTML={renderPluginPageHtml(buildStoreDetailMarkdown(storeDetailItem), "markdown")}
+                    />
+                  </div>
+                  {Array.isArray(storeDetailItem.tags) && storeDetailItem.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {storeDetailItem.tags.map((tag: string) => (
+                        <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {storeDetailItem.repository && (
+                    <a
+                      href={storeDetailItem.repository}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+                    >
+                      <Github className="h-4 w-4" />
+                      {storeDetailItem.repository}
+                    </a>
+                  )}
+                </div>
+                <DialogFooter className="gap-2">
+                  <Button variant="outline" onClick={() => setStoreDetailItem(null)}>
+                    关闭
+                  </Button>
+                  <Button
+                    className="gap-2"
+                    onClick={() => installFromStore.mutate({ id: storeDetailItem.id })}
+                    disabled={installFromStore.isPending}
+                  >
+                    {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {installedIds.has(storeDetailItem.id) ? "重新安装" : "安装插件"}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {activeSection === "manage" && (
         <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardHeader>
@@ -932,9 +1484,8 @@ export default function Plugins() {
                 </CardHeader>
                 <CardContent>
                   <Tabs defaultValue="overview" className="space-y-4">
-                    <TabsList className={cn("grid w-full", hasUsageView ? "grid-cols-6" : "grid-cols-5")}>
+                    <TabsList className="grid w-full grid-cols-5">
                       <TabsTrigger value="overview">概览</TabsTrigger>
-                      {hasUsageView && <TabsTrigger value="usage">使用</TabsTrigger>}
                       <TabsTrigger value="settings">设置</TabsTrigger>
                       <TabsTrigger value="pages">页面</TabsTrigger>
                       <TabsTrigger value="assets">资产</TabsTrigger>
@@ -1023,200 +1574,6 @@ export default function Plugins() {
                         </Button>
                       )}
                     </TabsContent>
-
-                    {hasUsageView && (
-                      <TabsContent value="usage" className="space-y-4">
-                        {pluginUsageLoading ? (
-                          <DataSectionLoading label="正在加载使用配置" minHeight="min-h-[220px]" />
-                        ) : (
-                          <>
-                            <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div>
-                                  <p className="text-base font-medium">{hostAssetSyncUsageView?.title || "主机使用配置"}</p>
-                                  {(hostAssetSyncUsageView?.description || hostAssetSyncUsageView?.targetDirectory) && (
-                                    <p className="mt-1 text-sm text-muted-foreground">
-                                      {hostAssetSyncUsageView?.description || `选中的文件会同步到目标主机的 ${hostAssetSyncUsageView?.targetDirectory}。`}
-                                    </p>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-3 rounded-full border border-border/40 bg-background/70 px-3 py-2">
-                                  <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
-                                  <Switch
-                                    checked={usageDraft.enabled}
-                                    onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
-                                  />
-                                </div>
-                              </div>
-                              {selectedPlugin.status !== "enabled" && (
-                                <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
-                                  <AlertTriangle className="h-4 w-4" />
-                                  <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
-                                  <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。"}</AlertDescription>
-                                </Alert>
-                              )}
-                            </div>
-
-                            <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                              <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div>
-                                    <p className="font-medium">{hostAssetSyncUsageView?.hostSelector?.title || "生效主机"}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {hostAssetSyncUsageView?.hostSelector?.selectedLabel || "已选"} {usageDraft.hostIds.length} 台
-                                    </p>
-                                    {hostAssetSyncUsageView?.hostSelector?.description && (
-                                      <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.hostSelector.description}</p>
-                                    )}
-                                  </div>
-                                  <div className="flex gap-2">
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => setUsageDraft((current) => ({
-                                        ...current,
-                                        hostIds: usageHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
-                                      }))}
-                                    >
-                                      {hostAssetSyncUsageView?.hostSelector?.selectAllLabel || "全选"}
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => setUsageDraft((current) => ({ ...current, hostIds: [] }))}
-                                    >
-                                      {hostAssetSyncUsageView?.hostSelector?.clearLabel || "清空"}
-                                    </Button>
-                                  </div>
-                                </div>
-                                <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                                  {usageHosts.length ? usageHosts.map((host) => {
-                                    const hostId = Number(host.id);
-                                    const active = usageDraft.hostIds.includes(hostId);
-                                    return (
-                                      <button
-                                        key={host.id}
-                                        type="button"
-                                        onClick={() => setUsageDraft((current) => ({
-                                          ...current,
-                                          hostIds: toggleNumberItem(current.hostIds, hostId),
-                                        }))}
-                                        className={cn(
-                                          "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
-                                          active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-background/60 hover:bg-muted/40",
-                                        )}
-                                      >
-                                        <div className="flex min-w-0 items-center gap-2">
-                                          <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", host.isOnline ? "bg-emerald-500" : "bg-muted-foreground/40")} />
-                                          <div className="min-w-0">
-                                            <p className="truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</p>
-                                            <p className="truncate text-xs text-muted-foreground">{host.ip || "-"}</p>
-                                          </div>
-                                        </div>
-                                        {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
-                                      </button>
-                                    );
-                                  }) : (
-                                    <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                                      {hostAssetSyncUsageView?.hostSelector?.emptyText || "暂无可选主机"}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div>
-                                    <p className="font-medium">{hostAssetSyncUsageView?.assetSelector?.title || "同步内容"}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {hostAssetSyncUsageView?.assetSelector?.selectedLabel || "已选"} {usageDraft.assetPaths.length} 个文件，
-                                      <span className={cn(usageSizeExceeded && "text-destructive")}>
-                                        {formatBytes(selectedUsageAssetsSize)}
-                                      </span>
-                                      / {formatBytes(pluginHostAssetSyncMaxBytes)}
-                                    </p>
-                                    {hostAssetSyncUsageView?.assetSelector?.description && (
-                                      <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.assetSelector.description}</p>
-                                    )}
-                                  </div>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setUsageDraft((current) => ({ ...current, assetPaths: [] }))}
-                                  >
-                                    {hostAssetSyncUsageView?.assetSelector?.clearLabel || "清空"}
-                                  </Button>
-                                </div>
-                                <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                                  {usageAssets.length ? usageAssets.map((asset) => {
-                                    const path = String(asset.path || "");
-                                    const active = usageDraft.assetPaths.includes(path);
-                                    return (
-                                      <button
-                                        key={path}
-                                        type="button"
-                                        onClick={() => setUsageDraft((current) => ({
-                                          ...current,
-                                          assetPaths: toggleStringItem(current.assetPaths, path),
-                                        }))}
-                                        className={cn(
-                                          "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
-                                          active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-background/60 hover:bg-muted/40",
-                                        )}
-                                      >
-                                        <div className="min-w-0">
-                                          <p className="truncate text-sm font-medium">{asset.label || path}</p>
-                                          {asset.description && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{asset.description}</p>}
-                                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{path} · {formatBytes(asset.size || 0)}</p>
-                                        </div>
-                                        {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
-                                      </button>
-                                    );
-                                  }) : (
-                                    <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                                      {hostAssetSyncUsageView?.assetSelector?.emptyText || "还没有可同步文件，请先到“动作”里刷新插件资产"}
-                                    </div>
-                                  )}
-                                </div>
-                                {usageSizeExceeded && (
-                                  <p className="text-xs text-destructive">
-                                    当前选择超过 Agent 单次同步限制，请减少文件数量后保存。
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>{hostAssetSyncUsageView?.noteField?.label || "备注"}</Label>
-                              <Textarea
-                                value={usageDraft.note}
-                                onChange={(event) => setUsageDraft((current) => ({ ...current, note: event.target.value }))}
-                                placeholder={hostAssetSyncUsageView?.noteField?.placeholder || "例如：说明这个配置会用在哪些主机或脚本里"}
-                                className="min-h-20"
-                              />
-                            </div>
-
-                            <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-background/60 p-4 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="text-sm text-muted-foreground">
-                                <p>{hostAssetSyncUsageView?.footer?.title || "当前方式：同步文件到主机本地目录。"}</p>
-                                <p className="mt-1">{hostAssetSyncUsageView?.footer?.description || "保存后，目标主机下次 Agent 心跳会收到更新。"}</p>
-                              </div>
-                              <Button
-                                className="gap-2"
-                                onClick={handleSaveUsage}
-                                disabled={saveUsageMutation.isPending || usageSizeExceeded}
-                              >
-                                {saveUsageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
-                                {hostAssetSyncUsageView?.footer?.submitLabel || "保存使用配置"}
-                              </Button>
-                            </div>
-                          </>
-                        )}
-                      </TabsContent>
-                    )}
 
                     <TabsContent value="settings" className="space-y-4">
                       {settingFields.length ? (
@@ -1368,6 +1725,7 @@ export default function Plugins() {
             )}
           </Card>
         </div>
+        )}
       </div>
     </DashboardLayout>
   );

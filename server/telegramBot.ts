@@ -389,12 +389,15 @@ function pickManageRuleForwardType(actor: any, mode: ManageForwardMode) {
 }
 
 async function settleTrafficBillingForDeletedRuleByTelegram(rule: any) {
-  const tunnelId = Number(rule?.tunnelId || 0);
+  const billingResource = await db.findTrafficBillingResourceForRule(rule);
+  const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
+  const resource = billingResource || fallback;
+  if (!resource) return null;
   const billed = await db.settleTrafficBillingRuleOnDelete({
     userId: Number(rule?.userId || 0),
     ruleId: Number(rule?.id || 0),
-    resourceType: tunnelId > 0 ? "tunnel" : "host",
-    resourceId: tunnelId > 0 ? tunnelId : Number(rule?.hostId || 0),
+    resourceType: resource.resourceType,
+    resourceId: resource.resourceId,
   });
   if (billed && Number((billed as any).balanceAfterCents) < 0) {
     await db.setUserForwardAccess(Number(rule?.userId || 0), false, "traffic_billing_balance");
@@ -3481,14 +3484,14 @@ async function executePendingManageAction(pending: PendingManageAction, callback
           randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
           randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
         }
-        const randomPort = await db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd);
+        const randomPort = await db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd, "both");
         if (!randomPort) throw new Error("该主机端口范围内暂无可用入口端口。");
         sourcePort = Number(randomPort);
       } else {
         if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
           throw new Error(portPolicyErrorMessage(effectivePolicy, "入口端口"));
         }
-        const used = await db.isPortUsedOnHost(hostId, sourcePort);
+        const used = await db.isPortUsedOnHost(hostId, sourcePort, undefined, "both");
         if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再试。`);
       }
 
@@ -4863,6 +4866,7 @@ async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
     group = await db.getForwardGroupById(Number((rule as any).forwardGroupId));
     await db.validateForwardGroupRuleConfig(Number((rule as any).forwardGroupId), {
       sourcePort: Number(rule.sourcePort),
+      protocol: (rule as any).protocol,
       excludeTemplateRuleId: Number(rule.id),
     });
     if (group?.groupType === "tunnel") {
@@ -4916,7 +4920,7 @@ async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
     if (owner?.expiresAt && new Date(owner.expiresAt) <= new Date()) throw new Error("账户已到期，无法启用规则");
     if (Number(owner?.trafficLimit) > 0 && Number(owner?.trafficUsed) >= Number(owner?.trafficLimit)) throw new Error("流量已用完，无法启用规则");
   }
-  const used = await db.isPortUsedOnHost(Number(rule.hostId), Number(rule.sourcePort), Number(rule.id));
+  const used = await db.isPortUsedOnHost(Number(rule.hostId), Number(rule.sourcePort), Number(rule.id), (rule as any).protocol);
   if (used) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
 }
 

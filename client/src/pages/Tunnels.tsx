@@ -2849,45 +2849,61 @@ function TunnelsContent() {
         )}
       </div>
     ) : null;
+    const renderTransportSwitch = (
+      title: string,
+      description: string,
+      checked: boolean,
+      onCheckedChange: (checked: boolean) => void,
+      tooltip?: string,
+    ) => {
+      const control = (
+        <Switch
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
+      );
+      return (
+        <label className={cn(
+          "flex min-h-12 items-center justify-between gap-2 rounded-md border px-3 py-2 transition-colors",
+          checked ? "border-primary/35 bg-primary/5" : "border-border/50 bg-background/60",
+        )}>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium">{title}</span>
+            <span className="block truncate text-xs text-muted-foreground">{description}</span>
+          </span>
+          {tooltip ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="shrink-0">{control}</span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-72">{tooltip}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span className="shrink-0">{control}</span>
+          )}
+        </label>
+      );
+    };
     const transportOptions = transportTuningSupported ? (
       <div className="space-y-2 border-t border-border/45 pt-2 first:border-t-0 first:pt-0">
         <Label className="text-sm">传输优化</Label>
         <div className="grid gap-2 sm:grid-cols-2">
-          <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium">TCP Fast Open</span>
-              <span className="block truncate text-xs text-muted-foreground">降低 TCP 建连等待</span>
-            </span>
-            <Switch
-              checked={form.tcpFastOpen}
-              onCheckedChange={(tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen }))}
-            />
-          </label>
-          <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium">mimic UDP 混淆</span>
-              <span className="block truncate text-xs text-muted-foreground">ForwardX UDP 外观混淆</span>
-            </span>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Switch
-                    checked={form.udpOverTcp}
-                    onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
-                  />
-                </TooltipTrigger>
-                <TooltipContent className="max-w-72">
-                  需要在参与链路的 Agent 主机自行安装 mimic/mimic-dkms；Agent 安装时可输入 Y 安装，未安装时开启会下发失败提示。
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </label>
+          {renderTransportSwitch(
+            "TCP Fast Open",
+            "降低 TCP 建连等待",
+            form.tcpFastOpen,
+            (tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen })),
+          )}
+          {renderTransportSwitch(
+            "mimic UDP 混淆",
+            "ForwardX UDP 外观混淆",
+            form.udpOverTcp,
+            (udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp })),
+            "需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；未安装时开启会下发失败提示。UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。",
+          )}
         </div>
-        {form.udpOverTcp && (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
-            mimic TCP 外观伪装会增加封装开销，UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。
-          </div>
-        )}
       </div>
     ) : null;
     if (!shouldCollapseAdvanced) {

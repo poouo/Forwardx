@@ -1,4 +1,4 @@
-import { forwardRuleProtocols } from "@shared/forwardTypes";
+import { forwardRuleProtocols, normalizeForwardRuleProtocol } from "@shared/forwardTypes";
 import { isIP } from "net";
 
 type IptablesBinary = "iptables" | "ip6tables";
@@ -359,14 +359,22 @@ export function buildNftForwardCmds(rule: any): string[] {
 }
 
 export function buildManagedPortCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
+  const normalizedProtocol = normalizeForwardRuleProtocol(protocol, "both");
+  const protocols = forwardRuleProtocols(protocol, "both");
+  const legacyServiceCleanup = normalizedProtocol === "both"
+    ? [
+        removeManagedServiceCmd(`forwardx-socat-${port}`),
+        removeManagedServiceCmd(`forwardx-realm-${port}`),
+        `rm -f /etc/forwardx/realm/forwardx-realm-${port}.toml /etc/forwardx/realm/forwardx-realm-${port}.toml.sha256 2>/dev/null || true`,
+      ]
+    : [];
   return [
-    ...buildIptablesForwardPortCleanupCmds(port),
-    ...buildNftPortCleanupCmds(port),
-    removeManagedServiceCmd(`forwardx-socat-${port}`),
-    removeManagedServiceCmd(`forwardx-socat-tcp-${port}`),
-    removeManagedServiceCmd(`forwardx-socat-udp-${port}`),
-    removeManagedServiceCmd(`forwardx-realm-${port}`),
-    `rm -f /etc/forwardx/realm/forwardx-realm-${port}.toml /etc/forwardx/realm/forwardx-realm-${port}.toml.sha256 2>/dev/null || true`,
+    ...buildIptablesForwardPortCleanupCmds(port, protocol),
+    ...buildNftPortCleanupCmds(port, protocol),
+    ...legacyServiceCleanup,
+    ...protocols.map((proto) => removeManagedServiceCmd(`forwardx-socat-${proto}-${port}`)),
+    removeManagedServiceCmd(`forwardx-realm-${normalizedProtocol}-${port}`),
+    `rm -f /etc/forwardx/realm/forwardx-realm-${normalizedProtocol}-${port}.toml /etc/forwardx/realm/forwardx-realm-${normalizedProtocol}-${port}.toml.sha256 2>/dev/null || true`,
     `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/port_${port}.tunnel /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
     ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
   ];
@@ -376,7 +384,7 @@ export function buildIptablesForwardCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
   const protos = forwardRuleProtocols(rule.protocol);
-  const cmds: string[] = buildIptablesForwardPortCleanupCmds(Number(rule.sourcePort));
+  const cmds: string[] = buildIptablesForwardPortCleanupCmds(Number(rule.sourcePort), rule.protocol);
   for (const proto of protos) {
     cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
     cmds.push(iptablesDelete(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));

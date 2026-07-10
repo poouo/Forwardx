@@ -27,7 +27,7 @@ import {
 import { getHostById, getHosts } from "./hostRepository";
 import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
-import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
+import { findTrafficBillingResourceForRule, settleTrafficBillingRuleOnDelete, trafficBillingResourceCandidatesForRule } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latencyProbe";
@@ -44,6 +44,7 @@ export type ForwardGroupMemberInput = {
 
 type ForwardGroupRuleConfig = {
   sourcePort: number;
+  protocol?: "tcp" | "udp" | "both" | string | null;
   excludeTemplateRuleId?: number | null;
 };
 
@@ -952,18 +953,20 @@ async function existingChildRule(templateRuleId: number, memberId: number, hostI
   return rows[0];
 }
 
-async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number, ignoreRuleIds: number[]) {
+async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number, ignoreRuleIds: number[], protocol?: unknown) {
   const table = quoteIdentifier("forward_rules");
   const idCol = quoteIdentifier("id");
   const hostCol = quoteIdentifier("hostId");
   const portCol = quoteIdentifier("sourcePort");
   const pendingCol = quoteIdentifier("pendingDelete");
   const enabledCol = quoteIdentifier("isEnabled");
+  const protocolCol = quoteIdentifier("protocol");
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
   const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
+  const protocolSql = rawProtocolConflictWhere(protocolCol, protocol);
   const rows = await queryRaw<{ count: number }>(
-    `SELECT ${countAll()} FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    [hostId, sourcePort, boolValue(false), boolValue(true), ...ignore],
+    `SELECT ${countAll()} FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${protocolSql.sql}${ignoreSql}`,
+    [hostId, sourcePort, boolValue(false), boolValue(true), ...protocolSql.params, ...ignore],
   );
   return (Number(rows[0]?.count) || 0) > 0;
 }
@@ -1000,21 +1003,23 @@ async function assertEntryPortAllowed(member: any, sourcePort: number) {
   }
 }
 
-async function usedPortsOnEntryHost(hostId: number, ignoreRuleIds: number[], range?: { start: number; end: number } | null) {
+async function usedPortsOnEntryHost(hostId: number, ignoreRuleIds: number[], range?: { start: number; end: number } | null, protocol?: unknown) {
   const table = quoteIdentifier("forward_rules");
   const idCol = quoteIdentifier("id");
   const hostCol = quoteIdentifier("hostId");
   const portCol = quoteIdentifier("sourcePort");
   const pendingCol = quoteIdentifier("pendingDelete");
   const enabledCol = quoteIdentifier("isEnabled");
+  const protocolCol = quoteIdentifier("protocol");
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
   const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
   const rangeSql = range ? ` AND ${portCol} BETWEEN ? AND ?` : "";
+  const protocolSql = rawProtocolConflictWhere(protocolCol, protocol);
   const rows = await queryRaw<{ port: number }>(
-    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ?${rangeSql} AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
+    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ?${rangeSql} AND ${pendingCol} = ? AND ${enabledCol} = ?${protocolSql.sql}${ignoreSql}`,
     range
-      ? [hostId, range.start, range.end, boolValue(false), boolValue(true), ...ignore]
-      : [hostId, boolValue(false), boolValue(true), ...ignore],
+      ? [hostId, range.start, range.end, boolValue(false), boolValue(true), ...protocolSql.params, ...ignore]
+      : [hostId, boolValue(false), boolValue(true), ...protocolSql.params, ...ignore],
   );
   return new Set(rows.map((row) => Number(row.port)).filter((port) => Number.isInteger(port)));
 }
@@ -1097,6 +1102,7 @@ export async function findAvailableForwardGroupPort(
   groupId: number,
   excludeTemplateRuleId?: number | null,
   allowedRange?: { start: number; end: number } | null,
+  protocol?: unknown,
 ) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
@@ -1137,7 +1143,7 @@ export async function findAvailableForwardGroupPort(
   if (candidates.length === 0) return null;
 
   const usedPortSets = await Promise.all(
-    entries.map((entry) => usedPortsOnEntryHost(entry.hostId, entry.ignoreRuleIds)),
+    entries.map((entry) => usedPortsOnEntryHost(entry.hostId, entry.ignoreRuleIds, null, protocol)),
   );
   const isAvailable = (port: number) => usedPortSets.every((usedPorts) => !usedPorts.has(port));
 
@@ -1157,6 +1163,7 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
   const sourcePort = Number(config.sourcePort || 0);
+  const protocol = normalizeRuleProtocol(config.protocol);
   if (!Number.isInteger(sourcePort) || sourcePort < 1 || sourcePort > 65535) {
     throw new Error("Forward group entry port must be 1-65535");
   }
@@ -1220,6 +1227,7 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
       hostId,
       sourcePort,
       [Number(config.excludeTemplateRuleId || 0), Number(existing?.id || 0)].filter(Boolean),
+      protocol,
     );
     if (used) throw new Error(`Entry agent port ${sourcePort} is already used`);
   }
@@ -1323,6 +1331,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     hostId,
     Number(templateRule.sourcePort),
     [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean),
+    templateRule.protocol,
   );
   if (used) throw new Error(`Entry agent port ${templateRule.sourcePort} is already used`);
 
@@ -1459,6 +1468,7 @@ async function ensureChainRuleForTemplate(
       hostId,
       Number(templateRule.sourcePort),
       [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean),
+      templateRule.protocol,
     );
     if (used) throw new Error(`Entry agent port ${templateRule.sourcePort} is already used`);
   }
@@ -1558,12 +1568,19 @@ async function removeStaleForwardGroupChildRules(
 async function removeManagedRule(ruleId: number) {
   const rule = await getForwardRuleById(ruleId);
   if (!rule) return;
-  const tunnelId = Number((rule as any).tunnelId || 0);
+  const billingResource = await findTrafficBillingResourceForRule(rule);
+  const fallback = trafficBillingResourceCandidatesForRule(rule)[0];
+  const resource = billingResource || fallback;
+  if (!resource) {
+    await markForwardRulePendingDelete(ruleId);
+    await refreshRuleEndpoints(rule, "forward-group-child-deleted");
+    return;
+  }
   const billed = await settleTrafficBillingRuleOnDelete({
     userId: Number((rule as any).userId),
     ruleId: Number((rule as any).id),
-    resourceType: tunnelId > 0 ? "tunnel" : "host",
-    resourceId: tunnelId > 0 ? tunnelId : Number((rule as any).hostId),
+    resourceType: resource.resourceType,
+    resourceId: resource.resourceId,
   });
   if (billed && Number(billed.balanceAfterCents) < 0) {
     await setUserForwardAccess(Number((rule as any).userId), false, "traffic_billing_balance");
@@ -1752,6 +1769,22 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
   return id;
 }
 
+type RuleProtocol = "tcp" | "udp" | "both";
+
+function normalizeRuleProtocol(protocol: unknown): RuleProtocol {
+  const text = String(protocol || "both").toLowerCase();
+  return text === "tcp" || text === "udp" ? text : "both";
+}
+
+function rawProtocolConflictWhere(protocolColumn: string, protocol: unknown) {
+  const requestedProtocol = normalizeRuleProtocol(protocol);
+  if (requestedProtocol === "both") return { sql: "", params: [] as unknown[] };
+  return {
+    sql: ` AND (${protocolColumn} IS NULL OR ${protocolColumn} = ? OR ${protocolColumn} = ? OR ${protocolColumn} = ?)`,
+    params: ["", "both", requestedProtocol] as unknown[],
+  };
+}
+
 async function nextForwardGroupSortOrder(userId: number, groupMode: ForwardGroupMode) {
   const q = quoteIdentifier;
   const params: any[] = [groupMode];
@@ -1869,12 +1902,15 @@ export async function deleteForwardGroup(id: number) {
   for (const rule of childRules as any[]) await removeManagedRule(Number(rule.id));
   const templates = await getForwardGroupTemplateRules(id);
   for (const template of templates as any[]) {
-    const tunnelId = Number((template as any).tunnelId || 0);
+    const billingResource = await findTrafficBillingResourceForRule(template);
+    const fallback = trafficBillingResourceCandidatesForRule(template)[0];
+    const resource = billingResource || fallback;
+    if (!resource) continue;
     const billed = await settleTrafficBillingRuleOnDelete({
       userId: Number((template as any).userId),
       ruleId: Number((template as any).id),
-      resourceType: tunnelId > 0 ? "tunnel" : "host",
-      resourceId: tunnelId > 0 ? tunnelId : Number((template as any).hostId),
+      resourceType: resource.resourceType,
+      resourceId: resource.resourceId,
     });
     if (billed && Number(billed.balanceAfterCents) < 0) {
       await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");

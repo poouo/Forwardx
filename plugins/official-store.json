@@ -1,35 +1,36 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-09",
+  "updatedAt": "2026-07-10",
   "items": [
     {
       "id": "china-region-whitelist",
       "name": "ForwardX 中国区域白名单",
-      "description": "为 ForwardX 面板适配的中国区域白名单数据插件，可选择主机并同步到 Agent 本地。",
-      "version": "0.1.0",
-      "releaseDate": "2026-07-09",
-      "updatedAt": "2026-07-09",
-      "changelog": "提供 ForwardX 内置中国区域白名单数据，并支持在插件内选择主机生效。",
+      "description": "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
+      "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。\n\n安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。\n\n支持全国或按省份选择全局入站白名单，支持额外 ASN，支持端口优先白名单，支持 nftables 或 iptables/ipset，也可以查看状态、预演规则、应用规则、清理规则和更新 ASN。",
+      "version": "0.2.0",
+      "releaseDate": "2026-07-10",
+      "updatedAt": "2026-07-10",
+      "changelog": "补齐白名单脚本能力，支持主机配置生成、预演、应用、状态查看、清理规则和完整数据下发。",
       "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
       "features": [
         {
-          "title": "白名单数据",
-          "description": "提供面板内置维护的中国区域 IP、域名、云服务和区域标识数据。"
+          "title": "区域白名单",
+          "description": "支持全国 CN 或按省份选择入站白名单。"
         },
         {
-          "title": "在线刷新",
-          "description": "安装后可从 ForwardX 内置插件目录刷新数据资产。"
+          "title": "端口策略",
+          "description": "支持为指定端口或端口范围设置独立白名单。"
         },
         {
-          "title": "本地下载",
-          "description": "同步后的文件可在插件资产中预览和下载。"
+          "title": "Agent 下发",
+          "description": "面板生成配置后由 Agent 同步脚本、数据和规则操作。"
         },
         {
-          "title": "主机同步",
-          "description": "使用页由插件声明，面板按声明渲染主机和数据文件选择。"
+          "title": "规则预演",
+          "description": "应用前可以先输出将执行的 nftables/iptables 命令。"
         }
       ],
-      "tags": ["whitelist", "china-region", "data"],
+      "tags": ["whitelist", "china-region", "firewall", "agent"],
       "license": "Unknown",
       "repository": "https://github.com/poouo/Forwardx",
       "branch": "main",
@@ -38,10 +39,13 @@
       "author": "poouo",
       "packageRepository": "https://github.com/poouo/Forwardx",
       "packageBranch": "main",
+      "packagePath": "plugins/packages/china-region-whitelist.tar.gz",
+      "bundledPath": "plugins/china-region-whitelist",
       "category": "data",
       "permissions": ["data:whitelist"],
       "extensionPoints": ["data.whitelist"],
-      "official": true
+      "official": true,
+      "builtIn": true
     }
   ]
 }

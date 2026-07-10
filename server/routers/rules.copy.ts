@@ -124,7 +124,7 @@ export const copyRulesRouter = router({
             effectivePolicy = combinePortPolicies(effectivePolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
           }
           const outOfRange = !isPortAllowedByPolicy(sourcePort, effectivePolicy);
-          const used = await db.isPortUsedOnHost(Number(host.id), sourcePort);
+          const used = await db.isPortUsedOnHost(Number(host.id), sourcePort, undefined, (rule as any).protocol);
           if (used || outOfRange) {
             if (input.conflictStrategy === "skip") {
               skipped.push({
@@ -139,7 +139,7 @@ export const copyRulesRouter = router({
                 ? `${host.name} ${portPolicyErrorMessage(effectivePolicy, `端口 ${sourcePort}`)}`
                 : `${host.name} 的端口 ${sourcePort} 已被占用`);
             }
-            const nextPort = await db.findAvailablePort(Number(host.id), planRange?.start ?? null, planRange?.end ?? null);
+            const nextPort = await db.findAvailablePort(Number(host.id), planRange?.start ?? null, planRange?.end ?? null, (rule as any).protocol);
             if (!nextPort) {
               skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: "目标主机无可用端口" });
               continue;

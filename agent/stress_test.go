@@ -77,6 +77,12 @@ func TestSkipStaleRemoveWhenDesiredRuleStillRuns(t *testing.T) {
 	if shouldSkipRemoveForReassignedPort(realRemove) {
 		t.Fatal("unexpected skip for remove outside the desired running rule set")
 	}
+
+	currentRouteRemove := staleRemove
+	currentRouteRemove.TunnelID = 3
+	if shouldSkipRemoveForReassignedPort(currentRouteRemove) {
+		t.Fatal("unexpected skip for explicit remove of the currently desired rule route")
+	}
 }
 
 func TestAgentStress3000RuleHeartbeat(t *testing.T) {

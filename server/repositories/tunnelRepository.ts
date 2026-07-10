@@ -441,8 +441,21 @@ export async function updateTunnelTestResult(id: number, data: {
   await db.update(tunnels).set(updates).where(eq(tunnels.id, id));
 }
 
+type RuleProtocol = "tcp" | "udp" | "both";
+
+function normalizeRuleProtocol(protocol: unknown): RuleProtocol {
+  const text = String(protocol || "both").toLowerCase();
+  return text === "tcp" || text === "udp" ? text : "both";
+}
+
+function protocolConflictCondition(protocol: unknown) {
+  const requestedProtocol = normalizeRuleProtocol(protocol);
+  if (requestedProtocol === "both") return null;
+  return sql`(${forwardRules.protocol} IS NULL OR ${forwardRules.protocol} = '' OR ${forwardRules.protocol} = 'both' OR ${forwardRules.protocol} = ${requestedProtocol})`;
+}
+
 /** 检查某主机上的某端口是否已被占用 */
-export async function isPortUsedOnHost(hostId: number, sourcePort: number, excludeRuleId?: number | number[]): Promise<boolean> {
+export async function isPortUsedOnHost(hostId: number, sourcePort: number, excludeRuleId?: number | number[], protocol?: unknown): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
   const excludedIds = Array.from(new Set(
@@ -457,6 +470,8 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ];
+  const protocolCond = protocolConflictCondition(protocol);
+  if (protocolCond) conds.push(protocolCond);
   if (excludedIds.length > 0) {
     conds.push(sql`${forwardRules.id} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`);
   }
@@ -469,12 +484,16 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
   if (excludedIds.length > 0) {
     exitConds.push(sql`${forwardRuleTunnelExits.ruleId} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`);
   }
-  const exitRows = await db.select({ count: sqlCountAll() }).from(forwardRuleTunnelExits).where(and(...exitConds));
+  if (protocolCond) exitConds.push(protocolCond);
+  const exitRows = await db.select({ count: sqlCountAll() })
+    .from(forwardRuleTunnelExits)
+    .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+    .where(and(...exitConds));
   return (Number(exitRows[0]?.count) || 0) > 0;
 }
 
 /** 在主机端口区间内找一个未被占用的随机端口 */
-export async function findAvailablePort(hostId: number, rangeStart?: number | null, rangeEnd?: number | null): Promise<number | null> {
+export async function findAvailablePort(hostId: number, rangeStart?: number | null, rangeEnd?: number | null, protocol?: unknown): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
   const host = await getHostById(hostId) as any;
@@ -484,13 +503,24 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
     : null;
   const policy = explicitPolicy ? combinePortPolicies(hostPolicy, explicitPolicy) : hostPolicy;
   // 获取该主机已占用的端口
-  const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(
+  const usedConds: any[] = [
     eq(forwardRules.hostId, hostId),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
-  ));
-  const usedPorts = new Set<number>(usedRows.map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port)));
+  ];
+  const protocolCond = protocolConflictCondition(protocol);
+  if (protocolCond) usedConds.push(protocolCond);
+  const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedConds));
+  const exitConds: any[] = [
+    eq(forwardRuleTunnelExits.exitHostId, hostId),
+  ];
+  if (protocolCond) exitConds.push(protocolCond);
+  const usedExitRows = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
+    .from(forwardRuleTunnelExits)
+    .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+    .where(and(...exitConds));
+  const usedPorts = new Set<number>([...usedRows, ...usedExitRows].map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port)));
   return pickAvailablePort(policy, usedPorts, { start: 10000, end: 65535 });
 }
 

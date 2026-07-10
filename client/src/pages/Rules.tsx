@@ -2427,7 +2427,10 @@ function RulesContent() {
 
   const isTrafficBillingRule = (rule: any) => {
     if (!trafficBilling?.enabled) return false;
-    const resourceIds = trafficBilling.usableResourceIds || { hostIds: [], tunnelIds: [] };
+    const resourceIds = trafficBilling.usableResourceIds || { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
+    if (rule.forwardGroupId) {
+      return (resourceIds.forwardGroupIds || []).map(Number).includes(Number(rule.forwardGroupId));
+    }
     if (rule.tunnelId) {
       return (resourceIds.tunnelIds || []).map(Number).includes(Number(rule.tunnelId));
     }
@@ -2522,7 +2525,7 @@ function RulesContent() {
         setShowDialog(true);
         return;
       }
-      toast.error("请先在链路管理中创建可用端口转发，或确认按量计费主机和余额可用");
+      toast.error("请先在链路管理中创建可用端口转发，或确认按量计费资源和余额可用");
       return;
     }
     if (hasSavedLocalForward || hasBillingHostLocalForward || firstTunnel || firstChain || firstGroup) {
@@ -2550,7 +2553,7 @@ function RulesContent() {
         forwardGroupId: routeMode === "local" && localUsesSavedForward && firstPortGroup ? Number(firstPortGroup.id) : routeMode === "chain" && firstChain ? Number(firstChain.id) : routeMode === "group" && firstGroup ? Number(firstGroup.id) : null,
       });
     } else {
-      toast.error("请先创建可用端口转发、隧道、转发链、转发组，或确认按量计费主机和余额可用。");
+      toast.error("请先创建可用端口转发、隧道、转发链、转发组，或确认按量计费资源和余额可用。");
       return;
     }
     setShowDialog(true);
@@ -2623,6 +2626,7 @@ function RulesContent() {
       tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
       sourcePort: form.sourcePort,
       excludeRuleId: editingId || undefined,
+      protocol: form.protocol,
     },
     {
       enabled: false,
@@ -2851,6 +2855,14 @@ function RulesContent() {
     const ids = (trafficBilling?.usableResourceIds?.hostIds || []) as Array<number | string>;
     return new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0));
   }, [trafficBilling?.usableResourceIds]);
+  const trafficBillingTunnelIds = useMemo(() => {
+    const ids = (trafficBilling?.usableResourceIds?.tunnelIds || []) as Array<number | string>;
+    return new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0));
+  }, [trafficBilling?.usableResourceIds]);
+  const trafficBillingForwardGroupIds = useMemo(() => {
+    const ids = (trafficBilling?.usableResourceIds?.forwardGroupIds || []) as Array<number | string>;
+    return new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0));
+  }, [trafficBilling?.usableResourceIds]);
   const availableTrafficBillingHosts = useMemo(
     () => (hosts || []).filter((host: any) => trafficBillingHostIds.has(Number(host.id))),
     [hosts, trafficBillingHostIds]
@@ -2862,6 +2874,32 @@ function RulesContent() {
   const canUseForwardChain = availableForwardChainGroups.length > 0;
   const canUseFailoverGroup = availableFailoverForwardGroups.length > 0;
   const canCreateRule = canUseLocalForward || canUseGost || canUseForwardChain || canUseFailoverGroup;
+  const routeModeTabItems: SlidingTabItem<RuleRouteMode>[] = [
+    {
+      value: "local",
+      label: "端口转发",
+      icon: ArrowRightLeft,
+      disabled: !canUseLocalForward || (routeModeLocked && form.routeMode !== "local"),
+    },
+    {
+      value: "tunnel",
+      label: "隧道转发",
+      icon: Network,
+      disabled: !canUseGost || (routeModeLocked && form.routeMode !== "tunnel"),
+    },
+    {
+      value: "chain",
+      label: "转发链",
+      icon: GitBranch,
+      disabled: !canUseForwardChain || (routeModeLocked && form.routeMode !== "chain"),
+    },
+    {
+      value: "group",
+      label: "转发组",
+      icon: Layers3,
+      disabled: !canUseFailoverGroup || (routeModeLocked && form.routeMode !== "group"),
+    },
+  ];
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get("create") !== "local") return;
@@ -2952,6 +2990,7 @@ function RulesContent() {
         tunnelId: routeMode === "tunnel" ? tunnelId : null,
         sourcePort,
         excludeRuleId: editingId || undefined,
+        protocol: form.protocol,
       });
       if (latestPortCheckRef.current !== checkId) return;
       setPortStatus(result.used ? "used" : "available");
@@ -2959,7 +2998,7 @@ function RulesContent() {
       if (latestPortCheckRef.current !== checkId) return;
       setPortStatus("idle");
     }
-  }, [form.hostId, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy, isForwardGroupRouteMode]);
+  }, [form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy, isForwardGroupRouteMode]);
 
   // 源端口变化时自动检测
   useEffect(() => {
@@ -2973,7 +3012,7 @@ function RulesContent() {
     } else {
       setPortStatus("idle");
     }
-  }, [form.sourcePort, form.hostId, form.routeMode, checkPort, isForwardGroupRouteMode]);
+  }, [form.sourcePort, form.hostId, form.protocol, form.routeMode, checkPort, isForwardGroupRouteMode]);
 
   useEffect(() => {
     if (form.routeMode !== "local") return;
@@ -3030,8 +3069,8 @@ function RulesContent() {
     }
     try {
       const randomPortInput = isForwardGroupRouteMode
-        ? { forwardGroupId: Number(form.forwardGroupId), excludeRuleId: editingId || undefined }
-        : { hostId: Number(form.hostId), tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null, excludeRuleId: editingId || undefined };
+        ? { forwardGroupId: Number(form.forwardGroupId), excludeRuleId: editingId || undefined, protocol: form.protocol }
+        : { hostId: Number(form.hostId), tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null, excludeRuleId: editingId || undefined, protocol: form.protocol };
       const result = await utils.rules.randomPort.fetch(randomPortInput);
       setForm({ ...form, sourcePort: result.port });
       setPortStatus("available");
@@ -3136,18 +3175,18 @@ function RulesContent() {
     return payload;
   };
 
-  const getBatchCopyRandomPort = async (targetType: RuleTransferScopeType, resource: any) => {
+  const getBatchCopyRandomPort = async (rule: any, targetType: RuleTransferScopeType, resource: any) => {
     const input = targetType === "tunnel"
-      ? { hostId: Number(resource.entryHostId), tunnelId: Number(resource.id) }
-      : { forwardGroupId: Number(resource.id) };
+      ? { hostId: Number(resource.entryHostId), tunnelId: Number(resource.id), protocol: rule.protocol || "both" }
+      : { forwardGroupId: Number(resource.id), protocol: rule.protocol || "both" };
     const result = await utils.rules.randomPort.fetch(input as any);
     return Number(result.port || 0);
   };
 
   const getBatchEditRandomPort = async (rule: any) => {
     const input = batchEditForm.routeMode === "tunnel" && selectedBatchEditTunnel
-      ? { hostId: Number(selectedBatchEditTunnel.entryHostId), tunnelId: Number(selectedBatchEditTunnel.id), excludeRuleId: Number(rule.id) }
-      : { forwardGroupId: Number(selectedBatchEditForwardGroup?.id || 0), excludeRuleId: Number(rule.id) };
+      ? { hostId: Number(selectedBatchEditTunnel.entryHostId), tunnelId: Number(selectedBatchEditTunnel.id), excludeRuleId: Number(rule.id), protocol: rule.protocol || "both" }
+      : { forwardGroupId: Number(selectedBatchEditForwardGroup?.id || 0), excludeRuleId: Number(rule.id), protocol: rule.protocol || "both" };
     const result = await utils.rules.randomPort.fetch(input as any);
     return Number(result.port || 0);
   };
@@ -3160,7 +3199,7 @@ function RulesContent() {
     } catch (error: any) {
       if (copyConflictStrategy === "error") throw error;
       if (copyConflictStrategy === "auto") {
-        const nextPort = await getBatchCopyRandomPort(targetType, resource);
+        const nextPort = await getBatchCopyRandomPort(rule, targetType, resource);
         if (!nextPort) throw error;
         await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, nextPort) as any);
         return { copied: true, skipped: false };
@@ -3349,7 +3388,7 @@ function RulesContent() {
       return;
     }
     if (form.routeMode === "local" && !canUseLocalForward) {
-      toast.error("暂无可用端口转发或按量计费主机");
+      toast.error("暂无可用端口转发或按量计费资源");
       return;
     }
     if (form.routeMode === "chain" && !canUseForwardChain) {
@@ -4030,7 +4069,12 @@ function RulesContent() {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
   };
   const getHostOptionName = (host: any) => host?.name || `主机 #${host?.id || "-"}`;
-  const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? "在线" : "离线"}）`;
+  const renderTrafficBillingResourceBadge = (enabled = true) => enabled ? (
+    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-300">
+      按量计费资源
+    </span>
+  ) : null;
+  const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? "在线" : "离线"}）${trafficBillingHostIds.has(Number(host?.id)) ? " / 按量计费资源" : ""}`;
   const renderHostStatusLabel = (host: any) => {
     const online = !!host?.isOnline;
     return (
@@ -4044,6 +4088,7 @@ function RulesContent() {
           aria-hidden="true"
         />
         <span className="min-w-0 truncate">{getHostOptionName(host)}</span>
+        {renderTrafficBillingResourceBadge(trafficBillingHostIds.has(Number(host?.id)))}
         <span className="sr-only">{online ? "在线" : "离线"}</span>
       </span>
     );
@@ -4066,6 +4111,7 @@ function RulesContent() {
     getTunnelSelectModeLabel(tunnel),
     getPortRangeText(tunnel),
     formatTrafficMultiplier((tunnel as any)?.trafficMultiplier),
+    trafficBillingTunnelIds.has(Number(tunnel?.id)) ? "按量计费资源" : "",
   ].filter(Boolean).join(" / ");
   const renderTunnelModeBadge = (tunnel: any) => (
     <span className="shrink-0 rounded border border-chart-4/30 bg-chart-4/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-chart-4">
@@ -4089,16 +4135,29 @@ function RulesContent() {
       {renderTunnelModeBadge(tunnel)}
       {getPortRangeText(tunnel) && <span className="shrink-0 rounded border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">{getPortRangeText(tunnel)}</span>}
       {renderTrafficMultiplierBadge((tunnel as any).trafficMultiplier)}
+      {renderTrafficBillingResourceBadge(trafficBillingTunnelIds.has(Number(tunnel?.id)))}
       <span className="sr-only">{getTunnelStatusText(tunnel)}</span>
     </span>
   );
   const getForwardGroupSelectName = (group: any) => String(group?.name || `转发组 #${group?.id || "-"}`);
+  const isTrafficBillingForwardGroup = (group: any) => {
+    if (!trafficBilling?.enabled || !group) return false;
+    if (trafficBillingForwardGroupIds.has(Number(group.id))) return true;
+    const members = Array.isArray(group.members) ? group.members : [];
+    return members.some((member: any) => {
+      if (!member || member.isEnabled === false) return false;
+      if (member.memberType === "host") return trafficBillingHostIds.has(Number(member.hostId || 0));
+      if (member.memberType === "tunnel") return trafficBillingTunnelIds.has(Number(member.tunnelId || 0));
+      return false;
+    });
+  };
   const getForwardGroupSelectText = (group: any) => {
     const mode = normalizeForwardGroupModeForRule(group);
+    const billingText = isTrafficBillingForwardGroup(group) ? " / 按量计费资源" : "";
     if (isForwardChainGroup(group) || mode === "port") {
-      return [getForwardGroupSelectName(group), formatTrafficMultiplier((group as any)?.trafficMultiplier)].join(" / ");
+      return [getForwardGroupSelectName(group), formatTrafficMultiplier((group as any)?.trafficMultiplier)].join(" / ") + billingText;
     }
-    return `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员`;
+    return `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员${billingText}`;
   };
   const getForwardGroupConfigStatus = (group: any): "available" | "pending" | "unavailable" | "error" | "disabled" => {
     if (!group) return "unavailable";
@@ -4144,6 +4203,7 @@ function RulesContent() {
         {renderForwardGroupSelectStatusDot(group)}
         <span className="min-w-0 truncate">{getForwardGroupSelectName(group)}</span>
         {(isForwardChainGroup(group) || mode === "port") && renderTrafficMultiplierBadge((group as any).trafficMultiplier)}
+        {renderTrafficBillingResourceBadge(isTrafficBillingForwardGroup(group))}
         {mode === "failover" && (
           <span className="shrink-0 rounded border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">
             {memberCount} 成员
@@ -6113,7 +6173,7 @@ function RulesContent() {
               onClick={() => openCreate()}
               className="col-span-2 gap-2 sm:col-span-1"
               disabled={!canCreateRule}
-              title={!canCreateRule ? "暂无可用端口转发、按量计费主机、隧道、转发链或转发组" : undefined}
+              title={!canCreateRule ? "暂无可用端口转发、按量计费资源、隧道、转发链或转发组" : undefined}
             >
               <Plus className="h-4 w-4" />
               添加规则
@@ -6547,199 +6607,165 @@ function RulesContent() {
             <DialogTitle>{editingId ? "编辑规则" : "添加转发规则"}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 scroll-pb-28 space-y-3 overflow-y-auto pb-5 pr-1">
-            <div className={segmentedControlClassName}>
-              <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
-                <button
-                  type="button"
-                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward || (routeModeLocked && form.routeMode !== "local"))}
-                  aria-pressed={form.routeMode === "local"}
-                  onClick={() => setRouteMode("local")}
-                  disabled={!canUseLocalForward || (routeModeLocked && form.routeMode !== "local")}
-                  title={!canUseLocalForward ? "暂无可用端口转发或按量计费主机" : undefined}
-                >
-                  <ArrowRightLeft className="h-4 w-4 shrink-0" />
-                  <span className="truncate">端口转发</span>
-                </button>
-                <button
-                  type="button"
-                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost || (routeModeLocked && form.routeMode !== "tunnel"))}
-                  aria-pressed={form.routeMode === "tunnel"}
-                  onClick={() => setRouteMode("tunnel")}
-                  disabled={!canUseGost || (routeModeLocked && form.routeMode !== "tunnel")}
-                  title={!canUseGost ? "暂无可用隧道" : undefined}
-                >
-                  <Network className="h-4 w-4 shrink-0" />
-                  <span className="truncate">隧道转发</span>
-                </button>
-                <button
-                  type="button"
-                  className={routeModeOptionClass(form.routeMode === "chain", !canUseForwardChain || (routeModeLocked && form.routeMode !== "chain"))}
-                  aria-pressed={form.routeMode === "chain"}
-                  onClick={() => setRouteMode("chain")}
-                  disabled={!canUseForwardChain || (routeModeLocked && form.routeMode !== "chain")}
-                  title={!canUseForwardChain ? "暂无可用转发链" : undefined}
-                >
-                  <GitBranch className="h-4 w-4 shrink-0" />
-                  <span className="truncate">转发链</span>
-                </button>
-                <button
-                  type="button"
-                  className={routeModeOptionClass(form.routeMode === "group", !canUseFailoverGroup || (routeModeLocked && form.routeMode !== "group"))}
-                  aria-pressed={form.routeMode === "group"}
-                  onClick={() => setRouteMode("group")}
-                  disabled={!canUseFailoverGroup || (routeModeLocked && form.routeMode !== "group")}
-                  title={!canUseFailoverGroup ? "暂无可用转发组" : undefined}
-                >
-                  <Layers3 className="h-4 w-4 shrink-0" />
-                  <span className="truncate">转发组</span>
-                </button>
-              </div>
-            </div>
+            <Tabs
+              value={form.routeMode}
+              onValueChange={(value) => setRouteMode(value as RuleRouteMode)}
+              className="space-y-3"
+            >
+              <SlidingTabsList
+                items={routeModeTabItems}
+                activeValue={form.routeMode}
+                ariaLabel="转发规则类型"
+                minItemWidthRem={5.75}
+              />
+            </Tabs>
 
-            {form.routeMode === "tunnel" && (
-              <div className="space-y-2 rounded-md border border-chart-4/20 bg-chart-4/5 p-2.5">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                  <div className="space-y-2">
-                    <Label>使用隧道</Label>
-                    <Select
-                      value={form.tunnelId ? String(form.tunnelId) : "none"}
-                      disabled={availableTunnels.length === 0}
-                      onValueChange={(v) => {
-                        const nextTunnelId = v === "none" ? null : Number(v);
-                        const tunnel = nextTunnelId ? tunnels?.find((t: any) => t.id === nextTunnelId) : null;
-                        setForm({
-                          ...form,
-                          tunnelId: nextTunnelId,
-                          hostId: tunnel ? tunnel.entryHostId : null,
-                        });
-                      }}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">请选择隧道</SelectItem>
-                        {availableTunnels.map((t: any) => (
-                          <SelectItem key={t.id} value={String(t.id)} textValue={getTunnelSelectText(t)}>
-                            {renderTunnelSelectLabel(t)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+            <RuleContentTransition
+              transitionKey={`rule-route-${form.routeMode}-${isForwardGroupRouteMode ? "resource" : "direct"}`}
+              className="space-y-3"
+            >
+              {form.routeMode === "tunnel" && (
+                <div className="space-y-2 rounded-md border border-chart-4/20 bg-chart-4/5 p-2.5">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                    <div className="space-y-2">
+                      <Label>使用隧道</Label>
+                      <Select
+                        value={form.tunnelId ? String(form.tunnelId) : undefined}
+                        disabled={availableTunnels.length === 0}
+                        onValueChange={(v) => {
+                          const nextTunnelId = Number(v);
+                          const tunnel = nextTunnelId ? tunnels?.find((t: any) => t.id === nextTunnelId) : null;
+                          setForm({
+                            ...form,
+                            tunnelId: nextTunnelId,
+                            hostId: tunnel ? tunnel.entryHostId : null,
+                          });
+                        }}
+                      >
+                        <SelectTrigger><SelectValue placeholder="请选择隧道" /></SelectTrigger>
+                        <SelectContent>
+                          {availableTunnels.map((t: any) => (
+                            <SelectItem key={t.id} value={String(t.id)} textValue={getTunnelSelectText(t)}>
+                              {renderTunnelSelectLabel(t)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Badge variant="outline" className="h-9 justify-center gap-1.5 border-chart-4/30 px-3 text-chart-4">
+                      <Network className="h-3.5 w-3.5" />
+                      {selectedTunnelDisplay.shortLabel}
+                    </Badge>
                   </div>
-                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-chart-4/30 px-3 text-chart-4">
-                    <Network className="h-3.5 w-3.5" />
-                    {selectedTunnelDisplay.shortLabel}
-                  </Badge>
+                  {availableTunnels.length === 0 && (
+                    <p className="text-xs text-amber-600">暂无可用隧道，请先在链路管理中创建隧道。</p>
+                  )}
+                  {selectedTunnel && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      {renderTunnelRoute(selectedTunnel, true)}
+                      <code className="rounded bg-background/60 px-1.5 py-0.5">:{selectedTunnel.listenPort}</code>
+                    </div>
+                  )}
                 </div>
-                {availableTunnels.length === 0 && (
-                  <p className="text-xs text-amber-600">暂无可用隧道，请先在链路管理中创建隧道。</p>
-                )}
-                {selectedTunnel && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {renderTunnelRoute(selectedTunnel, true)}
-                    <code className="rounded bg-background/60 px-1.5 py-0.5">:{selectedTunnel.listenPort}</code>
-                  </div>
-                )}
-              </div>
-            )}
+              )}
 
-            {isForwardGroupRouteMode && (
-              <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                  <div className="space-y-2">
-                    <Label>{form.routeMode === "local" ? "使用端口转发" : form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
-                    <Select
-                      value={form.forwardGroupId ? String(form.forwardGroupId) : "none"}
-                      disabled={(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).length === 0}
-                      onValueChange={(v) => {
-                        const nextGroupId = v === "none" ? null : Number(v);
-                        const group = nextGroupId ? forwardGroupById.get(nextGroupId) : null;
-                        setForm({
-                          ...form,
-                          forwardGroupId: nextGroupId,
-                          forwardType: getForwardGroupRuleForwardType(group, form.forwardType),
-                          hostId: null,
-                          tunnelId: null,
-                          failoverEnabled: isForwardChainGroup(group) ? false : form.failoverEnabled,
-                        });
-                      }}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">{form.routeMode === "local" ? "请选择端口转发" : form.routeMode === "chain" ? "请选择转发链" : "请选择转发组"}</SelectItem>
-                        {(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).map((group: any) => (
-                          <SelectItem key={group.id} value={String(group.id)} textValue={getForwardGroupSelectText(group)}>
-                            {renderForwardGroupSelectLabel(group)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+              {isForwardGroupRouteMode && (
+                <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                    <div className="space-y-2">
+                      <Label>{form.routeMode === "local" ? "使用端口转发" : form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
+                      <Select
+                        value={form.forwardGroupId ? String(form.forwardGroupId) : undefined}
+                        disabled={(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).length === 0}
+                        onValueChange={(v) => {
+                          const nextGroupId = Number(v);
+                          const group = nextGroupId ? forwardGroupById.get(nextGroupId) : null;
+                          setForm({
+                            ...form,
+                            forwardGroupId: nextGroupId,
+                            forwardType: getForwardGroupRuleForwardType(group, form.forwardType),
+                            hostId: null,
+                            tunnelId: null,
+                            failoverEnabled: isForwardChainGroup(group) ? false : form.failoverEnabled,
+                          });
+                        }}
+                      >
+                        <SelectTrigger><SelectValue placeholder={form.routeMode === "local" ? "请选择端口转发" : form.routeMode === "chain" ? "请选择转发链" : "请选择转发组"} /></SelectTrigger>
+                        <SelectContent>
+                          {(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).map((group: any) => (
+                            <SelectItem key={group.id} value={String(group.id)} textValue={getForwardGroupSelectText(group)}>
+                              {renderForwardGroupSelectLabel(group)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
+                      {form.routeMode === "local" ? <ArrowRightLeft className="h-3.5 w-3.5" /> : form.routeMode === "chain" ? <GitBranch className="h-3.5 w-3.5" /> : <Layers3 className="h-3.5 w-3.5" />}
+                      {FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}
+                    </Badge>
                   </div>
-                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
-                    {form.routeMode === "local" ? <ArrowRightLeft className="h-3.5 w-3.5" /> : form.routeMode === "chain" ? <GitBranch className="h-3.5 w-3.5" /> : <Layers3 className="h-3.5 w-3.5" />}
-                    {FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}
-                  </Badge>
+                  {selectedForwardGroup && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      {(selectedForwardGroup.members || []).slice(0, 4).map((member: any, index: number) => (
+                        <span key={member.id} className="rounded bg-background/60 px-1.5 py-0.5">
+                          {index + 1}. {getForwardGroupMemberLabel(member)}
+                        </span>
+                      ))}
+                      {(selectedForwardGroup.members || []).length > 4 && <span>+{(selectedForwardGroup.members || []).length - 4}</span>}
+                    </div>
+                  )}
                 </div>
-                {selectedForwardGroup && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {(selectedForwardGroup.members || []).slice(0, 4).map((member: any, index: number) => (
-                      <span key={member.id} className="rounded bg-background/60 px-1.5 py-0.5">
-                        {index + 1}. {getForwardGroupMemberLabel(member)}
-                      </span>
-                    ))}
-                    {(selectedForwardGroup.members || []).length > 4 && <span>+{(selectedForwardGroup.members || []).length - 4}</span>}
-                  </div>
-                )}
-              </div>
-            )}
+              )}
 
-            {form.routeMode === "local" && !isForwardGroupRouteMode && (
-              <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                  <div className="space-y-2">
-                    <Label>使用主机</Label>
-                    <Select
-                      value={form.hostId ? String(form.hostId) : "none"}
-                      disabled={availableTrafficBillingHosts.length === 0}
-                      onValueChange={(v) => {
-                        const nextHostId = v === "none" ? null : Number(v);
-                        latestPortCheckRef.current += 1;
-                        setPortStatus("idle");
-                        setPortRangeError(null);
-                        setForm({
-                          ...form,
-                          hostId: nextHostId,
-                          tunnelId: null,
-                          forwardGroupId: null,
-                        });
-                      }}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">请选择按量计费主机</SelectItem>
-                        {availableTrafficBillingHosts.map((host: any) => (
-                          <SelectItem key={host.id} value={String(host.id)} textValue={getHostOptionText(host)}>
-                            {renderHostStatusLabel(host)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+              {form.routeMode === "local" && !isForwardGroupRouteMode && (
+                <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                    <div className="space-y-2">
+                      <Label>使用按量计费资源</Label>
+                      <Select
+                        value={form.hostId ? String(form.hostId) : undefined}
+                        disabled={availableTrafficBillingHosts.length === 0}
+                        onValueChange={(v) => {
+                          const nextHostId = Number(v);
+                          latestPortCheckRef.current += 1;
+                          setPortStatus("idle");
+                          setPortRangeError(null);
+                          setForm({
+                            ...form,
+                            hostId: nextHostId,
+                            tunnelId: null,
+                            forwardGroupId: null,
+                          });
+                        }}
+                      >
+                        <SelectTrigger><SelectValue placeholder="请选择按量计费资源" /></SelectTrigger>
+                        <SelectContent>
+                          {availableTrafficBillingHosts.map((host: any) => (
+                            <SelectItem key={host.id} value={String(host.id)} textValue={getHostOptionText(host)}>
+                              {renderHostStatusLabel(host)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
+                      <ArrowRightLeft className="h-3.5 w-3.5" />
+                      按量计费
+                    </Badge>
                   </div>
-                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
-                    <ArrowRightLeft className="h-3.5 w-3.5" />
-                    按量计费
-                  </Badge>
+                  {availableTrafficBillingHosts.length === 0 && (
+                    <p className="text-xs text-amber-600">暂无可用按量计费资源，请确认资源授权和余额。</p>
+                  )}
+                  {selectedHost && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      {renderHostStatusLabel(selectedHost)}
+                      <span className="rounded bg-background/60 px-1.5 py-0.5">端口 {sourcePortRangeText}</span>
+                    </div>
+                  )}
                 </div>
-                {availableTrafficBillingHosts.length === 0 && (
-                  <p className="text-xs text-amber-600">暂无可用按量计费主机，请确认资源授权和余额。</p>
-                )}
-                {selectedHost && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {renderHostStatusLabel(selectedHost)}
-                    <span className="rounded bg-background/60 px-1.5 py-0.5">端口 {sourcePortRangeText}</span>
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            </RuleContentTransition>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>规则名称</Label>

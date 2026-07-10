@@ -134,7 +134,7 @@ var actionQueue = make(chan actionJob, actionQueueCapacity)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
 var desiredRunningRuleMu sync.Mutex
-var desiredRunningRulesByPort = map[int]runningRule{}
+var desiredRunningRulesByPort = map[string]runningRule{}
 var iperf3Mu sync.Mutex
 var iperf3Server *iperf3Process
 var dnsWatchMu sync.Mutex
@@ -1722,7 +1722,9 @@ func heartbeat(cfg Config) (int, error) {
 	actionDone := make([]<-chan struct{}, 0, len(resp.Actions)+len(desiredStateActions(resp.DesiredState)))
 	for _, a := range desiredStateActions(resp.DesiredState) {
 		if a.SourcePort > 0 && shouldReportActionStatus(a) {
-			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
+			if key := actionProtectedPort(a); key != "" {
+				pendingActionPorts[key] = true
+			}
 		}
 	}
 	for _, done := range syncDesiredState(cfg, resp.DesiredState) {
@@ -1730,7 +1732,9 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	for _, a := range resp.Actions {
 		if a.SourcePort > 0 && shouldReportActionStatus(a) {
-			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
+			if key := actionProtectedPort(a); key != "" {
+				pendingActionPorts[key] = true
+			}
 		}
 		actionDone = append(actionDone, enqueueAction(cfg, a))
 	}
@@ -2569,13 +2573,19 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 	if a.Op != "remove" || a.RuleID <= 0 || a.SourcePort <= 0 || strings.TrimSpace(a.StatusType) == "tunnel" {
 		return false
 	}
-	if desired, ok := desiredRunningRuleForPort(a.SourcePort); ok && desired.RuleID > 0 {
+	if desired, ok := desiredRunningRuleForAction(a); ok && desired.RuleID > 0 {
 		if desired.RuleID != a.RuleID {
-			logf("skip stale remove for desired reassigned port=%d removeRule=%d desiredRule=%d forwardType=%s", a.SourcePort, a.RuleID, desired.RuleID, a.ForwardType)
+			logf("skip stale remove for desired reassigned port=%d protocol=%s removeRule=%d desiredRule=%d forwardType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.RuleID, desired.RuleID, a.ForwardType)
 			return true
 		}
-		logf("skip stale remove for desired running port=%d rule=%d removeTunnel=%d desiredTunnel=%d forwardType=%s", a.SourcePort, a.RuleID, a.TunnelID, desired.TunnelID, a.ForwardType)
-		return true
+		if desired.TunnelID != a.TunnelID && (desired.TunnelID > 0 || a.TunnelID > 0) {
+			logf("skip stale remove for desired tunnel reassigned port=%d protocol=%s rule=%d removeTunnel=%d desiredTunnel=%d forwardType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.RuleID, a.TunnelID, desired.TunnelID, a.ForwardType)
+			return true
+		}
+		if strings.TrimSpace(desired.ForwardType) != "" && strings.TrimSpace(a.ForwardType) != "" && strings.TrimSpace(desired.ForwardType) != strings.TrimSpace(a.ForwardType) {
+			logf("skip stale remove for desired type reassigned port=%d protocol=%s rule=%d removeType=%s desiredType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.RuleID, a.ForwardType, desired.ForwardType)
+			return true
+		}
 	}
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
@@ -2592,26 +2602,40 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 }
 
 func rememberDesiredRunningRules(rules []runningRule) {
-	next := map[int]runningRule{}
+	next := map[string]runningRule{}
 	for _, r := range rules {
 		if r.RuleID <= 0 || r.SourcePort <= 0 {
 			continue
 		}
-		next[r.SourcePort] = r
+		next[actionPortProtocolKey(r.SourcePort, r.Protocol)] = r
 	}
 	desiredRunningRuleMu.Lock()
 	desiredRunningRulesByPort = next
 	desiredRunningRuleMu.Unlock()
 }
 
-func desiredRunningRuleForPort(port int) (runningRule, bool) {
-	if port <= 0 {
+func desiredRunningRuleForAction(a action) (runningRule, bool) {
+	if a.SourcePort <= 0 {
 		return runningRule{}, false
+	}
+	protocol := normalizeRuntimeProtocol(a.Protocol)
+	keys := []string{actionPortProtocolKey(a.SourcePort, protocol)}
+	if protocol == "both" {
+		keys = append(keys, actionPortProtocolKey(a.SourcePort, "tcp"), actionPortProtocolKey(a.SourcePort, "udp"))
+	} else {
+		keys = append(keys, actionPortProtocolKey(a.SourcePort, "both"))
 	}
 	desiredRunningRuleMu.Lock()
 	defer desiredRunningRuleMu.Unlock()
-	r, ok := desiredRunningRulesByPort[port]
-	return r, ok
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if r, ok := desiredRunningRulesByPort[key]; ok {
+			return r, true
+		}
+	}
+	return runningRule{}, false
 }
 
 func cleanupKernelForwardPortBeforeApply(a action) {
@@ -2621,23 +2645,28 @@ func cleanupKernelForwardPortBeforeApply(a action) {
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
+	_, _, localProtocol, hasLocalTarget := readTargetInfo(port)
+	cleanupProtocol := normalizeRuntimeProtocol(a.Protocol)
+	if localRuleID == a.RuleID && hasLocalTarget {
+		cleanupProtocol = normalizeRuntimeProtocol(localProtocol)
+	}
 	reassignedRule := a.RuleID > 0 && localRuleID > 0 && localRuleID != a.RuleID
 	changedFromKernelForward := reassignedRule && (localForwardType == "iptables" || localForwardType == "nftables")
 	if changedFromKernelForward && a.ForwardType != "iptables" {
 		for _, binary := range iptablesAgentBinaries() {
-			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
+			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, cleanupProtocol))
 		}
 	}
 	if changedFromKernelForward && a.ForwardType != "nftables" {
-		_ = runShell(nftPortCleanupCmd(port, "both"))
+		_ = runShell(nftPortCleanupCmd(port, cleanupProtocol))
 	}
 	switch a.ForwardType {
 	case "iptables":
 		for _, binary := range iptablesAgentBinaries() {
-			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
+			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, cleanupProtocol))
 		}
 	case "nftables":
-		_ = runShell(nftPortCleanupCmd(port, "both"))
+		_ = runShell(nftPortCleanupCmd(port, cleanupProtocol))
 	}
 }
 
@@ -3856,8 +3885,9 @@ func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 		}
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
-			if protectedPorts[port] {
-				logVerbosef("reconcile skip pending action port=%s", port)
+			_, _, protocol, _ := readTargetInfo(port)
+			if protectedActionMatchesPort(protectedPorts, port, protocol) {
+				logVerbosef("reconcile skip pending action port=%s protocol=%s", port, normalizeRuntimeProtocol(protocol))
 				continue
 			}
 			reconcileRemovePort(port)
@@ -4744,6 +4774,34 @@ func runtimeProtocols(protocol string) []string {
 	default:
 		return []string{"tcp"}
 	}
+}
+
+func actionPortProtocolKey(port int, protocol string) string {
+	if !validActionPort(port) {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", port, normalizeRuntimeProtocol(protocol))
+}
+
+func protectedActionMatchesPort(protectedPorts map[string]bool, port string, protocol string) bool {
+	if len(protectedPorts) == 0 || strings.TrimSpace(port) == "" {
+		return false
+	}
+	if protectedPorts[port] {
+		return true
+	}
+	portNumber := atoi(port)
+	if portNumber <= 0 {
+		return false
+	}
+	normalized := normalizeRuntimeProtocol(protocol)
+	if protectedPorts[actionPortProtocolKey(portNumber, normalized)] || protectedPorts[actionPortProtocolKey(portNumber, "both")] {
+		return true
+	}
+	if normalized == "both" {
+		return protectedPorts[actionPortProtocolKey(portNumber, "tcp")] || protectedPorts[actionPortProtocolKey(portNumber, "udp")]
+	}
+	return false
 }
 
 func normalizeRuntimeProtocol(protocol string) string {

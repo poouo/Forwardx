@@ -195,8 +195,11 @@ export async function getUserManualAllowedForwardGroupIds(userId: number): Promi
 
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
   const manualRows = await getUserManualAllowedForwardGroupIds(userId);
-  const planRows = await _getActiveSubscriptionForwardGroupIds(userId);
-  return Array.from(new Set([...manualRows, ...planRows]));
+  const [planRows, billingResourceIds] = await Promise.all([
+    _getActiveSubscriptionForwardGroupIds(userId),
+    getUserUsableTrafficBillingResourceIds(userId),
+  ]);
+  return Array.from(new Set([...manualRows, ...planRows, ...billingResourceIds.forwardGroupIds]));
 }
 
 export async function setUserForwardGroupPermissions(userId: number, forwardGroupIds: number[]) {
@@ -217,7 +220,9 @@ export async function checkUserForwardGroupPermission(userId: number, forwardGro
   ).limit(1);
   if (rows.length > 0) return true;
   const planForwardGroupIds = await _getActiveSubscriptionForwardGroupIds(userId);
-  return planForwardGroupIds.includes(forwardGroupId);
+  if (planForwardGroupIds.includes(forwardGroupId)) return true;
+  const billingResourceIds = await getUserUsableTrafficBillingResourceIds(userId);
+  return billingResourceIds.forwardGroupIds.includes(forwardGroupId);
 }
 
 export async function deleteForwardGroupPermissions(forwardGroupId: number) {
