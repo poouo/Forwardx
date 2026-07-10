@@ -105,6 +105,10 @@ function readSidebarMenuSettings(all: Record<string, string | undefined>) {
   normalized.plugins = all.pluginsEnabled === "true";
   return normalized;
 }
+
+function isUpdateAutoCheckEnabled(all: Record<string, string | null | undefined>) {
+  return all.updateAutoCheckEnabled !== "false";
+}
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
 const RESERVED_PUBLIC_HOST_MONITOR_PATHS = new Set([
@@ -217,6 +221,9 @@ type UpdateInfo = {
   currentVersion: string;
   latestVersion: string | null;
   hasUpdate: boolean;
+  currentAgentVersion: string;
+  latestAgentVersion: string | null;
+  hasAgentUpdate: boolean;
   releaseUrl: string | null;
   source: "release" | "tag" | "main" | null;
   publishedAt: string | null;
@@ -831,16 +838,36 @@ function makeUpdateInfo(
   checkedAt: string,
   releaseUrl?: string | null,
   publishedAt?: string | null,
+  latestAgentVersion?: string | null,
 ): UpdateInfo {
+  const normalizedAgentVersion = normalizeVersion(latestAgentVersion || "");
   return {
     currentVersion: APP_VERSION,
     latestVersion: latestVersion || null,
     hasUpdate: !!latestVersion && compareVersions(latestVersion, APP_VERSION) > 0,
+    currentAgentVersion: AGENT_VERSION,
+    latestAgentVersion: normalizedAgentVersion || null,
+    hasAgentUpdate: !!normalizedAgentVersion && compareVersions(normalizedAgentVersion, AGENT_VERSION) > 0,
     releaseUrl: releaseUrl || (latestVersion ? `${REPO_URL}/releases/tag/${latestVersion}` : null),
     source,
     publishedAt: publishedAt || null,
     checkedAt,
   };
+}
+
+async function withLatestAgentVersion(info: UpdateInfo): Promise<UpdateInfo> {
+  if (info.latestAgentVersion || !info.latestVersion) return info;
+  try {
+    const agentVersion = await fetchReleaseAgentVersion(info.latestVersion);
+    const normalized = normalizeVersion(agentVersion || "");
+    return {
+      ...info,
+      latestAgentVersion: normalized || null,
+      hasAgentUpdate: !!normalized && compareVersions(normalized, AGENT_VERSION) > 0,
+    };
+  } catch {
+    return info;
+  }
 }
 
 async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
@@ -878,7 +905,8 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
     const text = await fetchTextNoCache(githubRawMainUrl(REPO_URL, "shared/versions.ts"));
     const match = text.match(/APP_VERSION\s*=\s*["']v?([^"']+)["']/);
     const mainVersion = match?.[1] ? `v${normalizeVersion(match[1])}` : null;
-    if (mainVersion) candidates.push(makeUpdateInfo(mainVersion, "main", checkedAt));
+    const mainAgentVersion = parseAgentVersionFromVersionsText(text);
+    if (mainVersion) candidates.push(makeUpdateInfo(mainVersion, "main", checkedAt, null, null, mainAgentVersion));
   } catch (mainError: any) {
     errors.push(mainError?.message || "main 分支版本检查失败");
   }
@@ -886,21 +914,18 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   const latest = candidates
     .filter((item) => !!item.latestVersion)
     .sort((a, b) => compareVersions(b.latestVersion || "0", a.latestVersion || "0"))[0];
-  if (latest) return ensureUpdateDeployable(latest);
+  if (latest) return ensureUpdateDeployable(await withLatestAgentVersion(latest));
 
   return {
-    currentVersion: APP_VERSION,
-    latestVersion: null,
-    hasUpdate: false,
-    releaseUrl: null,
-    source: null,
-    publishedAt: null,
-    checkedAt,
+    ...makeUpdateInfo(null, null, checkedAt),
     error: errors[0] || "检查更新失败",
   };
 }
 
 async function getLatestUpdateInfoCached(force = false): Promise<UpdateInfo> {
+  if (!force && !isUpdateAutoCheckEnabled({ updateAutoCheckEnabled: await db.getSetting("updateAutoCheckEnabled") })) {
+    return lastUpdateInfo || makeUpdateInfo(null, null, new Date().toISOString());
+  }
   if (!force && lastUpdateInfo) {
     const checkedAt = new Date(lastUpdateInfo.checkedAt).getTime();
     if (Number.isFinite(checkedAt) && Date.now() - checkedAt < UPDATE_CHECK_COOLDOWN_MS) {
@@ -1633,6 +1658,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       dockerSocket: false,
       commandConfigured: false,
       manualUpgradeCommand: "",
+      autoCheckEnabled: isUpdateAutoCheckEnabled(all),
     },
     telegram: {
       enabled: false,
@@ -1684,6 +1710,7 @@ export const systemRouter = router({
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
       allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
       pluginsEnabled: all.pluginsEnabled === "true",
+      updateAutoCheckEnabled: isUpdateAutoCheckEnabled(all),
       publicHostMonitor: {
         enabled: all.publicHostMonitorEnabled === "true",
         path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
@@ -1795,6 +1822,7 @@ export const systemRouter = router({
         dockerSocket: getDeploymentInfo().dockerSocket,
         commandConfigured: !!ENV.upgradeCommand.trim(),
         manualUpgradeCommand: getDeploymentInfo().manualUpgradeCommand,
+        autoCheckEnabled: isUpdateAutoCheckEnabled(all),
       },
       telegram: {
         enabled: all.telegramBotEnabled === "true" || (!!ENV.telegramBotToken.trim() && all.telegramBotEnabled !== "false"),
@@ -1932,6 +1960,7 @@ export const systemRouter = router({
         twoFactorEnabled: z.boolean().optional(),
         lookingGlassUserEnabled: z.boolean().optional(),
         allowMultiDeviceLogin: z.boolean().optional(),
+        updateAutoCheckEnabled: z.boolean().optional(),
         pluginsEnabled: z.boolean().optional(),
         publicHostMonitor: z.object({
           enabled: z.boolean().optional(),
@@ -2066,6 +2095,10 @@ export const systemRouter = router({
       if (input.allowMultiDeviceLogin !== undefined) {
         await db.setSetting("allowMultiDeviceLogin", input.allowMultiDeviceLogin ? "true" : "false");
         console.info(`[Settings] multi-device login ${input.allowMultiDeviceLogin ? "enabled" : "disabled"}`);
+      }
+      if (input.updateAutoCheckEnabled !== undefined) {
+        await db.setSetting("updateAutoCheckEnabled", input.updateAutoCheckEnabled ? "true" : "false");
+        console.info(`[Settings] update auto check ${input.updateAutoCheckEnabled ? "enabled" : "disabled"}`);
       }
       if (input.pluginsEnabled !== undefined) {
         await db.setSetting("pluginsEnabled", input.pluginsEnabled ? "true" : "false");
@@ -2552,13 +2585,16 @@ export const systemRouter = router({
   }),
 
   /** 获取上次检查结果和升级任务状态 */
-  upgradeStatus: adminProcedure.query(() => {
+  upgradeStatus: adminProcedure.query(async () => {
+    const all = await db.getAllSettings();
     return {
       currentVersion: APP_VERSION,
+      currentAgentVersion: AGENT_VERSION,
       repoUrl: REPO_URL,
       update: lastUpdateInfo,
       job: upgradeJob,
       upgradeEnabled: !!ENV.upgradeCommand.trim(),
+      autoCheckEnabled: isUpdateAutoCheckEnabled(all),
       ...getDeploymentInfo(),
     };
   }),

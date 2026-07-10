@@ -428,7 +428,7 @@ export const tunnelsRouter = router({
     latencySeries: protectedProcedure
     .input(z.object({
       tunnelId: z.number(),
-      hours: z.number().min(1).max(24 * 3).default(24),
+      hours: z.number().min(0.5).max(24 * 3).default(24),
     }))
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.tunnelId);

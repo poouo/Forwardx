@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.146"
+var Version = "2.2.147"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -291,17 +291,21 @@ type localRuntimeServiceState struct {
 }
 
 type localRuntimeReadiness struct {
-	runtimePorts       map[int]bool
-	gostRuntimePorts   map[int]bool
-	tunnelRuntimePorts map[int]bool
-	nginxRuntimePorts  map[int]bool
-	gostRuntimeReady   bool
-	tunnelRuntimeReady bool
-	nginxRuntimeReady  bool
-	sharedRuntimeReady bool
-	serviceStates      []localRuntimeServiceState
-	serviceActiveCache map[string]bool
-	kernelSnapshot     *kernelForwardSnapshot
+	runtimePorts               map[int]bool
+	gostRuntimePorts           map[int]bool
+	tunnelRuntimePorts         map[int]bool
+	nginxRuntimePorts          map[int]bool
+	gostRuntimePortProtocols   map[int]map[string]bool
+	tunnelRuntimePortProtocols map[int]map[string]bool
+	nginxRuntimePortProtocols  map[int]map[string]bool
+	gostRuntimeReady           bool
+	tunnelRuntimeReady         bool
+	nginxRuntimeReady          bool
+	sharedRuntimeReady         bool
+	serviceStates              []localRuntimeServiceState
+	serviceActiveCache         map[string]bool
+	kernelSnapshot             *kernelForwardSnapshot
+	listenSnapshot             *runtimeListenSnapshot
 }
 
 func heartbeatStateSignaturePayload() map[string]string {
@@ -359,16 +363,20 @@ func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
 
 func readLocalRuntimeReadiness() localRuntimeReadiness {
 	readiness := localRuntimeReadiness{
-		runtimePorts:       map[int]bool{},
-		gostRuntimePorts:   map[int]bool{},
-		tunnelRuntimePorts: map[int]bool{},
-		nginxRuntimePorts:  map[int]bool{},
-		gostRuntimeReady:   true,
-		tunnelRuntimeReady: true,
-		nginxRuntimeReady:  true,
-		sharedRuntimeReady: true,
-		serviceActiveCache: map[string]bool{},
-		kernelSnapshot:     newKernelForwardSnapshot(),
+		runtimePorts:               map[int]bool{},
+		gostRuntimePorts:           map[int]bool{},
+		tunnelRuntimePorts:         map[int]bool{},
+		nginxRuntimePorts:          map[int]bool{},
+		gostRuntimePortProtocols:   map[int]map[string]bool{},
+		tunnelRuntimePortProtocols: map[int]map[string]bool{},
+		nginxRuntimePortProtocols:  map[int]map[string]bool{},
+		gostRuntimeReady:           true,
+		tunnelRuntimeReady:         true,
+		nginxRuntimeReady:          true,
+		sharedRuntimeReady:         true,
+		serviceActiveCache:         map[string]bool{},
+		kernelSnapshot:             newKernelForwardSnapshot(),
+		listenSnapshot:             newRuntimeListenSnapshot(),
 	}
 	configs := []struct {
 		path    string
@@ -380,24 +388,28 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		{nginxConfigPath, nginxServiceName, "nginx"},
 	}
 	for _, cfg := range configs {
-		var addrs []string
+		var listens []runtimeListenConfig
 		var ok bool
 		if cfg.kind == "nginx" {
-			addrs, ok = nginxRuntimeListenAddrs(cfg.path)
+			listens, ok = nginxRuntimeListenConfigs(cfg.path)
 		} else {
-			addrs, ok = readGostRuntimeServiceAddrs(cfg.path)
+			listens, ok = readGostRuntimeServiceListens(cfg.path)
 		}
-		hasWork := ok && len(addrs) > 0
-		for _, addr := range addrs {
-			if port := addrPort(addr); port > 0 {
+		hasWork := ok && len(listens) > 0
+		for _, listen := range listens {
+			if port := addrPort(listen.Addr); port > 0 {
 				readiness.runtimePorts[port] = true
+				protocol := normalizeRuntimeProtocol(listen.Protocol)
 				switch cfg.kind {
 				case "nginx":
 					readiness.nginxRuntimePorts[port] = true
+					addRuntimePortProtocol(readiness.nginxRuntimePortProtocols, port, protocol)
 				case "tunnel-gost":
 					readiness.tunnelRuntimePorts[port] = true
+					addRuntimePortProtocol(readiness.tunnelRuntimePortProtocols, port, protocol)
 				default:
 					readiness.gostRuntimePorts[port] = true
+					addRuntimePortProtocol(readiness.gostRuntimePortProtocols, port, protocol)
 				}
 			}
 		}
@@ -451,25 +463,66 @@ func (r *localRuntimeReadiness) managedServiceActiveCached(name string) bool {
 	return active
 }
 
-func (r *localRuntimeReadiness) gostReadyForPort(port int) bool {
-	if r == nil || port <= 0 {
-		return false
+func addRuntimePortProtocol(ports map[int]map[string]bool, port int, protocol string) {
+	if ports == nil || port <= 0 {
+		return
 	}
-	return (r.gostRuntimeReady && r.gostRuntimePorts[port]) ||
-		(r.tunnelRuntimeReady && r.tunnelRuntimePorts[port])
+	protocol = normalizeRuntimeProtocol(protocol)
+	if ports[port] == nil {
+		ports[port] = map[string]bool{}
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		ports[port][proto] = true
+	}
 }
 
-func (r *localRuntimeReadiness) nginxReadyForPort(port int) bool {
+func runtimePortProtocolConfigured(ports map[int]map[string]bool, port int, protocol string) bool {
+	if ports == nil || port <= 0 {
+		return false
+	}
+	configured := ports[port]
+	if len(configured) == 0 {
+		return false
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if !configured[proto] && !configured["both"] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *localRuntimeReadiness) gostReadyForPort(port int, protocol string) bool {
 	if r == nil || port <= 0 {
 		return false
 	}
-	return r.nginxRuntimeReady && r.nginxRuntimePorts[port]
+	return (r.gostRuntimeReady &&
+		r.gostRuntimePorts[port] &&
+		runtimePortProtocolConfigured(r.gostRuntimePortProtocols, port, protocol) &&
+		runtimeListenPortReady(r.listenSnapshot, port, protocol, []string{"gost"})) ||
+		(r.tunnelRuntimeReady &&
+			r.tunnelRuntimePorts[port] &&
+			runtimePortProtocolConfigured(r.tunnelRuntimePortProtocols, port, protocol) &&
+			runtimeListenPortReady(r.listenSnapshot, port, protocol, []string{"gost"}))
+}
+
+func (r *localRuntimeReadiness) nginxReadyForPort(port int, protocol string) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
+	return r.nginxRuntimeReady &&
+		r.nginxRuntimePorts[port] &&
+		runtimePortProtocolConfigured(r.nginxRuntimePortProtocols, port, protocol) &&
+		runtimeListenPortReady(r.listenSnapshot, port, protocol, []string{"nginx"})
 }
 
 func addrPort(addr string) int {
 	text := strings.TrimSpace(addr)
 	if text == "" {
 		return 0
+	}
+	if idx := strings.LastIndex(text, "://"); idx >= 0 {
+		text = text[idx+3:]
 	}
 	_, rawPort, err := net.SplitHostPort(text)
 	if err != nil {
@@ -506,9 +559,9 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	case "nftables":
 		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
-		return readiness.gostReadyForPort(port)
+		return readiness.gostReadyForPort(port, state.Protocol)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
-		return readiness.nginxReadyForPort(port)
+		return readiness.nginxReadyForPort(port, state.Protocol)
 	case "forwardx":
 		return fxpRuntimeProcessExistsForRulePort(state.RuleID, port)
 	default:
@@ -522,9 +575,9 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 	}
 	switch strings.TrimSpace(forwardType) {
 	case "gost-tunnel":
-		return readiness.gostReadyForPort(port)
+		return readiness.gostReadyForPort(port, "tcp")
 	case "nginx-tunnel", "nginx-tunnel-exit":
-		return readiness.nginxReadyForPort(port)
+		return readiness.nginxReadyForPort(port, "tcp")
 	case "forwardx-tunnel":
 		return fxpRuntimeProcessExistsForTunnelPort(tunnelID, port)
 	default:
@@ -2544,14 +2597,23 @@ func handleAction(cfg Config, a action) bool {
 	actionMessage := &actionMessage{}
 	skippedStaleRemove := false
 	if strings.TrimSpace(a.StatusType) == "runtime" {
+		mimicAction := isMimicRuntimeAction(a)
 		if shouldSkipRuntimeAction(a) {
+			if mimicAction && shouldLogAgentReport("mimic-runtime-skip", agentReportLogInterval) {
+				logf("mimic runtime sync skipped; cached state healthy diagnostics=%s", mimicRuntimeDiagnostics())
+			}
 			return true
+		}
+		if mimicAction {
+			logf("mimic runtime sync start commands=%d diagnosticsBefore=%s", len(a.Commands), mimicRuntimeDiagnostics())
 		}
 		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 		ok = runShellBatch(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...)) && ok
 		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
-		if !ok || agentVerboseLogs {
+		if mimicAction {
+			logf("mimic runtime sync complete ok=%v diagnosticsAfter=%s", ok, mimicRuntimeDiagnostics())
+		} else if !ok || agentVerboseLogs {
 			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		}
 		rememberRuntimeActionResult(a, ok)
@@ -2600,7 +2662,16 @@ func handleAction(cfg Config, a action) bool {
 			ok = failoverOK && ok
 		}
 		runPostCommands(a.PostCommands, actionMessage)
-		if shouldReportActionStatus(a) {
+		if ok && shouldVerifyManagedRuntimeListen(a) && !waitForManagedRuntimeActionListenReady(a, 12*time.Second) {
+			ok = false
+			message := fmt.Sprintf("managed runtime listener not ready after apply port=%d protocol=%s forwardType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), strings.TrimSpace(a.ForwardType))
+			actionMessage.set(message)
+			if shouldLogAgentReport(fmt.Sprintf("managed-runtime-listen-missing:%d:%s:%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.ForwardType), agentReportLogInterval) {
+				logf("%s %s owner=%s", message, actionLogSummary(a), listenPortOwnerSummary(a.SourcePort))
+			}
+			requestLocalRuntimeStateUpload()
+		}
+		if ok && shouldReportActionStatus(a) {
 			writeState(a)
 		}
 	} else {
@@ -2644,6 +2715,45 @@ func handleAction(cfg Config, a action) bool {
 	running := ok && a.Op == "apply"
 	reportActionStatus(cfg, a, running, actionMessage.get())
 	return ok
+}
+
+func shouldVerifyManagedRuntimeListen(a action) bool {
+	if strings.TrimSpace(a.Op) != "apply" || strings.TrimSpace(a.StatusType) == "runtime" || a.SourcePort <= 0 {
+		return false
+	}
+	if a.Fxp != nil {
+		return false
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForManagedRuntimeActionListenReady(a action, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if managedRuntimeActionListenReady(a) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func managedRuntimeActionListenReady(a action) bool {
+	switch strings.TrimSpace(a.ForwardType) {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
+	default:
+		return true
+	}
 }
 
 func reportActionStatus(cfg Config, a action, running bool, message string) {
@@ -2858,10 +2968,17 @@ func rememberRuntimeActionResult(a action, ok bool) {
 	runtimeActionMu.Unlock()
 }
 
+func isMimicRuntimeAction(a action) bool {
+	return strings.TrimSpace(a.ForwardType) == "mimic-runtime-sync"
+}
+
 func runtimeActionServicesHealthy(a action) bool {
-	if strings.TrimSpace(a.ForwardType) == "mimic-runtime-sync" {
+	if isMimicRuntimeAction(a) {
 		for _, name := range managedMimicServicesFromLocalConfig() {
-			if !mimicRuntimeServiceHealthy(name) {
+			if ok, reason := mimicRuntimeServiceHealth(name); !ok {
+				if shouldLogAgentReport("mimic-runtime-unhealthy:"+name, agentReportLogInterval) {
+					logf("mimic runtime unhealthy service=%s reason=%s", name, reason)
+				}
 				return false
 			}
 		}
@@ -2873,6 +2990,19 @@ func runtimeActionServicesHealthy(a action) bool {
 		}
 	}
 	return true
+}
+
+func mimicRuntimeDiagnostics() string {
+	services := managedMimicServicesFromLocalConfig()
+	if len(services) == 0 {
+		return "services=none"
+	}
+	parts := make([]string, 0, len(services))
+	for _, name := range services {
+		ok, reason := mimicRuntimeServiceHealth(name)
+		parts = append(parts, fmt.Sprintf("%s healthy=%v %s", name, ok, reason))
+	}
+	return compactLogOutput(strings.Join(parts, " | "))
 }
 
 func requiredRuntimeServicesFromLocalConfig() []string {
@@ -2925,14 +3055,41 @@ func managedMimicServicesFromConfigDir(configDir string) []string {
 }
 
 func mimicRuntimeServiceHealthy(name string) bool {
-	if !strings.HasPrefix(name, "mimic@") || !managedServiceActive(name) {
-		return false
+	ok, _ := mimicRuntimeServiceHealth(name)
+	return ok
+}
+
+func mimicRuntimeServiceHealth(name string) (bool, string) {
+	if !strings.HasPrefix(name, "mimic@") {
+		return false, "invalid-service-name"
+	}
+	if !managedServiceActive(name) {
+		return false, "service-inactive"
 	}
 	iface := strings.TrimPrefix(name, "mimic@")
-	if !validNetworkInterfaceName(iface) || !commandExists("mimic") {
-		return false
+	if !validNetworkInterfaceName(iface) {
+		return false, "invalid-interface"
 	}
-	return runShellQuiet("mimic show " + shellQuote(iface) + " >/dev/null 2>&1")
+	if !commandExists("mimic") {
+		return false, "mimic-command-missing"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "mimic", "show", iface).CombinedOutput()
+	output := compactLogOutput(string(out))
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, "mimic-show-timeout"
+	}
+	if err != nil {
+		if output == "" {
+			output = err.Error()
+		}
+		return false, "mimic-show-failed " + output
+	}
+	if output == "" {
+		output = "mimic-show-ok"
+	}
+	return true, output
 }
 
 func validNetworkInterfaceName(name string) bool {
@@ -3421,34 +3578,70 @@ func gostRuntimeConfigServiceCount(path string) (int, bool) {
 	return len(addrs), ok
 }
 
-func readGostRuntimeServiceAddrs(path string) ([]string, bool) {
+type runtimeListenConfig struct {
+	Addr     string
+	Protocol string
+}
+
+func readGostRuntimeServiceListens(path string) ([]runtimeListenConfig, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
 	var cfg struct {
 		Services []struct {
-			Addr string `json:"addr"`
+			Addr     string `json:"addr"`
+			Listener struct {
+				Type string `json:"type"`
+			} `json:"listener"`
 		} `json:"services"`
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, false
 	}
-	addrs := make([]string, 0, len(cfg.Services))
+	listens := make([]runtimeListenConfig, 0, len(cfg.Services))
 	for _, svc := range cfg.Services {
-		addrs = append(addrs, svc.Addr)
+		protocol := strings.TrimSpace(svc.Listener.Type)
+		if protocol == "" {
+			protocol = protocolFromListenAddr(svc.Addr)
+		}
+		listens = append(listens, runtimeListenConfig{Addr: svc.Addr, Protocol: protocol})
+	}
+	return listens, true
+}
+
+func readGostRuntimeServiceAddrs(path string) ([]string, bool) {
+	listens, ok := readGostRuntimeServiceListens(path)
+	if !ok {
+		return nil, false
+	}
+	addrs := make([]string, 0, len(listens))
+	for _, listen := range listens {
+		addrs = append(addrs, listen.Addr)
 	}
 	return addrs, true
 }
 
-func nginxRuntimeListenAddrs(path string) ([]string, bool) {
+func protocolFromListenAddr(addr string) string {
+	value := strings.ToLower(strings.TrimSpace(addr))
+	switch {
+	case strings.HasPrefix(value, "udp://"):
+		return "udp"
+	case strings.HasPrefix(value, "tcp://"):
+		return "tcp"
+	default:
+		return "tcp"
+	}
+}
+
+func nginxRuntimeListenConfigs(path string) ([]runtimeListenConfig, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
 	re := regexp.MustCompile(`(?m)\blisten\s+([^;]+);`)
 	matches := re.FindAllStringSubmatch(string(b), -1)
-	addrs := make([]string, 0, len(matches))
+	listens := make([]runtimeListenConfig, 0, len(matches))
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
@@ -3457,7 +3650,26 @@ func nginxRuntimeListenAddrs(path string) ([]string, bool) {
 		if len(fields) == 0 {
 			continue
 		}
-		addrs = append(addrs, fields[0])
+		protocol := "tcp"
+		for _, field := range fields[1:] {
+			if strings.EqualFold(strings.TrimSpace(field), "udp") {
+				protocol = "udp"
+				break
+			}
+		}
+		listens = append(listens, runtimeListenConfig{Addr: fields[0], Protocol: protocol})
+	}
+	return listens, true
+}
+
+func nginxRuntimeListenAddrs(path string) ([]string, bool) {
+	listens, ok := nginxRuntimeListenConfigs(path)
+	if !ok {
+		return nil, false
+	}
+	addrs := make([]string, 0, len(listens))
+	for _, listen := range listens {
+		addrs = append(addrs, listen.Addr)
 	}
 	return addrs, true
 }
@@ -3575,6 +3787,200 @@ func listenPortOwnerPIDs(port int) []int {
 	}
 	sort.Ints(pids)
 	return pids
+}
+
+type runtimeListenSnapshot struct {
+	tcpPorts map[int][]string
+	udpPorts map[int][]string
+	usable   bool
+}
+
+func newRuntimeListenSnapshot() *runtimeListenSnapshot {
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{},
+		udpPorts: map[int][]string{},
+	}
+	if _, err := exec.LookPath("ss"); err == nil {
+		if out, err := exec.Command("ss", "-H", "-ltnup").CombinedOutput(); err == nil {
+			snapshot.parseSSListenOutput(string(out))
+		}
+	}
+	if !snapshot.usable {
+		snapshot.parseProcNetListenFiles()
+	}
+	return snapshot
+}
+
+func (s *runtimeListenSnapshot) parseSSListenOutput(text string) {
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		proto := strings.ToLower(strings.TrimSpace(fields[0]))
+		if strings.HasPrefix(proto, "tcp") {
+			proto = "tcp"
+		} else if strings.HasPrefix(proto, "udp") {
+			proto = "udp"
+		} else {
+			continue
+		}
+		port := addrPort(fields[4])
+		if port <= 0 {
+			continue
+		}
+		s.add(proto, port, line)
+	}
+}
+
+func (s *runtimeListenSnapshot) parseProcNetListenFiles() {
+	files := []struct {
+		path     string
+		protocol string
+	}{
+		{"/proc/net/tcp", "tcp"},
+		{"/proc/net/tcp6", "tcp"},
+		{"/proc/net/udp", "udp"},
+		{"/proc/net/udp6", "udp"},
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file.path)
+		if err != nil {
+			continue
+		}
+		for idx, line := range strings.Split(string(raw), "\n") {
+			if idx == 0 {
+				continue
+			}
+			fields := strings.Fields(strings.TrimSpace(line))
+			if len(fields) < 4 {
+				continue
+			}
+			if file.protocol == "tcp" && strings.ToUpper(fields[3]) != "0A" {
+				continue
+			}
+			port := procNetLocalPort(fields[1])
+			if port <= 0 {
+				continue
+			}
+			s.add(file.protocol, port, file.path+":"+fields[1])
+		}
+	}
+}
+
+func procNetLocalPort(value string) int {
+	idx := strings.LastIndex(value, ":")
+	if idx < 0 || idx >= len(value)-1 {
+		return 0
+	}
+	raw := strings.TrimSpace(value[idx+1:])
+	port64, err := strconv.ParseInt(raw, 16, 32)
+	if err != nil || port64 <= 0 || port64 > 65535 {
+		return 0
+	}
+	return int(port64)
+}
+
+func (s *runtimeListenSnapshot) add(protocol string, port int, line string) {
+	if s == nil || port <= 0 {
+		return
+	}
+	protocol = normalizeRuntimeProtocol(protocol)
+	if protocol == "udp" {
+		s.udpPorts[port] = append(s.udpPorts[port], line)
+	} else {
+		s.tcpPorts[port] = append(s.tcpPorts[port], line)
+	}
+	s.usable = true
+}
+
+func runtimeListenPortReady(snapshot *runtimeListenSnapshot, port int, protocol string, processNeedles []string) bool {
+	if port <= 0 {
+		return false
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if snapshot != nil && snapshot.usable {
+			if !snapshot.protocolPortReady(port, proto, processNeedles) {
+				return false
+			}
+			continue
+		}
+		if !runtimePortOccupiedByProtocol(port, proto) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *runtimeListenSnapshot) protocolPortReady(port int, protocol string, processNeedles []string) bool {
+	if s == nil || !s.usable || port <= 0 {
+		return false
+	}
+	var lines []string
+	if normalizeRuntimeProtocol(protocol) == "udp" {
+		lines = s.udpPorts[port]
+	} else {
+		lines = s.tcpPorts[port]
+	}
+	if len(lines) == 0 {
+		return false
+	}
+	needles := normalizeRuntimeProcessNeedles(processNeedles)
+	if len(needles) == 0 {
+		return true
+	}
+	ownerSeen := false
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "users:") || strings.Contains(lower, "pid=") {
+			ownerSeen = true
+			for _, needle := range needles {
+				if strings.Contains(lower, needle) {
+					return true
+				}
+			}
+		}
+	}
+	return !ownerSeen
+}
+
+func normalizeRuntimeProcessNeedles(values []string) []string {
+	seen := map[string]bool{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func runtimePortOccupiedByProtocol(port int, protocol string) bool {
+	if port <= 0 {
+		return false
+	}
+	addr := ":" + strconv.Itoa(port)
+	if normalizeRuntimeProtocol(protocol) == "udp" {
+		conn, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
 }
 
 func fxpMatchesRunning(spec *fxpSpec) bool {

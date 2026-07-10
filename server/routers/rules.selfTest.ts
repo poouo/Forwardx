@@ -15,7 +15,7 @@ export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
       .input(z.object({
         ruleId: z.number(),
-        hours: z.number().min(1).max(24 * 3).default(24),
+        hours: z.number().min(0.5).max(24 * 3).default(24),
       }))
     .query(async ({ input, ctx }) => {
       const rule = await db.getForwardRuleById(input.ruleId);

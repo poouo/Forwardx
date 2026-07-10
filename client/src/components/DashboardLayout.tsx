@@ -110,6 +110,7 @@ const adminMenuItems: SidebarNavItem[] = [
 const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
 const PANEL_UPGRADE_NOTICE_DISMISSED_KEY = "forwardx.panel.upgrade.dismissedVersion";
 const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+const UPDATE_AUTO_CHECK_REFETCH_MS = 6 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
 const POPUP_ANNOUNCEMENT_SESSION_KEY = "forwardx.popupAnnouncement.seen";
 const UPGRADE_ANNOUNCEMENT_VERSION_KEY = "forwardx.upgradeAnnouncement.lastSeenVersion";
@@ -388,8 +389,16 @@ function DashboardLayoutContent({
     const timer = window.setTimeout(() => setDeferBackgroundQueries(false), 1200);
     return () => window.clearTimeout(timer);
   }, []);
+  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: !!user,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const updateAutoCheckReady = !isAdmin || !!publicInfo;
+  const updateAutoCheckEnabled = publicInfo?.updateAutoCheckEnabled !== false;
   const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
-    enabled: isAdmin && !deferBackgroundQueries,
+    enabled: isAdmin && !deferBackgroundQueries && updateAutoCheckReady && updateAutoCheckEnabled,
+    refetchInterval: updateAutoCheckEnabled ? UPDATE_AUTO_CHECK_REFETCH_MS : false,
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 60 * 1000,
@@ -417,11 +426,6 @@ function DashboardLayoutContent({
       const expiresAt = status.pendingBind?.expiresAt ? new Date(status.pendingBind.expiresAt).getTime() : 0;
       return expiresAt > Date.now() ? 2000 : false;
     },
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
-    enabled: !!user,
     refetchOnWindowFocus: false,
     retry: false,
   });

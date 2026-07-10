@@ -88,6 +88,7 @@ import {
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
 import {
+  FORWARD_RULE_PROTOCOL_LABELS,
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
   normalizeForwardProtocolSettings,
@@ -273,6 +274,7 @@ type ForwardGroupsContentProps = {
   createRequestKey?: number;
   editRequest?: { id: number; requestKey: number } | null;
   onEditRequestConsumed?: () => void;
+  searchQuery?: string;
 };
 
 const FORWARD_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -396,6 +398,101 @@ function entryGroupDisplayText(group: any, groupsByMode: Record<GroupMode, any[]
   const entryGroup = groupsByMode.entry.find((item: any) => Number(item.id) === entryGroupId);
   if (!entryGroup) return `入口组 #${entryGroupId}`;
   return String(entryGroup.domain || entryGroup.name || `入口组 #${entryGroupId}`).trim();
+}
+
+function normalizeForwardGroupSearchText(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function forwardGroupSearchMatches(parts: unknown[], query: string) {
+  const needle = normalizeForwardGroupSearchText(query);
+  if (!needle) return true;
+  return parts.some((part) => normalizeForwardGroupSearchText(part).includes(needle));
+}
+
+function forwardGroupHostSearchParts(host: any | null | undefined) {
+  if (!host) return [];
+  return [
+    host.id,
+    host.name,
+    host.hostname,
+    host.ip,
+    host.ipv4,
+    host.ipv6,
+    host.publicIp,
+    host.entryIp,
+    host.tunnelEntryIp,
+    host.ddnsDomain,
+    host.region,
+    host.country,
+    host.os,
+    host.system,
+    host.agentVersion,
+  ];
+}
+
+function forwardGroupMatchesSearchQuery(
+  group: any,
+  query: string,
+  hosts: any[] | undefined,
+  tunnels: any[] | undefined,
+  groupsByMode: Record<GroupMode, any[]>,
+) {
+  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
+  const tunnelById = new Map((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
+  const mode = normalizeGroupMode(group?.groupMode);
+  const entryGroupText = entryGroupDisplayText(group, groupsByMode);
+  const modeLabels: Record<GroupMode, string[]> = {
+    port: ["端口转发", "port"],
+    chain: ["转发链", "端口转发链", "chain"],
+    failover: ["转发组", "故障转移", "failover"],
+    entry: ["入口组", "entry"],
+    exit: ["出口组", "exit"],
+  };
+  const memberParts = (Array.isArray(group?.members) ? group.members : []).flatMap((member: any) => {
+    if (member?.memberType === "tunnel") {
+      const tunnel = tunnelById.get(Number(member.tunnelId || 0));
+      return [
+        member.id,
+        member.tunnelId,
+        member.entryAddress,
+        member.connectHost,
+        tunnel?.id,
+        tunnel?.name,
+        tunnel?.listenPort,
+        tunnel?.mode,
+        getTunnelRouteText(tunnel, hosts),
+      ];
+    }
+    const host = hostById.get(Number(member?.hostId || 0));
+    return [
+      member?.id,
+      member?.hostId,
+      member?.entryAddress,
+      member?.connectHost,
+      host?.name || (member?.hostId ? `host #${member.hostId}` : ""),
+      ...forwardGroupHostSearchParts(host),
+    ];
+  });
+  return forwardGroupSearchMatches([
+    group?.id,
+    group?.name,
+    group?.domain,
+    group?.recordType,
+    group?.lastDdnsValue,
+    group?.lastStatus,
+    group?.lastMessage,
+    group?.protocol,
+    FORWARD_RULE_PROTOCOL_LABELS[normalizeForwardRuleProtocol(group?.protocol, "both")],
+    group?.forwardType,
+    (FORWARD_TYPE_LABELS as Record<string, string>)[String(group?.forwardType || "")],
+    group?.groupType,
+    group?.failoverStrategy,
+    group?.trafficMultiplier,
+    entryGroupText,
+    ...(modeLabels[mode] || []),
+    ...memberParts,
+  ], query);
 }
 
 type GroupLatencyPoint = {
@@ -739,6 +836,7 @@ export function ForwardGroupsContent({
   createRequestKey,
   editRequest,
   onEditRequestConsumed,
+  searchQuery = "",
 }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
@@ -813,8 +911,13 @@ export function ForwardGroupsContent({
       })),
     };
   };
-  const visibleGroups = groupsByMode[activeGroupMode] || [];
-  const modeTotal = visibleGroups.length;
+  const rawVisibleGroups = groupsByMode[activeGroupMode] || [];
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const visibleGroups = useMemo(() => {
+    if (!normalizedSearchQuery) return rawVisibleGroups;
+    return rawVisibleGroups.filter((group: any) => forwardGroupMatchesSearchQuery(group, normalizedSearchQuery, hosts, tunnels, groupsByMode));
+  }, [groupsByMode, hosts, normalizedSearchQuery, rawVisibleGroups, tunnels]);
+  const modeTotal = rawVisibleGroups.length;
   const groupConfigStateById = useMemo(() => {
     const makeState = (
       status: "disabled" | "available" | "pending" | "unavailable" | "error",
@@ -1075,13 +1178,13 @@ export function ForwardGroupsContent({
 
   useEffect(() => {
     if (!editRequest || editRequest.requestKey === lastEditRequestKeyRef.current) return;
-    const group = visibleGroups.find((item: any) => Number(item.id) === Number(editRequest.id));
+    const group = rawVisibleGroups.find((item: any) => Number(item.id) === Number(editRequest.id));
     if (group) {
       lastEditRequestKeyRef.current = editRequest.requestKey;
       openEdit(group);
       onEditRequestConsumed?.();
     }
-  }, [editRequest?.id, editRequest?.requestKey, onEditRequestConsumed, visibleGroups]);
+  }, [editRequest?.id, editRequest?.requestKey, onEditRequestConsumed, rawVisibleGroups]);
 
   const createMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
@@ -1703,7 +1806,7 @@ export function ForwardGroupsContent({
   const emptyDescription = currentModeMeta.emptyDescription;
   const paginationItemName = currentModeMeta.paginationItemName;
   const dialogTitle = editingId ? `编辑${currentModeMeta.title}` : `添加${currentModeMeta.title}`;
-  const contentTransitionKey = `${activeGroupMode}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
+  const contentTransitionKey = `${activeGroupMode}-${normalizedSearchQuery || "all"}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
     <div className="space-y-6">

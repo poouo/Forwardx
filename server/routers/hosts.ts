@@ -643,7 +643,7 @@ export const hostsRouter = router({
       }));
     }),
     probeServiceSeries: protectedProcedure
-      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hostId: z.number().int().positive().optional(), hours: z.number().int().min(1).max(24 * 3).default(24) }).optional())
+      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hostId: z.number().int().positive().optional(), hours: z.number().min(0.5).max(24 * 3).default(24) }).optional())
       .query(async ({ input, ctx }) => {
         const isAdmin = ctx.user.role === "admin";
         const visibleServices = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);

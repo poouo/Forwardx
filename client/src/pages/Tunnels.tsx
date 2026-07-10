@@ -64,6 +64,7 @@ import {
   ArrowRight,
   ArrowRightLeft,
   ChevronRight,
+  Filter,
   Globe,
   LayoutGrid,
   List,
@@ -75,6 +76,7 @@ import {
   Pencil,
   Plus,
   Route,
+  Search,
   ShieldCheck,
   Stethoscope,
   Trash2,
@@ -1888,7 +1890,7 @@ function TunnelSelfTestDialog({
 
 function normalizeForwardGroupMode(mode: unknown) {
   const value = String(mode || "failover");
-  return value === "chain" || value === "entry" || value === "exit" ? value : "failover";
+  return value === "port" || value === "chain" || value === "entry" || value === "exit" ? value : "failover";
 }
 
 function enabledHostGroupMembers(group: any) {
@@ -1921,6 +1923,158 @@ function groupHostSummary(group: any, hosts: any[] | undefined) {
   }).join("、");
 }
 
+function normalizeLinkSearchText(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function linkSearchMatches(parts: unknown[], query: string) {
+  const needle = normalizeLinkSearchText(query);
+  if (!needle) return true;
+  return parts.some((part) => normalizeLinkSearchText(part).includes(needle));
+}
+
+function linkHostSearchParts(host: any | null | undefined) {
+  if (!host) return [];
+  return [
+    host.id,
+    host.name,
+    host.hostname,
+    host.ip,
+    host.ipv4,
+    host.ipv6,
+    host.publicIp,
+    host.entryIp,
+    host.tunnelEntryIp,
+    host.ddnsDomain,
+    host.region,
+    host.country,
+    host.os,
+    host.system,
+    host.agentVersion,
+  ];
+}
+
+function linkForwardGroupSearchParts(
+  group: any,
+  hosts: any[] | undefined,
+  tunnels: any[] | undefined,
+  entryGroupById?: Map<number, any>,
+) {
+  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
+  const tunnelById = new Map((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
+  const mode = normalizeForwardGroupMode(group?.groupMode);
+  const entryGroup = Number(group?.entryGroupId || 0) > 0 ? entryGroupById?.get(Number(group.entryGroupId)) : null;
+  const modeLabels: Record<string, string[]> = {
+    port: ["端口转发", "port"],
+    chain: ["转发链", "端口转发链", "chain"],
+    failover: ["转发组", "故障转移", "failover"],
+    entry: ["入口组", "entry"],
+    exit: ["出口组", "exit"],
+  };
+  const memberParts = (Array.isArray(group?.members) ? group.members : []).flatMap((member: any) => {
+    if (member?.memberType === "tunnel") {
+      const tunnel = tunnelById.get(Number(member.tunnelId || 0));
+      return [
+        member.id,
+        member.tunnelId,
+        member.entryAddress,
+        member.connectHost,
+        tunnel?.id,
+        tunnel?.name,
+        tunnel?.listenPort,
+        getTunnelModeDisplay(tunnel?.mode),
+        getTunnelRouteText(tunnel, hosts),
+      ];
+    }
+    const host = hostById.get(Number(member?.hostId || 0));
+    return [
+      member?.id,
+      member?.hostId,
+      member?.entryAddress,
+      member?.connectHost,
+      groupMemberConnectLabel(member, hosts),
+      groupMemberHostName(member, hosts),
+      ...linkHostSearchParts(host),
+    ];
+  });
+  return [
+    group?.id,
+    group?.name,
+    group?.domain,
+    group?.recordType,
+    group?.lastDdnsValue,
+    group?.lastStatus,
+    group?.lastMessage,
+    group?.protocol,
+    FORWARD_PROTOCOL_LABELS[group?.protocol as ForwardProtocolKey],
+    group?.forwardType,
+    FORWARD_TYPE_LABELS[group?.forwardType as ForwardType],
+    group?.groupType,
+    group?.failoverStrategy,
+    group?.trafficMultiplier,
+    ...(modeLabels[mode] || []),
+    entryGroup?.id,
+    entryGroup?.name,
+    entryGroup?.domain,
+    groupHostSummary(group, hosts),
+    ...memberParts,
+  ];
+}
+
+function linkForwardGroupMatchesSearch(
+  group: any,
+  query: string,
+  hosts: any[] | undefined,
+  tunnels: any[] | undefined,
+  entryGroupById?: Map<number, any>,
+) {
+  return linkSearchMatches(linkForwardGroupSearchParts(group, hosts, tunnels, entryGroupById), query);
+}
+
+function tunnelMatchesLinkSearch(
+  tunnel: any,
+  query: string,
+  hosts: any[] | undefined,
+  nginxTunnelEnabled: boolean,
+  entryGroupById: Map<number, any>,
+  exitGroupById: Map<number, any>,
+) {
+  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
+  const hopIds = getTunnelHopIds(tunnel);
+  const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
+  const exitGroup = Number(tunnel?.exitGroupId || 0) > 0 ? exitGroupById.get(Number(tunnel.exitGroupId)) : null;
+  const loadBalanceExitParts = (Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits : []).flatMap((exit: any) => [
+    exit?.hostId,
+    exit?.connectHost,
+    ...linkHostSearchParts(hostById.get(Number(exit?.hostId || 0))),
+  ]);
+  const groupParts = [
+    entryGroup?.id,
+    entryGroup?.name,
+    entryGroup?.domain,
+    groupHostSummary(entryGroup, hosts),
+    exitGroup?.id,
+    exitGroup?.name,
+    groupHostSummary(exitGroup, hosts),
+  ];
+  return linkSearchMatches([
+    tunnel?.id,
+    tunnel?.name,
+    tunnel?.mode,
+    getTunnelModeDisplay(tunnel?.mode, nginxTunnelEnabled),
+    tunnel?.listenPort,
+    tunnel?.rateLimitMbps,
+    tunnel?.trafficMultiplier,
+    tunnel?.networkType,
+    tunnel?.connectHost,
+    tunnel?.certDomain,
+    getTunnelRouteText(tunnel, hosts),
+    ...groupParts,
+    ...hopIds.flatMap((hostId: number) => [hostId, ...linkHostSearchParts(hostById.get(Number(hostId)))]),
+    ...loadBalanceExitParts,
+  ], query);
+}
+
 function TunnelsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -1942,6 +2096,7 @@ function TunnelsContent() {
     defaultValue: "tunnels",
     storageKey: TUNNEL_SECTION_STORAGE_KEY,
   });
+  const [linkSearchQuery, setLinkSearchQuery] = useState("");
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("chain");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
@@ -2016,10 +2171,12 @@ function TunnelsContent() {
       : (enabledGostTunnelModes[0] || enabledNginxTunnelModes[0] || "forwardx");
   };
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
+  const portGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "port"), [forwardGroups]);
   const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "chain"), [forwardGroups]);
   const failoverGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "failover"), [forwardGroups]);
   const entryGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "entry"), [forwardGroups]);
   const exitGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "exit"), [forwardGroups]);
+  const activePortCount = useMemo(() => portGroups.filter((group: any) => group.isEnabled).length, [portGroups]);
   const activeChainCount = useMemo(() => chainGroups.filter((group: any) => group.isEnabled).length, [chainGroups]);
   const activeFailoverGroupCount = useMemo(() => failoverGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [failoverGroups]);
   const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [entryGroups]);
@@ -2158,7 +2315,40 @@ function TunnelsContent() {
       })),
     };
   };
-  const tunnelItems = tunnels || [];
+  const normalizedLinkSearchQuery = linkSearchQuery.trim().toLowerCase();
+  const isLinkSearchFiltered = normalizedLinkSearchQuery.length > 0;
+  const rawTunnelItems = tunnels || [];
+  const tunnelItems = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return rawTunnelItems;
+    return rawTunnelItems.filter((tunnel: any) => tunnelMatchesLinkSearch(
+      tunnel,
+      normalizedLinkSearchQuery,
+      hosts,
+      nginxTunnelEnabled,
+      entryGroupById,
+      exitGroupById,
+    ));
+  }, [entryGroupById, exitGroupById, hosts, nginxTunnelEnabled, normalizedLinkSearchQuery, rawTunnelItems]);
+  const filteredPortGroups = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return portGroups;
+    return portGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
+  }, [entryGroupById, hosts, normalizedLinkSearchQuery, portGroups, tunnels]);
+  const filteredChainGroups = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return chainGroups;
+    return chainGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
+  }, [chainGroups, entryGroupById, hosts, normalizedLinkSearchQuery, tunnels]);
+  const filteredFailoverGroups = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return failoverGroups;
+    return failoverGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
+  }, [entryGroupById, failoverGroups, hosts, normalizedLinkSearchQuery, tunnels]);
+  const filteredEntryGroups = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return entryGroups;
+    return entryGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
+  }, [entryGroupById, entryGroups, hosts, normalizedLinkSearchQuery, tunnels]);
+  const filteredExitGroups = useMemo(() => {
+    if (!normalizedLinkSearchQuery) return exitGroups;
+    return exitGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
+  }, [entryGroupById, exitGroups, hosts, normalizedLinkSearchQuery, tunnels]);
   const tunnelPagination = usePersistentPagination(tunnelItems, {
     storageKey: "forwardx.tunnels.page",
     pageSize: 12,
@@ -2976,23 +3166,38 @@ function TunnelsContent() {
     else if (nextViewMode !== "globe") handleChainViewModeChange(nextViewMode);
   };
   const activeSectionTransitionKey = activeSection === "chains"
-    ? `chains-${chainViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : chainGroups.length > 0 ? "list" : "empty"}`
-    : activeSection === "groups"
-      ? `groups-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : failoverGroups.length > 0 ? "list" : "empty"}`
+    ? `chains-${chainViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredChainGroups.length > 0 ? "list" : "empty"}`
+    : activeSection === "ports"
+      ? `ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredPortGroups.length > 0 ? "list" : "empty"}`
+      : activeSection === "groups"
+        ? `groups-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredFailoverGroups.length > 0 ? "list" : "empty"}`
       : activeSection === "entries"
-        ? `entries-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : entryGroups.length > 0 ? "list" : "empty"}`
+        ? `entries-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredEntryGroups.length > 0 ? "list" : "empty"}`
         : activeSection === "exits"
-          ? `exits-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : exitGroups.length > 0 ? "list" : "empty"}`
-          : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
+          ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredExitGroups.length > 0 ? "list" : "empty"}`
+          : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
     ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-primary" }
-    : activeSection === "groups"
-      ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-primary" }
-      : activeSection === "entries"
-        ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
-        : activeSection === "exits"
-          ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
-          : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
+    : activeSection === "ports"
+      ? { value: `${activePortCount} / ${portGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 启用", iconClass: "text-primary" }
+      : activeSection === "groups"
+        ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-primary" }
+        : activeSection === "entries"
+          ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
+          : activeSection === "exits"
+            ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+            : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
+  const linkSearchStats = activeSection === "ports"
+    ? { filtered: filteredPortGroups.length, total: portGroups.length, unit: "条" }
+    : activeSection === "chains"
+      ? { filtered: filteredChainGroups.length, total: chainGroups.length, unit: "条" }
+      : activeSection === "groups"
+        ? { filtered: filteredFailoverGroups.length, total: failoverGroups.length, unit: "个" }
+        : activeSection === "entries"
+          ? { filtered: filteredEntryGroups.length, total: entryGroups.length, unit: "个" }
+          : activeSection === "exits"
+            ? { filtered: filteredExitGroups.length, total: exitGroups.length, unit: "个" }
+            : { filtered: tunnelItems.length, total: rawTunnelItems.length, unit: "条" };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
@@ -3163,6 +3368,35 @@ function TunnelsContent() {
         </div>
       </div>
 
+      <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm text-muted-foreground">筛选:</span>
+        </div>
+        <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={linkSearchQuery}
+            onChange={(event) => setLinkSearchQuery(event.target.value)}
+            placeholder="搜索链路 / 主机 / IP / 工具 / 端口"
+            className="h-8 w-full pl-8 pr-8 text-xs"
+          />
+          {linkSearchQuery ? (
+            <button
+              type="button"
+              aria-label="清空搜索"
+              className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => setLinkSearchQuery("")}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {linkSearchStats.filtered} / {linkSearchStats.total} {linkSearchStats.unit}
+        </span>
+      </div>
+
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
         <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} ariaLabel="链路管理" minItemWidthRem={7.75} />
 
@@ -3179,8 +3413,8 @@ function TunnelsContent() {
           <DataSectionLoading label="正在加载全球链路地图" />
         ) : (
           <TunnelWorldGlobe
-            tunnels={tunnels || []}
-            chainGroups={chainGroups}
+            tunnels={tunnelItems}
+            chainGroups={filteredChainGroups}
             hosts={hosts || []}
             isTunnelSupported={isTunnelSupported}
             onEditTunnel={openEdit}
@@ -3189,7 +3423,7 @@ function TunnelsContent() {
         )
       ) : isLoading ? (
         <DataSectionLoading label="正在加载隧道数据" />
-      ) : tunnels && tunnels.length > 0 ? (
+      ) : tunnels && tunnelItems.length > 0 ? (
         <>
         {viewMode === "card" ? (
           <SortableReorderContext sortable={tunnelSortable} ids={pagedTunnels.map((tunnel: any) => Number(tunnel.id))} strategy="rect">
@@ -3541,13 +3775,14 @@ function TunnelsContent() {
         </TabsContent>
 
         <TabsContent value="ports" className="space-y-4">
-          <TunnelSectionTransition transitionKey={`ports-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : "ready"}`}>
+          <TunnelSectionTransition transitionKey={`ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredPortGroups.length > 0 ? "list" : "empty"}`}>
             <ForwardGroupsContent
               mode="port"
               embedded
               viewMode={groupViewMode}
               onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
               hideHeaderActions
+              searchQuery={normalizedLinkSearchQuery}
               createRequestKey={groupCreateRequest?.mode === "port" ? groupCreateRequest.requestKey : undefined}
             />
           </TunnelSectionTransition>
@@ -3560,8 +3795,8 @@ function TunnelsContent() {
                 <DataSectionLoading label="正在加载全球链路地图" />
               ) : (
                 <TunnelWorldGlobe
-                  tunnels={tunnels || []}
-                  chainGroups={chainGroups}
+                  tunnels={tunnelItems}
+                  chainGroups={filteredChainGroups}
                   hosts={hosts || []}
                   isTunnelSupported={isTunnelSupported}
                   onEditTunnel={openEdit}
@@ -3574,6 +3809,7 @@ function TunnelsContent() {
                   embedded
                   viewMode="card"
                   hideHeaderActions
+                  searchQuery={normalizedLinkSearchQuery}
                   editRequest={chainEditRequest}
                   onEditRequestConsumed={() => setChainEditRequest(null)}
                 />
@@ -3586,6 +3822,7 @@ function TunnelsContent() {
               viewMode={chainViewMode}
               onViewModeChange={handleChainViewModeChange}
               hideHeaderActions
+              searchQuery={normalizedLinkSearchQuery}
               editRequest={chainEditRequest}
               onEditRequestConsumed={() => setChainEditRequest(null)}
             />
@@ -3601,6 +3838,7 @@ function TunnelsContent() {
               viewMode={groupViewMode}
               onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
               hideHeaderActions
+              searchQuery={normalizedLinkSearchQuery}
               createRequestKey={groupCreateRequest?.mode === "failover" ? groupCreateRequest.requestKey : undefined}
             />
           </TunnelSectionTransition>
@@ -3614,6 +3852,7 @@ function TunnelsContent() {
               viewMode={groupViewMode}
               onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
               hideHeaderActions
+              searchQuery={normalizedLinkSearchQuery}
               createRequestKey={groupCreateRequest?.mode === "entry" ? groupCreateRequest.requestKey : undefined}
             />
           </TunnelSectionTransition>
@@ -3627,6 +3866,7 @@ function TunnelsContent() {
               viewMode={groupViewMode}
               onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
               hideHeaderActions
+              searchQuery={normalizedLinkSearchQuery}
               createRequestKey={groupCreateRequest?.mode === "exit" ? groupCreateRequest.requestKey : undefined}
             />
           </TunnelSectionTransition>

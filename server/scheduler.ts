@@ -11,6 +11,7 @@ import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
+import { checkPanelUpdateTask } from "./_core/systemRouter";
 
 type TimedOutForwardTest = {
   id: number;
@@ -20,6 +21,7 @@ type TimedOutForwardTest = {
 };
 
 const SELF_TEST_TIMEOUT_SECONDS = 30;
+const UPDATE_AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let hostStatusPrimePromise: Promise<void> | null = null;
 
@@ -462,6 +464,14 @@ async function runHostStatusSweep() {
   }
 }
 
+async function runUpdateAutoCheck() {
+  try {
+    await checkPanelUpdateTask(false);
+  } catch (error: any) {
+    console.warn("[Scheduler] Update auto-check error:", error?.message || error);
+  }
+}
+
 function hostTrafficUsageBytes(traffic: any, mode: unknown) {
   const bytesIn = Number(traffic?.bytesIn || 0);
   const bytesOut = Number(traffic?.bytesOut || 0);
@@ -527,6 +537,10 @@ export function startScheduler() {
     await runTelegramReminders();
   }, 6 * 60 * 60 * 1000);
 
+  setInterval(async () => {
+    await runUpdateAutoCheck();
+  }, UPDATE_AUTO_CHECK_INTERVAL_MS);
+
   setTimeout(async () => {
     await runMonthlyTrafficReset();
     await runSubscriptionExpirationCheck();
@@ -538,7 +552,8 @@ export function startScheduler() {
     await runHostStatusSweep();
     await runEmailReminders();
     await runTelegramReminders();
+    await runUpdateAutoCheck();
   }, 5000);
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host DDNS reconcile + host status + email/telegram reminders)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host DDNS reconcile + host status + email/telegram reminders + update auto-check)");
 }

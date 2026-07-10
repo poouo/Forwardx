@@ -2707,6 +2707,7 @@ type SystemSettingsSaveKey =
   | "registration"
   | "twoFactor"
   | "sessionPolicy"
+  | "updateAutoCheck"
   | "ddns"
   | "hostMonitor"
   | "forwardProtocols"
@@ -3607,6 +3608,7 @@ function SystemInfoSection() {
   const [publicHostMonitorPath, setPublicHostMonitorPath] = useState("dev");
   const [publicHostMonitorTitle, setPublicHostMonitorTitle] = useState("");
   const [allowMultiDeviceLogin, setAllowMultiDeviceLogin] = useState(false);
+  const [updateAutoCheckEnabled, setUpdateAutoCheckEnabled] = useState(true);
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [showSidebarMenuDialog, setShowSidebarMenuDialog] = useState(false);
   const [savingSetting, setSavingSetting] = useState<SystemSettingsSaveKey | null>(null);
@@ -3638,6 +3640,7 @@ function SystemInfoSection() {
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
       setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
+      setUpdateAutoCheckEnabled(settings.upgrade?.autoCheckEnabled !== false);
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
       setSidebarMenu(normalizeSidebarMenuSettings({
         ...settings.sidebarMenu,
@@ -3998,6 +4001,20 @@ function SystemInfoSection() {
 
   const handleSaveSessionPolicy = () => {
     saveSystemSettings("sessionPolicy", { allowMultiDeviceLogin });
+  };
+
+  const handleUpdateAutoCheckChange = (checked: boolean) => {
+    setUpdateAutoCheckEnabled(checked);
+    saveSystemSettings(
+      "updateAutoCheck",
+      { updateAutoCheckEnabled: checked },
+      {
+        onSuccess: () => {
+          utils.system.getSettings.invalidate();
+          utils.system.publicInfo.invalidate();
+        },
+      },
+    );
   };
 
   const resetForwardProtocolDraft = () => {
@@ -5113,20 +5130,38 @@ function SystemInfoSection() {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* 版本升级 */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Rocket className="h-4 w-4 text-primary" />
-              版本升级
-            </CardTitle>
-            <CardDescription>
-              检查并升级 ForwardX。
-            </CardDescription>
+          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Rocket className="h-4 w-4 text-primary" />
+                版本升级
+              </CardTitle>
+              <CardDescription>
+                检查并升级 ForwardX。
+              </CardDescription>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(220px,0.9fr)]">
               <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">当前版本</p>
+                <p className="text-xs text-muted-foreground">当前面板版本</p>
                 <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground">当前 Agent 目标版本</p>
+                <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentAgentVersion || settings?.agentVersion || "-"}</p>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">自动检查更新</p>
+                  <p className="text-xs text-muted-foreground">开启后定期检查面板和 Agent 更新。</p>
+                </div>
+                <Switch
+                  className="shrink-0"
+                  checked={updateAutoCheckEnabled}
+                  disabled={isSavingSetting("updateAutoCheck")}
+                  onCheckedChange={handleUpdateAutoCheckChange}
+                />
               </div>
             </div>
 
@@ -5162,6 +5197,7 @@ function SystemInfoSection() {
                     <p className="mt-1 text-xs text-muted-foreground">
                       来源：{updateInfo.source === "release" ? "GitHub Release" : updateInfo.source === "tag" ? "GitHub Tag" : updateInfo.source === "main" ? "main 分支" : "GitHub"}
                       {updateInfo.publishedAt ? `，发布时间：${new Date(updateInfo.publishedAt).toLocaleString()}` : ""}
+                      {updateInfo.latestAgentVersion ? `，Agent 目标：v${updateInfo.latestAgentVersion}` : ""}
                     </p>
                   </div>
                 </div>

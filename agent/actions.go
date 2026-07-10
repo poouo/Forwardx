@@ -19,8 +19,8 @@ type desiredRuntimeReadyCacheEntry struct {
 }
 
 var desiredRuntimeReadyMu sync.Mutex
-var desiredNginxRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
-var desiredGostRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
+var desiredNginxRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
+var desiredGostRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
 var actionSerialMu sync.Mutex
 var actionSerialLocks = map[string]*actionSerialLock{}
 
@@ -91,12 +91,12 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		seen[key] = true
 		if record, ok := records[key]; ok && record.Signature == signature {
 			if record.Success {
-				if kernelSnapshot.desiredActionConsistent(a) {
+				if desiredActionRecordConsistent(a, kernelSnapshot) {
 					continue
 				}
 				delete(records, key)
-				if shouldLogAgentReport("desired-kernel-drift:"+key, agentReportLogInterval) {
-					logf("desired state kernel drift detected; reapply queued key=%s %s", key, actionLogSummary(a))
+				if shouldLogAgentReport("desired-state-drift:"+key, agentReportLogInterval) {
+					logf("desired state drift detected; reapply queued key=%s %s", key, actionLogSummary(a))
 				}
 			} else if time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
 				continue
@@ -156,6 +156,22 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		enqueueActionJob(job)
 	}
 	return done
+}
+
+func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapshot) bool {
+	if actionRequiresKernelForwardConsistency(a) {
+		if kernelSnapshot == nil {
+			kernelSnapshot = newKernelForwardSnapshot()
+		}
+		return kernelSnapshot.desiredActionConsistent(a)
+	}
+	if strings.TrimSpace(a.StatusType) == "runtime" {
+		return true
+	}
+	if strings.TrimSpace(a.Op) == "apply" {
+		return canAdoptDesiredAction(a)
+	}
+	return true
 }
 
 func reportAdoptedDesiredActions(cfg Config, actions []action) {
@@ -258,9 +274,9 @@ func desiredActionLocalRuntimeReady(a action) bool {
 	case "iptables", "nftables":
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
-		return desiredNginxRuntimeReady(a.SourcePort)
+		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "gost", "forwardx", "gost-tunnel", "guard":
-		return desiredGostRuntimeReady(a.SourcePort)
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
 	}
 	return checkedService
 }
@@ -283,11 +299,11 @@ func desiredKnownRunningActionReady(a action) bool {
 	}
 	switch strings.TrimSpace(a.ForwardType) {
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
-		return desiredNginxRuntimeReady(a.SourcePort)
+		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "iptables", "nftables":
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "gost", "forwardx", "gost-tunnel", "guard":
-		return desiredGostRuntimeReady(a.SourcePort)
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
 	default:
 		return true
 	}
@@ -333,30 +349,32 @@ func desiredRuntimeServicesHealthy() bool {
 	return true
 }
 
-func desiredNginxRuntimeReady(port int) bool {
-	return cachedDesiredRuntimeReady(desiredNginxRuntimeReadyCache, port, func() bool {
+func desiredNginxRuntimeReady(port int, protocol string) bool {
+	return cachedDesiredRuntimeReady(desiredNginxRuntimeReadyCache, port, protocol, func() bool {
+		readiness := readLocalRuntimeReadiness()
 		return port > 0 &&
-			nginxRuntimeConfigUsesPort(nginxConfigPath, port) &&
-			managedServiceActive(nginxServiceName)
+			readiness.nginxReadyForPort(port, protocol)
 	})
 }
 
-func desiredGostRuntimeReady(port int) bool {
+func desiredGostRuntimeReady(port int, protocol string) bool {
 	if port <= 0 {
 		return false
 	}
-	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, func() bool {
+	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, protocol, func() bool {
+		readiness := readLocalRuntimeReadiness()
 		matched := false
 		for _, item := range []struct {
-			path    string
-			service string
+			path      string
+			service   string
+			readyPort func(int, string) bool
 		}{
-			{runtimeConfigPath, runtimeServiceName},
-			{tunnelRuntimeConfigPath, tunnelRuntimeServiceName},
+			{runtimeConfigPath, runtimeServiceName, readiness.gostReadyForPort},
+			{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, readiness.gostReadyForPort},
 		} {
 			if managedRuntimeConfigUsesPort(item.path, port) {
 				matched = true
-				if !managedServiceActive(item.service) {
+				if !managedServiceActive(item.service) || !item.readyPort(port, protocol) {
 					return false
 				}
 			}
@@ -365,20 +383,21 @@ func desiredGostRuntimeReady(port int) bool {
 	})
 }
 
-func cachedDesiredRuntimeReady(cache map[int]desiredRuntimeReadyCacheEntry, port int, compute func() bool) bool {
+func cachedDesiredRuntimeReady(cache map[string]desiredRuntimeReadyCacheEntry, port int, protocol string, compute func() bool) bool {
 	if port <= 0 {
 		return false
 	}
+	key := desiredRuntimeReadyCacheKey(port, protocol)
 	now := time.Now()
 	desiredRuntimeReadyMu.Lock()
-	if entry, ok := cache[port]; ok && now.Sub(entry.checkedAt) <= desiredRuntimeReadyCacheTTL {
+	if entry, ok := cache[key]; ok && now.Sub(entry.checkedAt) <= desiredRuntimeReadyCacheTTL {
 		desiredRuntimeReadyMu.Unlock()
 		return entry.value
 	}
 	desiredRuntimeReadyMu.Unlock()
 	value := compute()
 	desiredRuntimeReadyMu.Lock()
-	cache[port] = desiredRuntimeReadyCacheEntry{value: value, checkedAt: now}
+	cache[key] = desiredRuntimeReadyCacheEntry{value: value, checkedAt: now}
 	if len(cache) > 2048 {
 		for key, entry := range cache {
 			if now.Sub(entry.checkedAt) > desiredRuntimeReadyCacheTTL {
@@ -388,6 +407,10 @@ func cachedDesiredRuntimeReady(cache map[int]desiredRuntimeReadyCacheEntry, port
 	}
 	desiredRuntimeReadyMu.Unlock()
 	return value
+}
+
+func desiredRuntimeReadyCacheKey(port int, protocol string) string {
+	return fmt.Sprintf("%d:%s", port, normalizeRuntimeProtocol(protocol))
 }
 
 func desiredRuntimeConfigUsesPort(port int) bool {

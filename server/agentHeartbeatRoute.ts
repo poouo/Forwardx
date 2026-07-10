@@ -54,6 +54,7 @@ const resolvedIpCache = new Map<number, { raw: string; ip: string }>();
 const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
 const nginxRuntimeLogCache = new Map<number, string>();
+const mimicRuntimeLogCache = new Map<number, { signature: string; loggedAt: number }>();
 const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
@@ -90,6 +91,7 @@ const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
+const MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const SHARED_RUNTIME_FORWARD_TYPES = new Set([
   "gost",
   "gost-tunnel",
@@ -355,6 +357,24 @@ function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssu
   }
   agentActionBatchCache.set(hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now });
   return fallbackIssuedAt;
+}
+
+function compactMimicFiltersForLog(filters: string[]) {
+  const items = filters.map((item) => String(item || "").trim()).filter(Boolean).sort();
+  if (items.length <= 6) return items.join(",");
+  return `${items.slice(0, 6).join(",")},+${items.length - 6}`;
+}
+
+function shouldLogMimicRuntimePlan(hostId: number, signature: string) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0 || !signature) return false;
+  const now = Date.now();
+  const cached = mimicRuntimeLogCache.get(id);
+  if (!cached || cached.signature !== signature || now - cached.loggedAt >= MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS) {
+    mimicRuntimeLogCache.set(id, { signature, loggedAt: now });
+    return true;
+  }
+  return false;
 }
 
 function shouldSendDesiredState(hostId: number, actions: any[], activeWorkActions: any[], now: number) {
@@ -1282,6 +1302,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       rows.push(row);
       tunnelExitRowsByRuleId.set(ruleId, rows);
     }
+    const isForwardXTunnel = isForwardXTunnelMode;
     const tunnelNeedsMimic = (tunnel: any) => {
       if (!tunnel || !isForwardXTunnel(tunnel) || !tunnel.isEnabled || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
       return (agentAllRules as any[]).some((rule: any) => {
@@ -1561,7 +1582,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const merged = Object.assign({}, ...items.filter(Boolean));
       return Object.keys(merged).length > 0 ? merged : undefined;
     };
-    const isForwardXTunnel = isForwardXTunnelMode;
     const tunnelForwardProtos = (protocol: string) => forwardRuleProtocols(protocol);
     const hostPublicAddress = (hostLike: any) => {
       const value = hostIngressAddress(hostLike);
@@ -4460,6 +4480,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const mimicDnsRefreshToken = anyTunnelDnsRefresh(
         (hostTunnels as any[]).filter((tunnel: any) => tunnelNeedsMimic(tunnel)),
       ) ? dnsRuntimeRefreshToken : "";
+      const mimicLogIfaces = Array.from(new Set([
+        ...(hostInterface ? [hostInterface] : []),
+        ...Array.from(mimicFiltersByInterface.keys()),
+        ...Array.from(reportedMimicInterfaces),
+      ])).sort();
+      const mimicLogPlan = mimicLogIfaces.map((iface) => {
+        const filters = Array.from(mimicFiltersByInterface.get(iface) || []).sort();
+        return `${iface}{desired=${filters.length ? compactMimicFiltersForLog(filters) : "-"} reported=${reportedMimicInterfaces.has(iface) ? "yes" : "no"}}`;
+      }).join(" ");
+      const mimicLogSignature = JSON.stringify({
+        hostInterface,
+        requestedWithoutInterface: mimicRequestedWithoutInterface,
+        dnsRefresh: !!mimicDnsRefreshToken,
+        plan: mimicLogPlan,
+      });
+      if (shouldLogMimicRuntimePlan(Number(host.id), mimicLogSignature)) {
+        appendPanelLog("info", `[Mimic] runtime plan host=${host.id} iface=${hostInterface || "-"} requestedWithoutInterface=${mimicRequestedWithoutInterface} dnsRefresh=${!!mimicDnsRefreshToken} ${mimicLogPlan || "plan=-"}`);
+      }
       const mimicRuntimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,

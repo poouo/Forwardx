@@ -110,13 +110,14 @@ async function upsertUserTrafficCounter(input: { userId: number; bytesIn: number
     return;
   }
   const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
+  const current = (column: string) => kind === "postgresql" ? `${q("user_traffic_counters")}.${q(column)}` : q(column);
   await executeRaw(
     `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})
      ON CONFLICT (${q("userId")})
      DO UPDATE SET
-       ${q("bytesIn")} = ${q("bytesIn")} + ${excluded}.${q("bytesIn")},
-       ${q("bytesOut")} = ${q("bytesOut")} + ${excluded}.${q("bytesOut")},
-       ${q("connections")} = ${q("connections")} + ${excluded}.${q("connections")},
+       ${q("bytesIn")} = ${current("bytesIn")} + ${excluded}.${q("bytesIn")},
+       ${q("bytesOut")} = ${current("bytesOut")} + ${excluded}.${q("bytesOut")},
+       ${q("connections")} = ${current("connections")} + ${excluded}.${q("connections")},
        ${q("updatedAt")} = ${excluded}.${q("updatedAt")}`,
     values,
   );
@@ -151,14 +152,15 @@ async function upsertForwardRuleTrafficCounter(input: { ruleId: number; hostId: 
     return;
   }
   const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
+  const current = (column: string) => kind === "postgresql" ? `${q("forward_rule_traffic_counters")}.${q(column)}` : q(column);
   await executeRaw(
     `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})
      ON CONFLICT (${q("ruleId")}, ${q("hostId")})
      DO UPDATE SET
        ${q("userId")} = ${excluded}.${q("userId")},
-       ${q("bytesIn")} = ${q("bytesIn")} + ${excluded}.${q("bytesIn")},
-       ${q("bytesOut")} = ${q("bytesOut")} + ${excluded}.${q("bytesOut")},
-       ${q("connections")} = ${q("connections")} + ${excluded}.${q("connections")},
+       ${q("bytesIn")} = ${current("bytesIn")} + ${excluded}.${q("bytesIn")},
+       ${q("bytesOut")} = ${current("bytesOut")} + ${excluded}.${q("bytesOut")},
+       ${q("connections")} = ${current("connections")} + ${excluded}.${q("connections")},
        ${q("updatedAt")} = ${excluded}.${q("updatedAt")}`,
     values,
   );
@@ -884,14 +886,15 @@ async function upsertTrafficStatBucket(input: {
     return;
   }
   const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
+  const current = (column: string) => kind === "postgresql" ? `${q("traffic_stat_buckets")}.${q(column)}` : q(column);
   await executeRaw(
     `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})
      ON CONFLICT (${q("bucketStart")}, ${q("bucketMinutes")}, ${q("ruleId")}, ${q("hostId")})
      DO UPDATE SET
        ${q("userId")} = ${excluded}.${q("userId")},
-       ${q("bytesIn")} = ${q("bytesIn")} + ${excluded}.${q("bytesIn")},
-       ${q("bytesOut")} = ${q("bytesOut")} + ${excluded}.${q("bytesOut")},
-       ${q("connections")} = ${q("connections")} + ${excluded}.${q("connections")},
+       ${q("bytesIn")} = ${current("bytesIn")} + ${excluded}.${q("bytesIn")},
+       ${q("bytesOut")} = ${current("bytesOut")} + ${excluded}.${q("bytesOut")},
+       ${q("connections")} = ${current("connections")} + ${excluded}.${q("connections")},
        ${q("updatedAt")} = ${excluded}.${q("updatedAt")}`,
     values,
   );
