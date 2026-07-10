@@ -23,8 +23,20 @@ func readConfig(path string) (config, error) {
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
 	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
 	cfg.ProxyProtocolVersion = normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion)
+	if cfg.UDPListenPort <= 0 {
+		cfg.UDPListenPort = cfg.ListenPort
+	}
+	if cfg.UDPExitPort <= 0 {
+		cfg.UDPExitPort = cfg.ExitPort
+	}
+	if cfg.UDPRelayExitPort <= 0 {
+		cfg.UDPRelayExitPort = cfg.RelayExitPort
+	}
 	for i := range cfg.Exits {
 		cfg.Exits[i].Host = strings.TrimSpace(cfg.Exits[i].Host)
+		if cfg.Exits[i].UDPPort <= 0 {
+			cfg.Exits[i].UDPPort = cfg.Exits[i].Port
+		}
 		if cfg.Exits[i].Key == "" {
 			cfg.Exits[i].Key = cfg.Key
 		}
@@ -39,14 +51,20 @@ func validateConfig(cfg config) error {
 	if cfg.ListenPort <= 0 || cfg.ListenPort > 65535 {
 		return fmt.Errorf("bad listen port %d", cfg.ListenPort)
 	}
+	if cfg.UDPListenPort < 0 || cfg.UDPListenPort > 65535 {
+		return fmt.Errorf("bad udp listen port %d", cfg.UDPListenPort)
+	}
 	if cfg.Role == "entry" {
 		if cfg.ExitHost == "" || cfg.ExitPort <= 0 || cfg.ExitPort > 65535 {
 			return errors.New("entry requires exit host and port")
 		}
 		for _, exit := range cfg.Exits {
-			if exit.Host == "" || exit.Port <= 0 || exit.Port > 65535 {
+			if exit.Host == "" || exit.Port <= 0 || exit.Port > 65535 || exit.UDPPort <= 0 || exit.UDPPort > 65535 {
 				return errors.New("entry exits require host and port")
 			}
+		}
+		if cfg.UDPExitPort < 0 || cfg.UDPExitPort > 65535 {
+			return errors.New("entry requires a valid udp exit port")
 		}
 		if cfg.TargetIP == "" || cfg.TargetPort <= 0 || cfg.TargetPort > 65535 {
 			return errors.New("entry requires target host and port")
@@ -58,6 +76,9 @@ func validateConfig(cfg config) error {
 	if cfg.Role == "relay" {
 		if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayExitPort > 65535 || cfg.RelayKey == "" {
 			return errors.New("relay requires relay exit host, port, and key")
+		}
+		if cfg.UDPRelayExitPort < 0 || cfg.UDPRelayExitPort > 65535 {
+			return errors.New("relay requires a valid udp relay exit port")
 		}
 	}
 	return nil

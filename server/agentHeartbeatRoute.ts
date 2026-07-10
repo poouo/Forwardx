@@ -418,6 +418,17 @@ function ruleRuntimeIdentityKey(ruleIdValue: unknown, portValue: unknown, protoc
   return `${ruleId}:${portKey}`;
 }
 
+function ruleRuntimePortIdentityKey(ruleIdValue: unknown, portValue: unknown) {
+  const ruleId = Number(ruleIdValue || 0);
+  const port = Number(portValue || 0);
+  if (ruleId <= 0 || port <= 0) return "";
+  return `${ruleId}:${port}`;
+}
+
+function actionRuleRuntimePortIdentityKey(action: any) {
+  return ruleRuntimePortIdentityKey(action?.ruleId, action?.sourcePort);
+}
+
 function actionPortKey(action: any) {
   const port = Number(action?.sourcePort || 0);
   if (port <= 0) return "";
@@ -434,16 +445,19 @@ function actionPortKey(action: any) {
 }
 
 function dropStalePortRemoveActions(actions: any[], protectedRulePorts = new Set<string>()) {
-  const applyPorts = new Set(
-    actions
-      .filter((action: any) => action?.op === "apply")
-      .map(actionPortKey)
-      .filter(Boolean),
-  );
+  const applyPorts = new Set<string>();
+  for (const action of actions) {
+    if (action?.op !== "apply") continue;
+    const key = actionPortKey(action);
+    if (key) applyPorts.add(key);
+    const rulePortKey = actionRuleRuntimePortIdentityKey(action);
+    if (rulePortKey) applyPorts.add(rulePortKey);
+  }
   return actions.filter((action: any) => {
     if (action?.op !== "remove") return true;
     const key = actionPortKey(action);
-    return !(key && (applyPorts.has(key) || protectedRulePorts.has(key)));
+    const rulePortKey = actionRuleRuntimePortIdentityKey(action);
+    return !((key && (applyPorts.has(key) || protectedRulePorts.has(key))) || (rulePortKey && (applyPorts.has(rulePortKey) || protectedRulePorts.has(rulePortKey))));
   });
 }
 
@@ -1276,6 +1290,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return udpOverTcpEnabled(rule, tunnel) && isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel);
       });
     };
+    for (const tunnel of hostTunnels as any[]) {
+      if (!tunnelNeedsMimic(tunnel)) continue;
+      try {
+        const ensured = await hopRepo.ensureForwardXMimicPorts(
+          tunnel,
+          tunnelHopsByTunnelId.get(Number(tunnel.id)) || [],
+          tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [],
+        );
+        Object.assign(tunnel, ensured.tunnel);
+        if (Array.isArray(ensured.hops) && ensured.hops.length > 0) {
+          tunnelHopsByTunnelId.set(Number(tunnel.id), ensured.hops);
+        }
+        if (Array.isArray(ensured.exitNodes) && ensured.exitNodes.length > 0) {
+          tunnelExitNodesByTunnelId.set(Number(tunnel.id), ensured.exitNodes);
+        }
+        if (ensured.changed) {
+          appendPanelLog("info", `[Mimic] allocated dedicated UDP wire ports for ForwardX tunnel=${tunnel.id}`);
+        }
+      } catch (error) {
+        appendPanelLog("error", `[Mimic] failed to allocate dedicated UDP wire port tunnel=${tunnel.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const tunnelExitRowsMatchNodes = (rows: any[], nodes: any[]) => {
       const enabledNodes = nodes
         .filter((node: any) => node && node.isEnabled !== false)
@@ -1542,7 +1578,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!exit) return "";
       return hostPublicAddress(exit);
     };
-    const tunnelExitEndpointById = new Map<number, { host: string; port: number }>();
+    const tunnelExitEndpointById = new Map<number, { host: string; port: number; udpPort?: number }>();
     const hostIngressAddressById = new Map<number, string>();
     const getHostIngressAddress = async (hostId: number) => {
       const id = Number(hostId);
@@ -1662,7 +1698,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const fxpHopKey = (tunnel: any, hop: any, fallback: number) =>
       hopKey(tunnelSecretSeed(tunnel), hopSeq(hop, fallback));
     const forwardXExtraExitRoutes = async (tunnel: any) => {
-      const routes: Array<{ host: string; port: number; key: string }> = [];
+      const routes: Array<{ host: string; port: number; udpPort: number; key: string }> = [];
       if (!(tunnel as any).loadBalanceEnabled) return routes;
       const extraNodes = tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [];
       for (const exitNode of extraNodes as any[]) {
@@ -1671,7 +1707,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (port <= 0) continue;
         const exitHost = await getExtraExitDialAddress(exitNode);
         if (!exitHost) continue;
-        routes.push({ host: exitHost, port, key: tunnelSecretSeed(tunnel) });
+        routes.push({ host: exitHost, port, udpPort: Number((exitNode as any).mimicPort || 0), key: tunnelSecretSeed(tunnel) });
       }
       return routes;
     };
@@ -1683,6 +1719,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     ) => {
       const hop = hops[hopIdx] as any;
       const listenPort = Number(hop?.listenPort) || 0;
+      const udpListenPort = tunnelNeedsMimic(tunnel) ? Number(hop?.mimicPort || 0) : 0;
       const isLast = hopIdx === hops.length - 1;
       const fxpSpec: any = {
         role: isLast ? "exit" : "relay",
@@ -1693,29 +1730,35 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         key: fxpHopKey(tunnel, hop, hopIdx),
         dnsGeneration: tunnelDnsGeneration(tunnel),
       };
+      if (udpListenPort > 0) fxpSpec.udpListenPort = udpListenPort;
       if (!isLast) {
         const nextHop = hops[hopIdx + 1] as any;
         const nextIp = await getHopDialAddress(nextHop);
+        const nextUdpPort = tunnelNeedsMimic(tunnel) ? Number(nextHop?.mimicPort || 0) : 0;
         fxpSpec.relayExitHost = String(nextIp).trim();
         fxpSpec.relayExitPort = Number(nextHop?.listenPort) || 0;
+        if (nextUdpPort > 0) fxpSpec.udpRelayExitPort = nextUdpPort;
         fxpSpec.relayKey = fxpHopKey(tunnel, nextHop, hopIdx + 1);
-        if (tunnelNeedsMimic(tunnel)) {
-          const endpoint = mimicFilterEndpoint(fxpSpec.relayExitHost, fxpSpec.relayExitPort);
+        if (nextUdpPort > 0) {
+          const endpoint = mimicFilterEndpoint(fxpSpec.relayExitHost, nextUdpPort);
           if (endpoint) addMimicFilter(`remote=${endpoint}`);
         }
         const nextIsFinalExit = hopIdx + 1 === hops.length - 1;
         if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
           const extraRoutes = await forwardXExtraExitRoutes(tunnel);
           if (extraRoutes.length > 0) {
-            if (tunnelNeedsMimic(tunnel)) {
-              for (const route of extraRoutes) {
-                const endpoint = mimicFilterEndpoint(route.host, route.port);
-                if (endpoint) addMimicFilter(`remote=${endpoint}`);
-              }
+            if (tunnelNeedsMimic(tunnel) && extraRoutes.some((route) => Number(route.udpPort || 0) <= 0)) {
+              appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP port tunnel=${tunnel.id} hop=${hopIdx} extraExit=1`);
+              return null;
+            }
+            for (const route of extraRoutes) {
+              if (route.udpPort <= 0) continue;
+              const endpoint = mimicFilterEndpoint(route.host, route.udpPort);
+              if (endpoint) addMimicFilter(`remote=${endpoint}`);
             }
             fxpSpec.exits = [
-              { host: fxpSpec.relayExitHost, port: fxpSpec.relayExitPort, key: fxpSpec.relayKey },
-              ...extraRoutes.map((route) => ({ host: route.host, port: route.port, key: route.key })),
+              { host: fxpSpec.relayExitHost, port: fxpSpec.relayExitPort, udpPort: fxpSpec.udpRelayExitPort || 0, key: fxpSpec.relayKey },
+              ...extraRoutes.map((route) => ({ host: route.host, port: route.port, udpPort: route.udpPort || 0, key: route.key })),
             ];
           }
         }
@@ -1723,9 +1766,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           appendPanelLog("error", `[TunnelRoute] invalid ForwardX relay next hop tunnel=${tunnel.id} hop=${hopIdx} nextHost=${fxpSpec.relayExitHost || "-"} nextPort=${fxpSpec.relayExitPort || "-"}`);
           return null;
         }
+        if (op === "apply" && tunnelNeedsMimic(tunnel) && nextUdpPort <= 0) {
+          appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP next port tunnel=${tunnel.id} hop=${hopIdx} nextHost=${fxpSpec.relayExitHost || "-"} nextPort=${fxpSpec.relayExitPort || "-"}`);
+          return null;
+        }
       }
       if (op === "apply" && listenPort <= 0) {
         appendPanelLog("error", `[TunnelRoute] invalid ForwardX hop listen port tunnel=${tunnel.id} hop=${hopIdx} listen=${listenPort || "-"}`);
+        return null;
+      }
+      if (op === "apply" && tunnelNeedsMimic(tunnel) && udpListenPort <= 0) {
+        appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP listen port tunnel=${tunnel.id} hop=${hopIdx} listen=${listenPort || "-"}`);
         return null;
       }
       return fxpSpec;
@@ -1737,6 +1788,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return {
           host: String(await getHopDialAddress(nextHop)).trim(),
           port: Number(nextHop?.listenPort) || 0,
+          udpPort: Number(nextHop?.mimicPort || 0),
           key: fxpHopKey(tunnel, nextHop, 1),
         };
       }
@@ -1744,12 +1796,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return {
         host: String(endpoint?.host || await tunnelExitHostAddress(tunnel)).trim(),
         port: Number(endpoint?.port || tunnel.listenPort) || 0,
+        udpPort: Number((endpoint as any)?.udpPort || (tunnel as any).mimicPort || 0),
         key: tunnelSecretSeed(tunnel),
       };
     };
     const forwardXEntryRoutes = async (rule: any, tunnel: any) => {
       const primary = await forwardXEntryRoute(tunnel);
-      const routes: Array<{ host: string; port: number; key: string }> = [];
+      const routes: Array<{ host: string; port: number; udpPort: number; key: string }> = [];
       if (primary.host && primary.port > 0 && primary.key) routes.push(primary);
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       if (!Array.isArray(hops) || hops.length < 3) {
@@ -1757,9 +1810,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return routes;
     };
-    const addMimicRemoteFilterForRoutes = (routes: Array<{ host: string; port: number }>) => {
+    const addMimicRemoteFilterForRoutes = (routes: Array<{ host: string; port: number; udpPort?: number }>) => {
       for (const route of routes) {
-        const endpoint = mimicFilterEndpoint(route.host, route.port);
+        const udpPort = Number(route.udpPort || 0);
+        if (udpPort <= 0) continue;
+        const endpoint = mimicFilterEndpoint(route.host, udpPort);
         if (endpoint) addMimicFilter(`remote=${endpoint}`);
       }
     };
@@ -1776,7 +1831,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const extraExitNodes = (tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [])
           .filter((node: any) => node?.isEnabled !== false && Number(node.hostId) === hostId);
         for (const extraExitNode of extraExitNodes) {
-          addMimicLocalFilterForPort(Number((extraExitNode as any).listenPort || 0));
+          addMimicLocalFilterForPort(Number((extraExitNode as any).mimicPort || 0));
         }
       };
       if (isCurrentHostTunnelEntry(tunnel)) {
@@ -1787,12 +1842,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (hostIdx >= 0) {
           const currentHop = hops[hostIdx] as any;
           if (hostIdx > 0) {
-            addMimicLocalFilterForPort(Number(currentHop?.listenPort || 0));
+            addMimicLocalFilterForPort(Number(currentHop?.mimicPort || 0));
           }
           if (hostIdx < hops.length - 1) {
             const nextHop = hops[hostIdx + 1] as any;
             const nextHost = String(await getHopDialAddress(nextHop)).trim();
-            const nextRoutes = [{ host: nextHost, port: Number(nextHop?.listenPort || 0) }];
+            const nextRoutes = [{ host: nextHost, port: Number(nextHop?.listenPort || 0), udpPort: Number(nextHop?.mimicPort || 0) }];
             if (hostIdx + 1 === hops.length - 1 && (tunnel as any).loadBalanceEnabled) {
               nextRoutes.push(...await forwardXExtraExitRoutes(tunnel));
             }
@@ -1804,7 +1859,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       const primaryExitHostId = Number(tunnel.exitHostId || 0);
       if (primaryExitHostId === hostId) {
-        addMimicLocalFilterForPort(Number(tunnel.listenPort) || 0);
+        addMimicLocalFilterForPort(Number((tunnel as any).mimicPort) || 0);
       }
       addCurrentHostExtraExitFilters();
     };
@@ -1815,6 +1870,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         tunnelExitEndpointById.set(tunnel.id, {
           host: nextHop ? await getHopDialAddress(nextHop) : await tunnelExitHostAddress(tunnel),
           port: nextHop ? Number(nextHop.listenPort) : Number(tunnel.listenPort),
+          udpPort: nextHop ? Number(nextHop.mimicPort || 0) : Number((tunnel as any).mimicPort || 0),
         });
       }
     }
@@ -2930,6 +2986,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ));
     const expectedRulePorts = new Set<string>();
     const expectedRuleIdentityKeys = new Set<string>();
+    const expectedRulePortIdentityKeys = new Set<string>();
     const expectedTunnelPorts = new Set<number>();
     const forwardTypeCompatible = (local: unknown, expected: unknown) => {
       const localValue = String(local || "").trim();
@@ -2986,6 +3043,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         sourcePort: port,
         protocol: rule.protocol,
       }));
+      protectedRuleRemoveActionKeys.add(ruleRuntimePortIdentityKey(ruleId, port));
     };
     const localTunnelMatches = (tunnelId: number, expectedForwardType: string, port: number) => {
       if (!hasReportedRuntimeState || port <= 0) return true;
@@ -3095,6 +3153,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const fxpListenPort = isCurrentHostPrimaryExit
         ? Number(tunnel.listenPort)
         : Number((currentHostExtraExitNode as any)?.listenPort || 0);
+      const fxpUdpListenPort = tunnelNeedsMimic(tunnel)
+        ? (isCurrentHostPrimaryExit
+          ? Number((tunnel as any).mimicPort || 0)
+          : Number((currentHostExtraExitNode as any)?.mimicPort || 0))
+        : 0;
       const runtimeReady = (fxpTunnel || isCurrentHostGostExtraExit)
         ? isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id))
         : false;
@@ -3103,7 +3166,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)) || (isCurrentHostGostExtraExit && !runtimeReady));
       const tunnelProtocolEnabled = isTunnelProtocolEnabled(forwardProtocolSettings, tunnel);
       if (fxpTunnel && tunnelProtocolEnabled && tunnelNeedsMimic(tunnel)) {
-        addMimicLocalFilterForPort(fxpListenPort);
+        addMimicLocalFilterForPort(fxpUdpListenPort);
       }
       const tunnelSourcePort = fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? Number(tunnel.listenPort) : Number((currentHostExtraExitNode as any)?.listenPort || 0));
       const tunnelForwardType = fxpTunnel ? "forwardx-tunnel" : "gost-tunnel";
@@ -3131,6 +3194,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               tunnelId: tunnel.id,
               ruleId: 0,
               listenPort: fxpListenPort,
+              ...(fxpUdpListenPort > 0 ? { udpListenPort: fxpUdpListenPort } : {}),
               protocol: "both",
               key: tunnelSecretSeed(tunnel),
               dnsGeneration: tunnelDnsGeneration(tunnel),
@@ -3153,6 +3217,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               tunnelId: tunnel.id,
               ruleId: 0,
               listenPort: fxpListenPort,
+              ...(fxpUdpListenPort > 0 ? { udpListenPort: fxpUdpListenPort } : {}),
               protocol: "both",
               key: tunnelSecretSeed(tunnel),
               dnsGeneration: tunnelDnsGeneration(tunnel),
@@ -3191,7 +3256,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         if (isFXP) {
           if (!isFirst && tunnelNeedsMimic(tunnel)) {
-            addMimicLocalFilterForPort(listenPort);
+            addMimicLocalFilterForPort(Number((hops[hostIdx] as any)?.mimicPort || 0));
           }
           // ForwardX multi-hop
           if (isFirst) {
@@ -3355,6 +3420,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (rule.isEnabled && expectedRulePort > 0) {
         expectedRulePorts.add(runtimePortProtocolKey(expectedRulePort, rule.protocol));
         expectedRuleIdentityKeys.add(ruleRuntimeIdentityKey(rule.id, expectedRulePort, rule.protocol));
+        expectedRulePortIdentityKeys.add(ruleRuntimePortIdentityKey(rule.id, expectedRulePort));
         protectActiveRulePort(rule, expectedRulePort);
       }
       const shouldRepairLocalRule = rule.isEnabled
@@ -3794,6 +3860,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const accessLimits = userAccessLimits(Number(rule.userId));
             const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
             const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
+            if (useUdpOverTcp && entryRoutes.some((route) => Number((route as any).udpPort || 0) <= 0)) {
+              appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP exit port tunnel=${tunnel.id} rule=${rule.id}`);
+              continue;
+            }
             if (useUdpOverTcp) addMimicRemoteFilterForRoutes(entryRoutes);
             actions.push({
               tunnelId: tunnel.id,
@@ -3818,9 +3888,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 protocol: rule.protocol,
                 exitHost: entryRoute.host,
                 exitPort: entryRoute.port,
+                ...(useUdpOverTcp ? { udpExitPort: Number((entryRoute as any).udpPort || 0) } : {}),
                 exits: entryRoutes.map((route) => ({
                   host: route.host,
                   port: route.port,
+                  ...(useUdpOverTcp ? { udpPort: Number((route as any).udpPort || 0) } : {}),
                   key: route.key,
                 })),
                 targetIp: mainBackup ? "127.0.0.1" : processTarget(rule),
@@ -4123,9 +4195,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const port = Number(runningRule.sourcePort || 0);
       if (port > 0) expectedRulePorts.add(runtimePortProtocolKey(port, runningRule.protocol));
       if (port > 0) expectedRuleIdentityKeys.add(ruleRuntimeIdentityKey(runningRule.ruleId, port, runningRule.protocol));
+      if (port > 0) expectedRulePortIdentityKeys.add(ruleRuntimePortIdentityKey(runningRule.ruleId, port));
     }
     if (hasReportedRuntimeState) {
       const ruleActionPorts = new Set<string>();
+      const ruleActionPortIdentityKeys = new Set<string>();
       const tunnelActionPorts = new Set<number>();
       for (const action of actions) {
         const port = Number(action?.sourcePort || 0);
@@ -4135,6 +4209,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const tunnelId = Number(action?.tunnelId || 0);
         if (ruleId > 0 || statusType === "rule") {
           ruleActionPorts.add(runtimePortProtocolKey(port, action?.protocol));
+          ruleActionPortIdentityKeys.add(ruleRuntimePortIdentityKey(ruleId, port));
         } else if (tunnelId > 0 || statusType === "tunnel") {
           tunnelActionPorts.add(port);
         }
@@ -4157,8 +4232,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const localRuntimeKey = runtimePortProtocolKey(port, localRule.protocol || "both");
         const reportedRuleId = Number(localRule.ruleId || 0);
         const localIdentityKey = ruleRuntimeIdentityKey(reportedRuleId, port, localRule.protocol || "both");
+        const localPortIdentityKey = ruleRuntimePortIdentityKey(reportedRuleId, port);
         const expectedIdentity = !!localIdentityKey && expectedRuleIdentityKeys.has(localIdentityKey);
-        if (expectedIdentity || (!reportedRuleId && expectedRulePorts.has(localRuntimeKey)) || ruleActionPorts.has(localRuntimeKey)) continue;
+        const expectedPortIdentity = !!localPortIdentityKey && expectedRulePortIdentityKeys.has(localPortIdentityKey);
+        if (expectedIdentity || expectedPortIdentity || (!reportedRuleId && expectedRulePorts.has(localRuntimeKey)) || ruleActionPorts.has(localRuntimeKey) || (!!localPortIdentityKey && ruleActionPortIdentityKeys.has(localPortIdentityKey))) continue;
         const guarded = reportedRuleId > 0 && knownEnabledRuleIds.has(reportedRuleId);
         const orphanKey = localIdentityKey || `unknown:${localRuntimeKey}`;
         if (guarded) {

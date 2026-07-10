@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.145"
+var Version = "2.2.146"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -136,10 +136,13 @@ var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
 var desiredRunningRuleMu sync.Mutex
 var desiredRunningRulesByPort = map[string]runningRule{}
+var desiredRunningRulesByRulePort = map[string]runningRule{}
 var iperf3Mu sync.Mutex
 var iperf3Server *iperf3Process
 var dnsWatchMu sync.Mutex
 var dnsWatchSnapshot = map[string][]string{}
+var dnsWatchCandidates = map[string]dnsWatchCandidate{}
+var dnsWatchRetiredSnapshots = map[string]dnsWatchRetiredSnapshot{}
 var pendingDNSChanges []dnsChangeReport
 var publicIPMu sync.Mutex
 var publicIPv4Cache string
@@ -1226,9 +1229,11 @@ type fxpSpec struct {
 	TunnelID                 int               `json:"tunnelId"`
 	RuleID                   int               `json:"ruleId"`
 	ListenPort               int               `json:"listenPort"`
+	UDPListenPort            int               `json:"udpListenPort,omitempty"`
 	Protocol                 string            `json:"protocol"`
 	ExitHost                 string            `json:"exitHost"`
 	ExitPort                 int               `json:"exitPort"`
+	UDPExitPort              int               `json:"udpExitPort,omitempty"`
 	Exits                    []fxpExitEndpoint `json:"exits,omitempty"`
 	TargetIP                 string            `json:"targetIp"`
 	TargetPort               int               `json:"targetPort"`
@@ -1251,14 +1256,16 @@ type fxpSpec struct {
 	Token                    string            `json:"token,omitempty"`
 	RelayExitHost            string            `json:"relayExitHost,omitempty"`
 	RelayExitPort            int               `json:"relayExitPort,omitempty"`
+	UDPRelayExitPort         int               `json:"udpRelayExitPort,omitempty"`
 	RelayKey                 string            `json:"relayKey,omitempty"`
 	DNSGeneration            int               `json:"dnsGeneration,omitempty"`
 }
 
 type fxpExitEndpoint struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
-	Key  string `json:"key,omitempty"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	UDPPort int    `json:"udpPort,omitempty"`
+	Key     string `json:"key,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -2581,7 +2588,7 @@ func handleAction(cfg Config, a action) bool {
 		if a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
 			if !fxpOK || agentVerboseLogs {
-				logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
+				logf("action fxp role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.UDPListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
 			}
 			ok = fxpOK && ok
 		}
@@ -2690,14 +2697,19 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 
 func rememberDesiredRunningRules(rules []runningRule) {
 	next := map[string]runningRule{}
+	nextByRulePort := map[string]runningRule{}
 	for _, r := range rules {
 		if r.RuleID <= 0 || r.SourcePort <= 0 {
 			continue
 		}
 		next[actionPortProtocolKey(r.SourcePort, r.Protocol)] = r
+		if key := runningRuleIDPortKey(r.RuleID, r.SourcePort); key != "" {
+			nextByRulePort[key] = r
+		}
 	}
 	desiredRunningRuleMu.Lock()
 	desiredRunningRulesByPort = next
+	desiredRunningRulesByRulePort = nextByRulePort
 	desiredRunningRuleMu.Unlock()
 }
 
@@ -2721,6 +2733,23 @@ func desiredRunningRuleForAction(a action) (runningRule, bool) {
 		if r, ok := desiredRunningRulesByPort[key]; ok {
 			return r, true
 		}
+	}
+	if key := runningRuleIDPortKey(a.RuleID, a.SourcePort); key != "" {
+		if r, ok := desiredRunningRulesByRulePort[key]; ok {
+			return r, true
+		}
+	}
+	return runningRule{}, false
+}
+
+func desiredRunningRuleForStatePort(ruleID int, port int) (runningRule, bool) {
+	if ruleID <= 0 || port <= 0 {
+		return runningRule{}, false
+	}
+	desiredRunningRuleMu.Lock()
+	defer desiredRunningRuleMu.Unlock()
+	if r, ok := desiredRunningRulesByRulePort[runningRuleIDPortKey(ruleID, port)]; ok {
+		return r, true
 	}
 	return runningRule{}, false
 }
@@ -3552,9 +3581,7 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 	if spec == nil {
 		return false
 	}
-	normalized := *spec
-	normalized.Role = strings.ToLower(strings.TrimSpace(normalized.Role))
-	normalized.Protocol = normalizeRuntimeProtocol(normalized.Protocol)
+	normalized := normalizeFXPSpec(*spec)
 	id := fxpServerID(normalized)
 	signature := fxpServerSignature(normalized)
 	configPath := fxpConfigPath(normalized)
@@ -4041,6 +4068,12 @@ func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 		}
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
+			localRuleID := readRuleIDByPort(port)
+			if desired, ok := desiredRunningRuleForStatePort(localRuleID, atoi(port)); ok {
+				logf("reconcile skip desired local rule port=%s rule=%d desiredTunnel=%d forwardType=%s", port, localRuleID, desired.TunnelID, desired.ForwardType)
+				writeRunningRuleState(desired)
+				continue
+			}
 			_, _, protocol, _ := readTargetInfo(port)
 			if protectedActionMatchesPort(protectedPorts, port, protocol) {
 				logVerbosef("reconcile skip pending action port=%s protocol=%s", port, normalizeRuntimeProtocol(protocol))
@@ -4497,15 +4530,45 @@ func fxpServerID(spec fxpSpec) string {
 	return spec.Role + ":" + strconv.Itoa(spec.TunnelID) + ":" + strconv.Itoa(spec.RuleID) + ":" + strconv.Itoa(spec.ListenPort)
 }
 
+func normalizeFXPSpec(spec fxpSpec) fxpSpec {
+	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
+	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
+	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
+	spec.TargetIP = strings.TrimSpace(spec.TargetIP)
+	spec.RelayExitHost = strings.TrimSpace(spec.RelayExitHost)
+	if spec.UDPListenPort <= 0 {
+		spec.UDPListenPort = spec.ListenPort
+	}
+	if spec.UDPExitPort <= 0 {
+		spec.UDPExitPort = spec.ExitPort
+	}
+	if spec.UDPRelayExitPort <= 0 {
+		spec.UDPRelayExitPort = spec.RelayExitPort
+	}
+	for i := range spec.Exits {
+		spec.Exits[i].Host = strings.TrimSpace(spec.Exits[i].Host)
+		if spec.Exits[i].UDPPort <= 0 {
+			spec.Exits[i].UDPPort = spec.Exits[i].Port
+		}
+		if spec.Exits[i].Key == "" {
+			spec.Exits[i].Key = spec.Key
+		}
+	}
+	return spec
+}
+
 func fxpServerSignature(spec fxpSpec) string {
+	spec = normalizeFXPSpec(spec)
 	parts := []string{
 		spec.Role,
 		strconv.Itoa(spec.TunnelID),
 		strconv.Itoa(spec.RuleID),
 		strconv.Itoa(spec.ListenPort),
+		strconv.Itoa(spec.UDPListenPort),
 		spec.Protocol,
 		spec.ExitHost,
 		strconv.Itoa(spec.ExitPort),
+		strconv.Itoa(spec.UDPExitPort),
 		spec.TargetIP,
 		strconv.Itoa(spec.TargetPort),
 		spec.Key,
@@ -4525,11 +4588,12 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.FormatBool(spec.TCPFastOpen),
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
+		strconv.Itoa(spec.UDPRelayExitPort),
 		spec.RelayKey,
 		strconv.Itoa(spec.DNSGeneration),
 	}
 	for _, exit := range spec.Exits {
-		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strings.TrimSpace(exit.Key))
+		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key))
 	}
 	return strings.Join(parts, "|")
 }
@@ -4629,8 +4693,7 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 	if err := json.Unmarshal(raw, &existing); err != nil {
 		return false
 	}
-	existing.Role = strings.ToLower(strings.TrimSpace(existing.Role))
-	existing.Protocol = normalizeRuntimeProtocol(existing.Protocol)
+	existing = normalizeFXPSpec(existing)
 	if fxpServerSignature(existing) != signature {
 		return false
 	}
@@ -4664,14 +4727,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp runtime missing: install /usr/local/bin/forwardx-fxp to use custom encrypted tunnels")
 		return false
 	}
-	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
-	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
-	for i := range spec.Exits {
-		spec.Exits[i].Host = strings.TrimSpace(spec.Exits[i].Host)
-		if spec.Exits[i].Key == "" {
-			spec.Exits[i].Key = spec.Key
-		}
-	}
+	spec = normalizeFXPSpec(spec)
 
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)
@@ -4692,12 +4748,23 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	stopFXP(spec)
 	stopFXPByListenPort(spec.ListenPort)
-	for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(spec.ListenPort)) {
-		_ = runShell(cmd)
+	cleanupPorts := []int{spec.ListenPort}
+	if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
+		cleanupPorts = append(cleanupPorts, spec.UDPListenPort)
+	}
+	for _, cleanupPort := range cleanupPorts {
+		for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(cleanupPort)) {
+			_ = runShell(cmd)
+		}
 	}
 	if !waitForFXPListenPortFree(&spec, spec.ListenPort, 3*time.Second) {
 		owner := listenPortOwnerSummary(spec.ListenPort)
-		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d listen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, owner)
+		if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
+			if udpOwner := listenPortOwnerSummary(spec.UDPListenPort); udpOwner != "" {
+				owner = strings.TrimSpace(owner + " udpListen=:" + strconv.Itoa(spec.UDPListenPort) + " " + udpOwner)
+			}
+		}
+		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d listen=:%d udpListen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.UDPListenPort, owner)
 		return false
 	}
 
@@ -4710,11 +4777,12 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Token = cfg.Token
 	}
 	logf(
-		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d",
 		spec.Role,
 		spec.TunnelID,
 		spec.RuleID,
 		spec.ListenPort,
+		spec.UDPListenPort,
 		spec.Protocol,
 		spec.ProxyProtocolReceive,
 		spec.ProxyProtocolSend,
@@ -4723,8 +4791,10 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.TCPFastOpen,
 		spec.ExitHost,
 		spec.ExitPort,
+		spec.UDPExitPort,
 		spec.RelayExitHost,
 		spec.RelayExitPort,
+		spec.UDPRelayExitPort,
 		spec.TargetIP,
 		spec.TargetPort,
 	)
@@ -4786,8 +4856,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 }
 
 func stopFXP(spec fxpSpec) {
-	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
-	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
+	spec = normalizeFXPSpec(spec)
 	id := fxpServerID(spec)
 	fxpMu.Lock()
 	s := fxpServers[id]
@@ -4876,15 +4945,28 @@ func waitForFXPListenPortFree(spec *fxpSpec, listenPort int, timeout time.Durati
 	if spec == nil || listenPort <= 0 {
 		return true
 	}
-	protos := runtimeProtocols(spec.Protocol)
+	normalized := normalizeFXPSpec(*spec)
+	protos := runtimeProtocols(normalized.Protocol)
 	if len(protos) == 0 {
 		protos = []string{"tcp"}
 	}
 	deadline := time.Now().Add(timeout)
 	for {
 		busy := false
+		checked := map[string]bool{}
 		for _, proto := range protos {
-			if listenPortBusy(proto, listenPort) {
+			port := listenPort
+			if proto == "udp" {
+				port = normalized.UDPListenPort
+			} else if normalized.ListenPort > 0 {
+				port = normalized.ListenPort
+			}
+			key := proto + ":" + strconv.Itoa(port)
+			if checked[key] {
+				continue
+			}
+			checked[key] = true
+			if listenPortBusy(proto, port) {
 				busy = true
 				break
 			}
@@ -4937,6 +5019,13 @@ func actionPortProtocolKey(port int, protocol string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d:%s", port, normalizeRuntimeProtocol(protocol))
+}
+
+func runningRuleIDPortKey(ruleID int, port int) string {
+	if ruleID <= 0 || !validActionPort(port) {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", ruleID, port)
 }
 
 func protectedActionMatchesPort(protectedPorts map[string]bool, port string, protocol string) bool {

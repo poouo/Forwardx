@@ -1409,6 +1409,8 @@ export const crudRulesRouter = router({
               tunnel.exitHostId,
               (exit as any)?.portRangeStart,
               (exit as any)?.portRangeEnd,
+              [],
+              [Number(rule.id)],
             );
             if (!(data as any).tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
           }

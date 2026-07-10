@@ -98,9 +98,10 @@ export const pluginsRouter = router({
     .input(z.object({
       pluginId: z.string().trim().min(1).max(128),
       actionId: z.string().trim().min(1).max(128),
+      input: z.record(z.unknown()).optional(),
     }))
     .mutation(async ({ input }) => {
-      return pluginRepo.runPluginAction(input.pluginId, input.actionId);
+      return pluginRepo.runPluginAction(input.pluginId, input.actionId, input.input);
     }),
 
   usage: adminProcedure

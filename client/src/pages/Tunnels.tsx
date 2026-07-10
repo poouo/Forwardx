@@ -4,6 +4,13 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import {
+  DEFAULT_LATENCY_TIME_RANGE_HOURS,
+  filterLatencySeriesByTimeRange,
+  latencyTimeRangeLabel,
+  LatencyTimeRangeSelect,
+  type LatencyTimeRangeHours,
+} from "@/components/LatencyTimeRangeSelect";
 import type { LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
@@ -1224,6 +1231,7 @@ function TunnelLatencyDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
+  const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
     { tunnelId, hours: 24 },
     { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
@@ -1232,6 +1240,10 @@ function TunnelLatencyDialog({
   const rawSeriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
+  const rangedSeriesData = useMemo(
+    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
+    [seriesData, timeRangeHours],
+  );
   const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
 
   useEffect(() => {
@@ -1241,9 +1253,9 @@ function TunnelLatencyDialog({
   }, [data, tunnelId]);
 
   const seriesMeta = useMemo<TunnelLatencySeriesMeta[]>(() => {
-    if (!seriesData || seriesData.length === 0) return [];
+    if (rangedSeriesData.length === 0) return [];
     const byKey = new Map<string, TunnelLatencySeriesMeta>();
-    for (const item of seriesData) {
+    for (const item of rangedSeriesData) {
       const key = normalizeTunnelLatencySeriesKey(item.seriesKey);
       if (byKey.has(key)) continue;
       byKey.set(key, {
@@ -1262,12 +1274,12 @@ function TunnelLatencyDialog({
       if (b.key === "primary") return 1;
       return a.label.localeCompare(b.label, "zh-CN");
     });
-  }, [seriesData]);
+  }, [rangedSeriesData]);
 
   const rawChartData = useMemo<TunnelLatencyPoint[]>(() => {
-    if (!seriesData || seriesData.length === 0) return [];
+    if (rangedSeriesData.length === 0) return [];
     const byTime = new Map<number, TunnelLatencyPoint>();
-    for (const item of seriesData) {
+    for (const item of rangedSeriesData) {
       const at = new Date(item.recordedAt);
       const time = Number.isFinite(at.getTime()) ? at.getTime() : Date.now();
       const point = byTime.get(time) || {
@@ -1283,7 +1295,7 @@ function TunnelLatencyDialog({
       byTime.set(time, point);
     }
     return Array.from(byTime.entries()).sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
-  }, [seriesData]);
+  }, [rangedSeriesData]);
   const chartData = useMemo<TunnelLatencyPoint[]>(() => {
     if (!peakCutEnabled || seriesMeta.length === 0) return rawChartData;
     return applyLatencyPeakCut(
@@ -1332,9 +1344,12 @@ function TunnelLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
-              <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+              <DialogDescription>{`最近 ${latencyTimeRangeLabel(timeRangeHours)} 延迟和丢包。`}</DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
+            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
+              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+            </div>
           </div>
         </DialogHeader>
         <div className="dialog-scroll-area min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">

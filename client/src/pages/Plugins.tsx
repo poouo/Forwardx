@@ -157,6 +157,43 @@ function normalizeSettingDraftValue(field: PluginSettingField, value: unknown) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+function actionInputDefaultValue(field: PluginSettingField) {
+  if (field.defaultValue !== undefined) return field.defaultValue;
+  if (field.type === "boolean") return false;
+  if (field.type === "select") return field.options?.[0]?.value || "";
+  return "";
+}
+
+function buildActionInputDraft(action: any) {
+  const fields = Array.isArray(action?.inputSchema) ? action.inputSchema as PluginSettingField[] : [];
+  const draft: Record<string, unknown> = {};
+  for (const field of fields) {
+    draft[field.key] = normalizeSettingDraftValue(field, actionInputDefaultValue(field));
+  }
+  return draft;
+}
+
+function actionResultDisplayBody(result: any) {
+  const payload = result?.result;
+  if (!payload) return "";
+  if (payload.body !== undefined) {
+    try {
+      return JSON.stringify(payload.body, null, 2);
+    } catch {
+      return String(payload.body);
+    }
+  }
+  return String(payload.bodyText || "");
+}
+
+function actionResultTitle(result: any) {
+  const payload = result?.result;
+  if (payload?.type === "http.request") {
+    return `${payload.method || "HTTP"} ${payload.status || "-"}${payload.durationMs !== undefined ? ` · ${payload.durationMs}ms` : ""}`;
+  }
+  return result?.message || "动作结果";
+}
+
 function renderPluginPageHtml(content: string, type?: string) {
   if (type === "text") return { __html: textToHtml(content || "") };
   return { __html: renderMixedHtml(content || "") };
@@ -433,6 +470,9 @@ export default function Plugins() {
   const [uploadFileName, setUploadFileName] = useState("");
   const [settingDraft, setSettingDraft] = useState<Record<string, unknown>>({});
   const [usageDraft, setUsageDraft] = useState<PluginUsageDraft>(defaultPluginUsage);
+  const [actionInputDialog, setActionInputDialog] = useState<any | null>(null);
+  const [actionInputDraft, setActionInputDraft] = useState<Record<string, unknown>>({});
+  const [actionResult, setActionResult] = useState<any | null>(null);
   const [activePageId, setActivePageId] = useState("");
   const [activeAssetPath, setActiveAssetPath] = useState("");
 
@@ -564,7 +604,12 @@ export default function Plugins() {
 
   const runActionMutation = trpc.plugins.runAction.useMutation({
     onSuccess: (result: any) => {
-      toast.success(result?.message || "动作已执行");
+      setActionResult(result);
+      if (result?.ok === false) {
+        toast.error(result?.message || "动作执行未成功");
+      } else {
+        toast.success(result?.message || "动作已执行");
+      }
       invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "执行失败"),
@@ -583,6 +628,9 @@ export default function Plugins() {
   useEffect(() => {
     if (!selectedPlugin) {
       setSettingDraft({});
+      setActionInputDialog(null);
+      setActionInputDraft({});
+      setActionResult(null);
       return;
     }
     const saved = getPluginSettings(selectedPlugin);
@@ -594,6 +642,9 @@ export default function Plugins() {
       );
     }
     setSettingDraft(next);
+    setActionInputDialog(null);
+    setActionInputDraft({});
+    setActionResult(null);
   }, [selectedPlugin?.pluginId, selectedPlugin?.manifestJson]);
 
   useEffect(() => {
@@ -764,17 +815,49 @@ export default function Plugins() {
     if (confirmed) uninstallMutation.mutate({ pluginId: plugin.pluginId });
   };
 
-  const handleRunAction = async (action: any) => {
-    if (!selectedPlugin) return;
+  const executePluginAction = async (action: any, input?: Record<string, unknown>) => {
+    if (!selectedPlugin) return false;
     if (action.confirmRequired) {
       const confirmed = await confirmDialog({
         title: action.label || "执行动作",
         description: action.description || "确定执行该插件动作？",
         confirmText: "执行",
       });
-      if (!confirmed) return;
+      if (!confirmed) return false;
     }
-    runActionMutation.mutate({ pluginId: selectedPlugin.pluginId, actionId: action.id });
+    try {
+      await runActionMutation.mutateAsync({ pluginId: selectedPlugin.pluginId, actionId: action.id, input });
+      return true;
+    } catch {
+      // Mutation onError shows the failure toast; keep the dialog open for quick retry.
+      return false;
+    }
+  };
+
+  const handleRunAction = async (action: any) => {
+    const fields = Array.isArray(action?.inputSchema) ? action.inputSchema as PluginSettingField[] : [];
+    if (fields.length > 0) {
+      setActionResult(null);
+      setActionInputDraft(buildActionInputDraft(action));
+      setActionInputDialog(action);
+      return;
+    }
+    await executePluginAction(action);
+  };
+
+  const handleSubmitActionInput = async () => {
+    if (!actionInputDialog) return;
+    const fields = Array.isArray(actionInputDialog.inputSchema) ? actionInputDialog.inputSchema as PluginSettingField[] : [];
+    for (const field of fields) {
+      if (!field.required) continue;
+      const value = actionInputDraft[field.key];
+      if (String(value ?? "").trim() === "") {
+        toast.error(`请填写${field.label}`);
+        return;
+      }
+    }
+    const ok = await executePluginAction(actionInputDialog, actionInputDraft);
+    if (ok) setActionInputDialog(null);
   };
 
   const handleDownloadAsset = (asset?: any) => {
@@ -1689,6 +1772,12 @@ export default function Plugins() {
                             <div className="min-w-0">
                               <p className="text-sm font-medium">{action.label}</p>
                               {action.description && <p className="text-xs text-muted-foreground">{action.description}</p>}
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                <Badge variant="outline" className="font-mono text-[10px]">{action.type}</Badge>
+                                {Array.isArray(action.inputSchema) && action.inputSchema.length > 0 && (
+                                  <Badge variant="outline" className="text-[10px]">需要输入 {action.inputSchema.length} 项</Badge>
+                                )}
+                              </div>
                             </div>
                             <Button
                               className="gap-2"
@@ -1704,6 +1793,31 @@ export default function Plugins() {
                       ) : (
                         <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
                           这个插件没有动作
+                        </div>
+                      )}
+                      {actionResult && (
+                        <div className="rounded-lg border border-border/40 bg-background/80 p-3">
+                          <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{actionResultTitle(actionResult)}</p>
+                              {actionResult?.result?.url && (
+                                <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{actionResult.result.url}</p>
+                              )}
+                            </div>
+                            <Button type="button" variant="ghost" size="sm" className="h-8 self-start sm:self-auto" onClick={() => setActionResult(null)}>
+                              清除
+                            </Button>
+                          </div>
+                          {actionResult?.result?.parseError && (
+                            <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">JSON 解析失败：{actionResult.result.parseError}</p>
+                          )}
+                          {actionResultDisplayBody(actionResult) ? (
+                            <pre className="max-h-80 overflow-auto rounded-md bg-muted/40 p-3 text-xs leading-5">
+                              {actionResultDisplayBody(actionResult)}
+                            </pre>
+                          ) : (
+                            <p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">没有响应内容</p>
+                          )}
                         </div>
                       )}
                       {selectedPlugin.status !== "enabled" && pluginActions.length > 0 && (
@@ -1727,6 +1841,54 @@ export default function Plugins() {
         </div>
         )}
       </div>
+      <Dialog
+        open={!!actionInputDialog}
+        onOpenChange={(open) => {
+          if (runActionMutation.isPending) return;
+          if (!open) {
+            setActionInputDialog(null);
+            setActionInputDraft({});
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100svh-1.5rem)] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="px-4 pt-4 sm:px-6 sm:pt-6">
+            <DialogTitle>{actionInputDialog?.label || "执行插件动作"}</DialogTitle>
+            {actionInputDialog?.description && (
+              <DialogDescription>{actionInputDialog.description}</DialogDescription>
+            )}
+          </DialogHeader>
+          <div className="grid gap-4 overflow-y-auto px-4 py-2 sm:grid-cols-2 sm:px-6">
+            {(Array.isArray(actionInputDialog?.inputSchema) ? actionInputDialog.inputSchema as PluginSettingField[] : []).map((field) => (
+              <div key={field.key} className={field.type === "textarea" || field.type === "boolean" ? "sm:col-span-2" : ""}>
+                <PluginSettingInput
+                  field={field}
+                  value={actionInputDraft[field.key]}
+                  disabled={runActionMutation.isPending}
+                  onChange={(value) => setActionInputDraft((current) => ({ ...current, [field.key]: value }))}
+                />
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 border-t border-border/40 px-4 py-3 sm:px-6">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={runActionMutation.isPending}
+              onClick={() => {
+                setActionInputDialog(null);
+                setActionInputDraft({});
+              }}
+            >
+              取消
+            </Button>
+            <Button type="button" className="gap-2" disabled={runActionMutation.isPending} onClick={handleSubmitActionInput}>
+              {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              执行
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

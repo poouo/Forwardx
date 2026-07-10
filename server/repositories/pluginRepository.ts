@@ -9,6 +9,9 @@ import {
   DEFAULT_PLUGIN_MANIFEST,
   PLUGIN_ACTION_TYPES,
   PLUGIN_EXTENSION_POINTS,
+  PLUGIN_HTTP_AUTH_TYPES,
+  PLUGIN_HTTP_METHODS,
+  PLUGIN_HTTP_RESPONSE_TYPES,
   PLUGIN_MANIFEST_VERSION,
   PLUGIN_PERMISSION_KEYS,
   PLUGIN_USAGE_VIEW_TYPES,
@@ -20,6 +23,8 @@ import {
   type PluginActionDefinition,
   type PluginExtensionPoint,
   type PluginFeatureDescription,
+  type PluginHttpAuthDefinition,
+  type PluginHttpRequestDefinition,
   type PluginPageDefinition,
   type PluginPermissionKey,
   type PluginSettingField,
@@ -45,6 +50,10 @@ const MAX_PLUGIN_ACTIONS = 20;
 const MAX_PLUGIN_FEATURES = 12;
 const MAX_PLUGIN_USAGE_VIEWS = 8;
 const MAX_PLUGIN_PACKAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PLUGIN_HTTP_TEMPLATE_BYTES = 64 * 1024;
+const MAX_PLUGIN_HTTP_RESPONSE_BYTES = PLUGIN_SECURITY_MODEL.maxHttpResponseBytes;
+const MAX_PLUGIN_HTTP_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_PLUGIN_HTTP_TIMEOUT_MS = 10 * 1000;
 const MAX_PLUGIN_PACKAGE_FILES = 160;
 const PACKAGE_MANIFEST_CANDIDATES = ["forwardx-plugin.json", "plugin.json", ".forwardx/plugin.json"];
 const AUTO_DISCOVER_DATA_ROOTS = ["data/"];
@@ -360,6 +369,83 @@ function normalizeSettingFields(value: unknown): PluginSettingField[] {
   });
 }
 
+function normalizeHttpRecord(value: unknown, maxEntries: number, maxValueLength: number): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(value).slice(0, maxEntries)) {
+    const cleanKey = String(key || "").trim().slice(0, 120);
+    if (!cleanKey || /[\u0000-\u001f]/.test(cleanKey)) continue;
+    result[cleanKey] = String(rawValue ?? "").slice(0, maxValueLength);
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function normalizeHttpAuth(value: unknown): PluginHttpAuthDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  const allowedTypes = new Set<string>(PLUGIN_HTTP_AUTH_TYPES);
+  const type = allowedTypes.has(String(raw.type || "")) ? String(raw.type) as PluginHttpAuthDefinition["type"] : "none";
+  if (type === "none") return undefined;
+  const auth: PluginHttpAuthDefinition = { type };
+  if (type === "bearer") {
+    auth.token = String(raw.token ?? "").slice(0, 1000);
+  } else if (type === "header") {
+    auth.header = String(raw.header || "").trim().slice(0, 120);
+    auth.value = String(raw.value ?? "").slice(0, 1000);
+  } else if (type === "cookie") {
+    auth.cookieName = String(raw.cookieName || "").trim().slice(0, 120);
+    auth.cookieValue = String(raw.cookieValue ?? "").slice(0, 2000);
+  }
+  return auth;
+}
+
+function normalizeHttpBodyTemplate(value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  const encoded = JSON.stringify(value);
+  if (encoded && Buffer.byteLength(encoded, "utf8") > MAX_PLUGIN_HTTP_TEMPLATE_BYTES) return undefined;
+  if (typeof value === "string") return value.slice(0, MAX_PLUGIN_HTTP_TEMPLATE_BYTES);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 80).map(normalizeHttpBodyTemplate);
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value).slice(0, 80)) {
+      const cleanKey = String(key || "").trim().slice(0, 120);
+      if (!cleanKey) continue;
+      result[cleanKey] = normalizeHttpBodyTemplate(item);
+    }
+    return result;
+  }
+  return undefined;
+}
+
+function normalizeHttpRequest(value: unknown): PluginHttpRequestDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  const allowedMethods = new Set<string>(PLUGIN_HTTP_METHODS);
+  const method = String(raw.method || "GET").trim().toUpperCase();
+  if (!allowedMethods.has(method)) return undefined;
+  const responseTypes = new Set<string>(PLUGIN_HTTP_RESPONSE_TYPES);
+  const responseType = responseTypes.has(String(raw.responseType || "")) ? String(raw.responseType) as PluginHttpRequestDefinition["responseType"] : "auto";
+  const timeoutValue = Math.floor(Number(raw.timeoutMs || DEFAULT_PLUGIN_HTTP_TIMEOUT_MS));
+  const timeoutMs = Number.isFinite(timeoutValue)
+    ? Math.max(1000, Math.min(MAX_PLUGIN_HTTP_TIMEOUT_MS, timeoutValue))
+    : DEFAULT_PLUGIN_HTTP_TIMEOUT_MS;
+  const request: PluginHttpRequestDefinition = {
+    method: method as PluginHttpRequestDefinition["method"],
+    url: normalizeOptionalText(raw.url, 2000),
+    baseUrlSetting: normalizePluginId(raw.baseUrlSetting).slice(0, 80) || undefined,
+    path: normalizeOptionalText(raw.path, 1200),
+    headers: normalizeHttpRecord(raw.headers, 40, 2000),
+    query: normalizeHttpRecord(raw.query, 40, 2000),
+    body: normalizeHttpBodyTemplate(raw.body),
+    timeoutMs,
+    responseType,
+    auth: normalizeHttpAuth(raw.auth),
+  };
+  if (!request.url && (!request.baseUrlSetting || !request.path)) return undefined;
+  return request;
+}
+
 function normalizePluginPages(value: unknown): PluginPageDefinition[] {
   if (!Array.isArray(value)) return [];
   const contentTypes = new Set<string>(PLUGIN_PAGE_CONTENT_TYPES);
@@ -398,13 +484,18 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
     const type = String(item?.type || "noop").trim();
     if (!allowedTypes.has(type)) return [];
     seen.add(id);
-    return [{
+    const action: PluginActionDefinition = {
       id,
       label: String(item?.label || id).trim().slice(0, 100) || id,
       type: type as PluginActionDefinition["type"],
       description: String(item?.description || "").trim().slice(0, 240) || undefined,
       confirmRequired: item?.confirmRequired === true,
-    }];
+      inputSchema: normalizeSettingFields(item?.inputSchema || item?.inputs),
+      request: normalizeHttpRequest(item?.request),
+    };
+    if (!action.inputSchema?.length) delete (action as any).inputSchema;
+    if (!action.request) delete (action as any).request;
+    return [action];
   });
 }
 
@@ -1360,6 +1451,10 @@ export function getPluginDeveloperCapabilities() {
     settingFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
     pageContentTypes: PLUGIN_PAGE_CONTENT_TYPES,
     actionTypes: PLUGIN_ACTION_TYPES,
+    actionInputFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
+    httpMethods: PLUGIN_HTTP_METHODS,
+    httpResponseTypes: PLUGIN_HTTP_RESPONSE_TYPES,
+    httpAuthTypes: PLUGIN_HTTP_AUTH_TYPES,
   };
 }
 
@@ -2080,12 +2175,294 @@ export async function savePluginSetting(pluginId: string, key: string, value: un
   return await getPlugin(id);
 }
 
-export async function runPluginAction(pluginId: string, actionId: string) {
+function defaultActionInputValue(field: PluginSettingField) {
+  if (field.defaultValue !== undefined) return field.defaultValue;
+  if (field.type === "boolean") return false;
+  return "";
+}
+
+function normalizeActionInputValues(fields: PluginSettingField[] | undefined, value: unknown) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const result: Record<string, unknown> = {};
+  for (const field of fields || []) {
+    const incoming = raw[field.key] !== undefined ? raw[field.key] : defaultActionInputValue(field);
+    if (field.type === "boolean") {
+      result[field.key] = incoming === true;
+      continue;
+    }
+    if (field.type === "number") {
+      const numberText = String(incoming ?? "").trim();
+      if (!numberText && !field.required) {
+        result[field.key] = "";
+        continue;
+      }
+      const numberValue = Number(numberText);
+      if (!Number.isFinite(numberValue)) throw new Error(`请填写有效的${field.label}`);
+      if (field.min !== undefined && numberValue < field.min) throw new Error(`${field.label}不能小于 ${field.min}`);
+      if (field.max !== undefined && numberValue > field.max) throw new Error(`${field.label}不能大于 ${field.max}`);
+      result[field.key] = numberValue;
+      continue;
+    }
+    const textLimit = field.type === "textarea" ? 10000 : 1000;
+    const text = String(incoming ?? "").slice(0, textLimit);
+    if (field.required && !text.trim()) throw new Error(`请填写${field.label}`);
+    if (field.type === "url" && text.trim() && !/^https?:\/\//i.test(text.trim())) {
+      throw new Error(`${field.label}必须以 http:// 或 https:// 开头`);
+    }
+    if (field.type === "select" && field.options?.length) {
+      const allowed = new Set(field.options.map((option: { value: string }) => option.value));
+      result[field.key] = allowed.has(text) ? text : String(field.defaultValue || field.options[0]?.value || "");
+      continue;
+    }
+    result[field.key] = text;
+  }
+  return result;
+}
+
+function pluginHasPermission(plugin: any, permission: PluginPermissionKey) {
+  const manifestPermissions = Array.isArray(plugin?.manifest?.permissions) ? plugin.manifest.permissions : [];
+  const rowPermissions = Array.isArray(plugin?.permissions) ? plugin.permissions : [];
+  return manifestPermissions.includes(permission) || rowPermissions.includes(permission);
+}
+
+function collectPluginSecretValues(plugin: any) {
+  const settings = pluginSettingsValues(plugin?.manifest || {});
+  const secrets: string[] = [];
+  for (const field of plugin?.manifest?.settingsSchema || []) {
+    const key = String(field?.key || "");
+    const value = String(settings[key] ?? "");
+    const lowerKey = key.toLowerCase();
+    if (value && (field?.type === "password" || /token|secret|password|passwd|cookie|key/.test(lowerKey))) {
+      secrets.push(value);
+    }
+  }
+  return Array.from(new Set(secrets)).filter((item) => item.length >= 4).slice(0, 40);
+}
+
+function redactText(value: string, secrets: string[]) {
+  let text = String(value || "");
+  for (const secret of secrets) {
+    text = text.split(secret).join("***");
+  }
+  return text;
+}
+
+function redactJsonValue(value: unknown, secrets: string[]): unknown {
+  if (typeof value === "string") return redactText(value, secrets);
+  if (Array.isArray(value)) return value.slice(0, 1000).map((item) => redactJsonValue(item, secrets));
+  if (value && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value).slice(0, 1000)) {
+      result[key] = redactJsonValue(item, secrets);
+    }
+    return result;
+  }
+  return value;
+}
+
+function templateLookup(path: string, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }) {
+  const match = String(path || "").match(/^(settings|input|plugin)\.([A-Za-z0-9._-]{1,120})$/);
+  if (!match) return "";
+  const [, scope, key] = match;
+  const normalizedKey = normalizePluginId(key).slice(0, 80);
+  if (scope === "settings") return context.settings[key] ?? context.settings[normalizedKey] ?? "";
+  if (scope === "input") return context.input[key] ?? context.input[normalizedKey] ?? "";
+  if (scope === "plugin") {
+    if (key === "id") return context.plugin?.pluginId || context.plugin?.manifest?.id || "";
+    if (key === "name") return context.plugin?.name || context.plugin?.manifest?.name || "";
+    if (key === "version") return context.plugin?.version || context.plugin?.manifest?.version || "";
+  }
+  return "";
+}
+
+function renderTemplateString(template: string, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }) {
+  return String(template || "").replace(/\{\{\s*([A-Za-z]+(?:\.[A-Za-z0-9._-]{1,120})?)\s*\}\}/g, (_all, key) => {
+    const value = templateLookup(key, context);
+    if (value === undefined || value === null) return "";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  });
+}
+
+function renderTemplateValue(value: unknown, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }): unknown {
+  if (typeof value === "string") return renderTemplateString(value, context);
+  if (Array.isArray(value)) return value.map((item) => renderTemplateValue(item, context));
+  if (value && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = renderTemplateValue(item, context);
+    }
+    return result;
+  }
+  return value;
+}
+
+function buildPluginHttpUrl(request: PluginHttpRequestDefinition, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }) {
+  let urlText = "";
+  if (request.url) {
+    urlText = renderTemplateString(request.url, context).trim();
+  } else if (request.baseUrlSetting && request.path) {
+    const base = String(context.settings[request.baseUrlSetting] ?? "").trim();
+    if (!base) throw new Error(`请先配置 ${request.baseUrlSetting}`);
+    const renderedPath = renderTemplateString(request.path, context).trim();
+    urlText = new URL(renderedPath || "/", base.endsWith("/") ? base : `${base}/`).toString();
+  }
+  let url: URL;
+  try {
+    url = new URL(urlText);
+  } catch {
+    throw new Error("插件 HTTP 请求地址无效");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("插件 HTTP 请求仅支持 http/https");
+  for (const [key, value] of Object.entries(request.query || {})) {
+    url.searchParams.set(key, renderTemplateString(value, context));
+  }
+  return url;
+}
+
+function buildPluginHttpHeaders(request: PluginHttpRequestDefinition, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }) {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(request.headers || {})) {
+    headers[key] = renderTemplateString(value, context);
+  }
+  const auth = request.auth;
+  if (auth?.type === "bearer") {
+    const token = renderTemplateString(auth.token || "", context).trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } else if (auth?.type === "header") {
+    const header = renderTemplateString(auth.header || "", context).trim();
+    const value = renderTemplateString(auth.value || "", context);
+    if (header && value) headers[header] = value;
+  } else if (auth?.type === "cookie") {
+    const cookieName = renderTemplateString(auth.cookieName || "", context).trim();
+    const cookieValue = renderTemplateString(auth.cookieValue || "", context);
+    if (cookieName && cookieValue) headers.Cookie = `${cookieName}=${cookieValue}`;
+  }
+  return headers;
+}
+
+function buildPluginHttpBody(request: PluginHttpRequestDefinition, headers: Record<string, string>, context: { settings: Record<string, unknown>; input: Record<string, unknown>; plugin: any }) {
+  if (request.method === "GET" || request.body === undefined) return undefined;
+  const rendered = renderTemplateValue(request.body, context);
+  if (typeof rendered === "string") {
+    if (!Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+      headers["Content-Type"] = "text/plain;charset=utf-8";
+    }
+    return rendered;
+  }
+  if (!Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = "application/json;charset=utf-8";
+  }
+  return JSON.stringify(rendered ?? {});
+}
+
+async function readResponseTextLimited(response: Response, maxBytes: number) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Ignore cancellation errors after the limit has already been enforced.
+      }
+      throw new Error(`插件 HTTP 响应过大，不能超过 ${formatByteLimit(maxBytes)}`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function executePluginHttpAction(plugin: any, action: PluginActionDefinition, input: unknown) {
+  if (!pluginHasPermission(plugin, "net:http")) throw new Error("插件未声明 net:http 权限，不能发起外部 API 请求");
+  if (!action.request) throw new Error("插件动作缺少 HTTP 请求定义");
+  const settings = pluginSettingsValues(plugin.manifest);
+  const actionInput = normalizeActionInputValues(action.inputSchema, input);
+  const context = { settings, input: actionInput, plugin };
+  const secrets = collectPluginSecretValues(plugin);
+  const url = buildPluginHttpUrl(action.request, context);
+  const headers = buildPluginHttpHeaders(action.request, context);
+  const body = buildPluginHttpBody(action.request, headers, context);
+  const timeoutMs = Math.max(1000, Math.min(MAX_PLUGIN_HTTP_TIMEOUT_MS, Number(action.request.timeoutMs || DEFAULT_PLUGIN_HTTP_TIMEOUT_MS)));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: action.request.method,
+      headers,
+      body,
+      redirect: "manual",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError"
+      ? `插件 HTTP 请求超时（${timeoutMs}ms）`
+      : `插件 HTTP 请求失败：${error instanceof Error ? error.message : String(error)}`;
+    throw new Error(redactText(message, secrets));
+  } finally {
+    clearTimeout(timeout);
+  }
+  const durationMs = Date.now() - startedAt;
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > MAX_PLUGIN_HTTP_RESPONSE_BYTES) {
+    throw new Error(`插件 HTTP 响应过大，不能超过 ${formatByteLimit(MAX_PLUGIN_HTTP_RESPONSE_BYTES)}`);
+  }
+  const responseText = await readResponseTextLimited(response, MAX_PLUGIN_HTTP_RESPONSE_BYTES);
+  const responseHeaders: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "set-cookie") return;
+    responseHeaders[key] = redactText(value, secrets).slice(0, 1000);
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const shouldParseJson = action.request.responseType === "json" || (action.request.responseType !== "text" && /\bjson\b/i.test(contentType));
+  let parsedBody: unknown;
+  let parseError: string | undefined;
+  if (shouldParseJson && responseText.trim()) {
+    try {
+      parsedBody = redactJsonValue(JSON.parse(responseText), secrets);
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  return {
+    ok: response.ok,
+    message: response.ok
+      ? `HTTP ${response.status} 请求完成`
+      : `HTTP ${response.status} ${response.statusText || "请求未成功"}`,
+    result: {
+      type: "http.request",
+      actionId: action.id,
+      url: redactText(url.toString(), secrets),
+      method: action.request.method,
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      durationMs,
+      headers: responseHeaders,
+      body: parsedBody,
+      bodyText: redactText(responseText, secrets),
+      parseError,
+    },
+  };
+}
+
+export async function runPluginAction(pluginId: string, actionId: string, input?: unknown) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
   if (plugin.status !== "enabled") throw new Error("插件未启用");
   const action = (plugin.manifest.actions || []).find((item: PluginActionDefinition) => item.id === actionId);
   if (!action) throw new Error("插件没有声明该动作");
+  if (action.type === "http.request") {
+    return executePluginHttpAction(plugin, action, input);
+  }
   if (action.type === "noop") {
     return { ok: true, message: "动作已执行（noop）" };
   }

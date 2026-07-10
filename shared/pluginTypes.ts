@@ -9,6 +9,7 @@ export const PLUGIN_PERMISSION_KEYS = [
   "read:tunnels",
   "read:traffic",
   "write:settings",
+  "net:http",
   "data:whitelist",
   "ui:page",
   "ui:settings",
@@ -46,11 +47,39 @@ export type PluginPageContentType = typeof PLUGIN_PAGE_CONTENT_TYPES[number];
 
 export const PLUGIN_ACTION_TYPES = [
   "noop",
+  "http.request",
   "data.asset.refresh",
   "data.whitelist.refresh",
 ] as const;
 
 export type PluginActionType = typeof PLUGIN_ACTION_TYPES[number];
+
+export const PLUGIN_HTTP_METHODS = [
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+] as const;
+
+export type PluginHttpMethod = typeof PLUGIN_HTTP_METHODS[number];
+
+export const PLUGIN_HTTP_RESPONSE_TYPES = [
+  "auto",
+  "json",
+  "text",
+] as const;
+
+export type PluginHttpResponseType = typeof PLUGIN_HTTP_RESPONSE_TYPES[number];
+
+export const PLUGIN_HTTP_AUTH_TYPES = [
+  "none",
+  "bearer",
+  "header",
+  "cookie",
+] as const;
+
+export type PluginHttpAuthType = typeof PLUGIN_HTTP_AUTH_TYPES[number];
 
 export const PLUGIN_USAGE_VIEW_TYPES = [
   "host-asset-sync",
@@ -95,12 +124,36 @@ export type PluginPageDefinition = {
   assetPath?: string;
 };
 
+export type PluginHttpAuthDefinition = {
+  type?: PluginHttpAuthType;
+  token?: string;
+  header?: string;
+  value?: string;
+  cookieName?: string;
+  cookieValue?: string;
+};
+
+export type PluginHttpRequestDefinition = {
+  method: PluginHttpMethod;
+  url?: string;
+  baseUrlSetting?: string;
+  path?: string;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
+  body?: unknown;
+  timeoutMs?: number;
+  responseType?: PluginHttpResponseType;
+  auth?: PluginHttpAuthDefinition;
+};
+
 export type PluginActionDefinition = {
   id: string;
   label: string;
   type: PluginActionType;
   description?: string;
   confirmRequired?: boolean;
+  inputSchema?: PluginSettingField[];
+  request?: PluginHttpRequestDefinition;
 };
 
 export type PluginAssetDeclaration = {
@@ -302,5 +355,6 @@ export const PLUGIN_SECURITY_MODEL = {
   maxUploadBytes: 1024 * 1024,
   maxAssetBytes: 512 * 1024,
   maxPackageBytes: 5 * 1024 * 1024,
-  description: "ForwardX 插件由面板解释 manifest。普通插件不执行后端代码；内置受控插件可以通过声明式使用页向 Agent 下发白名单内的脚本和数据。",
+  maxHttpResponseBytes: 256 * 1024,
+  description: "ForwardX 插件由面板解释 manifest。普通插件不执行后端代码；声明 net:http 后可由面板按 manifest 发起受控 HTTP 请求；内置受控插件可以通过声明式使用页向 Agent 下发白名单内的脚本和数据。",
 } as const;

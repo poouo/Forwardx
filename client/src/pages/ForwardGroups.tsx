@@ -3,6 +3,13 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import {
+  DEFAULT_LATENCY_TIME_RANGE_HOURS,
+  filterLatencySeriesByTimeRange,
+  latencyTimeRangeLabel,
+  LatencyTimeRangeSelect,
+  type LatencyTimeRangeHours,
+} from "@/components/LatencyTimeRangeSelect";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
@@ -429,6 +436,7 @@ function ForwardGroupLatencyDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
+  const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const { data, isLoading, isFetching } = trpc.forwardGroups.latencySeries.useQuery(
     { groupId, hours: 24 },
     { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
@@ -437,21 +445,25 @@ function ForwardGroupLatencyDialog({
   const rawSeriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
+  const rangedSeriesData = useMemo(
+    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
+    [seriesData, timeRangeHours],
+  );
 
   useEffect(() => {
     if (data) groupLatencySeriesCache.set(groupId, data as GroupLatencySeriesDatum[]);
   }, [data, groupId]);
 
   const rawChartData = useMemo<GroupLatencyPoint[]>(() => {
-    if (!seriesData) return [];
-    return seriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => ({
+    if (!rangedSeriesData.length) return [];
+    return rangedSeriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => ({
       label: formatGroupLatencyTime(d.recordedAt),
       fullLabel: formatGroupLatencyTime(d.recordedAt),
       latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
       chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
-  }, [seriesData]);
+  }, [rangedSeriesData]);
   const chartData = useMemo<GroupLatencyPoint[]>(() => {
     if (!peakCutEnabled) return rawChartData;
     return applyLatencyPeakCut(rawChartData, [
@@ -476,9 +488,12 @@ function ForwardGroupLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>{"\u8f6c\u53d1\u94fe\u5ef6\u8fdf - "}{groupName}</DialogTitle>
-              <DialogDescription>{"\u8fd1 24 \u5c0f\u65f6\u94fe\u8def\u9010\u8df3\u63a2\u6d4b\u6c47\u603b\uff0c\u7eaf UDP \u89c4\u5219\u4f7f\u7528 Ping\uff0c\u5176\u4f59\u89c4\u5219\u4f7f\u7528 TCPing\u3002"}</DialogDescription>
+              <DialogDescription>{`最近 ${latencyTimeRangeLabel(timeRangeHours)} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。`}</DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
+            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
+              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+            </div>
           </div>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">

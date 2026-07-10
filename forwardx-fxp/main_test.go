@@ -154,6 +154,117 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardXBothSplitUDPWirePorts(t *testing.T) {
+	targetPort := freeTCPUDPPort(t)
+	targetLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(targetPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	targetUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: targetPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetUDP.Close()
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := targetUDP.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = targetUDP.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	key := "both-split-udp-key"
+	exitTCPPort := freeTCPUDPPort(t)
+	exitUDPPort := freeTCPUDPPort(t)
+	for exitUDPPort == exitTCPPort {
+		exitUDPPort = freeTCPUDPPort(t)
+	}
+	entryPort := freeTCPUDPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:          "exit",
+			TunnelID:      31,
+			ListenPort:    exitTCPPort,
+			UDPListenPort: exitUDPPort,
+			Protocol:      "both",
+			Key:           key,
+		})
+	}()
+	waitForTCP(t, exitTCPPort)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:        "entry",
+			TunnelID:    31,
+			RuleID:      32,
+			ListenPort:  entryPort,
+			Protocol:    "both",
+			ExitHost:    "127.0.0.1",
+			ExitPort:    exitTCPPort,
+			UDPExitPort: exitUDPPort,
+			TargetIP:    "127.0.0.1",
+			TargetPort:  targetPort,
+			Key:         key,
+		})
+	}()
+	waitForTCP(t, entryPort)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("split-tcp")); err != nil {
+		t.Fatal(err)
+	}
+	tcpBuf := make([]byte, len("split-tcp"))
+	if _, err := io.ReadFull(conn, tcpBuf); err != nil {
+		t.Fatal(err)
+	}
+	if string(tcpBuf) != "split-tcp" {
+		t.Fatalf("unexpected tcp echo %q", string(tcpBuf))
+	}
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("split-udp")); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	udpBuf := make([]byte, 64)
+	n, err := client.Read(udpBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(udpBuf[:n]) != "split-udp" {
+		t.Fatalf("unexpected udp echo %q", string(udpBuf[:n]))
+	}
+}
+
 func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 	target, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -730,6 +841,25 @@ func freeUDPPort(t *testing.T) int {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
+func freeTCPUDPPort(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+		if err == nil {
+			_ = conn.Close()
+			return port
+		}
+	}
+	t.Fatal("could not find a port free for tcp and udp")
+	return 0
 }
 
 func waitForUDP(t *testing.T, port int) {

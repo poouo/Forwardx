@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
+import {
+  DEFAULT_LATENCY_TIME_RANGE_HOURS,
+  filterLatencySeriesByTimeRange,
+  latencyTimeRangeLabel,
+  LatencyTimeRangeSelect,
+  type LatencyTimeRangeHours,
+} from "@/components/LatencyTimeRangeSelect";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
@@ -126,6 +133,7 @@ export default function HostProbeServiceLatencyDialog({
   const hostId = Number(host?.id || 0);
   const [selectedServiceIds, setSelectedServiceIds] = useState<Set<number>>(new Set());
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
+  const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const hostServices = useMemo(
     () => (services || []).filter((service) => serviceAppliesToHost(service, hostId)),
     [services, hostId],
@@ -140,6 +148,10 @@ export default function HostProbeServiceLatencyDialog({
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
     { serviceIds, hostId, hours: 24 },
     { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: pollingInterval("slow", open) },
+  );
+  const rangedData = useMemo(
+    () => filterLatencySeriesByTimeRange(data as any[], timeRangeHours),
+    [data, timeRangeHours],
   );
 
   useEffect(() => {
@@ -166,7 +178,7 @@ export default function HostProbeServiceLatencyDialog({
 
   const rawChart = useMemo(() => {
     const aggregates = new Map<string, { bucket: number; serviceId: number; sum: number; count: number; timeout: number }>();
-    for (const row of data as any[]) {
+    for (const row of rangedData as any[]) {
       const at = new Date(row.recordedAt).getTime();
       if (!Number.isFinite(at)) continue;
       const serviceId = Number(row.serviceId);
@@ -193,7 +205,7 @@ export default function HostProbeServiceLatencyDialog({
       byBucket.set(aggregate.bucket, point);
     }
     return Array.from(byBucket.values()).sort((a, b) => a.at - b.at);
-  }, [data]);
+  }, [rangedData]);
 
   const processedChart = useMemo(() => {
     if (!peakCutEnabled || visibleServiceIds.length === 0) return rawChart;
@@ -251,9 +263,12 @@ export default function HostProbeServiceLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>服务延迟图表</DialogTitle>
-              <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
+              <DialogDescription>{host?.name ? `${host.name} 最近 ${latencyTimeRangeLabel(timeRangeHours)} 服务探测延迟` : `最近 ${latencyTimeRangeLabel(timeRangeHours)} 服务探测延迟`}</DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
+            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
+              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+            </div>
           </div>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">

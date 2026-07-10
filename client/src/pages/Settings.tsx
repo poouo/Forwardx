@@ -5008,8 +5008,8 @@ function SystemInfoSection() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[calc(100svh-1.5rem)] w-[calc(100vw-0.75rem)] max-w-[42rem] flex-col gap-3 overflow-hidden p-3 sm:max-h-[92svh] sm:w-full sm:max-w-3xl sm:p-6">
+          <DialogHeader className="shrink-0 pr-8">
             <DialogTitle className="flex items-center gap-2">
               <ShieldCheck className="h-5 w-5 text-primary" />
               转发协议总开关
@@ -5018,43 +5018,45 @@ function SystemInfoSection() {
               开启或关闭可用协议。
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div>
-                <p className="text-sm font-medium">端口转发</p>
-                <p className="text-xs text-muted-foreground">端口转发工具开关。</p>
+          <div className="-mx-1 min-h-0 overflow-y-auto overscroll-contain px-1 pb-1">
+            <div className="grid gap-3 min-[360px]:grid-cols-2">
+              <div className="space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
+                <div>
+                  <p className="text-sm font-medium">端口转发</p>
+                  <p className="text-xs text-muted-foreground">端口转发工具开关。</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {directForwardProtocolKeys.map((key) => (
+                    <div
+                      key={key}
+                      className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/40 bg-background/60 px-3 py-2"
+                    >
+                      <span className="min-w-0 truncate text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
+                      <Switch className="shrink-0" checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-col gap-2">
-                {directForwardProtocolKeys.map((key) => (
-                  <div
-                    key={key}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
-                  >
-                    <span className="text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
-                    <Switch checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div>
-                <p className="text-sm font-medium">隧道协议</p>
-                <p className="text-xs text-muted-foreground">隧道模式开关。</p>
-              </div>
-              <div className="flex flex-col gap-2">
-                {tunnelForwardProtocolKeys.map((key) => (
-                  <div
-                    key={key}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
-                  >
-                    <span className="text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
-                    <Switch checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
-                  </div>
-                ))}
+              <div className="space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
+                <div>
+                  <p className="text-sm font-medium">隧道协议</p>
+                  <p className="text-xs text-muted-foreground">隧道模式开关。</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {tunnelForwardProtocolKeys.map((key) => (
+                    <div
+                      key={key}
+                      className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/40 bg-background/60 px-3 py-2"
+                    >
+                      <span className="min-w-0 truncate text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
+                      <Switch className="shrink-0" checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
-          <DialogFooter className="gap-2">
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/40 pt-3 sm:border-0 sm:pt-0">
             <Button variant="outline" onClick={closeForwardProtocolDialog}>
               取消
             </Button>
