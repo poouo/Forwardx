@@ -219,7 +219,9 @@ ForwardX 支持这些隧道：
 
 自定义加密隧道可以在入口和出口 Agent 下方指定连接地址。不填写时默认走公网入口；填写内网 IP 或 IPv6 地址时，会优先使用指定地址作为链路连接目标。隧道也可以引用入口组提供多入口，或配置多个出口节点用于出口负载均衡。
 
-需要绕过 UDP 识别或限制时，可以在 ForwardX 隧道规则中开启 mimic UDP 混淆。该功能要求相关 Agent 主机已安装 mimic/mimic-dkms，并在主机管理中配置正确网卡名；面板只下发 filter 配置，mimic 负责透明混淆，ForwardX 继续负责加密转发。
+需要绕过 UDP 识别或限制时，可以在 ForwardX 隧道规则中开启 mimic UDP 混淆。该功能要求相关 Agent 主机已安装 mimic/mimic-dkms；面板会优先使用主机管理中配置的网卡，未配置时由新版 Agent 上报默认路由网卡。
+
+链路仍由 ForwardX FXP 原生 UDP 承载：拨号侧 FXP UDP 数据先经过 mimic `remote=` filter 伪装为 TCP 外观，对端物理网卡上的 mimic `local=` filter 还原为 UDP，再交给监听侧 FXP。多跳隧道会在每一跳重复这套处理，额外出口也使用各自 FXP 监听端口。该功能不创建或使用 WireGuard。
 
 ## Telegram 机器人
 

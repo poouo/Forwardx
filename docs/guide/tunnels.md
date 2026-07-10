@@ -66,6 +66,8 @@
 不同隧道类型支持的高级设置不同，界面只会展示当前类型可用的配置项。
 启用 mimic UDP 混淆前，需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；Agent 安装脚本会作为可选项提示是否安装，默认 `n`，只有输入 `Y` 才会执行。
 
+mimic 仅工作在物理网卡的 XDP/TC 层，ForwardX 隧道本身仍由 FXP 原生 UDP 承载。拨号侧按下一跳 FXP 地址生成 `remote=` filter，监听侧按本机网卡真实地址和 FXP 监听端口生成 `local=` filter；多跳和额外出口会分别配置。此流程不使用 WireGuard。
+
 
 ## Nginx 隧道注意事项
 

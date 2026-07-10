@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.3.226] - 2026-07-10
+
+### 修复
+
+- 修复 mimic UDP 混淆开启后只写入示例配置、`mimic@网卡` 服务未被 Agent 正确识别，导致无 XDP/TC hook、实际仍是普通 ForwardX UDP 的问题。
+- 调整 mimic 链路编排：FXP 原生 UDP 继续作为承载层，拨号侧生成 `remote=` filter，监听侧按物理网卡真实地址和 FXP 监听端口生成 `local=` filter，多跳和额外出口会按各自 FXP 端点完整配置。
+- mimic runtime 同步独立于 GOST runtime，同一主机不同 runtime 缓存互不覆盖；失败时按分钟节流重试，并把失败原因写入面板运行日志。
+- ForwardX 隧道下一跳使用域名时，DNS 地址变化会触发一次 mimic 服务刷新，避免 FXP 已切换新地址但 mimic 仍匹配旧地址。
+- Agent 心跳新增默认路由网卡上报，主机未手动配置网卡时可自动用于 mimic；同时修复 `mimic@eth0` 这类 systemd 实例服务名被校验过滤的问题。
+- ForwardX 接管已有 `/etc/mimic/<iface>.conf` 时会备份原配置及原服务启用/运行状态，关闭混淆后恢复原配置和原服务状态。
+- Agent 本地运行态上报会检查 ForwardX 管理的 mimic 服务是否 active 且 `mimic show <iface>` 可用，避免面板误判为已混淆生效。
+
+### 文档
+
+- README 与 docs 补充 mimic 链路说明，明确只参考 `ike-sh/wg-mimic-fabric` 的网卡/filter 编排方式，不引入 WireGuard，ForwardX 使用 FXP 原生 UDP 承载业务数据。
+
+### 版本
+
+- 面板版本升级至 `2.3.226`。
+- Agent 目标版本升级至 `2.2.145`。
+- Android APP 版本保持 `2.3.79`，APK Release 版本升级至 `2.3.226`。
+
 ## [2.3.225] - 2026-07-10
 
 ### 修复

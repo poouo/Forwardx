@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.144"
+var Version = "2.2.145"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -106,6 +106,7 @@ const nginxServiceName = "forwardx-nginx"
 const runtimeConfigPath = "/etc/forwardx/runtime/gost.json"
 const tunnelRuntimeConfigPath = "/etc/forwardx/runtime/tunnel-gost.json"
 const nginxConfigPath = "/etc/forwardx/nginx/nginx.conf"
+const mimicConfigDir = "/etc/mimic"
 const legacyGostServiceName = "forwardx-gost"
 const legacyTunnelServiceName = "forwardx-tunnels"
 const legacyGostConfigPath = "/etc/forwardx-gost/config.json"
@@ -187,16 +188,17 @@ type actionJob struct {
 }
 
 type heartbeatStaticSnapshot struct {
-	PrimaryIP   string
-	IPv4        string
-	IPv6        string
-	CPUInfo     string
-	MemoryTotal uint64
-	SwapTotal   uint64
-	DiskTotal   uint64
-	Version     string
-	ReportedAt  time.Time
-	Initialized bool
+	PrimaryIP               string
+	IPv4                    string
+	IPv6                    string
+	DefaultNetworkInterface string
+	CPUInfo                 string
+	MemoryTotal             uint64
+	SwapTotal               uint64
+	DiskTotal               uint64
+	Version                 string
+	ReportedAt              time.Time
+	Initialized             bool
 }
 
 type runtimeActionState struct {
@@ -416,6 +418,15 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 			Name:    cfg.service,
 			Active:  active,
 			HasWork: hasWork,
+		})
+	}
+	for _, service := range managedMimicServicesFromLocalConfig() {
+		active := mimicRuntimeServiceHealthy(service)
+		readiness.serviceActiveCache[service] = active
+		readiness.serviceStates = append(readiness.serviceStates, localRuntimeServiceState{
+			Name:    service,
+			Active:  active,
+			HasWork: true,
 		})
 	}
 	return readiness
@@ -1094,6 +1105,7 @@ type action struct {
 	Fxp              *fxpSpec      `json:"fxp,omitempty"`
 	Failover         *failoverSpec `json:"failover,omitempty"`
 	ReportStatus     *bool         `json:"reportStatus,omitempty"`
+	FailureMessage   string        `json:"failureMessage,omitempty"`
 }
 
 type desiredState struct {
@@ -1588,11 +1600,68 @@ func heartbeatStaticChanged(a, b heartbeatStaticSnapshot) bool {
 	return a.PrimaryIP != b.PrimaryIP ||
 		a.IPv4 != b.IPv4 ||
 		a.IPv6 != b.IPv6 ||
+		a.DefaultNetworkInterface != b.DefaultNetworkInterface ||
 		a.CPUInfo != b.CPUInfo ||
 		a.MemoryTotal != b.MemoryTotal ||
 		a.SwapTotal != b.SwapTotal ||
 		a.DiskTotal != b.DiskTotal ||
 		a.Version != b.Version
+}
+
+func defaultNetworkInterface() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	if raw, err := os.ReadFile("/proc/net/route"); err == nil {
+		if name := defaultIPv4NetworkInterface(raw); name != "" {
+			return name
+		}
+	}
+	if raw, err := os.ReadFile("/proc/net/ipv6_route"); err == nil {
+		return defaultIPv6NetworkInterface(raw)
+	}
+	return ""
+}
+
+func defaultIPv4NetworkInterface(raw []byte) string {
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[1] != "00000000" {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 64)
+		if err != nil || flags&0x1 == 0 {
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		if validNetworkInterfaceName(name) {
+			return name
+		}
+	}
+	return ""
+}
+
+func defaultIPv6NetworkInterface(raw []byte) string {
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 || strings.Trim(fields[0], "0") != "" {
+			continue
+		}
+		prefixLength, err := strconv.ParseUint(fields[1], 16, 16)
+		if err != nil || prefixLength != 0 {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[len(fields)-2], 16, 64)
+		if err != nil || flags&0x1 == 0 {
+			continue
+		}
+		name := strings.TrimSpace(fields[len(fields)-1])
+		if validNetworkInterfaceName(name) {
+			return name
+		}
+	}
+	return ""
 }
 
 func heartbeat(cfg Config) (int, error) {
@@ -1613,14 +1682,15 @@ func heartbeat(cfg Config) (int, error) {
 	uptimeValue := uptime()
 	compactEnabled := compactAgentReports.Load()
 	currentStatic := heartbeatStaticSnapshot{
-		PrimaryIP:   primaryIP,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
-		CPUInfo:     cpuInfo(),
-		MemoryTotal: memoryTotal,
-		SwapTotal:   swapTotal,
-		DiskTotal:   diskTotal,
-		Version:     Version,
+		PrimaryIP:               primaryIP,
+		IPv4:                    ipv4,
+		IPv6:                    ipv6,
+		DefaultNetworkInterface: defaultNetworkInterface(),
+		CPUInfo:                 cpuInfo(),
+		MemoryTotal:             memoryTotal,
+		SwapTotal:               swapTotal,
+		DiskTotal:               diskTotal,
+		Version:                 Version,
 	}
 	previousStatic := heartbeatStaticReport
 	shouldReportStatic := !previousStatic.Initialized ||
@@ -1674,6 +1744,9 @@ func heartbeat(cfg Config) (int, error) {
 	if compactEnabled && shouldReportStatic {
 		payload["cpuInfo"] = currentStatic.CPUInfo
 		payload["agentVersion"] = Version
+	}
+	if currentStatic.DefaultNetworkInterface != "" {
+		payload["defaultNetworkInterface"] = currentStatic.DefaultNetworkInterface
 	}
 	if len(dnsChanges) > 0 {
 		payload["dnsChanged"] = dnsChanges
@@ -1788,14 +1861,15 @@ func heartbeatKeepalive(cfg Config) error {
 	swapUsed := swapUsedFrom(memInfo)
 	diskUsageValue, diskUsed, diskTotal := diskStats()
 	currentStatic := heartbeatStaticSnapshot{
-		PrimaryIP:   primaryIP,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
-		CPUInfo:     cpuInfo(),
-		MemoryTotal: memoryTotal,
-		SwapTotal:   swapTotal,
-		DiskTotal:   diskTotal,
-		Version:     Version,
+		PrimaryIP:               primaryIP,
+		IPv4:                    ipv4,
+		IPv6:                    ipv6,
+		DefaultNetworkInterface: defaultNetworkInterface(),
+		CPUInfo:                 cpuInfo(),
+		MemoryTotal:             memoryTotal,
+		SwapTotal:               swapTotal,
+		DiskTotal:               diskTotal,
+		Version:                 Version,
 	}
 	previousStatic := heartbeatStaticReport
 	shouldReportStatic := !previousStatic.Initialized ||
@@ -1845,6 +1919,9 @@ func heartbeatKeepalive(cfg Config) error {
 	if compactAgentReports.Load() && shouldReportStatic {
 		payload["cpuInfo"] = currentStatic.CPUInfo
 		payload["agentVersion"] = Version
+	}
+	if currentStatic.DefaultNetworkInterface != "" {
+		payload["defaultNetworkInterface"] = currentStatic.DefaultNetworkInterface
 	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
@@ -2471,6 +2548,16 @@ func handleAction(cfg Config, a action) bool {
 			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		}
 		rememberRuntimeActionResult(a, ok)
+		if a.ReportStatus != nil && *a.ReportStatus {
+			if !ok {
+				message := strings.TrimSpace(a.FailureMessage)
+				if message == "" {
+					message = fmt.Sprintf("runtime action failed: %s", strings.TrimSpace(a.ForwardType))
+				}
+				actionMessage.set("%s", message)
+			}
+			reportActionStatus(cfg, a, ok, actionMessage.get())
+		}
 		return ok
 	}
 	logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
@@ -2556,7 +2643,7 @@ func reportActionStatus(cfg Config, a action, running bool, message string) {
 	if !shouldReportActionStatus(a) {
 		return
 	}
-	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": running, "message": message}
+	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "forwardType": a.ForwardType, "isRunning": running, "message": message}
 	var out map[string]any
 	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
 		if isTransientAgentCommError(err) {
@@ -2717,7 +2804,7 @@ func shouldSkipRuntimeAction(a action) bool {
 	state := runtimeActionCache[key]
 	recentMatch := state.Success && state.Signature == signature && !state.CheckedAt.IsZero() && now.Sub(state.CheckedAt) < runtimeActionRefreshInterval
 	runtimeActionMu.Unlock()
-	if recentMatch && runtimeActionServicesHealthy() {
+	if recentMatch && runtimeActionServicesHealthy(a) {
 		return true
 	}
 	runtimeActionMu.Lock()
@@ -2742,8 +2829,16 @@ func rememberRuntimeActionResult(a action, ok bool) {
 	runtimeActionMu.Unlock()
 }
 
-func runtimeActionServicesHealthy() bool {
-	for _, name := range requiredRuntimeServicesFromLocalConfig() {
+func runtimeActionServicesHealthy(a action) bool {
+	if strings.TrimSpace(a.ForwardType) == "mimic-runtime-sync" {
+		for _, name := range managedMimicServicesFromLocalConfig() {
+			if !mimicRuntimeServiceHealthy(name) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, name := range requiredSharedRuntimeServicesFromLocalConfig() {
 		if !managedServiceActive(name) {
 			return false
 		}
@@ -2752,6 +2847,12 @@ func runtimeActionServicesHealthy() bool {
 }
 
 func requiredRuntimeServicesFromLocalConfig() []string {
+	services := requiredSharedRuntimeServicesFromLocalConfig()
+	services = append(services, managedMimicServicesFromLocalConfig()...)
+	return services
+}
+
+func requiredSharedRuntimeServicesFromLocalConfig() []string {
 	services := []string{}
 	if gostRuntimeConfigHasServices(runtimeConfigPath) {
 		services = append(services, runtimeServiceName)
@@ -2763,6 +2864,61 @@ func requiredRuntimeServicesFromLocalConfig() []string {
 		services = append(services, nginxServiceName)
 	}
 	return services
+}
+
+func managedMimicServicesFromLocalConfig() []string {
+	return managedMimicServicesFromConfigDir(mimicConfigDir)
+}
+
+func managedMimicServicesFromConfigDir(configDir string) []string {
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return nil
+	}
+	services := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+			continue
+		}
+		path := filepath.Join(configDir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(raw), "# Managed by ForwardX") {
+			continue
+		}
+		iface := strings.TrimSuffix(entry.Name(), ".conf")
+		if !validNetworkInterfaceName(iface) {
+			continue
+		}
+		services = append(services, "mimic@"+iface)
+	}
+	sort.Strings(services)
+	return services
+}
+
+func mimicRuntimeServiceHealthy(name string) bool {
+	if !strings.HasPrefix(name, "mimic@") || !managedServiceActive(name) {
+		return false
+	}
+	iface := strings.TrimPrefix(name, "mimic@")
+	if !validNetworkInterfaceName(iface) || !commandExists("mimic") {
+		return false
+	}
+	return runShellQuiet("mimic show " + shellQuote(iface) + " >/dev/null 2>&1")
+}
+
+func validNetworkInterfaceName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '_' || r == '-' || r == '.' || r == ':' || r == '@' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func gostRuntimeConfigHasServices(path string) bool {
@@ -3649,7 +3805,7 @@ func sanitizeServiceName(name string) string {
 		return ""
 	}
 	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '@' {
 			continue
 		}
 		return ""

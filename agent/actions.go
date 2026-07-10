@@ -320,6 +320,12 @@ func desiredRuntimeServicesHealthy() bool {
 		return false
 	}
 	for _, name := range services {
+		if strings.HasPrefix(name, "mimic@") {
+			if !mimicRuntimeServiceHealthy(name) {
+				return false
+			}
+			continue
+		}
 		if !managedServiceActive(name) {
 			return false
 		}

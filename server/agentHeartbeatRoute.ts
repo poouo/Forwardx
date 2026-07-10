@@ -57,7 +57,7 @@ const nginxRuntimeLogCache = new Map<number, string>();
 const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
-const agentRuntimeSyncActionCache = new Map<number, { signature: string; sentAt: number }>();
+const agentRuntimeSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
@@ -283,7 +283,9 @@ export function invalidateAgentDesiredStateCache(hostId: number) {
   agentActionBatchCache.delete(id);
   agentDesiredStateSendCache.delete(id);
   agentLocalRuntimeStateCache.delete(id);
-  agentRuntimeSyncActionCache.delete(id);
+  for (const key of Array.from(agentRuntimeSyncActionCache.keys())) {
+    if (key.startsWith(`${id}:`)) agentRuntimeSyncActionCache.delete(key);
+  }
   for (const key of Array.from(agentPluginSyncActionCache.keys())) {
     if (key.startsWith(`${id}:`)) agentPluginSyncActionCache.delete(key);
   }
@@ -377,12 +379,14 @@ function shouldSendDesiredState(hostId: number, actions: any[], activeWorkAction
 function shouldSendRuntimeSyncAction(hostId: number, action: any, force: boolean, now: number, resendAfterMs = 0) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return true;
+  const actionType = String(action?.forwardType || "runtime").trim() || "runtime";
+  const cacheKey = `${id}:${actionType}`;
   const signature = stableActionSignature([action]);
-  const cached = agentRuntimeSyncActionCache.get(id);
+  const cached = agentRuntimeSyncActionCache.get(cacheKey);
   const changed = !cached || cached.signature !== signature;
   const shouldResend = !!cached && resendAfterMs > 0 && now - cached.sentAt >= resendAfterMs;
   if (force || changed || shouldResend) {
-    agentRuntimeSyncActionCache.set(id, { signature, sentAt: now });
+    agentRuntimeSyncActionCache.set(cacheKey, { signature, sentAt: now });
     return true;
   }
   return false;
@@ -711,6 +715,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const { cpuInfo, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
+    const reportedDefaultNetworkInterface = normalizeNetworkInterface(req.body?.defaultNetworkInterface);
     const previousHost = { ...(host as any) };
     const wasOnline = isHostStatusOnline(host);
     const reportedAddress = agentReportedAddress(req.body, host);
@@ -838,13 +843,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const dnsWatches = new Map<string, AgentDnsWatch>();
     const responseIssuedAt = Date.now();
 
-    // 获取主机配置的网卡名称（用于 realm --interface）
-    const hostInterface = normalizeNetworkInterface((host as any).networkInterface);
+    // Prefer the explicit host setting. Current Agents also report the
+    // interface selected by the default route so mimic is not silently skipped.
+    const configuredHostInterface = normalizeNetworkInterface((host as any).networkInterface);
+    const hostInterface = configuredHostInterface || reportedDefaultNetworkInterface;
     const mimicFiltersByInterface = new Map<string, Set<string>>();
+    const reportedMimicInterfaces = new Set<string>();
+    let mimicRequestedWithoutInterface = false;
     const addMimicFilter = (filter: string, iface = hostInterface) => {
       const networkInterface = normalizeNetworkInterface(iface);
       const text = String(filter || "").trim();
-      if (!networkInterface || !text) return;
+      if (!text) return;
+      if (!networkInterface) {
+        mimicRequestedWithoutInterface = true;
+        return;
+      }
       if (!mimicFiltersByInterface.has(networkInterface)) mimicFiltersByInterface.set(networkInterface, new Set());
       mimicFiltersByInterface.get(networkInterface)!.add(text);
     };
@@ -857,38 +870,78 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       dnsRuntimeGenerationByKey.set(key, next);
       return next;
     };
-    const buildMimicRuntimeSyncCmds = () => {
-      if (!hostInterface) return [];
+    const buildMimicRuntimeSyncCmds = (dnsRefreshToken = "") => {
+      if (mimicRequestedWithoutInterface && !hostInterface) {
+        return [
+          `echo "[mimic] no usable network interface; configure the host network interface or upgrade the Agent so it can report the default interface"; exit 1`,
+        ];
+      }
       const cmds: string[] = [];
       const activeIfaces = Array.from(mimicFiltersByInterface.keys()).sort();
-      const knownIfaces = new Set([hostInterface, ...activeIfaces]);
+      const knownIfaces = new Set([
+        ...(hostInterface ? [hostInterface] : []),
+        ...activeIfaces,
+        ...reportedMimicInterfaces,
+      ]);
       for (const networkInterface of Array.from(knownIfaces).sort()) {
-        const filters = Array.from(mimicFiltersByInterface.get(networkInterface) || []).sort();
+        const desiredFilters = Array.from(mimicFiltersByInterface.get(networkInterface) || []).sort();
+        const localPorts = desiredFilters
+          .filter((filter) => filter.startsWith("local-port="))
+          .map((filter) => Number(filter.slice("local-port=".length)) || 0)
+          .filter((port) => port > 0 && port <= 65535);
+        const filters = desiredFilters.filter((filter) => !filter.startsWith("local-port="));
         const configPath = `${MIMIC_CONFIG_DIR}/${networkInterface}.conf`;
+        const backupPath = `${configPath}.forwardx-backup`;
+        const backupActivePath = `${configPath}.forwardx-backup-active`;
+        const backupEnabledPath = `${configPath}.forwardx-backup-enabled`;
+        const dnsRefreshPath = `${configPath}.forwardx-dns-refresh`;
+        const configTempPath = `${configPath}.forwardx-new`;
         const serviceName = `mimic@${networkInterface}`;
-        if (filters.length === 0) {
-          cmds.push(stopManagedServiceCmd(serviceName));
-          cmds.push(`rm -f ${shQuote(configPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true`);
+        const serviceNameQuoted = shQuote(serviceName);
+        const serviceActiveCheck = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} status >/dev/null 2>&1; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} status >/dev/null 2>&1; else false; fi`;
+        const serviceEnabledCheck = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-enabled --quiet ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update show default 2>/dev/null | grep -q -F ${shQuote(serviceName)}; else false; fi`;
+        const enableRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update add ${serviceNameQuoted} default; else echo "[mimic] cannot restore enabled state for ${serviceName} on unsupported init system"; exit 1; fi`;
+        const restartRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} restart; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} restart; else echo "[mimic] cannot restore service ${serviceName} on unsupported init system"; exit 1; fi`;
+        if (filters.length === 0 && localPorts.length === 0) {
+          cmds.push(
+            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; fi`,
+          );
           continue;
         }
         const config = [
+          "# Managed by ForwardX",
           "log.verbosity = info",
           "link_type = eth",
-          "use_libxdp = false",
-          "max_window = false",
           "xdp_mode = skb",
+          "use_libxdp = false",
+          "keepalive = 300:::",
+          "max_window = false",
           ...filters.map((filter) => `filter = ${filter}`),
-          "",
         ].join("\n");
         const encodedConfig = Buffer.from(config, "utf8").toString("base64");
-        cmds.push(
+        const localPortList = localPorts.join(" ");
+        cmds.push([
+          "set -e",
           `if ! command -v mimic >/dev/null 2>&1; then echo "[mimic] mimic is not installed; install mimic and mimic-dkms to use UDP camouflage"; exit 1; fi`,
+          `if ! ip link show dev ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] network interface ${shQuote(networkInterface)} does not exist"; exit 1; fi`,
           `mkdir -p ${shQuote(MIMIC_CONFIG_DIR)}`,
-          `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(configPath)}`,
-          `echo "[mimic] sync ${shQuote(networkInterface)} filters=${filters.length}"`,
-          `modprobe mimic 2>/dev/null || true`,
+          `if [ -f ${shQuote(configPath)} ] && ! grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null && [ ! -f ${shQuote(backupPath)} ]; then if { ${serviceActiveCheck}; }; then : > ${shQuote(backupActivePath)}; else rm -f ${shQuote(backupActivePath)}; fi; if { ${serviceEnabledCheck}; }; then : > ${shQuote(backupEnabledPath)}; else rm -f ${shQuote(backupEnabledPath)}; fi; cp -p ${shQuote(configPath)} ${shQuote(backupPath)}; fi`,
+          `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(configTempPath)}`,
+          localPorts.length > 0
+            ? `mimic_ipv4=$(ip -o -4 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk 'NR==1 { sub(/\\/.*/, "", $4); print $4 }'); mimic_ipv6=$(ip -o -6 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk '$4 !~ /^fe80:/ { sub(/\\/.*/, "", $4); print $4; exit }'); if [ -z "$mimic_ipv4$mimic_ipv6" ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] interface ${shQuote(networkInterface)} has no global IPv4 or IPv6 address"; exit 1; fi; for mimic_port in ${localPortList}; do [ -n "$mimic_ipv4" ] && printf '\\nfilter = local=%s:%s' "$mimic_ipv4" "$mimic_port" >> ${shQuote(configTempPath)}; [ -n "$mimic_ipv6" ] && printf '\\nfilter = local=[%s]:%s' "$mimic_ipv6" "$mimic_port" >> ${shQuote(configTempPath)}; done`
+            : "",
+          `printf '\\n' >> ${shQuote(configTempPath)}; mimic_filter_count=$(grep -c '^filter = ' ${shQuote(configTempPath)} 2>/dev/null || true); if [ "$mimic_filter_count" -le 0 ] || [ "$mimic_filter_count" -gt 32 ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] invalid filter count: $mimic_filter_count (supported 1-32)"; exit 1; fi; mv -f ${shQuote(configTempPath)} ${shQuote(configPath)}; chmod 644 ${shQuote(configPath)}`,
+          `echo "[mimic] sync ${shQuote(networkInterface)} filters=$mimic_filter_count"`,
+          `if ! modprobe mimic 2>/dev/null; then echo "[mimic] kernel module could not be loaded"; exit 1; fi`,
+          dnsRefreshToken
+            ? `mimic_old_hash=$(cat ${shQuote(configPath)}.sha256 2>/dev/null || true); if command -v sha256sum >/dev/null 2>&1; then mimic_new_hash=$(sha256sum ${shQuote(configPath)} 2>/dev/null | awk '{print "sha256:"$1}'); elif command -v cksum >/dev/null 2>&1; then mimic_new_hash=$(cksum ${shQuote(configPath)} 2>/dev/null | awk '{print "cksum:"$1":"$2}'); else mimic_new_hash="mtime:$(wc -c < ${shQuote(configPath)} 2>/dev/null):$(date -r ${shQuote(configPath)} +%s 2>/dev/null)"; fi; mimic_dns_restart=0; if { ${serviceActiveCheck}; } && [ "$mimic_new_hash" = "$mimic_old_hash" ] && [ "$(cat ${shQuote(dnsRefreshPath)} 2>/dev/null || true)" != ${shQuote(dnsRefreshToken)} ]; then mimic_dns_restart=1; fi`
+            : "mimic_dns_restart=0",
           restartManagedServiceIfConfigChangedCmd(serviceName, configPath),
-        );
+          dnsRefreshToken
+            ? `if [ "$mimic_dns_restart" = "1" ]; then echo ${shQuote(`[mimic] DNS refresh ${dnsRefreshToken}`)}; ${startManagedServiceCmd(serviceName)}; fi; printf '%s' ${shQuote(dnsRefreshToken)} > ${shQuote(dnsRefreshPath)}`
+            : "",
+          `if ! mimic show ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] runtime hooks are unavailable on ${shQuote(networkInterface)}"; systemctl status ${shQuote(serviceName)}.service --no-pager -l 2>/dev/null || true; journalctl -u ${shQuote(serviceName)}.service -n 80 --no-pager 2>/dev/null || true; exit 1; fi`,
+        ].filter(Boolean).join("\n"));
       }
       return cmds;
     };
@@ -1654,6 +1707,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
           const extraRoutes = await forwardXExtraExitRoutes(tunnel);
           if (extraRoutes.length > 0) {
+            if (tunnelNeedsMimic(tunnel)) {
+              for (const route of extraRoutes) {
+                const endpoint = mimicFilterEndpoint(route.host, route.port);
+                if (endpoint) addMimicFilter(`remote=${endpoint}`);
+              }
+            }
             fxpSpec.exits = [
               { host: fxpSpec.relayExitHost, port: fxpSpec.relayExitPort, key: fxpSpec.relayKey },
               ...extraRoutes.map((route) => ({ host: route.host, port: route.port, key: route.key })),
@@ -1707,13 +1766,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const addMimicLocalFilterForPort = (port: unknown) => {
       const p = Number(port) || 0;
       if (p <= 0 || p > 65535) return;
-      addMimicFilter(`local=0.0.0.0:${p}`);
-      addMimicFilter(`local=[::]:${p}`);
+      addMimicFilter(`local-port=${p}`);
     };
     const collectMimicFiltersForRule = async (rule: any, tunnel: any) => {
       if (!udpOverTcpEnabled(rule, tunnel) || !isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return;
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const hostId = Number(host.id);
+      const addCurrentHostExtraExitFilters = () => {
+        const extraExitNodes = (tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [])
+          .filter((node: any) => node?.isEnabled !== false && Number(node.hostId) === hostId);
+        for (const extraExitNode of extraExitNodes) {
+          addMimicLocalFilterForPort(Number((extraExitNode as any).listenPort || 0));
+        }
+      };
       if (isCurrentHostTunnelEntry(tunnel)) {
         addMimicRemoteFilterForRoutes(await forwardXEntryRoutes(rule, tunnel));
       }
@@ -1727,21 +1792,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (hostIdx < hops.length - 1) {
             const nextHop = hops[hostIdx + 1] as any;
             const nextHost = String(await getHopDialAddress(nextHop)).trim();
-            const endpoint = mimicFilterEndpoint(nextHost, Number(nextHop?.listenPort || 0));
-            if (endpoint) addMimicFilter(`remote=${endpoint}`);
+            const nextRoutes = [{ host: nextHost, port: Number(nextHop?.listenPort || 0) }];
+            if (hostIdx + 1 === hops.length - 1 && (tunnel as any).loadBalanceEnabled) {
+              nextRoutes.push(...await forwardXExtraExitRoutes(tunnel));
+            }
+            addMimicRemoteFilterForRoutes(nextRoutes);
           }
         }
+        addCurrentHostExtraExitFilters();
         return;
       }
       const primaryExitHostId = Number(tunnel.exitHostId || 0);
       if (primaryExitHostId === hostId) {
         addMimicLocalFilterForPort(Number(tunnel.listenPort) || 0);
       }
-      const extraExitNode = (tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [])
-        .find((node: any) => node?.isEnabled !== false && Number(node.hostId) === hostId);
-      if (extraExitNode) {
-        addMimicLocalFilterForPort(Number((extraExitNode as any).listenPort || 0));
-      }
+      addCurrentHostExtraExitFilters();
     };
     for (const tunnel of hostTunnels as any[]) {
       if (isCurrentHostTunnelEntry(tunnel) && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
@@ -2659,7 +2724,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...buildGostReloadCmds(),
       ...await buildTunnelReloadCmds(),
       ...await getNginxRuntimeSyncCmds(),
-      ...buildMimicRuntimeSyncCmds(),
     ].filter(Boolean);
 
     const ruleTrafficPort = (rule: any) => {
@@ -2850,8 +2914,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const item of reportedRuntimeState?.tunnels || []) {
       if (Number(item.port) > 0) localTunnelsByPort.set(Number(item.port), item);
     }
+    const reportedRuntimeServices = reportedRuntimeState?.services || [];
+    for (const service of reportedRuntimeServices) {
+      const name = String(service?.name || "").trim();
+      if (!name.startsWith("mimic@")) continue;
+      const iface = normalizeNetworkInterface(name.slice("mimic@".length));
+      if (iface) reportedMimicInterfaces.add(iface);
+    }
     const managedRuntimeServiceNames = new Set([RUNTIME_SERVICE_NAME, TUNNEL_RUNTIME_SERVICE_NAME, NGINX_SERVICE_NAME]);
-    const runtimeServiceUnhealthy = hasReportedRuntimeState && (reportedRuntimeState?.services || [])
+    const runtimeServiceUnhealthy = hasReportedRuntimeState && reportedRuntimeServices
       .some((service: AgentLocalRuntimeServiceState) => (
         managedRuntimeServiceNames.has(String(service.name || "").trim())
         && service.hasWork
@@ -4284,8 +4355,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     const runtimeConfigChanged = actions.some(actionMayAffectSharedRuntime) || dnsChangedReports.length > 0;
-    const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0;
-    const runtimeSyncWanted = runtimeConfigChanged || runtimeServiceUnhealthy || mimicRuntimeSyncWanted;
+    const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0
+      || mimicRequestedWithoutInterface
+      || reportedMimicInterfaces.size > 0;
+    const runtimeSyncWanted = runtimeConfigChanged || runtimeServiceUnhealthy;
     const runtimeSyncBootstrap = !runtimeSyncWanted && (!supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState);
     if (runtimeSyncWanted || runtimeSyncBootstrap) {
       const runtimeSyncAction = {
@@ -4304,6 +4377,35 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const runtimeRepairResendMs = runtimeServiceUnhealthy ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS : 0;
       if (shouldSendRuntimeSyncAction(Number(host.id), runtimeSyncAction, runtimeConfigChanged, responseIssuedAt, runtimeRepairResendMs)) {
         actions.push(runtimeSyncAction);
+      }
+    }
+    if (mimicRuntimeSyncWanted) {
+      const mimicDnsRefreshToken = anyTunnelDnsRefresh(
+        (hostTunnels as any[]).filter((tunnel: any) => tunnelNeedsMimic(tunnel)),
+      ) ? dnsRuntimeRefreshToken : "";
+      const mimicRuntimeSyncAction = {
+        statusType: "runtime",
+        ruleId: 0,
+        tunnelId: 0,
+        op: "apply",
+        forwardType: "mimic-runtime-sync",
+        sourcePort: 0,
+        targetIp: "",
+        targetPort: 0,
+        protocol: "udp",
+        knownRunning: false,
+        reportStatus: true,
+        failureMessage: "mimic UDP camouflage synchronization failed; check the host network interface, mimic installation, kernel module, and Agent logs",
+        commands: buildMimicRuntimeSyncCmds(mimicDnsRefreshToken),
+      } as any;
+      if (shouldSendRuntimeSyncAction(
+        Number(host.id),
+        mimicRuntimeSyncAction,
+        false,
+        responseIssuedAt,
+        AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS,
+      )) {
+        actions.push(mimicRuntimeSyncAction);
       }
     }
 

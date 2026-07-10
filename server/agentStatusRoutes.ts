@@ -174,6 +174,17 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     const rawMessage = typeof req.body?.message === "string" ? req.body.message.trim() : "";
     const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
     const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
+    if (statusType === "runtime") {
+      const runtimeType = String(req.body?.forwardType || "runtime").trim() || "runtime";
+      if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}:message=${message}`, !isRunning || !!message)) {
+        appendPanelLog(
+          !!isRunning ? "info" : "warn",
+          `[Runtime] status type=${runtimeType} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        );
+      }
+      res.json({ success: true });
+      return;
+    }
     if (statusType === "tunnel") {
       if (typeof tunnelId !== "number") {
         res.status(400).json({ error: "tunnelId is required" });
