@@ -31,6 +31,8 @@ import {
   RefreshCw,
   Server,
   Settings2,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -520,6 +522,193 @@ function PluginUsageFieldInput({
   );
 }
 
+function chinaWhitelistSelectedCodes(value: unknown) {
+  return Array.from(new Set((Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter((code) => code === "CN" || /^[0-9]{6}$/.test(code))));
+}
+
+function ChinaWhitelistRegionSelector({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: PluginUsageField;
+  value: unknown;
+  disabled?: boolean;
+  onChange: (value: string[]) => void;
+}) {
+  const selected = chinaWhitelistSelectedCodes(value);
+  const selectedProvinces = selected.filter((code) => code !== "CN");
+  const hasNationalSelection = selected.includes("CN");
+  const [provinceMode, setProvinceMode] = useState(selectedProvinces.length > 0);
+  useEffect(() => {
+    if (selectedProvinces.length > 0) {
+      setProvinceMode(true);
+    } else if (hasNationalSelection) {
+      setProvinceMode(false);
+    }
+  }, [hasNationalSelection, selectedProvinces.length]);
+  const provinces = (field.options || []).filter((option) => /^[0-9]{6}$/.test(option.value));
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border/40 bg-background/60 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Label>{field.label}</Label>
+          {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
+        </div>
+        <Badge variant="outline" className="shrink-0">
+          {provinceMode ? `已选 ${selectedProvinces.length} 个省份` : "全国"}
+        </Badge>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            setProvinceMode(false);
+            onChange(["CN"]);
+          }}
+          className={cn(
+            "flex items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left text-sm transition-colors",
+            !provinceMode ? "border-primary/45 bg-primary/10 text-primary" : "border-border/40 hover:bg-muted/50",
+          )}
+        >
+          <span>
+            <span className="block font-medium">全国</span>
+            <span className="mt-0.5 block text-xs text-muted-foreground">允许中国大陆 IPv4 地址</span>
+          </span>
+          {!provinceMode && <CheckCircle2 className="h-4 w-4 shrink-0" />}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            setProvinceMode(true);
+            onChange(selectedProvinces);
+          }}
+          className={cn(
+            "flex items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left text-sm transition-colors",
+            provinceMode ? "border-primary/45 bg-primary/10 text-primary" : "border-border/40 hover:bg-muted/50",
+          )}
+        >
+          <span>
+            <span className="block font-medium">按省份</span>
+            <span className="mt-0.5 block text-xs text-muted-foreground">仅允许下方已选择的省份</span>
+          </span>
+          {provinceMode && <CheckCircle2 className="h-4 w-4 shrink-0" />}
+        </button>
+      </div>
+      {provinceMode && (
+        <div className="grid max-h-64 gap-1.5 overflow-auto rounded-md border border-border/40 p-2 sm:grid-cols-2 xl:grid-cols-3">
+          {provinces.map((option) => {
+            const active = selectedProvinces.includes(option.value);
+            return (
+              <button
+                key={option.value}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(active
+                  ? selectedProvinces.filter((code) => code !== option.value)
+                  : [...selectedProvinces, option.value])}
+                className={cn(
+                  "flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-sm transition-colors",
+                  active ? "border-primary/45 bg-primary/10 text-primary" : "border-border/40 hover:bg-muted/50",
+                )}
+              >
+                <span className="truncate">{option.label}</span>
+                {active && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {provinceMode && selectedProvinces.length === 0 && (
+        <p className="text-xs text-destructive">请至少选择一个省份，或切换回全国模式。</p>
+      )}
+    </div>
+  );
+}
+
+function ChinaWhitelistHostStatusSummary({
+  hosts,
+  selectedHostIds,
+  statusByHostId,
+  regionLabelByCode,
+}: {
+  hosts: any[];
+  selectedHostIds: number[];
+  statusByHostId: Map<number, any>;
+  regionLabelByCode: Map<string, string>;
+}) {
+  const selectedHosts = hosts.filter((host) => selectedHostIds.includes(Number(host.id)));
+  if (selectedHosts.length === 0) return null;
+  const appliedCount = selectedHosts.filter((host) => statusByHostId.get(Number(host.id))?.data?.applied === true).length;
+  const configuredCount = selectedHosts.filter((host) => statusByHostId.get(Number(host.id))?.data?.configured === true).length;
+
+  return (
+    <div className="border-b border-border/40 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <p className="text-sm font-medium">Agent 规则状态</p>
+        </div>
+        <p className="text-xs text-muted-foreground">已读取 {statusByHostId.size}/{selectedHosts.length} 台</p>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">已配置 {configuredCount} 台，规则已挂载 {appliedCount} 台。</p>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {selectedHosts.map((host) => {
+          const result = statusByHostId.get(Number(host.id));
+          const data = result?.data;
+          const regions = Array.isArray(data?.regions)
+            ? data.regions.map((code: unknown) => regionLabelByCode.get(String(code)) || String(code)).join("、")
+            : "";
+          const failed = result && result.status !== "success";
+          const stateLabel = data?.applied
+            ? "规则已挂载"
+            : data?.configured
+              ? "已同步配置"
+              : failed
+                ? "读取失败"
+                : "尚未读取";
+          return (
+            <div key={host.id} className="min-w-0 rounded-md border border-border/40 bg-background/60 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={cn("h-2 w-2 shrink-0 rounded-full", host.isOnline ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+                  <p className="truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {failed && <ShieldAlert className="h-3.5 w-3.5 text-destructive" />}
+                  <Badge variant="outline" className={cn(
+                    "text-[10px]",
+                    data?.applied ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : failed ? "border-destructive/25 bg-destructive/10 text-destructive" : "border-border/50 text-muted-foreground",
+                  )}>
+                    {stateLabel}
+                  </Badge>
+                </div>
+              </div>
+              {data ? (
+                <p className="mt-1.5 truncate text-xs text-muted-foreground" title={regions || "未配置区域"}>
+                  {data.backend === "none" ? "未检测到防火墙规则" : `${data.backend || "-"} · ${Number(data.ruleCount || 0)} 条 CIDR`}
+                  {regions ? ` · ${regions}` : ""}
+                  {data.serviceActive ? " · 已持久化" : ""}
+                </p>
+              ) : failed ? (
+                <p className="mt-1.5 line-clamp-2 text-xs text-destructive">{result.error || result.stderr || result.output || "Agent 未返回状态"}</p>
+              ) : (
+                <p className="mt-1.5 text-xs text-muted-foreground">点击下方“读取主机状态”获取实际规则状态。</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Plugins() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
@@ -568,6 +757,12 @@ export default function Plugins() {
     ? pluginActions.filter((action: any) => action?.type !== "agent.request")
     : pluginActions;
   const usageFields = (hostAssetSyncUsageView?.fields || []) as PluginUsageField[];
+  const isChinaRegionWhitelist = selectedPlugin?.pluginId === "china-region-whitelist";
+  const chinaRegionField = isChinaRegionWhitelist ? usageFields.find((field) => field.key === "region-codes") : undefined;
+  const renderedUsageFields = isChinaRegionWhitelist
+    ? usageFields.filter((field) => field.key !== "region-codes")
+    : usageFields;
+  const chinaRegionLabelByCode = useMemo(() => new Map((chinaRegionField?.options || []).map((option) => [option.value, option.label])), [chinaRegionField?.options]);
   const usageOperationOptions = Array.isArray(hostAssetSyncUsageView?.operationSelector?.options)
     ? hostAssetSyncUsageView.operationSelector.options
     : [];
@@ -595,6 +790,14 @@ export default function Plugins() {
     },
   );
   const agentActionStatus = agentActionStatusQuery.data;
+  const chinaWhitelistStatusByHostId = useMemo(() => {
+    const rows = actionResult?.result?.actionId === "read-agent-status" && Array.isArray(actionResult?.result?.body?.results)
+      ? actionResult.result.body.results
+      : [];
+    return new Map(rows
+      .map((row: any) => [Number(row?.hostId), row] as const)
+      .filter(([hostId]) => Number.isInteger(hostId) && hostId > 0));
+  }, [actionResult]);
 
   const selectedAsset = assets.find((asset: any) => asset.path === activeAssetPath) || assets[0];
   const selectedPage = pluginPages.find((page: any) => page.id === activePageId) || pluginPages[0];
@@ -689,6 +892,8 @@ export default function Plugins() {
   const saveUsageMutation = trpc.plugins.saveUsage.useMutation({
     onSuccess: async () => {
       toast.success("使用配置已保存");
+      setActionResult(null);
+      setAgentActionGroupId("");
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "保存失败"),
@@ -1065,7 +1270,7 @@ export default function Plugins() {
           )}
         </div>
 
-        {(usageOperationOptions.length > 0 || usageFields.length > 0) && (
+        {(isChinaRegionWhitelist || usageOperationOptions.length > 0 || renderedUsageFields.length > 0) && (
           <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
             {usageOperationOptions.length > 0 && (
               <div className="mb-4 space-y-2">
@@ -1092,9 +1297,22 @@ export default function Plugins() {
                 )}
               </div>
             )}
-            {usageFields.length > 0 && (
+            {isChinaRegionWhitelist && chinaRegionField && (
+              <div className="mb-4">
+                <ChinaWhitelistRegionSelector
+                  field={chinaRegionField}
+                  value={usageDraft.fieldValues[chinaRegionField.key]}
+                  disabled={saveUsageMutation.isPending}
+                  onChange={(value) => setUsageDraft((current) => ({
+                    ...current,
+                    fieldValues: { ...current.fieldValues, [chinaRegionField.key]: value },
+                  }))}
+                />
+              </div>
+            )}
+            {renderedUsageFields.length > 0 && (
               <div className="grid gap-4 lg:grid-cols-2">
-                {usageFields.map((field) => (
+                {renderedUsageFields.map((field) => (
                   <PluginUsageFieldInput
                     key={field.key}
                     field={field}
@@ -1145,6 +1363,14 @@ export default function Plugins() {
                 </Button>
               </div>
             </div>
+            {isChinaRegionWhitelist && (
+              <ChinaWhitelistHostStatusSummary
+                hosts={usageHosts}
+                selectedHostIds={usageDraft.hostIds}
+                statusByHostId={chinaWhitelistStatusByHostId}
+                regionLabelByCode={chinaRegionLabelByCode}
+              />
+            )}
             <div className="max-h-72 space-y-2 overflow-auto pr-1">
               {usageHosts.length ? usageHosts.map((host) => {
                 const hostId = Number(host.id);

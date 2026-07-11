@@ -106,6 +106,17 @@ const tables: TableDef[] = [
     unique: [["username"], ["telegramId"], ["telegramBindCode"], ["telegramLoginCode"]],
   },
   {
+    name: "auth_sessions",
+    columns: [
+      c("id", "id"), c("sid", "varchar", { length: 80, notNull: true }), c("userId", "int", { notNull: true }),
+      c("kind", "varchar", { length: 32, notNull: true, default: "browser" }), c("expiresAt", "epoch", { notNull: true }),
+      c("revokedAt", "epoch"), c("revokeReason", "varchar", { length: 64 }),
+      c("createdAt", "epoch", { notNull: true, default: "now" }), c("lastSeenAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    unique: [["sid"]],
+    indexes: [["userId"], ["userId", "kind"], ["expiresAt"]],
+  },
+  {
     name: "hosts",
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("ip", "text", { notNull: true }),

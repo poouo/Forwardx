@@ -3,6 +3,7 @@ import { InsertUser, users, forwardRules } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
+import { revokeUserAuthSessions } from "./sessionRepository";
 import {
   AVATAR_DAILY_CHANGE_LIMIT,
   AVATAR_RANDOM_WINDOW_LIMIT,
@@ -89,6 +90,7 @@ export async function changeUserPassword(userId: number, oldPassword: string, ne
   if (!verifyPassword(oldPassword, user.password)) return false;
   const db = await getDb();
   if (!db) return false;
+  await revokeUserAuthSessions(userId, { reason: "password_changed" });
   await db.update(users).set({ password: hashPassword(newPassword), updatedAt: nowDate() }).where(eq(users.id, userId));
   return true;
 }
@@ -330,6 +332,7 @@ export async function registerUser(data: { username: string; password: string; n
 export async function resetUserPassword(userId: number, newPassword: string) {
   const db = await getDb();
   if (!db) return;
+  await revokeUserAuthSessions(userId, { reason: "password_reset" });
   await db.update(users).set({ password: hashPassword(newPassword), updatedAt: nowDate() }).where(eq(users.id, userId));
 }
 
@@ -349,7 +352,10 @@ export async function updateUserAccount(userId: number, data: { username?: strin
     patch.name = name || username || current.username;
   }
   const password = data.password?.trim();
-  if (password) patch.password = hashPassword(password);
+  if (password) {
+    await revokeUserAuthSessions(userId, { reason: "password_reset" });
+    patch.password = hashPassword(password);
+  }
   if (data.avatar !== undefined) {
     patch.avatar = normalizeAvatarValue(data.avatar) || randomAvataaarsValue(String(`user-${userId}`));
   }

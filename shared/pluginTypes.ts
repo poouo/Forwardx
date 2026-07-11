@@ -340,10 +340,10 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
       "- 支持 nftables 或 iptables/ipset。",
       "- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。",
     ].join("\n"),
-    version: "0.3.0",
+    version: "0.3.1",
     releaseDate: "2026-07-11",
     updatedAt: "2026-07-11",
-    changelog: "接入通用 Agent 操作接口，可从插件使用页读取各主机上的实际白名单、防火墙后端和持久化状态。",
+    changelog: "修复全国与省份同时选择时省级白名单被全国 CIDR 覆盖的问题，并优化主机规则状态展示。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },

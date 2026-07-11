@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.148"
+var Version = "2.2.149"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1355,6 +1355,7 @@ type fxpSpec struct {
 	Exits                    []fxpExitEndpoint `json:"exits,omitempty"`
 	TargetIP                 string            `json:"targetIp"`
 	TargetPort               int               `json:"targetPort"`
+	UDPTargets               []fxpUDPTarget    `json:"udpTargets,omitempty"`
 	Key                      string            `json:"key"`
 	LimitIn                  int64             `json:"limitIn"`
 	LimitOut                 int64             `json:"limitOut"`
@@ -1384,6 +1385,12 @@ type fxpExitEndpoint struct {
 	Port    int    `json:"port"`
 	UDPPort int    `json:"udpPort,omitempty"`
 	Key     string `json:"key,omitempty"`
+}
+
+type fxpUDPTarget struct {
+	RuleID     int    `json:"ruleId"`
+	TargetIP   string `json:"targetIp"`
+	TargetPort int    `json:"targetPort"`
 }
 
 type protocolPolicy struct {
@@ -5086,6 +5093,18 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 			spec.Exits[i].Key = spec.Key
 		}
 	}
+	targets := make([]fxpUDPTarget, 0, len(spec.UDPTargets))
+	seenTargets := map[int]bool{}
+	for _, target := range spec.UDPTargets {
+		target.TargetIP = strings.TrimSpace(target.TargetIP)
+		if target.RuleID <= 0 || target.TargetIP == "" || target.TargetPort <= 0 || target.TargetPort > 65535 || seenTargets[target.RuleID] {
+			continue
+		}
+		seenTargets[target.RuleID] = true
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].RuleID < targets[j].RuleID })
+	spec.UDPTargets = targets
 	return spec
 }
 
@@ -5126,6 +5145,9 @@ func fxpServerSignature(spec fxpSpec) string {
 	}
 	for _, exit := range spec.Exits {
 		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key))
+	}
+	for _, target := range spec.UDPTargets {
+		parts = append(parts, strconv.Itoa(target.RuleID), strings.TrimSpace(target.TargetIP), strconv.Itoa(target.TargetPort))
 	}
 	return strings.Join(parts, "|")
 }
@@ -5312,7 +5334,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Token = cfg.Token
 	}
 	logf(
-		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d",
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d udpTargets=%d",
 		spec.Role,
 		spec.TunnelID,
 		spec.RuleID,
@@ -5332,6 +5354,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.UDPRelayExitPort,
 		spec.TargetIP,
 		spec.TargetPort,
+		len(spec.UDPTargets),
 	)
 	cfgBytes, err := json.Marshal(spec)
 	if err != nil {

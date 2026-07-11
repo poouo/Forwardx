@@ -16,6 +16,7 @@ import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomAvataaarsValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
+import { revokeUserAuthSessions } from "./repositories/sessionRepository";
 import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { ensureBundledDeveloperAnnouncements } from "./repositories/announcementRepository";
@@ -304,6 +305,7 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {
+    await revokeUserAuthSessions(admin.id, { reason: "password_reset" });
     payload.password = hashPassword(input.password);
   }
   await db.update(users).set(payload).where(eq(users.id, admin.id));

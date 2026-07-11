@@ -6,6 +6,7 @@ import { countAll, quoteIdentifier } from "./dbCompat";
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { getHosts, requestHostAgentUpgrade } from "./db";
 import { pushAgentUpgrade } from "./agentEvents";
+import { assertSafeOutboundUrl } from "./ssrf";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
@@ -976,6 +977,7 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
   onPendingApproval?: () => void;
 }) {
   const url = `${normalizePanelUrl(input.oldPanelUrl)}/api/migration/export`;
+  await assertSafeOutboundUrl(url, { purpose: "面板迁移请求" });
   const normalizedTargetPanelUrl = normalizePanelUrl(input.targetPanelUrl);
   let requestId = "";
   const deadline = Date.now() + 6 * 60 * 1000;
@@ -984,6 +986,7 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      redirect: "manual",
       body: JSON.stringify({
         migrationCode: input.migrationCode,
         targetPanelUrl: normalizedTargetPanelUrl,
@@ -1017,9 +1020,11 @@ async function finalizeOldPanelTakeover(input: {
 }) {
   if (!input.takeoverToken) return null;
   const url = `${normalizePanelUrl(input.oldPanelUrl)}/api/migration/takeover-complete`;
+  await assertSafeOutboundUrl(url, { purpose: "面板迁移请求" });
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    redirect: "manual",
     body: JSON.stringify({
       takeoverToken: input.takeoverToken,
       targetPanelUrl: input.targetPanelUrl,

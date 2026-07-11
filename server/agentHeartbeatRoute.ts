@@ -61,6 +61,7 @@ const agentActionBatchCache = new Map<number, { signature: string; issuedAt: num
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentRuntimeSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
+const fxpUdpTargetSignatureCache = new Map<string, string>();
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
@@ -1369,6 +1370,30 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
     // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
     const processTarget = (rule: any) => (rule as any)._originalTargetIp || rule.targetIp;
+    const forwardXUDPTargets = (tunnel: any) => {
+      if (!tunnel || !isForwardXTunnel(tunnel) || !tunnel.isEnabled || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
+        return [] as Array<{ ruleId: number; targetIp: string; targetPort: number }>;
+      }
+      const targets = new Map<number, { ruleId: number; targetIp: string; targetPort: number }>();
+      for (const rule of agentAllRules as any[]) {
+        if (!rule || rule.pendingDelete || !rule.isEnabled || rule.forwardType !== "gost") continue;
+        if (Number(rule.tunnelId || 0) !== Number(tunnel.id || 0)) continue;
+        if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel) || !isForwardRuleProtocolUdpEnabled(rule.protocol)) continue;
+        const ruleId = Number(rule.id || 0);
+        const targetIp = String(processTarget(rule) || "").trim();
+        const targetPort = Number(rule.targetPort || 0);
+        if (!Number.isInteger(ruleId) || ruleId <= 0 || !targetIp || !Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) continue;
+        targets.set(ruleId, { ruleId, targetIp, targetPort });
+      }
+      return Array.from(targets.values()).sort((a, b) => a.ruleId - b.ruleId);
+    };
+    const forwardXUDPTargetsChanged = (tunnel: any, targets: Array<{ ruleId: number; targetIp: string; targetPort: number }>) => {
+      const key = `${Number(host.id)}:${Number(tunnel?.id || 0)}`;
+      const signature = stableStateSignature(targets);
+      if (fxpUdpTargetSignatureCache.get(key) === signature) return false;
+      fxpUdpTargetSignatureCache.set(key, signature);
+      return true;
+    };
     const proxyDebugBool = (value: unknown) => value ? "true" : "false";
     const buildProxyRuleDebugCmd = (label: string, rule: any, extra: Record<string, unknown> = {}) => {
       const fields: Record<string, unknown> = {
@@ -3184,10 +3209,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const runtimeReady = (fxpTunnel || isCurrentHostGostExtraExit)
         ? isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id))
         : false;
-      const shouldRefreshExit = fxpTunnel
-        ? !runtimeReady
-        : (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)) || (isCurrentHostGostExtraExit && !runtimeReady));
       const tunnelProtocolEnabled = isTunnelProtocolEnabled(forwardProtocolSettings, tunnel);
+      const udpTargets = fxpTunnel ? forwardXUDPTargets(tunnel) : [];
+      const shouldSyncUDPTargets = fxpTunnel
+        && tunnel.isEnabled
+        && tunnelProtocolEnabled
+        && forwardXUDPTargetsChanged(tunnel, udpTargets);
+      const shouldRefreshExit = fxpTunnel
+        ? (!runtimeReady || shouldSyncUDPTargets)
+        : (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)) || (isCurrentHostGostExtraExit && !runtimeReady));
       if (fxpTunnel && tunnelProtocolEnabled && tunnelNeedsMimic(tunnel)) {
         addMimicLocalFilterForPort(fxpUdpListenPort);
       }
@@ -3220,6 +3250,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...(fxpUdpListenPort > 0 ? { udpListenPort: fxpUdpListenPort } : {}),
               protocol: "both",
               key: tunnelSecretSeed(tunnel),
+              udpTargets,
               dnsGeneration: tunnelDnsGeneration(tunnel),
             } : undefined,
         });
@@ -3243,6 +3274,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...(fxpUdpListenPort > 0 ? { udpListenPort: fxpUdpListenPort } : {}),
               protocol: "both",
               key: tunnelSecretSeed(tunnel),
+              udpTargets,
               dnsGeneration: tunnelDnsGeneration(tunnel),
             } : undefined,
         });
@@ -3262,13 +3294,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
         const listenPortValue = Number((hops[hostIdx] as any)?.listenPort || 0);
         const tunnelForwardType = isFXP ? "forwardx-tunnel" : "gost-tunnel";
+        const isLastHop = hostIdx === hops.length - 1;
+        const udpTargets = isFXP && isLastHop ? forwardXUDPTargets(tunnel) : [];
+        const shouldSyncUDPTargets = isFXP
+          && isLastHop
+          && tunnel.isEnabled
+          && forwardXUDPTargetsChanged(tunnel, udpTargets);
         if (tunnel.isEnabled && listenPortValue > 0) {
           expectedTunnelPorts.add(listenPortValue);
         }
         const shouldRepairLocalHop = tunnel.isEnabled
           && listenPortValue > 0
           && !localTunnelMatches(Number(tunnel.id), tunnelForwardType, listenPortValue);
-        const shouldApply = tunnel.isEnabled && (!multiHopRuntimeReady || shouldRepairLocalHop);
+        const shouldApply = tunnel.isEnabled && (!multiHopRuntimeReady || shouldRepairLocalHop || shouldSyncUDPTargets);
         const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
         if (!shouldApply && !shouldRemove) continue;
@@ -3299,7 +3337,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
           const fxpSpec = await buildForwardXHopSpec(tunnel, hops, hostIdx, op);
           if (!fxpSpec) continue;
-          // Exit (isLast): just listens, target from helloFrame via rules
+          if (isLastHop) fxpSpec.udpTargets = udpTargets;
 
           actions.push({
             tunnelId: tunnel.id,

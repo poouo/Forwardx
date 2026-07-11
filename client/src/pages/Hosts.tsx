@@ -1582,6 +1582,10 @@ function HostsContent() {
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
       setUpgradeHost(null);
+      if ((data as any)?.skippedOffline) {
+        toast.info("主机离线，已跳过升级任务");
+        return;
+      }
       if ((data as any)?.alreadyLatest) {
         toast.info("该 Agent 已经是最新版本");
         return;
@@ -1595,7 +1599,8 @@ function HostsContent() {
       utils.hosts.list.invalidate();
       setBulkUpgradeDialogOpen(false);
       const skippedLatest = (data as any)?.skippedLatest || 0;
-      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}`);
+      const skippedOffline = (data as any)?.skippedOffline || 0;
+      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}${skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""}`);
     },
     onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
   });
@@ -1784,11 +1789,21 @@ function HostsContent() {
   );
   const bulkUpgradeableHosts = useMemo(
     () => filteredDisplayHosts.filter((h: any) => {
+      if (!h.isOnline) return false;
       const timedOut = isAgentUpgradeTimedOut(h);
       const pending = !!h.agentUpgradeRequested && !timedOut;
       return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
     }),
     [filteredDisplayHosts, latestAgentVersion]
+  );
+  const offlineUpgradeableHostCount = useMemo(
+    () => filteredDisplayHosts.filter((h: any) => {
+      if (h.isOnline) return false;
+      const timedOut = isAgentUpgradeTimedOut(h);
+      const pending = !!h.agentUpgradeRequested && !timedOut;
+      return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
+    }).length,
+    [filteredDisplayHosts, latestAgentVersion],
   );
   const hostPagination = usePersistentPagination<any>(filteredDisplayHosts, {
     storageKey: "forwardx.hosts.page",
@@ -1919,6 +1934,10 @@ function HostsContent() {
     return compareVersions(host.agentVersion, latestAgentVersion) >= 0;
   };
   const requestAgentUpgrade = (host: any) => {
+    if (!host?.isOnline) {
+      toast.info("主机离线，无法下发升级任务");
+      return;
+    }
     if (isAgentLatest(host)) {
       toast.info("该 Agent 已经是最新版本");
       return;
@@ -2518,8 +2537,8 @@ function HostsContent() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
-                              disabled={user?.role !== "admin"}
-                              title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
+                              disabled={user?.role !== "admin" || !host.isOnline}
+                              title={!host.isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
                               onClick={() => requestAgentUpgrade(host)}
                             >
                               {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -2732,7 +2751,7 @@ function HostsContent() {
               一键升级 Agent
             </DialogTitle>
             <DialogDescription>
-              点击确认后才会向可升级的 Agent 下发升级任务。
+              点击确认后才会向在线且可升级的 Agent 下发升级任务。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
@@ -2740,6 +2759,12 @@ function HostsContent() {
               <span className="text-muted-foreground">升级数量</span>
               <span className="font-medium">{bulkUpgradeableHosts.length} 台</span>
             </div>
+            {offlineUpgradeableHostCount > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">已跳过离线主机</span>
+                <span className="font-medium">{offlineUpgradeableHostCount} 台</span>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">目标版本</span>
               <span className="font-mono">v{latestAgentVersion || "-"}</span>

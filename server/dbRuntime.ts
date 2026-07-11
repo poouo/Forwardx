@@ -8,6 +8,7 @@ import pg from "pg";
 import Database from "better-sqlite3";
 import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
+import { assertSafeDatabaseHost } from "./ssrf";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -395,7 +396,9 @@ function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
 }
 
 export async function testMysqlConnection(config: MysqlConfig) {
-  const conn = await mysql.createConnection(mysqlConnectionOptions(normalizeMysql(config)));
+  const normalized = normalizeMysql(config);
+  await assertSafeDatabaseHost(normalized.host);
+  const conn = await mysql.createConnection(mysqlConnectionOptions(normalized));
   try {
     await conn.ping();
     await assertSupportedMysqlServer((sqlText) => conn.query(sqlText));
@@ -405,7 +408,9 @@ export async function testMysqlConnection(config: MysqlConfig) {
 }
 
 export async function testPostgresqlConnection(config: PostgresqlConfig) {
-  const pool = new pg.Pool(pgPoolOptions(normalizePostgresql(config)));
+  const normalized = normalizePostgresql(config);
+  await assertSafeDatabaseHost(normalized.host);
+  const pool = new pg.Pool(pgPoolOptions(normalized));
   try {
     await pool.query("SELECT 1");
   } finally {

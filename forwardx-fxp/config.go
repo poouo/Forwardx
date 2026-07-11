@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -41,6 +42,19 @@ func readConfig(path string) (config, error) {
 			cfg.Exits[i].Key = cfg.Key
 		}
 	}
+	udpTargets := make([]udpTarget, 0, len(cfg.UDPTargets))
+	seenUDPTargets := make(map[int]bool)
+	for _, target := range cfg.UDPTargets {
+		target.RuleID = int(target.RuleID)
+		target.TargetIP = strings.TrimSpace(target.TargetIP)
+		if target.RuleID <= 0 || target.TargetIP == "" || target.TargetPort <= 0 || target.TargetPort > 65535 || seenUDPTargets[target.RuleID] {
+			continue
+		}
+		seenUDPTargets[target.RuleID] = true
+		udpTargets = append(udpTargets, target)
+	}
+	sort.Slice(udpTargets, func(i, j int) bool { return udpTargets[i].RuleID < udpTargets[j].RuleID })
+	cfg.UDPTargets = udpTargets
 	return cfg, nil
 }
 

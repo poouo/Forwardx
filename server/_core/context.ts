@@ -7,16 +7,11 @@ import { ENV } from "../env";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import {
-  encodeSessionLease,
-  getSessionKindField,
-  inferLegacySessionKind,
-  isSessionLeaseActive,
   normalizeSessionKind,
-  parseSessionLease,
-  shouldRefreshSessionLease,
   type SessionKind,
 } from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
+import { getActiveAuthSession, touchAuthSession } from "../repositories/sessionRepository";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -35,9 +30,6 @@ export interface TrpcContext {
 }
 
 type TokenSource = "cookie" | "bearer";
-
-const MULTI_DEVICE_LOGIN_SETTING_CACHE_MS = 30 * 1000;
-let allowMultiDeviceLoginCache: { value: boolean; loadedAt: number } = { value: false, loadedAt: 0 };
 
 function getRequestToken(req: Request): { token: string; source: TokenSource | null } {
   const authHeader = req.headers.authorization;
@@ -60,29 +52,12 @@ function normalizeSessionPayload(req: Request, payload: unknown) {
   const userId = Number(data.userId);
   if (!Number.isFinite(userId) || userId <= 0) return null;
   const sid = String(data.sid || "").trim();
-  const kind = normalizeSessionKind(data.kind, inferLegacySessionKind(req));
+  const kind = normalizeSessionKind(data.kind, "browser");
   return {
     userId,
     sid: sid || null,
     kind,
   };
-}
-
-async function allowMultiDeviceLogin() {
-  const now = Date.now();
-  if (now - allowMultiDeviceLoginCache.loadedAt < MULTI_DEVICE_LOGIN_SETTING_CACHE_MS) {
-    return allowMultiDeviceLoginCache.value;
-  }
-  const value = (await db.getSetting("allowMultiDeviceLogin").catch(() => null)) === "true";
-  allowMultiDeviceLoginCache = { value, loadedAt: now };
-  return value;
-}
-
-async function refreshActiveSessionLease(userId: number, sessionKind: SessionKind, sid: string, storedToken: string) {
-  const now = Date.now();
-  const lease = parseSessionLease(storedToken);
-  if (!shouldRefreshSessionLease(lease, sid, now)) return;
-  await db.setUserSessionToken(userId, sessionKind, encodeSessionLease(sid, now), { touchUserUpdatedAt: false });
 }
 
 type ResolveSessionResult =
@@ -95,36 +70,27 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     const payload = jwt.verify(token, ENV.cookieSecret);
     const normalized = normalizeSessionPayload(req, payload);
     if (!normalized) return { user: null, authSession: null, failureReason: null };
+    if (!normalized.sid) {
+      if (source === "cookie") clearSessionCookie(res, req);
+      return { user: null, authSession: null, failureReason: "session_replaced" };
+    }
 
     const found = await db.getUserById(normalized.userId);
     if (!found) return { user: null, authSession: null, failureReason: null };
 
-    const sessionKind = normalized.sid ? normalized.kind : inferLegacySessionKind(req);
-    const field = getSessionKindField(sessionKind);
-    const storedToken = String((found as any)[field] || "").trim();
-
-    if (normalized.sid) {
-      if (!(await allowMultiDeviceLogin())) {
-        const activeLease = parseSessionLease(storedToken);
-        if (activeLease?.sid && activeLease.sid !== normalized.sid && isSessionLeaseActive(activeLease)) {
-          return {
-            user: null,
-            authSession: null,
-            failureReason: "session_replaced",
-          };
-        }
-        await refreshActiveSessionLease(found.id, sessionKind, normalized.sid, storedToken).catch((error) => {
-          console.warn(`[Auth] refresh session lease failed userId=${found.id} kind=${sessionKind}: ${error instanceof Error ? error.message : String(error)}`);
-        });
-      }
-    } else if (storedToken) {
+    const sessionKind = normalized.kind;
+    const activeSession = await getActiveAuthSession(found.id, normalized.sid, sessionKind);
+    if (!activeSession) {
       if (source === "cookie") clearSessionCookie(res, req);
       return {
         user: null,
         authSession: null,
-        failureReason: null,
+        failureReason: "session_replaced",
       };
     }
+    await touchAuthSession(found.id, normalized.sid, sessionKind).catch((error) => {
+      console.warn(`[Auth] session touch failed userId=${found.id} kind=${sessionKind}: ${error instanceof Error ? error.message : String(error)}`);
+    });
 
     return {
       user: found,
@@ -132,7 +98,7 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
         kind: sessionKind,
         sid: normalized.sid,
         token,
-        legacy: !normalized.sid,
+        legacy: false,
         source,
       },
     };

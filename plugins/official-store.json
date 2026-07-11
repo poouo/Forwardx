@@ -7,10 +7,10 @@
       "name": "ForwardX 中国区域白名单",
       "description": "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
       "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。\n\n安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。\n\n支持全国或按省份选择全局入站白名单，支持额外 ASN，支持端口优先白名单，支持 nftables 或 iptables/ipset，也可以查看状态、预演规则、应用规则、清理规则和更新 ASN。",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "releaseDate": "2026-07-11",
       "updatedAt": "2026-07-11",
-      "changelog": "接入通用 Agent 操作接口，可从插件使用页读取各主机上的实际白名单、防火墙后端和持久化状态。",
+      "changelog": "修复全国与省份同时选择时省级白名单被全国 CIDR 覆盖的问题，并优化主机规则状态展示。",
       "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
       "features": [
         {

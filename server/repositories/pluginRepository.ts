@@ -43,6 +43,7 @@ import {
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
 import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup } from "../pluginAgentTasks";
+import { assertSafePluginHttpUrl } from "../ssrf";
 
 const GITHUB_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i;
 const FORWARDX_REPO_URL = "https://github.com/poouo/Forwardx";
@@ -1639,6 +1640,9 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
     note: input.note,
     updatedAt: new Date().toISOString(),
   }, usageView);
+  if (id === "china-region-whitelist" && nextUsage.fieldValues) {
+    nextUsage.fieldValues["region-codes"] = chinaRegionWhitelistCodes(nextUsage);
+  }
   if (nextUsage.enabled && nextUsage.hostIds.length === 0) throw new Error("请选择至少一台生效主机");
   if (nextUsage.enabled && !allAssetsMode && nextUsage.assetPaths.length === 0) throw new Error("请选择至少一个白名单文件");
   if (nextUsage.enabled) {
@@ -1742,11 +1746,19 @@ function usageArrayField(usage: HostAssetSyncUsageConfig, key: string) {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
 }
 
-function buildChinaRegionWhitelistConfig(usage: HostAssetSyncUsageConfig, targetDir: string) {
-  const regionCodes = usageArrayField(usage, "region-codes")
-    .filter((code) => code === "CN" || /^[0-9]{6}$/.test(code))
+function chinaRegionWhitelistCodes(usage: HostAssetSyncUsageConfig) {
+  const selected = Array.from(new Set(usageArrayField(usage, "region-codes")
+    .filter((code) => code === "CN" || /^[0-9]{6}$/.test(code))))
     .slice(0, 40);
-  const codes = regionCodes.length ? regionCodes : ["CN"];
+  // CN is the default option in historical configurations. Province mode must
+  // take precedence when both were persisted, otherwise CN opens the whitelist
+  // for every domestic address and hides the intended province restriction.
+  const provinces = selected.filter((code) => code !== "CN");
+  return provinces.length > 0 ? provinces : ["CN"];
+}
+
+function buildChinaRegionWhitelistConfig(usage: HostAssetSyncUsageConfig, targetDir: string) {
+  const codes = chinaRegionWhitelistCodes(usage);
   const backend = ["auto", "nft", "iptables"].includes(usageStringField(usage, "firewall-backend"))
     ? usageStringField(usage, "firewall-backend")
     : "auto";
@@ -2473,6 +2485,7 @@ async function executePluginHttpAction(plugin: any, action: PluginActionDefiniti
   const context = { settings, input: actionInput, plugin };
   const secrets = collectPluginSecretValues(plugin);
   const url = buildPluginHttpUrl(action.request, context);
+  const safeUrl = await assertSafePluginHttpUrl(url.toString());
   const headers = buildPluginHttpHeaders(action.request, context);
   const body = buildPluginHttpBody(action.request, headers, context);
   const timeoutMs = Math.max(1000, Math.min(MAX_PLUGIN_HTTP_TIMEOUT_MS, Number(action.request.timeoutMs || DEFAULT_PLUGIN_HTTP_TIMEOUT_MS)));
@@ -2481,7 +2494,7 @@ async function executePluginHttpAction(plugin: any, action: PluginActionDefiniti
   const startedAt = Date.now();
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(safeUrl, {
       method: action.request.method,
       headers,
       body,

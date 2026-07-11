@@ -84,6 +84,7 @@ export default function Setup() {
     ssl: false,
   });
   const [sqlitePath, setSqlitePath] = useState(defaultSqlitePath);
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [admin, setAdmin] = useState({ email: "", password: "", name: "" });
   const [migration, setMigration] = useState({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin });
   const [jobId, setJobId] = useState<string | null>(null);
@@ -115,6 +116,15 @@ export default function Setup() {
   const hasAdmin = !!data?.hasAdmin;
   const hasExistingData = !!data?.hasExistingData;
   const existingData = data?.existingData;
+  const bootstrapTokenValue = bootstrapToken.trim();
+  const bootstrapPayload = { bootstrapToken: bootstrapTokenValue || undefined };
+  const requireBootstrapToken = () => {
+    if (data?.bootstrapRequired && bootstrapTokenValue.length < 32) {
+      toast.error("请输入本机生成的初始化令牌");
+      return false;
+    }
+    return true;
+  };
 
   useEffect(() => {
     if (!configuredDatabase?.type || configuredDatabaseKey === loadedDatabaseConfigKey) return;
@@ -228,7 +238,7 @@ export default function Setup() {
   });
 
   const migrationStatus = trpc.setup.migrationStatus.useQuery(
-    { jobId: jobId || "" },
+    { jobId: jobId || "", ...bootstrapPayload },
     { enabled: !!jobId, refetchInterval: (query) => (query.state.data?.status === "success" || query.state.data?.status === "failed" ? false : 1200) },
   );
 
@@ -250,7 +260,8 @@ export default function Setup() {
       setStep(2);
       return;
     }
-    saveDatabase.mutate(databaseConfig);
+    if (!requireBootstrapToken()) return;
+    saveDatabase.mutate({ ...databaseConfig, ...bootstrapPayload });
   };
 
   const handleReviewDatabaseStep = () => {
@@ -268,7 +279,8 @@ export default function Setup() {
         toast.error("请输入旧面板地址和迁移码");
         return;
       }
-      startMigration.mutate(migration);
+      if (!requireBootstrapToken()) return;
+      startMigration.mutate({ ...migration, ...bootstrapPayload });
       return;
     }
     if (hasExistingData && hasAdmin && data?.setupDataChoice !== "new-panel") {
@@ -279,6 +291,7 @@ export default function Setup() {
   };
 
   const handleAdminSubmit = () => {
+    if (!requireBootstrapToken()) return;
     if (!admin.email.trim()) {
       toast.error("请输入管理员邮箱");
       return;
@@ -292,12 +305,14 @@ export default function Setup() {
         email: admin.email.trim(),
         password: admin.password.trim() || undefined,
         name: admin.name.trim() || undefined,
+        ...bootstrapPayload,
       });
     } else {
       createAdmin.mutate({
         email: admin.email.trim(),
         password: admin.password,
         name: admin.name.trim() || undefined,
+        ...bootstrapPayload,
       });
     }
   };
@@ -343,6 +358,24 @@ export default function Setup() {
             <AlertTitle>{data.needsRestart ? "等待服务重启" : "数据库连接异常"}</AlertTitle>
             <AlertDescription>{data.error}</AlertDescription>
           </Alert>
+        )}
+
+        {data?.bootstrapRequired && (
+          <Card className="border-primary/25 bg-primary/5 shadow-sm">
+            <CardContent className="grid gap-2 p-4 sm:grid-cols-[minmax(0,1fr)_minmax(260px,420px)] sm:items-center">
+              <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                <KeyRound className="h-4 w-4" />
+                初始化令牌
+              </div>
+              <Input
+                type="password"
+                value={bootstrapToken}
+                onChange={(event) => setBootstrapToken(event.target.value)}
+                autoComplete="off"
+                placeholder="本机日志或 .setup-bootstrap-token"
+              />
+            </CardContent>
+          </Card>
         )}
 
         <div className="overflow-hidden">
@@ -509,7 +542,10 @@ export default function Setup() {
                         </div>
                       </div>
                       <div className="flex flex-col gap-3 sm:flex-row">
-                        <Button disabled={useExistingData.isPending} onClick={() => useExistingData.mutate()}>
+                        <Button disabled={useExistingData.isPending} onClick={() => {
+                          if (!requireBootstrapToken()) return;
+                          useExistingData.mutate(bootstrapPayload);
+                        }}>
                           {useExistingData.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                           使用以前的数据
                         </Button>
@@ -523,7 +559,8 @@ export default function Setup() {
                               confirmText: "清空",
                               tone: "destructive",
                             })) {
-                              resetExistingData.mutate();
+                              if (!requireBootstrapToken()) return;
+                              resetExistingData.mutate(bootstrapPayload);
                             }
                           }}
                         >

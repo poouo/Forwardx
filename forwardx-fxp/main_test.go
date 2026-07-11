@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -115,6 +116,7 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 			ListenPort: exitPort,
 			Protocol:   "udp",
 			Key:        key,
+			UDPTargets: []udpTarget{{RuleID: 22, TargetIP: "127.0.0.1", TargetPort: targetPort}},
 		})
 	}()
 	waitForUDP(t, exitPort)
@@ -209,6 +211,7 @@ func TestForwardXBothSplitUDPWirePorts(t *testing.T) {
 			UDPListenPort: exitUDPPort,
 			Protocol:      "both",
 			Key:           key,
+			UDPTargets:    []udpTarget{{RuleID: 32, TargetIP: "127.0.0.1", TargetPort: targetPort}},
 		})
 	}()
 	waitForTCP(t, exitTCPPort)
@@ -302,6 +305,7 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 			ListenPort: exitPort,
 			Protocol:   "udp",
 			Key:        downstreamKey,
+			UDPTargets: []udpTarget{{RuleID: 24, TargetIP: "127.0.0.1", TargetPort: targetPort}},
 		})
 	}()
 	waitForUDP(t, exitPort)
@@ -352,6 +356,70 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 	}
 	if string(buf[:n]) != "udp-relay-forwardx" {
 		t.Fatalf("unexpected udp relay echo %q", string(buf[:n]))
+	}
+}
+
+func TestFXPUDPv3EncryptsAuthenticatesAndRejectsReplay(t *testing.T) {
+	packet := fxpUDPPacket{
+		packetType: fxpUDPTypeData,
+		tunnelID:   41,
+		ruleID:     42,
+		sessionID:  43,
+		sequence:   44,
+		payload:    []byte("private-udp-payload"),
+	}
+	raw, err := sealFXPUDPPacket(packet, "udp-v3-test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw[4] != fxpUDPVersion {
+		t.Fatalf("unexpected UDP wire version %d", raw[4])
+	}
+	if bytes.Contains(raw, packet.payload) {
+		t.Fatal("UDP v3 payload was sent in plaintext")
+	}
+	opened, err := openFXPUDPPacket(raw, "udp-v3-test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.sequence != packet.sequence || !bytes.Equal(opened.payload, packet.payload) {
+		t.Fatalf("unexpected opened packet: %+v", opened)
+	}
+
+	tampered := append([]byte(nil), raw...)
+	tampered[len(tampered)-1] ^= 0x01
+	if _, err := openFXPUDPPacket(tampered, "udp-v3-test-key"); err == nil {
+		t.Fatal("expected tampered payload to be rejected")
+	}
+	tamperedHeader := append([]byte(nil), raw...)
+	tamperedHeader[12] ^= 0x01
+	if _, err := openFXPUDPPacket(tamperedHeader, "udp-v3-test-key"); err == nil {
+		t.Fatal("expected tampered header to be rejected")
+	}
+	if _, err := openFXPUDPPacket(raw, "wrong-key"); err == nil {
+		t.Fatal("expected wrong key to be rejected")
+	}
+
+	var replay udpReplayWindow
+	if !replay.accept(100) || replay.accept(100) {
+		t.Fatal("replay window did not reject a duplicate sequence")
+	}
+	if !replay.accept(102) || !replay.accept(101) || replay.accept(101) {
+		t.Fatal("replay window did not preserve bounded packet reordering")
+	}
+	if replay.accept(1) {
+		t.Fatal("replay window accepted an expired sequence")
+	}
+}
+
+func TestFXPUDPExitTargetIsConfigurationBound(t *testing.T) {
+	cfg := config{UDPTargets: []udpTarget{{RuleID: 7, TargetIP: "127.0.0.1", TargetPort: 5353}}}
+	target, ok := udpTargetForRule(cfg, 7)
+	if !ok || target.TargetIP != "127.0.0.1" || target.TargetPort != 5353 {
+		t.Fatalf("configured UDP target not resolved: %+v ok=%v", target, ok)
+	}
+	if _, ok := udpTargetForRule(cfg, 8); ok {
+		t.Fatal("UDP exit accepted a destination that was not configured for the rule")
 	}
 }
 

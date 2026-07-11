@@ -372,8 +372,8 @@ export default function HostCard({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                disabled={!canUpgrade}
-                title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
+                disabled={!canUpgrade || !isOnline}
+                title={!isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
                 onClick={() => onUpgrade(host)}
               >
                 {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -437,8 +437,8 @@ export default function HostCard({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                disabled={!canUpgrade}
-                title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
+                disabled={!canUpgrade || !isOnline}
+                title={!isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
                 onClick={() => onUpgrade(host)}
               >
                 {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}

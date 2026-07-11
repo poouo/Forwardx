@@ -195,6 +195,20 @@ export const users = table("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
+export const authSessions = table("auth_sessions", {
+  id: serial("id"),
+  sid: varchar("sid", { length: 80 }).notNull().unique(),
+  userId: int("userId").notNull(),
+  kind: varchar("kind", { length: 32 }).notNull().default("browser"),
+  expiresAt: epoch("expiresAt").notNull(),
+  revokedAt: epoch("revokedAt"),
+  revokeReason: varchar("revokeReason", { length: 64 }),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  lastSeenAt: epoch("lastSeenAt").notNull().default(nowDefault()),
+});
+export type AuthSession = typeof authSessions.$inferSelect;
+export type InsertAuthSession = typeof authSessions.$inferInsert;
+
 export const hosts = table("hosts", {
   id: serial("id"),
   name: text("name").notNull(),

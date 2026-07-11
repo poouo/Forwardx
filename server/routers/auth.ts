@@ -7,7 +7,8 @@ import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
 import * as db from "../db";
-import { getSessionKindField, isSessionLeaseActive, parseSessionLease, resolveRequestedSessionKind, type SessionKind } from "../session";
+import { resolveRequestedSessionKind, SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, type SessionKind } from "../session";
+import { createAuthSession, revokeAuthSession } from "../repositories/sessionRepository";
 import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
@@ -171,7 +172,13 @@ async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, 
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
   const sid = nanoid(24);
-  const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: "10d" });
+  await createAuthSession({
+    userId: user.id,
+    sid,
+    kind: sessionKind,
+    expiresAt: new Date(Date.now() + SESSION_TOKEN_TTL_MS),
+  });
+  const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: SESSION_TOKEN_TTL_SECONDS });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
   const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
   return { ...safeUser, mobileToken: mobile ? token : null };
@@ -438,12 +445,9 @@ export const authRouter = router({
   logout: publicProcedure.mutation(async ({ ctx }) => {
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-    if (ctx.user && ctx.authSession?.kind) {
-      const field = getSessionKindField(ctx.authSession.kind);
-      const activeLease = parseSessionLease((ctx.user as any)[field]);
-      if (!ctx.authSession.sid || !activeLease || activeLease.sid === ctx.authSession.sid || !isSessionLeaseActive(activeLease)) {
-        await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
-      }
+    if (ctx.user && ctx.authSession?.sid) {
+      await revokeAuthSession(ctx.user.id, ctx.authSession.sid, ctx.authSession.kind, "logout");
+      await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
     }
     if (ctx.user) {
       console.info(`[Auth] Logout userId=${ctx.user.id} username=${maskIdentifier(ctx.user.username)} ip=${getRequestIp(ctx)}`);

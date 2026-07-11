@@ -2,6 +2,9 @@ export type SessionKind = "browser" | "mobile" | "telegram";
 
 export const SESSION_ACTIVE_LEASE_TTL_MS = 120 * 1000;
 export const SESSION_ACTIVE_LEASE_REFRESH_MS = 30 * 1000;
+export const SESSION_TOKEN_TTL_MS = 10 * 24 * 60 * 60 * 1000;
+export const SESSION_TOKEN_TTL_SECONDS = Math.floor(SESSION_TOKEN_TTL_MS / 1000);
+export const SESSION_TOUCH_INTERVAL_MS = 30 * 1000;
 
 export const SESSION_KIND_FIELDS = {
   browser: "browserSessionToken",
