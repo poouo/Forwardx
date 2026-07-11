@@ -10,6 +10,7 @@ export const PLUGIN_PERMISSION_KEYS = [
   "read:traffic",
   "write:settings",
   "net:http",
+  "agent:execute",
   "data:whitelist",
   "ui:page",
   "ui:settings",
@@ -48,6 +49,7 @@ export type PluginPageContentType = typeof PLUGIN_PAGE_CONTENT_TYPES[number];
 export const PLUGIN_ACTION_TYPES = [
   "noop",
   "http.request",
+  "agent.request",
   "data.asset.refresh",
   "data.whitelist.refresh",
 ] as const;
@@ -80,6 +82,18 @@ export const PLUGIN_HTTP_AUTH_TYPES = [
 ] as const;
 
 export type PluginHttpAuthType = typeof PLUGIN_HTTP_AUTH_TYPES[number];
+
+export const PLUGIN_AGENT_EXECUTORS = ["script"] as const;
+export type PluginAgentExecutor = typeof PLUGIN_AGENT_EXECUTORS[number];
+
+export const PLUGIN_AGENT_INTERPRETERS = ["bash", "sh", "python3"] as const;
+export type PluginAgentInterpreter = typeof PLUGIN_AGENT_INTERPRETERS[number];
+
+export const PLUGIN_AGENT_OUTPUT_TYPES = ["json", "text"] as const;
+export type PluginAgentOutputType = typeof PLUGIN_AGENT_OUTPUT_TYPES[number];
+
+export const PLUGIN_AGENT_TARGETS = ["usage-hosts"] as const;
+export type PluginAgentTarget = typeof PLUGIN_AGENT_TARGETS[number];
 
 export const PLUGIN_USAGE_VIEW_TYPES = [
   "host-asset-sync",
@@ -146,6 +160,17 @@ export type PluginHttpRequestDefinition = {
   auth?: PluginHttpAuthDefinition;
 };
 
+export type PluginAgentRequestDefinition = {
+  executor: PluginAgentExecutor;
+  interpreter?: PluginAgentInterpreter;
+  target?: PluginAgentTarget;
+  usageViewId?: string;
+  entry: string;
+  arguments?: string[];
+  timeoutMs?: number;
+  outputType?: PluginAgentOutputType;
+};
+
 export type PluginActionDefinition = {
   id: string;
   label: string;
@@ -154,6 +179,7 @@ export type PluginActionDefinition = {
   confirmRequired?: boolean;
   inputSchema?: PluginSettingField[];
   request?: PluginHttpRequestDefinition;
+  agent?: PluginAgentRequestDefinition;
 };
 
 export type PluginAssetDeclaration = {
@@ -314,10 +340,10 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
       "- 支持 nftables 或 iptables/ipset。",
       "- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。",
     ].join("\n"),
-    version: "0.2.0",
-    releaseDate: "2026-07-10",
-    updatedAt: "2026-07-10",
-    changelog: "补齐白名单脚本能力，支持主机配置生成、预演、应用、状态查看、清理规则和完整数据下发。",
+    version: "0.3.0",
+    releaseDate: "2026-07-11",
+    updatedAt: "2026-07-11",
+    changelog: "接入通用 Agent 操作接口，可从插件使用页读取各主机上的实际白名单、防火墙后端和持久化状态。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },
@@ -337,7 +363,7 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     packagePath: "plugins/packages/china-region-whitelist.tar.gz",
     bundledPath: "plugins/china-region-whitelist",
     category: "data",
-    permissions: ["data:whitelist"],
+    permissions: ["data:whitelist", "agent:execute"],
     extensionPoints: ["data.whitelist"],
     official: true,
     builtIn: true,
@@ -351,10 +377,11 @@ export const DEFAULT_PLUGIN_MANIFEST: Pick<ForwardxPluginManifest, "permissions"
 
 export const PLUGIN_SECURITY_MODEL = {
   remoteCodeExecution: false,
+  agentPackagedScriptExecution: true,
   uploadPackageType: "json|zip|tar.gz",
   maxUploadBytes: 1024 * 1024,
   maxAssetBytes: 512 * 1024,
   maxPackageBytes: 5 * 1024 * 1024,
   maxHttpResponseBytes: 256 * 1024,
-  description: "ForwardX 插件由面板解释 manifest。普通插件不执行后端代码；声明 net:http 后可由面板按 manifest 发起受控 HTTP 请求；内置受控插件可以通过声明式使用页向 Agent 下发白名单内的脚本和数据。",
+  description: "ForwardX 插件由面板解释 manifest。普通插件不执行面板后端代码；声明 net:http 后可发起受控 HTTP 请求；声明 agent:execute 后可让 Agent 在独立任务队列中执行插件包内固定脚本入口，并限制目录、参数、超时和输出大小。",
 } as const;

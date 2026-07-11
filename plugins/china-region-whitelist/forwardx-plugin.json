@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "id": "china-region-whitelist",
   "name": "ForwardX 中国区域白名单",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
   "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。\n\n安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 面板和 Agent 下发的非交互使用方式。",
   "author": "poouo",
   "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
-  "releaseDate": "2026-07-10",
-  "updatedAt": "2026-07-10",
-  "changelog": "补齐白名单脚本能力，支持主机配置生成、预演、应用、状态查看、清理规则和完整数据下发。",
+  "releaseDate": "2026-07-11",
+  "updatedAt": "2026-07-11",
+  "changelog": "接入通用 Agent 操作接口，可从插件使用页读取各主机上的实际白名单、防火墙后端和持久化状态。",
   "tags": ["whitelist", "china-region", "firewall", "agent"],
   "license": "Unknown",
   "homepage": "https://github.com/poouo/Forwardx",
@@ -32,7 +32,7 @@
       "description": "应用前可以先输出将执行的 nftables/iptables 命令。"
     }
   ],
-  "permissions": ["data:whitelist"],
+  "permissions": ["data:whitelist", "agent:execute"],
   "extensionPoints": ["data.whitelist"],
   "usageViews": [
     {
@@ -76,11 +76,6 @@
             "value": "apply",
             "label": "应用规则",
             "description": "按当前配置应用白名单规则，并尽量配置开机恢复。"
-          },
-          {
-            "value": "status",
-            "label": "查看状态",
-            "description": "查看当前 nftables、ipset、iptables 和持久化配置状态。"
           },
           {
             "value": "clear",
@@ -201,6 +196,22 @@
     }
   ],
   "actions": [
+    {
+      "id": "read-agent-status",
+      "label": "读取主机状态",
+      "type": "agent.request",
+      "description": "从已选主机读取实际白名单配置、防火墙后端、规则数量和持久化状态。",
+      "agent": {
+        "executor": "script",
+        "interpreter": "bash",
+        "target": "usage-hosts",
+        "usageViewId": "sync-to-hosts",
+        "entry": "forwardx-agent-run.sh",
+        "arguments": ["status-json"],
+        "timeoutMs": 15000,
+        "outputType": "json"
+      }
+    },
     {
       "id": "refresh-whitelist-source",
       "label": "刷新插件数据",

@@ -498,7 +498,12 @@ export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[
         const hostId = Number(hop.hostId || 0);
         const listenPort = Number(hop.listenPort || 0);
         if (hostId <= 0 || listenPort <= 0) continue;
-        const mimicPort = await ensurePort(hostId, listenPort, hop.mimicPort);
+        // The primary exit port is stored on the tunnel. Prefer it for the
+        // final multi-hop node so an administrator-specified port is retained.
+        const requestedPort = index === hops.length - 1 && Number(tunnel.mimicPort || 0) > 0
+          ? Number(tunnel.mimicPort)
+          : hop.mimicPort;
+        const mimicPort = await ensurePort(hostId, listenPort, requestedPort);
         if (mimicPort <= 0) throw new Error(`主机 ${hostId} 已无可用的 mimic UDP 线路端口`);
         if (Number(hop.mimicPort || 0) !== mimicPort) {
           await db.update(tunnelHops).set({ mimicPort } as any).where(eq(tunnelHops.id, Number(hop.id)));
@@ -587,7 +592,13 @@ function protocolConflictCondition(protocol: unknown) {
 }
 
 /** 检查某主机上的某端口是否已被占用 */
-export async function isPortUsedOnHost(hostId: number, sourcePort: number, excludeRuleId?: number | number[], protocol?: unknown): Promise<boolean> {
+export async function isPortUsedOnHost(
+  hostId: number,
+  sourcePort: number,
+  excludeRuleId?: number | number[],
+  protocol?: unknown,
+  excludeTunnelId?: number,
+): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
   const excludedIds = Array.from(new Set(
@@ -595,6 +606,7 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
       .map((id) => Number(id || 0))
       .filter((id) => Number.isInteger(id) && id > 0),
   ));
+  const excludedTunnelId = Number(excludeTunnelId || 0);
   const conds: any[] = [
     eq(forwardRules.hostId, hostId),
     eq(forwardRules.sourcePort, sourcePort),
@@ -642,17 +654,17 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
     eq(tunnels.exitHostId, hostId),
     sql`(${tunnels.listenPort} = ${sourcePort} OR ${tunnels.mimicPort} = ${sourcePort})`,
   ));
-  if (tunnelRows.length > 0) return true;
-  const extraRows = await db.select({ id: tunnelExitNodes.id }).from(tunnelExitNodes).where(and(
+  if (tunnelRows.some((row: any) => Number(row.id) !== excludedTunnelId)) return true;
+  const extraRows = await db.select({ tunnelId: tunnelExitNodes.tunnelId }).from(tunnelExitNodes).where(and(
     eq(tunnelExitNodes.hostId, hostId),
     sql`(${tunnelExitNodes.listenPort} = ${sourcePort} OR ${tunnelExitNodes.mimicPort} = ${sourcePort})`,
   ));
-  if (extraRows.length > 0) return true;
-  const hopRows = await db.select({ id: tunnelHops.id }).from(tunnelHops).where(and(
+  if (extraRows.some((row: any) => Number(row.tunnelId) !== excludedTunnelId)) return true;
+  const hopRows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(and(
     eq(tunnelHops.hostId, hostId),
     sql`(${tunnelHops.listenPort} = ${sourcePort} OR ${tunnelHops.mimicPort} = ${sourcePort})`,
   ));
-  return hopRows.length > 0;
+  return hopRows.some((row: any) => Number(row.tunnelId) !== excludedTunnelId);
 }
 
 /** 在主机端口区间内找一个未被占用的随机端口 */

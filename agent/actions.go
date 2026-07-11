@@ -23,6 +23,8 @@ var desiredNginxRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
 var desiredGostRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
 var actionSerialMu sync.Mutex
 var actionSerialLocks = map[string]*actionSerialLock{}
+var desiredActionRecordMu sync.Mutex
+var sharedRuntimeSyncGate sync.RWMutex
 
 type actionSerialLock struct {
 	mu   sync.Mutex
@@ -71,7 +73,13 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		return nil
 	}
 	kernelSnapshot := newKernelForwardSnapshot()
-	records := readDesiredActionRecords()
+	// Pre-populate the per-port readiness cache once for all gost/nginx actions in this
+	// batch. Without this, canAdoptDesiredAction → desiredGostRuntimeReady calls
+	// readLocalRuntimeReadiness() once per unique (port, protocol) pair — O(N) expensive
+	// syscalls (ss -H -ltnup + systemctl + config parse) for N rules on first restart.
+	primeDesiredRuntimeReadyCacheForActions(state.Actions)
+	desiredActionRecordMu.Lock()
+	records := readDesiredActionRecordsLocked()
 	done := make([]<-chan struct{}, 0, len(state.Actions))
 	seen := map[string]bool{}
 	pendingJobs := make([]actionJob, 0, len(state.Actions))
@@ -133,7 +141,8 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 			delete(records, key)
 		}
 	}
-	writeDesiredActionRecords(records)
+	writeDesiredActionRecordsLocked(records)
+	desiredActionRecordMu.Unlock()
 	if len(adoptedStatusReports) > 0 {
 		go reportAdoptedDesiredActions(cfg, adoptedStatusReports)
 	}
@@ -177,7 +186,6 @@ func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapsh
 func reportAdoptedDesiredActions(cfg Config, actions []action) {
 	for _, a := range actions {
 		reportActionStatus(cfg, a, true, "local runtime already matches desired state")
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -413,6 +421,122 @@ func desiredRuntimeReadyCacheKey(port int, protocol string) string {
 	return fmt.Sprintf("%d:%s", port, normalizeRuntimeProtocol(protocol))
 }
 
+// primeDesiredRuntimeReadyCacheForActions computes readLocalRuntimeReadiness() once
+// and pre-populates the per-(port,protocol) cache for every gost/nginx action in the
+// batch. Without this, a host with N rules would call readLocalRuntimeReadiness() N
+// times during the adoption check loop in syncDesiredState, each time running
+// ss -H -ltnup + systemctl is-active + config JSON parse — O(N) expensive syscalls
+// that add 10-30 seconds for 500+ rules on the first heartbeat after Agent restart.
+func primeDesiredRuntimeReadyCacheForActions(actions []action) {
+	type portKey struct {
+		port  int
+		proto string
+		ft    string
+	}
+	unique := map[portKey]struct{}{}
+	for _, a := range actions {
+		if a.SourcePort <= 0 {
+			continue
+		}
+		ft := strings.TrimSpace(a.ForwardType)
+		switch ft {
+		case "gost", "forwardx", "gost-tunnel", "guard",
+			"nginx", "nginx-tunnel", "nginx-tunnel-exit":
+			unique[portKey{a.SourcePort, normalizeRuntimeProtocol(a.Protocol), ft}] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return
+	}
+	// Filter to only uncached keys — skip work we already know.
+	needCompute := make([]portKey, 0, len(unique))
+	desiredRuntimeReadyMu.Lock()
+	now := time.Now()
+	for pk := range unique {
+		key := fmt.Sprintf("%d:%s", pk.port, pk.proto)
+		var cache map[string]desiredRuntimeReadyCacheEntry
+		switch pk.ft {
+		case "gost", "forwardx", "gost-tunnel", "guard":
+			cache = desiredGostRuntimeReadyCache
+		default:
+			cache = desiredNginxRuntimeReadyCache
+		}
+		if entry, ok := cache[key]; !ok || now.Sub(entry.checkedAt) > desiredRuntimeReadyCacheTTL {
+			needCompute = append(needCompute, pk)
+		}
+	}
+	desiredRuntimeReadyMu.Unlock()
+	if len(needCompute) == 0 {
+		return
+	}
+
+	// Single shared readiness snapshot — one ss + one systemctl call for the whole batch.
+	// All compute below is pure in-memory; no IO while holding the cache mutex.
+	// 使用跨心跳缓存，避免在快速 SSE 唤醒窗口内重复执行 ss/systemctl。
+	readiness := readLocalRuntimeReadinessCached()
+
+	// Cache managedServiceActive results per service name: at most 2 calls total
+	// (runtimeServiceName, tunnelRuntimeServiceName) for the entire batch.
+	svcActiveCache := map[string]bool{}
+	svcActive := func(name string) bool {
+		if v, ok := svcActiveCache[name]; ok {
+			return v
+		}
+		v := managedServiceActive(name)
+		svcActiveCache[name] = v
+		return v
+	}
+
+	type result struct {
+		key   string
+		value bool
+		cache *map[string]desiredRuntimeReadyCacheEntry
+	}
+	results := make([]result, 0, len(needCompute))
+	runtimeItems := []struct {
+		path      string
+		service   string
+		readyPort func(int, string) bool
+	}{
+		{runtimeConfigPath, runtimeServiceName, readiness.gostReadyForPort},
+		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, readiness.gostReadyForPort},
+	}
+	for _, pk := range needCompute {
+		key := fmt.Sprintf("%d:%s", pk.port, pk.proto)
+		var ready bool
+		var target *map[string]desiredRuntimeReadyCacheEntry
+		switch pk.ft {
+		case "gost", "forwardx", "gost-tunnel", "guard":
+			target = &desiredGostRuntimeReadyCache
+			// Replicate desiredGostRuntimeReady: matched AND all-services-pass.
+			matched := false
+			allOK := true
+			for _, item := range runtimeItems {
+				if managedRuntimeConfigUsesPort(item.path, pk.port) {
+					matched = true
+					if !svcActive(item.service) || !item.readyPort(pk.port, pk.proto) {
+						allOK = false
+						break
+					}
+				}
+			}
+			ready = matched && allOK
+		default: // nginx family
+			target = &desiredNginxRuntimeReadyCache
+			ready = readiness.nginxReadyForPort(pk.port, pk.proto)
+		}
+		results = append(results, result{key, ready, target})
+	}
+
+	// Write all results in one lock window.
+	now = time.Now()
+	desiredRuntimeReadyMu.Lock()
+	for _, r := range results {
+		(*r.cache)[r.key] = desiredRuntimeReadyCacheEntry{value: r.value, checkedAt: now}
+	}
+	desiredRuntimeReadyMu.Unlock()
+}
+
 func desiredRuntimeConfigUsesPort(port int) bool {
 	if port <= 0 {
 		return false
@@ -443,7 +567,7 @@ func desiredForwardTypeCompatible(local string, desired string) bool {
 	return false
 }
 
-func readDesiredActionRecords() map[string]desiredActionRecord {
+func readDesiredActionRecordsLocked() map[string]desiredActionRecord {
 	records := map[string]desiredActionRecord{}
 	raw, err := os.ReadFile(desiredStateRecordPath)
 	if err != nil || len(raw) == 0 {
@@ -453,22 +577,32 @@ func readDesiredActionRecords() map[string]desiredActionRecord {
 	return records
 }
 
-func writeDesiredActionRecords(records map[string]desiredActionRecord) {
+func writeDesiredActionRecordsLocked(records map[string]desiredActionRecord) {
 	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
 	raw, err := json.Marshal(records)
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(desiredStateRecordPath, raw, 0644)
+	tmpPath := desiredStateRecordPath + ".tmp"
+	if err := os.WriteFile(tmpPath, raw, 0644); err != nil {
+		return
+	}
+	if err := os.Rename(tmpPath, desiredStateRecordPath); err != nil {
+		_ = os.Remove(tmpPath)
+	}
 }
 
 func rememberDesiredActionResult(key string, signature string, ok bool) {
-	records := readDesiredActionRecords()
+	desiredActionRecordMu.Lock()
+	defer desiredActionRecordMu.Unlock()
+	records := readDesiredActionRecordsLocked()
 	records[key] = desiredActionRecord{Signature: signature, Success: ok, UpdatedAt: time.Now().Unix()}
-	writeDesiredActionRecords(records)
+	writeDesiredActionRecordsLocked(records)
 }
 
 func resetDesiredActionRecordsAfterAgentUpgrade() {
+	desiredActionRecordMu.Lock()
+	defer desiredActionRecordMu.Unlock()
 	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
 	raw, err := os.ReadFile(desiredStateVersionPath)
 	previous := strings.TrimSpace(string(raw))
@@ -510,12 +644,44 @@ func enqueueActionJob(job actionJob) {
 }
 
 func actionWorker() {
-	workers := actionWorkerConcurrency
-	if workers < 1 {
-		workers = 1
+	baseWorkers := actionWorkerBaseConcurrency
+	if baseWorkers < 1 {
+		baseWorkers = 1
 	}
-	for i := 0; i < workers; i++ {
-		go actionWorkerLoop(i + 1)
+	if baseWorkers > actionWorkerConcurrency {
+		baseWorkers = actionWorkerConcurrency
+	}
+	startActionWorkerLoops(baseWorkers)
+	go actionWorkerScaler()
+}
+
+func startActionWorkerLoops(count int) {
+	for i := 0; i < count; i++ {
+		workerID := int(atomic.AddInt64(&actionWorkerStartedCount, 1))
+		go actionWorkerLoop(workerID)
+	}
+}
+
+func actionWorkerScaler() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		pending := atomic.LoadInt64(&actionPendingCount)
+		started := atomic.LoadInt64(&actionWorkerStartedCount)
+		if pending <= started || started >= int64(actionWorkerConcurrency) {
+			continue
+		}
+		target := pending
+		if target < int64(actionWorkerBaseConcurrency) {
+			target = int64(actionWorkerBaseConcurrency)
+		}
+		if target > int64(actionWorkerConcurrency) {
+			target = int64(actionWorkerConcurrency)
+		}
+		if add := int(target - started); add > 0 {
+			startActionWorkerLoops(add)
+			logf("action workers scaled pendingActions=%d workers=%d/%d", pending, target, actionWorkerConcurrency)
+		}
 	}
 }
 
@@ -541,6 +707,10 @@ func actionWorkerLoop(workerID int) {
 			if isOlderAction(job.action, false) {
 				return
 			}
+			releaseRuntimeGate := acquireSharedRuntimeSyncGate(job.action)
+			if releaseRuntimeGate != nil {
+				defer releaseRuntimeGate()
+			}
 			serialKey := actionSerialKey(job.action)
 			unlock := acquireActionSerialLock(serialKey)
 			if unlock != nil {
@@ -559,6 +729,25 @@ func actionWorkerLoop(workerID int) {
 				rememberDesiredActionResult(job.desiredKey, job.desiredSignature, ok)
 			}
 		}()
+	}
+}
+
+func acquireSharedRuntimeSyncGate(a action) func() {
+	statusType := strings.TrimSpace(a.StatusType)
+	forwardType := strings.TrimSpace(a.ForwardType)
+	if statusType == "runtime" && forwardType == "gost-runtime-sync" {
+		sharedRuntimeSyncGate.Lock()
+		return sharedRuntimeSyncGate.Unlock
+	}
+	if statusType == "runtime" {
+		return nil
+	}
+	switch forwardType {
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "guard":
+		sharedRuntimeSyncGate.RLock()
+		return sharedRuntimeSyncGate.RUnlock
+	default:
+		return nil
 	}
 }
 

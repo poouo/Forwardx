@@ -8,6 +8,10 @@ import {
   BUILTIN_PLUGIN_STORE_ITEMS,
   DEFAULT_PLUGIN_MANIFEST,
   PLUGIN_ACTION_TYPES,
+  PLUGIN_AGENT_EXECUTORS,
+  PLUGIN_AGENT_INTERPRETERS,
+  PLUGIN_AGENT_OUTPUT_TYPES,
+  PLUGIN_AGENT_TARGETS,
   PLUGIN_EXTENSION_POINTS,
   PLUGIN_HTTP_AUTH_TYPES,
   PLUGIN_HTTP_METHODS,
@@ -21,6 +25,7 @@ import {
   PLUGIN_PAGE_CONTENT_TYPES,
   type ForwardxPluginManifest,
   type PluginActionDefinition,
+  type PluginAgentRequestDefinition,
   type PluginExtensionPoint,
   type PluginFeatureDescription,
   type PluginHttpAuthDefinition,
@@ -36,6 +41,8 @@ import {
   type PluginUsageViewDefinition,
 } from "../../shared/pluginTypes";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
+import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup } from "../pluginAgentTasks";
 
 const GITHUB_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i;
 const FORWARDX_REPO_URL = "https://github.com/poouo/Forwardx";
@@ -54,6 +61,7 @@ const MAX_PLUGIN_HTTP_TEMPLATE_BYTES = 64 * 1024;
 const MAX_PLUGIN_HTTP_RESPONSE_BYTES = PLUGIN_SECURITY_MODEL.maxHttpResponseBytes;
 const MAX_PLUGIN_HTTP_TIMEOUT_MS = 30 * 1000;
 const DEFAULT_PLUGIN_HTTP_TIMEOUT_MS = 10 * 1000;
+const PLUGIN_HOST_ASSET_ROOT = "/var/lib/forwardx-agent/plugins";
 const MAX_PLUGIN_PACKAGE_FILES = 160;
 const PACKAGE_MANIFEST_CANDIDATES = ["forwardx-plugin.json", "plugin.json", ".forwardx/plugin.json"];
 const AUTO_DISCOVER_DATA_ROOTS = ["data/"];
@@ -229,9 +237,8 @@ function normalizeUsageStorageKey(value: unknown) {
 }
 
 function hostAssetSyncDir(pluginId: string, view?: PluginUsageViewDefinition | null) {
-  const configured = String(view?.targetDirectory || "").trim();
-  if (configured && configured.startsWith("/")) return configured.replace(/\/+$/, "");
-  return `/etc/forwardx/plugins/${assertPluginId(pluginId)}`;
+  void view;
+  return `${PLUGIN_HOST_ASSET_ROOT}/${assertPluginId(pluginId)}`;
 }
 
 function firstHostAssetSyncView(manifest?: ForwardxPluginManifest) {
@@ -446,6 +453,52 @@ function normalizeHttpRequest(value: unknown): PluginHttpRequestDefinition | und
   return request;
 }
 
+function normalizePluginAgentEntry(value: unknown) {
+  const entry = String(value || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
+  if (!entry || entry.startsWith("/") || entry.includes("..") || /[\u0000-\u001f]/.test(entry)) return undefined;
+  if (!/^[A-Za-z0-9._/-]{1,240}$/.test(entry)) return undefined;
+  return entry;
+}
+
+function normalizePluginAgentRequest(value: unknown): PluginAgentRequestDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  const executors = new Set<string>(PLUGIN_AGENT_EXECUTORS);
+  const executor = String(raw.executor || "script").trim();
+  if (!executors.has(executor)) return undefined;
+  const entry = normalizePluginAgentEntry(raw.entry);
+  if (!entry) return undefined;
+  const interpreters = new Set<string>(PLUGIN_AGENT_INTERPRETERS);
+  const interpreter = interpreters.has(String(raw.interpreter || ""))
+    ? String(raw.interpreter) as PluginAgentRequestDefinition["interpreter"]
+    : "bash";
+  const outputTypes = new Set<string>(PLUGIN_AGENT_OUTPUT_TYPES);
+  const outputType = outputTypes.has(String(raw.outputType || ""))
+    ? String(raw.outputType) as PluginAgentRequestDefinition["outputType"]
+    : "json";
+  const targets = new Set<string>(PLUGIN_AGENT_TARGETS);
+  const target = targets.has(String(raw.target || ""))
+    ? String(raw.target) as PluginAgentRequestDefinition["target"]
+    : "usage-hosts";
+  const timeoutValue = Math.floor(Number(raw.timeoutMs || DEFAULT_PLUGIN_HTTP_TIMEOUT_MS));
+  const timeoutMs = Number.isFinite(timeoutValue)
+    ? Math.max(1000, Math.min(MAX_PLUGIN_HTTP_TIMEOUT_MS, timeoutValue))
+    : DEFAULT_PLUGIN_HTTP_TIMEOUT_MS;
+  const request: PluginAgentRequestDefinition = {
+    executor: executor as PluginAgentRequestDefinition["executor"],
+    interpreter,
+    target,
+    usageViewId: normalizePluginId(raw.usageViewId).slice(0, 80) || undefined,
+    entry,
+    arguments: Array.isArray(raw.arguments || raw.args)
+      ? (raw.arguments || raw.args).slice(0, 24).map((item: unknown) => String(item ?? "").slice(0, 512))
+      : [],
+    timeoutMs,
+    outputType,
+  };
+  return request;
+}
+
 function normalizePluginPages(value: unknown): PluginPageDefinition[] {
   if (!Array.isArray(value)) return [];
   const contentTypes = new Set<string>(PLUGIN_PAGE_CONTENT_TYPES);
@@ -492,9 +545,12 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
       confirmRequired: item?.confirmRequired === true,
       inputSchema: normalizeSettingFields(item?.inputSchema || item?.inputs),
       request: normalizeHttpRequest(item?.request),
+      agent: normalizePluginAgentRequest(item?.agent),
     };
+    if (action.type === "agent.request" && !action.agent) return [];
     if (!action.inputSchema?.length) delete (action as any).inputSchema;
     if (!action.request) delete (action as any).request;
+    if (!action.agent) delete (action as any).agent;
     return [action];
   });
 }
@@ -622,7 +678,7 @@ function normalizePluginUsageViews(value: unknown): PluginUsageViewDefinition[] 
       description: normalizeOptionalText(item?.description, 300),
       storageKey: normalizeUsageStorageKey(item?.storageKey),
       enableLabel: normalizeOptionalText(item?.enableLabel, 80),
-      targetDirectory: normalizeOptionalText(item?.targetDirectory, 240),
+      targetDirectory: undefined,
       assetMode: item?.assetMode === "all-plugin-assets" ? "all-plugin-assets" : "selected-assets",
       preserveAssetPaths: item?.preserveAssetPaths === true,
       disabledTitle: normalizeOptionalText(item?.disabledTitle, 100),
@@ -1197,6 +1253,22 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
     ],
     actions: [
       {
+        id: "read-agent-status",
+        label: "读取主机状态",
+        type: "agent.request",
+        description: "从已选主机读取实际白名单配置、防火墙后端、规则数量和持久化状态。",
+        agent: {
+          executor: "script",
+          interpreter: "bash",
+          target: "usage-hosts",
+          usageViewId: "sync-to-hosts",
+          entry: "forwardx-agent-run.sh",
+          arguments: ["status-json"],
+          timeoutMs: 15000,
+          outputType: "json",
+        },
+      },
+      {
         id: "refresh-whitelist-source",
         label: "刷新插件数据",
         type: "data.asset.refresh",
@@ -1210,9 +1282,8 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
         type: "host-asset-sync",
         storageKey: "chinaRegionWhitelistUsage",
         title: "主机白名单同步",
-        description: "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /etc/forwardx/plugins/china-region-whitelist。",
+        description: "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /var/lib/forwardx-agent/plugins/china-region-whitelist。",
         enableLabel: "启用同步",
-        targetDirectory: "/etc/forwardx/plugins/china-region-whitelist",
         hostSelector: {
           title: "生效主机",
           selectedLabel: "已选",
@@ -1260,6 +1331,15 @@ async function upsertPlugin(manifest: ForwardxPluginManifest, source: {
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const builtin = BUILTIN_PLUGIN_STORE_ITEMS.find((item) => item.id === manifest.id);
+  if (builtin) {
+    const trustedRepository = String(builtin.packageRepository || builtin.repository || "").trim();
+    const trustedSource = source.sourceType === "local"
+      || (source.sourceType === "github" && !!trustedRepository && source.sourceUrl === trustedRepository);
+    if (!trustedSource) {
+      throw new Error(`插件 ID ${manifest.id} 是内置插件保留标识，不能由第三方包覆盖`);
+    }
+  }
   const now = nowDate();
   const existing = await db.select().from(plugins).where(eq(plugins.pluginId, manifest.id)).limit(1);
   if (existing[0]) {
@@ -1455,6 +1535,11 @@ export function getPluginDeveloperCapabilities() {
     httpMethods: PLUGIN_HTTP_METHODS,
     httpResponseTypes: PLUGIN_HTTP_RESPONSE_TYPES,
     httpAuthTypes: PLUGIN_HTTP_AUTH_TYPES,
+    agentExecutors: PLUGIN_AGENT_EXECUTORS,
+    agentInterpreters: PLUGIN_AGENT_INTERPRETERS,
+    agentOutputTypes: PLUGIN_AGENT_OUTPUT_TYPES,
+    agentTargets: PLUGIN_AGENT_TARGETS,
+    agentMinimumVersion: AGENT_PLUGIN_TASK_VERSION,
   };
 }
 
@@ -1795,6 +1880,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
     }));
     const manifest = {
       pluginId: plugin.pluginId,
+      pluginVersion: plugin.version,
       usageViewId: usageView.id,
       mode: usage.mode,
       operation: usage.operation || defaultUsageOperation(usageView),
@@ -2454,6 +2540,59 @@ async function executePluginHttpAction(plugin: any, action: PluginActionDefiniti
   };
 }
 
+async function executePluginAgentAction(plugin: any, action: PluginActionDefinition, input: unknown) {
+  if (!pluginHasPermission(plugin, "agent:execute")) throw new Error("插件未声明 agent:execute 权限，不能向 Agent 下发操作");
+  if (!action.agent) throw new Error("插件动作缺少 Agent 请求定义");
+  const usageView = (plugin.manifest.usageViews || []).find((item: PluginUsageViewDefinition) => item.id === action.agent?.usageViewId)
+    || firstHostAssetSyncView(plugin.manifest);
+  if (!usageView || usageView.type !== "host-asset-sync") throw new Error("Agent 动作需要关联主机使用页");
+  const usage = normalizeHostAssetSyncUsage(pluginSettingsValues(plugin.manifest)[usageStorageKey(plugin, usageView.id)], usageView);
+  if (!usage.enabled || usage.hostIds.length === 0) throw new Error("请先在插件使用页启用配置并选择生效主机");
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const hostRows = await db.select({ id: hosts.id, name: hosts.name, agentVersion: hosts.agentVersion }).from(hosts);
+  const selectedHostIds = new Set(usage.hostIds);
+  const targetHosts = hostRows.filter((host: any) => selectedHostIds.has(Number(host.id)));
+  if (targetHosts.length === 0) throw new Error("插件配置中的目标主机已不存在");
+  const unsupportedHosts = targetHosts.filter((host: any) => !isAgentVersionAtLeast(host.agentVersion, AGENT_PLUGIN_TASK_VERSION));
+  if (unsupportedHosts.length > 0) {
+    const names = unsupportedHosts.slice(0, 5).map((host: any) => String(host.name || `主机 ${host.id}`)).join("、");
+    const suffix = unsupportedHosts.length > 5 ? ` 等 ${unsupportedHosts.length} 台主机` : "";
+    throw new Error(`${names}${suffix} 需要先升级到 Agent v${AGENT_PLUGIN_TASK_VERSION} 才能执行插件操作`);
+  }
+  const actionInput = normalizeActionInputValues(action.inputSchema, input);
+  const context = { settings: pluginSettingsValues(plugin.manifest), input: actionInput, plugin };
+  const renderedArguments = (action.agent.arguments || []).map((argument) => renderTemplateString(argument, context).slice(0, 2000));
+  const workingDirectory = hostAssetSyncDir(plugin.pluginId, usageView);
+  const expectedRoot = `${PLUGIN_HOST_ASSET_ROOT}/${plugin.pluginId}`;
+  if (workingDirectory !== expectedRoot && !workingDirectory.startsWith(`${expectedRoot}/`)) {
+    throw new Error(`Agent 动作目录必须位于 ${expectedRoot}`);
+  }
+  const group = enqueuePluginAgentTaskGroup({
+    pluginId: plugin.pluginId,
+    pluginVersion: plugin.version,
+    actionId: action.id,
+    executor: action.agent.executor,
+    interpreter: action.agent.interpreter || "bash",
+    workingDirectory,
+    entry: action.agent.entry,
+    arguments: renderedArguments,
+    timeoutMs: action.agent.timeoutMs || DEFAULT_PLUGIN_HTTP_TIMEOUT_MS,
+    outputType: action.agent.outputType || "json",
+    hosts: targetHosts,
+  });
+  return {
+    ok: true,
+    message: `已向 ${targetHosts.length} 台主机下发插件操作`,
+    result: {
+      type: "agent.request",
+      actionId: action.id,
+      groupId: group?.groupId,
+      body: group,
+    },
+  };
+}
+
 export async function runPluginAction(pluginId: string, actionId: string, input?: unknown) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
@@ -2462,6 +2601,9 @@ export async function runPluginAction(pluginId: string, actionId: string, input?
   if (!action) throw new Error("插件没有声明该动作");
   if (action.type === "http.request") {
     return executePluginHttpAction(plugin, action, input);
+  }
+  if (action.type === "agent.request") {
+    return executePluginAgentAction(plugin, action, input);
   }
   if (action.type === "noop") {
     return { ok: true, message: "动作已执行（noop）" };
@@ -2487,6 +2629,14 @@ export async function runPluginAction(pluginId: string, actionId: string, input?
     };
   }
   throw new Error("该插件动作暂未支持");
+}
+
+export async function getPluginAgentActionStatus(pluginId: string, groupId: string) {
+  const plugin = await getPlugin(pluginId);
+  if (!plugin) throw new Error("插件不存在");
+  const group = getPluginAgentTaskGroup(groupId);
+  if (!group || group.pluginId !== plugin.pluginId) return null;
+  return group;
 }
 
 export async function getEnabledPluginExtensionPoints() {

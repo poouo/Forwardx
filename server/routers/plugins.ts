@@ -104,6 +104,15 @@ export const pluginsRouter = router({
       return pluginRepo.runPluginAction(input.pluginId, input.actionId, input.input);
     }),
 
+  agentActionStatus: adminProcedure
+    .input(z.object({
+      pluginId: z.string().trim().min(1).max(128),
+      groupId: z.string().uuid(),
+    }))
+    .query(async ({ input }) => {
+      return pluginRepo.getPluginAgentActionStatus(input.pluginId, input.groupId);
+    }),
+
   usage: adminProcedure
     .input(z.object({
       pluginId: z.string().trim().min(1).max(128),

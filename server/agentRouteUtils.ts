@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import { isSelfTestMeta, type SelfTestMeta } from "../shared/agentDtos";
 
+export const AGENT_PLUGIN_TASK_VERSION = "2.2.148";
+
 export function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }

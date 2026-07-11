@@ -10,10 +10,12 @@ export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/looking-glass-result",
   "/api/agent/looking-glass-progress",
   "/api/agent/iperf3-result",
+  "/api/agent/plugin-action-result",
   "/api/agent/traffic",
   "/api/agent/tcping",
   "/api/agent/protocol-block",
   "/api/agent/rule-status",
+  "/api/agent/rule-status-batch",
 ]);
 
 function normalizeTunnelPath(value: unknown) {

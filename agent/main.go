@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.147"
+var Version = "2.2.148"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -62,20 +62,34 @@ const agentEventStreamReconnectMaxDelay = 30 * time.Second
 const actionBacklogKeepaliveInterval = 10 * time.Second
 const actionQueueCapacity = 4096
 
-// actionWorkerConcurrency 是动作队列的并发 worker 数。每个 worker 从共享队列取活，
-// 并按 actionSerialKey（端口/规则/隧道粒度）加串行锁：同一端口的动作永远串行执行
-// （保证正确性），不同端口的动作可并发。规则数达 500~1000+ 时，固定 4 个 worker 会成为
-// 批量下发的瓶颈，故按 CPU 核数自适应放大，上限 16，避免在小核机器上过度并发。
-var actionWorkerConcurrency = resolveActionWorkerConcurrency()
+// 动作 worker 从基础并发起步，积压时自动扩容到上限。空闲 worker 只阻塞等待队列，
+// 不消耗 CPU；状态上报由独立批处理器完成，因此 worker 只负责实际转发动作。
+var actionWorkerBaseConcurrency = resolveActionWorkerBaseConcurrency()
+var actionWorkerConcurrency = resolveActionWorkerMaxConcurrency()
+var actionWorkerStartedCount int64
 
-func resolveActionWorkerConcurrency() int {
+func resolveActionWorkerBaseConcurrency() int {
 	cores := runtime.NumCPU()
 	workers := cores * 2
-	if workers < 4 {
-		workers = 4
+	if workers < 8 {
+		workers = 8
 	}
 	if workers > 16 {
 		workers = 16
+	}
+	return workers
+}
+
+func resolveActionWorkerMaxConcurrency() int {
+	workers := runtime.NumCPU() * 8
+	if workers < 16 {
+		workers = 16
+	}
+	if workers > 64 {
+		workers = 64
+	}
+	if workers < actionWorkerBaseConcurrency {
+		workers = actionWorkerBaseConcurrency
 	}
 	return workers
 }
@@ -166,6 +180,7 @@ var agentReportLogAt = map[string]time.Time{}
 var agentMemoryPrunedAt time.Time
 var actionPendingCount int64
 var heartbeatWakeCh = make(chan struct{}, 1)
+var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
@@ -179,6 +194,16 @@ var heartbeatStateSignatures = map[string]string{}
 var localRuntimeStateMu sync.Mutex
 var lastLocalRuntimeStateSignature string
 var forceSendLocalRuntimeState = true
+
+// readLocalRuntimeReadiness 的跨心跳缓存。
+// TTL 5s：正常心跳间隔 30s，对数据新鲜度无影响；
+// 在 SSE 唤醒风暴（churn）期间可消除重复的 ss/systemctl 调用。
+const localRuntimeReadinessCacheTTL = 5 * time.Second
+
+var localRuntimeReadinessCacheMu sync.Mutex
+var localRuntimeReadinessCacheResult *localRuntimeReadiness
+var localRuntimeReadinessCachedAt time.Time
+var localRuntimeReadinessCacheInvalid bool
 
 type actionJob struct {
 	cfg              Config
@@ -242,6 +267,7 @@ type heartbeatResp struct {
 	DNSWatch           []dnsWatchItem          `json:"dnsWatch"`
 	LookingGlassTests  []lookingGlassTask      `json:"lookingGlassTests"`
 	Iperf3Tasks        []iperf3Task            `json:"iperf3Tasks"`
+	PluginTasks        []pluginAgentTask       `json:"pluginTasks"`
 	AgentUpgrade       *agentUpgrade           `json:"agentUpgrade"`
 	StateSignatures    map[string]string       `json:"stateSignatures,omitempty"`
 	RequestLocalState  bool                    `json:"requestLocalState,omitempty"`
@@ -447,6 +473,31 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 	return readiness
 }
 
+// readLocalRuntimeReadinessCached 返回带 TTL 缓存的 readLocalRuntimeReadiness 结果。
+// 相同 TTL 窗口内多次调用（SSE 唤醒风暴、primeDesiredRuntimeReadyCacheForActions）
+// 只产生一次 ss/systemctl/config 读取。
+// 调用 invalidateLocalRuntimeReadinessCache() 可提前失效（如 action 执行完毕后）。
+func readLocalRuntimeReadinessCached() localRuntimeReadiness {
+	localRuntimeReadinessCacheMu.Lock()
+	defer localRuntimeReadinessCacheMu.Unlock()
+	if !localRuntimeReadinessCacheInvalid &&
+		localRuntimeReadinessCacheResult != nil &&
+		time.Since(localRuntimeReadinessCachedAt) < localRuntimeReadinessCacheTTL {
+		return *localRuntimeReadinessCacheResult
+	}
+	r := readLocalRuntimeReadiness()
+	localRuntimeReadinessCacheResult = &r
+	localRuntimeReadinessCachedAt = time.Now()
+	localRuntimeReadinessCacheInvalid = false
+	return r
+}
+
+func invalidateLocalRuntimeReadinessCache() {
+	localRuntimeReadinessCacheMu.Lock()
+	localRuntimeReadinessCacheInvalid = true
+	localRuntimeReadinessCacheMu.Unlock()
+}
+
 func (r *localRuntimeReadiness) managedServiceActiveCached(name string) bool {
 	name = sanitizeServiceName(name)
 	if name == "" {
@@ -496,14 +547,18 @@ func (r *localRuntimeReadiness) gostReadyForPort(port int, protocol string) bool
 	if r == nil || port <= 0 {
 		return false
 	}
+	// runtimeServiceName ("forwardx-runtime") is the actual binary; Linux ss(8)
+	// truncates comm to 15 chars so it appears as "forwardx-runtim" in ss output.
+	// Keep "gost" for environments that still run the upstream gost binary directly.
+	runtimeNeedles := []string{"gost", "forwardx-runt"}
 	return (r.gostRuntimeReady &&
 		r.gostRuntimePorts[port] &&
 		runtimePortProtocolConfigured(r.gostRuntimePortProtocols, port, protocol) &&
-		runtimeListenPortReady(r.listenSnapshot, port, protocol, []string{"gost"})) ||
+		runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles)) ||
 		(r.tunnelRuntimeReady &&
 			r.tunnelRuntimePorts[port] &&
 			runtimePortProtocolConfigured(r.tunnelRuntimePortProtocols, port, protocol) &&
-			runtimeListenPortReady(r.listenSnapshot, port, protocol, []string{"gost"}))
+			runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles))
 }
 
 func (r *localRuntimeReadiness) nginxReadyForPort(port int, protocol string) bool {
@@ -1043,7 +1098,7 @@ func iptablesForwardxMarkerSeenForPort(port int) bool {
 }
 
 func readLocalRuntimeStatePayload() localRuntimeStatePayload {
-	readiness := readLocalRuntimeReadiness()
+	readiness := readLocalRuntimeReadinessCached()
 	ruleStates := readLocalRuntimeRuleStates()
 	rules := make([]localRuntimeRuleState, 0, len(ruleStates))
 	for _, state := range ruleStates {
@@ -1133,6 +1188,8 @@ func requestLocalRuntimeStateUpload() {
 	localRuntimeStateMu.Lock()
 	forceSendLocalRuntimeState = true
 	localRuntimeStateMu.Unlock()
+	// 运行时状态有变化，丢弃 readiness 缓存以便下次心跳重新采集。
+	invalidateLocalRuntimeReadinessCache()
 }
 
 type selfTestResp struct {
@@ -1256,6 +1313,14 @@ type agentUpgrade struct {
 type agentEventMessage struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
+}
+
+// agentDesiredStatePush 是服务端经 SSE 下发的 desiredState 推送载荷，
+// 包含 desired state 及 running rules，让 Agent 无需等待下一个心跳即可立即执行。
+type agentDesiredStatePush struct {
+	DesiredState    *desiredState     `json:"desiredState,omitempty"`
+	RunningRules    []runningRule     `json:"runningRules,omitempty"`
+	StateSignatures map[string]string `json:"stateSignatures,omitempty"`
 }
 
 type migratedPanelError struct {
@@ -1442,28 +1507,45 @@ func main() {
 
 	_ = register(cfg)
 	resetDesiredActionRecordsAfterAgentUpgrade()
+	startActionStatusReporter()
+	startPluginAgentTaskWorkers()
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
 	for {
-		if pending := atomic.LoadInt64(&actionPendingCount); pending > 0 {
+		pending := atomic.LoadInt64(&actionPendingCount)
+		fromSSE := heartbeatWakeFromSSE.Swap(false)
+		if pending > 0 {
 			if shouldLogAgentReport("heartbeat-pending-continue", agentReportLogInterval) {
-				logf("heartbeat continue while actions pending=%d queued=%d workers=%d", pending, len(actionQueue), actionWorkerConcurrency)
+				logf("heartbeat continue while actions pending=%d queued=%d workers=%d/%d fromSSE=%v", pending, len(actionQueue), atomic.LoadInt64(&actionWorkerStartedCount), actionWorkerConcurrency, fromSSE)
 			}
 		}
-		nextInterval, err := heartbeat(cfg)
-		if err != nil {
-			logAgentCommError("heartbeat", err)
-		}
-		if nextInterval <= 0 {
-			nextInterval = cfg.Interval
-		}
-		if nextInterval < 2 {
-			nextInterval = 2
+		// SSE 唤醒 + 有 actions 正在处理：只发轻量 keepalive（不做 readiness 扫描，
+		// 仅上报指标并告知面板 Agent 正忙）。完整心跳由定时器或下一次 SSE 唤醒触发。
+		if fromSSE && pending > 0 {
+			if err := heartbeatKeepalive(cfg); err != nil {
+				logAgentCommError("heartbeat-keepalive", err)
+			}
+		} else {
+			nextInterval, err := heartbeat(cfg)
+			if err != nil {
+				logAgentCommError("heartbeat", err)
+			}
+			if nextInterval <= 0 {
+				nextInterval = cfg.Interval
+			}
+			if nextInterval < 2 {
+				nextInterval = 2
+			}
+			select {
+			case <-heartbeatWakeCh:
+			case <-time.After(time.Duration(nextInterval) * time.Second):
+			}
+			continue
 		}
 		select {
 		case <-heartbeatWakeCh:
-		case <-time.After(time.Duration(nextInterval) * time.Second):
+		case <-time.After(time.Duration(cfg.Interval) * time.Second):
 		}
 	}
 }
@@ -1473,6 +1555,14 @@ func wakeHeartbeat() {
 	case heartbeatWakeCh <- struct{}{}:
 	default:
 	}
+}
+
+// wakeHeartbeatFromSSE 由 SSE 推送触发，标记本次唤醒来源为 SSE。
+// 主循环据此判断：若 Agent 正忙（actions pending），只发轻量 keepalive，
+// 避免在 churn 窗口内重复执行 ss/systemctl/config 全扫描。
+func wakeHeartbeatFromSSE() {
+	heartbeatWakeFromSSE.Store(true)
+	wakeHeartbeat()
 }
 
 func loadConfigWithFallback(path string) (string, Config, error) {
@@ -1840,6 +1930,18 @@ func heartbeat(cfg Config) (int, error) {
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
+	// Interactive tasks are independent from desired-state reconciliation. Accept
+	// them before an early local-state return so a heartbeat response cannot drop
+	// a task while the Agent is rebuilding its runtime snapshot.
+	for _, task := range resp.LookingGlassTests {
+		go handleLookingGlassTask(cfg, task)
+	}
+	for _, task := range resp.Iperf3Tasks {
+		go handleIperf3Task(cfg, task)
+	}
+	for _, task := range resp.PluginTasks {
+		enqueuePluginAgentTask(cfg, task)
+	}
 	if resp.RequestLocalState {
 		requestLocalRuntimeStateUpload()
 		next := resp.NextInterval
@@ -1876,12 +1978,6 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	for _, t := range resp.SelfTests {
 		enqueueSelfTest(cfg, t)
-	}
-	for _, task := range resp.LookingGlassTests {
-		go handleLookingGlassTask(cfg, task)
-	}
-	for _, task := range resp.Iperf3Tasks {
-		go handleIperf3Task(cfg, task)
 	}
 	for port := range snapshotProtectedActionPorts() {
 		pendingActionPorts[port] = true
@@ -2561,7 +2657,14 @@ func runAgentEventStream(cfg Config) error {
 						go selfUpgrade(cfg, &up)
 					}
 				} else if msg.Type == "agent-refresh" {
-					wakeHeartbeat()
+					wakeHeartbeatFromSSE()
+				} else if msg.Type == "agent-desired-state" {
+					var push agentDesiredStatePush
+					if err := json.Unmarshal(msg.Data, &push); err != nil {
+						logf("decode agent-desired-state payload: %v", err)
+					} else {
+						go handleAgentDesiredStatePush(cfg, push)
+					}
 				}
 			}
 			data.Reset()
@@ -2590,6 +2693,35 @@ func decodeEventData(raw string, token string, out any) error {
 		return err
 	}
 	return json.Unmarshal(plain, out)
+}
+
+// handleAgentDesiredStatePush 处理服务端通过 SSE 推送的 desiredState，
+// 立即执行 desired state 对账，无需等待下一个心跳周期。
+// 与心跳路径的 syncDesiredState 共享同一幂等性机制（签名 + desired_state_records.json），
+// 因此即使心跳和 SSE 推送同时触发也不会重复执行。
+func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
+	if push.DesiredState == nil && len(push.RunningRules) == 0 {
+		return
+	}
+	// 先应用 running rules，stale-remove 保护依赖这份数据。
+	if len(push.RunningRules) > 0 || len(push.StateSignatures) > 0 {
+		partial := heartbeatResp{
+			RunningRules:    push.RunningRules,
+			StateSignatures: push.StateSignatures,
+		}
+		state := applyHeartbeatState(partial)
+		rememberDesiredRunningRules(state.RunningRules)
+	}
+	if push.DesiredState == nil {
+		return
+	}
+	done := syncDesiredState(cfg, push.DesiredState)
+	// desired state 里可能夹带 apply 动作，这些动作执行完才能准确上报端口 ready，
+	// 这里不阻塞等待，让 worker pool 自行处理；后续心跳会确认最终状态。
+	_ = done
+	// 通知下一次心跳重新采集本地状态（可能由于 worker 还未完成所以暂缓），
+	// 同时失效 readiness 缓存，让采集结果反映最新运行时状态。
+	requestLocalRuntimeStateUpload()
 }
 
 func handleAction(cfg Config, a action) bool {
@@ -2710,10 +2842,13 @@ func handleAction(cfg Config, a action) bool {
 		return ok
 	}
 	if !shouldReportActionStatus(a) {
+		// 即使不上报状态，运行时状态已变，让下次 readiness 重新采集。
+		invalidateLocalRuntimeReadinessCache()
 		return ok
 	}
 	running := ok && a.Op == "apply"
 	reportActionStatus(cfg, a, running, actionMessage.get())
+	invalidateLocalRuntimeReadinessCache()
 	return ok
 }
 
@@ -2760,17 +2895,7 @@ func reportActionStatus(cfg Config, a action, running bool, message string) {
 	if !shouldReportActionStatus(a) {
 		return
 	}
-	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "forwardType": a.ForwardType, "isRunning": running, "message": message}
-	var out map[string]any
-	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
-		if isTransientAgentCommError(err) {
-			logAgentCommError("rule-status", err)
-		} else if shouldLogAgentReport("rule-status-report-failed", agentReportLogInterval) {
-			logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
-		}
-	} else if !running || agentVerboseLogs {
-		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
-	}
+	enqueueActionStatusReport(cfg, a, running, message)
 }
 
 func shouldSkipRemoveForReassignedPort(a action) bool {
@@ -3515,15 +3640,12 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	}
 	stopped := false
 	for _, item := range managedRuntimeConfigs() {
-		if managedRuntimeConfigUsesPort(item.path, port) {
-			if item.service == nginxServiceName {
-				logf("runtime cleanup keeps shared %s for busy port=%d; waiting for nginx runtime sync to reload config", item.service, port)
-				stopped = true
-				continue
-			}
-			logf("runtime cleanup stopping %s for busy port=%d: %v", item.service, port, err)
-			cleanupManagedService(item.service)
+		if sharedManagedRuntimeOwnsPort(item.path, port) {
+			// A matching shared runtime listener is desired state, not a stale per-rule
+			// process. Stopping it here drops every port hosted by the same runtime.
+			logf("runtime cleanup keeps shared %s for busy port=%d; runtime sync owns config=%s", item.service, port, item.path)
 			stopped = true
+			continue
 		}
 	}
 	for _, configPath := range managedGostConfigPathsForListenPort(port) {
@@ -3544,6 +3666,10 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	if !stopped {
 		logf("runtime cleanup found busy port=%d but no managed gost config owns it: %v", port, err)
 	}
+}
+
+func sharedManagedRuntimeOwnsPort(configPath string, port int) bool {
+	return validActionPort(port) && managedRuntimeConfigUsesPort(configPath, port)
 }
 
 func managedRuntimeConfigUsesPort(path string, port int) bool {
@@ -5154,14 +5280,17 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	stopFXP(spec)
 	stopFXPByListenPort(spec.ListenPort)
-	cleanupPorts := []int{spec.ListenPort}
-	if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
-		cleanupPorts = append(cleanupPorts, spec.UDPListenPort)
+	for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(spec.ListenPort)) {
+		_ = runShell(cmd)
 	}
-	for _, cleanupPort := range cleanupPorts {
-		for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(cleanupPort)) {
-			_ = runShell(cmd)
-		}
+	// When mimic is enabled, UDPListenPort (mimicPort) differs from ListenPort (TCP port).
+	// fxpPortCleanupCmds matches by config filename which always ends in ListenPort, so
+	// using it with mimicPort would never match. Kill the UDP port occupant directly via ss.
+	if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
+		port := strconv.Itoa(spec.UDPListenPort)
+		_ = runShell("for pid in $(ss -Hlnup 'sport = :" + port + "' 2>/dev/null | " +
+			"awk '{match($0,/pid=([0-9]+)/,a); if(a[1]!=\"\" && a[1]!=\"$$\" && a[1]!=\"$PPID\") print a[1]}' | sort -u || true); " +
+			"do kill \"$pid\" 2>/dev/null || true; done")
 	}
 	if !waitForFXPListenPortFree(&spec, spec.ListenPort, 3*time.Second) {
 		owner := listenPortOwnerSummary(spec.ListenPort)

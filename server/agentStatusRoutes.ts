@@ -99,6 +99,171 @@ async function getTunnelEntryHostIds(tunnel: any) {
   return Array.from(hostIds);
 }
 
+const AGENT_STATUS_BATCH_MAX_SIZE = 200;
+
+type AgentStatusApplyResult = {
+  status: number;
+  body: Record<string, any>;
+};
+
+async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatusApplyResult> {
+  const { ruleId, tunnelId, statusType, isRunning } = payload || {};
+  const rawMessage = typeof payload?.message === "string" ? payload.message.trim() : "";
+  const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
+  const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
+  if (statusType === "runtime") {
+    const runtimeType = String(payload?.forwardType || "runtime").trim() || "runtime";
+    if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}:message=${message}`, !isRunning || !!message)) {
+      appendPanelLog(
+        !!isRunning ? "info" : "warn",
+        `[Runtime] status type=${runtimeType} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+      );
+    }
+    return { status: 200, body: { success: true } };
+  }
+  if (statusType === "tunnel") {
+    if (typeof tunnelId !== "number") {
+      return { status: 400, body: { error: "tunnelId is required" } };
+    }
+    const tunnel = await db.getTunnelById(tunnelId);
+    const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
+    const extraExitHostIds = tunnel ? await getTunnelExtraExitHostIds(Number(tunnel.id)) : [];
+    const isTunnelHop = Array.isArray(hops)
+      && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
+    const isExtraExit = extraExitHostIds.includes(Number(host.id));
+    const tunnelEntryHostIds = tunnel ? await getTunnelEntryHostIds(tunnel) : [];
+    const isEntryHost = tunnelEntryHostIds.includes(Number(host.id));
+    if (!tunnel || (!isEntryHost && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
+      return { status: 404, body: { error: "tunnel not found" } };
+    }
+    const hopHostIds = Array.isArray(hops)
+      ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
+      : [];
+    if (isExtraExit) {
+      recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
+      if (shouldLogStatus(`tunnel:${tunnelId}:extra:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
+        appendPanelLog(
+          !!isRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} extraExit=${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        );
+      }
+      return { status: 200, body: { success: true } };
+    }
+    if (hopHostIds.length >= 3) {
+      recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
+      const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
+      const nextRunning = !!isRunning && readyCount >= hopHostIds.length;
+      await db.updateTunnelRunningStatus(tunnelId, nextRunning);
+      if (isRunning) {
+        requestTunnelTcpingRefresh(hopHostIds.slice(0, -1), nextRunning ? "tunnel-tcping-refresh" : "tunnel-runtime-probe-refresh");
+      }
+      if (!nextRunning && isRunning) {
+        for (const hostId of hopHostIds) {
+          if (Number(hostId) !== Number(host.id) && getTunnelRuntimeHostStatus(tunnelId, hostId) !== true) {
+            pushAgentRefresh(hostId, "tunnel-runtime-sync");
+          }
+        }
+      }
+      if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:ready=${readyCount}/${hopHostIds.length}`, !isRunning || !!message)) {
+        appendPanelLog(
+          !!isRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
+        );
+      }
+      return { status: 200, body: { success: true } };
+    }
+    if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
+      if (shouldLogStatus(`tunnel:${tunnelId}:ignored:${host.id}`, `running=${!!isRunning}`, !!message)) {
+        appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+      }
+      return { status: 200, body: { success: true, ignored: true } };
+    }
+    const nextRunning = await updateDirectTunnelRunningStatus(tunnel, !!isRunning);
+    if (nextRunning) {
+      requestTunnelTcpingRefresh(tunnelEntryHostIds, "tunnel-tcping-refresh");
+    }
+    if (shouldLogStatus(`tunnel:${tunnelId}:direct:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}`, !nextRunning || !!message)) {
+      appendPanelLog(
+        nextRunning ? "info" : "warn",
+        `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
+      );
+    }
+    return { status: 200, body: { success: true } };
+  }
+  if (typeof ruleId !== "number") {
+    return { status: 400, body: { error: "ruleId is required" } };
+  }
+
+  const rule = await db.getForwardRuleById(ruleId);
+  if (!rule) {
+    return { status: 404, body: { error: "rule not found" } };
+  }
+  let ruleTunnel: any = null;
+  let ruleTunnelEntryHostIds: number[] = [];
+  let allowed = Number((rule as any).hostId) === Number(host.id);
+  if ((rule as any).tunnelId) {
+    ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
+    if (ruleTunnel) {
+      ruleTunnelEntryHostIds = await getTunnelEntryHostIds(ruleTunnel);
+      const extraExitHostIds = await getTunnelExtraExitHostIds(Number(ruleTunnel.id));
+      allowed = allowed
+        || ruleTunnelEntryHostIds.includes(Number(host.id))
+        || Number((ruleTunnel as any).exitHostId) === Number(host.id)
+        || extraExitHostIds.includes(Number(host.id));
+    }
+  }
+  if (!allowed) {
+    return { status: 403, body: { error: "forbidden" } };
+  }
+
+  const currentRuleTunnelId = Number((rule as any).tunnelId || 0);
+  const reportedRuleTunnelId = Number(tunnelId || 0);
+  if (currentRuleTunnelId !== reportedRuleTunnelId && (currentRuleTunnelId > 0 || reportedRuleTunnelId > 0)) {
+    if (shouldLogStatus(`rule:${ruleId}:stale-tunnel:${host.id}`, `reported=${reportedRuleTunnelId}:current=${currentRuleTunnelId}`, true)) {
+      appendPanelLog(
+        "info",
+        `[Rule] status ignored stale tunnel rule=${ruleId} name=${String((rule as any).name || "-")} reportedTunnel=${reportedRuleTunnelId || "-"} currentTunnel=${currentRuleTunnelId || "-"} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+      );
+    }
+    return { status: 200, body: { success: true, ignored: true } };
+  }
+
+  const wasRunning = !!(rule as any).isRunning;
+  await db.updateRuleRunningStatus(ruleId, !!isRunning);
+  if (
+    (wasRunning || !!message)
+    && !isRunning
+    && !!(rule as any).isEnabled
+    && !(rule as any).pendingDelete
+    && !!(rule as any).telegramErrorNotifyEnabled
+  ) {
+    void notifyForwardRuleError({ rule, host, message }).catch((error) => {
+      console.warn(`[Telegram] Forward rule error notify failed rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  if (ruleTunnel && ruleTunnelEntryHostIds.includes(Number(host.id))) {
+    recordTunnelRuntimeHostStatus(Number(ruleTunnel.id), Number(host.id), !!isRunning);
+  }
+  if (
+    !!isRunning
+    && ruleTunnel
+    && isForwardXTunnel(ruleTunnel)
+    && Number((rule as any).tunnelId) > 0
+  ) {
+    const hops = await hopRepo.getTunnelHops(Number(ruleTunnel.id));
+    if (!Array.isArray(hops) || hops.length < 3) {
+      await maybeMarkForwardXTunnelRunningFromRule(ruleTunnel);
+    }
+  }
+  if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
+    appendPanelLog(
+      !!isRunning ? "info" : "warn",
+      `[Rule] status rule=${ruleId} name=${String((rule as any).name || "-")} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${(rule as any).forwardType || "-"} proto=${(rule as any).protocol || "-"} target=${String((rule as any).targetIp || "-")}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+    );
+  }
+  return { status: 200, body: { success: true } };
+}
+
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
   try {
@@ -162,6 +327,42 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
   }
 });
 
+agentRouter.post("/api/agent/rule-status-batch", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostFromRequest(req);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const statuses = Array.isArray(req.body?.statuses) ? req.body.statuses : [];
+    if (statuses.length === 0 || statuses.length > AGENT_STATUS_BATCH_MAX_SIZE) {
+      res.status(400).json({ error: `statuses must contain 1-${AGENT_STATUS_BATCH_MAX_SIZE} items` });
+      return;
+    }
+    let accepted = 0;
+    let ignored = 0;
+    const rejected: Array<{ index: number; status: number; error: string }> = [];
+    for (let index = 0; index < statuses.length; index += 1) {
+      const payload = statuses[index];
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        rejected.push({ index, status: 400, error: "invalid status payload" });
+        continue;
+      }
+      const result = await applyAgentRuleStatus(host, payload);
+      if (result.status >= 400) {
+        rejected.push({ index, status: result.status, error: String(result.body?.error || "status rejected") });
+        continue;
+      }
+      accepted += 1;
+      if (result.body?.ignored) ignored += 1;
+    }
+    res.json({ success: true, accepted, ignored, rejected });
+  } catch (error) {
+    console.error("[Agent Rule Status Batch] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) => {
   try {
     const host = await getAgentHostFromRequest(req);
@@ -170,172 +371,8 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
 
-    const { ruleId, tunnelId, statusType, isRunning } = req.body;
-    const rawMessage = typeof req.body?.message === "string" ? req.body.message.trim() : "";
-    const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
-    const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
-    if (statusType === "runtime") {
-      const runtimeType = String(req.body?.forwardType || "runtime").trim() || "runtime";
-      if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}:message=${message}`, !isRunning || !!message)) {
-        appendPanelLog(
-          !!isRunning ? "info" : "warn",
-          `[Runtime] status type=${runtimeType} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-        );
-      }
-      res.json({ success: true });
-      return;
-    }
-    if (statusType === "tunnel") {
-      if (typeof tunnelId !== "number") {
-        res.status(400).json({ error: "tunnelId is required" });
-        return;
-      }
-      const tunnel = await db.getTunnelById(tunnelId);
-      const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
-      const extraExitHostIds = tunnel ? await getTunnelExtraExitHostIds(Number(tunnel.id)) : [];
-      const isTunnelHop = Array.isArray(hops)
-        && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
-      const isExtraExit = extraExitHostIds.includes(Number(host.id));
-      const tunnelEntryHostIds = tunnel ? await getTunnelEntryHostIds(tunnel) : [];
-      const isEntryHost = tunnelEntryHostIds.includes(Number(host.id));
-      if (!tunnel || (!isEntryHost && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
-        res.status(404).json({ error: "tunnel not found" });
-        return;
-      }
-      const hopHostIds = Array.isArray(hops)
-        ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
-        : [];
-      if (isExtraExit) {
-        recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
-        if (shouldLogStatus(`tunnel:${tunnelId}:extra:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
-          appendPanelLog(
-            !!isRunning ? "info" : "warn",
-            `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} extraExit=${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-          );
-        }
-        res.json({ success: true });
-        return;
-      }
-      if (hopHostIds.length >= 3) {
-        recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
-        const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
-        const nextRunning = !!isRunning && readyCount >= hopHostIds.length;
-        await db.updateTunnelRunningStatus(tunnelId, nextRunning);
-        if (isRunning) {
-          requestTunnelTcpingRefresh(hopHostIds.slice(0, -1), nextRunning ? "tunnel-tcping-refresh" : "tunnel-runtime-probe-refresh");
-        }
-        if (!nextRunning && isRunning) {
-          for (const hostId of hopHostIds) {
-            if (Number(hostId) !== Number(host.id) && getTunnelRuntimeHostStatus(tunnelId, hostId) !== true) {
-              pushAgentRefresh(hostId, "tunnel-runtime-sync");
-            }
-          }
-        }
-        if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:ready=${readyCount}/${hopHostIds.length}`, !isRunning || !!message)) {
-          appendPanelLog(
-            !!isRunning ? "info" : "warn",
-            `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
-          );
-        }
-        res.json({ success: true });
-        return;
-      }
-      if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
-        if (shouldLogStatus(`tunnel:${tunnelId}:ignored:${host.id}`, `running=${!!isRunning}`, !!message)) {
-          appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
-        }
-        res.json({ success: true, ignored: true });
-        return;
-      }
-      const nextRunning = await updateDirectTunnelRunningStatus(tunnel, !!isRunning);
-      if (nextRunning) {
-        requestTunnelTcpingRefresh(tunnelEntryHostIds, "tunnel-tcping-refresh");
-      }
-      if (shouldLogStatus(`tunnel:${tunnelId}:direct:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}`, !nextRunning || !!message)) {
-        appendPanelLog(
-          nextRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
-        );
-      }
-      res.json({ success: true });
-      return;
-    }
-    if (typeof ruleId !== "number") {
-      res.status(400).json({ error: "ruleId is required" });
-      return;
-    }
-
-    const rule = await db.getForwardRuleById(ruleId);
-    if (!rule) {
-      res.status(404).json({ error: "rule not found" });
-      return;
-    }
-    let ruleTunnel: any = null;
-    let ruleTunnelEntryHostIds: number[] = [];
-    let allowed = Number((rule as any).hostId) === Number(host.id);
-    if ((rule as any).tunnelId) {
-      ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
-      if (ruleTunnel) {
-        ruleTunnelEntryHostIds = await getTunnelEntryHostIds(ruleTunnel);
-        const extraExitHostIds = await getTunnelExtraExitHostIds(Number(ruleTunnel.id));
-        allowed = allowed
-          || ruleTunnelEntryHostIds.includes(Number(host.id))
-          || Number((ruleTunnel as any).exitHostId) === Number(host.id)
-          || extraExitHostIds.includes(Number(host.id));
-      }
-    }
-    if (!allowed) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
-
-    const currentRuleTunnelId = Number((rule as any).tunnelId || 0);
-    const reportedRuleTunnelId = Number(tunnelId || 0);
-    if (currentRuleTunnelId !== reportedRuleTunnelId && (currentRuleTunnelId > 0 || reportedRuleTunnelId > 0)) {
-      if (shouldLogStatus(`rule:${ruleId}:stale-tunnel:${host.id}`, `reported=${reportedRuleTunnelId}:current=${currentRuleTunnelId}`, true)) {
-        appendPanelLog(
-          "info",
-          `[Rule] status ignored stale tunnel rule=${ruleId} name=${String((rule as any).name || "-")} reportedTunnel=${reportedRuleTunnelId || "-"} currentTunnel=${currentRuleTunnelId || "-"} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-        );
-      }
-      res.json({ success: true, ignored: true });
-      return;
-    }
-
-    const wasRunning = !!(rule as any).isRunning;
-    await db.updateRuleRunningStatus(ruleId, !!isRunning);
-    if (
-      (wasRunning || !!message)
-      && !isRunning
-      && !!(rule as any).isEnabled
-      && !(rule as any).pendingDelete
-      && !!(rule as any).telegramErrorNotifyEnabled
-    ) {
-      void notifyForwardRuleError({ rule, host, message }).catch((error) => {
-        console.warn(`[Telegram] Forward rule error notify failed rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
-      });
-    }
-    if (ruleTunnel && ruleTunnelEntryHostIds.includes(Number(host.id))) {
-      recordTunnelRuntimeHostStatus(Number(ruleTunnel.id), Number(host.id), !!isRunning);
-    }
-    if (
-      !!isRunning
-      && ruleTunnel
-      && isForwardXTunnel(ruleTunnel)
-      && Number((rule as any).tunnelId) > 0
-    ) {
-      const hops = await hopRepo.getTunnelHops(Number(ruleTunnel.id));
-      if (!Array.isArray(hops) || hops.length < 3) {
-        await maybeMarkForwardXTunnelRunningFromRule(ruleTunnel);
-      }
-    }
-    if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
-      appendPanelLog(
-        !!isRunning ? "info" : "warn",
-        `[Rule] status rule=${ruleId} name=${String((rule as any).name || "-")} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${(rule as any).forwardType || "-"} proto=${(rule as any).protocol || "-"} target=${String((rule as any).targetIp || "-")}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-      );
-    }
-    res.json({ success: true });
+    const result = await applyAgentRuleStatus(host, req.body);
+    res.status(result.status).json(result.body);
   } catch (error) {
     console.error("[Agent Rule Status] Error:", error);
     res.status(500).json({ error: "Internal server error" });

@@ -191,7 +191,82 @@ function actionResultTitle(result: any) {
   if (payload?.type === "http.request") {
     return `${payload.method || "HTTP"} ${payload.status || "-"}${payload.durationMs !== undefined ? ` · ${payload.durationMs}ms` : ""}`;
   }
+  if (payload?.type === "agent.request") {
+    const body = payload?.body;
+    return `Agent 操作 ${Number(body?.completed || 0)}/${Number(body?.total || 0)}`;
+  }
   return result?.message || "动作结果";
+}
+
+function agentTaskStatusLabel(status?: string) {
+  if (status === "success") return "成功";
+  if (status === "partial") return "部分成功";
+  if (status === "error") return "失败";
+  if (status === "timeout") return "超时";
+  if (status === "running") return "执行中";
+  return "等待中";
+}
+
+function agentTaskStatusClass(status?: string) {
+  if (status === "success") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  if (status === "partial") return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  if (status === "error" || status === "timeout") return "border-destructive/25 bg-destructive/10 text-destructive";
+  if (status === "running") return "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+  return "border-border/60 bg-muted/30 text-muted-foreground";
+}
+
+function AgentActionResultPanel({ result, onClear }: { result: any; onClear: () => void }) {
+  const body = result?.result?.body;
+  if (!body) return null;
+  const rows = Array.isArray(body.results) ? body.results : [];
+  const message = String(body.error || body.message || "").trim();
+  return (
+    <div className="rounded-lg border border-border/40 bg-background/70 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="text-sm font-medium">{actionResultTitle(result)}</p>
+          <Badge variant="outline" className={agentTaskStatusClass(body.status)}>{agentTaskStatusLabel(body.status)}</Badge>
+        </div>
+        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={onClear}>清除</Button>
+      </div>
+      {message && (
+        <p className={cn("mb-3 text-xs", body.status === "error" || body.status === "timeout" ? "text-destructive" : "text-muted-foreground")}>{message}</p>
+      )}
+      <div className="space-y-2">
+        {rows.map((row: any) => (
+          <div key={row.taskId || row.hostId} className="rounded-md border border-border/40 bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className={cn(
+                  "h-2.5 w-2.5 shrink-0 rounded-full",
+                  row.status === "success" ? "bg-emerald-500" : row.status === "error" || row.status === "timeout" ? "bg-destructive" : row.status === "running" ? "bg-sky-500" : "bg-muted-foreground/40",
+                )} />
+                <p className="truncate text-sm font-medium">{row.hostName || `主机 ${row.hostId}`}</p>
+              </div>
+              <Badge variant="outline" className={agentTaskStatusClass(row.status)}>{agentTaskStatusLabel(row.status)}</Badge>
+            </div>
+            {row.data !== undefined && (
+              <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">
+                {JSON.stringify(row.data, null, 2)}
+              </pre>
+            )}
+            {!row.data && row.output && row.status !== "queued" && row.status !== "running" && (
+              <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">{row.output}</pre>
+            )}
+            {(row.error || row.stderr) && (
+              <p className="mt-2 whitespace-pre-wrap text-xs text-destructive">{row.error || row.stderr}</p>
+            )}
+            {(row.status === "queued" || row.status === "running") && (
+              <p className="mt-2 text-xs text-muted-foreground">{row.output || "等待 Agent 返回结果..."}</p>
+            )}
+          </div>
+        ))}
+        {rows.length === 0 && !message && (
+          <p className="text-xs text-muted-foreground">暂无主机返回结果。</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function renderPluginPageHtml(content: string, type?: string) {
@@ -473,6 +548,7 @@ export default function Plugins() {
   const [actionInputDialog, setActionInputDialog] = useState<any | null>(null);
   const [actionInputDraft, setActionInputDraft] = useState<Record<string, unknown>>({});
   const [actionResult, setActionResult] = useState<any | null>(null);
+  const [agentActionGroupId, setAgentActionGroupId] = useState("");
   const [activePageId, setActivePageId] = useState("");
   const [activeAssetPath, setActiveAssetPath] = useState("");
 
@@ -487,6 +563,10 @@ export default function Plugins() {
   const pluginUsageViews = Array.isArray(selectedManifest.usageViews) ? selectedManifest.usageViews : [];
   const hostAssetSyncUsageView = pluginUsageViews.find((view: any) => view?.type === "host-asset-sync");
   const hasUsageView = !!hostAssetSyncUsageView;
+  const usageAgentActions = pluginActions.filter((action: any) => action?.type === "agent.request");
+  const managementPluginActions = hasUsageView
+    ? pluginActions.filter((action: any) => action?.type !== "agent.request")
+    : pluginActions;
   const usageFields = (hostAssetSyncUsageView?.fields || []) as PluginUsageField[];
   const usageOperationOptions = Array.isArray(hostAssetSyncUsageView?.operationSelector?.options)
     ? hostAssetSyncUsageView.operationSelector.options
@@ -503,6 +583,18 @@ export default function Plugins() {
     { pluginId: selectedPlugin?.pluginId || "", usageViewId: hostAssetSyncUsageView?.id },
     { enabled: !!selectedPlugin?.pluginId && hasUsageView },
   );
+  const savedUsage = (pluginUsage as any)?.usage;
+  const savedUsageEnabled = savedUsage?.enabled === true;
+  const savedUsageHostCount = Array.isArray(savedUsage?.hostIds) ? savedUsage.hostIds.length : 0;
+  const agentActionStatusQuery = trpc.plugins.agentActionStatus.useQuery(
+    { pluginId: selectedPlugin?.pluginId || "", groupId: agentActionGroupId },
+    {
+      enabled: !!selectedPlugin?.pluginId && !!agentActionGroupId,
+      refetchInterval: 1000,
+      refetchOnWindowFocus: false,
+    },
+  );
+  const agentActionStatus = agentActionStatusQuery.data;
 
   const selectedAsset = assets.find((asset: any) => asset.path === activeAssetPath) || assets[0];
   const selectedPage = pluginPages.find((page: any) => page.id === activePageId) || pluginPages[0];
@@ -605,8 +697,12 @@ export default function Plugins() {
   const runActionMutation = trpc.plugins.runAction.useMutation({
     onSuccess: (result: any) => {
       setActionResult(result);
+      const groupId = String(result?.result?.groupId || "");
+      setAgentActionGroupId(groupId);
       if (result?.ok === false) {
         toast.error(result?.message || "动作执行未成功");
+      } else if (groupId) {
+        toast.success(result?.message || "任务已下发");
       } else {
         toast.success(result?.message || "动作已执行");
       }
@@ -631,6 +727,7 @@ export default function Plugins() {
       setActionInputDialog(null);
       setActionInputDraft({});
       setActionResult(null);
+      setAgentActionGroupId("");
       return;
     }
     const saved = getPluginSettings(selectedPlugin);
@@ -645,7 +742,43 @@ export default function Plugins() {
     setActionInputDialog(null);
     setActionInputDraft({});
     setActionResult(null);
+    setAgentActionGroupId("");
   }, [selectedPlugin?.pluginId, selectedPlugin?.manifestJson]);
+
+  useEffect(() => {
+    if (!agentActionStatus) {
+      if (agentActionGroupId && agentActionStatusQuery.isFetched) {
+        setActionResult({
+          ok: false,
+          message: "插件任务状态已失效，请重新执行",
+          result: {
+            type: "agent.request",
+            body: {
+              status: "error",
+              done: true,
+              total: 0,
+              completed: 0,
+              results: [],
+              error: "面板重启或任务结果超过保留时间，请重新读取主机状态。",
+            },
+          },
+        });
+        setAgentActionGroupId("");
+      }
+      return;
+    }
+    setActionResult({
+      ok: agentActionStatus.status === "success" || agentActionStatus.status === "partial",
+      message: agentActionStatus.done ? "Agent 操作已完成" : "Agent 操作执行中",
+      result: {
+        type: "agent.request",
+        actionId: agentActionStatus.actionId,
+        groupId: agentActionStatus.groupId,
+        body: agentActionStatus,
+      },
+    });
+    if (agentActionStatus.done) setAgentActionGroupId("");
+  }, [agentActionGroupId, agentActionStatus, agentActionStatusQuery.isFetched]);
 
   useEffect(() => {
     if (!hasUsageView) {
@@ -838,6 +971,7 @@ export default function Plugins() {
     const fields = Array.isArray(action?.inputSchema) ? action.inputSchema as PluginSettingField[] : [];
     if (fields.length > 0) {
       setActionResult(null);
+      setAgentActionGroupId("");
       setActionInputDraft(buildActionInputDraft(action));
       setActionInputDialog(action);
       return;
@@ -1118,6 +1252,43 @@ export default function Plugins() {
             className="min-h-20"
           />
         </div>
+
+        {usageAgentActions.length > 0 && (
+          <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-medium">主机操作</p>
+                <p className="text-xs text-muted-foreground">从已保存的生效主机读取或执行插件声明的 Agent 操作。</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {usageAgentActions.map((action: any) => (
+                  <Button
+                    key={action.id}
+                    type="button"
+                    variant="outline"
+                    className="gap-2"
+                    disabled={selectedPlugin.status !== "enabled" || !savedUsageEnabled || savedUsageHostCount === 0 || runActionMutation.isPending || !!agentActionGroupId}
+                    onClick={() => handleRunAction(action)}
+                  >
+                    {runActionMutation.isPending || agentActionGroupId
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <RefreshCw className="h-4 w-4" />}
+                    {action.label || "执行"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            {actionResult?.result?.type === "agent.request" && (
+              <AgentActionResultPanel
+                result={actionResult}
+                onClear={() => {
+                  setActionResult(null);
+                  setAgentActionGroupId("");
+                }}
+              />
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-background/60 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-muted-foreground">
@@ -1766,8 +1937,8 @@ export default function Plugins() {
                     </TabsContent>
 
                     <TabsContent value="actions" className="space-y-3">
-                      {pluginActions.length ? (
-                        pluginActions.map((action: any) => (
+                      {managementPluginActions.length ? (
+                        managementPluginActions.map((action: any) => (
                           <div key={action.id} className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
                             <div className="min-w-0">
                               <p className="text-sm font-medium">{action.label}</p>
@@ -1804,7 +1975,10 @@ export default function Plugins() {
                                 <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{actionResult.result.url}</p>
                               )}
                             </div>
-                            <Button type="button" variant="ghost" size="sm" className="h-8 self-start sm:self-auto" onClick={() => setActionResult(null)}>
+                            <Button type="button" variant="ghost" size="sm" className="h-8 self-start sm:self-auto" onClick={() => {
+                              setActionResult(null);
+                              setAgentActionGroupId("");
+                            }}>
                               清除
                             </Button>
                           </div>
@@ -1820,7 +1994,7 @@ export default function Plugins() {
                           )}
                         </div>
                       )}
-                      {selectedPlugin.status !== "enabled" && pluginActions.length > 0 && (
+                      {selectedPlugin.status !== "enabled" && managementPluginActions.length > 0 && (
                         <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                           <AlertTriangle className="h-4 w-4" />
                           <AlertTitle>插件未启用</AlertTitle>

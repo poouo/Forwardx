@@ -1,8 +1,8 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
-import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching } from "./agentEvents";
-import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
+import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
+import { AGENT_PLUGIN_TASK_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import * as hopRepo from "./repositories/tunnelRepository";
 import crypto from "crypto";
@@ -17,6 +17,7 @@ import { isIP } from "net";
 import { resolve4, resolve6 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
+import { takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentAddress, normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import {
@@ -787,6 +788,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime);
     const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
     const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
+    const supportsPluginTasks = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_PLUGIN_TASK_VERSION);
 
     await db.updateHostHeartbeat(host.id, {
       ip: reportedAddress.ip,
@@ -859,6 +861,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         dnsWatch: [],
         lookingGlassTests: [],
         iperf3Tasks: [],
+        pluginTasks: [],
         agentUpgrade: null,
         panelUrl,
         forceTcping: false,
@@ -4577,7 +4580,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
     const actionRank = (action: any) => (
-      action.op === "remove" ? 0 : action.statusType === "runtime" ? 1 : 2
+      action.statusType === "runtime" ? 0 : action.op === "apply" ? 1 : 2
     );
     const orderedActions = normalizedActions.slice().sort((a: any, b: any) => actionRank(a) - actionRank(b));
     const activeWorkActions = supportsDesiredState
@@ -4603,8 +4606,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
+    const pluginTasks = supportsPluginTasks ? takePluginAgentTasks(host.id) : [];
     const hasInteractiveTasks = lookingGlassTests.length > 0
       || iperf3Tasks.length > 0
+      || pluginTasks.length > 0
       || forceTcping
       || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
     const serviceProbeInterval = hostProbeServices.reduce((min: number, service: any) => {
@@ -4630,6 +4635,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       guardRules,
       dnsWatch: Array.from(dnsWatches.values()),
     }, agentStateSignatures);
+    // 有 SSE 长连接时立即将 desiredState + runningRules 推送给 Agent，
+    // 无需等待下一个心跳周期即可执行转发规则变更。
+    // heartbeat response 里仍携带 desiredState 作为兜底（SSE 断开时的最终一致保证）。
+    if (desiredState) {
+      pushAgentDesiredState(Number(host.id), {
+        desiredState,
+        runningRules,
+        stateSignatures: stateSections.signatures,
+      });
+    }
     res.json({
       success: true,
       actions: supportsDesiredState ? [] : orderedActions,
@@ -4639,6 +4654,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       stateSignatures: stateSections.signatures,
       lookingGlassTests,
       iperf3Tasks,
+      pluginTasks,
       agentUpgrade,
       panelUrl,
       forceTcping,

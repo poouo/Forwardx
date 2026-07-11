@@ -59,6 +59,38 @@ function normalizeTunnelRuntimeOptions(input: any, mode: unknown) {
   };
 }
 
+async function validateMimicUdpPort(input: {
+  port: unknown;
+  exitHostId: number;
+  exitHost: any;
+  listenPort: number;
+  tunnelId?: number;
+}) {
+  const port = Math.floor(Number(input.port || 0));
+  if (!Number.isFinite(port) || port <= 0) return 0;
+  if (port > 65535) throw new Error("mimic UDP 端口必须在 1-65535 范围内");
+  if (port === input.listenPort) throw new Error("mimic UDP 端口不能与出口监听端口相同");
+  const policy = portPolicyFrom(input.exitHost);
+  if (!isPortAllowedByPolicy(port, policy)) {
+    throw new Error(portPolicyErrorMessage(policy, "mimic UDP 端口"));
+  }
+  const used = await db.isPortUsedOnHost(input.exitHostId, port, undefined, "udp", input.tunnelId);
+  if (used) throw new Error(`mimic UDP 端口 ${port} 已被占用`);
+  const tunnelUsed = await hopRepo.isTunnelListenPortUsed(input.exitHostId, port, input.tunnelId);
+  if (tunnelUsed) throw new Error(`mimic UDP 端口 ${port} 已被其他隧道占用`);
+  return port;
+}
+
+async function ensureConfiguredMimicPorts(tunnelId: number) {
+  const tunnel = await db.getTunnelById(tunnelId) as any;
+  if (!tunnel || !isTunnelForwardXMode(tunnel.mode) || !tunnel.udpOverTcp) return null;
+  const [hops, exitNodes] = await Promise.all([
+    hopRepo.getTunnelHops(tunnelId),
+    hopRepo.getTunnelExitNodes(tunnelId),
+  ]);
+  return hopRepo.ensureForwardXMimicPorts(tunnel, hops || [], exitNodes || []);
+}
+
 function normalizeCertDomain(value: unknown) {
   const text = String(value || "").trim();
   if (!text) return null;
@@ -451,6 +483,7 @@ export const tunnelsRouter = router({
         exitHostId: z.number(),
         mode: tunnelModeSchema.default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
+        mimicPort: z.number().int().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         trafficMultiplier: z.number().int().min(1).max(5000).optional().default(100),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -538,6 +571,14 @@ export const tunnelsRouter = router({
           explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
         });
         const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
+        const mimicPort = runtimeOptions.udpOverTcp
+          ? await validateMimicUdpPort({
+            port: input.mimicPort,
+            exitHostId,
+            exitHost: exitHostForConnect,
+            listenPort,
+          })
+          : 0;
         const {
           hopHostIds: _ignoredHopHostIds,
           hopConnectHosts: _ignoredHopConnectHosts,
@@ -567,6 +608,7 @@ export const tunnelsRouter = router({
           loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
           loadBalanceStrategy: loadBalanceEnabled && extraExitNodes.length > 0 ? loadBalanceStrategy : "round_robin",
           listenPort,
+          mimicPort,
           trafficMultiplier: normalizeTrafficMultiplier(input.trafficMultiplier),
           secret,
           userId: ctx.user.id,
@@ -593,12 +635,13 @@ export const tunnelsRouter = router({
           }
           await hopRepo.createTunnelHops(id, hops);
         }
+        const ensuredMimic = runtimeOptions.udpOverTcp ? await ensureConfiguredMimicPorts(id) : null;
         if (hopHostIds) {
           await refreshTunnelRuntimeHosts(id, [...hopHostIds, ...extraExitNodes.map((node) => node.hostId)], "tunnel-created");
         } else {
           await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         }
-        return { id, listenPort };
+        return { id, listenPort, mimicPort: Number(ensuredMimic?.tunnel?.mimicPort || mimicPort || 0) };
       }),
     update: protectedProcedure
       .input(z.object({
@@ -609,6 +652,7 @@ export const tunnelsRouter = router({
         exitHostId: z.number().optional(),
         mode: tunnelModeSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
+        mimicPort: z.number().int().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         trafficMultiplier: z.number().int().min(1).max(5000).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -715,6 +759,7 @@ export const tunnelsRouter = router({
         }
         const runtimeOptionsChanged = tunnelRuntimeKeys.some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         const modeChanged = (data as any).mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode);
+        const nextMimicEnabled = nextModeForRuntime === "forwardx" && !!(data as any).udpOverTcp;
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
           (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
@@ -758,6 +803,17 @@ export const tunnelsRouter = router({
             if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
             (data as any).listenPort = listenPort;
           }
+        }
+        if (nextMimicEnabled && (data as any).mimicPort !== undefined) {
+          (data as any).mimicPort = await validateMimicUdpPort({
+            port: (data as any).mimicPort,
+            exitHostId,
+            exitHost: exit,
+            listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
+            tunnelId: id,
+          });
+        } else if (!nextMimicEnabled) {
+          delete (data as any).mimicPort;
         }
         if ((data as any).networkType !== undefined || (data as any).connectHost !== undefined) {
           const nextConnectHost = (data as any).connectHost !== undefined ? (data as any).connectHost : (tunnel as any).connectHost;
@@ -814,7 +870,7 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
-        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        let keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
@@ -861,6 +917,11 @@ export const tunnelsRouter = router({
         } else {
           await hopRepo.clearTunnelExitNodes(id);
           await hopRepo.clearForwardRuleTunnelExitsByTunnel(id);
+        }
+        const ensuredMimic = nextMimicEnabled ? await ensureConfiguredMimicPorts(id) : null;
+        if (ensuredMimic?.changed && !keyChanged) {
+          keyChanged = true;
+          await db.updateTunnel(id, { isRunning: false } as any);
         }
         if (enabledChanged) {
           if ((data as any).isEnabled) {

@@ -150,6 +150,7 @@ type TunnelForm = {
   certPem: string;
   certKeyPem: string;
   listenPort: number;
+  mimicPort: number;
   rateLimitMbps: number;
   trafficMultiplier: number;
   networkType: "public" | "private";
@@ -302,6 +303,7 @@ const defaultForm: TunnelForm = {
   certPem: "",
   certKeyPem: "",
   listenPort: 0,
+  mimicPort: 0,
   rateLimitMbps: 0,
   trafficMultiplier: 1,
   networkType: "public",
@@ -2484,6 +2486,7 @@ function TunnelsContent() {
       certPem: String(tunnel.certPem || ""),
       certKeyPem: String(tunnel.certKeyPem || ""),
       listenPort: tunnel.listenPort,
+      mimicPort: Number(tunnel.mimicPort || 0),
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
       networkType: tunnel.networkType === "private" ? "private" : "public",
@@ -2738,6 +2741,7 @@ function TunnelsContent() {
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
       listenPort: submitForm.listenPort,
+      mimicPort: transportTuningSupported && submitForm.udpOverTcp ? submitForm.mimicPort : 0,
       rateLimitMbps,
       trafficMultiplier,
       networkType: isMultiHopTunnel
@@ -3109,6 +3113,29 @@ function TunnelsContent() {
             "需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；未安装时开启会下发失败提示。UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。",
           )}
         </div>
+        {form.udpOverTcp && (
+          <label className="flex min-h-12 items-center justify-between gap-3 rounded-md border border-primary/25 bg-primary/5 px-3 py-2">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">mimic UDP 线路端口</span>
+              <span className="block truncate text-xs text-muted-foreground">留空后由系统随机分配</span>
+            </span>
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              inputMode="numeric"
+              className="h-9 w-32 shrink-0 text-right tabular-nums"
+              value={form.mimicPort > 0 ? form.mimicPort : ""}
+              placeholder="自动"
+              aria-label="mimic UDP 线路端口"
+              onChange={(event) => {
+                const rawValue = event.target.value;
+                const mimicPort = rawValue === "" ? 0 : Number.parseInt(rawValue, 10) || 0;
+                setForm((prev) => ({ ...prev, mimicPort }));
+              }}
+            />
+          </label>
+        )}
       </div>
     ) : null;
     if (!shouldCollapseAdvanced) {
@@ -3306,7 +3333,9 @@ function TunnelsContent() {
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
     const entryGroupLabel = entryGroup ? String(entryGroup.name || "入口组").trim() : "";
     const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
-    const exitText = extraExitNames.length > 0 ? `出口 ${extraExitNames.join(" / ")}` : "";
+    // getTunnelRouteText already lists every exit host. Keep the trailing item as
+    // a mode cue so the table does not repeat one of the same exit names.
+    const exitText = extraExitNames.length > 0 ? "多出口" : "";
     return [entryGroupLabel ? `入口组 ${entryGroupLabel}` : "", route, exitText].filter(Boolean).join(" ｜ ");
   };
 

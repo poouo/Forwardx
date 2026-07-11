@@ -109,3 +109,20 @@ export function hasHostTcpingRequest(hostId: number) {
 export function clearHostTcpingRequest(hostId: number) {
   hostTcpingRequestUntil.delete(Number(hostId));
 }
+
+// pushAgentDesiredState 将 desiredState + runningRules 直接经 SSE 推送给 Agent，
+// 使其无需等待下一个心跳周期即可立即执行转发规则变更。
+// 与心跳 response 里的 desiredState 共享同一幂等性机制（签名 + desired_state_records.json），
+// 两路同时触发也不会重复执行。
+export function pushAgentDesiredState(
+  hostId: number,
+  payload: {
+    desiredState?: unknown;
+    runningRules?: unknown[];
+    stateSignatures?: Record<string, string>;
+  }
+) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  return sendAgentEvent(id, "agent-desired-state", payload);
+}

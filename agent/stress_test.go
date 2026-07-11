@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,6 +98,9 @@ func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 	})
 
 	const ruleCount = 3000
+	assertManagedRuntimeLogRegression(t, ruleCount)
+	assertActionStatusBurstDoesNotBlock(t, ruleCount)
+
 	token := "stress-token"
 	actions := buildStressActions(ruleCount)
 	var heartbeatRequests atomic.Int64
@@ -130,6 +135,9 @@ func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 			return
 		}
 		heartbeatRequests.Add(1)
+		// The supplied logs contain sustained 300ms+ panel latency. Keep that
+		// latency in the stress path so action dispatch is tested after a slow pull.
+		time.Sleep(300 * time.Millisecond)
 		respEnv, err := encrypt(heartbeatResp{
 			Actions:        actions,
 			NextInterval:   30,
@@ -182,6 +190,135 @@ func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 		actionQueueCapacity,
 		actionWorkerConcurrency,
 		int64(after.Alloc-before.Alloc)/1024,
+	)
+}
+
+func assertManagedRuntimeLogRegression(t *testing.T, ruleCount int) {
+	t.Helper()
+	const basePort = 10000
+
+	// Reproduce the exact owner spelling emitted by Linux ss in the supplied
+	// logs. Linux truncates forwardx-runtime to forwardx-runtim, which used to
+	// make every TCP+UDP listener wait about 13 seconds and report a false error.
+	var ssOutput strings.Builder
+	services := make([]map[string]any, 0, ruleCount*2)
+	for i := 0; i < ruleCount; i++ {
+		port := basePort + i
+		pid := 2250000 + i
+		fmt.Fprintf(&ssOutput, "udp UNCONN 0 0 *:%d *:* users:((\"forwardx-runtim\",pid=%d,fd=8))\n", port, pid)
+		fmt.Fprintf(&ssOutput, "tcp LISTEN 0 4096 *:%d *:* users:((\"forwardx-runtim\",pid=%d,fd=7))\n", port, pid)
+		services = append(services,
+			map[string]any{"addr": fmt.Sprintf(":%d", port), "listener": map[string]any{"type": "tcp"}},
+			map[string]any{"addr": fmt.Sprintf(":%d", port), "listener": map[string]any{"type": "udp"}},
+		)
+	}
+
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{},
+		udpPorts: map[int][]string{},
+	}
+	started := time.Now()
+	snapshot.parseSSListenOutput(ssOutput.String())
+	for i := 0; i < ruleCount; i++ {
+		port := basePort + i
+		if !runtimeListenPortReady(snapshot, port, "both", []string{"gost", "forwardx-runt"}) {
+			t.Fatalf("log regression: truncated forwardx-runtime owner rejected for port %d", port)
+		}
+	}
+	listenerCheckElapsed := time.Since(started)
+
+	// The second failure in the logs stopped the shared forwardx-runtime after
+	// seeing an occupied port. Verify ownership against a realistically large
+	// runtime config, including the two reported ports 10002 and 10007.
+	rawConfig, err := json.Marshal(map[string]any{"services": services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "gost.json")
+	if err := os.WriteFile(configPath, rawConfig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range []int{10002, 10007, basePort + ruleCount - 1} {
+		if !sharedManagedRuntimeOwnsPort(configPath, port) {
+			t.Fatalf("log regression: shared runtime ownership missing for port %d", port)
+		}
+	}
+	if sharedManagedRuntimeOwnsPort(configPath, basePort+ruleCount) {
+		t.Fatalf("unexpected shared runtime ownership for unconfigured port %d", basePort+ruleCount)
+	}
+
+	t.Logf("log regression listeners=%d protocols=%d owner=forwardx-runtim check=%s sharedRuntimePorts=verified",
+		ruleCount,
+		ruleCount*2,
+		listenerCheckElapsed.Round(time.Millisecond),
+	)
+}
+
+func assertActionStatusBurstDoesNotBlock(t *testing.T, ruleCount int) {
+	t.Helper()
+	resetActionStatusReportsForTest()
+	defer resetActionStatusReportsForTest()
+
+	var requests atomic.Int64
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer panel.Close()
+
+	cfg := Config{PanelURL: panel.URL}
+	started := time.Now()
+	for i := 0; i < ruleCount; i++ {
+		a := action{
+			StatusType:  "rule",
+			RuleID:      i + 1,
+			SourcePort:  10000 + i,
+			ForwardType: "gost",
+			Protocol:    "both",
+		}
+		reportActionStatus(cfg, a, false, "managed runtime listener not ready after apply")
+		reportActionStatus(cfg, a, true, "")
+	}
+	queueElapsed := time.Since(started)
+	if queueElapsed > 2*time.Second {
+		t.Fatalf("queueing %d repeated rule statuses blocked for %s", ruleCount, queueElapsed)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("status burst made %d synchronous panel requests", requests.Load())
+	}
+	if pending := pendingActionStatusReportCount(); pending != ruleCount {
+		t.Fatalf("coalesced status count = %d, want %d", pending, ruleCount)
+	}
+
+	total := 0
+	batches := 0
+	for {
+		reports := takeActionStatusReports(actionStatusBatchSize)
+		if len(reports) == 0 {
+			break
+		}
+		batches++
+		total += len(reports)
+		if len(reports) > actionStatusBatchSize {
+			t.Fatalf("status batch size = %d, max %d", len(reports), actionStatusBatchSize)
+		}
+		for _, report := range reports {
+			if !report.payload.IsRunning || report.payload.Message != "" {
+				t.Fatalf("latest recovered status was not retained: %+v", report.payload)
+			}
+		}
+	}
+	wantBatches := (ruleCount + actionStatusBatchSize - 1) / actionStatusBatchSize
+	if total != ruleCount || batches != wantBatches {
+		t.Fatalf("status batches = %d/%d reports = %d/%d", batches, wantBatches, total, ruleCount)
+	}
+
+	t.Logf("log regression statuses=%d repeatedUpdates=%d queued=%s batches=%d panelLatency=300ms synchronousRequests=0",
+		ruleCount,
+		ruleCount*2,
+		queueElapsed.Round(time.Millisecond),
+		batches,
 	)
 }
 

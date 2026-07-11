@@ -19,6 +19,7 @@ import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState
 import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
+import { completePluginAgentTask } from "./pluginAgentTasks";
 import { getAgentHostFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
 
@@ -270,6 +271,53 @@ agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response)
     res.json({ success: ok });
   } catch (error) {
     console.error("[Agent Iperf3] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+agentRouter.post("/api/agent/plugin-action-result", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostFromRequest(req);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const result = req.body?.result;
+    if (!result?.taskId || !result?.groupId || !result?.pluginId || !result?.actionId) {
+      res.status(400).json({ error: "plugin action result identifiers are required" });
+      return;
+    }
+    let data = result.data;
+    if (data !== undefined) {
+      try {
+        if (Buffer.byteLength(JSON.stringify(data), "utf8") > 256 * 1024) {
+          res.status(400).json({ error: "plugin action result data is too large" });
+          return;
+        }
+      } catch {
+        res.status(400).json({ error: "plugin action result data is invalid" });
+        return;
+      }
+    }
+    const ok = completePluginAgentTask(host.id, {
+      taskId: String(result.taskId),
+      groupId: String(result.groupId),
+      pluginId: String(result.pluginId),
+      actionId: String(result.actionId),
+      success: !!result.success,
+      output: String(result.output || "").slice(0, 256 * 1024),
+      stderr: String(result.stderr || "").slice(0, 256 * 1024),
+      data,
+      exitCode: result.exitCode === undefined || result.exitCode === null ? null : Number(result.exitCode),
+      timedOut: !!result.timedOut,
+      durationMs: Math.max(0, Number(result.durationMs || 0)),
+      startedAt: result.startedAt ? String(result.startedAt) : undefined,
+      finishedAt: result.finishedAt ? String(result.finishedAt) : undefined,
+      error: result.error ? String(result.error).slice(0, 4000) : undefined,
+    });
+    res.json({ success: ok });
+  } catch (error) {
+    console.error("[Agent Plugin Action] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
