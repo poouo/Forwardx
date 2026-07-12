@@ -15,7 +15,7 @@ import { CheckCircle2, CreditCard, Gift, Package, ReceiptText, RefreshCw, Wallet
 import { useState } from "react";
 import { toast } from "sonner";
 
-type PaymentType = "alipay" | "wxpay" | "stripe";
+type PaymentType = "alipay" | "wxpay" | "stripe" | "usdt";
 
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((Number(cents) || 0) / 100);
@@ -31,6 +31,14 @@ function orderTypeText(type?: string | null) {
   if (type === "plan") return "套餐";
   if (type === "test") return "测试";
   return "余额";
+}
+
+function paymentMethodText(type?: string | null) {
+  if (type === "alipay") return "支付宝";
+  if (type === "wxpay") return "微信支付";
+  if (type === "stripe") return "Stripe";
+  if (type === "usdt" || type === "gmpay") return "USDT";
+  return type || "-";
 }
 
 function balanceTypeText(type?: string | null) {
@@ -296,7 +304,7 @@ export default function Wallet() {
                     <TableCell>
                       <Badge variant="outline">{orderTypeText(order.orderType)}</Badge>
                     </TableCell>
-                    <TableCell>{order.paymentType || order.provider}</TableCell>
+                    <TableCell>{paymentMethodText(order.paymentType || order.provider)}</TableCell>
                     <TableCell>{money(order.amountCents, order.currency || "CNY")}</TableCell>
                     <TableCell>
                       <Badge variant={order.status === "completed" || order.status === "paid" ? "default" : "secondary"}>
@@ -351,7 +359,7 @@ export default function Wallet() {
                 取消
               </Button>
               <Button
-                onClick={() => createOrder.mutate({ amount: Number(amount), paymentType })}
+                onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, returnPath: "/wallet" })}
                 disabled={!amount || paymentMethods.length === 0 || createOrder.isPending}
               >
                 {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}

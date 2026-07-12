@@ -2,7 +2,44 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { normalizePluginManifest, normalizePluginStoreCatalog } from "./repositories/pluginRepository";
+import zlib from "node:zlib";
+import {
+  buildPluginDirectorySwapCommand,
+  buildPluginTextFileCommands,
+  normalizePluginManifest,
+  normalizePluginStoreCatalog,
+} from "./repositories/pluginRepository";
+
+test("plugin sync commands compress, chunk, and restore large text assets", () => {
+  const content = Array.from({ length: 12_000 }, (_, index) => `192.0.2.${index % 255}/32 region-${index % 32}`).join("\n");
+  const commands = buildPluginTextFileCommands("/var/lib/forwardx-agent/plugins/demo/data/regions.txt", content);
+  const encoded = commands.flatMap((command) => {
+    const match = command.match(/^printf '%s' '([^']*)' >> /);
+    return match ? [match[1]] : [];
+  }).join("");
+
+  assert.ok(encoded.length > 0);
+  assert.equal(zlib.gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"), content);
+  assert.equal(commands.every((command) => Buffer.byteLength(command, "utf8") < 64 * 1024), true);
+  assert.ok(encoded.length < Buffer.byteLength(content, "utf8"));
+});
+
+test("plugin sync directory swap validates staged files and keeps a rollback path", () => {
+  const command = buildPluginDirectorySwapCommand({
+    targetDir: "/var/lib/forwardx-agent/plugins/demo",
+    stagingDir: "/var/lib/forwardx-agent/plugins/.sync-demo-abc",
+    backupDir: "/var/lib/forwardx-agent/plugins/.previous-demo",
+    expectedFiles: [{
+      path: "/var/lib/forwardx-agent/plugins/.sync-demo-abc/manifest.json",
+      sha256: "a".repeat(64),
+    }],
+  });
+
+  assert.match(command, /sha256sum/);
+  assert.match(command, /\.previous-demo/);
+  assert.match(command, /mv .*\.sync-demo-abc.*plugins\/demo/);
+  assert.match(command, /exit "\$status"/);
+});
 
 test("plugin resourceSchema shorthand expands into generic Agent sources", () => {
   const manifest = normalizePluginManifest({

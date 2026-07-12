@@ -30,6 +30,7 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   CheckCircle2,
+  CircleDollarSign,
   Copy,
   CreditCard,
   ExternalLink,
@@ -37,7 +38,8 @@ import {
   ShieldCheck,
   WalletCards,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import QRCode from "qrcode";
 import { toast } from "sonner";
 
 type PaymentConfigForm = {
@@ -88,16 +90,24 @@ type PaymentConfigForm = {
     webhookSecret: string;
     currency: string;
   };
+  gmpay: {
+    enabled: boolean;
+    apiBase: string;
+    pid: string;
+    secretKey: string;
+    network: "tron" | "ethereum" | "bsc" | "polygon" | "solana" | "aptos" | "plasma";
+  };
 };
 
-type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "test";
-const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "test"] as const;
+type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "gmpay" | "test";
+const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "gmpay", "test"] as const;
 const PAYMENT_TAB_ITEMS = [
   { value: "basic", label: "基础设置" },
   { value: "easypay", label: "易支付" },
   { value: "alipay", label: "支付宝官方" },
   { value: "wxpay", label: "微信官方" },
   { value: "stripe", label: "Stripe" },
+  { value: "gmpay", label: "USDT" },
   { value: "test", label: "测试下单" },
 ] as const satisfies readonly SlidingTabItem<PaymentTab>[];
 const PAYMENT_TAB_STORAGE_KEY = "forwardx.payments.tab";
@@ -150,6 +160,13 @@ const emptyForm: PaymentConfigForm = {
     webhookSecret: "",
     currency: "cny",
   },
+  gmpay: {
+    enabled: false,
+    apiBase: "",
+    pid: "",
+    secretKey: "",
+    network: "tron",
+  },
 };
 
 function formatMoney(amountCents?: number | null, currency = "CNY") {
@@ -168,6 +185,7 @@ function paymentTypeLabel(value: string) {
   if (value === "alipay") return "支付宝";
   if (value === "wxpay") return "微信";
   if (value === "stripe") return "Stripe";
+  if (value === "usdt") return "USDT";
   return value;
 }
 
@@ -176,6 +194,7 @@ function providerLabel(value: string) {
   if (value === "alipay") return "支付宝官方";
   if (value === "wxpay") return "微信官方";
   if (value === "stripe") return "Stripe";
+  if (value === "gmpay") return "GM Pay";
   return value;
 }
 
@@ -251,7 +270,7 @@ function CallbackItem({ label, value }: { label: string; value: string }) {
     toast.success("已复制");
   };
   return (
-    <div className="rounded-lg border bg-background/70 px-3 py-2">
+    <div className="min-w-0 overflow-hidden rounded-lg border bg-background/70 px-3 py-2">
       <div className="mb-1 text-xs text-muted-foreground">{label}</div>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate text-xs">{value}</code>
@@ -288,8 +307,45 @@ export default function Payments() {
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
   const [amount, setAmount] = useState("10");
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("alipay");
+  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("alipay");
   const [createdPayUrl, setCreatedPayUrl] = useState<string | null>(null);
+
+  // 测试下单 QR 对话框
+  const [testQrOrder, setTestQrOrder] = useState<{ outTradeNo: string; qrCode: string } | null>(null);
+  const [testQrDataUrl, setTestQrDataUrl] = useState<string | null>(null);
+  const testQrPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const queryOrderUtils = utils;
+
+  useEffect(() => {
+    if (!testQrOrder?.qrCode) { setTestQrDataUrl(null); return; }
+    QRCode.toDataURL(testQrOrder.qrCode, { width: 220, margin: 1, color: { dark: "#000", light: "#fff" } })
+      .then(setTestQrDataUrl)
+      .catch(() => setTestQrDataUrl(null));
+  }, [testQrOrder?.qrCode]);
+
+  useEffect(() => {
+    if (!testQrOrder) {
+      if (testQrPollingRef.current) clearInterval(testQrPollingRef.current);
+      return;
+    }
+    const poll = async () => {
+      try {
+        const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: testQrOrder.outTradeNo });
+        if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
+          setTestQrOrder(null);
+          toast.success("支付成功！");
+          utils.payment.listOrders.invalidate();
+          utils.payment.stats.invalidate();
+        } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
+          setTestQrOrder(null);
+          toast.error("订单已失效");
+          utils.payment.listOrders.invalidate();
+        }
+      } catch { /* 轮询失败静默忽略 */ }
+    };
+    testQrPollingRef.current = setInterval(poll, 3000);
+    return () => { if (testQrPollingRef.current) clearInterval(testQrPollingRef.current); };
+  }, [testQrOrder?.outTradeNo]);
   const [activeTab, setActiveTab] = useUrlTab<PaymentTab>({
     values: PAYMENT_TABS,
     defaultValue: "basic",
@@ -346,6 +402,13 @@ export default function Payments() {
         webhookSecret: "",
         currency: config.stripe.currency || "cny",
       },
+      gmpay: {
+        enabled: config.gmpay?.enabled || false,
+        apiBase: config.gmpay?.apiBase || "",
+        pid: config.gmpay?.pid || "",
+        secretKey: "",
+        network: config.gmpay?.network || "tron",
+      },
     });
   }, [config]);
 
@@ -364,12 +427,28 @@ export default function Payments() {
     onError: (error) => toast.error(error.message || "保存失败"),
   });
 
+  const testGmPayGateway = trpc.payment.testGmPayGateway.useMutation({
+    onSuccess: (result) => {
+      if (result.supportsUsdt) {
+        toast.success(`GM Pay 连接正常${result.version ? `（${result.version}）` : ""}`);
+      } else {
+        toast.error(`${result.networkLabel} 当前未启用 USDT`);
+      }
+    },
+    onError: (error) => toast.error(error.message || "GM Pay 网关检测失败"),
+  });
+
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
       toast.success("测试订单已创建");
-      setCreatedPayUrl(order?.payUrl || null);
       utils.payment.listOrders.invalidate();
       utils.payment.stats.invalidate();
+      if (order?.qrCode) {
+        setCreatedPayUrl(null);
+        setTestQrOrder({ outTradeNo: order.outTradeNo, qrCode: order.qrCode });
+      } else {
+        setCreatedPayUrl(order?.payUrl || null);
+      }
     },
     onError: (error) => toast.error(error.message || "创建订单失败"),
   });
@@ -689,6 +768,76 @@ export default function Payments() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="gmpay" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><CircleDollarSign className="h-5 w-5" /> USDT</CardTitle>
+                <CardDescription>GM Pay / Epusdt 托管收银台。</CardDescription>
+              </CardHeader>
+              <CardContent className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+                <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
+                  <div>
+                    <div className="font-medium">启用 USDT 支付</div>
+                    <div className="text-sm text-muted-foreground">通过独立部署的 GM Pay 网关收款</div>
+                  </div>
+                  <Switch checked={form.gmpay.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, enabled } }))} />
+                </div>
+                <Field label="网关地址">
+                  <Input placeholder="https://pay.example.com" value={form.gmpay.apiBase} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, apiBase: e.target.value } }))} />
+                </Field>
+                <Field label="商户 PID">
+                  <Input value={form.gmpay.pid} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, pid: e.target.value } }))} />
+                </Field>
+                <Field label="商户密钥" hint={config?.gmpay?.hasSecretKey ? "已保存密钥，留空表示不修改" : "尚未保存密钥"}>
+                  <Input type="password" value={form.gmpay.secretKey} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, secretKey: e.target.value } }))} />
+                </Field>
+                <Field label="USDT 网络">
+                  <Select value={form.gmpay.network} onValueChange={(network: PaymentConfigForm["gmpay"]["network"]) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, network } }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tron">TRON（TRC20）</SelectItem>
+                      <SelectItem value="ethereum">Ethereum（ERC20）</SelectItem>
+                      <SelectItem value="bsc">BNB Smart Chain（BEP20）</SelectItem>
+                      <SelectItem value="polygon">Polygon</SelectItem>
+                      <SelectItem value="solana">Solana</SelectItem>
+                      <SelectItem value="aptos">Aptos</SelectItem>
+                      <SelectItem value="plasma">Plasma</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <div className="flex min-h-10 flex-wrap items-center justify-between gap-3 rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
+                  <div className="flex min-w-0 items-center gap-2 text-sm">
+                    {testGmPayGateway.data ? (
+                      <>
+                        <Badge variant="outline" className={testGmPayGateway.data.supportsUsdt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-destructive/30 bg-destructive/5 text-destructive"}>
+                          {testGmPayGateway.data.supportsUsdt ? "USDT 可用" : "USDT 不可用"}
+                        </Badge>
+                        <span className="truncate text-muted-foreground">
+                          {testGmPayGateway.data.networkLabel}{testGmPayGateway.data.version ? ` · ${testGmPayGateway.data.version}` : ""}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">尚未检测网关</span>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => testGmPayGateway.mutate({ apiBase: form.gmpay.apiBase, network: form.gmpay.network })}
+                    disabled={!form.gmpay.apiBase.trim() || testGmPayGateway.isPending}
+                  >
+                    <RefreshCw className={`mr-2 h-4 w-4 ${testGmPayGateway.isPending ? "animate-spin" : ""}`} />
+                    检测网关
+                  </Button>
+                </div>
+                <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 md:col-span-2 md:grid-cols-2">
+                  <CallbackItem label="异步通知地址" value={`${panelUrl}/api/payment/webhook/gmpay`} />
+                  <CallbackItem label="同步返回地址" value={`${panelUrl}/api/payment/return/gmpay`} />
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           <TabsContent value="test" className="mt-4">
             <Card>
               <CardHeader>
@@ -700,17 +849,18 @@ export default function Payments() {
                   <Input type="number" min={0.01} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
                 </Field>
                 <Field label="支付方式">
-                  <Select value={paymentType} onValueChange={(value: "alipay" | "wxpay" | "stripe") => setPaymentType(value)}>
+                  <Select value={paymentType} onValueChange={(value: "alipay" | "wxpay" | "stripe" | "usdt") => setPaymentType(value)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="alipay">支付宝</SelectItem>
                       <SelectItem value="wxpay">微信</SelectItem>
                       <SelectItem value="stripe">Stripe</SelectItem>
+                      <SelectItem value="usdt">USDT</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
                 <div className="flex items-end">
-                  <Button className="w-full" onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, orderType: "test" })} disabled={createOrder.isPending}>
+                  <Button className="w-full" onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, orderType: "test", returnPath: "/payments" })} disabled={createOrder.isPending}>
                     {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
                     创建订单
                   </Button>
@@ -722,6 +872,25 @@ export default function Payments() {
                       <code className="min-w-0 flex-1 truncate text-xs">{createdPayUrl}</code>
                       <Button variant="outline" onClick={() => window.open(createdPayUrl, "_blank")}>打开支付页</Button>
                     </div>
+                  </div>
+                )}
+                {testQrOrder && (
+                  <div className="flex flex-col items-center gap-3 rounded-lg border bg-background/70 p-4 md:col-span-3">
+                    <div className="text-sm font-medium">扫描二维码完成支付</div>
+                    {testQrDataUrl ? (
+                      <div className="rounded-lg border border-border/40 bg-white p-2">
+                        <img src={testQrDataUrl} alt="支付二维码" width={180} height={180} />
+                      </div>
+                    ) : (
+                      <div className="flex h-[180px] w-[180px] items-center justify-center rounded-lg border">
+                        <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      正在等待支付结果……
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => setTestQrOrder(null)}>取消</Button>
                   </div>
                 )}
               </CardContent>

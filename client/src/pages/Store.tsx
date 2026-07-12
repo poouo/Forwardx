@@ -13,7 +13,8 @@ import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { toast } from "sonner";
 
 function money(cents?: number, currency = "CNY") {
@@ -193,7 +194,7 @@ export default function Store() {
     enabled: !!storeStatus?.enabled,
   });
   const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("stripe");
+  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
@@ -203,6 +204,47 @@ export default function Store() {
     storageKey: STORE_TAB_STORAGE_KEY,
   });
 
+  // QR 扫码支付对话框（precreate / native 模式）
+  const [qrOrder, setQrOrder] = useState<{ outTradeNo: string; qrCode: string; subject: string } | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const qrPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 生成 QR 图片 DataURL
+  useEffect(() => {
+    if (!qrOrder?.qrCode) { setQrDataUrl(null); return; }
+    QRCode.toDataURL(qrOrder.qrCode, { width: 220, margin: 1, color: { dark: "#000", light: "#fff" } })
+      .then(setQrDataUrl)
+      .catch(() => setQrDataUrl(null));
+  }, [qrOrder?.qrCode]);
+
+  // 扫码等待期间轮询订单状态，完成后自动关闭对话框
+  const queryOrderUtils = utils;
+  useEffect(() => {
+    if (!qrOrder) {
+      if (qrPollingRef.current) clearInterval(qrPollingRef.current);
+      return;
+    }
+    const poll = async () => {
+      try {
+        const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: qrOrder.outTradeNo });
+        if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
+          setQrOrder(null);
+          toast.success("支付成功！");
+          utils.plans.mySubscriptions.invalidate();
+          utils.billing.me.invalidate();
+          utils.billing.ledger.invalidate();
+        } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
+          setQrOrder(null);
+          toast.error("订单已失效，请重新下单");
+        }
+      } catch {
+        // 轮询失败静默忽略，继续等待
+      }
+    };
+    qrPollingRef.current = setInterval(poll, 3000);
+    return () => { if (qrPollingRef.current) clearInterval(qrPollingRef.current); };
+  }, [qrOrder?.outTradeNo]);
+
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
       toast.success("订单已创建");
@@ -210,7 +252,13 @@ export default function Store() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
-      if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
+      if (order?.qrCode) {
+        // 扫码支付（precreate / native）：在当前页渲染二维码，等待扫码
+        setQrOrder({ outTradeNo: order.outTradeNo, qrCode: order.qrCode, subject: order.subject || "" });
+      } else if (order?.payUrl) {
+        // 跳转支付（page / wap / redirect / stripe / h5）：新标签页打开
+        window.open(order.payUrl, "_blank", "noopener,noreferrer");
+      }
     },
     onError: (error) => toast.error(error.message || "创建订单失败"),
   });
@@ -240,7 +288,7 @@ export default function Store() {
   });
 
   const buy = (plan: any) => {
-    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | undefined;
+    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | "usdt" | undefined;
     if (firstMethod) setPaymentType(firstMethod);
     setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
@@ -259,6 +307,7 @@ export default function Store() {
       paymentType,
       planId: selectedPlan.id,
       discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined,
+      returnPath: "/store",
     });
   };
 
@@ -375,6 +424,40 @@ export default function Store() {
             </TabsContent>
           </Tabs>
         )}
+
+        {/* 扫码支付对话框（precreate / native 模式） */}
+        <Dialog open={!!qrOrder} onOpenChange={(open) => !open && setQrOrder(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <WalletCards className="h-5 w-5" />
+                扫码支付
+              </DialogTitle>
+              <DialogDescription>
+                {qrOrder?.subject ? `购买 ${qrOrder.subject}` : "请使用支付宝或微信扫码完成支付"}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col items-center gap-4 py-2">
+              {qrDataUrl ? (
+                <div className="rounded-lg border border-border/40 bg-white p-3 shadow-sm">
+                  <img src={qrDataUrl} alt="支付二维码" width={220} height={220} />
+                </div>
+              ) : (
+                <div className="flex h-[220px] w-[220px] items-center justify-center rounded-lg border border-border/40">
+                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              )}
+              <p className="text-sm text-muted-foreground">请使用支付宝 / 微信扫描二维码</p>
+              <div className="flex w-full items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
+                <span>正在等待支付结果，付款后将自动跳转……</span>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setQrOrder(null)}>取消</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={!!selectedPlan} onOpenChange={(open) => !open && setSelectedPlan(null)}>
           <DialogContent className="sm:max-w-md">

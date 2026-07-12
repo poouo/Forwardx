@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.151"
+var Version = "2.2.152"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -657,6 +657,55 @@ func addrPort(addr string) int {
 	return port
 }
 
+func localRuleManagedServiceGroups(forwardType string, port int, protocol string) [][]string {
+	if port <= 0 {
+		return nil
+	}
+	portText := strconv.Itoa(port)
+	normalizedProtocol := normalizeRuntimeProtocol(protocol)
+	switch strings.TrimSpace(forwardType) {
+	case "realm":
+		alternatives := []string{"forwardx-realm-" + normalizedProtocol + "-" + portText}
+		if normalizedProtocol != "udp" {
+			alternatives = append(alternatives, "forwardx-realm-"+portText)
+		}
+		return [][]string{alternatives}
+	case "socat":
+		if normalizedProtocol == "both" {
+			return [][]string{
+				{"forwardx-socat-tcp-" + portText},
+				{"forwardx-socat-udp-" + portText},
+			}
+		}
+		alternatives := []string{"forwardx-socat-" + normalizedProtocol + "-" + portText}
+		if normalizedProtocol != "udp" {
+			alternatives = append(alternatives, "forwardx-socat-"+portText)
+		}
+		return [][]string{alternatives}
+	default:
+		return nil
+	}
+}
+
+func managedServiceGroupsActiveCached(readiness *localRuntimeReadiness, groups [][]string) bool {
+	if readiness == nil || len(groups) == 0 {
+		return false
+	}
+	for _, alternatives := range groups {
+		active := false
+		for _, name := range alternatives {
+			if readiness.managedServiceActiveCached(name) {
+				active = true
+				break
+			}
+		}
+		if !active {
+			return false
+		}
+	}
+	return true
+}
+
 func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness) bool {
 	port := atoi(state.Port)
 	if port <= 0 || readiness == nil {
@@ -664,14 +713,8 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	}
 	forwardType := strings.TrimSpace(state.ForwardType)
 	switch forwardType {
-	case "realm":
-		return readiness.managedServiceActiveCached("forwardx-realm-" + state.Port)
-	case "socat":
-		if normalizeRuntimeProtocol(state.Protocol) == "both" {
-			return readiness.managedServiceActiveCached("forwardx-socat-tcp-"+state.Port) &&
-				readiness.managedServiceActiveCached("forwardx-socat-udp-"+state.Port)
-		}
-		return readiness.managedServiceActiveCached("forwardx-socat-" + state.Port)
+	case "realm", "socat":
+		return managedServiceGroupsActiveCached(readiness, localRuleManagedServiceGroups(forwardType, port, state.Protocol))
 	case "iptables":
 		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "nftables":
@@ -1163,6 +1206,7 @@ func iptablesForwardxMarkerSeenForPort(port int) bool {
 func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 	readiness := readLocalRuntimeReadinessCached()
 	ruleStates := readLocalRuntimeRuleStates()
+	ruleStates = mergeDesiredDisjointRuleStates(ruleStates, desiredRunningRuleStatesSnapshot())
 	rules := make([]localRuntimeRuleState, 0, len(ruleStates))
 	for _, state := range ruleStates {
 		port := atoi(state.Port)
@@ -1221,6 +1265,38 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 	return localRuntimeStatePayload{Rules: rules, Tunnels: tunnels, Services: readiness.serviceStates}
 }
 
+func mergeDesiredDisjointRuleStates(ruleStates []localRuleState, desiredStates []localRuleState) []localRuleState {
+	seenRuleStates := map[string]bool{}
+	reportedProtocolsByPort := map[string][]string{}
+	for _, state := range ruleStates {
+		key := fmt.Sprintf("%d:%s:%s", state.RuleID, state.Port, normalizeRuntimeProtocol(state.Protocol))
+		seenRuleStates[key] = true
+		reportedProtocolsByPort[state.Port] = append(reportedProtocolsByPort[state.Port], state.Protocol)
+	}
+	// The legacy on-disk marker is keyed only by port. Merge the desired rule
+	// snapshot only when another disjoint protocol is already recorded on that
+	// port, so a completely missing listener cannot be mistaken for desired state.
+	for _, state := range desiredStates {
+		key := fmt.Sprintf("%d:%s:%s", state.RuleID, state.Port, normalizeRuntimeProtocol(state.Protocol))
+		if seenRuleStates[key] {
+			continue
+		}
+		hasDisjointReportedProtocol := false
+		for _, reportedProtocol := range reportedProtocolsByPort[state.Port] {
+			if !runtimeProtocolsOverlap(reportedProtocol, state.Protocol) {
+				hasDisjointReportedProtocol = true
+				break
+			}
+		}
+		if !hasDisjointReportedProtocol {
+			continue
+		}
+		seenRuleStates[key] = true
+		ruleStates = append(ruleStates, state)
+	}
+	return ruleStates
+}
+
 func localRuntimeStateSignature(state localRuntimeStatePayload) string {
 	raw, err := json.Marshal(state)
 	if err != nil {
@@ -1263,6 +1339,7 @@ type action struct {
 	TunnelID         int           `json:"tunnelId"`
 	StatusType       string        `json:"statusType"`
 	RuleID           int           `json:"ruleId"`
+	PluginID         string        `json:"pluginId,omitempty"`
 	IssuedAt         int64         `json:"issuedAt,omitempty"`
 	KnownRunning     bool          `json:"knownRunning,omitempty"`
 	Op               string        `json:"op"`
@@ -1972,7 +2049,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	if len(forceReconcile) > 0 && forceReconcile[0] {
 		payload["forceReconcile"] = true
 	}
-	payload["pluginVersions"] = installedPluginVersions()
+	pluginVersions, pluginSyncSignatures := installedPluginInventory()
+	payload["pluginVersions"] = pluginVersions
+	payload["pluginSyncSignatures"] = pluginSyncSignatures
 	if (!compactEnabled || shouldReportStatic) && primaryIP != "" {
 		payload["ip"] = primaryIP
 	}
@@ -2830,6 +2909,10 @@ func handleAction(cfg Config, a action) bool {
 }
 
 func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()) bool {
+	if strings.TrimSpace(a.StatusType) == "runtime" && pluginAgentTaskIDPattern.MatchString(strings.TrimSpace(a.PluginID)) {
+		releasePluginLock := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: strings.TrimSpace(a.PluginID), Intent: "write"})
+		defer releasePluginLock()
+	}
 	ok := true
 	actionMessage := &actionMessage{}
 	skippedStaleRemove := false
@@ -2926,6 +3009,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			if a.Fxp != nil {
 				stopFXP(*a.Fxp)
 			}
+			cleanupLocalManagedRuleServices(a)
 			for _, name := range managedServiceNamesForAction(a) {
 				cleanupManagedService(name)
 			}
@@ -3144,6 +3228,9 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 	if localRuleID <= 0 || localRuleID == a.RuleID {
 		return false
 	}
+	if _, _, localProtocol, ok := readTargetInfo(port); ok && !runtimeProtocolsOverlap(localProtocol, a.Protocol) {
+		return false
+	}
 	logf("skip stale remove for reassigned port=%d removeRule=%d currentRule=%d forwardType=%s", a.SourcePort, a.RuleID, localRuleID, a.ForwardType)
 	return true
 }
@@ -3164,6 +3251,27 @@ func rememberDesiredRunningRules(rules []runningRule) {
 	desiredRunningRulesByPort = next
 	desiredRunningRulesByRulePort = nextByRulePort
 	desiredRunningRuleMu.Unlock()
+}
+
+func desiredRunningRuleStatesSnapshot() []localRuleState {
+	desiredRunningRuleMu.Lock()
+	defer desiredRunningRuleMu.Unlock()
+	states := make([]localRuleState, 0, len(desiredRunningRulesByRulePort))
+	for _, rule := range desiredRunningRulesByRulePort {
+		if rule.RuleID <= 0 || rule.SourcePort <= 0 {
+			continue
+		}
+		states = append(states, localRuleState{
+			Port:        strconv.Itoa(rule.SourcePort),
+			RuleID:      rule.RuleID,
+			TunnelID:    rule.TunnelID,
+			ForwardType: rule.ForwardType,
+			TargetIP:    rule.TargetIP,
+			TargetPort:  rule.TargetPort,
+			Protocol:    normalizeRuntimeProtocol(rule.Protocol),
+		})
+	}
+	return states
 }
 
 func desiredRunningRuleForAction(a action) (runningRule, bool) {
@@ -3214,10 +3322,18 @@ func cleanupKernelForwardPortBeforeApply(a action) {
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
-	_, _, localProtocol, hasLocalTarget := readTargetInfo(port)
+	localTargetIP, localTargetPort, localProtocol, hasLocalTarget := readTargetInfo(port)
 	cleanupProtocol := normalizeRuntimeProtocol(a.Protocol)
 	if localRuleID == a.RuleID && hasLocalTarget {
 		cleanupProtocol = normalizeRuntimeProtocol(localProtocol)
+		switch localForwardType {
+		case "iptables":
+			for _, command := range iptablesAgentTargetCleanupCmds(port, localTargetIP, localTargetPort, cleanupProtocol) {
+				_ = runShell(command)
+			}
+		case "nftables":
+			_ = runShell(nftRuleCleanupCmd(localRuleID))
+		}
 	}
 	reassignedRule := a.RuleID > 0 && localRuleID > 0 && localRuleID != a.RuleID
 	changedFromKernelForward := reassignedRule && (localForwardType == "iptables" || localForwardType == "nftables")
@@ -3791,6 +3907,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
 	localRuleTunnelID := readRuleTunnelIDByPort(port)
+	_, _, localProtocol, hasLocalProtocol := readTargetInfo(port)
 	if localRuleID <= 0 && localForwardType == "" {
 		if fxpMatchesRunning(a.Fxp) {
 			writeState(a)
@@ -3813,6 +3930,14 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			writeState(a)
 			return true
 		}
+		if hasLocalProtocol && normalizeRuntimeProtocol(localProtocol) != normalizeRuntimeProtocol(a.Protocol) {
+			if cleanupManagedRuleProtocol(localForwardType, a.SourcePort, localProtocol) {
+				waitForActionListenPortFree(a, 2*time.Second)
+			}
+		}
+		return false
+	}
+	if localRuleID > 0 && localRuleID != a.RuleID && hasLocalProtocol && !runtimeProtocolsOverlap(localProtocol, a.Protocol) {
 		return false
 	}
 	logf(
@@ -4596,6 +4721,54 @@ func managedServiceNamesForAction(a action) []string {
 	}
 }
 
+func managedRuleProtocolServiceNames(forwardType string, port int, protocol string) []string {
+	groups := localRuleManagedServiceGroups(forwardType, port, protocol)
+	seen := map[string]bool{}
+	names := make([]string, 0, 4)
+	for _, group := range groups {
+		for _, name := range group {
+			name = sanitizeServiceName(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func cleanupManagedRuleProtocol(forwardType string, port int, protocol string) bool {
+	forwardType = strings.TrimSpace(forwardType)
+	if forwardType != "realm" && forwardType != "socat" {
+		return false
+	}
+	names := managedRuleProtocolServiceNames(forwardType, port, protocol)
+	for _, name := range names {
+		cleanupManagedService(name)
+		if forwardType == "realm" {
+			_ = runShell("rm -f /etc/forwardx/realm/" + name + ".toml /etc/forwardx/realm/" + name + ".toml.sha256 2>/dev/null || true")
+		}
+	}
+	return len(names) > 0
+}
+
+func cleanupLocalManagedRuleServices(a action) {
+	if a.RuleID <= 0 || a.SourcePort <= 0 {
+		return
+	}
+	port := strconv.Itoa(a.SourcePort)
+	if readRuleIDByPort(port) != a.RuleID {
+		return
+	}
+	forwardType := readForwardTypeByPort(port)
+	_, _, protocol, ok := readTargetInfo(port)
+	if !ok {
+		protocol = a.Protocol
+	}
+	cleanupManagedRuleProtocol(forwardType, a.SourcePort, protocol)
+}
+
 func cleanupManagedService(name string) {
 	name = sanitizeServiceName(name)
 	if name == "" {
@@ -5017,6 +5190,46 @@ func iptablesAgentDeleteDnatRulesForPort(binary string, port string, protocol st
 	return cmd + "; true"
 }
 
+func iptablesAgentTargetCleanupCmds(port string, targetIP string, targetPort int, protocol string) []string {
+	if strings.TrimSpace(port) == "" || !iptablesAgentIsIPAddress(targetIP) || targetPort <= 0 {
+		return nil
+	}
+	target := iptablesAgentAddress(targetIP)
+	targetPortText := strconv.Itoa(targetPort)
+	binary := iptablesAgentBinaryForTarget(target)
+	dnatTarget := iptablesAgentDnatTarget(target, targetPort)
+	inMarker := "fwx-stat-" + port + ":in"
+	outMarker := "fwx-stat-" + port + ":out"
+	commands := []string{}
+	for _, proto := range runtimeProtocols(protocol) {
+		stateMatch := ""
+		if proto == "tcp" {
+			stateMatch = "-m state --state ESTABLISHED,RELATED "
+		}
+		rules := []struct {
+			table string
+			rule  string
+		}{
+			{"nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -j DNAT --to-destination %s`, proto, port, dnatTarget)},
+			{"nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j MASQUERADE`, proto, target, targetPortText)},
+			{"", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j ACCEPT`, proto, target, targetPortText)},
+			{"", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s %s-j ACCEPT`, proto, target, targetPortText, stateMatch)},
+			{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, targetPortText, inMarker)},
+			{"mangle", fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -m comment --comment %q`, proto, target, targetPortText, inMarker)},
+			{"mangle", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q`, proto, target, targetPortText, inMarker)},
+			{"mangle", fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -m comment --comment %q`, proto, target, targetPortText, outMarker)},
+			{"mangle", fmt.Sprintf(`INPUT -p %s -s %s --sport %s -m comment --comment %q`, proto, target, targetPortText, outMarker)},
+			{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, targetPortText, outMarker)},
+			{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, targetPortText, port)},
+			{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, targetPortText, port)},
+		}
+		for _, item := range rules {
+			commands = append(commands, iptablesAgentDelete(binary, item.table, item.rule))
+		}
+	}
+	return commands
+}
+
 func managedPortCleanupCmds(port string) []string {
 	return managedPortCleanupCmdsWithNginx(port, true)
 }
@@ -5029,7 +5242,10 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 		managedServiceCleanupShell("forwardx-socat-tcp-"+port),
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
-		"rm -f /etc/forwardx/realm/forwardx-realm-"+port+".toml /etc/forwardx/realm/forwardx-realm-"+port+".toml.sha256 2>/dev/null || true",
+		managedServiceCleanupShell("forwardx-realm-tcp-"+port),
+		managedServiceCleanupShell("forwardx-realm-udp-"+port),
+		managedServiceCleanupShell("forwardx-realm-both-"+port),
+		"rm -f /etc/forwardx/realm/forwardx-realm-"+port+".toml /etc/forwardx/realm/forwardx-realm-"+port+".toml.sha256 /etc/forwardx/realm/forwardx-realm-tcp-"+port+".toml /etc/forwardx/realm/forwardx-realm-tcp-"+port+".toml.sha256 /etc/forwardx/realm/forwardx-realm-udp-"+port+".toml /etc/forwardx/realm/forwardx-realm-udp-"+port+".toml.sha256 /etc/forwardx/realm/forwardx-realm-both-"+port+".toml /etc/forwardx/realm/forwardx-realm-both-"+port+".toml.sha256 2>/dev/null || true",
 	)
 	if cleanupNginx {
 		cmds = append(cmds, managedNginxCleanupShell(port))
@@ -5079,39 +5295,8 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 		)
 	}
 	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/port_"+port+".tunnel /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
-	if targetIP, targetPort, _, ok := readTargetInfo(port); ok && iptablesAgentIsIPAddress(targetIP) {
-		target := iptablesAgentAddress(targetIP)
-		tp := strconv.Itoa(targetPort)
-		binary := iptablesAgentBinaryForTarget(target)
-		dnatTarget := iptablesAgentDnatTarget(target, targetPort)
-		targetCmds := []string{}
-		for _, proto := range []string{"tcp", "udp"} {
-			stateMatch := ""
-			if proto == "tcp" {
-				stateMatch = "-m state --state ESTABLISHED,RELATED "
-			}
-			targetRules := []struct {
-				table string
-				rule  string
-			}{
-				{"nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -j DNAT --to-destination %s`, proto, port, dnatTarget)},
-				{"nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j MASQUERADE`, proto, target, tp)},
-				{"", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j ACCEPT`, proto, target, tp)},
-				{"", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s %s-j ACCEPT`, proto, target, tp, stateMatch)},
-				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
-				{"mangle", fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
-				{"mangle", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
-				{"mangle", fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
-				{"mangle", fmt.Sprintf(`INPUT -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
-				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
-				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, port)},
-				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, port)},
-			}
-			for _, targetRule := range targetRules {
-				targetCmds = append(targetCmds, iptablesAgentDelete(binary, targetRule.table, targetRule.rule))
-			}
-		}
-		cmds = append(targetCmds, cmds...)
+	if targetIP, targetPort, protocol, ok := readTargetInfo(port); ok {
+		cmds = append(iptablesAgentTargetCleanupCmds(port, targetIP, targetPort, protocol), cmds...)
 	}
 	return cmds
 }
@@ -5276,6 +5461,7 @@ type fxpProcess struct {
 	signature  string
 	cmd        *exec.Cmd
 	configPath string
+	spec       fxpSpec
 }
 
 type actionMessage struct {
@@ -5504,10 +5690,69 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 	}
 	id := fxpServerID(spec)
 	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{signature: signature, configPath: configPath}
+	fxpServers[id] = &fxpProcess{signature: signature, configPath: configPath, spec: spec}
 	fxpMu.Unlock()
 	logf("fxp %s adopted existing runtime tunnel=%d rule=%d listen=:%d protocol=%s config=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, configPath)
 	return true
+}
+
+func fxpListenEndpoints(spec fxpSpec) map[string]int {
+	spec = normalizeFXPSpec(spec)
+	endpoints := map[string]int{}
+	for _, protocol := range runtimeProtocols(spec.Protocol) {
+		if protocol == "udp" {
+			if spec.UDPListenPort > 0 {
+				endpoints[protocol] = spec.UDPListenPort
+			}
+			continue
+		}
+		if spec.ListenPort > 0 {
+			endpoints[protocol] = spec.ListenPort
+		}
+	}
+	return endpoints
+}
+
+func fxpSpecsListenConflict(left fxpSpec, right fxpSpec) bool {
+	leftEndpoints := fxpListenEndpoints(left)
+	rightEndpoints := fxpListenEndpoints(right)
+	for protocol, port := range leftEndpoints {
+		if port > 0 && rightEndpoints[protocol] == port {
+			return true
+		}
+	}
+	return false
+}
+
+func stopConflictingFXP(spec fxpSpec) {
+	spec = normalizeFXPSpec(spec)
+	desiredID := fxpServerID(spec)
+	conflictingSpecs := []fxpSpec{}
+	fxpMu.Lock()
+	for id, process := range fxpServers {
+		if id == desiredID || process == nil || !fxpSpecsListenConflict(process.spec, spec) {
+			continue
+		}
+		conflictingSpecs = append(conflictingSpecs, process.spec)
+	}
+	fxpMu.Unlock()
+	for _, conflicting := range conflictingSpecs {
+		stopFXP(conflicting)
+	}
+
+	paths, _ := filepath.Glob("/run/forwardx-agent/fxp-*.json")
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var existing fxpSpec
+		if json.Unmarshal(raw, &existing) != nil || !fxpSpecsListenConflict(existing, spec) {
+			continue
+		}
+		killFXPByConfigPath(path)
+		_ = os.Remove(path)
+	}
 }
 
 func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
@@ -5549,10 +5794,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		return true
 	}
 	stopFXP(spec)
-	stopFXPByListenPort(spec.ListenPort)
-	for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(spec.ListenPort)) {
-		_ = runShell(cmd)
-	}
+	stopConflictingFXP(spec)
 	// When mimic is enabled, UDPListenPort (mimicPort) differs from ListenPort (TCP port).
 	// fxpPortCleanupCmds matches by config filename which always ends in ListenPort, so
 	// using it with mimicPort would never match. Kill the UDP port occupant directly via ss.
@@ -5648,7 +5890,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 
 	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath}
+	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: spec}
 	fxpMu.Unlock()
 	go func() {
 		err := <-exited
@@ -5878,6 +6120,12 @@ func normalizeRuntimeProtocol(protocol string) string {
 	default:
 		return "tcp"
 	}
+}
+
+func runtimeProtocolsOverlap(left string, right string) bool {
+	leftProtocol := normalizeRuntimeProtocol(left)
+	rightProtocol := normalizeRuntimeProtocol(right)
+	return leftProtocol == "both" || rightProtocol == "both" || leftProtocol == rightProtocol
 }
 
 type protocolGuardServer struct {
@@ -6606,10 +6854,13 @@ func prepareProtocolGuardPort(rule guardRule) {
 			"forwardx-socat-tcp-" + port,
 			"forwardx-socat-udp-" + port,
 			"forwardx-realm-" + port,
+			"forwardx-realm-tcp-" + port,
+			"forwardx-realm-udp-" + port,
+			"forwardx-realm-both-" + port,
 		} {
 			_ = runShell(managedServiceCleanupShell(name))
 		}
-		_ = runShell("rm -f /etc/forwardx/realm/forwardx-realm-" + port + ".toml /etc/forwardx/realm/forwardx-realm-" + port + ".toml.sha256 2>/dev/null || true")
+		_ = runShell("rm -f /etc/forwardx/realm/forwardx-realm-" + port + ".toml /etc/forwardx/realm/forwardx-realm-" + port + ".toml.sha256 /etc/forwardx/realm/forwardx-realm-tcp-" + port + ".toml /etc/forwardx/realm/forwardx-realm-tcp-" + port + ".toml.sha256 /etc/forwardx/realm/forwardx-realm-udp-" + port + ".toml /etc/forwardx/realm/forwardx-realm-udp-" + port + ".toml.sha256 /etc/forwardx/realm/forwardx-realm-both-" + port + ".toml /etc/forwardx/realm/forwardx-realm-both-" + port + ".toml.sha256 2>/dev/null || true")
 	}
 	if backendType != "nginx" || backendPort == rule.ListenPort {
 		_ = runShell(managedNginxCleanupShell(port))

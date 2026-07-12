@@ -154,6 +154,9 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
         `[Runtime] status type=${runtimeType} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
       );
     }
+    if (runtimeType.startsWith("plugin-") && runtimeType.endsWith("-sync")) {
+      pushAgentRefresh(Number(host.id), `${runtimeType}-${isRunning ? "complete" : "failed"}`, { urgent: true });
+    }
     return { status: 200, body: { success: true } };
   }
   if (statusType === "tunnel") {

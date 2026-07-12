@@ -73,7 +73,7 @@ export default function Subscriptions() {
   const { data: subscriptions = [], isLoading } = trpc.plans.mySubscriptions.useQuery();
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("stripe");
+  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
@@ -138,7 +138,7 @@ export default function Subscriptions() {
   });
 
   const openRenew = (sub: any) => {
-    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | undefined;
+    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | "usdt" | undefined;
     if (firstMethod) setPaymentType(firstMethod);
     setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
@@ -159,6 +159,7 @@ export default function Subscriptions() {
       paymentType,
       planId,
       discountCode: code,
+      returnPath: "/subscriptions",
     });
   };
 

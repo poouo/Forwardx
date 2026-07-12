@@ -731,8 +731,8 @@ export const paymentOrders = table("payment_orders", {
   id: serial("id"),
   outTradeNo: text("outTradeNo").notNull().unique(),
   userId: int("userId").notNull(),
-  provider: varchar("provider", { length: 32 }).notNull(), // easypay | alipay | wxpay | stripe
-  paymentType: varchar("paymentType", { length: 32 }).notNull(), // alipay | wxpay | stripe
+  provider: varchar("provider", { length: 32 }).notNull(), // easypay | alipay | wxpay | stripe | gmpay
+  paymentType: varchar("paymentType", { length: 32 }).notNull(), // alipay | wxpay | stripe | usdt
   status: varchar("status", { length: 32 }).notNull().default("pending"), // pending | paid | completed | expired | cancelled | failed
   subject: text("subject").notNull(),
   amountCents: bigint("amountCents", { mode: "number" }).notNull(),

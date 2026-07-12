@@ -24,6 +24,7 @@ import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPlug
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentAddress, normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import {
+  planGostTunnelProbeListeners,
   shouldReconcileGostRuntime,
   shouldReconcileNginxRuntime,
   tunnelExitRuntimeForwardType,
@@ -104,6 +105,7 @@ const AGENT_DESIRED_STATE_ACTIVE_RESEND_MS = 60 * 1000;
 const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
 const AGENT_GOST_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
 const AGENT_NGINX_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
+const AGENT_MIMIC_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
@@ -169,6 +171,7 @@ function stableActionSignature(actions: any[]) {
     statusType: action?.statusType || "",
     ruleId: Number(action?.ruleId || 0),
     tunnelId: Number(action?.tunnelId || 0),
+    pluginId: String(action?.pluginId || ""),
     forwardType: action?.forwardType || "",
     sourcePort: Number(action?.sourcePort || 0),
     targetIp: String(action?.targetIp || ""),
@@ -768,7 +771,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
-    updateAgentPluginInventory(logHostId, req.body?.pluginVersions);
+    updateAgentPluginInventory(logHostId, req.body?.pluginVersions, req.body?.pluginSyncSignatures);
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
     const busyHeartbeat = req.body?.busy === true || String(req.body?.busy || "").toLowerCase() === "true";
@@ -1743,9 +1746,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && !!tunnel
       && Number(primaryManagedTunnelRuleIdByTunnelId.get(Number((tunnel as any).id || 0)) || 0) === Number((rule as any).id || 0)
     );
-    const hasPrimaryManagedTunnelRule = (tunnel: any) => (
-      Number(primaryManagedTunnelRuleIdByTunnelId.get(Number((tunnel as any)?.id || 0)) || 0) > 0
-    );
     const tunnelExtraExitNodes = (tunnel: any) => (
       (tunnel as any)?.loadBalanceEnabled
         ? (tunnelExitNodesByTunnelId.get(Number(tunnel?.id || 0)) || [])
@@ -2015,9 +2015,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             hopCount: hops.length - 1,
           } : null;
         }
-        // A direct GOST tunnel only owns an exit listener when a forwarding
-        // rule is bound to it. Do not probe an otherwise idle saved link.
-        if (isGostTunnelMode(tunnel) && !hasPrimaryManagedTunnelRule(tunnel)) return null;
         if (!isCurrentHostTunnelEntry(tunnel)) return null;
         const primaryEndpoint = tunnelExitEndpointById.get(tunnel.id);
         const baseProbe = {
@@ -2348,11 +2345,46 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return cmds;
     };
+    const businessTunnelListenKeys = new Set<string>();
+    for (const rule of tunnelExitRules as any[]) {
+      const tunnel = tunnelById.get(Number((rule as any).tunnelId)) as any;
+      if (!tunnel || !isGostTunnelMode(tunnel)) continue;
+      for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
+        if (endpoint.exitHostId > 0 && endpoint.listenPort > 0) {
+          businessTunnelListenKeys.add(`${endpoint.exitHostId}:${endpoint.listenPort}`);
+        }
+      }
+    }
+    // Keep idle GOST links probeable. A real forwarding service on the same
+    // host and port takes precedence, so the generated runtime never binds twice.
+    const gostTunnelProbePlans = planGostTunnelProbeListeners(
+      Number(host.id),
+      (hostTunnels as any[]).map((tunnel: any) => ({
+        ...tunnel,
+        protocolEnabled: isTunnelProtocolEnabled(forwardProtocolSettings, tunnel),
+      })),
+      tunnelExitNodesByTunnelId,
+      businessTunnelListenKeys,
+    );
+    const gostTunnelProbeServices = gostTunnelProbePlans.map((probe) => ({
+      name: probe.name,
+      addr: `:${probe.listenPort}`,
+      handler: { type: "tcp" },
+      listener: {
+        type: tunnelProtocolType(probe.mode),
+        ...(tunnelProtocolMetadata(probe.mode) ? { metadata: tunnelProtocolMetadata(probe.mode) } : {}),
+      },
+      forwarder: {
+        nodes: [{
+          name: `probe-${probe.name}`,
+          addr: "127.0.0.1:9",
+          connector: { type: "tcp" },
+          dialer: { type: "tcp" },
+        }],
+      },
+    }));
     const buildTunnelReloadCmds = async () => {
-      // A saved GOST tunnel has no standalone listener. Only a real forwarding
-      // rule may create one, otherwise stale tunnel/extra-exit ports become
-      // phantom listeners that are repeatedly reported as failed.
-    const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
+      const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
         const exitPorts = currentHostTunnelExitPortsForRule(rule, tunnel);
@@ -2416,7 +2448,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ...(relayReceiveProxyMetadata ? { metadata: relayReceiveProxyMetadata } : {}),
         };
       }));
-      const services = [...ruleServices, ...multiHopRelayServices.filter(Boolean)];
+      const services = [...gostTunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
       const countingCmds = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
@@ -2829,9 +2861,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         cmds.push(nginxApplyCmd);
       } else {
         cmds.push(
-          `rm -f ${shQuote(NGINX_STAGED_CONFIG_PATH)} 2>/dev/null || true`,
           stopManagedServiceCmd(NGINX_SERVICE_NAME),
-          `rm -f ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`,
+          `rm -f ${shQuote(NGINX_CONFIG_PATH)} ${shQuote(NGINX_STAGED_CONFIG_PATH)} ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`,
         );
       }
       cmds.push(...countingCmds);
@@ -3054,6 +3085,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ));
     const gostRuntimeServiceUnhealthy = runtimeServiceUnhealthy(new Set([RUNTIME_SERVICE_NAME, TUNNEL_RUNTIME_SERVICE_NAME]));
     const nginxRuntimeServiceUnhealthy = runtimeServiceUnhealthy(new Set([NGINX_SERVICE_NAME]));
+    const mimicRuntimeServiceUnhealthy = hasReportedRuntimeState && reportedRuntimeServices.some((service: AgentLocalRuntimeServiceState) => (
+      String(service?.name || "").trim().startsWith("mimic@")
+      && service.hasWork
+      && !service.active
+    ));
     const expectedRulePorts = new Set<string>();
     const expectedRuleIdentityKeys = new Set<string>();
     const expectedRulePortIdentityKeys = new Set<string>();
@@ -3127,6 +3163,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const port = Number(local.port || 0);
       const forwardType = String(local.forwardType || "").trim() || "unknown";
       const protocol = local.protocol || "both";
+      const fxp = forwardType === "forwardx" && Number(local.ruleId || 0) > 0
+        ? {
+            role: "entry",
+            tunnelId: Number(local.tunnelId || 0),
+            ruleId: Number(local.ruleId || 0),
+            listenPort: port,
+            protocol,
+            key: "",
+          }
+        : undefined;
       const cleanupCmds = SHARED_NGINX_FORWARD_TYPES.has(forwardType)
         ? buildNginxPortCleanupCmds({
           sourcePort: port,
@@ -3136,8 +3182,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         })
         : [
           ...buildManagedPortCleanupCmds(port, local.targetIp, local.targetPort, protocol),
-          `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
-          `rm -f /run/forwardx-agent/fxp-*-${port}.json /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
+          ...(fxp ? [] : [
+            `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
+            `rm -f /run/forwardx-agent/fxp-*-${port}.json 2>/dev/null || true`,
+          ]),
+          `rm -f /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
         ];
       return {
         ruleId: Number(local.ruleId || 0),
@@ -3150,6 +3199,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: Number(local.targetPort || 0),
         protocol,
         commands: cleanupCmds,
+        fxp,
       };
     };
     const buildGenericLocalTunnelRemovalAction = (local: AgentLocalRuntimeTunnelState) => {
@@ -3218,17 +3268,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const runtimeFamily = tunnelRuntimeFamily(tunnel);
       const fxpTunnel = runtimeFamily === "forwardx";
-      const gostTunnel = runtimeFamily === "gost";
-      const hasGostTunnelBusinessListener = gostTunnel && hasPrimaryManagedTunnelRule(tunnel);
       const isCurrentHostSharedRuntimeExtraExit = !fxpTunnel && isCurrentHostExtraExit;
       if (!isCurrentHostPrimaryExit && !(fxpTunnel && isCurrentHostExtraExit) && !isCurrentHostSharedRuntimeExtraExit) continue;
       if (runtimeFamily !== "nginx" && Array.isArray(existingHops) && existingHops.length >= (fxpTunnel ? 2 : 3) && !isCurrentHostExtraExit) continue;
-      if (gostTunnel && !hasGostTunnelBusinessListener) {
-        if (isCurrentHostPrimaryExit && tunnel.isRunning) {
-          await db.updateTunnelRunningStatus(Number(tunnel.id), false);
-        }
-        continue;
-      }
       const fxpListenPort = isCurrentHostPrimaryExit
         ? Number(tunnel.listenPort)
         : Number((currentHostExtraExitNode as any)?.listenPort || 0);
@@ -4526,10 +4568,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const reportedPluginInventory = getAgentPluginInventory(host.id);
     let pluginSyncActionQueued = false;
     for (const pluginSyncTask of pluginSyncTasks) {
+      const reportedPluginVersion = reportedPluginInventory?.versions.get(pluginSyncTask.pluginId) || "";
+      const syncConfirmed = reportedPluginInventory?.supportsSyncSignatures === true
+        && !pluginSyncTask.expectAbsent
+        && reportedPluginVersion === pluginSyncTask.pluginVersion
+        && reportedPluginInventory.syncSignatures.get(pluginSyncTask.pluginId) === pluginSyncTask.syncSignature;
+      if (syncConfirmed) continue;
       const pluginSyncAction = {
         statusType: "runtime",
         ruleId: 0,
         tunnelId: 0,
+        pluginId: pluginSyncTask.pluginId,
         op: "apply",
         forwardType: pluginSyncTask.forwardType,
         sourcePort: 0,
@@ -4541,7 +4590,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         failureMessage: `插件 ${pluginSyncTask.pluginId} 资源同步失败，请检查 Agent 日志`,
         commands: pluginSyncTask.commands,
       } as any;
-      const reportedPluginVersion = reportedPluginInventory?.versions.get(pluginSyncTask.pluginId) || "";
       const repairResendMs = reportedPluginInventory && reportedPluginVersion !== pluginSyncTask.pluginVersion
         ? 5_000
         : AGENT_PLUGIN_SYNC_RESEND_MS;
@@ -4572,6 +4620,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     });
     const gostDesiredRelevant = gostServiceConfig.length > 0
       || tunnelExitRules.length > 0
+      || gostTunnelProbePlans.length > 0
       || gostMultiHopRuntimeDesired;
     const reportedNginxRuntimeService = reportedRuntimeServices.find((service: AgentLocalRuntimeServiceState) => (
       String(service?.name || "").trim() === NGINX_SERVICE_NAME
@@ -4608,6 +4657,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0
       || mimicRequestedWithoutInterface
       || reportedMimicInterfaces.size > 0;
+    const desiredMimicInterfaces = new Set(Array.from(mimicFiltersByInterface.keys()));
+    const mimicRuntimeTopologyMismatch = desiredMimicInterfaces.size !== reportedMimicInterfaces.size
+      || Array.from(desiredMimicInterfaces).some((iface) => !reportedMimicInterfaces.has(iface));
     const runtimeSyncBootstrap = !supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState;
     const gostReconcileCandidate = shouldReconcileGostRuntime({
       configChanged: gostRuntimeConfigChanged,
@@ -4748,6 +4800,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: 0,
         protocol: "udp",
         knownRunning: false,
+        forceRuntimeSync: true,
         reportStatus: true,
         failureMessage: "mimic UDP camouflage synchronization failed; check the host network interface, mimic installation, kernel module, and Agent logs",
         commands: buildMimicRuntimeSyncCmds(mimicDnsRefreshToken),
@@ -4757,7 +4810,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         mimicRuntimeSyncAction,
         false,
         responseIssuedAt,
-        AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS,
+        mimicRuntimeServiceUnhealthy || mimicRuntimeTopologyMismatch || runtimeSyncBootstrap
+          ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS
+          : AGENT_MIMIC_RUNTIME_RECONCILE_MS,
       )) {
         actions.push(mimicRuntimeSyncAction);
       }
@@ -4844,7 +4899,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const legacyPluginSyncSettling = !reportedPluginInventory
       && hasRecentPluginSyncDispatch(Number(host.id), responseIssuedAt);
     const pluginTasks = supportsPluginTasks && !pluginSyncActionQueued && !legacyPluginSyncSettling
-      ? takePluginAgentTasks(host.id, 2, (task) => (
+      ? takePluginAgentTasks(host.id, 4, (task) => (
           !reportedPluginInventory
           || reportedPluginInventory.versions.get(task.pluginId) === task.pluginVersion
         ))
@@ -4854,6 +4909,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || iperf3Tasks.length > 0
       || pluginTasks.length > 0
       || hasPendingPluginTasks
+      || pluginSyncActionQueued
       || forceTcping
       || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
     const serviceProbeInterval = hostProbeServices.reduce((min: number, service: any) => {

@@ -316,6 +316,9 @@ agentRouter.post("/api/agent/plugin-action-result", async (req: Request, res: Re
       startedAt: result.startedAt ? String(result.startedAt) : undefined,
       finishedAt: result.finishedAt ? String(result.finishedAt) : undefined,
       error: result.error ? String(result.error).slice(0, 4000) : undefined,
+      errorDetail: result.errorDetail ? String(result.errorDetail).slice(0, 4000) : undefined,
+      advice: result.advice ? String(result.advice).slice(0, 4000) : undefined,
+      processError: result.processError ? String(result.processError).slice(0, 4000) : undefined,
     });
     if (ok) await db.syncPluginAgentActionState(String(result.pluginId), String(result.groupId));
     res.json({ success: ok });

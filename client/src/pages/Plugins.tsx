@@ -809,7 +809,14 @@ export default function Plugins() {
   );
   const { data: pluginUsage, isLoading: pluginUsageLoading } = trpc.plugins.usage.useQuery(
     { pluginId: selectedPlugin?.pluginId || "", usageViewId: hostAssetSyncUsageView?.id },
-    { enabled: !!selectedPlugin?.pluginId && hasUsageView },
+    {
+      enabled: !!selectedPlugin?.pluginId && hasUsageView,
+      refetchInterval: (query) => {
+        const hosts = ((query.state.data as any)?.hosts || []) as any[];
+        return hosts.some((host) => host?.pluginSelected && host?.pluginSyncPending) ? 1500 : false;
+      },
+      refetchOnWindowFocus: false,
+    },
   );
   const savedUsage = (pluginUsage as any)?.usage;
   const savedUsageEnabled = savedUsage?.enabled === true;

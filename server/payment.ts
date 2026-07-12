@@ -3,7 +3,30 @@ import express from "express";
 import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
 import { appendPanelLog } from "./_core/panelLogger";
+import { resolvePanelUrl } from "./agentPanelUrl";
 import * as db from "./db";
+import {
+  createGmPayOrder,
+  getGmPayGatewayInfo,
+  GM_PAY_NETWORKS,
+  normalizeGmPayBase,
+  verifyGmPaySignature,
+  type GmPayNetwork,
+} from "./gmPay";
+import {
+  appendWxpayH5Redirect,
+  buildPaymentFrontendReturnUrl,
+  buildPaymentProviderReturnUrl,
+  buildPaymentWebhookUrl,
+  DEFAULT_PAYMENT_RETURN_PATH,
+  firstStringValue,
+  isPaymentReturnPath,
+  normalizePaymentReturnPath,
+  PAYMENT_RETURN_PATHS,
+  queryToStringRecord,
+  type PaymentProvider,
+  type PaymentReturnPath,
+} from "./paymentUrls";
 
 const PAYMENT_CONFIG_KEY = "paymentConfig";
 
@@ -23,6 +46,14 @@ type StripeConfig = {
   publishableKey: string;
   webhookSecret: string;
   currency: string;
+};
+
+type GmPayConfig = {
+  enabled: boolean;
+  apiBase: string;
+  pid: string;
+  secretKey: string;
+  network: GmPayNetwork;
 };
 
 type AlipayConfig = {
@@ -63,6 +94,7 @@ type PaymentConfig = {
   alipay: AlipayConfig;
   wxpay: WxpayConfig;
   stripe: StripeConfig;
+  gmpay: GmPayConfig;
 };
 
 const defaultPaymentConfig: PaymentConfig = {
@@ -112,6 +144,13 @@ const defaultPaymentConfig: PaymentConfig = {
     publishableKey: "",
     webhookSecret: "",
     currency: "cny",
+  },
+  gmpay: {
+    enabled: false,
+    apiBase: "",
+    pid: "",
+    secretKey: "",
+    network: "tron",
   },
 };
 
@@ -163,14 +202,22 @@ const paymentConfigInput = z.object({
     webhookSecret: z.string().max(256).optional(),
     currency: z.string().trim().min(3).max(8),
   }),
+  gmpay: z.object({
+    enabled: z.boolean(),
+    apiBase: z.string().trim().max(512),
+    pid: z.string().trim().max(128),
+    secretKey: z.string().max(256).optional(),
+    network: z.enum(GM_PAY_NETWORKS),
+  }).optional(),
 });
 
 const createOrderInput = z.object({
   amount: z.number().min(0.01).max(1_000_000),
-  paymentType: z.enum(["alipay", "wxpay", "stripe"]),
+  paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
   planId: z.number().int().positive().optional(),
   discountCode: z.string().trim().max(64).optional(),
   orderType: z.enum(["balance", "test"]).optional(),
+  returnPath: z.enum(PAYMENT_RETURN_PATHS).optional(),
 });
 
 function mergeConfig(raw: any): PaymentConfig {
@@ -182,6 +229,7 @@ function mergeConfig(raw: any): PaymentConfig {
     alipay: { ...defaultPaymentConfig.alipay, ...(raw?.alipay || {}) },
     wxpay: { ...defaultPaymentConfig.wxpay, ...(raw?.wxpay || {}) },
     stripe: { ...defaultPaymentConfig.stripe, ...(raw?.stripe || {}) },
+    gmpay: { ...defaultPaymentConfig.gmpay, ...(raw?.gmpay || {}) },
   };
 }
 
@@ -216,6 +264,11 @@ function sanitizeConfig(config: PaymentConfig) {
       hasSecretKey: !!config.stripe.secretKey,
       hasWebhookSecret: !!config.stripe.webhookSecret,
     },
+    gmpay: {
+      ...config.gmpay,
+      secretKey: "",
+      hasSecretKey: !!config.gmpay.secretKey,
+    },
   };
 }
 
@@ -231,15 +284,6 @@ export async function getPaymentConfig(): Promise<PaymentConfig> {
 
 async function savePaymentConfig(config: PaymentConfig) {
   await db.setSetting(PAYMENT_CONFIG_KEY, JSON.stringify(config));
-}
-
-async function getPanelPublicUrl(req?: express.Request) {
-  const configured = (await db.getSetting("panelPublicUrl"))?.trim().replace(/\/+$/, "");
-  if (configured) return configured;
-  if (!req) return "";
-  const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || req.protocol || "http";
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  return host ? `${proto}://${host}` : "";
 }
 
 function normalizeEasyPayBase(apiBase: string) {
@@ -319,7 +363,8 @@ async function createEasyPayOrder(config: PaymentConfig, order: {
   subject: string;
   amountCents: number;
   paymentType: "alipay" | "wxpay";
-  panelUrl: string;
+  notifyUrl: string;
+  returnUrl: string;
   clientIp: string;
 }) {
   const ep = config.easypay;
@@ -330,8 +375,8 @@ async function createEasyPayOrder(config: PaymentConfig, order: {
     pid: ep.pid,
     type: order.paymentType,
     out_trade_no: order.outTradeNo,
-    notify_url: `${order.panelUrl}/api/payment/webhook/easypay`,
-    return_url: `${order.panelUrl}/api/payment/return/easypay`,
+    notify_url: order.notifyUrl,
+    return_url: order.returnUrl,
     name: order.subject,
     money: formatMoney(order.amountCents),
   };
@@ -389,7 +434,7 @@ function alipaySignContent(params: Record<string, string>) {
     .join("&");
 }
 
-function normalizeAlipayBaseParams(config: PaymentConfig, method: string, panelUrl: string) {
+function normalizeAlipayBaseParams(config: PaymentConfig, method: string, urls: { notifyUrl: string; returnUrl: string }) {
   const alipay = config.alipay;
   return {
     app_id: alipay.appId,
@@ -398,17 +443,22 @@ function normalizeAlipayBaseParams(config: PaymentConfig, method: string, panelU
     sign_type: "RSA2",
     timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
     version: "1.0",
-    notify_url: `${panelUrl}/api/payment/webhook/alipay`,
-    return_url: `${panelUrl}/api/payment/return/alipay`,
+    notify_url: urls.notifyUrl,
+    return_url: urls.returnUrl,
   };
 }
 
-async function callAlipayGateway(config: PaymentConfig, method: string, bizContent: Record<string, unknown>, panelUrl: string) {
+async function callAlipayGateway(
+  config: PaymentConfig,
+  method: string,
+  bizContent: Record<string, unknown>,
+  urls: { notifyUrl: string; returnUrl: string },
+) {
   const alipay = config.alipay;
   const gateway = normalizeGateway(alipay.gateway, defaultPaymentConfig.alipay.gateway);
   if (!alipay.enabled || !alipay.appId || !alipay.privateKey || !alipay.publicKey) throw new Error("支付宝官方配置不完整");
   const params: Record<string, string> = {
-    ...normalizeAlipayBaseParams(config, method, panelUrl),
+    ...normalizeAlipayBaseParams(config, method, urls),
     biz_content: stableJson(bizContent),
   };
   params.sign = alipaySign(params, alipay.privateKey);
@@ -436,7 +486,8 @@ async function createAlipayOrder(config: PaymentConfig, order: {
   outTradeNo: string;
   subject: string;
   amountCents: number;
-  panelUrl: string;
+  notifyUrl: string;
+  returnUrl: string;
 }) {
   const alipay = config.alipay;
   const gateway = normalizeGateway(alipay.gateway, defaultPaymentConfig.alipay.gateway);
@@ -446,7 +497,7 @@ async function createAlipayOrder(config: PaymentConfig, order: {
     const method = alipay.mode === "wap" ? "alipay.trade.wap.pay" : "alipay.trade.page.pay";
     const productCode = alipay.mode === "wap" ? "QUICK_WAP_WAY" : "FAST_INSTANT_TRADE_PAY";
     const params: Record<string, string> = {
-      ...normalizeAlipayBaseParams(config, method, order.panelUrl),
+      ...normalizeAlipayBaseParams(config, method, order),
       biz_content: stableJson({
         out_trade_no: order.outTradeNo,
         total_amount: amount,
@@ -467,7 +518,7 @@ async function createAlipayOrder(config: PaymentConfig, order: {
     total_amount: amount,
     subject: order.subject,
     product_code: "FACE_TO_FACE_PAYMENT",
-  }, order.panelUrl);
+  }, order);
   return {
     tradeNo: payload.trade_no || order.outTradeNo,
     payUrl: payload.qr_code || null,
@@ -493,15 +544,16 @@ async function createStripeCheckoutOrder(config: PaymentConfig, order: {
   outTradeNo: string;
   subject: string;
   amountCents: number;
-  panelUrl: string;
+  returnUrl: string;
+  cancelUrl: string;
 }) {
   const stripe = config.stripe;
   if (!stripe.enabled || !stripe.secretKey) throw new Error("Stripe 配置不完整");
   const currency = stripe.currency.trim().toLowerCase();
   const params = new URLSearchParams();
   params.set("mode", "payment");
-  params.set("success_url", `${order.panelUrl}/api/payment/return/stripe?out_trade_no=${encodeURIComponent(order.outTradeNo)}`);
-  params.set("cancel_url", `${order.panelUrl}/payments?payment_cancelled=1&out_trade_no=${encodeURIComponent(order.outTradeNo)}`);
+  params.set("success_url", order.returnUrl);
+  params.set("cancel_url", order.cancelUrl);
   params.set("line_items[0][price_data][currency]", currency);
   params.set("line_items[0][price_data][product_data][name]", order.subject);
   params.set("line_items[0][price_data][unit_amount]", String(stripeAmountForCurrency(order.amountCents, currency)));
@@ -601,7 +653,8 @@ async function createWxpayOrder(config: PaymentConfig, order: {
   outTradeNo: string;
   subject: string;
   amountCents: number;
-  panelUrl: string;
+  notifyUrl: string;
+  returnUrl: string;
   clientIp: string;
 }) {
   const wxpay = config.wxpay;
@@ -613,7 +666,7 @@ async function createWxpayOrder(config: PaymentConfig, order: {
     mchid: wxpay.mchId,
     description: order.subject.slice(0, 127),
     out_trade_no: order.outTradeNo,
-    notify_url: `${order.panelUrl}/api/payment/webhook/wxpay`,
+    notify_url: order.notifyUrl,
     amount: {
       total: order.amountCents,
       currency: "CNY",
@@ -630,7 +683,7 @@ async function createWxpayOrder(config: PaymentConfig, order: {
     const data = await wxpayPost(wxpay, "/v3/pay/transactions/h5", { ...basePayload, scene_info: sceneInfo });
     return {
       tradeNo: order.outTradeNo,
-      payUrl: data.h5_url || null,
+      payUrl: data.h5_url ? appendWxpayH5Redirect(String(data.h5_url), order.returnUrl) : null,
       qrCode: null,
     };
   }
@@ -816,7 +869,7 @@ export const paymentRouter = router({
   availableMethods: protectedProcedure.query(async () => {
     const config = await getPaymentConfig();
     if (!config.enabled) return [];
-    const methods: Array<{ value: "alipay" | "wxpay" | "stripe"; label: string }> = [];
+    const methods: Array<{ value: "alipay" | "wxpay" | "stripe" | "usdt"; label: string }> = [];
     const alipayProvider = config.routes.alipay;
     const wxpayProvider = config.routes.wxpay;
     if ((alipayProvider === "easypay" && config.easypay.enabled) || (alipayProvider === "alipay" && config.alipay.enabled)) {
@@ -827,6 +880,9 @@ export const paymentRouter = router({
     }
     if (config.stripe.enabled) {
       methods.push({ value: "stripe", label: "Stripe" });
+    }
+    if (config.gmpay.enabled) {
+      methods.push({ value: "usdt", label: "USDT" });
     }
     return methods;
   }),
@@ -865,10 +921,36 @@ export const paymentRouter = router({
           webhookSecret: input.stripe.webhookSecret?.trim() || previous.stripe.webhookSecret,
           currency: input.stripe.currency.trim().toLowerCase(),
         },
+        gmpay: input.gmpay ? {
+          ...input.gmpay,
+          apiBase: normalizeGmPayBase(input.gmpay.apiBase),
+          secretKey: input.gmpay.secretKey?.trim() || previous.gmpay.secretKey,
+        } : previous.gmpay,
       });
+      if (next.gmpay.enabled && (!next.gmpay.apiBase || !next.gmpay.pid || !next.gmpay.secretKey)) {
+        throw new Error("启用 USDT 支付前请完整填写网关地址、商户 PID 和商户密钥");
+      }
       await savePaymentConfig(next);
       appendPanelLog("info", "[Payment] config updated");
       return sanitizeConfig(next);
+    }),
+
+  testGmPayGateway: adminProcedure
+    .input(z.object({
+      apiBase: z.string().trim().min(1).max(512),
+      network: z.enum(GM_PAY_NETWORKS),
+    }))
+    .mutation(async ({ input }) => {
+      const info = await getGmPayGatewayInfo(input.apiBase);
+      const network = info.supportedAssets.find((asset) => asset.network === input.network);
+      const supportsUsdt = !!network?.tokens.includes("USDT");
+      appendPanelLog("info", `[Payment] GM Pay gateway checked version=${info.version || "unknown"} network=${input.network} usdt=${supportsUsdt}`);
+      return {
+        version: info.version,
+        supportsUsdt,
+        networkLabel: network?.displayName || input.network,
+        supportedAssets: info.supportedAssets,
+      };
     }),
 
   stats: adminProcedure.query(async () => {
@@ -888,6 +970,19 @@ export const paymentRouter = router({
     .query(async ({ input, ctx }) => {
       await expireStalePendingOrders();
       return db.listPaymentOrders(input?.limit || 50, ctx.user.id);
+    }),
+
+  // queryOrder：前端轮询订单状态（precreate/native 扫码模式等待支付结果使用）。
+  // 只返回当前用户自己的订单，且只暴露状态和单号，不泄露支付细节。
+  queryOrder: protectedProcedure
+    .input(z.object({ outTradeNo: z.string().min(1).max(64) }))
+    .query(async ({ input, ctx }) => {
+      const order = await db.getPaymentOrderByOutTradeNo(input.outTradeNo);
+      if (!order || Number(order.userId) !== Number(ctx.user.id)) return null;
+      return {
+        outTradeNo: order.outTradeNo,
+        status: order.status,
+      };
     }),
 
   createOrder: protectedProcedure
@@ -924,38 +1019,39 @@ export const paymentRouter = router({
         throw new Error("待支付订单过多，请先完成或等待旧订单过期");
       }
 
-      const provider = input.paymentType === "stripe"
+      const provider: PaymentProvider = input.paymentType === "stripe"
         ? "stripe"
-        : input.paymentType === "alipay"
-          ? config.routes.alipay
-          : config.routes.wxpay;
+        : input.paymentType === "usdt"
+          ? "gmpay"
+          : input.paymentType === "alipay"
+            ? config.routes.alipay
+            : config.routes.wxpay;
       if (provider === "alipay" && !config.alipay.enabled) throw new Error("支付宝官方未启用");
       if (provider === "wxpay" && !config.wxpay.enabled) throw new Error("微信支付未启用");
       if (provider === "easypay" && !config.easypay.enabled) throw new Error("易支付未启用");
       if (provider === "stripe" && !config.stripe.enabled) throw new Error("Stripe 未启用");
+      if (provider === "gmpay" && !config.gmpay.enabled) throw new Error("USDT 支付未启用");
 
       const amountCents = Math.round(amount * 100);
       const outTradeNo = createOutTradeNo();
-      const panelUrl = await getPanelPublicUrl(ctx.req);
+      const panelUrl = await resolvePanelUrl(ctx.req);
       if (!panelUrl) throw new Error("请先配置面板公开访问地址");
       const subject = input.planId ? subjectSuffix : `${config.productName} - ${ctx.user.username}`;
       const expiresAt = new Date(Date.now() + config.orderTimeoutMinutes * 60 * 1000);
-      const paymentResult = provider === "stripe"
-        ? await createStripeCheckoutOrder(config, { outTradeNo, subject, amountCents, panelUrl })
-        : provider === "alipay"
-          ? await createAlipayOrder(config, { outTradeNo, subject, amountCents, panelUrl })
-          : provider === "wxpay"
-            ? await createWxpayOrder(config, { outTradeNo, subject, amountCents, panelUrl, clientIp: getClientIp(ctx.req) })
-            : await createEasyPayOrder(config, {
-              outTradeNo,
-              subject,
-              amountCents,
-              paymentType: input.paymentType as "alipay" | "wxpay",
-              panelUrl,
-              clientIp: getClientIp(ctx.req),
-            });
+      const defaultReturnPath: PaymentReturnPath = input.orderType === "test"
+        ? "/payments"
+        : input.planId
+          ? "/store"
+          : DEFAULT_PAYMENT_RETURN_PATH;
+      const requestedReturnPath = normalizePaymentReturnPath(input.returnPath, defaultReturnPath);
+      const returnPath = requestedReturnPath === "/payments" && ctx.user.role !== "admin"
+        ? defaultReturnPath
+        : requestedReturnPath;
+      const notifyUrl = buildPaymentWebhookUrl(panelUrl, provider);
+      const returnUrl = buildPaymentProviderReturnUrl({ panelUrl, provider, returnPath, outTradeNo });
+      const cancelUrl = buildPaymentProviderReturnUrl({ panelUrl, provider, returnPath, outTradeNo, cancelled: true });
 
-      const order = await db.createPaymentOrder({
+      const pendingOrder = await db.createPaymentOrder({
         outTradeNo,
         userId: ctx.user.id,
         provider,
@@ -964,9 +1060,6 @@ export const paymentRouter = router({
         subject,
         amountCents,
         currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
-        tradeNo: paymentResult.tradeNo,
-        payUrl: paymentResult.payUrl,
-        qrCode: paymentResult.qrCode,
         orderType: input.planId ? "plan" : input.orderType || "balance",
         planId: input.planId ?? null,
         discountCodeId,
@@ -974,25 +1067,72 @@ export const paymentRouter = router({
         clientIp: getClientIp(ctx.req),
         expiresAt,
       } as any);
-      appendPanelLog("info", `[Payment] order created user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo}`);
-      return order;
+      if (!pendingOrder) throw new Error("创建本地支付订单失败");
+
+      try {
+        let paymentResult: { tradeNo: string | null; payUrl: string | null; qrCode: string | null };
+        if (provider === "stripe") {
+          paymentResult = await createStripeCheckoutOrder(config, { outTradeNo, subject, amountCents, returnUrl, cancelUrl });
+        } else if (provider === "alipay") {
+          paymentResult = await createAlipayOrder(config, { outTradeNo, subject, amountCents, notifyUrl, returnUrl });
+        } else if (provider === "wxpay") {
+          paymentResult = await createWxpayOrder(config, { outTradeNo, subject, amountCents, notifyUrl, returnUrl, clientIp: getClientIp(ctx.req) });
+        } else if (provider === "gmpay") {
+          const gmPayOrder = await createGmPayOrder(config.gmpay, { outTradeNo, subject, amountCents, notifyUrl, returnUrl });
+          paymentResult = {
+            tradeNo: gmPayOrder.tradeId,
+            payUrl: gmPayOrder.paymentUrl,
+            qrCode: null,
+          };
+        } else {
+          paymentResult = await createEasyPayOrder(config, {
+            outTradeNo,
+            subject,
+            amountCents,
+            paymentType: input.paymentType as "alipay" | "wxpay",
+            notifyUrl,
+            returnUrl,
+            clientIp: getClientIp(ctx.req),
+          });
+        }
+        const order = await db.updatePaymentOrder(outTradeNo, {
+          tradeNo: paymentResult.tradeNo,
+          payUrl: paymentResult.payUrl,
+          qrCode: paymentResult.qrCode,
+        } as any);
+        appendPanelLog("info", `[Payment] order created user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo} return=${returnPath}`);
+        return order || pendingOrder;
+      } catch (error: any) {
+        await db.updatePaymentOrder(outTradeNo, { status: "failed" } as any).catch(() => undefined);
+        appendPanelLog("error", `[Payment] order create failed user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo}: ${error?.message || error}`);
+        throw error;
+      }
     }),
 });
 
 export const paymentCallbackRouter = express.Router();
 
-paymentCallbackRouter.post("/api/payment/webhook/easypay", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
+async function handleEasyPayNotification(req: express.Request, res: express.Response) {
   try {
     const config = await getPaymentConfig();
-    const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
-    const params = parseRawForm(raw);
+    const postRaw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+    const params = req.method === "GET"
+      ? queryToStringRecord(req.query as Record<string, unknown>)
+      : parseRawForm(postRaw);
+    const raw = postRaw || new URLSearchParams(params).toString();
+    if (!config.easypay.enabled || !config.easypay.pkey) throw new Error("EasyPay is not configured");
     const expected = easyPaySign(params, config.easypay.pkey);
     if (!params.sign || expected.toLowerCase() !== params.sign.toLowerCase()) {
       appendPanelLog("warn", "[Payment] EasyPay notify signature failed");
       res.status(400).send("fail");
       return;
     }
-    if (params.trade_status !== "TRADE_SUCCESS") {
+    if (params.pid && params.pid !== config.easypay.pid) {
+      appendPanelLog("warn", `[Payment] EasyPay notify merchant mismatch expected=${config.easypay.pid} got=${params.pid}`);
+      res.status(400).send("fail");
+      return;
+    }
+    if (params.trade_status !== "TRADE_SUCCESS" && params.trade_status !== "TRADE_FINISHED") {
       res.send("success");
       return;
     }
@@ -1011,10 +1151,104 @@ paymentCallbackRouter.post("/api/payment/webhook/easypay", express.raw({ type: "
     appendPanelLog("error", `[Payment] EasyPay notify failed: ${error?.message || error}`);
     res.status(500).send("fail");
   }
+}
+
+async function handleGmPayNotification(req: express.Request, res: express.Response) {
+  try {
+    const config = await getPaymentConfig();
+    const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+    const params = JSON.parse(raw || "{}") as Record<string, string | number | null | undefined>;
+    if (!config.gmpay.secretKey) throw new Error("GM Pay is not configured");
+    if (!verifyGmPaySignature(params, config.gmpay.secretKey)) {
+      appendPanelLog("warn", "[Payment] GM Pay notify signature failed");
+      res.status(400).send("fail");
+      return;
+    }
+    const pid = String(params.pid || "").trim();
+    if (pid !== config.gmpay.pid) {
+      appendPanelLog("warn", `[Payment] GM Pay notify merchant mismatch expected=${config.gmpay.pid} got=${pid}`);
+      res.status(400).send("fail");
+      return;
+    }
+    if (Number(params.status) !== 2) {
+      res.send("ok");
+      return;
+    }
+    const outTradeNo = String(params.order_id || "").trim();
+    const tradeId = String(params.trade_id || "").trim();
+    if (!outTradeNo || !tradeId) throw new Error("missing order_id or trade_id");
+    const order = await db.getPaymentOrderByOutTradeNo(outTradeNo);
+    if (!order) throw new Error(`unknown order=${outTradeNo}`);
+    if (order.provider !== "gmpay") throw new Error(`provider mismatch order=${outTradeNo}`);
+    if (order.tradeNo && order.tradeNo !== tradeId) throw new Error(`trade id mismatch order=${outTradeNo}`);
+    if (String(params.token || "").toUpperCase() !== "USDT") throw new Error(`token mismatch order=${outTradeNo}`);
+    await processPaidNotification(outTradeNo, {
+      provider: "gmpay",
+      tradeNo: tradeId,
+      amountCents: parseAmountCents(params.amount),
+      currency: "CNY",
+      rawNotify: raw,
+    });
+    appendPanelLog("info", `[Payment] GM Pay paid outTradeNo=${outTradeNo} tradeId=${tradeId}`);
+    res.send("ok");
+  } catch (error: any) {
+    appendPanelLog("error", `[Payment] GM Pay notify failed: ${error?.message || error}`);
+    res.status(500).send("fail");
+  }
+}
+
+async function inferPaymentReturnPath(outTradeNo: string): Promise<PaymentReturnPath> {
+  if (!outTradeNo) return DEFAULT_PAYMENT_RETURN_PATH;
+  const order = await db.getPaymentOrderByOutTradeNo(outTradeNo);
+  if (order?.orderType === "test") return "/payments";
+  if (order?.orderType === "plan") return "/subscriptions";
+  return DEFAULT_PAYMENT_RETURN_PATH;
+}
+
+async function handlePaymentBrowserReturn(
+  req: express.Request,
+  res: express.Response,
+  provider: PaymentProvider,
+) {
+  const outTradeNo = firstStringValue(req.query.out_trade_no);
+  const cancelled = firstStringValue(req.query.payment_cancelled) === "1";
+  const query = new URLSearchParams({ payment_return: provider });
+  if (outTradeNo) query.set("out_trade_no", outTradeNo);
+  if (cancelled) query.set("payment_cancelled", "1");
+  try {
+    const returnPath = isPaymentReturnPath(req.query.return_to)
+      ? normalizePaymentReturnPath(req.query.return_to)
+      : await inferPaymentReturnPath(outTradeNo);
+    const panelUrl = await resolvePanelUrl(req);
+    const target = panelUrl
+      ? buildPaymentFrontendReturnUrl({ panelUrl, provider, returnPath, outTradeNo, cancelled })
+      : `${returnPath}?${query.toString()}`;
+    res.redirect(303, target);
+  } catch (error: any) {
+    appendPanelLog("error", `[Payment] ${provider} browser return failed: ${error?.message || error}`);
+    res.redirect(303, `${DEFAULT_PAYMENT_RETURN_PATH}?${query.toString()}`);
+  }
+}
+
+paymentCallbackRouter.get("/api/payment/webhook/easypay", handleEasyPayNotification);
+paymentCallbackRouter.post(
+  "/api/payment/webhook/easypay",
+  express.raw({ type: "*/*", limit: "1mb" }),
+  handleEasyPayNotification,
+);
+
+paymentCallbackRouter.get("/api/payment/return/easypay", async (req, res) => {
+  await handlePaymentBrowserReturn(req, res, "easypay");
 });
 
-paymentCallbackRouter.get("/api/payment/return/easypay", async (_req, res) => {
-  res.redirect("/payments?payment_return=easypay");
+paymentCallbackRouter.post(
+  "/api/payment/webhook/gmpay",
+  express.raw({ type: "*/*", limit: "1mb" }),
+  handleGmPayNotification,
+);
+
+paymentCallbackRouter.get("/api/payment/return/gmpay", async (req, res) => {
+  await handlePaymentBrowserReturn(req, res, "gmpay");
 });
 
 paymentCallbackRouter.post("/api/payment/webhook/alipay", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
@@ -1049,8 +1283,8 @@ paymentCallbackRouter.post("/api/payment/webhook/alipay", express.raw({ type: "*
   }
 });
 
-paymentCallbackRouter.get("/api/payment/return/alipay", async (_req, res) => {
-  res.redirect("/payments?payment_return=alipay");
+paymentCallbackRouter.get("/api/payment/return/alipay", async (req, res) => {
+  await handlePaymentBrowserReturn(req, res, "alipay");
 });
 
 paymentCallbackRouter.post("/api/payment/webhook/wxpay", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
@@ -1095,8 +1329,8 @@ paymentCallbackRouter.post("/api/payment/webhook/wxpay", express.raw({ type: "*/
   }
 });
 
-paymentCallbackRouter.get("/api/payment/return/wxpay", async (_req, res) => {
-  res.redirect("/payments?payment_return=wxpay");
+paymentCallbackRouter.get("/api/payment/return/wxpay", async (req, res) => {
+  await handlePaymentBrowserReturn(req, res, "wxpay");
 });
 
 paymentCallbackRouter.post("/api/payment/webhook/stripe", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
@@ -1134,6 +1368,6 @@ paymentCallbackRouter.post("/api/payment/webhook/stripe", express.raw({ type: "*
   }
 });
 
-paymentCallbackRouter.get("/api/payment/return/stripe", async (_req, res) => {
-  res.redirect("/payments?payment_return=stripe");
+paymentCallbackRouter.get("/api/payment/return/stripe", async (req, res) => {
+  await handlePaymentBrowserReturn(req, res, "stripe");
 });

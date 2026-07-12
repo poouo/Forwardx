@@ -1,4 +1,4 @@
-import type { ComponentType, CSSProperties, ReactNode } from "react";
+import { useEffect, useRef, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +37,7 @@ export function SlidingTabsList<T extends string>({
 }: SlidingTabsListProps<T>) {
   const count = Math.max(1, items.length);
   const activeIndex = Math.max(0, items.findIndex((item) => item.value === activeValue));
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const gapRem = 0.25;
   const indicatorStyle: CSSProperties = {
     left: "0.375rem",
@@ -48,8 +49,13 @@ export function SlidingTabsList<T extends string>({
     minWidth: `max(${Math.max(count * minItemWidthRem, minItemWidthRem)}rem, 100%)`,
   };
 
+  useEffect(() => {
+    const activeTab = scrollerRef.current?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    activeTab?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [activeValue, items.length]);
+
   return (
-    <div className={cn("w-full overflow-x-auto pb-1", className)}>
+    <div ref={scrollerRef} className={cn("w-full overflow-x-auto pb-1", className)}>
       <TabsList
         aria-label={ariaLabel}
         className={cn(

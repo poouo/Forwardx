@@ -41,17 +41,54 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-
-type SourceSnapshot = {
-  data?: unknown;
-  loadedAt: number;
-  error?: string;
-};
+import {
+  failedResourceSnapshot,
+  optimisticResourceData,
+  pluginTaskFailureInfo,
+  type ResourceOperationKind,
+  type ResourceSourceSnapshot,
+} from "./agentResourceState";
 
 type TaskMeta = {
+  key: string;
   actionId: string;
   sourceId?: string;
+  kind: ResourceOperationKind;
+  label?: string;
 };
+
+type TaskPhase = "queueing" | "waiting-agent" | "running" | "applying" | "refreshing" | "success" | "error" | "timeout";
+
+type TaskState = TaskMeta & {
+  hostId: number;
+  phase: TaskPhase;
+  status: "queued" | "running" | "success" | "error" | "timeout";
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+  queueDurationMs?: number;
+  agentDurationMs?: number;
+  endToEndDurationMs?: number;
+  error?: string;
+  advice?: string;
+  detail?: string;
+  processError?: string;
+};
+
+class PluginActionError extends Error {
+  readonly info: ReturnType<typeof pluginTaskFailureInfo>;
+  readonly status: "error" | "timeout";
+  readonly row: any;
+
+  constructor(row: any) {
+    const info = pluginTaskFailureInfo(row);
+    super(info.message);
+    this.name = "PluginActionError";
+    this.info = info;
+    this.status = row?.status === "timeout" ? "timeout" : "error";
+    this.row = row;
+  }
+}
 
 type FormMode = "create" | "edit";
 
@@ -137,6 +174,45 @@ function taskStatusClass(status?: string) {
   return "border-border/60 bg-muted/30 text-muted-foreground";
 }
 
+function taskPhaseLabel(phase?: TaskPhase) {
+  if (phase === "queueing") return "排队中";
+  if (phase === "waiting-agent") return "等待 Agent";
+  if (phase === "running") return "执行中";
+  if (phase === "applying") return "应用中";
+  if (phase === "refreshing") return "刷新中";
+  if (phase === "success") return "成功";
+  if (phase === "timeout") return "超时";
+  if (phase === "error") return "失败";
+  return "";
+}
+
+function durationLabel(milliseconds?: number) {
+  if (milliseconds === undefined || !Number.isFinite(milliseconds)) return "";
+  if (milliseconds < 1000) return `${Math.max(0, Math.round(milliseconds))}ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
+}
+
+function taskTimingLabel(task?: TaskState) {
+  if (!task) return "";
+  return [
+    task.queueDurationMs !== undefined ? `排队 ${durationLabel(task.queueDurationMs)}` : "",
+    task.agentDurationMs !== undefined ? `Agent ${durationLabel(task.agentDurationMs)}` : "",
+    task.endToEndDurationMs !== undefined ? `总计 ${durationLabel(task.endToEndDurationMs)}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function notifyTaskError(error: unknown) {
+  if (error instanceof PluginActionError) {
+    const description = [
+      error.info.advice ? `处理建议: ${error.info.advice}` : "",
+      error.info.detail,
+    ].filter(Boolean).join(" · ");
+    toast.error(error.info.message, description ? { description } : undefined);
+    return;
+  }
+  toast.error(error instanceof Error ? error.message : String(error));
+}
+
 function resourceHostStatus(host: any | null | undefined, state: any | null | undefined) {
   if (!host) return "idle";
   if (!host?.isOnline) return "offline";
@@ -180,11 +256,11 @@ export function AgentResourceManager({
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
   const loadingKeysRef = useRef(new Set<string>());
-  const snapshotsRef = useRef<Record<string, SourceSnapshot>>({});
+  const snapshotsRef = useRef<Record<string, ResourceSourceSnapshot>>({});
   const [selectedHostId, setSelectedHostId] = useState(0);
-  const [snapshots, setSnapshots] = useState<Record<string, SourceSnapshot>>({});
+  const [snapshots, setSnapshots] = useState<Record<string, ResourceSourceSnapshot>>({});
   const [busySources, setBusySources] = useState<string[]>([]);
-  const [activeTasks, setActiveTasks] = useState<TaskMeta[]>([]);
+  const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
   const [selectedRow, setSelectedRow] = useState<any | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>("create");
@@ -199,6 +275,10 @@ export function AgentResourceManager({
     [hosts, selectedHostIds],
   );
   const selectedHost = resourceHosts.find((host) => Number(host.id) === selectedHostId) || null;
+  const activeTasks = useMemo(
+    () => Object.values(taskStates).filter((task) => task.status === "queued" || task.status === "running"),
+    [taskStates],
+  );
   const canRevealSecrets = (plugin?.permissions || plugin?.manifest?.permissions || []).includes("secret:reveal");
   const resourceStatesQuery = trpc.plugins.agentResourceStates.useQuery(
     { pluginId: plugin?.pluginId || "", resourceViewId: view.id },
@@ -232,11 +312,25 @@ export function AgentResourceManager({
       ?? "",
   ).trim();
   const pluginVersionMismatch = !!reportedPluginVersion && reportedPluginVersion !== String(plugin.version || "");
-  const stateFailure = selectedState?.status === "error" || selectedState?.status === "timeout";
+  const latestTaskState = useMemo(() => {
+    const hostTasks = Object.values(taskStates)
+      .filter((task) => task.hostId === selectedHostId)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    return hostTasks.find((task) => task.phase === "refreshing") || hostTasks[0];
+  }, [selectedHostId, taskStates]);
 
   const runActionMutation = trpc.plugins.runAction.useMutation();
   const runActionRef = useRef(runActionMutation.mutateAsync);
   const utilsRef = useRef(utils);
+
+  const patchTaskState = useCallback((key: string, patch: Partial<TaskState>) => {
+    if (!mountedRef.current) return;
+    setTaskStates((current) => {
+      const existing = current[key];
+      if (!existing) return current;
+      return { ...current, [key]: { ...existing, ...patch, updatedAt: Date.now() } };
+    });
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -265,19 +359,28 @@ export function AgentResourceManager({
     `${plugin?.pluginId || "plugin"}:${view.id}:${hostId}:${sourceId}`
   ), [plugin?.pluginId, view.id]);
 
-  const pollTask = useCallback(async (groupId: string, hostId: number, generation: number) => {
+  const pollTask = useCallback(async (
+    groupId: string,
+    hostId: number,
+    generation: number,
+    onProgress: (row: any) => void,
+  ) => {
     const startedAt = Date.now();
-    while (mountedRef.current && generation === generationRef.current && Date.now() - startedAt < 90_000) {
-      const group = await utilsRef.current.plugins.agentActionStatus.fetch({ pluginId: plugin.pluginId, groupId });
+    while (mountedRef.current && generation === generationRef.current && Date.now() - startedAt < 120_000) {
+      const group = await utilsRef.current.client.plugins.agentActionStatus.query({
+        pluginId: plugin.pluginId,
+        groupId,
+      });
       if (!group) throw new Error("插件任务状态已失效");
-      if ((group as any).done) {
-        const row = ((group as any).results || []).find((item: any) => Number(item.hostId) === hostId);
-        if (!row) throw new Error("Agent 未返回该主机的任务结果");
-        if (row.status !== "success") throw new Error(row.error || row.stderr || row.output || taskStatusLabel(row.status));
-        return row.data;
+      const row = ((group as any).results || []).find((item: any) => Number(item.hostId) === hostId);
+      if (row) {
+        onProgress(row);
+        if (row.status === "success") return row;
+        if (row.status === "error" || row.status === "timeout") throw new PluginActionError(row);
       }
-      await sleep(650);
+      await sleep(400);
     }
+    if (!mountedRef.current || generation !== generationRef.current) throw new Error("插件任务已取消");
     throw new Error("等待 Agent 返回插件任务结果超时");
   }, [plugin.pluginId]);
 
@@ -289,7 +392,18 @@ export function AgentResourceManager({
     generation = generationRef.current,
   ) => {
     if (!hostId) throw new Error("请先选择 Agent");
-    setActiveTasks((current) => [...current, meta]);
+    const localStartedAt = Date.now();
+    setTaskStates((current) => ({
+      ...current,
+      [meta.key]: {
+        ...meta,
+        hostId,
+        phase: "queueing",
+        status: "queued",
+        startedAt: localStartedAt,
+        updatedAt: localStartedAt,
+      },
+    }));
     try {
       const response: any = await runActionRef.current({
         pluginId: plugin.pluginId,
@@ -300,17 +414,53 @@ export function AgentResourceManager({
       });
       const groupId = String(response?.result?.groupId || "");
       if (!groupId) throw new Error(response?.message || "插件操作没有返回任务编号");
-      return await pollTask(groupId, hostId, generation);
+      patchTaskState(meta.key, { phase: "waiting-agent", status: "queued" });
+      return await pollTask(groupId, hostId, generation, (row) => {
+        const status = row.status === "success" ? "success" : row.status === "timeout" ? "timeout" : row.status === "error" ? "error" : row.status === "running" ? "running" : "queued";
+        const phase: TaskPhase = status === "success"
+          ? "success"
+          : status === "timeout"
+            ? "timeout"
+            : status === "error"
+              ? "error"
+              : status === "running"
+                ? (meta.kind === "read" || meta.kind === "execute" ? "running" : "applying")
+                : "waiting-agent";
+        patchTaskState(meta.key, {
+          phase,
+          status,
+          finishedAt: status === "success" || status === "error" || status === "timeout" ? Date.now() : undefined,
+          queueDurationMs: Number.isFinite(Number(row.queueDurationMs)) ? Number(row.queueDurationMs) : undefined,
+          agentDurationMs: Number.isFinite(Number(row.agentDurationMs ?? row.durationMs)) ? Number(row.agentDurationMs ?? row.durationMs) : undefined,
+          endToEndDurationMs: Number.isFinite(Number(row.endToEndDurationMs)) ? Number(row.endToEndDurationMs) : undefined,
+        });
+      });
+    } catch (error) {
+      const failure = error instanceof PluginActionError ? error.info : null;
+      const status = error instanceof PluginActionError
+        ? error.status
+        : error instanceof Error && error.message.includes("超时")
+          ? "timeout"
+          : "error";
+      patchTaskState(meta.key, {
+        phase: status,
+        status,
+        finishedAt: Date.now(),
+        endToEndDurationMs: error instanceof PluginActionError && Number.isFinite(Number(error.row?.endToEndDurationMs))
+          ? Number(error.row.endToEndDurationMs)
+          : Date.now() - localStartedAt,
+        error: failure?.message || (error instanceof Error ? error.message : String(error)),
+        advice: failure?.advice,
+        detail: failure?.detail,
+        processError: failure?.processError,
+      });
+      throw error;
     } finally {
       if (mountedRef.current) {
-        setActiveTasks((current) => {
-          const index = current.findIndex((item) => item === meta);
-          return index < 0 ? current : current.filter((_item, itemIndex) => itemIndex !== index);
-        });
         void utilsRef.current.plugins.agentResourceStates.invalidate({ pluginId: plugin.pluginId, resourceViewId: view.id });
       }
     }
-  }, [plugin.pluginId, pollTask, selectedHostId, view.id]);
+  }, [patchTaskState, plugin.pluginId, pollTask, selectedHostId, view.id]);
 
   const loadSource = useCallback(async (
     source: PluginResourceDataSourceDefinition,
@@ -324,7 +474,7 @@ export function AgentResourceManager({
     if (!options.force && current && source.cacheTtlMs && Date.now() - current.loadedAt < source.cacheTtlMs) return current.data;
     if (loadingKeysRef.current.has(key)) return current?.data;
     loadingKeysRef.current.add(key);
-    setBusySources((items) => items.includes(source.id) ? items : [...items, source.id]);
+    setBusySources((items) => items.includes(key) ? items : [...items, key]);
     try {
       const selectionValue = options.selection
         ? valueAtPath(options.selection, source.selectionValuePath || view.rowKey || "id")
@@ -333,31 +483,54 @@ export function AgentResourceManager({
       if (source.selectionInputKey && selectionValue !== undefined) input[source.selectionInputKey] = selectionValue;
       input.resourceId = selectionValue ?? "";
       input.payload = { ...input };
-      const raw = await executeAction(source.actionId, input, { actionId: source.actionId, sourceId: source.id }, hostId, generation);
-      const data = valueAtPath(raw, source.resultPath);
+      const taskResult = await executeAction(source.actionId, input, {
+        key: `${hostId}:source:${source.id}`,
+        actionId: source.actionId,
+        sourceId: source.id,
+        kind: "read",
+        label: source.id,
+      }, hostId, generation);
+      const data = valueAtPath(taskResult?.data, source.resultPath);
       if (mountedRef.current && generation === generationRef.current) {
         setSnapshots((items) => ({ ...items, [key]: { data, loadedAt: Date.now() } }));
       }
       return data;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const failure = error instanceof PluginActionError ? error.info : null;
+      const message = failure?.message || (error instanceof Error ? error.message : String(error));
       if (mountedRef.current && generation === generationRef.current) {
-        setSnapshots((items) => ({ ...items, [key]: { loadedAt: Date.now(), error: message } }));
+        setSnapshots((items) => ({
+          ...items,
+          [key]: failedResourceSnapshot(items[key], {
+            message,
+            advice: failure?.advice || "",
+            detail: failure?.detail || "",
+          }),
+        }));
       }
       throw error;
     } finally {
       loadingKeysRef.current.delete(key);
-      if (mountedRef.current) setBusySources((items) => items.filter((id) => id !== source.id));
+      if (mountedRef.current) setBusySources((items) => items.filter((item) => item !== key));
     }
   }, [executeAction, selectedHostId, sourceCacheKey, view.rowKey]);
 
   const refreshSources = useCallback(async (sourceIds?: string[]) => {
     const wanted = sourceIds?.length ? new Set(sourceIds) : null;
-    const sources = view.sources.filter((source) => !wanted || wanted.has(source.id));
-    const results = await Promise.allSettled(sources.map((source) => loadSource(source, { force: true })));
+    const sources = view.sources.filter((source) => {
+      if (wanted) return wanted.has(source.id) && (source.id !== view.detailSourceId || !!selectedRow);
+      return source.id === view.listSourceId
+        || source.triggers?.includes("onOpen")
+        || source.triggers?.includes("onHostSelected");
+    });
+    const results = await Promise.allSettled(sources.map((source) => loadSource(source, {
+      force: true,
+      selection: source.id === view.detailSourceId ? selectedRow : undefined,
+    })));
     const rejected = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
-    if (rejected) toast.error(rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason));
-  }, [loadSource, view.sources]);
+    if (rejected) notifyTaskError(rejected.reason);
+    return !rejected;
+  }, [loadSource, selectedRow, view.detailSourceId, view.listSourceId, view.sources]);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -371,7 +544,7 @@ export function AgentResourceManager({
     void Promise.allSettled(automaticSources.map((source) => loadSource(source, { force: true, generation }))).then((results) => {
       if (!mountedRef.current || generation !== generationRef.current) return;
       const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
-      if (failed) toast.error(failed.reason instanceof Error ? failed.reason.message : String(failed.reason));
+      if (failed) notifyTaskError(failed.reason);
     });
   }, [loadSource, selectedHost?.agentPluginSupported, selectedHost?.isOnline, selectedHost?.pluginSyncPending, selectedHostId, view.sources]);
 
@@ -379,7 +552,7 @@ export function AgentResourceManager({
   const listSnapshot = listSource ? snapshots[sourceCacheKey(selectedHostId, listSource.id)] : undefined;
   const listValue = valueAtPath(listSnapshot?.data, listSource?.itemsPath);
   const rows = Array.isArray(listValue) ? listValue : Array.isArray(listSnapshot?.data) ? listSnapshot?.data : [];
-  const listLoading = !!listSource && busySources.includes(listSource.id);
+  const listLoading = !!listSource && busySources.includes(sourceCacheKey(selectedHostId, listSource.id));
   const transportBlockedReason = !selectedHost
     ? "请先选择 Agent"
     : !selectedHost.isOnline
@@ -393,11 +566,37 @@ export function AgentResourceManager({
             : "";
   const blockedReason = transportBlockedReason || (pluginVersionMismatch
     ? `Agent 插件版本 ${reportedPluginVersion} 与面板版本 ${plugin.version} 不一致，请等待同步或升级`
-    : stateFailure
-      ? "最近一次 Agent 插件操作失败，请先刷新状态"
-      : "");
-  const refreshDisabled = !!transportBlockedReason || activeTasks.length > 0;
-  const actionsDisabled = !!blockedReason || activeTasks.length > 0;
+    : "");
+  const refreshDisabled = !!blockedReason || listLoading;
+  const actionsDisabled = !!blockedReason;
+  const listHasData = listSnapshot?.data !== undefined;
+  const sourceWarnings = view.sources.flatMap((source) => {
+    const snapshot = snapshots[sourceCacheKey(selectedHostId, source.id)];
+    return snapshot?.error ? [{ source, snapshot }] : [];
+  });
+
+  const operationTaskMeta = useCallback((
+    kind: Exclude<ResourceOperationKind, "read">,
+    operation: PluginResourceOperationDefinition,
+    row?: any,
+  ): TaskMeta => {
+    const resourceId = rowIdentity(row || selectedRow, view) || (kind === "create" ? "new" : "global");
+    return {
+      key: `${selectedHostId}:operation:${kind}:${operation.actionId}:${resourceId}`,
+      actionId: operation.actionId,
+      kind,
+      label: operation.label,
+    };
+  }, [selectedHostId, selectedRow, view]);
+
+  const operationBusy = useCallback((
+    kind: Exclude<ResourceOperationKind, "read">,
+    operation: PluginResourceOperationDefinition,
+    row?: any,
+  ) => {
+    const state = taskStates[operationTaskMeta(kind, operation, row).key];
+    return state?.status === "queued" || state?.status === "running";
+  }, [operationTaskMeta, taskStates]);
 
   const conditionContext = useMemo(() => {
     const sourceValues: Record<string, unknown> = {};
@@ -443,7 +642,7 @@ export function AgentResourceManager({
         const loaded = await loadSource(detailSource, { force: true, selection: row });
         if (loaded && typeof loaded === "object") detail = { ...row, ...(loaded as Record<string, unknown>) };
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : String(error));
+        notifyTaskError(error);
         return;
       }
     }
@@ -477,7 +676,11 @@ export function AgentResourceManager({
     };
   };
 
-  const runOperation = async (operation: PluginResourceOperationDefinition, row?: any) => {
+  const runOperation = async (
+    operation: PluginResourceOperationDefinition,
+    row: any | undefined,
+    kind: Exclude<ResourceOperationKind, "read">,
+  ) => {
     if (operation.confirmRequired) {
       const accepted = await confirm({
         title: operation.label || "确认操作",
@@ -486,18 +689,51 @@ export function AgentResourceManager({
       });
       if (!accepted) return false;
     }
-    setSaving(true);
+    const meta = operationTaskMeta(kind, operation, row);
+    const isFormOperation = kind === "create" || kind === "update";
+    if (isFormOperation) setSaving(true);
     try {
-      await executeAction(operation.actionId, operationInput(row), { actionId: operation.actionId });
+      const taskResult = await executeAction(operation.actionId, operationInput(row), meta);
+      if (kind === "create" || kind === "update" || kind === "delete") {
+        const key = listSource ? sourceCacheKey(selectedHostId, listSource.id) : "";
+        if (key) {
+          setSnapshots((items) => {
+            const snapshot = items[key];
+            if (!snapshot) return items;
+            return {
+              ...items,
+              [key]: {
+                ...snapshot,
+                data: optimisticResourceData({
+                  data: snapshot.data,
+                  itemsPath: listSource?.itemsPath,
+                  rowKey: view.rowKey,
+                  kind,
+                  currentRow: row || selectedRow,
+                  form,
+                  resultData: taskResult?.data,
+                }),
+              },
+            };
+          });
+        }
+      }
       toast.success(`${operation.label || "操作"}成功`);
       const refreshAfter = operation.refreshAfter?.length ? operation.refreshAfter : operation.refreshSources;
-      await refreshSources(refreshAfter?.length ? refreshAfter : [view.listSourceId]);
+      patchTaskState(meta.key, { phase: "refreshing", status: "success" });
+      void refreshSources(refreshAfter?.length ? refreshAfter : [view.listSourceId]).then((refreshed) => {
+        patchTaskState(meta.key, {
+          phase: "success",
+          status: "success",
+          detail: refreshed ? undefined : "写入已成功，后台刷新失败，当前保留已有数据",
+        });
+      });
       return true;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      notifyTaskError(error);
       return false;
     } finally {
-      setSaving(false);
+      if (isFormOperation) setSaving(false);
     }
   };
 
@@ -505,7 +741,7 @@ export function AgentResourceManager({
     if (!validateForm()) return;
     const operation = formMode === "create" ? view.operations?.create : view.operations?.update;
     if (!operation) return;
-    if (await runOperation(operation, selectedRow)) setFormOpen(false);
+    if (await runOperation(operation, selectedRow, formMode === "create" ? "create" : "update")) setFormOpen(false);
   };
 
   const deleteRow = async (row: any) => {
@@ -518,7 +754,7 @@ export function AgentResourceManager({
       tone: "destructive",
     });
     if (!accepted) return;
-    await runOperation({ ...operation, confirmRequired: false }, row);
+    await runOperation({ ...operation, confirmRequired: false }, row, "delete");
   };
 
   const copyValue = async (value: unknown) => {
@@ -676,16 +912,24 @@ export function AgentResourceManager({
                 <p className="truncate text-sm font-semibold">{selectedHost?.name || "请选择主机"}</p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{view.title}</p>
               </div>
+              {latestTaskState && (
+                <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                  <span className={cn(
+                    latestTaskState.status === "error" || latestTaskState.status === "timeout" ? "text-destructive" : "",
+                  )}>{taskPhaseLabel(latestTaskState.phase)}</span>
+                  {taskTimingLabel(latestTaskState) && <span className="tabular-nums">{taskTimingLabel(latestTaskState)}</span>}
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className={taskStatusClass(resourceHostStatus(selectedHost, selectedState))}>
                 {taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}
               </Badge>
               <Button type="button" variant="outline" size="sm" title="刷新" disabled={refreshDisabled} onClick={() => refreshSources()}>
-                {activeTasks.length || busySources.length ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               </Button>
               {view.operations?.create && (
-                <Button type="button" size="sm" className="gap-2" disabled={actionsDisabled} onClick={openCreate}>
+                <Button type="button" size="sm" className="gap-2" disabled={actionsDisabled || operationBusy("create", view.operations.create)} onClick={openCreate}>
                   <Plus className="h-4 w-4" />{view.operations.create.label || "新增"}
                 </Button>
               )}
@@ -699,10 +943,38 @@ export function AgentResourceManager({
             </div>
           )}
 
-          {selectedState?.error && (
+          {sourceWarnings.length > 0 && (
+            <div className="m-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1 break-words">
+                {listHasData ? "刷新失败，当前保留上次成功数据：" : "读取 Agent 数据失败："}
+                {sourceWarnings[0].snapshot.error}
+                {sourceWarnings.length > 1 ? `（另有 ${sourceWarnings.length - 1} 个数据源失败）` : ""}
+                {sourceWarnings[0].snapshot.advice && <span className="mt-1 block text-xs">处理建议：{sourceWarnings[0].snapshot.advice}</span>}
+                {sourceWarnings[0].snapshot.detail && <span className="mt-1 block text-xs opacity-80">{sourceWarnings[0].snapshot.detail}</span>}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 shrink-0 px-2"
+                disabled={!!blockedReason || busySources.includes(sourceCacheKey(selectedHostId, sourceWarnings[0].source.id))}
+                onClick={() => refreshSources([sourceWarnings[0].source.id])}
+              >
+                {busySources.includes(sourceCacheKey(selectedHostId, sourceWarnings[0].source.id)) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span className="ml-1.5">重试</span>
+              </Button>
+            </div>
+          )}
+
+          {latestTaskState && latestTaskState.kind !== "read" && (latestTaskState.status === "error" || latestTaskState.status === "timeout") && (
             <div className="m-3 flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
               <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="break-words">{selectedState.error}</span>
+              <span className="min-w-0 break-words">
+                <span className="block">{latestTaskState.error || "插件操作执行失败"}</span>
+                {latestTaskState.advice && <span className="mt-1 block text-xs">处理建议：{latestTaskState.advice}</span>}
+                {latestTaskState.detail && <span className="mt-1 block text-xs opacity-80">{latestTaskState.detail}</span>}
+              </span>
             </div>
           )}
 
@@ -752,11 +1024,13 @@ export function AgentResourceManager({
                   })}
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      {view.operations?.update && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" title="编辑" disabled={actionsDisabled} onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>}
+                      {view.operations?.update && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" title="编辑" disabled={actionsDisabled || operationBusy("update", view.operations.update, row)} onClick={() => openEdit(row)}>{operationBusy("update", view.operations.update, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}</Button>}
                       {(view.operations?.execute || []).map((operation) => (
-                        <Button key={operation.actionId} type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" title={operation.description || operation.label} disabled={actionsDisabled} onClick={() => runOperation(operation, row)}>{operation.label || "执行"}</Button>
+                        <Button key={operation.actionId} type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" title={operation.description || operation.label} disabled={actionsDisabled || operationBusy("execute", operation, row)} onClick={() => runOperation(operation, row, "execute")}>
+                          {operationBusy("execute", operation, row) && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{operation.label || "执行"}
+                        </Button>
                       ))}
-                      {view.operations?.delete && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="删除" disabled={actionsDisabled} onClick={() => deleteRow(row)}><Trash2 className="h-4 w-4" /></Button>}
+                      {view.operations?.delete && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="删除" disabled={actionsDisabled || operationBusy("delete", view.operations.delete, row)} onClick={() => deleteRow(row)}>{operationBusy("delete", view.operations.delete, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}</Button>}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -765,7 +1039,7 @@ export function AgentResourceManager({
             {!rows.length && (
               <TableRow>
                 <TableCell colSpan={(view.columns || []).length + 1} className="h-28 text-center text-muted-foreground">
-                  {listLoading ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />正在读取 Agent 数据</span> : listSnapshot?.error || view.emptyText || "暂无数据"}
+                  {listLoading ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />正在读取 Agent 数据</span> : view.emptyText || "暂无数据"}
                 </TableCell>
               </TableRow>
             )}

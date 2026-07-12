@@ -23,12 +23,16 @@ const pluginAgentResultQueueCapacity = 256
 const pluginAgentResultReportAttempts = 12
 const pluginAgentManifestSyncWait = 10 * time.Second
 const pluginAgentManifestPollInterval = 100 * time.Millisecond
+const pluginAgentTaskWorkerConcurrency = 4
+const pluginAgentResultWorkerConcurrency = 4
 
 var pluginAgentTaskWorkersOnce sync.Once
 var pluginAgentTaskQueue = make(chan pluginAgentTaskJob, pluginAgentTaskQueueCapacity)
 var pluginAgentResultQueue = make(chan pluginAgentTaskResultJob, pluginAgentResultQueueCapacity)
 var pluginAgentTaskSeenMu sync.Mutex
 var pluginAgentTaskSeen = map[string]time.Time{}
+var pluginAgentTaskLocksMu sync.Mutex
+var pluginAgentTaskLocks = map[string]*sync.RWMutex{}
 var pluginAgentTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type pluginAgentTask struct {
@@ -37,6 +41,7 @@ type pluginAgentTask struct {
 	PluginID         string   `json:"pluginId"`
 	PluginVersion    string   `json:"pluginVersion"`
 	ActionID         string   `json:"actionId"`
+	Intent           string   `json:"intent"`
 	ContextID        string   `json:"contextId,omitempty"`
 	Executor         string   `json:"executor"`
 	Interpreter      string   `json:"interpreter"`
@@ -59,25 +64,29 @@ type pluginAgentTaskResultJob struct {
 }
 
 type pluginAgentTaskResult struct {
-	TaskID     string `json:"taskId"`
-	GroupID    string `json:"groupId"`
-	PluginID   string `json:"pluginId"`
-	ActionID   string `json:"actionId"`
-	Success    bool   `json:"success"`
-	Output     string `json:"output,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	Data       any    `json:"data,omitempty"`
-	ExitCode   *int   `json:"exitCode,omitempty"`
-	TimedOut   bool   `json:"timedOut,omitempty"`
-	DurationMs int    `json:"durationMs"`
-	StartedAt  string `json:"startedAt,omitempty"`
-	FinishedAt string `json:"finishedAt,omitempty"`
-	Error      string `json:"error,omitempty"`
+	TaskID       string `json:"taskId"`
+	GroupID      string `json:"groupId"`
+	PluginID     string `json:"pluginId"`
+	ActionID     string `json:"actionId"`
+	Success      bool   `json:"success"`
+	Output       string `json:"output,omitempty"`
+	Stderr       string `json:"stderr,omitempty"`
+	Data         any    `json:"data,omitempty"`
+	ExitCode     *int   `json:"exitCode,omitempty"`
+	TimedOut     bool   `json:"timedOut,omitempty"`
+	DurationMs   int    `json:"durationMs"`
+	StartedAt    string `json:"startedAt,omitempty"`
+	FinishedAt   string `json:"finishedAt,omitempty"`
+	Error        string `json:"error,omitempty"`
+	ErrorDetail  string `json:"errorDetail,omitempty"`
+	Advice       string `json:"advice,omitempty"`
+	ProcessError string `json:"processError,omitempty"`
 }
 
 type pluginAgentManifest struct {
 	Version       string `json:"version"`
 	PluginVersion string `json:"pluginVersion"`
+	SyncSignature string `json:"syncSignature"`
 }
 
 type pluginAgentTaskOutput struct {
@@ -114,13 +123,29 @@ func (output *pluginAgentTaskOutput) String() string {
 
 func startPluginAgentTaskWorkers() {
 	pluginAgentTaskWorkersOnce.Do(func() {
-		for i := 0; i < 2; i++ {
+		for i := 0; i < pluginAgentTaskWorkerConcurrency; i++ {
 			go pluginAgentTaskWorker()
 		}
-		for i := 0; i < 2; i++ {
+		for i := 0; i < pluginAgentResultWorkerConcurrency; i++ {
 			go pluginAgentTaskResultWorker()
 		}
 	})
+}
+
+func acquirePluginAgentTaskLock(task pluginAgentTask) func() {
+	pluginAgentTaskLocksMu.Lock()
+	lock := pluginAgentTaskLocks[task.PluginID]
+	if lock == nil {
+		lock = &sync.RWMutex{}
+		pluginAgentTaskLocks[task.PluginID] = lock
+	}
+	pluginAgentTaskLocksMu.Unlock()
+	if strings.TrimSpace(task.Intent) == "read" {
+		lock.RLock()
+		return lock.RUnlock
+	}
+	lock.Lock()
+	return lock.Unlock
 }
 
 func pluginAgentTaskWorker() {
@@ -190,6 +215,9 @@ func validatePluginAgentTask(task pluginAgentTask) error {
 	if task.OutputType != "json" && task.OutputType != "text" {
 		return errors.New("不支持的插件输出类型")
 	}
+	if intent := strings.TrimSpace(task.Intent); intent != "" && intent != "read" && intent != "write" && intent != "execute" {
+		return errors.New("不支持的插件操作类型")
+	}
 	if len(task.Arguments) > 16 {
 		return errors.New("插件任务参数过多")
 	}
@@ -239,15 +267,21 @@ func parsePluginAgentManifestVersion(content []byte) (string, error) {
 	return strings.TrimSpace(manifest.Version), nil
 }
 
-func installedPluginVersions() map[string]string {
-	return installedPluginVersionsAt(pluginAgentTaskRoot)
+func installedPluginInventory() (map[string]string, map[string]string) {
+	return installedPluginInventoryAt(pluginAgentTaskRoot)
 }
 
 func installedPluginVersionsAt(root string) map[string]string {
+	versions, _ := installedPluginInventoryAt(root)
+	return versions
+}
+
+func installedPluginInventoryAt(root string) (map[string]string, map[string]string) {
 	versions := map[string]string{}
+	signatures := map[string]string{}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return versions
+		return versions, signatures
 	}
 	for _, entry := range entries {
 		pluginID := strings.TrimSpace(entry.Name())
@@ -258,12 +292,22 @@ func installedPluginVersionsAt(root string) map[string]string {
 		if err != nil {
 			continue
 		}
-		version, err := parsePluginAgentManifestVersion(content)
-		if err == nil && version != "" {
+		var manifest pluginAgentManifest
+		if err := json.Unmarshal(content, &manifest); err != nil {
+			continue
+		}
+		version := strings.TrimSpace(manifest.PluginVersion)
+		if version == "" {
+			version = strings.TrimSpace(manifest.Version)
+		}
+		if version != "" {
 			versions[pluginID] = version
+			if signature := strings.TrimSpace(manifest.SyncSignature); signature != "" {
+				signatures[pluginID] = signature
+			}
 		}
 	}
-	return versions
+	return versions, signatures
 }
 
 func validatePluginAgentTaskVersion(task pluginAgentTask) error {
@@ -316,14 +360,143 @@ func invalidPluginAgentTaskResult(task pluginAgentTask, err error) pluginAgentTa
 	}
 }
 
+func pluginAgentTaskJSONText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case bool, float64, json.Number:
+		return fmt.Sprint(typed)
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(encoded))
+	}
+}
+
+func pluginAgentTaskJSONField(data any, keys ...string) string {
+	object, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range keys {
+		for actualKey, value := range object {
+			if strings.EqualFold(strings.TrimSpace(actualKey), key) {
+				if text := pluginAgentTaskJSONText(value); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	for _, containerKey := range []string{"data", "result", "details"} {
+		for actualKey, value := range object {
+			if strings.EqualFold(strings.TrimSpace(actualKey), containerKey) {
+				if text := pluginAgentTaskJSONField(value, keys...); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func pluginAgentTaskBusinessDetails(data any) (message string, advice string, detail string) {
+	message = pluginAgentTaskJSONField(data,
+		"error", "errorMessage", "message", "detail", "reason",
+		"错误", "错误信息", "原因",
+	)
+	advice = pluginAgentTaskJSONField(data,
+		"suggestion", "advice", "resolution", "hint",
+		"处理建议", "建议", "解决方案",
+	)
+	encoded, err := json.Marshal(data)
+	if err == nil {
+		detail = strings.TrimSpace(string(encoded))
+		if len(detail) > 4000 {
+			detail = detail[:4000] + "..."
+		}
+	}
+	return message, advice, detail
+}
+
+func finalizePluginAgentTaskResult(
+	task pluginAgentTask,
+	result pluginAgentTaskResult,
+	commandErr error,
+	timedOut bool,
+) pluginAgentTaskResult {
+	code := 0
+	if commandErr != nil {
+		code = 1
+		var exitError *exec.ExitError
+		if errors.As(commandErr, &exitError) {
+			code = exitError.ExitCode()
+		}
+		result.ProcessError = commandErr.Error()
+	}
+	result.TimedOut = timedOut
+	result.ExitCode = &code
+	result.Success = commandErr == nil && !timedOut
+	if timedOut {
+		result.Error = "插件操作执行超时"
+	}
+
+	if task.OutputType == "json" {
+		if strings.TrimSpace(result.Output) == "" {
+			if result.Success {
+				result.Success = false
+				result.Error = "插件操作未返回 JSON 数据"
+			}
+		} else {
+			var data any
+			if decodeErr := json.Unmarshal([]byte(result.Output), &data); decodeErr != nil {
+				if result.Success {
+					result.Success = false
+					result.Error = "插件操作返回的 JSON 数据无效: " + decodeErr.Error()
+				}
+			} else {
+				result.Data = data
+				if !result.Success {
+					message, advice, detail := pluginAgentTaskBusinessDetails(data)
+					if message != "" {
+						result.Error = message
+					}
+					result.Advice = advice
+					result.ErrorDetail = detail
+				}
+			}
+		}
+	}
+
+	if !result.Success && result.Error == "" {
+		result.Error = result.ProcessError
+		if result.Error == "" {
+			result.Error = strings.TrimSpace(result.Stderr)
+		}
+		if result.Error == "" {
+			result.Error = strings.TrimSpace(result.Output)
+		}
+		if result.Error == "" {
+			result.Error = "插件操作执行失败"
+		}
+	}
+	if !result.Success && result.Output == "" && result.Stderr != "" {
+		result.Output = result.Stderr
+	}
+	return result
+}
+
 func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
-	started := time.Now()
+	receivedAt := time.Now()
 	result := pluginAgentTaskResult{
 		TaskID:    task.TaskID,
 		GroupID:   task.GroupID,
 		PluginID:  task.PluginID,
 		ActionID:  task.ActionID,
-		StartedAt: started.Format(time.RFC3339Nano),
+		StartedAt: receivedAt.Format(time.RFC3339Nano),
 	}
 	if err := validatePluginAgentTask(task); err != nil {
 		return invalidPluginAgentTaskResult(task, err)
@@ -331,6 +504,8 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 	if err := validatePluginAgentTaskVersion(task); err != nil {
 		return invalidPluginAgentTaskResult(task, err)
 	}
+	releasePluginLock := acquirePluginAgentTaskLock(task)
+	defer releasePluginLock()
 	entryPath := filepath.Join(filepath.Clean(task.WorkingDirectory), filepath.Clean(task.Entry))
 	info, err := os.Stat(entryPath)
 	if err != nil || info.IsDir() {
@@ -352,39 +527,14 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 	stderr := &pluginAgentTaskOutput{limit: pluginAgentTaskOutputLimit}
 	command.Stdout = stdout
 	command.Stderr = stderr
+	executionStartedAt := time.Now()
+	result.StartedAt = executionStartedAt.Format(time.RFC3339Nano)
 	err = command.Run()
 	result.Output = stdout.String()
 	result.Stderr = stderr.String()
-	result.DurationMs = int(time.Since(started).Milliseconds())
+	result.DurationMs = int(time.Since(executionStartedAt).Milliseconds())
 	result.FinishedAt = time.Now().Format(time.RFC3339Nano)
-	result.TimedOut = ctx.Err() == context.DeadlineExceeded
-	code := 0
-	if err != nil {
-		code = 1
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			code = exitError.ExitCode()
-		}
-		result.Error = err.Error()
-	}
-	if result.TimedOut {
-		result.Error = "插件操作执行超时"
-	}
-	result.ExitCode = &code
-	result.Success = err == nil && !result.TimedOut
-	if result.Success && task.OutputType == "json" {
-		if strings.TrimSpace(result.Output) == "" {
-			result.Success = false
-			result.Error = "插件操作未返回 JSON 数据"
-		} else if err := json.Unmarshal([]byte(result.Output), &result.Data); err != nil {
-			result.Success = false
-			result.Error = "插件操作返回的 JSON 数据无效: " + err.Error()
-		}
-	}
-	if !result.Success && result.Output == "" && result.Stderr != "" {
-		result.Output = result.Stderr
-	}
-	return result
+	return finalizePluginAgentTaskResult(task, result, err, ctx.Err() == context.DeadlineExceeded)
 }
 
 func reportPluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {

@@ -1,4 +1,4 @@
-import { Request } from "express";
+import type { Request } from "express";
 import * as db from "./db";
 
 function firstHeaderValue(value: unknown) {
@@ -6,8 +6,17 @@ function firstHeaderValue(value: unknown) {
   return String(raw || "").split(",")[0].trim();
 }
 
-function normalizePanelUrl(value: string) {
-  return String(value || "").trim().replace(/\/+$/, "");
+export function normalizePanelUrl(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) return "";
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
 }
 
 export async function getConfiguredPanelUrl(): Promise<string> {
@@ -28,26 +37,54 @@ function forwardedProto(req: Request) {
   }
   const proto = firstHeaderValue(req.headers["x-forwarded-proto"]).toLowerCase();
   if (proto === "http" || proto === "https") return proto;
-  return req.protocol || "http";
+  return req.protocol === "https" ? "https" : "http";
 }
 
 function forwardedHost(req: Request) {
-  return firstHeaderValue(req.headers["x-forwarded-host"]) || req.get("host") || "";
+  const host = firstHeaderValue(req.headers["x-forwarded-host"]) || req.get("host") || "";
+  if (!host || /[\s/?#\\@]/.test(host)) return "";
+  return host;
 }
 
-export async function resolvePanelUrl(req: Request): Promise<string> {
-  const configured = await getConfiguredPanelUrl();
+function forwardedPrefix(req: Request) {
+  const prefix = firstHeaderValue(req.headers["x-forwarded-prefix"]);
+  if (!prefix || prefix === "/") return "";
+  if (!prefix.startsWith("/") || /[?#\\\s]/.test(prefix)) return "";
+  try {
+    const segments = decodeURIComponent(prefix).split("/");
+    if (segments.some((segment) => segment === "." || segment === "..")) return "";
+  } catch {
+    return "";
+  }
+  return prefix.replace(/\/+$/, "");
+}
+
+export function resolveRequestPanelUrl(req: Request, configuredPanelUrl = ""): string {
+  const configured = normalizePanelUrl(configuredPanelUrl);
   if (configured) return configured;
 
   const proto = forwardedProto(req);
   const host = forwardedHost(req);
-  if (!host) return `${req.protocol}://${req.get("host")}`;
+  if (!host) return "";
 
   const forwardedPort = firstHeaderValue(req.headers["x-forwarded-port"]);
+  const validForwardedPort = /^\d{1,5}$/.test(forwardedPort) && Number(forwardedPort) > 0 && Number(forwardedPort) <= 65535
+    ? forwardedPort
+    : "";
   const hasPort = /^\[[^\]]+\]:\d+$/.test(host) || /^[^:]+:\d+$/.test(host);
-  const defaultPort = (proto === "https" && forwardedPort === "443") || (proto === "http" && forwardedPort === "80");
-  const hostWithPort = !hasPort && forwardedPort && !defaultPort ? `${host}:${forwardedPort}` : host;
-  return `${proto}://${hostWithPort}`.replace(/\/+$/, "");
+  const defaultPort = (proto === "https" && validForwardedPort === "443") || (proto === "http" && validForwardedPort === "80");
+  const hostWithPort = !hasPort && validForwardedPort && !defaultPort ? `${host}:${validForwardedPort}` : host;
+  try {
+    const url = new URL(`${proto}://${hostWithPort}`);
+    url.pathname = forwardedPrefix(req) || "/";
+    return normalizePanelUrl(url.toString());
+  } catch {
+    return "";
+  }
+}
+
+export async function resolvePanelUrl(req: Request): Promise<string> {
+  return resolveRequestPanelUrl(req, await getConfiguredPanelUrl());
 }
 
 export async function resolveAgentAdvertisedPanelUrl(): Promise<string> {

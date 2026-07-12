@@ -64,6 +64,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
 import { getAgentPluginInventory } from "../agentPluginInventory";
+import { pushAgentRefresh } from "../agentEvents";
 import { mapWithConcurrency } from "../asyncPool";
 import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup, type PluginAgentTaskGroup } from "../pluginAgentTasks";
 import { isFreshHostHeartbeat } from "./hostRepository";
@@ -105,6 +106,7 @@ const BUNDLED_PLUGIN_ROOT = path.resolve(process.cwd(), "plugins");
 const MAX_WHITELIST_USAGE_HOSTS = 256;
 const MAX_WHITELIST_USAGE_ASSETS = 16;
 const MAX_WHITELIST_USAGE_SYNC_BYTES = 1024 * 1024;
+const PLUGIN_SYNC_ENCODED_CHUNK_BYTES = 48 * 1024;
 const OFFICIAL_STORE_CACHE_TTL_MS = 10 * 60 * 1000;
 const PLUGIN_WARN_THROTTLE_MS = 5 * 60 * 1000;
 const PACKAGE_ASSET_EXTENSIONS = new Set([
@@ -274,6 +276,78 @@ function normalizeUsageStorageKey(value: unknown) {
 function hostAssetSyncDir(pluginId: string, view?: PluginUsageViewDefinition | null) {
   void view;
   return `${PLUGIN_HOST_ASSET_ROOT}/${assertPluginId(pluginId)}`;
+}
+
+type PluginHostSyncFile = {
+  source: string;
+  sha256: string;
+  size: number;
+  content: string;
+};
+
+function pluginHostSyncFiles(
+  usageView: PluginUsageViewDefinition,
+  usage: HostAssetSyncUsageConfig,
+  assetRows: any[],
+) {
+  const allAssetsMode = usageViewAssetMode(usageView) === "all-plugin-assets";
+  const byPath = new Map<string, any>(assetRows.map((asset: any) => [String(asset?.path || ""), asset]));
+  const selectedRows = allAssetsMode
+    ? assetRows
+      .filter((asset: any) => isHostSyncAssetCandidate(String(asset?.path || ""), Number(asset?.size || 0)))
+      .sort((a: any, b: any) => String(a?.path || "").localeCompare(String(b?.path || ""), "zh-Hans-CN"))
+    : usage.assetPaths.flatMap((assetPath) => {
+      const asset = byPath.get(assetPath);
+      return asset ? [asset] : [];
+    });
+  let totalBytes = 0;
+  const skippedPaths: string[] = [];
+  const files: PluginHostSyncFile[] = [];
+  for (const asset of selectedRows) {
+    const source = String(asset?.path || "");
+    const hasContent = typeof asset?.content === "string";
+    const content = hasContent ? String(asset.content) : "";
+    const size = hasContent ? Buffer.byteLength(content, "utf8") : Math.max(0, Number(asset?.size || 0));
+    if (!source || size <= 0) continue;
+    if (totalBytes + size > MAX_WHITELIST_USAGE_SYNC_BYTES) {
+      skippedPaths.push(source);
+      continue;
+    }
+    const storedSha256 = String(asset?.sha256 || "").trim().toLowerCase();
+    const contentSha256 = /^[a-f0-9]{64}$/.test(storedSha256)
+      ? storedSha256
+      : hasContent
+        ? sha256(content)
+        : "";
+    if (!contentSha256) continue;
+    totalBytes += size;
+    files.push({
+      source,
+      size,
+      sha256: contentSha256,
+      content,
+    });
+  }
+  return { files, skippedPaths };
+}
+
+function pluginHostSyncSignature(
+  pluginId: string,
+  usageView: PluginUsageViewDefinition,
+  usage: HostAssetSyncUsageConfig,
+  targetDir: string,
+  files: PluginHostSyncFile[],
+) {
+  return sha256(JSON.stringify({
+    pluginId,
+    usageViewId: usageView.id,
+    operation: usage.operation || defaultUsageOperation(usageView),
+    fieldValues: usage.fieldValues || {},
+    note: usage.note || "",
+    updatedAt: usage.updatedAt || "",
+    targetDir,
+    files: files.map(({ source, sha256: fileSha256, size }) => ({ source, sha256: fileSha256, size })),
+  }));
 }
 
 function firstHostAssetSyncView(manifest?: ForwardxPluginManifest) {
@@ -2020,7 +2094,10 @@ export async function syncPluginAgentActionState(pluginId: string, groupId: stri
       status: result.status === "success" && pluginAgentResultEffective(result.data) ? "effective" : result.status,
       dataJson: pluginAgentStateData(result.data),
       output: String(result.output || "").slice(0, 64 * 1024) || null,
-      error: String(result.error || result.stderr || "").slice(0, 8 * 1024) || null,
+      error: [
+        result.error || result.errorDetail || result.processError || result.stderr || "",
+        result.advice ? `处理建议: ${result.advice}` : "",
+      ].filter(Boolean).join("\n").slice(0, 8 * 1024) || null,
       startedAt: result.startedAt ? new Date(result.startedAt) : null,
       finishedAt: result.finishedAt ? new Date(result.finishedAt) : null,
       updatedAt: nowDate(),
@@ -2282,7 +2359,14 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
       lastHeartbeat: hosts.lastHeartbeat,
       agentVersion: hosts.agentVersion,
     }).from(hosts),
-    db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, id)),
+    db.select({
+      path: pluginAssets.path,
+      contentType: pluginAssets.contentType,
+      size: pluginAssets.size,
+      sha256: pluginAssets.sha256,
+      createdAt: pluginAssets.createdAt,
+      updatedAt: pluginAssets.updatedAt,
+    }).from(pluginAssets).where(eq(pluginAssets.pluginId, id)),
   ]);
   const allAssetsMode = usageViewAssetMode(usageView) === "all-plugin-assets";
   const assets = assetRows
@@ -2306,6 +2390,10 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
   const usageUpdatedAt = usage.updatedAt ? new Date(usage.updatedAt).getTime() : 0;
   const pluginUpdatedAt = plugin.updatedAt ? new Date(plugin.updatedAt).getTime() : 0;
   const pluginSyncRequiredAt = Math.max(usageUpdatedAt, pluginUpdatedAt);
+  const desiredSyncFiles = pluginHostSyncFiles(usageView, usage, assetRows).files;
+  const desiredSyncSignature = usage.enabled && desiredSyncFiles.length > 0
+    ? pluginHostSyncSignature(plugin.pluginId, usageView, usage, hostAssetSyncDir(plugin.pluginId, usageView), desiredSyncFiles)
+    : "";
   return {
     plugin,
     usageView,
@@ -2317,6 +2405,8 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
       const agentPluginVersion = agentPluginInventory?.versions.get(plugin.pluginId) || null;
       const pluginSyncPending = agentPluginInventory
         ? agentPluginVersion !== plugin.version
+          || (agentPluginInventory.supportsSyncSignatures
+            && agentPluginInventory.syncSignatures.get(plugin.pluginId) !== desiredSyncSignature)
         : pluginSyncRequiredAt > 0 && (!Number.isFinite(lastHeartbeatAt) || lastHeartbeatAt < pluginSyncRequiredAt);
       return {
         ...host,
@@ -2399,6 +2489,14 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   (manifest as any).settingsValues = settings;
   await db.update(plugins).set({ manifestJson: JSON.stringify(manifest, null, 2), updatedAt: nowDate(), lastError: null } as any)
     .where(eq(plugins.pluginId, id));
+  const refreshHostIds = new Set([
+    ...(previousUsage.enabled ? previousUsage.hostIds : []),
+    ...(nextUsage.enabled ? nextUsage.hostIds : []),
+    ...(nextUsage.cleanupHostIds || []),
+  ]);
+  for (const hostId of refreshHostIds) {
+    pushAgentRefresh(hostId, `plugin-${id}-usage-saved`, { urgent: true });
+  }
   return getPluginUsage(id, usageView.id);
 }
 
@@ -2416,13 +2514,42 @@ function safeAgentRelativePath(assetPath: string) {
   return clean;
 }
 
-function writeTextFileCommands(targetPath: string, content: string) {
-  const encoded = Buffer.from(content, "utf8").toString("base64");
+export function buildPluginTextFileCommands(targetPath: string, content: string) {
+  const encoded = zlib.gzipSync(Buffer.from(content, "utf8"), {
+    level: zlib.constants.Z_BEST_SPEED,
+  }).toString("base64");
   const targetDir = path.posix.dirname(targetPath);
+  const encodedPath = `${targetPath}.gz.b64.tmp`;
+  const decodedPath = `${targetPath}.tmp`;
+  const chunks: string[] = [];
+  for (let offset = 0; offset < encoded.length; offset += PLUGIN_SYNC_ENCODED_CHUNK_BYTES) {
+    chunks.push(encoded.slice(offset, offset + PLUGIN_SYNC_ENCODED_CHUNK_BYTES));
+  }
   return [
     `mkdir -p ${shellQuote(targetDir)}`,
-    `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(targetPath)}`,
+    `: > ${shellQuote(encodedPath)}`,
+    ...chunks.map((chunk) => `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(encodedPath)}`),
+    `base64 -d < ${shellQuote(encodedPath)} | gzip -dc > ${shellQuote(decodedPath)} && mv -f ${shellQuote(decodedPath)} ${shellQuote(targetPath)} && rm -f ${shellQuote(encodedPath)}`,
   ];
+}
+
+export function buildPluginDirectorySwapCommand(input: {
+  targetDir: string;
+  stagingDir: string;
+  backupDir: string;
+  expectedFiles: Array<{ path: string; sha256: string }>;
+}) {
+  const checks = input.expectedFiles.flatMap((file) => [
+    `test -f ${shellQuote(file.path)}`,
+    `test "$(sha256sum ${shellQuote(file.path)} | cut -c 1-64)" = ${shellQuote(file.sha256)}`,
+  ]);
+  return [
+    "set -e",
+    ...checks,
+    `rm -rf ${shellQuote(input.backupDir)}`,
+    `if [ -e ${shellQuote(input.targetDir)} ]; then mv ${shellQuote(input.targetDir)} ${shellQuote(input.backupDir)}; fi`,
+    `if mv ${shellQuote(input.stagingDir)} ${shellQuote(input.targetDir)}; then rm -rf ${shellQuote(input.backupDir)} || true; else status=$?; rm -rf ${shellQuote(input.targetDir)}; if [ -e ${shellQuote(input.backupDir)} ]; then mv ${shellQuote(input.backupDir)} ${shellQuote(input.targetDir)}; fi; exit "$status"; fi`,
+  ].join("\n");
 }
 
 function normalizeWhitespaceList(value: unknown) {
@@ -2539,8 +2666,17 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
   if (!db) return [];
   const currentHostId = Number(hostId);
   if (!Number.isInteger(currentHostId) || currentHostId <= 0) return [];
+  const reportedPluginInventory = getAgentPluginInventory(currentHostId);
   const pluginRows = await db.select().from(plugins);
-  const tasks: Array<{ pluginId: string; pluginVersion: string; usageViewId: string; forwardType: string; commands: string[] }> = [];
+  const tasks: Array<{
+    pluginId: string;
+    pluginVersion: string;
+    usageViewId: string;
+    forwardType: string;
+    syncSignature: string;
+    expectAbsent: boolean;
+    commands: string[];
+  }> = [];
   for (const row of pluginRows) {
     const plugin = normalizePluginRow(row);
     const usageView = firstHostAssetSyncView(plugin.manifest);
@@ -2551,6 +2687,8 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
     const hasUsageConfig = usage.enabled || usage.hostIds.length > 0 || usage.assetPaths.length > 0 || !!usage.note || !!usage.cleanupHostIds?.length;
     if (!hasUsageConfig) continue;
     const targetDir = hostAssetSyncDir(plugin.pluginId, usageView);
+    const pluginRootDir = path.posix.dirname(targetDir);
+    const backupDir = `${pluginRootDir}/.previous-${plugin.pluginId}`;
     const hasSyncTargets = allAssetsMode || usage.assetPaths.length > 0;
     const isChinaRegionWhitelist = plugin.pluginId === "china-region-whitelist";
     const shouldCleanup = usage.cleanupHostIds?.includes(currentHostId)
@@ -2559,61 +2697,40 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       const commands = isChinaRegionWhitelist
         ? [
             `if [ -x ${shellQuote(`${targetDir}/forwardx-agent-run.sh`)} ]; then CN_CONFIG_FILE=/etc/china-region-whitelist.conf bash ${shellQuote(`${targetDir}/forwardx-agent-run.sh`)} clear 2>/dev/null || true; fi`,
-            `rm -rf ${shellQuote(targetDir)} 2>/dev/null || true`,
+            `rm -rf ${shellQuote(targetDir)} ${shellQuote(backupDir)} 2>/dev/null || true`,
+            `find ${shellQuote(pluginRootDir)} -mindepth 1 -maxdepth 1 -type d -name ${shellQuote(`.sync-${plugin.pluginId}-*`)} -exec rm -rf {} + 2>/dev/null || true`,
           ]
-        : [`rm -rf ${shellQuote(targetDir)} 2>/dev/null || true`];
+        : [
+            `rm -rf ${shellQuote(targetDir)} ${shellQuote(backupDir)} 2>/dev/null || true`,
+            `find ${shellQuote(pluginRootDir)} -mindepth 1 -maxdepth 1 -type d -name ${shellQuote(`.sync-${plugin.pluginId}-*`)} -exec rm -rf {} + 2>/dev/null || true`,
+          ];
       tasks.push({
         pluginId: plugin.pluginId,
         pluginVersion: plugin.version,
         usageViewId: usageView.id,
         forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`,
+        syncSignature: "",
+        expectAbsent: true,
         commands,
       });
       continue;
     }
     if (plugin.status !== "enabled" || !usage.enabled || !usage.hostIds.includes(currentHostId) || !hasSyncTargets) continue;
     const rows = await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, plugin.pluginId));
-    const byPath = new Map<string, any>(rows.map((asset: any) => [String(asset.path || ""), asset]));
-    let totalBytes = 0;
-    const skippedPaths: string[] = [];
     const preservePaths = allAssetsMode || usageView.preserveAssetPaths === true;
-    const selectedAssetRows: any[] = allAssetsMode
-      ? rows
-        .filter((asset: any) => isHostSyncAssetCandidate(String(asset.path || ""), Number(asset.size || 0)))
-        .sort((a: any, b: any) => String(a.path || "").localeCompare(String(b.path || ""), "zh-Hans-CN"))
-      : usage.assetPaths.flatMap((assetPath: string) => {
-          const asset = byPath.get(assetPath);
-          return asset ? [asset] : [];
-        });
-    const files: Array<{ source: string; fileName: string; sha256: string; size: number; content: string }> = selectedAssetRows.flatMap((asset: any) => {
-      const assetPath = String(asset?.path || "");
-      const content = String(asset?.content || "");
-      if (!asset || !content) return [];
-      const size = Buffer.byteLength(content, "utf8");
-      if (totalBytes + size > MAX_WHITELIST_USAGE_SYNC_BYTES) {
-        skippedPaths.push(assetPath);
-        return [];
-      }
-      totalBytes += size;
-      return [{
-        source: assetPath,
-        fileName: preservePaths ? safeAgentRelativePath(assetPath) : safeAgentPluginAssetName(assetPath),
-        sha256: String(asset.sha256 || sha256(content)),
-        size,
-        content,
-      }];
-    });
-    if (files.length === 0) continue;
-    const operationSignature = sha256(JSON.stringify({
-      pluginId: plugin.pluginId,
-      usageViewId: usageView.id,
-      operation: usage.operation || defaultUsageOperation(usageView),
-      fieldValues: usage.fieldValues || {},
-      note: usage.note || "",
-      updatedAt: usage.updatedAt || "",
-      targetDir,
-      files: files.map(({ source, sha256, size }) => ({ source, sha256, size })),
+    const syncFiles = pluginHostSyncFiles(usageView, usage, rows);
+    const skippedPaths = syncFiles.skippedPaths;
+    const files = syncFiles.files.map((file) => ({
+      ...file,
+      fileName: preservePaths ? safeAgentRelativePath(file.source) : safeAgentPluginAssetName(file.source),
     }));
+    if (files.length === 0) continue;
+    const operationSignature = pluginHostSyncSignature(plugin.pluginId, usageView, usage, targetDir, files);
+    if (reportedPluginInventory?.supportsSyncSignatures
+      && reportedPluginInventory.versions.get(plugin.pluginId) === plugin.version
+      && reportedPluginInventory.syncSignatures.get(plugin.pluginId) === operationSignature) {
+      continue;
+    }
     const manifest = {
       id: plugin.pluginId,
       version: plugin.version,
@@ -2627,32 +2744,62 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       updatedAt: usage.updatedAt || "",
       files: files.map(({ content: _content, ...file }: { source: string; fileName: string; sha256: string; size: number; content: string }) => file),
       skipped: skippedPaths,
+      syncSignature: operationSignature,
     };
+    const stagingDir = `${pluginRootDir}/.sync-${plugin.pluginId}-${operationSignature.slice(0, 20)}`;
     const commands = [
-      `mkdir -p ${shellQuote(targetDir)}`,
-      `find ${shellQuote(targetDir)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
+      `mkdir -p ${shellQuote(pluginRootDir)}`,
+      `rm -rf ${shellQuote(stagingDir)}`,
+      `mkdir -p ${shellQuote(stagingDir)}`,
     ];
+    const expectedFiles: Array<{ path: string; sha256: string }> = [];
     for (const file of files) {
-      const target = `${targetDir}/${file.fileName}`;
-      commands.push(...writeTextFileCommands(target, file.content));
+      const target = `${stagingDir}/${file.fileName}`;
+      commands.push(...buildPluginTextFileCommands(target, file.content));
+      expectedFiles.push({ path: target, sha256: file.sha256 });
     }
-    const manifestEncoded = Buffer.from(JSON.stringify(manifest, null, 2), "utf8").toString("base64");
-    const manifestPath = `${targetDir}/manifest.json`;
-    const manifestTempPath = `${manifestPath}.tmp`;
-    commands.push(`printf '%s' ${shellQuote(manifestEncoded)} | base64 -d > ${shellQuote(manifestTempPath)} && mv -f ${shellQuote(manifestTempPath)} ${shellQuote(manifestPath)}`);
+    let generatedConfig = "";
     if (isChinaRegionWhitelist) {
-      const config = buildChinaRegionWhitelistConfig(usage, targetDir);
-      commands.push(...writeTextFileCommands(`${targetDir}/forwardx-generated.conf`, config));
+      generatedConfig = buildChinaRegionWhitelistConfig(usage, targetDir);
+      const generatedConfigPath = `${stagingDir}/forwardx-generated.conf`;
+      commands.push(...buildPluginTextFileCommands(generatedConfigPath, generatedConfig));
+      expectedFiles.push({ path: generatedConfigPath, sha256: sha256(generatedConfig) });
+    }
+    const manifestContent = JSON.stringify(manifest, null, 2);
+    const manifestSha256 = sha256(manifestContent);
+    const manifestPath = `${stagingDir}/manifest.json`;
+    commands.push(...buildPluginTextFileCommands(manifestPath, manifestContent));
+    expectedFiles.push({ path: manifestPath, sha256: manifestSha256 });
+    commands.push(buildPluginDirectorySwapCommand({
+      targetDir,
+      stagingDir,
+      backupDir,
+      expectedFiles,
+    }));
+    if (isChinaRegionWhitelist) {
+      const postSyncCommands = [
+        "set -e",
+        `test "$(sha256sum ${shellQuote(`${targetDir}/manifest.json`)} | cut -c 1-64)" = ${shellQuote(manifestSha256)}`,
+      ];
       const hasInteractiveResources = (plugin.manifest.resourceViews || []).some((view: PluginResourceViewDefinition) => view.usageViewId === usageView.id);
       if (hasInteractiveResources) {
-        commands.push(`if [ ! -s /etc/china-region-whitelist.conf ]; then cp ${shellQuote(`${targetDir}/forwardx-generated.conf`)} /etc/china-region-whitelist.conf; fi`);
-        commands.push(`echo ${shellQuote("[ForwardX Plugin] china-region-whitelist assets synced; per-host config preserved")}`);
+        postSyncCommands.push(`if [ ! -s /etc/china-region-whitelist.conf ]; then cp ${shellQuote(`${targetDir}/forwardx-generated.conf`)} /etc/china-region-whitelist.conf; fi`);
+        postSyncCommands.push(`echo ${shellQuote("[ForwardX Plugin] china-region-whitelist assets synced; per-host config preserved")}`);
       } else {
-        commands.push(...writeTextFileCommands("/etc/china-region-whitelist.conf", config));
-        commands.push(...buildChinaRegionWhitelistOperationCommands(usage, targetDir, operationSignature));
+        postSyncCommands.push(...buildPluginTextFileCommands("/etc/china-region-whitelist.conf", generatedConfig));
+        postSyncCommands.push(...buildChinaRegionWhitelistOperationCommands(usage, targetDir, operationSignature));
       }
+      commands.push(postSyncCommands.join("\n"));
     }
-    tasks.push({ pluginId: plugin.pluginId, pluginVersion: plugin.version, usageViewId: usageView.id, forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`, commands });
+    tasks.push({
+      pluginId: plugin.pluginId,
+      pluginVersion: plugin.version,
+      usageViewId: usageView.id,
+      forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`,
+      syncSignature: operationSignature,
+      expectAbsent: false,
+      commands,
+    });
   }
   return tasks;
 }
@@ -3382,13 +3529,27 @@ async function executePluginAgentAction(
   if (!usage.enabled || usage.hostIds.length === 0) throw new Error("请先在插件使用页启用配置并选择生效主机");
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const hostRows = await db.select({
-    id: hosts.id,
-    name: hosts.name,
-    agentVersion: hosts.agentVersion,
-    isOnline: hosts.isOnline,
-    lastHeartbeat: hosts.lastHeartbeat,
-  }).from(hosts);
+  const [hostRows, syncAssetRows] = await Promise.all([
+    db.select({
+      id: hosts.id,
+      name: hosts.name,
+      agentVersion: hosts.agentVersion,
+      isOnline: hosts.isOnline,
+      lastHeartbeat: hosts.lastHeartbeat,
+    }).from(hosts),
+    db.select({
+      path: pluginAssets.path,
+      size: pluginAssets.size,
+      sha256: pluginAssets.sha256,
+    }).from(pluginAssets).where(eq(pluginAssets.pluginId, plugin.pluginId)),
+  ]);
+  const expectedSyncSignature = pluginHostSyncSignature(
+    plugin.pluginId,
+    usageView,
+    usage,
+    hostAssetSyncDir(plugin.pluginId, usageView),
+    pluginHostSyncFiles(usageView, usage, syncAssetRows).files,
+  );
   const selectedHostIds = new Set(usage.hostIds);
   const requestedHostIds = normalizePositiveIds(options.hostIds);
   if (action.agent.target === "selected-hosts" && requestedHostIds.length === 0) {
@@ -3420,7 +3581,9 @@ async function executePluginAgentAction(
     const inventory = getAgentPluginInventory(host.id);
     if (!inventory) return [];
     const actualVersion = inventory.versions.get(plugin.pluginId) || "未同步";
-    return actualVersion === plugin.version ? [] : [{ ...host, actualVersion }];
+    const signatureMatches = !inventory.supportsSyncSignatures
+      || inventory.syncSignatures.get(plugin.pluginId) === expectedSyncSignature;
+    return actualVersion === plugin.version && signatureMatches ? [] : [{ ...host, actualVersion }];
   });
   if (unsyncedHosts.length > 0) {
     const names = unsyncedHosts.slice(0, 5)
@@ -3442,6 +3605,7 @@ async function executePluginAgentAction(
     pluginId: plugin.pluginId,
     pluginVersion: plugin.version,
     actionId: action.id,
+    intent: action.intent || "execute",
     contextId: resourceViewId,
     executor: action.agent.executor,
     interpreter: action.agent.interpreter || "bash",
@@ -3453,6 +3617,9 @@ async function executePluginAgentAction(
     hosts: targetHosts,
   });
   await rememberPluginAgentTaskGroup(group);
+  for (const host of targetHosts) {
+    pushAgentRefresh(Number(host.id), `plugin-${plugin.pluginId}-action-${action.id}`, { urgent: true });
+  }
   return {
     ok: true,
     message: `已向 ${targetHosts.length} 台主机下发插件操作`,

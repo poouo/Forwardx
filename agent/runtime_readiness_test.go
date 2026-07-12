@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +80,129 @@ func TestGostRuntimeReadinessCacheSeparatesMainAndTunnelScopes(t *testing.T) {
 	tunnelKey := desiredRuntimeReadyCacheKey(61082, "tcp", desiredGostTunnelRuntimeScope)
 	if mainKey == tunnelKey {
 		t.Fatalf("runtime scopes share cache key %q", mainKey)
+	}
+}
+
+func TestLocalRuleManagedServiceGroupsUseProtocolQualifiedNames(t *testing.T) {
+	tests := []struct {
+		name        string
+		forwardType string
+		protocol    string
+		want        [][]string
+	}{
+		{
+			name:        "realm tcp with legacy fallback",
+			forwardType: "realm",
+			protocol:    "tcp",
+			want:        [][]string{{"forwardx-realm-tcp-12001", "forwardx-realm-12001"}},
+		},
+		{
+			name:        "socat udp protocol service",
+			forwardType: "socat",
+			protocol:    "udp",
+			want:        [][]string{{"forwardx-socat-udp-12001"}},
+		},
+		{
+			name:        "socat both requires both services",
+			forwardType: "socat",
+			protocol:    "both",
+			want: [][]string{
+				{"forwardx-socat-tcp-12001"},
+				{"forwardx-socat-udp-12001"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := localRuleManagedServiceGroups(tt.forwardType, 12001, tt.protocol)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("service groups = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagedPortCleanupCoversAllRealmServiceVariants(t *testing.T) {
+	commands := strings.Join(managedPortCleanupCmds("12002"), "\n")
+	for _, name := range []string{
+		"forwardx-realm-12002",
+		"forwardx-realm-tcp-12002",
+		"forwardx-realm-udp-12002",
+		"forwardx-realm-both-12002",
+	} {
+		if !strings.Contains(commands, name) {
+			t.Fatalf("managed cleanup does not include %s", name)
+		}
+	}
+}
+
+func TestDesiredRuleSnapshotKeepsDisjointProtocolsOnSamePort(t *testing.T) {
+	rememberDesiredRunningRules([]runningRule{
+		{RuleID: 101, SourcePort: 12003, Protocol: "tcp", ForwardType: "socat", TargetIP: "192.0.2.10", TargetPort: 80},
+		{RuleID: 102, SourcePort: 12003, Protocol: "udp", ForwardType: "socat", TargetIP: "192.0.2.11", TargetPort: 53},
+	})
+	t.Cleanup(func() { rememberDesiredRunningRules(nil) })
+	states := desiredRunningRuleStatesSnapshot()
+	if len(states) != 2 {
+		t.Fatalf("desired state count = %d, want 2", len(states))
+	}
+	seen := map[string]bool{}
+	for _, state := range states {
+		seen[state.Protocol] = true
+	}
+	if !seen["tcp"] || !seen["udp"] {
+		t.Fatalf("desired protocol states = %#v", seen)
+	}
+}
+
+func TestMergeDesiredRuleStatesOnlyFillsDisjointProtocolLane(t *testing.T) {
+	reported := []localRuleState{{Port: "12003", RuleID: 101, Protocol: "tcp"}}
+	desired := []localRuleState{
+		{Port: "12003", RuleID: 102, Protocol: "udp"},
+		{Port: "12003", RuleID: 103, Protocol: "tcp"},
+		{Port: "12004", RuleID: 104, Protocol: "udp"},
+	}
+	merged := mergeDesiredDisjointRuleStates(reported, desired)
+	if len(merged) != 2 {
+		t.Fatalf("merged state count = %d, want 2: %#v", len(merged), merged)
+	}
+	if merged[1].RuleID != 102 || merged[1].Protocol != "udp" {
+		t.Fatalf("unexpected merged state: %#v", merged[1])
+	}
+}
+
+func TestRuntimeProtocolOverlap(t *testing.T) {
+	if runtimeProtocolsOverlap("tcp", "udp") {
+		t.Fatal("disjoint TCP and UDP lanes were treated as overlapping")
+	}
+	if !runtimeProtocolsOverlap("both", "udp") || !runtimeProtocolsOverlap("tcp", "tcp") {
+		t.Fatal("overlapping protocol lanes were treated as disjoint")
+	}
+}
+
+func TestIptablesTargetCleanupUsesStoredProtocol(t *testing.T) {
+	commands := strings.Join(iptablesAgentTargetCleanupCmds("12004", "192.0.2.20", 8080, "tcp"), "\n")
+	if !strings.Contains(commands, "-p tcp") {
+		t.Fatal("TCP cleanup commands are missing")
+	}
+	if strings.Contains(commands, "-p udp") {
+		t.Fatal("TCP-only target cleanup unexpectedly removes the UDP lane")
+	}
+}
+
+func TestFXPListenerConflictsAreProtocolAware(t *testing.T) {
+	tcp := fxpSpec{ListenPort: 12005, Protocol: "tcp"}
+	udp := fxpSpec{ListenPort: 12005, UDPListenPort: 12005, Protocol: "udp"}
+	if fxpSpecsListenConflict(tcp, udp) {
+		t.Fatal("disjoint FXP TCP and UDP listeners on the same numeric port conflict")
+	}
+	if !fxpSpecsListenConflict(fxpSpec{ListenPort: 12005, Protocol: "both"}, tcp) {
+		t.Fatal("combined FXP listener did not conflict with its TCP lane")
+	}
+	if !fxpSpecsListenConflict(
+		fxpSpec{ListenPort: 12006, UDPListenPort: 12007, Protocol: "udp"},
+		fxpSpec{ListenPort: 12008, UDPListenPort: 12007, Protocol: "udp"},
+	) {
+		t.Fatal("FXP listeners sharing a dedicated mimic UDP port were not considered conflicting")
 	}
 }
