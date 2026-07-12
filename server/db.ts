@@ -25,6 +25,7 @@ import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/traffic
 import { purgeSettledPendingForwardRuleDeletes } from "./repositories/forwardRuleRepository";
 import { markLocalSetupComplete } from "./setupState";
 import { seedDevPanelData } from "./devPanel";
+import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -189,6 +190,11 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await repairPortForwardRuleHostReferences().then((repairs) => {
+      if (repairs.length > 0) console.log(`[Database] Repaired stale port-forward rule hosts count=${repairs.length}`);
+    }).catch((error) => {
+      console.warn("[Database] Port-forward rule host repair skipped:", error instanceof Error ? error.message : String(error));
+    });
     await purgeSettledPendingForwardRuleDeletes().then((count) => {
       if (count > 0) console.log(`[Database] Purged settled pending forward rules count=${count}`);
     }).catch((error) => {

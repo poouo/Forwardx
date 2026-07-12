@@ -18,6 +18,32 @@ export const pluginsRouter = router({
     return pluginRepo.getPluginStoreItems();
   }),
 
+  storeSources: adminProcedure.query(async () => {
+    return pluginRepo.listPluginStoreSources();
+  }),
+
+  addStoreSources: adminProcedure
+    .input(z.object({ repositories: z.array(z.string().trim().min(1).max(512)).min(1).max(32) }))
+    .mutation(async ({ input }) => {
+      return pluginRepo.addPluginStoreSources(input.repositories);
+    }),
+
+  refreshStoreSource: adminProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input }) => {
+      return pluginRepo.refreshPluginStoreSource(input.id);
+    }),
+
+  deleteStoreSource: adminProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input }) => {
+      return pluginRepo.deletePluginStoreSource(input.id);
+    }),
+
+  refreshStore: adminProcedure.mutation(async () => {
+    return pluginRepo.refreshPluginStoreItems();
+  }),
+
   list: adminProcedure.query(async () => {
     return pluginRepo.listPlugins();
   }),
@@ -29,9 +55,10 @@ export const pluginsRouter = router({
     }),
 
   installFromStore: adminProcedure
-    .input(z.object({ id: z.string().trim().min(1).max(128) }))
+    .input(z.object({ id: z.string().trim().min(1).max(128), storeSourceId: z.number().int().positive().optional() }))
     .mutation(async ({ input }) => {
-      const item = (await pluginRepo.getPluginStoreItems()).find((candidate) => candidate.id === input.id);
+      const item = (await pluginRepo.getPluginStoreItems()).find((candidate) => candidate.id === input.id
+        && (input.storeSourceId === undefined || Number(candidate.storeSourceId || 0) === input.storeSourceId));
       if (!item) throw new Error("插件商店中没有找到该插件");
       return pluginRepo.installPluginFromStoreItem(item);
     }),
@@ -63,6 +90,12 @@ export const pluginsRouter = router({
     .input(z.object({ pluginId: z.string().trim().min(1).max(128), enabled: z.boolean() }))
     .mutation(async ({ input }) => {
       return pluginRepo.setPluginEnabled(input.pluginId, input.enabled);
+    }),
+
+  setTrusted: adminProcedure
+    .input(z.object({ pluginId: z.string().trim().min(1).max(128), trusted: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      return pluginRepo.setPluginTrusted(input.pluginId, input.trusted, ctx.user.id);
     }),
 
   uninstall: adminProcedure
@@ -102,10 +135,11 @@ export const pluginsRouter = router({
       hostIds: z.array(z.number().int().positive()).max(512).optional(),
       resourceViewId: z.string().trim().min(1).max(128).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       return pluginRepo.runPluginAction(input.pluginId, input.actionId, input.input, {
         hostIds: input.hostIds,
         resourceViewId: input.resourceViewId,
+        context: ctx,
       });
     }),
 

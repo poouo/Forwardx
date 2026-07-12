@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import zlib from "zlib";
 import { and, eq } from "drizzle-orm";
-import { hosts, pluginAgentStates, pluginAssets, plugins } from "../../drizzle/schema";
+import { hosts, pluginAgentStates, pluginAssets, plugins, pluginStoreSources } from "../../drizzle/schema";
 import {
   BUILTIN_PLUGIN_STORE_ITEMS,
   DEFAULT_PLUGIN_MANIFEST,
@@ -18,6 +18,7 @@ import {
   PLUGIN_HTTP_METHODS,
   PLUGIN_HTTP_RESPONSE_TYPES,
   PLUGIN_MANIFEST_VERSION,
+  PLUGIN_PANEL_OPERATIONS,
   PLUGIN_PERMISSION_KEYS,
   PLUGIN_RESOURCE_COLUMN_TYPES,
   PLUGIN_RESOURCE_CONDITION_OPERATORS,
@@ -39,6 +40,7 @@ import {
   type PluginHttpAuthDefinition,
   type PluginHttpRequestDefinition,
   type PluginPageDefinition,
+  type PluginPanelRequestDefinition,
   type PluginPermissionKey,
   type PluginResourceColumnDefinition,
   type PluginResourceCondition,
@@ -57,16 +59,25 @@ import {
   type PluginUsageSelectorCopy,
   type PluginUsageViewDefinition,
 } from "../../shared/pluginTypes";
+import type { TrpcContext } from "../_core/context";
+import { appendPanelLog } from "../_core/panelLogger";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
+import { getAgentPluginInventory } from "../agentPluginInventory";
+import { mapWithConcurrency } from "../asyncPool";
 import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup, type PluginAgentTaskGroup } from "../pluginAgentTasks";
 import { isFreshHostHeartbeat } from "./hostRepository";
 import { assertSafePluginHttpUrl } from "../ssrf";
+import { executePluginPanelRequest, getPluginPanelOperationCapabilities } from "../pluginPanelApi";
 
 const GITHUB_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i;
 const FORWARDX_REPO_URL = "https://github.com/poouo/Forwardx";
 const MANIFEST_CANDIDATES = ["forwardx-plugin.json", "plugin.json", ".forwardx/plugin.json"];
 const OFFICIAL_STORE_PATH = "plugins/official-store.json";
+const DEFAULT_THIRD_PARTY_STORE_PATH = "forwardx-store.json";
+const MAX_PLUGIN_STORE_SOURCES = 32;
+const MAX_PLUGIN_STORE_ITEMS_PER_SOURCE = 200;
+const PLUGIN_STORE_SYNC_CONCURRENCY = 6;
 const MAX_PLUGIN_UPLOAD_BYTES = PLUGIN_SECURITY_MODEL.maxUploadBytes;
 const MAX_PLUGIN_ASSET_BYTES = PLUGIN_SECURITY_MODEL.maxAssetBytes;
 const MAX_PLUGIN_ASSETS = 96;
@@ -589,6 +600,13 @@ function normalizePluginResultSchema(value: unknown): PluginResultSchemaDefiniti
   };
 }
 
+function normalizePluginPanelRequest(value: unknown): PluginPanelRequestDefinition | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const operation = String((value as any).operation || "").trim();
+  if (!PLUGIN_PANEL_OPERATIONS.includes(operation as any)) return undefined;
+  return { operation: operation as PluginPanelRequestDefinition["operation"] };
+}
+
 function normalizePluginActions(value: unknown): PluginActionDefinition[] {
   if (!Array.isArray(value)) return [];
   const allowedTypes = new Set<string>(PLUGIN_ACTION_TYPES);
@@ -609,12 +627,15 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
       inputSchema: normalizeSettingFields(item?.inputSchema || item?.inputs),
       request: normalizeHttpRequest(item?.request),
       agent: normalizePluginAgentRequest(item?.agent),
+      panel: normalizePluginPanelRequest(item?.panel || item?.panelRequest),
       resultSchema: normalizePluginResultSchema(item?.resultSchema),
     };
     if (action.type === "agent.request" && !action.agent) return [];
+    if (action.type === "panel.request" && !action.panel) return [];
     if (!action.inputSchema?.length) delete (action as any).inputSchema;
     if (!action.request) delete (action as any).request;
     if (!action.agent) delete (action as any).agent;
+    if (!action.panel) delete (action as any).panel;
     if (!action.resultSchema) delete (action as any).resultSchema;
     return [action];
   });
@@ -678,7 +699,11 @@ function normalizeResourceFields(value: unknown): PluginResourceFieldDefinition[
       ? item.options.slice(0, 100).flatMap((option: any) => {
           const optionValue = String(option?.value ?? "").trim().slice(0, 240);
           if (!optionValue) return [];
-          return [{ value: optionValue, label: String(option?.label || optionValue).trim().slice(0, 240) || optionValue }];
+          return [{
+            value: optionValue,
+            label: String(option?.label || optionValue).trim().slice(0, 240) || optionValue,
+            exclusive: option?.exclusive === true,
+          }];
         })
       : undefined;
     let defaultValue: PluginResourceFieldDefinition["defaultValue"];
@@ -1038,11 +1063,19 @@ function normalizePluginFeatures(value: unknown): PluginFeatureDescription[] {
   });
 }
 
-function normalizeStoreItem(input: any): PluginStoreItem | null {
+function normalizeStoreItem(input: any, options: {
+  official?: boolean;
+  defaultRepository?: string;
+  defaultPackageRepository?: string;
+  storeSourceId?: number;
+  storeSourceName?: string;
+} = {}): PluginStoreItem | null {
   try {
     const id = assertPluginId(input?.id);
-    const repository = String(input?.repository || "").trim();
+    const repository = String(input?.repository || options.defaultRepository || "").trim();
     githubRepoParts(repository);
+    const packageRepository = String(input?.packageRepository || options.defaultPackageRepository || "").trim().slice(0, 512) || undefined;
+    if (packageRepository) githubRepoParts(packageRepository);
     return {
       id,
       name: String(input?.name || id).trim().slice(0, 120) || id,
@@ -1061,7 +1094,7 @@ function normalizeStoreItem(input: any): PluginStoreItem | null {
       homepage: String(input?.homepage || repository).trim().slice(0, 512) || repository,
       author: String(input?.author || "ForwardX").trim().slice(0, 120) || "ForwardX",
       logo: normalizeOptionalLogo(input?.logo),
-      packageRepository: String(input?.packageRepository || "").trim().slice(0, 512) || undefined,
+      packageRepository,
       packageBranch: String(input?.packageBranch || "").trim().slice(0, 128) || undefined,
       packageUrl: /^https?:\/\//i.test(String(input?.packageUrl || "").trim()) ? String(input.packageUrl).trim().slice(0, 512) : undefined,
       packagePath: String(input?.packagePath || "").trim().replace(/\\/g, "/").replace(/^\/+/, "").slice(0, 256) || undefined,
@@ -1071,8 +1104,10 @@ function normalizeStoreItem(input: any): PluginStoreItem | null {
         : "integration") as PluginStoreItem["category"],
       permissions: uniqueValidPermissions(input?.permissions),
       extensionPoints: uniqueValidExtensionPoints(input?.extensionPoints),
-      official: input?.official !== false,
+      official: options.official ?? input?.official !== false,
       builtIn: input?.builtIn === true,
+      storeSourceId: options.storeSourceId,
+      storeSourceName: options.storeSourceName,
     };
   } catch {
     return null;
@@ -1146,7 +1181,8 @@ function githubTreeApiUrl(repository: string, branch: string) {
   return `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
 }
 
-async function fetchText(url: string) {
+async function fetchText(url: string, maxBytes = MAX_PLUGIN_ASSET_BYTES) {
+  await assertSafePluginHttpUrl(url);
   const response = await fetch(url, {
     headers: {
       "User-Agent": "ForwardX-Plugin-Installer",
@@ -1156,10 +1192,16 @@ async function fetchText(url: string) {
   if (!response.ok) {
     throw new Error(`请求失败 ${response.status}`);
   }
-  return await response.text();
+  if (response.url) await assertSafePluginHttpUrl(response.url);
+  const length = Number(response.headers.get("content-length") || 0);
+  if (length > maxBytes) throw new Error(`响应内容不能超过 ${Math.floor(maxBytes / 1024)}KB`);
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`响应内容不能超过 ${Math.floor(maxBytes / 1024)}KB`);
+  return text;
 }
 
 async function fetchBuffer(url: string) {
+  await assertSafePluginHttpUrl(url);
   const response = await fetch(url, {
     headers: {
       "User-Agent": "ForwardX-Plugin-Installer",
@@ -1169,6 +1211,7 @@ async function fetchBuffer(url: string) {
   if (!response.ok) {
     throw new Error(`请求失败 ${response.status}`);
   }
+  if (response.url) await assertSafePluginHttpUrl(response.url);
   const length = Number(response.headers.get("content-length") || 0);
   if (length > MAX_PLUGIN_PACKAGE_BYTES) {
     throw new Error(`插件包不能超过 ${Math.floor(MAX_PLUGIN_PACKAGE_BYTES / 1024 / 1024)}MB`);
@@ -1473,7 +1516,8 @@ async function tryFetchGithubManifest(repository: string, branch: string, prefer
   throw new Error(`未找到插件 manifest (${errors.join("; ")})`);
 }
 
-async function fetchOfficialStoreItems(): Promise<PluginStoreItem[]> {
+async function fetchOfficialStoreItems(force = false): Promise<PluginStoreItem[]> {
+  if (force) officialStoreCache = null;
   if (officialStoreCache && Date.now() - officialStoreCache.checkedAt < OFFICIAL_STORE_CACHE_TTL_MS) {
     return officialStoreCache.items;
   }
@@ -1484,7 +1528,7 @@ async function fetchOfficialStoreItems(): Promise<PluginStoreItem[]> {
     const parsed = JSON.parse(text);
     const items = Array.isArray(parsed?.items) ? parsed.items : [];
     const normalized = items.flatMap((item: any) => {
-      const next = normalizeStoreItem(item);
+      const next = normalizeStoreItem(item, { official: true });
       return next ? [next] : [];
     });
     const result = normalized.length ? normalized : BUILTIN_PLUGIN_STORE_ITEMS;
@@ -1501,13 +1545,188 @@ async function fetchOfficialStoreItems(): Promise<PluginStoreItem[]> {
   return officialStoreFetchInFlight;
 }
 
+function canonicalGithubRepository(value: unknown) {
+  const { owner, repo } = githubRepoParts(String(value || "").trim());
+  return `https://github.com/${owner}/${repo}`;
+}
+
+function normalizePluginStoreSourceRow(row: any) {
+  const items = parseJson<PluginStoreItem[]>(row?.itemsJson, []);
+  return {
+    ...row,
+    branch: String(row?.branch || "main"),
+    catalogPath: String(row?.catalogPath || DEFAULT_THIRD_PARTY_STORE_PATH),
+    pluginCount: Array.isArray(items) ? items.length : 0,
+  };
+}
+
+function pluginStoreSourceSummary(source: any) {
+  const { itemsJson: _itemsJson, ...summary } = source || {};
+  return summary;
+}
+
+async function pluginStoreSourceById(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const rows = await db.select().from(pluginStoreSources).where(eq(pluginStoreSources.id, id)).limit(1);
+  return rows[0] ? normalizePluginStoreSourceRow(rows[0]) : undefined;
+}
+
+export function normalizePluginStoreCatalog(parsed: any, source: any) {
+  const repository = canonicalGithubRepository(source.repository);
+  const branch = String(source.branch || "main").trim().slice(0, 128) || "main";
+  const catalogPath = normalizeAssetPath(source.catalogPath || DEFAULT_THIRD_PARTY_STORE_PATH);
+  const rawItems = Array.isArray(parsed?.items) ? parsed.items : Array.isArray(parsed?.plugins) ? parsed.plugins : null;
+  if (!rawItems) throw new Error("第三方商店配置必须包含 items 或 plugins 数组");
+  const parts = githubRepoParts(repository);
+  const fallbackName = `${parts.owner}/${parts.repo}`;
+  const name = String(parsed?.name || fallbackName).trim().slice(0, 120) || fallbackName;
+  const items = rawItems.slice(0, MAX_PLUGIN_STORE_ITEMS_PER_SOURCE).flatMap((item: any) => {
+    const normalized = normalizeStoreItem(item, {
+      official: false,
+      defaultRepository: repository,
+      defaultPackageRepository: repository,
+      storeSourceId: Number(source.id),
+      storeSourceName: name,
+    });
+    return normalized ? [normalized] : [];
+  });
+  if (rawItems.length > 0 && items.length === 0) throw new Error("第三方商店配置中没有合法的插件条目");
+  return { name, repository, branch, catalogPath, items };
+}
+
+async function fetchPluginStoreSourceCatalog(source: any) {
+  const repository = canonicalGithubRepository(source.repository);
+  const branch = String(source.branch || "main").trim().slice(0, 128) || "main";
+  const catalogPath = normalizeAssetPath(source.catalogPath || DEFAULT_THIRD_PARTY_STORE_PATH);
+  const text = await fetchText(githubRawUrl(repository, branch, catalogPath));
+  try {
+    return normalizePluginStoreCatalog(JSON.parse(text), { ...source, repository, branch, catalogPath });
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error(`${catalogPath} 不是有效 JSON`);
+    throw error;
+  }
+}
+
+export async function listPluginStoreSources() {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(pluginStoreSources);
+  return rows.map(normalizePluginStoreSourceRow).map(pluginStoreSourceSummary).sort((a: any, b: any) => Number(a.id) - Number(b.id));
+}
+
+export async function refreshPluginStoreSource(sourceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const source = await pluginStoreSourceById(sourceId);
+  if (!source) throw new Error("第三方商店来源不存在");
+  try {
+    const catalog = await fetchPluginStoreSourceCatalog(source);
+    await db.update(pluginStoreSources).set({
+      name: catalog.name,
+      repository: catalog.repository,
+      branch: catalog.branch,
+      catalogPath: catalog.catalogPath,
+      itemsJson: JSON.stringify(catalog.items),
+      lastSyncedAt: nowDate(),
+      lastError: null,
+      updatedAt: nowDate(),
+    } as any).where(eq(pluginStoreSources.id, sourceId));
+    return pluginStoreSourceSummary(await pluginStoreSourceById(sourceId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await db.update(pluginStoreSources).set({ lastError: message.slice(0, 1000), updatedAt: nowDate() } as any).where(eq(pluginStoreSources.id, sourceId));
+    throw error;
+  }
+}
+
+export async function addPluginStoreSources(repositories: string[]) {
+  const invalidResults: Array<{ repository: string; status: "failed"; error: string }> = [];
+  const canonicalRepositories: string[] = [];
+  for (const value of Array.from(new Set(repositories.map((item) => String(item || "").trim()).filter(Boolean))).slice(0, MAX_PLUGIN_STORE_SOURCES)) {
+    try {
+      canonicalRepositories.push(canonicalGithubRepository(value));
+    } catch (error) {
+      invalidResults.push({ repository: value, status: "failed", error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  const uniqueRepositories = Array.from(new Set(canonicalRepositories));
+  if (!uniqueRepositories.length) return invalidResults;
+  const existing = await listPluginStoreSources();
+  const newCount = uniqueRepositories.filter((repository) => !existing.some((source: any) => source.repository === repository)).length;
+  if (existing.length + newCount > MAX_PLUGIN_STORE_SOURCES) throw new Error(`第三方商店来源不能超过 ${MAX_PLUGIN_STORE_SOURCES} 个`);
+  const syncedResults = await mapWithConcurrency(uniqueRepositories, PLUGIN_STORE_SYNC_CONCURRENCY, async (repository) => {
+    let source = existing.find((item: any) => item.repository === repository && item.branch === "main" && item.catalogPath === DEFAULT_THIRD_PARTY_STORE_PATH);
+    let status: "added" | "existing" = "existing";
+    try {
+      if (!source) {
+        const parts = githubRepoParts(repository);
+        const id = await insertAndGetId("plugin_store_sources", {
+          name: `${parts.owner}/${parts.repo}`,
+          repository,
+          branch: "main",
+          catalogPath: DEFAULT_THIRD_PARTY_STORE_PATH,
+          itemsJson: "[]",
+          createdAt: nowDate(),
+          updatedAt: nowDate(),
+        });
+        source = await pluginStoreSourceById(id);
+        status = "added";
+      }
+      const synced = await refreshPluginStoreSource(Number(source.id));
+      return { repository, status, source: synced };
+    } catch (error) {
+      return { repository, status: "failed" as const, source: pluginStoreSourceSummary(source), error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  return [...syncedResults, ...invalidResults];
+}
+
+export async function deletePluginStoreSource(sourceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const source = await pluginStoreSourceById(sourceId);
+  if (!source) throw new Error("第三方商店来源不存在");
+  await db.delete(pluginStoreSources).where(eq(pluginStoreSources.id, sourceId));
+  return { success: true };
+}
+
+function cachedThirdPartyStoreItems(sources: any[]) {
+  return sources.flatMap((source) => {
+    const items = parseJson<PluginStoreItem[]>(source?.itemsJson, []);
+    if (!Array.isArray(items)) return [];
+    return items.map((item) => ({
+      ...item,
+      official: false,
+      builtIn: false,
+      storeSourceId: Number(source.id),
+      storeSourceName: String(source.name || source.repository),
+    }));
+  });
+}
+
+export async function refreshPluginStoreItems() {
+  const sources = await listPluginStoreSources();
+  const [official, sourceResults] = await Promise.all([
+    fetchOfficialStoreItems(true)
+      .then((items) => ({ ok: true as const, count: items.length }))
+      .catch((error) => ({ ok: false as const, count: 0, error: error instanceof Error ? error.message : String(error) })),
+    mapWithConcurrency(sources, PLUGIN_STORE_SYNC_CONCURRENCY, async (source: any) => {
+      try {
+        const synced = await refreshPluginStoreSource(Number(source.id));
+        return { id: Number(source.id), name: String(source.name), ok: true as const, count: Number(synced?.pluginCount || 0) };
+      } catch (error) {
+        return { id: Number(source.id), name: String(source.name), ok: false as const, count: Number(source.pluginCount || 0), error: error instanceof Error ? error.message : String(error) };
+      }
+    }),
+  ]);
+  return { official, sources: sourceResults, items: await getPluginStoreItems() };
+}
+
 async function findStoreFallbackItem(input: { id?: string | null; repository?: string | null }) {
   const repository = String(input.repository || "").trim();
   const id = String(input.id || "").trim();
-  const candidates = [
-    ...BUILTIN_PLUGIN_STORE_ITEMS,
-    ...(await fetchOfficialStoreItems()),
-  ];
+  const candidates = await getPluginStoreItems();
   return candidates.find((item) => (id && item.id === id) || (repository && item.repository === repository));
 }
 
@@ -1967,6 +2186,7 @@ function normalizePluginRow(row: any) {
   } as any);
   return {
     ...row,
+    trusted: row?.trusted === true || Number(row?.trusted || 0) === 1,
     manifest,
     permissions: parseJson<PluginPermissionKey[]>(row?.permissionsJson, []),
     extensionPoints: parseJson<PluginExtensionPoint[]>(row?.extensionPointsJson, []),
@@ -1974,10 +2194,18 @@ function normalizePluginRow(row: any) {
 }
 
 export async function getPluginStoreItems() {
-  const onlineItems = await fetchOfficialStoreItems();
+  const db = await getDb();
+  const [onlineItems, sourceRows] = await Promise.all([
+    fetchOfficialStoreItems(),
+    db ? db.select().from(pluginStoreSources) : Promise.resolve([]),
+  ]);
+  const sources = sourceRows.map(normalizePluginStoreSourceRow);
   const merged = new Map<string, PluginStoreItem>();
   for (const item of BUILTIN_PLUGIN_STORE_ITEMS) merged.set(item.id, { ...item, official: true });
-  for (const item of onlineItems) merged.set(item.id, item);
+  for (const item of onlineItems) merged.set(item.id, { ...item, official: true });
+  for (const item of cachedThirdPartyStoreItems(sources)) {
+    if (!merged.has(item.id)) merged.set(item.id, item);
+  }
   return Array.from(merged.values());
 }
 
@@ -1999,6 +2227,7 @@ export function getPluginDeveloperCapabilities() {
     agentInterpreters: PLUGIN_AGENT_INTERPRETERS,
     agentOutputTypes: PLUGIN_AGENT_OUTPUT_TYPES,
     agentTargets: PLUGIN_AGENT_TARGETS,
+    panelOperations: getPluginPanelOperationCapabilities(),
     resourceViewTypes: PLUGIN_RESOURCE_VIEW_TYPES,
     resourceSourceTriggers: PLUGIN_RESOURCE_SOURCE_TRIGGERS,
     resourceColumnTypes: PLUGIN_RESOURCE_COLUMN_TYPES,
@@ -2084,12 +2313,18 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
     hosts: hostRows.map((host: any) => {
       const lastHeartbeatAt = host.lastHeartbeat ? new Date(host.lastHeartbeat).getTime() : 0;
       const selected = selectedHostIds.has(Number(host.id));
+      const agentPluginInventory = getAgentPluginInventory(host.id);
+      const agentPluginVersion = agentPluginInventory?.versions.get(plugin.pluginId) || null;
+      const pluginSyncPending = agentPluginInventory
+        ? agentPluginVersion !== plugin.version
+        : pluginSyncRequiredAt > 0 && (!Number.isFinite(lastHeartbeatAt) || lastHeartbeatAt < pluginSyncRequiredAt);
       return {
         ...host,
         isOnline: !!host.isOnline && isFreshHostHeartbeat(host.lastHeartbeat),
         pluginSelected: selected,
-        pluginSyncPending: selected && pluginSyncRequiredAt > 0 && (!Number.isFinite(lastHeartbeatAt) || lastHeartbeatAt < pluginSyncRequiredAt),
+        pluginSyncPending: selected && pluginSyncPending,
         pluginVersion: plugin.version,
+        agentPluginVersion,
         agentPluginSupported: isAgentVersionAtLeast(host.agentVersion, AGENT_PLUGIN_TASK_VERSION),
       };
     }),
@@ -2305,7 +2540,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
   const currentHostId = Number(hostId);
   if (!Number.isInteger(currentHostId) || currentHostId <= 0) return [];
   const pluginRows = await db.select().from(plugins);
-  const tasks: Array<{ pluginId: string; usageViewId: string; forwardType: string; commands: string[] }> = [];
+  const tasks: Array<{ pluginId: string; pluginVersion: string; usageViewId: string; forwardType: string; commands: string[] }> = [];
   for (const row of pluginRows) {
     const plugin = normalizePluginRow(row);
     const usageView = firstHostAssetSyncView(plugin.manifest);
@@ -2329,6 +2564,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
         : [`rm -rf ${shellQuote(targetDir)} 2>/dev/null || true`];
       tasks.push({
         pluginId: plugin.pluginId,
+        pluginVersion: plugin.version,
         usageViewId: usageView.id,
         forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`,
         commands,
@@ -2379,6 +2615,8 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       files: files.map(({ source, sha256, size }) => ({ source, sha256, size })),
     }));
     const manifest = {
+      id: plugin.pluginId,
+      version: plugin.version,
       pluginId: plugin.pluginId,
       pluginVersion: plugin.version,
       usageViewId: usageView.id,
@@ -2399,7 +2637,9 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       commands.push(...writeTextFileCommands(target, file.content));
     }
     const manifestEncoded = Buffer.from(JSON.stringify(manifest, null, 2), "utf8").toString("base64");
-    commands.push(`printf '%s' ${shellQuote(manifestEncoded)} | base64 -d > ${shellQuote(`${targetDir}/manifest.json`)}`);
+    const manifestPath = `${targetDir}/manifest.json`;
+    const manifestTempPath = `${manifestPath}.tmp`;
+    commands.push(`printf '%s' ${shellQuote(manifestEncoded)} | base64 -d > ${shellQuote(manifestTempPath)} && mv -f ${shellQuote(manifestTempPath)} ${shellQuote(manifestPath)}`);
     if (isChinaRegionWhitelist) {
       const config = buildChinaRegionWhitelistConfig(usage, targetDir);
       commands.push(...writeTextFileCommands(`${targetDir}/forwardx-generated.conf`, config));
@@ -2412,7 +2652,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
         commands.push(...buildChinaRegionWhitelistOperationCommands(usage, targetDir, operationSignature));
       }
     }
-    tasks.push({ pluginId: plugin.pluginId, usageViewId: usageView.id, forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`, commands });
+    tasks.push({ pluginId: plugin.pluginId, pluginVersion: plugin.version, usageViewId: usageView.id, forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`, commands });
   }
   return tasks;
 }
@@ -2628,6 +2868,17 @@ export async function setPluginEnabled(pluginId: string, enabled: boolean) {
   if (!db) throw new Error("Database not available");
   const id = assertPluginId(pluginId);
   await db.update(plugins).set({ status: enabled ? "enabled" : "disabled", updatedAt: nowDate(), lastError: null } as any).where(eq(plugins.pluginId, id));
+  return await getPlugin(id);
+}
+
+export async function setPluginTrusted(pluginId: string, trusted: boolean, actorUserId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const id = assertPluginId(pluginId);
+  const plugin = await getPlugin(id);
+  if (!plugin) throw new Error("插件不存在");
+  await db.update(plugins).set({ trusted, updatedAt: nowDate() } as any).where(eq(plugins.pluginId, id));
+  appendPanelLog("info", `[PluginAudit] plugin=${id} operation=trust.change actor=${Number(actorUserId || 0) || "-"} trusted=${trusted}`);
   return await getPlugin(id);
 }
 
@@ -3165,6 +3416,18 @@ async function executePluginAgentAction(
     const suffix = unsupportedHosts.length > 5 ? ` 等 ${unsupportedHosts.length} 台主机` : "";
     throw new Error(`${names}${suffix} 需要先升级到 Agent v${AGENT_PLUGIN_TASK_VERSION} 才能执行插件操作`);
   }
+  const unsyncedHosts = targetHosts.flatMap((host: any) => {
+    const inventory = getAgentPluginInventory(host.id);
+    if (!inventory) return [];
+    const actualVersion = inventory.versions.get(plugin.pluginId) || "未同步";
+    return actualVersion === plugin.version ? [] : [{ ...host, actualVersion }];
+  });
+  if (unsyncedHosts.length > 0) {
+    const names = unsyncedHosts.slice(0, 5)
+      .map((host: any) => `${String(host.name || `主机 ${host.id}`)}（Agent=${host.actualVersion}，面板=${plugin.version}）`)
+      .join("、");
+    throw new Error(`${names} 的插件资源尚未同步完成，请等待 Agent 回报实际版本后重试`);
+  }
   const actionInput = resourceView
     ? normalizeAgentResourceInput(input)
     : normalizeActionInputValues(action.inputSchema, input);
@@ -3206,7 +3469,7 @@ export async function runPluginAction(
   pluginId: string,
   actionId: string,
   input?: unknown,
-  options: { hostIds?: number[]; resourceViewId?: string } = {},
+  options: { hostIds?: number[]; resourceViewId?: string; context?: TrpcContext } = {},
 ) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
@@ -3218,6 +3481,15 @@ export async function runPluginAction(
   }
   if (action.type === "agent.request") {
     return executePluginAgentAction(plugin, action, input, options);
+  }
+  if (action.type === "panel.request" && action.panel) {
+    return executePluginPanelRequest({
+      plugin,
+      actionId: action.id,
+      operation: action.panel.operation,
+      actionInput: input,
+      context: options.context,
+    });
   }
   if (action.type === "noop") {
     return { ok: true, message: "动作已执行（noop）" };

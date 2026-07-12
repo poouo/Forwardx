@@ -17,6 +17,27 @@ export function tunnelHopHostName(tunnel: any | null | undefined, hostId: number
   return `主机 #${id}`;
 }
 
+export function getTunnelLoadBalanceExitNames(tunnel: any | null | undefined, hosts: any[] | undefined) {
+  if (!Array.isArray(tunnel?.loadBalanceExits)) return [];
+  const names = tunnel.loadBalanceExits
+    .map((exit: any) => Number(exit?.hostId || 0))
+    .filter((hostId: number) => hostId > 0)
+    .map((hostId: number) => tunnelHopHostName(tunnel, hostId, hosts))
+    .map((name: string) => String(name || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+}
+
+export function getTunnelExitNames(tunnel: any | null | undefined, hosts: any[] | undefined) {
+  const primaryExitId = Number(tunnel?.exitHostId || 0);
+  const primaryName = primaryExitId > 0 ? tunnelHopHostName(tunnel, primaryExitId, hosts) : "";
+  const names = [
+    String(primaryName || "").trim(),
+    ...getTunnelLoadBalanceExitNames(tunnel, hosts),
+  ].filter(Boolean);
+  return Array.from(new Set(names));
+}
+
 export function getTunnelHopIds(tunnel: any | null | undefined) {
   const hopIds = Array.isArray(tunnel?.hopHostIds)
     ? tunnel.hopHostIds.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id) && id > 0)
@@ -31,5 +52,10 @@ export function getTunnelRouteText(tunnel: any | null | undefined, hosts: any[] 
     .map((name: string) => String(name || "").trim())
     .filter(Boolean);
   if (hopNames.length === 0) return "-";
+  const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts)
+    .filter((name) => !hopNames.includes(name));
+  if (extraExitNames.length > 0) {
+    return `${hopNames.join(" -> ")}；出口：${getTunnelExitNames(tunnel, hosts).join(" / ")}`;
+  }
   return hopNames.join(" -> ");
 }

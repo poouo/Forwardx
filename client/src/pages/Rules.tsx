@@ -760,8 +760,12 @@ function buildRuleSearchText(rule: any, filters: RuleFilterState) {
   if (targetIp && targetPort > 0) addRuleSearchPart(parts, formatAddressWithPort(targetIp, targetPort));
   if (sourcePort > 0 && targetIp && targetPort > 0) addRuleSearchPart(parts, `${sourcePort}->${formatAddressWithPort(targetIp, targetPort)}`);
 
-  addRuleSearchHostParts(parts, filters.hostById.get(Number(rule?.hostId || 0)), sourcePort);
-  if (entryHostId && entryHostId !== Number(rule?.hostId || 0)) addRuleSearchHostParts(parts, filters.hostById.get(entryHostId), sourcePort);
+  const storedHostId = Number(rule?.hostId || 0);
+  if (!entryHostId || entryHostId === storedHostId) {
+    addRuleSearchHostParts(parts, filters.hostById.get(storedHostId), sourcePort);
+  } else {
+    addRuleSearchHostParts(parts, filters.hostById.get(entryHostId), sourcePort);
+  }
   addRuleSearchTunnelParts(parts, tunnel, filters);
   addRuleSearchForwardGroupParts(parts, group, filters, sourcePort);
   addRuleSearchUserParts(parts, filters.userById.get(Number(rule?.userId || 0)));

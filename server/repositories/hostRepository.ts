@@ -21,6 +21,7 @@ import {
 } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
+import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
 
 // ==================== Host Queries ====================
@@ -95,6 +96,7 @@ export async function reorderHosts(ids: number[], userId?: number) {
 export async function deleteHost(id: number) {
   const db = await getDb();
   if (!db) return;
+  await repairPortForwardRuleHostReferences();
   await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.exitHostId, id));
   await db.delete(agentTokens).where(eq(agentTokens.hostId, id));
@@ -293,6 +295,7 @@ export async function getHostByAgentToken(token: string) {
 export async function getHostRuleDeleteBlockers(hostId: number) {
   const db = await getDb();
   if (!db) return { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 };
+  await repairPortForwardRuleHostReferences();
   const managedRuleSql = sql`${forwardRules.forwardGroupRuleId} IS NOT NULL OR ${forwardRules.id} IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)`;
   const [ruleRows, managedRows, pendingRows] = await Promise.all([
     db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`

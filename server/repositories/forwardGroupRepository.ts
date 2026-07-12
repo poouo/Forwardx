@@ -34,6 +34,7 @@ import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latenc
 import { notifyForwardGroupSwitch } from "../forwardGroupSwitchNotifier";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reserveAvailableHostPort, type HostPortReservation } from "../portReservations";
+import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -1631,6 +1632,14 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
   const groupMode = groupModeOf(group);
   const preserveRuntime = !!options.preserveRuntime;
   const activeChainMembers = groupMode === "chain" ? members.filter((member: any) => !!member.isEnabled) : members;
+
+  if (groupMode === "port") {
+    if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
+    if (String(group.groupType || "host") !== "host") throw new Error("端口转发仅支持主机成员");
+    if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
+    await repairPortForwardRuleHostReferences(groupId);
+  }
+
   const templates = await getForwardGroupTemplateRules(groupId);
 
   if (isCollectionGroupMode(groupMode)) {
@@ -1649,11 +1658,6 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
   const liveMemberIds = new Set((groupMode === "chain" ? activeChainMembers : members).map((m: any) => Number(m.id)));
   const liveTemplateIds = new Set((templates as any[]).map((rule: any) => Number(rule.id)));
 
-  if (groupMode === "port") {
-    if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
-    if (String(group.groupType || "host") !== "host") throw new Error("端口转发仅支持主机成员");
-    if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
-  }
   if (groupMode === "chain") {
     const liveChildKeys = new Set<string>();
     const entryMembers = await chainEntryMembers(group);

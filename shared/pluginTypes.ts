@@ -3,11 +3,18 @@ export const PLUGIN_MANIFEST_VERSION = 1 as const;
 
 export const PLUGIN_PERMISSION_KEYS = [
   "read:system",
+  "read:users",
+  "write:users",
   "read:hosts",
+  "write:hosts",
   "read:rules",
   "write:rules",
   "read:tunnels",
+  "write:tunnels",
+  "read:forward-groups",
+  "write:forward-groups",
   "read:traffic",
+  "telegram:send",
   "write:settings",
   "net:http",
   "agent:read",
@@ -54,11 +61,54 @@ export const PLUGIN_ACTION_TYPES = [
   "noop",
   "http.request",
   "agent.request",
+  "panel.request",
   "data.asset.refresh",
   "data.whitelist.refresh",
 ] as const;
 
 export type PluginActionType = typeof PLUGIN_ACTION_TYPES[number];
+
+export const PLUGIN_PANEL_OPERATIONS = [
+  "system.summary",
+  "users.list",
+  "users.get",
+  "users.create",
+  "users.updateAccount",
+  "users.updateLimits",
+  "users.setAccountEnabled",
+  "users.setForwardAccess",
+  "users.delete",
+  "users.permissions.get",
+  "users.permissions.set",
+  "hosts.list",
+  "hosts.get",
+  "hosts.create",
+  "hosts.update",
+  "hosts.delete",
+  "rules.list",
+  "rules.get",
+  "rules.create",
+  "rules.update",
+  "rules.toggle",
+  "rules.delete",
+  "tunnels.list",
+  "tunnels.get",
+  "tunnels.create",
+  "tunnels.update",
+  "tunnels.delete",
+  "tunnels.test",
+  "forwardGroups.list",
+  "forwardGroups.get",
+  "forwardGroups.create",
+  "forwardGroups.update",
+  "forwardGroups.delete",
+  "forwardGroups.sync",
+  "forwardGroups.test",
+  "traffic.summary",
+  "telegram.send",
+] as const;
+
+export type PluginPanelOperation = typeof PLUGIN_PANEL_OPERATIONS[number];
 
 export const PLUGIN_HTTP_METHODS = [
   "GET",
@@ -172,6 +222,7 @@ export type PluginUsageFieldType = typeof PLUGIN_USAGE_FIELD_TYPES[number];
 export type PluginSettingOption = {
   label: string;
   value: string;
+  exclusive?: boolean;
 };
 
 export type PluginSettingField = {
@@ -229,6 +280,10 @@ export type PluginAgentRequestDefinition = {
   outputType?: PluginAgentOutputType;
 };
 
+export type PluginPanelRequestDefinition = {
+  operation: PluginPanelOperation;
+};
+
 export type PluginActionDefinition = {
   id: string;
   label: string;
@@ -239,6 +294,7 @@ export type PluginActionDefinition = {
   inputSchema?: PluginSettingField[];
   request?: PluginHttpRequestDefinition;
   agent?: PluginAgentRequestDefinition;
+  panel?: PluginPanelRequestDefinition;
   resultSchema?: PluginResultSchemaDefinition;
 };
 
@@ -493,6 +549,21 @@ export type PluginStoreItem = {
   extensionPoints: PluginExtensionPoint[];
   official?: boolean;
   builtIn?: boolean;
+  storeSourceId?: number;
+  storeSourceName?: string;
+};
+
+export type PluginStoreSource = {
+  id: number;
+  name: string;
+  repository: string;
+  branch: string;
+  catalogPath: string;
+  pluginCount: number;
+  lastSyncedAt?: Date | string | null;
+  lastError?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
 };
 
 export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
@@ -503,17 +574,17 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     detailsMarkdown: [
       "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。",
       "",
-      "安装后先在“插件使用”中选择同步插件程序和数据的主机，再通过“Agent 资源管理”逐台读取、编辑、应用或清理实际白名单配置。",
+      "安装后在“插件使用”中选择同步插件程序和数据的主机，保存后即可在当前插件下方的“Agent 节点管理”中新增、查看、修改或删除实际白名单配置。",
       "",
       "- 支持全国或按省份选择全局入站白名单。",
       "- 支持额外 ASN 和端口优先白名单。",
       "- 支持 nftables 或 iptables/ipset。",
       "- 支持按 Agent 独立管理配置并实时查看应用和失败状态。",
     ].join("\n"),
-    version: "0.4.0",
+    version: "0.5.0",
     releaseDate: "2026-07-12",
     updatedAt: "2026-07-12",
-    changelog: "接入通用 Agent 动态资源管理，支持按主机实时读取、编辑、应用和清理白名单配置。",
+    changelog: "新增插件内 Agent 节点管理区域，支持按主机新增、查看、修改和删除省份白名单，并展示实际配置区域。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },
@@ -553,5 +624,5 @@ export const PLUGIN_SECURITY_MODEL = {
   maxAssetBytes: 512 * 1024,
   maxPackageBytes: 5 * 1024 * 1024,
   maxHttpResponseBytes: 256 * 1024,
-  description: "ForwardX 插件由面板解释 manifest。普通插件不执行面板后端代码；声明 net:http 后可发起受控 HTTP 请求；声明 agent:read、agent:write 或 agent:execute 后可让 Agent 在独立任务队列中执行插件包内固定脚本入口，并限制目标主机、目录、参数、超时和输出大小。",
+  description: "ForwardX 插件由面板解释 manifest。普通插件不执行面板后端代码；声明 net:http 后可发起受控 HTTP 请求；声明 Agent 权限后可在独立任务队列中执行插件包内固定脚本入口。panel.request 仅允许管理员已设为信任且声明对应细分权限的插件调用固定面板操作，不支持任意路由、SQL 或后端代码执行。",
 } as const;

@@ -143,6 +143,15 @@ function getPluginManifest(plugin?: PluginRow) {
   return plugin?.manifest || {};
 }
 
+function getPluginResourceViews(plugin?: PluginRow) {
+  const manifest = getPluginManifest(plugin);
+  return Array.isArray(manifest.resourceSchemas)
+    ? manifest.resourceSchemas
+    : Array.isArray(manifest.resourceViews)
+      ? manifest.resourceViews
+      : [];
+}
+
 function getPluginSettings(plugin?: PluginRow): Record<string, unknown> {
   const manifest = getPluginManifest(plugin);
   return manifest?.settingsValues && typeof manifest.settingsValues === "object" ? manifest.settingsValues : {};
@@ -734,14 +743,15 @@ export default function Plugins() {
   const { data: storeItems = [], isLoading: storeLoading } = trpc.plugins.store.useQuery(undefined, {
     enabled: publicInfo?.pluginsEnabled === true,
   });
+  const { data: storeSources = [] } = trpc.plugins.storeSources.useQuery(undefined, {
+    enabled: publicInfo?.pluginsEnabled === true,
+  });
   const { data: plugins = [], isLoading: pluginsLoading } = trpc.plugins.list.useQuery(undefined, {
     enabled: publicInfo?.pluginsEnabled === true,
   });
   const [selectedPluginId, setSelectedPluginId] = useState("");
   const [activeSection, setActiveSection] = useState<PluginSection>("usage");
-  const [githubRepository, setGithubRepository] = useState("");
-  const [githubBranch, setGithubBranch] = useState("main");
-  const [githubManifestPath, setGithubManifestPath] = useState("");
+  const [storeRepositoryList, setStoreRepositoryList] = useState("");
   const [customInstallOpen, setCustomInstallOpen] = useState(false);
   const [storeDetailItem, setStoreDetailItem] = useState<any | null>(null);
   const [uploadContent, setUploadContent] = useState("");
@@ -765,11 +775,7 @@ export default function Plugins() {
   const pluginPages = Array.isArray(selectedManifest.pages) ? selectedManifest.pages : [];
   const pluginActions = Array.isArray(selectedManifest.actions) ? selectedManifest.actions : [];
   const pluginUsageViews = Array.isArray(selectedManifest.usageViews) ? selectedManifest.usageViews : [];
-  const pluginResourceViews = Array.isArray(selectedManifest.resourceSchemas)
-    ? selectedManifest.resourceSchemas
-    : Array.isArray(selectedManifest.resourceViews)
-      ? selectedManifest.resourceViews
-      : [];
+  const pluginResourceViews = getPluginResourceViews(selectedPlugin);
   const hostAssetSyncUsageView = pluginUsageViews.find((view: any) => view?.type === "host-asset-sync");
   const hasUsageView = !!hostAssetSyncUsageView;
   const resourceActionIds = new Set(pluginResourceViews.flatMap((view: any) => [
@@ -841,6 +847,7 @@ export default function Plugins() {
     await Promise.all([
       utils.plugins.list.invalidate(),
       utils.plugins.store.invalidate(),
+      utils.plugins.storeSources.invalidate(),
       hasUsageView && selectedPlugin?.pluginId
         ? utils.plugins.usage.invalidate({ pluginId: selectedPlugin.pluginId, usageViewId: hostAssetSyncUsageView?.id })
         : Promise.resolve(),
@@ -858,16 +865,42 @@ export default function Plugins() {
     onError: (error) => toast.error(error.message || "安装失败"),
   });
 
-  const installFromGithub = trpc.plugins.installFromGithub.useMutation({
-    onSuccess: async (plugin) => {
-      toast.success("插件已安装");
-      setSelectedPluginId((plugin as any)?.pluginId || "");
-      setGithubRepository("");
-      setGithubManifestPath("");
-      setCustomInstallOpen(false);
+  const addStoreSourcesMutation = trpc.plugins.addStoreSources.useMutation({
+    onSuccess: async (results) => {
+      const failed = results.filter((item: any) => item.status === "failed");
+      const synced = results.length - failed.length;
+      if (synced > 0) toast.success(`已同步 ${synced} 个第三方商店来源`);
+      if (failed.length > 0) toast.error(`${failed.length} 个商店来源同步失败，可在来源列表查看原因`);
+      setStoreRepositoryList("");
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "安装失败"),
+    onError: (error) => toast.error(error.message || "添加商店来源失败"),
+  });
+
+  const refreshStoreMutation = trpc.plugins.refreshStore.useMutation({
+    onSuccess: async (result) => {
+      const failed = result.sources.filter((item: any) => !item.ok).length + (result.official.ok ? 0 : 1);
+      if (failed > 0) toast.error(`商店刷新完成，${failed} 个来源同步失败`);
+      else toast.success("官方和第三方插件商店已同步");
+      await invalidatePluginQueries();
+    },
+    onError: (error) => toast.error(error.message || "刷新插件商店失败"),
+  });
+
+  const refreshStoreSourceMutation = trpc.plugins.refreshStoreSource.useMutation({
+    onSuccess: async () => {
+      toast.success("第三方商店来源已同步");
+      await invalidatePluginQueries();
+    },
+    onError: (error) => toast.error(error.message || "同步商店来源失败"),
+  });
+
+  const deleteStoreSourceMutation = trpc.plugins.deleteStoreSource.useMutation({
+    onSuccess: async () => {
+      toast.success("第三方商店来源已删除");
+      await invalidatePluginQueries();
+    },
+    onError: (error) => toast.error(error.message || "删除商店来源失败"),
   });
 
   const installFromUpload = trpc.plugins.installFromUpload.useMutation({
@@ -889,6 +922,14 @@ export default function Plugins() {
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "操作失败"),
+  });
+
+  const setTrustedMutation = trpc.plugins.setTrusted.useMutation({
+    onSuccess: async (plugin) => {
+      toast.success((plugin as any)?.trusted ? "插件信任已开启" : "插件信任已关闭");
+      await invalidatePluginQueries();
+    },
+    onError: (error) => toast.error(error.message || "修改插件信任失败"),
   });
 
   const uninstallMutation = trpc.plugins.uninstall.useMutation({
@@ -1062,9 +1103,13 @@ export default function Plugins() {
 
   const installedIds = new Set(plugins.map((plugin: PluginRow) => plugin.pluginId));
   const isBusy = installFromStore.isPending
-    || installFromGithub.isPending
     || installFromUpload.isPending
+    || addStoreSourcesMutation.isPending
+    || refreshStoreMutation.isPending
+    || refreshStoreSourceMutation.isPending
+    || deleteStoreSourceMutation.isPending
     || setEnabledMutation.isPending
+    || setTrustedMutation.isPending
     || uninstallMutation.isPending
     || checkUpdateMutation.isPending
     || updateFromGithubMutation.isPending
@@ -1072,17 +1117,16 @@ export default function Plugins() {
     || saveUsageMutation.isPending
     || runActionMutation.isPending;
 
-  const handleGithubInstall = () => {
-    const repository = githubRepository.trim();
-    if (!repository) {
-      toast.error("请填写 GitHub 仓库地址");
+  const handleAddStoreSources = () => {
+    const repositories = Array.from(new Set(storeRepositoryList
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)));
+    if (!repositories.length) {
+      toast.error("请填写至少一个 GitHub 商店仓库地址");
       return;
     }
-    installFromGithub.mutate({
-      repository,
-      branch: githubBranch.trim() || "main",
-      manifestPath: githubManifestPath.trim() || undefined,
-    });
+    addStoreSourcesMutation.mutate({ repositories });
   };
 
   const handleUploadInstall = () => {
@@ -1192,6 +1236,29 @@ export default function Plugins() {
       tone: "destructive",
     });
     if (confirmed) uninstallMutation.mutate({ pluginId: plugin.pluginId });
+  };
+
+  const handlePluginTrustChange = async (plugin: PluginRow, trusted: boolean) => {
+    if (trusted) {
+      const confirmed = await confirmDialog({
+        title: "信任此插件",
+        description: `${plugin.name || plugin.pluginId} 将可按清单声明调用用户、规则、主机、隧道及消息推送等高权限面板 API。仅对你确认可信的插件开启。`,
+        confirmText: "确认信任",
+        tone: "destructive",
+      });
+      if (!confirmed) return;
+    }
+    setTrustedMutation.mutate({ pluginId: plugin.pluginId, trusted });
+  };
+
+  const handleDeleteStoreSource = async (source: any) => {
+    const confirmed = await confirmDialog({
+      title: "删除第三方商店来源",
+      description: `确定删除 ${source.name || source.repository}？已安装插件不会被卸载。`,
+      confirmText: "删除来源",
+      tone: "destructive",
+    });
+    if (confirmed) deleteStoreSourceMutation.mutate({ id: Number(source.id) });
   };
 
   const executePluginAction = async (action: any, input?: Record<string, unknown>) => {
@@ -1563,8 +1630,8 @@ export default function Plugins() {
           <div className="space-y-4 border-t border-border/40 pt-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="font-medium">Agent 资源管理</p>
-                <p className="text-xs text-muted-foreground">选择节点后实时读取并管理该 Agent 上的插件资源。</p>
+                <p className="font-medium">Agent 节点管理</p>
+                <p className="text-xs text-muted-foreground">管理当前插件在已选主机上的资源和实时状态。</p>
               </div>
               {pluginResourceViews.length > 1 && (
                 <Tabs value={activeResourceView.id} onValueChange={setActiveResourceViewId}>
@@ -1626,8 +1693,8 @@ export default function Plugins() {
             <p className="mt-1 text-sm text-muted-foreground">安装、更新和调试插件能力。</p>
           </div>
           <Button className="w-full gap-2 sm:w-auto" onClick={() => setCustomInstallOpen(true)}>
-            <Upload className="h-4 w-4" />
-            自定义安装
+            <PackagePlus className="h-4 w-4" />
+            插件来源
           </Button>
         </div>
 
@@ -1669,6 +1736,7 @@ export default function Plugins() {
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
+                            {plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                         </div>
@@ -1705,12 +1773,25 @@ export default function Plugins() {
         {activeSection === "store" && (
         <div className="grid gap-4">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <PackagePlus className="h-4 w-4 text-primary" />
-                插件商店
-              </CardTitle>
-              <CardDescription>查看插件详情，或直接一键安装。</CardDescription>
+            <CardHeader className="flex-row items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <PackagePlus className="h-4 w-4 text-primary" />
+                  插件商店
+                </CardTitle>
+                <CardDescription className="mt-1">查看插件详情，或直接一键安装。</CardDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                title="刷新全部插件商店"
+                aria-label="刷新全部插件商店"
+                disabled={refreshStoreMutation.isPending}
+                onClick={() => refreshStoreMutation.mutate()}
+              >
+                <RefreshCw className={cn("h-4 w-4", refreshStoreMutation.isPending && "animate-spin")} />
+              </Button>
             </CardHeader>
             <CardContent className="space-y-3">
               {storeLoading ? (
@@ -1720,16 +1801,24 @@ export default function Plugins() {
                   {storeItems.map((item: any) => {
                     const installed = installedIds.has(item.id);
                     return (
-                      <button
-                        key={item.id}
-                        type="button"
+                      <div
+                        key={`${item.storeSourceId || "official"}:${item.id}`}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setStoreDetailItem(item)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setStoreDetailItem(item);
+                          }
+                        }}
                         className="group flex min-h-[17rem] flex-col rounded-2xl border border-border/40 bg-muted/20 p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:bg-muted/30 hover:shadow-lg hover:shadow-primary/5"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <PluginLogo logo={item.logo} name={item.name} />
                           <div className="flex flex-wrap justify-end gap-1.5">
                             {item.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                            {!item.official && item.storeSourceName && <Badge variant="outline" className="max-w-40 truncate" title={item.storeSourceName}>{item.storeSourceName}</Badge>}
                             {installed && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
                           </div>
                         </div>
@@ -1760,7 +1849,7 @@ export default function Plugins() {
                             variant={installed ? "outline" : "default"}
                             onClick={(event) => {
                               event.stopPropagation();
-                              installFromStore.mutate({ id: item.id });
+                              installFromStore.mutate({ id: item.id, storeSourceId: item.storeSourceId || undefined });
                             }}
                             disabled={installFromStore.isPending}
                           >
@@ -1768,7 +1857,7 @@ export default function Plugins() {
                             {installed ? "重装" : "安装"}
                           </Button>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1787,38 +1876,81 @@ export default function Plugins() {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Upload className="h-5 w-5" />
-                自定义安装
+                插件来源
               </DialogTitle>
-              <DialogDescription>支持 GitHub 仓库或插件压缩包。</DialogDescription>
+              <DialogDescription>管理第三方 GitHub 插件商店，或上传本地插件压缩包。</DialogDescription>
             </DialogHeader>
-            <Tabs defaultValue="github" className="space-y-4">
+            <Tabs defaultValue="store" className="space-y-4">
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="github">GitHub</TabsTrigger>
+                <TabsTrigger value="store">第三方商店</TabsTrigger>
                 <TabsTrigger value="upload">上传</TabsTrigger>
               </TabsList>
-              <TabsContent value="github" className="space-y-4">
+              <TabsContent value="store" className="space-y-4">
                 <div className="space-y-2">
-                  <Label>仓库地址</Label>
-                  <Input
-                    value={githubRepository}
-                    onChange={(event) => setGithubRepository(event.target.value)}
-                    placeholder="https://github.com/owner/repo"
+                  <Label>GitHub 商店仓库</Label>
+                  <Textarea
+                    value={storeRepositoryList}
+                    onChange={(event) => setStoreRepositoryList(event.target.value)}
+                    placeholder={"https://github.com/owner/store-one\nhttps://github.com/owner/store-two"}
+                    className="min-h-28 font-mono text-sm"
                   />
+                  <p className="text-xs text-muted-foreground">每行一个仓库，默认读取 main 分支根目录的 forwardx-store.json。</p>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>分支</Label>
-                    <Input value={githubBranch} onChange={(event) => setGithubBranch(event.target.value)} placeholder="main" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Manifest 路径</Label>
-                    <Input value={githubManifestPath} onChange={(event) => setGithubManifestPath(event.target.value)} placeholder="forwardx-plugin.json" />
-                  </div>
-                </div>
-                <Button className="w-full gap-2" onClick={handleGithubInstall} disabled={installFromGithub.isPending}>
-                  {installFromGithub.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
-                  从 GitHub 安装
+                <Button className="w-full gap-2" onClick={handleAddStoreSources} disabled={addStoreSourcesMutation.isPending}>
+                  {addStoreSourcesMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+                  添加并同步商店来源
                 </Button>
+                <div className="space-y-2 border-t border-border/40 pt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>已添加来源</Label>
+                    <span className="text-xs text-muted-foreground">{storeSources.length} 个</span>
+                  </div>
+                  {storeSources.length > 0 ? (
+                    <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                      {storeSources.map((source: any) => (
+                        <div key={source.id} className="flex items-center gap-3 rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
+                          <Github className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-medium">{source.name || source.repository}</p>
+                              <Badge variant="outline">{source.pluginCount || 0} 个插件</Badge>
+                              {source.lastError && <Badge variant="destructive">同步失败</Badge>}
+                            </div>
+                            <p className="mt-0.5 truncate text-xs text-muted-foreground" title={source.repository}>{source.repository}</p>
+                            {source.lastError && <p className="mt-1 line-clamp-2 text-xs text-destructive" title={source.lastError}>{source.lastError}</p>}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            title="同步此来源"
+                            aria-label="同步此来源"
+                            disabled={refreshStoreSourceMutation.isPending || deleteStoreSourceMutation.isPending}
+                            onClick={() => refreshStoreSourceMutation.mutate({ id: Number(source.id) })}
+                          >
+                            <RefreshCw className={cn("h-4 w-4", refreshStoreSourceMutation.isPending && "animate-spin")} />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            title="删除此来源"
+                            aria-label="删除此来源"
+                            className="text-destructive hover:text-destructive"
+                            disabled={refreshStoreSourceMutation.isPending || deleteStoreSourceMutation.isPending}
+                            onClick={() => handleDeleteStoreSource(source)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-sm text-muted-foreground">
+                      尚未添加第三方商店来源
+                    </div>
+                  )}
+                </div>
               </TabsContent>
               <TabsContent value="upload" className="space-y-4">
                 <input
@@ -1852,7 +1984,7 @@ export default function Plugins() {
               </TabsContent>
             </Tabs>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setCustomInstallOpen(false)} disabled={installFromGithub.isPending || installFromUpload.isPending}>
+              <Button variant="outline" onClick={() => setCustomInstallOpen(false)} disabled={addStoreSourcesMutation.isPending || installFromUpload.isPending}>
                 关闭
               </Button>
             </DialogFooter>
@@ -1870,6 +2002,7 @@ export default function Plugins() {
                       <DialogTitle className="flex flex-wrap items-center gap-2">
                         {storeDetailItem.name}
                         {storeDetailItem.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                        {!storeDetailItem.official && storeDetailItem.storeSourceName && <Badge variant="outline">{storeDetailItem.storeSourceName}</Badge>}
                         {installedIds.has(storeDetailItem.id) && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
                       </DialogTitle>
                       <DialogDescription className="mt-1">
@@ -1912,7 +2045,7 @@ export default function Plugins() {
                   </Button>
                   <Button
                     className="gap-2"
-                    onClick={() => installFromStore.mutate({ id: storeDetailItem.id })}
+                    onClick={() => installFromStore.mutate({ id: storeDetailItem.id, storeSourceId: storeDetailItem.storeSourceId || undefined })}
                     disabled={installFromStore.isPending}
                   >
                     {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
@@ -1957,6 +2090,7 @@ export default function Plugins() {
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
+                            {plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                           </div>
                           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1991,6 +2125,7 @@ export default function Plugins() {
                         <Badge variant="outline" className={pluginStatusClass(selectedPlugin.status)}>
                           {pluginStatusLabel(selectedPlugin.status)}
                         </Badge>
+                        {selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                       </CardTitle>
                       <CardDescription>{selectedPlugin.description || selectedPlugin.pluginId}</CardDescription>
                       <p className="text-xs text-muted-foreground">
@@ -1999,6 +2134,21 @@ export default function Plugins() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <div className={cn(
+                      "flex h-9 items-center gap-2 rounded-md border px-2.5",
+                      selectedPlugin.trusted ? "border-amber-500/40 bg-amber-500/10" : "border-border/50 bg-muted/20",
+                    )}>
+                      {selectedPlugin.trusted
+                        ? <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
+                        : <ShieldAlert className="h-4 w-4 text-muted-foreground" />}
+                      <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">插件信任</Label>
+                      <Switch
+                        id="plugin-trusted"
+                        checked={!!selectedPlugin.trusted}
+                        disabled={isBusy}
+                        onCheckedChange={(checked) => handlePluginTrustChange(selectedPlugin, checked)}
+                      />
+                    </div>
                     <Button
                       variant="outline"
                       size="sm"
@@ -2040,6 +2190,15 @@ export default function Plugins() {
                     </TabsList>
 
                     <TabsContent value="overview" className="space-y-4">
+                      <Alert className={selectedPlugin.trusted ? "border-amber-500/30 bg-amber-500/10" : "border-border/50 bg-muted/20"}>
+                        {selectedPlugin.trusted ? <ShieldCheck className="h-4 w-4 text-amber-600" /> : <ShieldAlert className="h-4 w-4" />}
+                        <AlertTitle>{selectedPlugin.trusted ? "高权限 API 已授权" : "受限插件模式"}</AlertTitle>
+                        <AlertDescription>
+                          {selectedPlugin.trusted
+                            ? "插件可按已声明权限调用受控的用户、规则、主机、隧道、转发组和消息推送 API。"
+                            : "当前只允许普通插件权限，所有 panel.request 高权限动作都会被拒绝。"}
+                        </AlertDescription>
+                      </Alert>
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                           <p className="text-xs text-muted-foreground">插件 ID</p>
@@ -2238,6 +2397,9 @@ export default function Plugins() {
                               {action.description && <p className="text-xs text-muted-foreground">{action.description}</p>}
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                 <Badge variant="outline" className="font-mono text-[10px]">{action.type}</Badge>
+                                {action.type === "panel.request" && !selectedPlugin.trusted && (
+                                  <Badge variant="destructive" className="text-[10px]">需要插件信任</Badge>
+                                )}
                                 {Array.isArray(action.inputSchema) && action.inputSchema.length > 0 && (
                                   <Badge variant="outline" className="text-[10px]">需要输入 {action.inputSchema.length} 项</Badge>
                                 )}
@@ -2246,7 +2408,7 @@ export default function Plugins() {
                             <Button
                               className="gap-2"
                               variant="outline"
-                              disabled={selectedPlugin.status !== "enabled" || runActionMutation.isPending}
+                              disabled={selectedPlugin.status !== "enabled" || runActionMutation.isPending || (action.type === "panel.request" && !selectedPlugin.trusted)}
                               onClick={() => handleRunAction(action)}
                             >
                               {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}

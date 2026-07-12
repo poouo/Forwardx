@@ -1033,6 +1033,7 @@ export const plugins = table("plugins", {
   permissionsJson: text("permissionsJson"),
   extensionPointsJson: text("extensionPointsJson"),
   status: varchar("status", { length: 32 }).notNull().default("disabled"), // enabled | disabled | error
+  trusted: boolean("trusted").notNull().default(false),
   installedAt: epoch("installedAt").notNull().default(nowDefault()),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
   lastCheckedAt: epoch("lastCheckedAt"),
@@ -1041,6 +1042,21 @@ export const plugins = table("plugins", {
 });
 export type Plugin = typeof plugins.$inferSelect;
 export type InsertPlugin = typeof plugins.$inferInsert;
+
+export const pluginStoreSources = table("plugin_store_sources", {
+  id: serial("id"),
+  name: text("name").notNull(),
+  repository: text("repository").notNull(),
+  branch: varchar("branch", { length: 128 }).notNull().default("main"),
+  catalogPath: text("catalogPath").notNull().default("forwardx-store.json"),
+  itemsJson: text("itemsJson"),
+  lastSyncedAt: epoch("lastSyncedAt"),
+  lastError: text("lastError"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type PluginStoreSource = typeof pluginStoreSources.$inferSelect;
+export type InsertPluginStoreSource = typeof pluginStoreSources.$inferInsert;
 
 export const pluginAssets = table("plugin_assets", {
   id: serial("id"),

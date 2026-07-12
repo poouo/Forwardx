@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.150"
+var Version = "2.2.151"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -59,6 +59,7 @@ const agentReportLogInterval = 30 * time.Second
 const transientAgentCommLogInterval = 5 * time.Minute
 const agentEventStreamReconnectMinDelay = 3 * time.Second
 const agentEventStreamReconnectMaxDelay = 30 * time.Second
+const agentEventStreamMaxTokenBytes = 8 * 1024 * 1024
 const actionBacklogKeepaliveInterval = 10 * time.Second
 const actionQueueCapacity = 4096
 
@@ -233,6 +234,7 @@ type actionJob struct {
 	desiredSignature string
 	enqueuedAt       time.Time
 	protectedPort    string
+	prerequisites    []<-chan struct{}
 }
 
 type heartbeatStaticSnapshot struct {
@@ -572,18 +574,54 @@ func (r *localRuntimeReadiness) gostReadyForPort(port int, protocol string) bool
 	if r == nil || port <= 0 {
 		return false
 	}
+	return r.gostMainReadyForPort(port, protocol) || r.gostTunnelReadyForPort(port, protocol)
+}
+
+func (r *localRuntimeReadiness) gostMainReadyForPort(port int, protocol string) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
 	// runtimeServiceName ("forwardx-runtime") is the actual binary; Linux ss(8)
 	// truncates comm to 15 chars so it appears as "forwardx-runtim" in ss output.
 	// Keep "gost" for environments that still run the upstream gost binary directly.
 	runtimeNeedles := []string{"gost", "forwardx-runt"}
-	return (r.gostRuntimeReady &&
+	return r.gostRuntimeReady &&
 		r.gostRuntimePorts[port] &&
 		runtimePortProtocolConfigured(r.gostRuntimePortProtocols, port, protocol) &&
-		runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles)) ||
-		(r.tunnelRuntimeReady &&
-			r.tunnelRuntimePorts[port] &&
-			runtimePortProtocolConfigured(r.tunnelRuntimePortProtocols, port, protocol) &&
-			runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles))
+		runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles)
+}
+
+func (r *localRuntimeReadiness) gostTunnelReadyForPort(port int, protocol string) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
+	runtimeNeedles := []string{"gost", "forwardx-runt"}
+	return r.tunnelRuntimeReady &&
+		r.tunnelRuntimePorts[port] &&
+		runtimePortProtocolConfigured(r.tunnelRuntimePortProtocols, port, protocol) &&
+		runtimeListenPortReady(r.listenSnapshot, port, protocol, runtimeNeedles)
+}
+
+// Prefer the runtime family that owns the action. Falling back only when the
+// preferred config does not declare the port keeps rolling upgrades compatible,
+// while preventing a stale duplicate in the other config from marking a healthy
+// TLS listener as failed.
+func (r *localRuntimeReadiness) gostReadyForPortInScope(port int, protocol string, scope string) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
+	switch strings.TrimSpace(scope) {
+	case desiredGostTunnelRuntimeScope:
+		if r.tunnelRuntimePorts[port] {
+			return r.gostTunnelReadyForPort(port, protocol)
+		}
+		return r.gostMainReadyForPort(port, protocol)
+	default:
+		if r.gostRuntimePorts[port] {
+			return r.gostMainReadyForPort(port, protocol)
+		}
+		return r.gostTunnelReadyForPort(port, protocol)
+	}
 }
 
 func (r *localRuntimeReadiness) nginxReadyForPort(port int, protocol string) bool {
@@ -1244,6 +1282,7 @@ type action struct {
 	Failover         *failoverSpec `json:"failover,omitempty"`
 	ReportStatus     *bool         `json:"reportStatus,omitempty"`
 	FailureMessage   string        `json:"failureMessage,omitempty"`
+	ForceRuntimeSync bool          `json:"forceRuntimeSync,omitempty"`
 }
 
 type desiredState struct {
@@ -1933,6 +1972,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	if len(forceReconcile) > 0 && forceReconcile[0] {
 		payload["forceReconcile"] = true
 	}
+	payload["pluginVersions"] = installedPluginVersions()
 	if (!compactEnabled || shouldReportStatic) && primaryIP != "" {
 		payload["ip"] = primaryIP
 	}
@@ -2691,7 +2731,7 @@ func runAgentEventStream(cfg Config) error {
 		return fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := newAgentEventStreamScanner(resp.Body)
 	var data strings.Builder
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -2736,6 +2776,12 @@ func runAgentEventStream(cfg Config) error {
 		return err
 	}
 	return io.EOF
+}
+
+func newAgentEventStreamScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), agentEventStreamMaxTokenBytes)
+	return scanner
 }
 
 func decodeEventData(raw string, token string, out any) error {
@@ -2797,6 +2843,8 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		}
 		if mimicAction {
 			logf("mimic runtime sync start commands=%d diagnosticsBefore=%s", len(a.Commands), mimicRuntimeDiagnostics())
+		} else if a.ForceRuntimeSync {
+			logf("runtime reconciliation start forwardType=%s commands=%d", strings.TrimSpace(a.ForwardType), len(a.Commands))
 		}
 		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 		ok = runShellBatch(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...)) && ok
@@ -2804,7 +2852,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
 		if mimicAction {
 			logf("mimic runtime sync complete ok=%v diagnosticsAfter=%s", ok, mimicRuntimeDiagnostics())
-		} else if !ok || agentVerboseLogs {
+		} else if a.ForceRuntimeSync || !ok || agentVerboseLogs {
 			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		}
 		rememberRuntimeActionResult(a, ok)
@@ -2862,7 +2910,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			message := fmt.Sprintf("managed runtime listener not ready after apply port=%d protocol=%s forwardType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), strings.TrimSpace(a.ForwardType))
 			actionMessage.set(message)
 			if shouldLogAgentReport(fmt.Sprintf("managed-runtime-listen-missing:%d:%s:%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.ForwardType), agentReportLogInterval) {
-				logf("%s %s owner=%s", message, actionLogSummary(a), listenPortOwnerSummary(a.SourcePort))
+				logf("%s %s readiness={%s} owner=%s", message, actionLogSummary(a), managedRuntimeActionReadinessDiagnostic(a), listenPortOwnerSummary(a.SourcePort))
 			}
 			requestLocalRuntimeStateUpload()
 		}
@@ -2965,10 +3013,100 @@ func managedRuntimeActionListenReady(a action) bool {
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
-		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	default:
 		return true
 	}
+}
+
+func managedRuntimeActionReadinessDiagnostic(a action) string {
+	port := a.SourcePort
+	protocol := normalizeRuntimeProtocol(a.Protocol)
+	readiness := readLocalRuntimeReadiness()
+	configPath := ""
+	serviceName := ""
+	configured := false
+	protocolConfigured := false
+	serviceActive := false
+	socketReady := false
+	ready := false
+	scope := ""
+
+	switch strings.TrimSpace(a.ForwardType) {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		scope = "nginx"
+		configPath = nginxConfigPath
+		serviceName = nginxServiceName
+		configured = readiness.nginxRuntimePorts[port]
+		protocolConfigured = runtimePortProtocolConfigured(readiness.nginxRuntimePortProtocols, port, protocol)
+		serviceActive = readiness.serviceActiveCache[serviceName]
+		socketReady = runtimeListenPortReady(readiness.listenSnapshot, port, protocol, []string{"nginx"})
+		ready = readiness.nginxReadyForPort(port, protocol)
+	default:
+		scope = desiredGostRuntimeScope(a.ForwardType)
+		useTunnelRuntime := scope == desiredGostTunnelRuntimeScope
+		if useTunnelRuntime && !readiness.tunnelRuntimePorts[port] && readiness.gostRuntimePorts[port] {
+			useTunnelRuntime = false
+		} else if !useTunnelRuntime && !readiness.gostRuntimePorts[port] && readiness.tunnelRuntimePorts[port] {
+			useTunnelRuntime = true
+		}
+		if useTunnelRuntime {
+			configPath = tunnelRuntimeConfigPath
+			serviceName = tunnelRuntimeServiceName
+			configured = readiness.tunnelRuntimePorts[port]
+			protocolConfigured = runtimePortProtocolConfigured(readiness.tunnelRuntimePortProtocols, port, protocol)
+			socketReady = runtimeListenPortReady(readiness.listenSnapshot, port, protocol, []string{"gost", "forwardx-runt"})
+			ready = readiness.gostTunnelReadyForPort(port, protocol)
+		} else {
+			configPath = runtimeConfigPath
+			serviceName = runtimeServiceName
+			configured = readiness.gostRuntimePorts[port]
+			protocolConfigured = runtimePortProtocolConfigured(readiness.gostRuntimePortProtocols, port, protocol)
+			socketReady = runtimeListenPortReady(readiness.listenSnapshot, port, protocol, []string{"gost", "forwardx-runt"})
+			ready = readiness.gostMainReadyForPort(port, protocol)
+		}
+		serviceActive = readiness.serviceActiveCache[serviceName]
+	}
+
+	return fmt.Sprintf(
+		"scope=%s config=%s listener=%s configured=%v protocolConfigured=%v service=%s active=%v socketReady=%v ready=%v",
+		scope,
+		configPath,
+		managedRuntimeConfigListenSummary(configPath, port),
+		configured,
+		protocolConfigured,
+		serviceName,
+		serviceActive,
+		socketReady,
+		ready,
+	)
+}
+
+func managedRuntimeConfigListenSummary(path string, port int) string {
+	if strings.TrimSpace(path) == "" || port <= 0 {
+		return "none"
+	}
+	var listens []runtimeListenConfig
+	var ok bool
+	if strings.HasSuffix(path, ".json") {
+		listens, ok = readGostRuntimeServiceListens(path)
+	} else {
+		listens, ok = nginxRuntimeListenConfigs(path)
+	}
+	if !ok {
+		return "unreadable"
+	}
+	matches := make([]string, 0, 2)
+	for _, listen := range listens {
+		if addrUsesPort(listen.Addr, port) {
+			matches = append(matches, fmt.Sprintf("%s@%s", strings.TrimSpace(listen.Protocol), strings.TrimSpace(listen.Addr)))
+		}
+	}
+	if len(matches) == 0 {
+		return "none"
+	}
+	sort.Strings(matches)
+	return strings.Join(matches, ",")
 }
 
 func reportActionStatus(cfg Config, a action, running bool, message string) {
@@ -3138,6 +3276,9 @@ func logIPv6ActionDiagnostic(a action) {
 }
 
 func shouldSkipRuntimeAction(a action) bool {
+	if a.ForceRuntimeSync {
+		return false
+	}
 	key := strings.TrimSpace(a.ForwardType)
 	if key == "" {
 		key = "runtime"
@@ -3525,6 +3666,9 @@ func actionCommandSignature(a action) string {
 	write(a.ServiceNameExtra)
 	write(a.Unit)
 	write(a.UnitExtra)
+	if a.ForceRuntimeSync {
+		write("force-runtime-sync")
+	}
 	for _, cmd := range a.PreCommands {
 		write(cmd)
 	}
@@ -5418,7 +5562,12 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 			"awk '{match($0,/pid=([0-9]+)/,a); if(a[1]!=\"\" && a[1]!=\"$$\" && a[1]!=\"$PPID\") print a[1]}' | sort -u || true); " +
 			"do kill \"$pid\" 2>/dev/null || true; done")
 	}
-	if !waitForFXPListenPortFree(&spec, spec.ListenPort, 3*time.Second) {
+	ownerBeforeWait := listenPortOwnerSummary(spec.ListenPort)
+	portReleaseTimeout := fxpPortReleaseTimeout(ownerBeforeWait)
+	if portReleaseTimeout > 3*time.Second {
+		logf("fxp waits for shared nginx runtime handoff role=%s tunnel=%d rule=%d listen=:%d timeout=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, portReleaseTimeout)
+	}
+	if !waitForFXPListenPortFree(&spec, spec.ListenPort, portReleaseTimeout) {
 		owner := listenPortOwnerSummary(spec.ListenPort)
 		if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
 			if udpOwner := listenPortOwnerSummary(spec.UDPListenPort); udpOwner != "" {
@@ -5601,6 +5750,13 @@ func stopFXPByListenPort(listenPort int) {
 	for _, spec := range specs {
 		stopFXP(spec)
 	}
+}
+
+func fxpPortReleaseTimeout(owner string) time.Duration {
+	if strings.Contains(strings.ToLower(owner), "forwardx-nginx") {
+		return 15 * time.Second
+	}
+	return 3 * time.Second
 }
 
 func waitForFXPListenPortFree(spec *fxpSpec, listenPort int, timeout time.Duration) bool {

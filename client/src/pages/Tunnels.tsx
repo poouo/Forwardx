@@ -56,7 +56,7 @@ import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, get
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { pollingInterval } from "@/lib/polling";
-import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
@@ -2376,13 +2376,15 @@ function TunnelsContent() {
     const visibleHopIds = entryGroup
       ? hopIds.filter((hostId: number) => !entryMembersForGroup(Number(entryGroup.id)).some((member: any) => Number(member.hostId || 0) === Number(hostId)))
       : hopIds;
+    const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
+    const exitNames = extraExitNames.length > 0 ? getTunnelExitNames(tunnel, hosts) : [];
     const routeTitle = [
       entryGroupLabel ? `入口组：${entryGroupLabel}` : "",
       getTunnelRouteText(tunnel, hosts),
     ].filter(Boolean).join("；");
     return (
       <div
-        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
+        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact || exitNames.length > 0 ? "flex-wrap" : "whitespace-nowrap"}`}
         title={routeTitle}
       >
         {entryGroupLabel && (
@@ -2399,6 +2401,12 @@ function TunnelsContent() {
             </span>
           </Fragment>
         ))}
+        {exitNames.length > 0 && (
+          <span className="flex min-w-0 items-center gap-1 rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 text-muted-foreground">
+            <span className="shrink-0">出口</span>
+            <span className="min-w-0 truncate">{exitNames.join(" / ")}</span>
+          </span>
+        )}
       </div>
     );
   };

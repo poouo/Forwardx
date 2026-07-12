@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
-import { normalizePluginManifest } from "./repositories/pluginRepository";
+import { normalizePluginManifest, normalizePluginStoreCatalog } from "./repositories/pluginRepository";
 
 test("plugin resourceSchema shorthand expands into generic Agent sources", () => {
   const manifest = normalizePluginManifest({
@@ -118,4 +120,69 @@ test("invalid result and resource schema members are discarded", () => {
   assert.deepEqual(manifest.permissions, ["agent:read"]);
   assert.equal(manifest.actions?.[0]?.resultSchema, undefined);
   assert.deepEqual(manifest.resourceSchemas, []);
+});
+
+test("official whitelist exposes per-host province configuration CRUD", () => {
+  const source = JSON.parse(fs.readFileSync(
+    path.resolve(process.cwd(), "plugins/china-region-whitelist/forwardx-plugin.json"),
+    "utf8",
+  ));
+  const manifest = normalizePluginManifest(source);
+  const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
+
+  assert.equal(manifest.version, "0.5.0");
+  assert.ok(schema);
+  assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
+  assert.equal(schema.operations?.create?.actionId, "save-whitelist-config");
+  assert.equal(schema.operations?.update?.actionId, "save-whitelist-config");
+  assert.equal(schema.operations?.delete?.actionId, "delete-whitelist-config");
+  const regions = schema.fields?.find((field) => field.key === "regions");
+  assert.equal(regions?.options?.find((option) => option.value === "CN")?.exclusive, true);
+  assert.equal(regions?.options?.some((option) => option.value === "440000"), true);
+});
+
+test("trusted panel actions retain only fixed operations and declared permissions", () => {
+  const manifest = normalizePluginManifest({
+    id: "panel-api-demo",
+    name: "Panel API demo",
+    version: "1.0.0",
+    permissions: ["read:users", "write:rules", "telegram:send"],
+    actions: [
+      { id: "users", label: "Users", type: "panel.request", panel: { operation: "users.list" } },
+      { id: "send", label: "Send", type: "panel.request", panelRequest: { operation: "telegram.send" } },
+      { id: "unsafe", label: "Unsafe", type: "panel.request", panel: { operation: "database.query" } },
+    ],
+  });
+
+  assert.deepEqual(manifest.permissions, ["read:users", "write:rules", "telegram:send"]);
+  assert.deepEqual(manifest.actions?.map((action) => [action.id, action.panel?.operation]), [
+    ["users", "users.list"],
+    ["send", "telegram.send"],
+  ]);
+});
+
+test("third-party store catalog annotates source and defaults package repository", () => {
+  const catalog = normalizePluginStoreCatalog({
+    name: "Community Store",
+    plugins: [{
+      id: "community-demo",
+      name: "Community Demo",
+      description: "Demo",
+      version: "1.0.0",
+      packagePath: "dist/community-demo.zip",
+      permissions: ["read:hosts"],
+      extensionPoints: [],
+    }],
+  }, {
+    id: 7,
+    repository: "https://github.com/example/community-store",
+    branch: "main",
+    catalogPath: "forwardx-store.json",
+  });
+
+  assert.equal(catalog.name, "Community Store");
+  assert.equal(catalog.items[0]?.official, false);
+  assert.equal(catalog.items[0]?.storeSourceId, 7);
+  assert.equal(catalog.items[0]?.storeSourceName, "Community Store");
+  assert.equal(catalog.items[0]?.packageRepository, "https://github.com/example/community-store");
 });

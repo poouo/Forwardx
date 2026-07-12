@@ -260,13 +260,23 @@ export function enqueuePluginAgentTaskGroup(input: PluginAgentTaskGroupInput) {
   return publicGroup(group);
 }
 
-export function takePluginAgentTasks(hostId: number, limit = 2) {
+export function takePluginAgentTasks(
+  hostId: number,
+  limit = 2,
+  canTake: (task: PluginAgentTask) => boolean = () => true,
+) {
   expireOverdueGroups();
   const id = Math.floor(Number(hostId));
   if (!Number.isInteger(id) || id <= 0) return [];
   const queue = taskQueues.get(id) || [];
-  const tasks = queue.splice(0, Math.max(1, Math.min(8, Math.floor(limit) || 2)));
-  if (queue.length > 0) taskQueues.set(id, queue);
+  const takeLimit = Math.max(1, Math.min(8, Math.floor(limit) || 2));
+  const tasks: PluginAgentTask[] = [];
+  const remaining: PluginAgentTask[] = [];
+  for (const task of queue) {
+    if (tasks.length < takeLimit && canTake(task)) tasks.push(task);
+    else remaining.push(task);
+  }
+  if (remaining.length > 0) taskQueues.set(id, remaining);
   else taskQueues.delete(id);
   const startedAt = nowIso();
   for (const task of tasks) {
@@ -280,6 +290,12 @@ export function takePluginAgentTasks(hostId: number, limit = 2) {
     refreshGroup(group);
   }
   return tasks;
+}
+
+export function hasQueuedPluginAgentTasks(hostId: number) {
+  expireOverdueGroups();
+  const id = Math.floor(Number(hostId));
+  return Number.isInteger(id) && id > 0 && (taskQueues.get(id)?.length || 0) > 0;
 }
 
 export function completePluginAgentTask(hostId: number, input: PluginAgentTaskResult) {
@@ -317,4 +333,12 @@ export function getPluginAgentTaskGroup(groupId: string) {
   expireOverdueGroups();
   const group = taskGroups.get(normalizeText(groupId, 64));
   return group ? publicGroup(group) : null;
+}
+
+export function clearPluginAgentTasksForTest() {
+  for (const group of taskGroups.values()) {
+    if (group.timeoutTimer) clearTimeout(group.timeoutTimer);
+  }
+  taskQueues.clear();
+  taskGroups.clear();
 }

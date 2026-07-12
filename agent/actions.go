@@ -275,6 +275,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	}
 	writeDesiredActionRecordsLocked(records)
 	desiredActionRecordMu.Unlock()
+	pendingJobs = prepareDesiredActionJobs(pendingJobs)
 	if len(adoptedStatusReports) > 0 {
 		go reportAdoptedDesiredActions(cfg, adoptedStatusReports)
 	}
@@ -308,7 +309,7 @@ func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapsh
 		return kernelSnapshot.desiredActionConsistent(a)
 	}
 	if strings.TrimSpace(a.StatusType) == "runtime" {
-		return true
+		return !a.ForceRuntimeSync
 	}
 	if strings.TrimSpace(a.Op) == "apply" {
 		return canAdoptDesiredAction(a)
@@ -416,8 +417,8 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
-	case "gost", "forwardx", "gost-tunnel", "guard":
-		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
+	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	}
 	return checkedService
 }
@@ -443,8 +444,8 @@ func desiredKnownRunningActionReady(a action) bool {
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "iptables", "nftables":
 		return newKernelForwardSnapshot().actionApplyReady(a)
-	case "gost", "forwardx", "gost-tunnel", "guard":
-		return desiredGostRuntimeReady(a.SourcePort, a.Protocol)
+	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	default:
 		return true
 	}
@@ -498,37 +499,36 @@ func desiredNginxRuntimeReady(port int, protocol string) bool {
 	})
 }
 
-func desiredGostRuntimeReady(port int, protocol string) bool {
-	if port <= 0 {
-		return false
+const (
+	desiredGostMainRuntimeScope   = "gost-main"
+	desiredGostTunnelRuntimeScope = "gost-tunnel"
+)
+
+func desiredGostRuntimeScope(forwardType string) string {
+	switch strings.TrimSpace(forwardType) {
+	case "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
+		return desiredGostTunnelRuntimeScope
+	default:
+		return desiredGostMainRuntimeScope
 	}
-	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, protocol, func() bool {
-		readiness := readLocalRuntimeReadinessCached()
-		matched := false
-		for _, item := range []struct {
-			path      string
-			service   string
-			readyPort func(int, string) bool
-		}{
-			{runtimeConfigPath, runtimeServiceName, readiness.gostReadyForPort},
-			{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, readiness.gostReadyForPort},
-		} {
-			if managedRuntimeConfigUsesPort(item.path, port) {
-				matched = true
-				if !managedServiceActive(item.service) || !item.readyPort(port, protocol) {
-					return false
-				}
-			}
-		}
-		return matched
-	})
 }
 
-func cachedDesiredRuntimeReady(cache map[string]desiredRuntimeReadyCacheEntry, port int, protocol string, compute func() bool) bool {
+func desiredGostRuntimeReady(port int, protocol string, forwardType string) bool {
 	if port <= 0 {
 		return false
 	}
-	key := desiredRuntimeReadyCacheKey(port, protocol)
+	scope := desiredGostRuntimeScope(forwardType)
+	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, protocol, func() bool {
+		readiness := readLocalRuntimeReadinessCached()
+		return readiness.gostReadyForPortInScope(port, protocol, scope)
+	}, scope)
+}
+
+func cachedDesiredRuntimeReady(cache map[string]desiredRuntimeReadyCacheEntry, port int, protocol string, compute func() bool, scopes ...string) bool {
+	if port <= 0 {
+		return false
+	}
+	key := desiredRuntimeReadyCacheKey(port, protocol, scopes...)
 	now := time.Now()
 	desiredRuntimeReadyMu.Lock()
 	if entry, ok := cache[key]; ok && now.Sub(entry.checkedAt) <= desiredRuntimeReadyCacheTTL {
@@ -550,7 +550,14 @@ func cachedDesiredRuntimeReady(cache map[string]desiredRuntimeReadyCacheEntry, p
 	return value
 }
 
-func desiredRuntimeReadyCacheKey(port int, protocol string) string {
+func desiredRuntimeReadyCacheKey(port int, protocol string, scopes ...string) string {
+	scope := ""
+	if len(scopes) > 0 {
+		scope = strings.TrimSpace(scopes[0])
+	}
+	if scope != "" {
+		return fmt.Sprintf("%s:%d:%s", scope, port, normalizeRuntimeProtocol(protocol))
+	}
 	return fmt.Sprintf("%d:%s", port, normalizeRuntimeProtocol(protocol))
 }
 
@@ -565,6 +572,7 @@ func primeDesiredRuntimeReadyCacheForActions(actions []action) {
 		port  int
 		proto string
 		ft    string
+		scope string
 	}
 	unique := map[portKey]struct{}{}
 	for _, a := range actions {
@@ -573,9 +581,13 @@ func primeDesiredRuntimeReadyCacheForActions(actions []action) {
 		}
 		ft := strings.TrimSpace(a.ForwardType)
 		switch ft {
-		case "gost", "forwardx", "gost-tunnel", "guard",
+		case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard",
 			"nginx", "nginx-tunnel", "nginx-tunnel-exit":
-			unique[portKey{a.SourcePort, normalizeRuntimeProtocol(a.Protocol), ft}] = struct{}{}
+			scope := ""
+			if ft != "nginx" && ft != "nginx-tunnel" && ft != "nginx-tunnel-exit" {
+				scope = desiredGostRuntimeScope(ft)
+			}
+			unique[portKey{a.SourcePort, normalizeRuntimeProtocol(a.Protocol), ft, scope}] = struct{}{}
 		}
 	}
 	if len(unique) == 0 {
@@ -586,10 +598,10 @@ func primeDesiredRuntimeReadyCacheForActions(actions []action) {
 	desiredRuntimeReadyMu.Lock()
 	now := time.Now()
 	for pk := range unique {
-		key := fmt.Sprintf("%d:%s", pk.port, pk.proto)
+		key := desiredRuntimeReadyCacheKey(pk.port, pk.proto, pk.scope)
 		var cache map[string]desiredRuntimeReadyCacheEntry
 		switch pk.ft {
-		case "gost", "forwardx", "gost-tunnel", "guard":
+		case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
 			cache = desiredGostRuntimeReadyCache
 		default:
 			cache = desiredNginxRuntimeReadyCache
@@ -608,52 +620,20 @@ func primeDesiredRuntimeReadyCacheForActions(actions []action) {
 	// 使用跨心跳缓存，避免在快速 SSE 唤醒窗口内重复执行 ss/systemctl。
 	readiness := readLocalRuntimeReadinessCached()
 
-	// Cache managedServiceActive results per service name: at most 2 calls total
-	// (runtimeServiceName, tunnelRuntimeServiceName) for the entire batch.
-	svcActiveCache := map[string]bool{}
-	svcActive := func(name string) bool {
-		if v, ok := svcActiveCache[name]; ok {
-			return v
-		}
-		v := managedServiceActive(name)
-		svcActiveCache[name] = v
-		return v
-	}
-
 	type result struct {
 		key   string
 		value bool
 		cache *map[string]desiredRuntimeReadyCacheEntry
 	}
 	results := make([]result, 0, len(needCompute))
-	runtimeItems := []struct {
-		path      string
-		service   string
-		readyPort func(int, string) bool
-	}{
-		{runtimeConfigPath, runtimeServiceName, readiness.gostReadyForPort},
-		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, readiness.gostReadyForPort},
-	}
 	for _, pk := range needCompute {
-		key := fmt.Sprintf("%d:%s", pk.port, pk.proto)
+		key := desiredRuntimeReadyCacheKey(pk.port, pk.proto, pk.scope)
 		var ready bool
 		var target *map[string]desiredRuntimeReadyCacheEntry
 		switch pk.ft {
-		case "gost", "forwardx", "gost-tunnel", "guard":
+		case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
 			target = &desiredGostRuntimeReadyCache
-			// Replicate desiredGostRuntimeReady: matched AND all-services-pass.
-			matched := false
-			allOK := true
-			for _, item := range runtimeItems {
-				if managedRuntimeConfigUsesPort(item.path, pk.port) {
-					matched = true
-					if !svcActive(item.service) || !item.readyPort(pk.port, pk.proto) {
-						allOK = false
-						break
-					}
-				}
-			}
-			ready = matched && allOK
+			ready = readiness.gostReadyForPortInScope(pk.port, pk.proto, pk.scope)
 		default: // nginx family
 			target = &desiredNginxRuntimeReadyCache
 			ready = readiness.nginxReadyForPort(pk.port, pk.proto)
@@ -979,6 +959,10 @@ func actionWorkerLoop(workerID int) {
 			if isOlderAction(job.action, false) {
 				return
 			}
+			waitForActionPrerequisites(job)
+			if isOlderAction(job.action, false) {
+				return
+			}
 			releaseRuntimeGate := acquireSharedRuntimeSyncGate(job.action)
 			if releaseRuntimeGate != nil {
 				var releaseOnce sync.Once
@@ -1003,6 +987,80 @@ func actionWorkerLoop(workerID int) {
 				rememberDesiredActionResult(job.desiredKey, job.desiredSignature, ok)
 			}
 		}()
+	}
+}
+
+func isSharedRuntimeSyncAction(a action) bool {
+	if strings.TrimSpace(a.StatusType) != "runtime" {
+		return false
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "gost-runtime-sync", "nginx-runtime-sync":
+		return true
+	default:
+		return false
+	}
+}
+
+// Shared runtime configs own many ports at once. Apply those configs as a short
+// batch phase before per-port work, then retain normal parallelism for all ports.
+func prepareDesiredActionJobs(jobs []actionJob) []actionJob {
+	if len(jobs) < 2 {
+		return jobs
+	}
+	sharedRuntimeJobs := make([]actionJob, 0, 2)
+	remainingJobs := make([]actionJob, 0, len(jobs))
+	prerequisites := make([]<-chan struct{}, 0, 2)
+	for _, job := range jobs {
+		if isSharedRuntimeSyncAction(job.action) {
+			sharedRuntimeJobs = append(sharedRuntimeJobs, job)
+			if job.done != nil {
+				prerequisites = append(prerequisites, job.done)
+			}
+			continue
+		}
+		remainingJobs = append(remainingJobs, job)
+	}
+	if len(sharedRuntimeJobs) == 0 {
+		return jobs
+	}
+	for index := range remainingJobs {
+		if actionNeedsSharedRuntimePhase(remainingJobs[index].action) {
+			remainingJobs[index].prerequisites = append(remainingJobs[index].prerequisites, prerequisites...)
+		}
+	}
+	return append(sharedRuntimeJobs, remainingJobs...)
+}
+
+func actionNeedsSharedRuntimePhase(a action) bool {
+	if strings.TrimSpace(a.StatusType) == "runtime" || !validActionPort(a.SourcePort) {
+		return false
+	}
+	if a.Fxp != nil {
+		return true
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "realm", "socat", "gost", "nginx", "forwardx", "forwardx-tunnel",
+		"gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop",
+		"nginx-tunnel", "nginx-tunnel-exit", "guard":
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForActionPrerequisites(job actionJob) {
+	if len(job.prerequisites) == 0 {
+		return
+	}
+	startedAt := time.Now()
+	for _, prerequisite := range job.prerequisites {
+		if prerequisite != nil {
+			<-prerequisite
+		}
+	}
+	if waited := time.Since(startedAt); waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-runtime-prerequisite-wait", agentReportLogInterval) {
+		logf("action runtime prerequisite wait duration=%s %s", waited.Round(time.Millisecond), actionLogSummary(job.action))
 	}
 }
 

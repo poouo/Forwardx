@@ -35,6 +35,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Server,
   Trash2,
   X,
@@ -123,15 +124,25 @@ function taskStatusLabel(status?: string) {
   if (status === "running") return "执行中";
   if (status === "offline") return "离线";
   if (status === "queued") return "等待中";
-  return "未检测";
+  if (status === "syncing") return "同步中";
+  if (status === "unsupported") return "版本不支持";
+  return "待读取";
 }
 
 function taskStatusClass(status?: string) {
   if (status === "success" || status === "effective") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
   if (status === "error" || status === "timeout" || status === "offline") return "border-destructive/25 bg-destructive/10 text-destructive";
   if (status === "running") return "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300";
-  if (status === "queued") return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  if (status === "queued" || status === "syncing") return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
   return "border-border/60 bg-muted/30 text-muted-foreground";
+}
+
+function resourceHostStatus(host: any | null | undefined, state: any | null | undefined) {
+  if (!host) return "idle";
+  if (!host?.isOnline) return "offline";
+  if (!host?.agentPluginSupported) return "unsupported";
+  if (host?.pluginSyncPending) return "syncing";
+  return String(state?.status || "idle");
 }
 
 function valueStatus(value: unknown) {
@@ -180,6 +191,7 @@ export function AgentResourceManager({
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [revealedValues, setRevealedValues] = useState<string[]>([]);
+  const [hostSearchQuery, setHostSearchQuery] = useState("");
 
   const selectedHostIds = useMemo(() => new Set((usage?.enabled ? usage?.hostIds : []).map(Number)), [usage?.enabled, usage?.hostIds]);
   const resourceHosts = useMemo(
@@ -196,7 +208,24 @@ export function AgentResourceManager({
       refetchOnWindowFocus: false,
     },
   );
-  const selectedState = ((resourceStatesQuery.data || []) as any[]).find((state) => Number(state.hostId) === selectedHostId);
+  const resourceStates = (resourceStatesQuery.data || []) as any[];
+  const resourceStateByHostId = useMemo(
+    () => new Map(resourceStates.map((state) => [Number(state.hostId), state])),
+    [resourceStates],
+  );
+  const selectedState = resourceStateByHostId.get(selectedHostId);
+  const filteredResourceHosts = useMemo(() => {
+    const query = hostSearchQuery.trim().toLowerCase();
+    if (!query) return resourceHosts;
+    return resourceHosts.filter((host) => [
+      host.name,
+      host.ip,
+      host.ipv4,
+      host.ipv6,
+      host.hostname,
+      host.remark,
+    ].some((value) => String(value || "").toLowerCase().includes(query)));
+  }, [hostSearchQuery, resourceHosts]);
   const reportedPluginVersion = String(
     valueAtPath(selectedState?.data, "pluginVersion")
       ?? valueAtPath(selectedState?.data, "items.0.pluginVersion")
@@ -528,13 +557,26 @@ export function AgentResourceManager({
           <div className="grid max-h-52 gap-2 overflow-auto rounded-md border border-border/50 p-2 sm:grid-cols-2">
             {options.map((option: any) => {
               const selected = Array.isArray(value) && value.map(String).includes(String(option.value));
+              const toggleOption = () => {
+                const current = Array.isArray(value) ? value : [];
+                if (selected) {
+                  setValue(current.filter((item) => String(item) !== String(option.value)));
+                  return;
+                }
+                if (option.exclusive) {
+                  setValue([option.value]);
+                  return;
+                }
+                const exclusiveValues = new Set(options.filter((item: any) => item.exclusive).map((item: any) => String(item.value)));
+                setValue([...current.filter((item) => !exclusiveValues.has(String(item))), option.value]);
+              };
               return (
                 <button
                   key={option.value}
                   type="button"
                   disabled={disabled || option.disabled}
                   className={cn("flex items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-sm", selected ? "border-primary/40 bg-primary/10 text-primary" : "border-border/40")}
-                  onClick={() => setValue(selected ? (value as unknown[]).filter((item) => String(item) !== String(option.value)) : [...(Array.isArray(value) ? value : []), option.value])}
+                  onClick={toggleOption}
                 >
                   <span className="truncate">{option.label}</span>
                   {selected && <Check className="h-4 w-4 shrink-0" />}
@@ -560,54 +602,112 @@ export function AgentResourceManager({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 border-b border-border/40 pb-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="mb-2 flex items-center gap-2">
-            <Server className="h-4 w-4 text-primary" />
-            <Label>管理节点</Label>
+      <div className="grid min-h-[30rem] overflow-hidden rounded-md border border-border/50 bg-background/45 lg:grid-cols-[15rem_minmax(0,1fr)]">
+        <aside className="hidden min-h-0 flex-col border-r border-border/50 bg-muted/15 lg:flex">
+          <div className="border-b border-border/40 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Server className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium">主机</span>
+              </div>
+              <span className="text-xs tabular-nums text-muted-foreground">{resourceHosts.length}</span>
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={hostSearchQuery}
+                onChange={(event) => setHostSearchQuery(event.target.value)}
+                placeholder="搜索主机"
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
           </div>
-          <Select value={selectedHostId ? String(selectedHostId) : ""} onValueChange={(value) => setSelectedHostId(Number(value))}>
-            <SelectTrigger className="w-full lg:max-w-md"><SelectValue placeholder="选择 Agent" /></SelectTrigger>
-            <SelectContent>
-              {resourceHosts.map((host) => (
-                <SelectItem key={host.id} value={String(host.id)}>
-                  {host.name || `主机 ${host.id}`} · {host.isOnline ? "在线" : "离线"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline" className={taskStatusClass(selectedHost?.isOnline ? selectedState?.status : "offline")}>
-            {selectedHost?.isOnline ? taskStatusLabel(selectedState?.status) : "离线"}
-          </Badge>
-          <Button type="button" variant="outline" size="sm" title="刷新" disabled={refreshDisabled} onClick={() => refreshSources()}>
-            {activeTasks.length || busySources.length ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </Button>
-          {view.operations?.create && (
-            <Button type="button" size="sm" className="gap-2" disabled={actionsDisabled} onClick={openCreate}>
-              <Plus className="h-4 w-4" />{view.operations.create.label || "新增"}
-            </Button>
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+            {filteredResourceHosts.map((host) => {
+              const hostState = resourceStateByHostId.get(Number(host.id));
+              const status = resourceHostStatus(host, hostState);
+              const active = Number(host.id) === selectedHostId;
+              return (
+                <button
+                  key={host.id}
+                  type="button"
+                  onClick={() => setSelectedHostId(Number(host.id))}
+                  className={cn(
+                    "flex w-full items-start gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors",
+                    active ? "border-primary/35 bg-primary/10" : "border-transparent hover:border-border/50 hover:bg-muted/35",
+                  )}
+                >
+                  <span className={cn(
+                    "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+                    status === "success" || status === "effective" ? "bg-emerald-500" : status === "running" || status === "queued" || status === "syncing" ? "bg-amber-400" : status === "error" || status === "timeout" || status === "offline" ? "bg-destructive/75" : "bg-muted-foreground/35",
+                  )} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{taskStatusLabel(status)}</span>
+                  </span>
+                </button>
+              );
+            })}
+            {!filteredResourceHosts.length && (
+              <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                {resourceHosts.length ? "没有匹配的主机" : "尚未选择生效主机"}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section className="min-w-0">
+          <div className="flex flex-col gap-3 border-b border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="lg:hidden">
+                <Label className="mb-2 block text-xs">管理节点</Label>
+                <Select value={selectedHostId ? String(selectedHostId) : ""} onValueChange={(value) => setSelectedHostId(Number(value))}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="选择 Agent" /></SelectTrigger>
+                  <SelectContent>
+                    {resourceHosts.map((host) => (
+                      <SelectItem key={host.id} value={String(host.id)}>
+                        {host.name || `主机 ${host.id}`} · {taskStatusLabel(resourceHostStatus(host, resourceStateByHostId.get(Number(host.id))))}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="hidden min-w-0 lg:block">
+                <p className="truncate text-sm font-semibold">{selectedHost?.name || "请选择主机"}</p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">{view.title}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={taskStatusClass(resourceHostStatus(selectedHost, selectedState))}>
+                {taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}
+              </Badge>
+              <Button type="button" variant="outline" size="sm" title="刷新" disabled={refreshDisabled} onClick={() => refreshSources()}>
+                {activeTasks.length || busySources.length ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              </Button>
+              {view.operations?.create && (
+                <Button type="button" size="sm" className="gap-2" disabled={actionsDisabled} onClick={openCreate}>
+                  <Plus className="h-4 w-4" />{view.operations.create.label || "新增"}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {blockedReason && (
+            <div className="m-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{blockedReason}</span>
+            </div>
           )}
-        </div>
-      </div>
 
-      {blockedReason && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">
-          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{blockedReason}</span>
-        </div>
-      )}
+          {selectedState?.error && (
+            <div className="m-3 flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="break-words">{selectedState.error}</span>
+            </div>
+          )}
 
-      {selectedState?.error && (
-        <div className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
-          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <span className="break-words">{selectedState.error}</span>
-        </div>
-      )}
-
-      <div className="overflow-hidden rounded-md border border-border/50">
-        <Table className="min-w-[720px]">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[720px]">
           <TableHeader>
             <TableRow>
               {(view.columns || []).map((column) => <TableHead key={column.key} style={{ width: column.width }}>{column.label}</TableHead>)}
@@ -670,7 +770,9 @@ export function AgentResourceManager({
               </TableRow>
             )}
           </TableBody>
-        </Table>
+            </Table>
+          </div>
+        </section>
       </div>
 
       <Dialog open={formOpen} onOpenChange={(open) => { if (!saving) setFormOpen(open); }}>

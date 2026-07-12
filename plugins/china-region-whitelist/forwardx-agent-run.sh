@@ -103,6 +103,25 @@ json_words_array() {
   printf ']'
 }
 
+region_codes_summary() {
+  local codes="${1:-}"
+  local code label summary=""
+  for code in ${codes}; do
+    if cn_is_all_china_selector "${code}"; then
+      label="全国（中国大陆）"
+    else
+      label="$(cn_province_name "${code}" 2>/dev/null || true)"
+      [[ -n "${label}" ]] || label="${code}"
+    fi
+    if [[ -z "${summary}" ]]; then
+      summary="${label}"
+    else
+      summary+="、${label}"
+    fi
+  done
+  printf '%s' "${summary}"
+}
+
 status_rules_json() {
   local privileged="false"
   if [[ "${EUID}" -eq 0 ]]; then
@@ -115,6 +134,7 @@ status_rules_json() {
   local configured_backend="${CN_FIREWALL_BACKEND:-auto}"
   local plugin_version=""
   local regions=""
+  local region_summary=""
   local asns=""
   local port_policies=""
   local forward_mode="all"
@@ -137,6 +157,7 @@ status_rules_json() {
     forward_mode="${CN_FORWARD_MODE:-all}"
     forward_ifaces="${CN_FORWARD_IFACES:-}"
   fi
+  region_summary="$(region_codes_summary "${regions}")"
 
   if command -v nft >/dev/null 2>&1; then
     nft_state="$(nft list table inet "${CN_NFT_TABLE}" 2>/dev/null || true)"
@@ -184,7 +205,8 @@ status_rules_json() {
   printf '"configuredBackend":"%s",' "$(json_escape "${configured_backend}")"
   printf '"regions":'
   json_words_array "${regions}"
-  printf ',"asns":'
+  printf ',"regionSummary":"%s",' "$(json_escape "${region_summary}")"
+  printf '"asns":'
   json_words_array "${asns}"
   printf ',"portPolicies":"%s",' "$(json_escape "${port_policies}")"
   printf '"forwardMode":"%s",' "$(json_escape "${forward_mode}")"
@@ -198,7 +220,9 @@ status_rules_json() {
 
 resource_list_json() {
   printf '{"items":['
-  status_rules_json
+  if [[ -r "${CN_CONFIG_FILE}" ]]; then
+    status_rules_json
+  fi
   printf ']}\n'
 }
 

@@ -21,6 +21,8 @@ const pluginAgentTaskOutputLimit = 256 * 1024
 const pluginAgentTaskRetention = 24 * time.Hour
 const pluginAgentResultQueueCapacity = 256
 const pluginAgentResultReportAttempts = 12
+const pluginAgentManifestSyncWait = 10 * time.Second
+const pluginAgentManifestPollInterval = 100 * time.Millisecond
 
 var pluginAgentTaskWorkersOnce sync.Once
 var pluginAgentTaskQueue = make(chan pluginAgentTaskJob, pluginAgentTaskQueueCapacity)
@@ -71,6 +73,11 @@ type pluginAgentTaskResult struct {
 	StartedAt  string `json:"startedAt,omitempty"`
 	FinishedAt string `json:"finishedAt,omitempty"`
 	Error      string `json:"error,omitempty"`
+}
+
+type pluginAgentManifest struct {
+	Version       string `json:"version"`
+	PluginVersion string `json:"pluginVersion"`
 }
 
 type pluginAgentTaskOutput struct {
@@ -221,27 +228,71 @@ func pluginAgentTaskTimeout(task pluginAgentTask) time.Duration {
 	return time.Duration(value) * time.Millisecond
 }
 
+func parsePluginAgentManifestVersion(content []byte) (string, error) {
+	var manifest pluginAgentManifest
+	if err := json.Unmarshal(content, &manifest); err != nil {
+		return "", err
+	}
+	if version := strings.TrimSpace(manifest.PluginVersion); version != "" {
+		return version, nil
+	}
+	return strings.TrimSpace(manifest.Version), nil
+}
+
+func installedPluginVersions() map[string]string {
+	return installedPluginVersionsAt(pluginAgentTaskRoot)
+}
+
+func installedPluginVersionsAt(root string) map[string]string {
+	versions := map[string]string{}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return versions
+	}
+	for _, entry := range entries {
+		pluginID := strings.TrimSpace(entry.Name())
+		if !entry.IsDir() || !pluginAgentTaskIDPattern.MatchString(pluginID) {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(root, pluginID, "manifest.json"))
+		if err != nil {
+			continue
+		}
+		version, err := parsePluginAgentManifestVersion(content)
+		if err == nil && version != "" {
+			versions[pluginID] = version
+		}
+	}
+	return versions
+}
+
 func validatePluginAgentTaskVersion(task pluginAgentTask) error {
 	expected := strings.TrimSpace(task.PluginVersion)
 	if expected == "" {
 		return nil
 	}
 	manifestPath := filepath.Join(pluginAgentTaskRoot, task.PluginID, "manifest.json")
-	content, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return fmt.Errorf("插件尚未同步或 manifest 不可用: %w", err)
+	deadline := time.Now().Add(pluginAgentManifestSyncWait)
+	var actual string
+	var lastErr error
+	for {
+		content, err := os.ReadFile(manifestPath)
+		if err == nil {
+			actual, lastErr = parsePluginAgentManifestVersion(content)
+			if lastErr == nil && actual == expected {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("插件尚未同步或 manifest 不可用: %w", lastErr)
+			}
+			return fmt.Errorf("插件版本不一致: Agent=%s 面板=%s", actual, expected)
+		}
+		time.Sleep(pluginAgentManifestPollInterval)
 	}
-	var manifest struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(content, &manifest); err != nil {
-		return fmt.Errorf("插件 manifest 无效: %w", err)
-	}
-	actual := strings.TrimSpace(manifest.Version)
-	if actual != expected {
-		return fmt.Errorf("插件版本不一致: Agent=%s 面板=%s", actual, expected)
-	}
-	return nil
 }
 
 func invalidPluginAgentTaskResult(task pluginAgentTask, err error) pluginAgentTaskResult {

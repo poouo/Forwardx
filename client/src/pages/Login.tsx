@@ -37,6 +37,13 @@ type TwoFactorChallengeState = {
   expiresAt: number;
 };
 
+type CaptchaChallengeState = {
+  captchaId: string;
+  imageDataUrl: string;
+  expiresAt: number;
+  purpose: "login" | "register";
+};
+
 type TelegramWebAppBridge = {
   initData?: string;
   ready?: () => void;
@@ -63,6 +70,68 @@ function isTelegramWebAppRequested() {
   if (typeof window === "undefined") return false;
   const value = String(new URLSearchParams(window.location.search).get("tgWebApp") || "").trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes";
+}
+
+function captchaRetryAfterSeconds(message: string) {
+  const match = /^CAPTCHA_REFRESH_RATE_LIMITED:(\d+)$/.exec(message);
+  return match ? Math.max(1, Number(match[1])) : 0;
+}
+
+function ImageCaptchaField(props: {
+  id: string;
+  value: string;
+  imageDataUrl?: string;
+  loading: boolean;
+  refreshDisabled: boolean;
+  refreshTitle: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={props.id}>验证码</Label>
+      <div className="flex items-stretch gap-2">
+        <div className="flex h-14 min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md border bg-white">
+          {props.imageDataUrl ? (
+            <img
+              src={props.imageDataUrl}
+              alt="图片验证码"
+              className="h-full w-full select-none object-fill"
+              draggable={false}
+            />
+          ) : props.loading ? (
+            <Loader2 className="h-5 w-5 animate-spin text-slate-500" />
+          ) : (
+            <span className="text-sm text-slate-500">验证码暂不可用</span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={props.onRefresh}
+          disabled={props.refreshDisabled}
+          className="flex h-14 w-11 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          title={props.refreshTitle}
+          aria-label={props.refreshTitle}
+        >
+          <RefreshCw className={`h-4 w-4 ${props.loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+      <Input
+        id={props.id}
+        type="text"
+        inputMode="text"
+        autoCapitalize="characters"
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={12}
+        placeholder="请输入图片中的字符"
+        value={props.value}
+        onChange={(event) => props.onChange(event.target.value)}
+        disabled={props.disabled || !props.imageDataUrl}
+      />
+    </div>
+  );
 }
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
@@ -97,7 +166,9 @@ export default function Login() {
   const [emailCode, setEmailCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [captchaAnswer, setCaptchaAnswer] = useState("");
-  const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaChallenge, setCaptchaChallenge] = useState<CaptchaChallengeState | null>(null);
+  const [loginCaptchaRequiredFor, setLoginCaptchaRequiredFor] = useState<string | null>(null);
+  const [captchaCooldownUntil, setCaptchaCooldownUntil] = useState(0);
   const [telegramLoginCode, setTelegramLoginCode] = useState<string | null>(null);
   const [mobileTelegramLogin, setMobileTelegramLogin] = useState<MobileTelegramLoginState | null>(null);
   const [twoFactorChallenge, setTwoFactorChallenge] = useState<TwoFactorChallengeState | null>(null);
@@ -108,6 +179,8 @@ export default function Login() {
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
   const telegramWebAppAutoLoginTriedRef = useRef(false);
   const telegramWebAppChallengeRetriedRef = useRef(false);
+  const captchaRequestIdRef = useRef(0);
+  const captchaRequestPendingRef = useRef(false);
   const telegramWebAppLoginRetryMutateRef = useRef((payload: { initData: string; challenge?: string; mobile?: boolean }) => {
     void payload;
   });
@@ -142,26 +215,79 @@ export default function Login() {
     }
   }, [mode, registrationEnabled]);
 
-  // 获取验证码
-  const captchaQuery = trpc.auth.getCaptcha.useQuery(undefined, {
-    enabled: showCaptcha && hasMobilePanelUrl,
+  const normalizedUsername = username.trim().toLowerCase();
+  const captchaStatusQuery = trpc.auth.needsCaptcha.useQuery({ username: normalizedUsername }, {
+    enabled: hasMobilePanelUrl && mode === "login" && !!normalizedUsername,
     retry: false,
     refetchOnWindowFocus: false,
+    staleTime: 0,
   });
+  const serverRequiresLoginCaptcha = captchaStatusQuery.data?.required === true;
+  const loginCaptchaRequired = serverRequiresLoginCaptcha || loginCaptchaRequiredFor === normalizedUsername;
+  const captchaVisible = mode === "register" || loginCaptchaRequired;
+  const captchaPurpose = mode === "register" ? "register" as const : "login" as const;
 
-  const refreshCaptcha = useCallback(() => {
+  const createCaptchaMutation = trpc.auth.createCaptcha.useMutation();
+  const requestCaptcha = useCallback((purpose: "login" | "register", clearExisting = true) => {
     if (!hasMobilePanelUrl) {
       setCaptchaAnswer("");
       return;
     }
-    captchaQuery.refetch();
-    setCaptchaAnswer("");
-  }, [captchaQuery, hasMobilePanelUrl]);
+    if (Date.now() < captchaCooldownUntil || captchaRequestPendingRef.current) return;
+    const requestId = ++captchaRequestIdRef.current;
+    captchaRequestPendingRef.current = true;
+    if (clearExisting) setCaptchaChallenge(null);
+    createCaptchaMutation.mutate({ purpose }, {
+      onSuccess: (data) => {
+        captchaRequestPendingRef.current = false;
+        if (requestId !== captchaRequestIdRef.current) return;
+        setCaptchaChallenge({
+          captchaId: data.captchaId,
+          imageDataUrl: data.imageDataUrl,
+          expiresAt: Date.now() + data.expiresInSeconds * 1000,
+          purpose,
+        });
+        setCaptchaAnswer("");
+        setCaptchaCooldownUntil(0);
+      },
+      onError: (error) => {
+        captchaRequestPendingRef.current = false;
+        if (requestId !== captchaRequestIdRef.current) return;
+        const retryAfter = captchaRetryAfterSeconds(error.message || "");
+        if (retryAfter > 0) {
+          setCaptchaCooldownUntil(Date.now() + retryAfter * 1000);
+          toast.error(`验证码刷新过于频繁，请 ${retryAfter} 秒后重试`);
+          return;
+        }
+        if (mobileAuth.isNative && isMobileNetworkError(error.message || "")) {
+          toast.error("无法连接面板，请检查右上角面板地址");
+          return;
+        }
+        toast.error(error.message || "验证码加载失败");
+      },
+    });
+  }, [captchaCooldownUntil, createCaptchaMutation, hasMobilePanelUrl]);
+
+  useEffect(() => {
+    if (!captchaVisible || !hasMobilePanelUrl) return;
+    const challengeReady = captchaChallenge?.purpose === captchaPurpose && captchaChallenge.expiresAt > Date.now();
+    if (challengeReady || createCaptchaMutation.isPending || Date.now() < captchaCooldownUntil) return;
+    requestCaptcha(captchaPurpose);
+  }, [captchaChallenge, captchaCooldownUntil, captchaPurpose, captchaVisible, createCaptchaMutation.isPending, hasMobilePanelUrl, requestCaptcha]);
+
+  useEffect(() => {
+    if (captchaCooldownUntil <= Date.now()) return;
+    const timeout = window.setTimeout(() => setCaptchaCooldownUntil(0), captchaCooldownUntil - Date.now() + 50);
+    return () => window.clearTimeout(timeout);
+  }, [captchaCooldownUntil]);
 
   // 登录 mutation
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: (data) => {
       if (data.twoFactorRequired) {
+        setLoginCaptchaRequiredFor(null);
+        setCaptchaChallenge(null);
+        setCaptchaAnswer("");
         setTwoFactorChallenge({
           challengeId: data.challengeId,
           username: data.username,
@@ -179,7 +305,7 @@ export default function Login() {
       utils.auth.me.invalidate();
       window.location.href = "/";
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       const msg = error.message || "";
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
         toast.error("无法连接面板，请检查右上角面板地址");
@@ -187,19 +313,28 @@ export default function Login() {
         return;
       }
       if (msg === "CAPTCHA_REQUIRED" || msg === "CAPTCHA_REQUIRED_AFTER_FAIL") {
-        setShowCaptcha(true);
-        refreshCaptcha();
+        setLoginCaptchaRequiredFor(variables.username.trim().toLowerCase());
+        requestCaptcha("login");
         if (msg === "CAPTCHA_REQUIRED_AFTER_FAIL") {
           toast.error("用户名或密码错误，请输入验证码后重试");
         } else {
           toast.error("请输入验证码");
         }
+      } else if (msg === "CAPTCHA_INVALID") {
+        setLoginCaptchaRequiredFor(variables.username.trim().toLowerCase());
+        toast.error("验证码错误或已过期，请重新输入");
+        requestCaptcha("login");
       } else {
         toast.error(msg || "登录失败");
         if (msg === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) {
           mobileAuth.clear();
         }
-        if (showCaptcha) refreshCaptcha();
+        if (variables.captchaId && !msg.startsWith("LOGIN_RATE_LIMITED:")) {
+          setLoginCaptchaRequiredFor(null);
+          setCaptchaChallenge(null);
+          setCaptchaAnswer("");
+          void captchaStatusQuery.refetch();
+        }
       }
     },
   });
@@ -348,7 +483,7 @@ export default function Login() {
       setConfirmPassword("");
       setName("");
       setCaptchaAnswer("");
-      refreshCaptcha();
+      setCaptchaChallenge(null);
     },
     onError: (error) => {
       const msg = error.message || "";
@@ -357,8 +492,8 @@ export default function Login() {
         setShowPanelSettings(true);
         return;
       }
-      toast.error(msg || "注册失败");
-      refreshCaptcha();
+      toast.error(msg === "CAPTCHA_INVALID" ? "验证码错误或已过期，请重新输入" : msg || "注册失败");
+      requestCaptcha("register");
     },
   });
 
@@ -374,13 +509,6 @@ export default function Login() {
       toast.error(msg || "发送验证码失败");
     },
   });
-
-  // 切换到注册模式时自动显示验证码
-  useEffect(() => {
-    if (mode === "register" && registrationEnabled) {
-      setShowCaptcha(true);
-    }
-  }, [mode, registrationEnabled]);
 
   useEffect(() => {
     if (telegramWebAppAutoLoginTriedRef.current || telegramWebAppLoginMutation.isPending) return;
@@ -497,16 +625,20 @@ export default function Login() {
       toast.error("请输入用户名和密码");
       return;
     }
-    if (showCaptcha) {
+    if (loginCaptchaRequired) {
       if (!captchaAnswer.trim()) {
-        toast.error("请输入验证码答案");
+        toast.error("请输入图片验证码");
+        return;
+      }
+      if (!captchaChallenge || captchaChallenge.purpose !== "login") {
+        toast.error("验证码尚未加载，请刷新后重试");
         return;
       }
       loginMutation.mutate({
         username: username.trim(),
         password,
-        captchaId: captchaQuery.data?.captchaId,
-        captchaAnswer: parseInt(captchaAnswer.trim(), 10),
+        captchaId: captchaChallenge.captchaId,
+        captchaAnswer: captchaAnswer.trim(),
         mobile: mobileAuth.isNative,
       });
     } else {
@@ -556,14 +688,14 @@ export default function Login() {
       }
     }
     if (!captchaAnswer.trim()) {
-      toast.error("请输入验证码答案");
+      toast.error("请输入图片验证码");
       return;
     }
     if (name.trim().length > DISPLAY_NAME_MAX_LENGTH) {
       toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
       return;
     }
-    if (!captchaQuery.data?.captchaId) {
+    if (!captchaChallenge || captchaChallenge.purpose !== "register") {
       toast.error("验证码加载失败，请刷新");
       return;
     }
@@ -573,8 +705,8 @@ export default function Login() {
       name: name.trim() || undefined,
       email: email.trim() || undefined,
       emailCode: emailCode.trim() || undefined,
-      captchaId: captchaQuery.data.captchaId,
-      captchaAnswer: parseInt(captchaAnswer.trim(), 10),
+      captchaId: captchaChallenge.captchaId,
+      captchaAnswer: captchaAnswer.trim(),
     });
   };
 
@@ -616,6 +748,11 @@ export default function Login() {
   const isTelegramPending = telegramLoginMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
   const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && !getTelegramWebAppInitData();
+  const captchaCooldownSeconds = Math.max(0, Math.ceil((captchaCooldownUntil - Date.now()) / 1000));
+  const activeCaptchaImage = captchaChallenge?.purpose === captchaPurpose ? captchaChallenge.imageDataUrl : undefined;
+  const captchaRefreshTitle = captchaCooldownSeconds > 0
+    ? `${captchaCooldownSeconds} 秒后可刷新`
+    : "刷新验证码";
 
   return (
     <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
@@ -772,32 +909,18 @@ export default function Login() {
                   </button>
                 </div>
               </div>
-              {/* 验证码（登录失败后显示） */}
-              {showCaptcha && (
-                <div className="space-y-2">
-                  <Label htmlFor="captcha">验证码</Label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 px-3 py-2 rounded-md border bg-muted text-center font-mono text-lg font-bold select-none tracking-widest">
-                      {captchaQuery.isLoading ? "..." : captchaQuery.data?.question || "加载中"}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={refreshCaptcha}
-                      className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors"
-                      title="刷新验证码"
-                    >
-                      <RefreshCw className="h-4 w-4 text-muted-foreground" />
-                    </button>
-                  </div>
-                  <Input
-                    id="captcha"
-                    type="number"
-                    placeholder="请输入计算结果"
-                    value={captchaAnswer}
-                    onChange={(e) => setCaptchaAnswer(e.target.value)}
-                    disabled={isPending}
-                  />
-                </div>
+              {loginCaptchaRequired && (
+                <ImageCaptchaField
+                  id="captcha"
+                  value={captchaAnswer}
+                  imageDataUrl={activeCaptchaImage}
+                  loading={createCaptchaMutation.isPending}
+                  refreshDisabled={createCaptchaMutation.isPending || captchaCooldownSeconds > 0}
+                  refreshTitle={captchaRefreshTitle}
+                  disabled={isPending}
+                  onChange={setCaptchaAnswer}
+                  onRefresh={() => requestCaptcha("login", false)}
+                />
               )}
 
               <Button
@@ -998,31 +1121,17 @@ export default function Login() {
                 />
               </div>
 
-              {/* 注册验证码（始终显示） */}
-              <div className="space-y-2">
-                <Label htmlFor="reg-captcha">验证码</Label>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 px-3 py-2 rounded-md border bg-muted text-center font-mono text-lg font-bold select-none tracking-widest">
-                    {captchaQuery.isLoading ? "..." : captchaQuery.data?.question || "加载中"}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={refreshCaptcha}
-                    className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors"
-                    title="刷新验证码"
-                  >
-                    <RefreshCw className="h-4 w-4 text-muted-foreground" />
-                  </button>
-                </div>
-                <Input
-                  id="reg-captcha"
-                  type="number"
-                  placeholder="请输入计算结果"
-                  value={captchaAnswer}
-                  onChange={(e) => setCaptchaAnswer(e.target.value)}
-                  disabled={isPending || !hasMobilePanelUrl}
-                />
-              </div>
+              <ImageCaptchaField
+                id="reg-captcha"
+                value={captchaAnswer}
+                imageDataUrl={activeCaptchaImage}
+                loading={createCaptchaMutation.isPending}
+                refreshDisabled={createCaptchaMutation.isPending || captchaCooldownSeconds > 0}
+                refreshTitle={captchaRefreshTitle}
+                disabled={isPending || !hasMobilePanelUrl}
+                onChange={setCaptchaAnswer}
+                onRefresh={() => requestCaptcha("register", false)}
+              />
 
               <Button
                 type="submit"

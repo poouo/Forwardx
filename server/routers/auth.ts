@@ -13,20 +13,13 @@ import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
 import { clearTwoFactorSetupChallenge, clearTwoFactorSetupChallengesForUser, createTwoFactorSetupChallenge, getTwoFactorSetupChallenge } from "../twoFactorSetupChallenges";
+import { authCaptcha, CaptchaRefreshRateLimitError } from "../authCaptcha";
 
-interface CaptchaEntry {
-  question: string;
-  answer: number;
-  expiresAt: number;
-}
-
-const captchaStore = new Map<string, CaptchaEntry>();
 type LoginFailEntry = { count: number; lastFailAt: number };
 const loginFailStore = new Map<string, LoginFailEntry>();
 const loginIpFailStore = new Map<string, LoginFailEntry>();
 const emailCodeStore = new Map<string, { code: string; expiresAt: number; lastSentAt: number; attempts: number }>();
 const emailSendIpStore = new Map<string, LoginFailEntry>();
-const LOGIN_FAIL_THRESHOLD = 1;
 const LOGIN_FAIL_WINDOW_MS = 30 * 60 * 1000;
 const LOGIN_BLOCK_MS = 15 * 60 * 1000;
 const LOGIN_BLOCK_THRESHOLD_PER_ACCOUNT = 8;
@@ -39,34 +32,8 @@ const EMAIL_CODE_IP_MAX_PER_WINDOW = 10;
 const TWO_FACTOR_ISSUER = "ForwardX";
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
-function generateCaptcha(): { captchaId: string; question: string } {
-  const a = Math.floor(Math.random() * 20) + 1;
-  const b = Math.floor(Math.random() * 20) + 1;
-  const ops = [
-    { symbol: "+", fn: (x: number, y: number) => x + y },
-    { symbol: "-", fn: (x: number, y: number) => x - y },
-  ];
-  const op = ops[Math.floor(Math.random() * ops.length)];
-  const answer = op.fn(a, b);
-  const question = `${a} ${op.symbol} ${b} = ?`;
-  const captchaId = nanoid(16);
-  captchaStore.set(captchaId, { question, answer, expiresAt: Date.now() + 5 * 60 * 1000 });
-  for (const [key, value] of captchaStore) {
-    if (value.expiresAt < Date.now()) captchaStore.delete(key);
-  }
-  return { captchaId, question };
-}
-
-function verifyCaptcha(captchaId: string, captchaAnswer: number): boolean {
-  const entry = captchaStore.get(captchaId);
-  if (!entry) return false;
-  captchaStore.delete(captchaId);
-  if (entry.expiresAt < Date.now()) return false;
-  return entry.answer === captchaAnswer;
-}
-
 function getLoginFailKey(ip: string, username: string) {
-  return `${ip}:${username}`;
+  return `${String(ip || "unknown").trim().toLowerCase()}:${String(username || "").trim().toLowerCase()}`;
 }
 
 function getActiveLoginFailEntry(store: Map<string, LoginFailEntry>, key: string) {
@@ -94,12 +61,11 @@ function recordFailInStore(store: Map<string, LoginFailEntry>, key: string) {
 function recordLoginFail(ip: string, username: string) {
   recordFailInStore(loginFailStore, getLoginFailKey(ip, username));
   recordFailInStore(loginIpFailStore, ip);
+  authCaptcha.recordLoginFailure(ip, username);
 }
 
 function needsCaptcha(ip: string, username: string): boolean {
-  const entry = getActiveLoginFailEntry(loginFailStore, getLoginFailKey(ip, username));
-  if (!entry) return false;
-  return entry.count >= LOGIN_FAIL_THRESHOLD;
+  return authCaptcha.requiresLoginCaptcha(ip, username);
 }
 
 function loginRateLimitState(ip: string, username: string) {
@@ -124,6 +90,7 @@ function loginRateLimitState(ip: string, username: string) {
 
 function clearLoginFail(ip: string, username: string) {
   loginFailStore.delete(getLoginFailKey(ip, username));
+  authCaptcha.clearLoginCaptchaRequirement(ip, username);
 }
 
 function recordEmailSend(ip: string) {
@@ -254,9 +221,21 @@ export const authRouter = router({
     return sanitizeUser(ctx.user);
   }),
 
-  getCaptcha: publicProcedure.query(() => {
-    return generateCaptcha();
-  }),
+  createCaptcha: publicProcedure
+    .input(z.object({ purpose: z.enum(["login", "register"]) }))
+    .mutation(({ input, ctx }) => {
+      try {
+        return authCaptcha.createImageChallenge(getRequestIp(ctx), input.purpose);
+      } catch (error) {
+        if (error instanceof CaptchaRefreshRateLimitError) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: `CAPTCHA_REFRESH_RATE_LIMITED:${error.retryAfterSeconds}`,
+          });
+        }
+        throw error;
+      }
+    }),
 
   emailConfig: publicProcedure.query(async () => {
     const config = await getEmailConfig();
@@ -307,7 +286,7 @@ export const authRouter = router({
       username: z.string().min(1, "请输入用户名"),
       password: z.string().min(1, "请输入密码"),
       captchaId: z.string().optional(),
-      captchaAnswer: z.number().optional(),
+      captchaAnswer: z.string().trim().min(1).max(12).optional(),
       mobile: z.boolean().optional(),
       twoFactorCode: z.string().optional(),
     }))
@@ -323,15 +302,16 @@ export const authRouter = router({
       }
 
       if (needsCaptcha(ip, input.username)) {
-        if (!input.captchaId || input.captchaAnswer === undefined) {
+        if (!input.captchaId || !input.captchaAnswer) {
           console.warn(`[Auth] Login requires captcha username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error("CAPTCHA_REQUIRED");
         }
-        if (!verifyCaptcha(input.captchaId, input.captchaAnswer)) {
+        if (!authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "login")) {
           recordLoginFail(ip, input.username);
           console.warn(`[Auth] Login captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
-          throw new Error("验证码错误，请重新输入");
+          throw new Error("CAPTCHA_INVALID");
         }
+        authCaptcha.clearLoginCaptchaRequirement(ip, input.username);
       }
 
       const user = await db.authenticateUser(input.username, input.password);
@@ -401,7 +381,7 @@ export const authRouter = router({
       email: z.string().email("邮箱格式不正确").optional(),
       emailCode: z.string().optional(),
       captchaId: z.string(),
-      captchaAnswer: z.number(),
+      captchaAnswer: z.string().trim().min(1).max(12),
     }))
     .mutation(async ({ input, ctx }) => {
       const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
@@ -409,9 +389,9 @@ export const authRouter = router({
         console.warn(`[Auth] Register rejected disabled username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
         throw new Error("当前注册未开放，请联系管理员");
       }
-      if (!verifyCaptcha(input.captchaId, input.captchaAnswer)) {
+      if (!authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, getRequestIp(ctx), "register")) {
         console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
-        throw new Error("验证码错误，请重新输入");
+        throw new Error("CAPTCHA_INVALID");
       }
       const emailConfig = await getEmailConfig();
       const usernameEmail = ensureAllowedEmail(input.username, emailConfig);
