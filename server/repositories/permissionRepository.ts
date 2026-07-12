@@ -190,7 +190,7 @@ export async function getUserManualAllowedForwardGroupIds(userId: number): Promi
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ forwardGroupId: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId));
-  return rows.map((r: any) => Number(r.forwardGroupId)).filter((id) => Number.isFinite(id) && id > 0);
+  return rows.map((r: any) => Number(r.forwardGroupId)).filter((id: number) => Number.isFinite(id) && id > 0);
 }
 
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,23 @@ import (
 
 const desiredActionFailureRetryInterval = 30 * time.Second
 const desiredRuntimeReadyCacheTTL = 2 * time.Second
+
+// desiredActionRecords 的内存缓存。所有读写直接操作此 map，
+// 避免在 rememberDesiredActionResult（每个 worker 完成时调用）的关键路径上
+// 做全量磁盘读写。后台 flusher 异步落盘。
+var desiredActionRecordsMem = map[string]desiredActionRecord{}
+var desiredActionRecordsLoaded bool
+
+// desiredActionRecordsDirty 标记内存缓存已更新、需要落盘。
+var desiredActionRecordsDirty atomic.Bool
+
+// desiredActionRecordsRevision is guarded by desiredActionRecordMu. A flush only
+// clears the dirty flag when no newer mutation happened while disk I/O ran.
+var desiredActionRecordsRevision uint64
+
+// desiredActionFlushCh 用于触发 flusher 尽快落盘（带缓冲，避免阻塞写方）。
+var desiredActionFlushCh = make(chan struct{}, 1)
+var writeDesiredActionRecordsSnapshot = flushDesiredActionRecordsToDisk
 
 type desiredRuntimeReadyCacheEntry struct {
 	value     bool
@@ -24,7 +42,121 @@ var desiredGostRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
 var actionSerialMu sync.Mutex
 var actionSerialLocks = map[string]*actionSerialLock{}
 var desiredActionRecordMu sync.Mutex
-var sharedRuntimeSyncGate sync.RWMutex
+
+// sharedGostRuntimeSyncGate 仅用于 gost/gost-tunnel/guard 动作与
+// gost-runtime-sync 之间的互斥。nginx 动作不再持有此锁，因此
+// gost-runtime-sync 的写锁不再阻塞 nginx worker。
+var sharedGostRuntimeSyncGate sync.RWMutex
+var sharedNginxRuntimeSyncGate sync.RWMutex
+
+type actionIngressItem struct {
+	job    actionJob
+	key    string
+	active bool
+}
+
+// actionIngressBuffer keeps heartbeat and SSE producers non-blocking when the
+// worker channel is full. Repeated pending work for the same runtime identity is
+// replaced in place, so rapid edits retain the latest action without spawning
+// one goroutine per overflow item.
+type actionIngressBuffer struct {
+	mu       sync.Mutex
+	items    []*actionIngressItem
+	head     int
+	byKey    map[string]*actionIngressItem
+	sequence uint64
+	active   int
+}
+
+var actionIngress = actionIngressBuffer{byKey: map[string]*actionIngressItem{}}
+var actionIngressWakeCh = make(chan struct{}, 1)
+
+func (b *actionIngressBuffer) push(job actionJob) (int, *actionJob) {
+	key := actionQueueKey(job.action)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.byKey == nil {
+		b.byKey = map[string]*actionIngressItem{}
+	}
+	var replaced *actionJob
+	if key != "" {
+		if current := b.byKey[key]; current != nil && current.active {
+			current.active = false
+			b.active--
+			oldJob := current.job
+			replaced = &oldJob
+		}
+	} else {
+		b.sequence++
+	}
+	item := &actionIngressItem{job: job, key: key, active: true}
+	b.items = append(b.items, item)
+	b.active++
+	if key != "" {
+		b.byKey[key] = item
+	}
+	return b.active, replaced
+}
+
+func (b *actionIngressBuffer) pop() (actionJob, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for b.head < len(b.items) {
+		item := b.items[b.head]
+		b.items[b.head] = nil
+		b.head++
+		if item == nil || !item.active {
+			continue
+		}
+		item.active = false
+		b.active--
+		if item.key != "" && b.byKey[item.key] == item {
+			delete(b.byKey, item.key)
+		}
+		b.compactLocked()
+		return item.job, true
+	}
+	b.compactLocked()
+	return actionJob{}, false
+}
+
+func (b *actionIngressBuffer) len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.active
+}
+
+func (b *actionIngressBuffer) reset() []actionJob {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pending := make([]actionJob, 0, b.active)
+	for index := b.head; index < len(b.items); index++ {
+		if item := b.items[index]; item != nil && item.active {
+			pending = append(pending, item.job)
+		}
+	}
+	b.items = nil
+	b.head = 0
+	b.byKey = map[string]*actionIngressItem{}
+	b.active = 0
+	return pending
+}
+
+func (b *actionIngressBuffer) compactLocked() {
+	if b.head == 0 {
+		return
+	}
+	if b.head >= len(b.items) {
+		b.items = nil
+		b.head = 0
+		return
+	}
+	if b.head >= 1024 && b.head*2 >= len(b.items) {
+		remaining := append([]*actionIngressItem(nil), b.items[b.head:]...)
+		b.items = remaining
+		b.head = 0
+	}
+}
 
 type actionSerialLock struct {
 	mu   sync.Mutex
@@ -148,6 +280,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	}
 	for _, job := range pendingJobs {
 		if isOlderAction(job.action, true) {
+			releaseQueuedAction(job.action)
 			if job.done != nil {
 				close(job.done)
 			}
@@ -359,7 +492,7 @@ func desiredRuntimeServicesHealthy() bool {
 
 func desiredNginxRuntimeReady(port int, protocol string) bool {
 	return cachedDesiredRuntimeReady(desiredNginxRuntimeReadyCache, port, protocol, func() bool {
-		readiness := readLocalRuntimeReadiness()
+		readiness := readLocalRuntimeReadinessCached()
 		return port > 0 &&
 			readiness.nginxReadyForPort(port, protocol)
 	})
@@ -370,7 +503,7 @@ func desiredGostRuntimeReady(port int, protocol string) bool {
 		return false
 	}
 	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, protocol, func() bool {
-		readiness := readLocalRuntimeReadiness()
+		readiness := readLocalRuntimeReadinessCached()
 		matched := false
 		for _, item := range []struct {
 			path      string
@@ -567,37 +700,148 @@ func desiredForwardTypeCompatible(local string, desired string) bool {
 	return false
 }
 
-func readDesiredActionRecordsLocked() map[string]desiredActionRecord {
+// ensureDesiredActionRecordsLoadedLocked 在持有 desiredActionRecordMu 的情况下
+// 从磁盘加载记录到内存缓存（仅首次调用执行 I/O）。
+func ensureDesiredActionRecordsLoadedLocked() {
+	if desiredActionRecordsLoaded {
+		return
+	}
 	records := map[string]desiredActionRecord{}
 	raw, err := os.ReadFile(desiredStateRecordPath)
-	if err != nil || len(raw) == 0 {
-		return records
+	if err == nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &records)
 	}
-	_ = json.Unmarshal(raw, &records)
-	return records
+	desiredActionRecordsMem = records
+	desiredActionRecordsLoaded = true
 }
 
+// readDesiredActionRecordsLocked 返回内存缓存的深拷贝（调用方持有 desiredActionRecordMu）。
+func readDesiredActionRecordsLocked() map[string]desiredActionRecord {
+	ensureDesiredActionRecordsLoadedLocked()
+	out := make(map[string]desiredActionRecord, len(desiredActionRecordsMem))
+	for k, v := range desiredActionRecordsMem {
+		out[k] = v
+	}
+	return out
+}
+
+// writeDesiredActionRecordsLocked 将 records 写入内存缓存并通知 flusher 落盘
+// （调用方持有 desiredActionRecordMu，不做磁盘 I/O）。
 func writeDesiredActionRecordsLocked(records map[string]desiredActionRecord) {
-	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	desiredActionRecordsMem = records
+	desiredActionRecordsLoaded = true
+	markDesiredActionRecordsDirtyLocked()
+}
+
+func markDesiredActionRecordsDirtyLocked() {
+	desiredActionRecordsRevision++
+	desiredActionRecordsDirty.Store(true)
+	select {
+	case desiredActionFlushCh <- struct{}{}:
+	default:
+	}
+}
+
+// flushDesiredActionRecordsToDisk writes records atomically and returns errors so
+// the background flusher can retain the dirty state and retry.
+func flushDesiredActionRecordsToDisk(records map[string]desiredActionRecord) error {
+	if err := os.MkdirAll("/var/lib/forwardx-agent", 0755); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(records)
 	if err != nil {
-		return
+		return err
 	}
 	tmpPath := desiredStateRecordPath + ".tmp"
 	if err := os.WriteFile(tmpPath, raw, 0644); err != nil {
-		return
+		return err
 	}
 	if err := os.Rename(tmpPath, desiredStateRecordPath); err != nil {
 		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+const desiredActionFlushDebounce = 250 * time.Millisecond
+const desiredActionFlushMaxDelay = 5 * time.Second
+
+func flushDesiredActionRecordsOnce() {
+	desiredActionRecordMu.Lock()
+	ensureDesiredActionRecordsLoadedLocked()
+	if !desiredActionRecordsDirty.Load() {
+		desiredActionRecordMu.Unlock()
+		return
+	}
+	revision := desiredActionRecordsRevision
+	snapshot := make(map[string]desiredActionRecord, len(desiredActionRecordsMem))
+	for key, value := range desiredActionRecordsMem {
+		snapshot[key] = value
+	}
+	desiredActionRecordMu.Unlock()
+
+	err := writeDesiredActionRecordsSnapshot(snapshot)
+	desiredActionRecordMu.Lock()
+	if err == nil && desiredActionRecordsRevision == revision {
+		desiredActionRecordsDirty.Store(false)
+	}
+	stillDirty := desiredActionRecordsDirty.Load()
+	desiredActionRecordMu.Unlock()
+	if err != nil && shouldLogAgentReport("desired-state-record-flush", agentReportLogInterval) {
+		logf("desired state record flush failed: %v", err)
+	}
+	if stillDirty {
+		select {
+		case desiredActionFlushCh <- struct{}{}:
+		default:
+		}
 	}
 }
 
+// startDesiredActionRecordsFlusher batches completion bursts into one snapshot
+// write. The max-delay ticker also retries failed writes.
+func startDesiredActionRecordsFlusher() {
+	go func() {
+		ticker := time.NewTicker(desiredActionFlushMaxDelay)
+		defer ticker.Stop()
+		var timer *time.Timer
+		var timerCh <-chan time.Time
+		resetTimer := func() {
+			if timer == nil {
+				timer = time.NewTimer(desiredActionFlushDebounce)
+			} else {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(desiredActionFlushDebounce)
+			}
+			timerCh = timer.C
+		}
+		for {
+			select {
+			case <-desiredActionFlushCh:
+				resetTimer()
+			case <-timerCh:
+				timerCh = nil
+				flushDesiredActionRecordsOnce()
+			case <-ticker.C:
+				flushDesiredActionRecordsOnce()
+			}
+		}
+	}()
+}
+
+// rememberDesiredActionResult 更新内存缓存中的单条记录（无磁盘 I/O）。
+// 后台 flusher 会在 ≤5s 内将变更落盘。
 func rememberDesiredActionResult(key string, signature string, ok bool) {
 	desiredActionRecordMu.Lock()
-	defer desiredActionRecordMu.Unlock()
-	records := readDesiredActionRecordsLocked()
-	records[key] = desiredActionRecord{Signature: signature, Success: ok, UpdatedAt: time.Now().Unix()}
-	writeDesiredActionRecordsLocked(records)
+	ensureDesiredActionRecordsLoadedLocked()
+	desiredActionRecordsMem[key] = desiredActionRecord{Signature: signature, Success: ok, UpdatedAt: time.Now().Unix()}
+	markDesiredActionRecordsDirtyLocked()
+	desiredActionRecordMu.Unlock()
 }
 
 func resetDesiredActionRecordsAfterAgentUpgrade() {
@@ -611,9 +855,18 @@ func resetDesiredActionRecordsAfterAgentUpgrade() {
 			_ = os.Remove(desiredStateRecordPath)
 			logf("agent desired state version initialized; retry records cleared")
 		}
+		// 同步清空内存缓存，避免 flusher 把旧数据重写回去。
+		desiredActionRecordsMem = map[string]desiredActionRecord{}
+		desiredActionRecordsLoaded = true
+		desiredActionRecordsRevision++
+		desiredActionRecordsDirty.Store(false)
 	} else if previous != Version {
 		_ = os.Remove(desiredStateRecordPath)
 		logf("agent version changed from %s to %s; desired state retry records cleared", previous, Version)
+		desiredActionRecordsMem = map[string]desiredActionRecord{}
+		desiredActionRecordsLoaded = true
+		desiredActionRecordsRevision++
+		desiredActionRecordsDirty.Store(false)
 	}
 	if err != nil || previous != Version {
 		_ = os.WriteFile(desiredStateVersionPath, []byte(Version+"\n"), 0644)
@@ -629,17 +882,18 @@ func enqueueActionJob(job actionJob) {
 	}
 	pending := atomic.LoadInt64(&actionPendingCount)
 	if pending >= actionQueueBacklogLogThreshold && shouldLogAgentReport("action-queue-backlog", agentReportLogInterval) {
-		logf("action queue backlog pendingActions=%d queued=%d capacity=%d next=%s", pending, len(actionQueue), actionQueueCapacity, actionLogSummary(job.action))
+		logf("action queue backlog pendingActions=%d queued=%d ingress=%d capacity=%d next=%s", pending, len(actionQueue), actionIngress.len(), actionQueueCapacity, actionLogSummary(job.action))
+	}
+	depth, replaced := actionIngress.push(job)
+	if replaced != nil {
+		finishActionJob(*replaced)
 	}
 	select {
-	case actionQueue <- job:
+	case actionIngressWakeCh <- struct{}{}:
 	default:
-		if shouldLogAgentReport("action-queue-saturated", agentReportLogInterval) {
-			logf("action queue saturated pendingActions=%d capacity=%d; enqueueing asynchronously", atomic.LoadInt64(&actionPendingCount), actionQueueCapacity)
-		}
-		go func() {
-			actionQueue <- job
-		}()
+	}
+	if depth >= actionQueueCapacity && shouldLogAgentReport("action-ingress-backlog", agentReportLogInterval) {
+		logf("action ingress backlog pendingActions=%d ingress=%d workerQueue=%d; producers remain non-blocking", atomic.LoadInt64(&actionPendingCount), depth, len(actionQueue))
 	}
 }
 
@@ -651,8 +905,35 @@ func actionWorker() {
 	if baseWorkers > actionWorkerConcurrency {
 		baseWorkers = actionWorkerConcurrency
 	}
+	go actionDispatcherLoop()
 	startActionWorkerLoops(baseWorkers)
 	go actionWorkerScaler()
+}
+
+func actionDispatcherLoop() {
+	for {
+		job, ok := actionIngress.pop()
+		if !ok {
+			<-actionIngressWakeCh
+			continue
+		}
+		if isOlderAction(job.action, false) {
+			finishActionJob(job)
+			continue
+		}
+		actionQueue <- job
+	}
+}
+
+func finishActionJob(job actionJob) {
+	if job.done != nil {
+		close(job.done)
+	}
+	releaseProtectedActionPort(job.protectedPort)
+	releaseQueuedAction(job.action)
+	if atomic.AddInt64(&actionPendingCount, -1) == 0 {
+		wakeHeartbeat()
+	}
 }
 
 func startActionWorkerLoops(count int) {
@@ -694,30 +975,23 @@ func actionWorkerLoop(workerID int) {
 					logf("action queue wait slow worker=%d waited=%s pendingActions=%d queued=%d %s", workerID, waited.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 				}
 			}
-			if job.done != nil {
-				defer close(job.done)
-			}
-			defer func() {
-				if atomic.AddInt64(&actionPendingCount, -1) == 0 {
-					wakeHeartbeat()
-				}
-			}()
-			defer releaseProtectedActionPort(job.protectedPort)
-			defer releaseQueuedAction(job.action)
+			defer finishActionJob(job)
 			if isOlderAction(job.action, false) {
 				return
 			}
 			releaseRuntimeGate := acquireSharedRuntimeSyncGate(job.action)
 			if releaseRuntimeGate != nil {
+				var releaseOnce sync.Once
+				release := releaseRuntimeGate
+				releaseRuntimeGate = func() { releaseOnce.Do(release) }
 				defer releaseRuntimeGate()
 			}
-			serialKey := actionSerialKey(job.action)
-			unlock := acquireActionSerialLock(serialKey)
+			unlock := acquireActionSerialLocks(actionSerialKeys(job.action))
 			if unlock != nil {
 				defer unlock()
 			}
 			started := time.Now()
-			ok := handleAction(job.cfg, job.action)
+			ok := handleActionWithRuntimeGate(job.cfg, job.action, releaseRuntimeGate)
 			elapsed := time.Since(started)
 			if elapsed >= actionSlowHandleThreshold && shouldLogAgentReport("action-handle-slow:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
 				logf("action handle slow worker=%d duration=%s ok=%v pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
@@ -736,40 +1010,83 @@ func acquireSharedRuntimeSyncGate(a action) func() {
 	statusType := strings.TrimSpace(a.StatusType)
 	forwardType := strings.TrimSpace(a.ForwardType)
 	if statusType == "runtime" && forwardType == "gost-runtime-sync" {
-		sharedRuntimeSyncGate.Lock()
-		return sharedRuntimeSyncGate.Unlock
+		// 独占写锁：等待所有 gost/guard worker 完成后才重写 gost.json 并重启服务。
+		sharedGostRuntimeSyncGate.Lock()
+		return sharedGostRuntimeSyncGate.Unlock
+	}
+	if statusType == "runtime" && forwardType == "nginx-runtime-sync" {
+		sharedNginxRuntimeSyncGate.Lock()
+		return sharedNginxRuntimeSyncGate.Unlock
 	}
 	if statusType == "runtime" {
 		return nil
 	}
 	switch forwardType {
-	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "guard":
-		sharedRuntimeSyncGate.RLock()
-		return sharedRuntimeSyncGate.RUnlock
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+		// 共享读锁：与同类 worker 并发，但阻塞 gost-runtime-sync 写锁。
+		sharedGostRuntimeSyncGate.RLock()
+		return sharedGostRuntimeSyncGate.RUnlock
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		sharedNginxRuntimeSyncGate.RLock()
+		return sharedNginxRuntimeSyncGate.RUnlock
 	default:
+		// nginx / iptables / nftables 等不参与 gost 运行时同步门，无需持锁。
 		return nil
 	}
 }
 
-func actionSerialKey(a action) string {
+func actionSerialKeys(a action) []string {
 	statusType := strings.TrimSpace(a.StatusType)
 	if statusType == "runtime" {
 		name := strings.TrimSpace(a.ForwardType)
 		if name == "" {
 			name = "runtime"
 		}
-		return "runtime:" + name
+		return []string{"runtime:" + name}
+	}
+	keys := make([]string, 0, 2)
+	if a.RuleID > 0 {
+		keys = append(keys, fmt.Sprintf("rule:%d", a.RuleID))
+	} else if a.TunnelID > 0 {
+		keys = append(keys, fmt.Sprintf("tunnel:%d", a.TunnelID))
 	}
 	if validActionPort(a.SourcePort) {
-		return fmt.Sprintf("port:%d", a.SourcePort)
+		keys = append(keys, fmt.Sprintf("port:%d", a.SourcePort))
 	}
-	if a.RuleID > 0 {
-		return fmt.Sprintf("rule:%d", a.RuleID)
+	sort.Strings(keys)
+	return keys
+}
+
+func acquireActionSerialLocks(keys []string) func() {
+	if len(keys) == 0 {
+		return nil
 	}
-	if a.TunnelID > 0 {
-		return fmt.Sprintf("tunnel:%d", a.TunnelID)
+	normalizedKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			normalizedKeys = append(normalizedKeys, key)
+		}
 	}
-	return ""
+	sort.Strings(normalizedKeys)
+	uniqueKeys := normalizedKeys[:0]
+	for _, key := range normalizedKeys {
+		if len(uniqueKeys) == 0 || uniqueKeys[len(uniqueKeys)-1] != key {
+			uniqueKeys = append(uniqueKeys, key)
+		}
+	}
+	if len(uniqueKeys) == 0 {
+		return nil
+	}
+	unlocks := make([]func(), 0, len(uniqueKeys))
+	for _, key := range uniqueKeys {
+		unlocks = append(unlocks, acquireActionSerialLock(key))
+	}
+	return func() {
+		for index := len(unlocks) - 1; index >= 0; index-- {
+			unlocks[index]()
+		}
+	}
 }
 
 func acquireActionSerialLock(key string) func() {
@@ -918,15 +1235,30 @@ func actionStaleKeys(a action) []string {
 			statusType = "tunnel"
 		}
 	}
+	if statusType == "runtime" {
+		name := strings.TrimSpace(a.ForwardType)
+		if name == "" {
+			name = "runtime"
+		}
+		return []string{"runtime:" + name}
+	}
 	if statusType == "tunnel" && a.TunnelID > 0 {
 		keys = append(keys, fmt.Sprintf("tunnel:%d:%d", a.TunnelID, a.SourcePort))
+		// A host can have only one listener for a tunnel. Make a newer port
+		// assignment supersede queued work for the old port.
+		keys = append(keys, fmt.Sprintf("tunnel:%d", a.TunnelID))
 	}
 	if a.RuleID > 0 {
 		keys = append(keys, fmt.Sprintf("rule:%d:%d:%d", a.RuleID, a.TunnelID, a.SourcePort))
 		keys = append(keys, fmt.Sprintf("rule:%d:%d", a.RuleID, a.SourcePort))
+		// A rule has one active listener identity per Agent. A newer host, tunnel,
+		// port, or protocol assignment must supersede queued work for the old one.
+		keys = append(keys, fmt.Sprintf("rule:%d", a.RuleID))
 	}
 	if validActionPort(a.SourcePort) {
-		keys = append(keys, fmt.Sprintf("port:%d", a.SourcePort))
+		for _, protocol := range runtimeProtocols(a.Protocol) {
+			keys = append(keys, fmt.Sprintf("port:%d:%s", a.SourcePort, protocol))
+		}
 	}
 	return keys
 }

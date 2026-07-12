@@ -762,8 +762,8 @@ export default function Plans() {
   const trafficBillingConfigs = trafficBillingData?.configs || [];
   const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
   const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
-  const forwardGroupMap = useMemo(
-    () => new Map(forwardGroups.map((group: any) => [Number(group.id), group])),
+  const forwardGroupMap = useMemo<Map<number, any>>(
+    () => new Map<number, any>(forwardGroups.map((group: any) => [Number(group.id), group])),
     [forwardGroups],
   );
   const planResourceSummary: any = useMemo(() => {

@@ -11,6 +11,8 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
+import { agentHeartbeatGate } from "./agentHeartbeatGate";
+import { mapWithConcurrency } from "./asyncPool";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
@@ -53,6 +55,7 @@ import {
 const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
 const resolvedIpCache = new Map<number, { raw: string; ip: string }>();
 const resolvedIpCheckedAt = new Map<number, number>();
+const resolvedIpInflight = new Map<string, Promise<string>>();
 const tunnelRouteLogCache = new Map<string, string>();
 const nginxRuntimeLogCache = new Map<number, string>();
 const mimicRuntimeLogCache = new Map<number, { signature: string; loggedAt: number }>();
@@ -94,14 +97,11 @@ const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
 const MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS = 5 * 60 * 1000;
-const SHARED_RUNTIME_FORWARD_TYPES = new Set([
+const SHARED_GOST_FORWARD_TYPES = new Set([
   "gost",
   "gost-tunnel",
   "gost-tunnel-exit",
   "gost-tunnel-hop",
-  "nginx",
-  "nginx-tunnel",
-  "nginx-tunnel-exit",
 ]);
 const SHARED_NGINX_FORWARD_TYPES = new Set(["nginx", "nginx-tunnel", "nginx-tunnel-exit"]);
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
@@ -483,12 +483,12 @@ function dropStalePortRemoveActions(actions: any[], protectedRulePorts = new Set
   });
 }
 
-function actionMayAffectSharedRuntime(action: any) {
+function actionMayAffectRuntimeFamily(action: any, forwardTypes: Set<string>) {
   if (!action || action.statusType === "runtime") return false;
   const op = String(action.op || "").trim();
   if (op !== "apply" && op !== "remove") return false;
   if (action.fxp) return false;
-  return SHARED_RUNTIME_FORWARD_TYPES.has(String(action.forwardType || "").trim());
+  return forwardTypes.has(String(action.forwardType || "").trim());
 }
 
 function cleanEndpointHost(value: unknown) {
@@ -693,9 +693,17 @@ async function resolveTargetIpCached(ruleId: number, raw: string, force = false)
   const cachedIp = resolvedIpCache.get(ruleId);
   const checkedAt = resolvedIpCheckedAt.get(ruleId) || 0;
   if (!force && cachedIp && cachedIp.raw === trimmed && now - checkedAt < AGENT_DNS_RESOLVE_TTL_MS) return cachedIp.ip;
-  const resolved = await resolveTargetIp(trimmed);
+  const inflightKey = trimmed.toLowerCase();
+  let work = resolvedIpInflight.get(inflightKey);
+  if (!work) {
+    work = resolveTargetIp(trimmed).finally(() => {
+      if (resolvedIpInflight.get(inflightKey) === work) resolvedIpInflight.delete(inflightKey);
+    });
+    resolvedIpInflight.set(inflightKey, work);
+  }
+  const resolved = await work;
   resolvedIpCache.set(ruleId, { raw: trimmed, ip: resolved });
-  resolvedIpCheckedAt.set(ruleId, now);
+  resolvedIpCheckedAt.set(ruleId, Date.now());
   return resolved;
 }
 
@@ -713,6 +721,7 @@ export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => {
   let logHostId = 0;
   let logHostName = "";
+  let releaseHeartbeatReconciliation: (() => void) | null = null;
   try {
     const token = getResolvedAgentToken(req);
     const host = await getAgentHostFromRequest(req);
@@ -734,6 +743,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
     const busyHeartbeat = req.body?.busy === true || String(req.body?.busy || "").toLowerCase() === "true";
+    const forceReconcile = req.body?.forceReconcile === true || String(req.body?.forceReconcile || "").toLowerCase() === "true";
+    if (!busyHeartbeat) {
+      releaseHeartbeatReconciliation = agentHeartbeatGate.tryAcquire(logHostId, { force: forceReconcile });
+      if (!releaseHeartbeatReconciliation) {
+        res.json({
+          success: true,
+          actions: [],
+          selfTests: [],
+          nextInterval: 1,
+          compactReports: true,
+          reconciliationCoalesced: true,
+        });
+        return;
+      }
+    }
     const heartbeatMetric = (key: string, index: number) => req.body?.[key] ?? compactMetrics[index];
     const cpuUsage = heartbeatMetric("cpuUsage", 0);
     const memoryUsage = heartbeatMetric("memoryUsage", 1);
@@ -1012,18 +1036,23 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // DNS 预解析：将域名转换为 IP，缓存中比较检测变更
     const dnsChangedRuleIds = new Set<number>();
     const dnsPreviousIpByRuleId = new Map<number, string>();
-    for (const rule of agentHostRules as any[]) {
-      if (!rule.targetIp) continue;
+    const resolvedHostRuleTargets = await mapWithConcurrency(agentHostRules as any[], 32, async (rule: any) => {
+      if (!rule.targetIp) return null;
       addDnsWatch(dnsWatches, rule.targetIp, "forward-rule-target", Number(rule.id));
       const rawTargetIp = String(rule.targetIp || "").trim();
+      const previous = resolvedIpCache.get(Number(rule.id));
       const forcedResolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase());
       const resolved = forcedResolved || await resolveTargetIpCached(Number(rule.id), rawTargetIp);
+      return { rule, rawTargetIp, previous, forcedResolved, resolved };
+    });
+    for (const target of resolvedHostRuleTargets) {
+      if (!target) continue;
+      const { rule, rawTargetIp, previous, forcedResolved, resolved } = target;
       if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
-      const cachedIp = resolvedIpCache.get(rule.id);
-      if (dnsChangedFor("forward-rule-target", Number(rule.id)) && cachedIp && cachedIp.raw === rawTargetIp && cachedIp.ip !== resolved) {
+      if (dnsChangedFor("forward-rule-target", Number(rule.id)) && previous && previous.raw === rawTargetIp && previous.ip !== resolved) {
         // IP 变更：标记为需要重新下发
         dnsChangedRuleIds.add(rule.id);
-        dnsPreviousIpByRuleId.set(rule.id, cachedIp.ip);
+        dnsPreviousIpByRuleId.set(rule.id, previous.ip);
       }
       resolvedIpCache.set(rule.id, { raw: rawTargetIp, ip: resolved });
       // 保存原始值（域名），将 rule.targetIp 替换为解析后的 IP
@@ -1164,13 +1193,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     const chainTargetsByRuleId = new Map<number, { targetIp: string; targetPort: number; originalTargetIp?: string }>();
-    for (const rule of agentHostRules as any[]) {
+    await mapWithConcurrency(agentHostRules as any[], 16, async (rule: any) => {
       const chainTarget = await resolveForwardChainTarget(rule);
-      if (!chainTarget) continue;
+      if (!chainTarget) return;
       const oldTargetIp = String(rule.targetIp || "").trim();
       const oldTargetPort = Number(rule.targetPort) || 0;
       chainTargetsByRuleId.set(Number(rule.id), chainTarget);
-      if (oldTargetIp === chainTarget.targetIp && oldTargetPort === chainTarget.targetPort) continue;
+      if (oldTargetIp === chainTarget.targetIp && oldTargetPort === chainTarget.targetPort) return;
       if (rule.isEnabled && rule.isRunning) {
         actions.push({
           ruleId: rule.id,
@@ -1194,7 +1223,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         isRunning: false,
       } as any);
       appendPanelLog("info", `[ForwardChain] rule=${rule.id} target=${chainTarget.targetIp}:${chainTarget.targetPort}${chainTarget.originalTargetIp && chainTarget.originalTargetIp !== chainTarget.targetIp ? ` resolvedFrom=${chainTarget.originalTargetIp}` : ""} source=chain-config`);
-    }
+    });
     for (const rule of rules as any[]) {
       const chainTarget = chainTargetsByRuleId.get(Number(rule.id));
       if (!chainTarget) continue;
@@ -1219,11 +1248,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
       rule.targetIp = resolved;
     };
-    await Promise.all((agentAllRules as any[]).map((rule: any) => hydrateRuntimeTarget(rule)));
+    await mapWithConcurrency(agentAllRules as any[], 32, (rule: any) => hydrateRuntimeTarget(rule));
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
     const tunnelHopsByTunnelId = new Map<number, any[]>();
     const tunnelExitNodesByTunnelId = new Map<number, any[]>();
-    await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
+    await mapWithConcurrency(hostTunnels as any[], 24, async (tunnel: any) => {
       const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
       if (Array.isArray(hops) && hops.length >= 2) {
         tunnelHopsByTunnelId.set(Number(tunnel.id), hops);
@@ -1232,7 +1261,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (Array.isArray(exits) && exits.length > 0) {
         tunnelExitNodesByTunnelId.set(Number(tunnel.id), exits);
       }
-    }));
+    });
     const tunnelDnsRefreshByTunnelId = new Map<number, number>();
     const markTunnelDnsRefresh = (tunnelId: unknown, generation: number) => {
       const id = Number(tunnelId) || 0;
@@ -1685,6 +1714,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && !!tunnel
       && Number(primaryManagedTunnelRuleIdByTunnelId.get(Number((tunnel as any).id || 0)) || 0) === Number((rule as any).id || 0)
     );
+    const hasPrimaryManagedTunnelRule = (tunnel: any) => (
+      Number(primaryManagedTunnelRuleIdByTunnelId.get(Number((tunnel as any)?.id || 0)) || 0) > 0
+    );
     const tunnelExtraExitNodes = (tunnel: any) => (
       (tunnel as any)?.loadBalanceEnabled
         ? (tunnelExitNodesByTunnelId.get(Number(tunnel?.id || 0)) || [])
@@ -1954,6 +1986,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             hopCount: hops.length - 1,
           } : null;
         }
+        // A direct GOST tunnel only owns an exit listener when a forwarding
+        // rule is bound to it. Do not probe an otherwise idle saved link.
+        if (isGostTunnelMode(tunnel) && !hasPrimaryManagedTunnelRule(tunnel)) return null;
         if (!isCurrentHostTunnelEntry(tunnel)) return null;
         const primaryEndpoint = tunnelExitEndpointById.get(tunnel.id);
         const baseProbe = {
@@ -2285,51 +2320,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return cmds;
     };
     const buildTunnelReloadCmds = async () => {
-      const businessTunnelListenKeys = new Set<string>();
-      for (const rule of tunnelExitRules as any[]) {
-        const tunnel = tunnelById.get(Number((rule as any).tunnelId)) as any;
-        if (!tunnel || isForwardXTunnel(tunnel)) continue;
-        for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
-          if (endpoint.exitHostId > 0 && endpoint.listenPort > 0) {
-            businessTunnelListenKeys.add(`${endpoint.exitHostId}:${endpoint.listenPort}`);
-          }
-        }
-      }
-      const tunnelBusinessPortInUse = (hostId: number, listenPort: number) => businessTunnelListenKeys.has(`${Number(hostId)}:${Number(listenPort)}`);
-      const gostTunnelProbeService = (tunnel: any, name: string, listenPort: number) => ({
-        name,
-        addr: `:${listenPort}`,
-        handler: { type: "tcp" },
-        listener: {
-          type: tunnelProtocolType(tunnel.mode),
-          ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-        },
-        forwarder: {
-          nodes: [{
-            name: `probe-${name}`,
-            addr: "127.0.0.1:9",
-            connector: { type: "tcp" },
-            dialer: { type: "tcp" },
-          }],
-        },
-      });
-      const tunnelProbeServices = (hostTunnels as any[]).flatMap((tunnel: any) => {
-      if (!tunnel || !tunnel.isEnabled || !isGostTunnelMode(tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return [];
-        const services: any[] = [];
-        if (Number(tunnel.exitHostId) === Number(host.id)) {
-          const listenPort = Number(tunnel.listenPort) || 0;
-          if (listenPort > 0 && !tunnelBusinessPortInUse(Number(host.id), listenPort)) services.push(gostTunnelProbeService(tunnel, `fwx-tunnel-probe-${tunnel.id}`, listenPort));
-        }
-        const extraNodes = tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [];
-        for (const exitNode of extraNodes as any[]) {
-          if (!exitNode || exitNode.isEnabled === false || Number(exitNode.hostId) !== Number(host.id)) continue;
-          const listenPort = Number(exitNode.listenPort) || 0;
-          if (listenPort <= 0 || tunnelBusinessPortInUse(Number(host.id), listenPort)) continue;
-          const exitKey = Number(exitNode.id) || Number(exitNode.seq) || listenPort;
-          services.push(gostTunnelProbeService(tunnel, `fwx-tunnel-probe-${tunnel.id}-exit-${exitKey}`, listenPort));
-        }
-        return services;
-      });
+      // A saved GOST tunnel has no standalone listener. Only a real forwarding
+      // rule may create one, otherwise stale tunnel/extra-exit ports become
+      // phantom listeners that are repeatedly reported as failed.
     const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
@@ -2394,7 +2387,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ...(relayReceiveProxyMetadata ? { metadata: relayReceiveProxyMetadata } : {}),
         };
       }));
-      const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
+      const services = [...ruleServices, ...multiHopRelayServices.filter(Boolean)];
       const countingCmds = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
@@ -2827,7 +2820,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       tunnelRuntimeGenerationCmd(),
       ...buildGostReloadCmds(),
       ...await buildTunnelReloadCmds(),
-      ...await getNginxRuntimeSyncCmds(),
     ].filter(Boolean);
 
     const ruleTrafficPort = (rule: any) => {
@@ -3025,13 +3017,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const iface = normalizeNetworkInterface(name.slice("mimic@".length));
       if (iface) reportedMimicInterfaces.add(iface);
     }
-    const managedRuntimeServiceNames = new Set([RUNTIME_SERVICE_NAME, TUNNEL_RUNTIME_SERVICE_NAME, NGINX_SERVICE_NAME]);
-    const runtimeServiceUnhealthy = hasReportedRuntimeState && reportedRuntimeServices
+    const runtimeServiceUnhealthy = (serviceNames: Set<string>) => hasReportedRuntimeState && reportedRuntimeServices
       .some((service: AgentLocalRuntimeServiceState) => (
-        managedRuntimeServiceNames.has(String(service.name || "").trim())
+        serviceNames.has(String(service.name || "").trim())
         && service.hasWork
         && !service.active
       ));
+    const gostRuntimeServiceUnhealthy = runtimeServiceUnhealthy(new Set([RUNTIME_SERVICE_NAME, TUNNEL_RUNTIME_SERVICE_NAME]));
+    const nginxRuntimeServiceUnhealthy = runtimeServiceUnhealthy(new Set([NGINX_SERVICE_NAME]));
     const expectedRulePorts = new Set<string>();
     const expectedRuleIdentityKeys = new Set<string>();
     const expectedRulePortIdentityKeys = new Set<string>();
@@ -3195,9 +3188,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const isCurrentHostExtraExit = !!currentHostExtraExitNode;
       const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const fxpTunnel = isForwardXTunnel(tunnel);
+      const hasGostTunnelBusinessListener = !fxpTunnel && hasPrimaryManagedTunnelRule(tunnel);
       const isCurrentHostGostExtraExit = !fxpTunnel && isCurrentHostExtraExit;
       if (!isCurrentHostPrimaryExit && !(fxpTunnel && isCurrentHostExtraExit) && !isCurrentHostGostExtraExit) continue;
       if (Array.isArray(existingHops) && existingHops.length >= (fxpTunnel ? 2 : 3) && !isCurrentHostExtraExit) continue;
+      if (!fxpTunnel && !hasGostTunnelBusinessListener) {
+        if (isCurrentHostPrimaryExit && tunnel.isRunning) {
+          await db.updateTunnelRunningStatus(Number(tunnel.id), false);
+        }
+        continue;
+      }
       const fxpListenPort = isCurrentHostPrimaryExit
         ? Number(tunnel.listenPort)
         : Number((currentHostExtraExitNode as any)?.listenPort || 0);
@@ -3409,41 +3409,42 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       // 收集所有已运行的规则映射（无论是否有 action 下发）
       if (rule.isEnabled && rule.isRunning) {
         const trafficPort = ruleTrafficPort(rule);
-        if (!trafficPort) continue;
-        if (useRuleGuard) {
-          const guardTarget = guardTargetForRule(rule, useRuleGuard);
-          guardRules.push({
+        if (trafficPort) {
+          if (useRuleGuard) {
+            const guardTarget = guardTargetForRule(rule, useRuleGuard);
+            guardRules.push({
+              ruleId: rule.id,
+              tunnelId: 0,
+              listenPort: Number(rule.sourcePort),
+              targetIp: guardTarget.targetIp,
+              targetPort: guardTarget.targetPort,
+              backendPort: guardTarget.backendPort,
+              backendForwardType: guardTarget.backendForwardType,
+              protocol: normalizeForwardRuleProtocol(rule.protocol),
+              policy: ruleGuardPolicy,
+              proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
+              proxyProtocolSend: guardTarget.backendPort > 0
+                ? (proxyProtocolEnabled(rule, "send") || proxyProtocolEnabled(rule, "receive"))
+                : proxyProtocolEnabled(rule, "send"),
+              proxyProtocolVersion: proxyProtocolVersion(rule),
+            });
+          }
+          const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
+            ? "forwardx"
+            : useRuleGuard
+            ? "guard"
+            : rule.forwardType;
+          addRunningRule({
             ruleId: rule.id,
-            tunnelId: 0,
-            listenPort: Number(rule.sourcePort),
-            targetIp: guardTarget.targetIp,
-            targetPort: guardTarget.targetPort,
-            backendPort: guardTarget.backendPort,
-            backendForwardType: guardTarget.backendForwardType,
-            protocol: normalizeForwardRuleProtocol(rule.protocol),
-            policy: ruleGuardPolicy,
-            proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
-            proxyProtocolSend: guardTarget.backendPort > 0
-              ? (proxyProtocolEnabled(rule, "send") || proxyProtocolEnabled(rule, "receive"))
-              : proxyProtocolEnabled(rule, "send"),
-            proxyProtocolVersion: proxyProtocolVersion(rule),
+            tunnelId: ruleTunnel ? Number(ruleTunnel.id) : 0,
+            sourcePort: trafficPort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            protocol: rule.protocol,
+            forwardType: runningForwardType,
+            failover: failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) }),
           });
         }
-        const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
-          ? "forwardx"
-          : useRuleGuard
-          ? "guard"
-          : rule.forwardType;
-        addRunningRule({
-          ruleId: rule.id,
-          tunnelId: ruleTunnel ? Number(ruleTunnel.id) : 0,
-          sourcePort: trafficPort,
-          targetIp: rule.targetIp,
-          targetPort: rule.targetPort,
-          protocol: rule.protocol,
-          forwardType: runningForwardType,
-          failover: failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) }),
-        });
       }
 
       const ruleTunnelHops = ruleTunnel ? tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) : null;
@@ -4261,6 +4262,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (hasReportedRuntimeState) {
       const ruleActionPorts = new Set<string>();
       const ruleActionPortIdentityKeys = new Set<string>();
+      const applyPortsByRuleId = new Map<number, Set<number>>();
       const tunnelActionPorts = new Set<number>();
       for (const action of actions) {
         const port = Number(action?.sourcePort || 0);
@@ -4271,6 +4273,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (ruleId > 0 || statusType === "rule") {
           ruleActionPorts.add(runtimePortProtocolKey(port, action?.protocol));
           ruleActionPortIdentityKeys.add(ruleRuntimePortIdentityKey(ruleId, port));
+          if (action?.op === "apply" && ruleId > 0) {
+            const applyPorts = applyPortsByRuleId.get(ruleId) || new Set<number>();
+            applyPorts.add(port);
+            applyPortsByRuleId.set(ruleId, applyPorts);
+          }
         } else if (tunnelId > 0 || statusType === "tunnel") {
           tunnelActionPorts.add(port);
         }
@@ -4297,7 +4304,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const expectedIdentity = !!localIdentityKey && expectedRuleIdentityKeys.has(localIdentityKey);
         const expectedPortIdentity = !!localPortIdentityKey && expectedRulePortIdentityKeys.has(localPortIdentityKey);
         if (expectedIdentity || expectedPortIdentity || (!reportedRuleId && expectedRulePorts.has(localRuntimeKey)) || ruleActionPorts.has(localRuntimeKey) || (!!localPortIdentityKey && ruleActionPortIdentityKeys.has(localPortIdentityKey))) continue;
-        const guarded = reportedRuleId > 0 && knownEnabledRuleIds.has(reportedRuleId);
+        // A replacement apply for this same rule proves that an old listener was
+        // superseded by an edit. Remove it in this batch; without that concrete
+        // replacement, retain orphan hysteresis for transient runtime gaps.
+        const replacementPorts = applyPortsByRuleId.get(reportedRuleId);
+        const supersededByRuleEdit = !!replacementPorts
+          && (replacementPorts.size > 1 || !replacementPorts.has(port));
+        const guarded = !supersededByRuleEdit
+          && reportedRuleId > 0
+          && knownEnabledRuleIds.has(reportedRuleId);
         const orphanKey = localIdentityKey || `unknown:${localRuntimeKey}`;
         if (guarded) {
           seenOrphanKeys.add(orphanKey);
@@ -4472,6 +4487,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       releaseVersion: (host as any).agentUpgradeReleaseVersion || null,
     } : null;
 
+    // Do not mark plugin sync as delivered while an Agent is first uploading its
+    // local runtime snapshot. Desired state is intentionally withheld for that
+    // response, so caching the plugin action here would otherwise lose it until
+    // the five-minute plugin retry window expires.
+    const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
     const pluginSyncTasks = await buildPluginHostAssetSyncActions(Number(host.id));
     for (const pluginSyncTask of pluginSyncTasks) {
       const pluginSyncAction = {
@@ -4485,20 +4505,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: 0,
         protocol: "tcp",
         knownRunning: false,
+        reportStatus: true,
+        failureMessage: `插件 ${pluginSyncTask.pluginId} 资源同步失败，请检查 Agent 日志`,
         commands: pluginSyncTask.commands,
       } as any;
-      if (shouldSendPluginSyncAction(Number(host.id), pluginSyncAction, responseIssuedAt)) {
+      if (!deferActionsForLocalState && shouldSendPluginSyncAction(Number(host.id), pluginSyncAction, responseIssuedAt)) {
         actions.push(pluginSyncAction);
+        appendPanelLog(
+          "info",
+          `[Plugin] sync queued plugin=${pluginSyncTask.pluginId} usageView=${pluginSyncTask.usageViewId} host=${host.id} name=${String(host.name || "-")}`,
+        );
       }
     }
 
-    const runtimeConfigChanged = actions.some(actionMayAffectSharedRuntime) || dnsChangedReports.length > 0;
+    const dnsRuntimeChanged = dnsChangedReports.length > 0;
+    const gostRuntimeConfigChanged = actions.some((action) => actionMayAffectRuntimeFamily(action, SHARED_GOST_FORWARD_TYPES)) || dnsRuntimeChanged;
+    const nginxRuntimeConfigChanged = actions.some((action) => actionMayAffectRuntimeFamily(action, SHARED_NGINX_FORWARD_TYPES)) || dnsRuntimeChanged;
     const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0
       || mimicRequestedWithoutInterface
       || reportedMimicInterfaces.size > 0;
-    const runtimeSyncWanted = runtimeConfigChanged || runtimeServiceUnhealthy;
-    const runtimeSyncBootstrap = !runtimeSyncWanted && (!supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState);
-    if (runtimeSyncWanted || runtimeSyncBootstrap) {
+    const runtimeSyncBootstrap = !supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState;
+    if (gostRuntimeConfigChanged || gostRuntimeServiceUnhealthy || runtimeSyncBootstrap) {
       const runtimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,
@@ -4512,9 +4539,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         knownRunning: false,
         commands: await buildGostRuntimeSyncCmds(),
       } as any;
-      const runtimeRepairResendMs = runtimeServiceUnhealthy ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS : 0;
-      if (shouldSendRuntimeSyncAction(Number(host.id), runtimeSyncAction, runtimeConfigChanged, responseIssuedAt, runtimeRepairResendMs)) {
+      const runtimeRepairResendMs = gostRuntimeServiceUnhealthy ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS : 0;
+      if (shouldSendRuntimeSyncAction(Number(host.id), runtimeSyncAction, gostRuntimeConfigChanged, responseIssuedAt, runtimeRepairResendMs)) {
         actions.push(runtimeSyncAction);
+      }
+    }
+    if (nginxRuntimeConfigChanged || nginxRuntimeServiceUnhealthy || runtimeSyncBootstrap) {
+      const nginxRuntimeSyncAction = {
+        statusType: "runtime",
+        ruleId: 0,
+        tunnelId: 0,
+        op: "apply",
+        forwardType: "nginx-runtime-sync",
+        sourcePort: 0,
+        targetIp: "",
+        targetPort: 0,
+        protocol: "tcp",
+        knownRunning: false,
+        commands: await getNginxRuntimeSyncCmds(),
+      } as any;
+      const runtimeRepairResendMs = nginxRuntimeServiceUnhealthy ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS : 0;
+      if (shouldSendRuntimeSyncAction(Number(host.id), nginxRuntimeSyncAction, nginxRuntimeConfigChanged, responseIssuedAt, runtimeRepairResendMs)) {
+        actions.push(nginxRuntimeSyncAction);
       }
     }
     if (mimicRuntimeSyncWanted) {
@@ -4597,7 +4643,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
-    const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
     if (!deferActionsForLocalState) {
       const runningRuleKeys = new Set(runningRules.map((rule: any) => ruleRuntimeIdentityKey(rule.ruleId, rule.sourcePort, rule.protocol)));
       for (const action of normalizedActions) {
@@ -4703,6 +4748,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
   } catch (error) {
     console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });
+  } finally {
+    releaseHeartbeatReconciliation?.();
   }
 });
 

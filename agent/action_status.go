@@ -14,6 +14,7 @@ type actionStatusPayload struct {
 	RuleID      int    `json:"ruleId"`
 	TunnelID    int    `json:"tunnelId"`
 	StatusType  string `json:"statusType"`
+	SourcePort  int    `json:"sourcePort,omitempty"`
 	IsRunning   bool   `json:"isRunning"`
 	Message     string `json:"message,omitempty"`
 	ForwardType string `json:"forwardType,omitempty"`
@@ -36,7 +37,7 @@ func actionStatusReportKey(payload actionStatusPayload) string {
 	if statusType == "" {
 		statusType = "rule"
 	}
-	return fmt.Sprintf("%s:%d:%d:%s", statusType, payload.RuleID, payload.TunnelID, strings.TrimSpace(payload.ForwardType))
+	return fmt.Sprintf("%s:%d:%d:%d:%s", statusType, payload.RuleID, payload.TunnelID, payload.SourcePort, strings.TrimSpace(payload.ForwardType))
 }
 
 func enqueueActionStatusReport(cfg Config, a action, running bool, message string) {
@@ -44,6 +45,7 @@ func enqueueActionStatusReport(cfg Config, a action, running bool, message strin
 		RuleID:      a.RuleID,
 		TunnelID:    a.TunnelID,
 		StatusType:  strings.TrimSpace(a.StatusType),
+		SourcePort:  a.SourcePort,
 		IsRunning:   running,
 		Message:     strings.TrimSpace(message),
 		ForwardType: strings.TrimSpace(a.ForwardType),
@@ -83,7 +85,11 @@ func takeActionStatusReports(limit int) []actionStatusReport {
 			delete(actionStatusReports, key)
 		}
 	}
-	actionStatusReportOrder = append([]string(nil), actionStatusReportOrder[limit:]...)
+	// 仅拷贝剩余部分，释放旧 slice 的前段内存。
+	remaining := actionStatusReportOrder[limit:]
+	newOrder := make([]string, len(remaining))
+	copy(newOrder, remaining)
+	actionStatusReportOrder = newOrder
 	return reports
 }
 
@@ -106,14 +112,24 @@ func restoreActionStatusReports(reports []actionStatusReport) {
 	}
 	actionStatusReportsMu.Lock()
 	defer actionStatusReportsMu.Unlock()
+	// 收集需要恢复的 key（去重），从后往前迭代维持原始优先级顺序。
+	toRestore := make([]string, 0, len(reports))
 	for index := len(reports) - 1; index >= 0; index-- {
 		report := reports[index]
 		if _, exists := actionStatusReports[report.key]; exists {
 			continue
 		}
 		actionStatusReports[report.key] = report
-		actionStatusReportOrder = append([]string{report.key}, actionStatusReportOrder...)
+		toRestore = append(toRestore, report.key)
 	}
+	if len(toRestore) == 0 {
+		return
+	}
+	// toRestore 是倒序的，反转后得到原始顺序，一次性前插到队列头部，O(N)。
+	for i, j := 0, len(toRestore)-1; i < j; i, j = i+1, j-1 {
+		toRestore[i], toRestore[j] = toRestore[j], toRestore[i]
+	}
+	actionStatusReportOrder = append(toRestore, actionStatusReportOrder...)
 }
 
 func startActionStatusReporter() {

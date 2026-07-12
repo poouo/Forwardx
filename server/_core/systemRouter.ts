@@ -98,7 +98,7 @@ const sidebarMenuSettingsSchema = z.object(
   ) as Record<typeof SIDEBAR_MENU_KEYS[number], z.ZodOptional<z.ZodBoolean>>
 );
 
-function readSidebarMenuSettings(all: Record<string, string | undefined>) {
+function readSidebarMenuSettings(all: Record<string, string | null | undefined>) {
   const normalized = normalizeSidebarMenuSettings(
     parseSidebarMenuSettings(all.sidebarMenu),
   );

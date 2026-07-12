@@ -9,6 +9,7 @@ export type PluginAgentTask = {
   pluginId: string;
   pluginVersion: string;
   actionId: string;
+  contextId: string;
   executor: "script";
   interpreter: "bash" | "sh" | "python3";
   workingDirectory: string;
@@ -24,6 +25,7 @@ export type PluginAgentTaskResult = {
   groupId: string;
   pluginId: string;
   actionId: string;
+  contextId?: string;
   success: boolean;
   output?: string;
   stderr?: string;
@@ -47,6 +49,7 @@ export type PluginAgentTaskGroup = {
   pluginId: string;
   pluginVersion: string;
   actionId: string;
+  contextId: string;
   createdAt: string;
   updatedAt: string;
   total: number;
@@ -70,6 +73,7 @@ type PluginAgentTaskGroupInput = {
   pluginId: string;
   pluginVersion?: string | null;
   actionId: string;
+  contextId?: string | null;
   executor: "script";
   interpreter?: "bash" | "sh" | "python3" | null;
   workingDirectory: string;
@@ -199,13 +203,14 @@ export function enqueuePluginAgentTaskGroup(input: PluginAgentTaskGroupInput) {
   const createdAt = nowIso();
   const groupId = crypto.randomUUID();
   const argumentsList = Array.isArray(input.arguments)
-    ? input.arguments.map((item) => normalizeText(item, 2_000)).slice(0, 16)
+    ? input.arguments.map((item) => normalizeText(item, 24 * 1024)).slice(0, 16)
     : [];
   const group: PluginAgentTaskGroupState = {
     groupId,
     pluginId,
     pluginVersion: normalizeText(input.pluginVersion, 64),
     actionId,
+    contextId: normalizeText(input.contextId, 128),
     createdAt,
     updatedAt: createdAt,
     total: hosts.length,
@@ -223,6 +228,7 @@ export function enqueuePluginAgentTaskGroup(input: PluginAgentTaskGroupInput) {
       pluginId,
       pluginVersion: group.pluginVersion,
       actionId,
+      contextId: group.contextId,
       executor: "script",
       interpreter,
       workingDirectory,
@@ -237,6 +243,7 @@ export function enqueuePluginAgentTaskGroup(input: PluginAgentTaskGroupInput) {
       groupId,
       pluginId,
       actionId,
+      contextId: group.contextId,
       hostId: host.id,
       hostName: host.name || `主机 ${host.id}`,
       status: "queued",

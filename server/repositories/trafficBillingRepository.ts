@@ -223,8 +223,8 @@ export async function listTrafficBillingConfigs() {
     }).from(forwardGroups),
   ]);
   const hostNames = new Map(hostRows.map((host: any) => [Number(host.id), host.name]));
-  const tunnelById = new Map(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel]));
-  const forwardGroupById = new Map(forwardGroupRows.map((group: any) => [Number(group.id), group]));
+  const tunnelById = new Map<number, any>(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel]));
+  const forwardGroupById = new Map<number, any>(forwardGroupRows.map((group: any) => [Number(group.id), group]));
   return configs.map((config: any) => ({
     ...config,
     pricePerGbMilliCents: configPriceMilliCents(config),

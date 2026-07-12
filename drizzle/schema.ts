@@ -1056,6 +1056,27 @@ export const pluginAssets = table("plugin_assets", {
 export type PluginAsset = typeof pluginAssets.$inferSelect;
 export type InsertPluginAsset = typeof pluginAssets.$inferInsert;
 
+export const pluginAgentStates = table("plugin_agent_states", {
+  id: serial("id"),
+  pluginId: varchar("pluginId", { length: 128 }).notNull(),
+  resourceViewId: varchar("resourceViewId", { length: 128 }).notNull(),
+  hostId: int("hostId").notNull(),
+  pluginVersion: varchar("pluginVersion", { length: 64 }),
+  actionId: varchar("actionId", { length: 128 }),
+  groupId: varchar("groupId", { length: 64 }),
+  taskId: varchar("taskId", { length: 64 }),
+  status: varchar("status", { length: 32 }).notNull().default("idle"),
+  dataJson: text("dataJson"),
+  output: text("output"),
+  error: text("error"),
+  startedAt: epoch("startedAt"),
+  finishedAt: epoch("finishedAt"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type PluginAgentState = typeof pluginAgentStates.$inferSelect;
+export type InsertPluginAgentState = typeof pluginAgentStates.$inferInsert;
+
 // ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = table("user_host_permissions", {
   id: serial("id"),

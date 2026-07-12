@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { AgentResourceManager } from "@/components/plugins/AgentResourceManager";
+import { PluginResultRenderer } from "@/components/plugins/PluginResultRenderer";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -217,7 +219,17 @@ function agentTaskStatusClass(status?: string) {
   return "border-border/60 bg-muted/30 text-muted-foreground";
 }
 
-function AgentActionResultPanel({ result, onClear }: { result: any; onClear: () => void }) {
+function AgentActionResultPanel({
+  result,
+  onClear,
+  resultSchema,
+  canRevealSecrets,
+}: {
+  result: any;
+  onClear: () => void;
+  resultSchema?: any;
+  canRevealSecrets: boolean;
+}) {
   const body = result?.result?.body;
   if (!body) return null;
   const rows = Array.isArray(body.results) ? body.results : [];
@@ -248,9 +260,11 @@ function AgentActionResultPanel({ result, onClear }: { result: any; onClear: () 
               <Badge variant="outline" className={agentTaskStatusClass(row.status)}>{agentTaskStatusLabel(row.status)}</Badge>
             </div>
             {row.data !== undefined && (
-              <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">
-                {JSON.stringify(row.data, null, 2)}
-              </pre>
+              <div className="mt-2">
+                {resultSchema
+                  ? <PluginResultRenderer data={row.data} schema={resultSchema} canRevealSecrets={canRevealSecrets} />
+                  : <pre className="max-h-64 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">{JSON.stringify(row.data, null, 2)}</pre>}
+              </div>
             )}
             {!row.data && row.output && row.status !== "queued" && row.status !== "running" && (
               <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">{row.output}</pre>
@@ -740,6 +754,7 @@ export default function Plugins() {
   const [agentActionGroupId, setAgentActionGroupId] = useState("");
   const [activePageId, setActivePageId] = useState("");
   const [activeAssetPath, setActiveAssetPath] = useState("");
+  const [activeResourceViewId, setActiveResourceViewId] = useState("");
 
   const selectedPlugin = useMemo(
     () => plugins.find((plugin: PluginRow) => plugin.pluginId === selectedPluginId) || plugins[0],
@@ -750,9 +765,21 @@ export default function Plugins() {
   const pluginPages = Array.isArray(selectedManifest.pages) ? selectedManifest.pages : [];
   const pluginActions = Array.isArray(selectedManifest.actions) ? selectedManifest.actions : [];
   const pluginUsageViews = Array.isArray(selectedManifest.usageViews) ? selectedManifest.usageViews : [];
+  const pluginResourceViews = Array.isArray(selectedManifest.resourceSchemas)
+    ? selectedManifest.resourceSchemas
+    : Array.isArray(selectedManifest.resourceViews)
+      ? selectedManifest.resourceViews
+      : [];
   const hostAssetSyncUsageView = pluginUsageViews.find((view: any) => view?.type === "host-asset-sync");
   const hasUsageView = !!hostAssetSyncUsageView;
-  const usageAgentActions = pluginActions.filter((action: any) => action?.type === "agent.request");
+  const resourceActionIds = new Set(pluginResourceViews.flatMap((view: any) => [
+    ...(view?.sources || []).map((source: any) => source?.actionId),
+    view?.operations?.create?.actionId,
+    view?.operations?.update?.actionId,
+    view?.operations?.delete?.actionId,
+    ...(view?.operations?.execute || []).map((operation: any) => operation?.actionId),
+  ].filter(Boolean)));
+  const usageAgentActions = pluginActions.filter((action: any) => action?.type === "agent.request" && !resourceActionIds.has(action.id));
   const managementPluginActions = hasUsageView
     ? pluginActions.filter((action: any) => action?.type !== "agent.request")
     : pluginActions;
@@ -790,13 +817,14 @@ export default function Plugins() {
     },
   );
   const agentActionStatus = agentActionStatusQuery.data;
-  const chinaWhitelistStatusByHostId = useMemo(() => {
+  const chinaWhitelistStatusByHostId = useMemo<Map<number, any>>(() => {
     const rows = actionResult?.result?.actionId === "read-agent-status" && Array.isArray(actionResult?.result?.body?.results)
       ? actionResult.result.body.results
       : [];
-    return new Map(rows
-      .map((row: any) => [Number(row?.hostId), row] as const)
-      .filter(([hostId]) => Number.isInteger(hostId) && hostId > 0));
+    const entries: Array<readonly [number, any]> = rows
+      .map((row: any) => [Number(row?.hostId), row] as const);
+    return new Map<number, any>(entries
+      .filter(([hostId]: readonly [number, any]) => Number.isInteger(hostId) && hostId > 0));
   }, [actionResult]);
 
   const selectedAsset = assets.find((asset: any) => asset.path === activeAssetPath) || assets[0];
@@ -805,6 +833,9 @@ export default function Plugins() {
     ? assets.find((asset: any) => asset.path === selectedPage.assetPath)
     : null;
   const selectedPageContent = selectedPageAsset?.content || selectedPage?.content || "";
+  const activeResourceView = pluginResourceViews.find((view: any) => view.id === activeResourceViewId) || pluginResourceViews[0];
+  const actionResultDefinition = pluginActions.find((action: any) => action.id === actionResult?.result?.actionId);
+  const canRevealPluginSecrets = (selectedPlugin?.permissions || selectedManifest.permissions || []).includes("secret:reveal");
 
   const invalidatePluginQueries = async () => {
     await Promise.all([
@@ -949,6 +980,16 @@ export default function Plugins() {
     setActionResult(null);
     setAgentActionGroupId("");
   }, [selectedPlugin?.pluginId, selectedPlugin?.manifestJson]);
+
+  useEffect(() => {
+    if (!pluginResourceViews.length) {
+      setActiveResourceViewId("");
+      return;
+    }
+    if (!pluginResourceViews.some((view: any) => view.id === activeResourceViewId)) {
+      setActiveResourceViewId(pluginResourceViews[0].id);
+    }
+  }, [activeResourceViewId, pluginResourceViews]);
 
   useEffect(() => {
     if (!agentActionStatus) {
@@ -1363,7 +1404,7 @@ export default function Plugins() {
                 </Button>
               </div>
             </div>
-            {isChinaRegionWhitelist && (
+            {isChinaRegionWhitelist && pluginResourceViews.length === 0 && (
               <ChinaWhitelistHostStatusSummary
                 hosts={usageHosts}
                 selectedHostIds={usageDraft.hostIds}
@@ -1507,12 +1548,38 @@ export default function Plugins() {
             {actionResult?.result?.type === "agent.request" && (
               <AgentActionResultPanel
                 result={actionResult}
+                resultSchema={actionResultDefinition?.resultSchema}
+                canRevealSecrets={canRevealPluginSecrets}
                 onClear={() => {
                   setActionResult(null);
                   setAgentActionGroupId("");
                 }}
               />
             )}
+          </div>
+        )}
+
+        {pluginResourceViews.length > 0 && savedUsageEnabled && activeResourceView && (
+          <div className="space-y-4 border-t border-border/40 pt-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-medium">Agent 资源管理</p>
+                <p className="text-xs text-muted-foreground">选择节点后实时读取并管理该 Agent 上的插件资源。</p>
+              </div>
+              {pluginResourceViews.length > 1 && (
+                <Tabs value={activeResourceView.id} onValueChange={setActiveResourceViewId}>
+                  <TabsList>
+                    {pluginResourceViews.map((view: any) => <TabsTrigger key={view.id} value={view.id}>{view.title}</TabsTrigger>)}
+                  </TabsList>
+                </Tabs>
+              )}
+            </div>
+            <AgentResourceManager
+              plugin={selectedPlugin}
+              view={activeResourceView}
+              usage={savedUsage}
+              hosts={usageHosts}
+            />
           </div>
         )}
 

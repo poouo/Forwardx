@@ -19,9 +19,12 @@ const pluginAgentTaskRoot = "/var/lib/forwardx-agent/plugins"
 const pluginAgentTaskQueueCapacity = 64
 const pluginAgentTaskOutputLimit = 256 * 1024
 const pluginAgentTaskRetention = 24 * time.Hour
+const pluginAgentResultQueueCapacity = 256
+const pluginAgentResultReportAttempts = 12
 
 var pluginAgentTaskWorkersOnce sync.Once
 var pluginAgentTaskQueue = make(chan pluginAgentTaskJob, pluginAgentTaskQueueCapacity)
+var pluginAgentResultQueue = make(chan pluginAgentTaskResultJob, pluginAgentResultQueueCapacity)
 var pluginAgentTaskSeenMu sync.Mutex
 var pluginAgentTaskSeen = map[string]time.Time{}
 var pluginAgentTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -32,6 +35,7 @@ type pluginAgentTask struct {
 	PluginID         string   `json:"pluginId"`
 	PluginVersion    string   `json:"pluginVersion"`
 	ActionID         string   `json:"actionId"`
+	ContextID        string   `json:"contextId,omitempty"`
 	Executor         string   `json:"executor"`
 	Interpreter      string   `json:"interpreter"`
 	WorkingDirectory string   `json:"workingDirectory"`
@@ -45,6 +49,11 @@ type pluginAgentTask struct {
 type pluginAgentTaskJob struct {
 	cfg  Config
 	task pluginAgentTask
+}
+
+type pluginAgentTaskResultJob struct {
+	cfg    Config
+	result pluginAgentTaskResult
 }
 
 type pluginAgentTaskResult struct {
@@ -101,19 +110,36 @@ func startPluginAgentTaskWorkers() {
 		for i := 0; i < 2; i++ {
 			go pluginAgentTaskWorker()
 		}
+		for i := 0; i < 2; i++ {
+			go pluginAgentTaskResultWorker()
+		}
 	})
 }
 
 func pluginAgentTaskWorker() {
 	for job := range pluginAgentTaskQueue {
 		result := runPluginAgentTask(job.task)
-		reportPluginAgentTaskResult(job.cfg, result)
+		enqueuePluginAgentTaskResult(job.cfg, result)
+	}
+}
+
+func pluginAgentTaskResultWorker() {
+	for job := range pluginAgentResultQueue {
+		reportPluginAgentTaskResult(job.cfg, job.result)
+	}
+}
+
+func enqueuePluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
+	select {
+	case pluginAgentResultQueue <- pluginAgentTaskResultJob{cfg: cfg, result: result}:
+	case <-time.After(2 * time.Second):
+		logf("plugin action result queue full task=%s plugin=%s action=%s", result.TaskID, result.PluginID, result.ActionID)
 	}
 }
 
 func enqueuePluginAgentTask(cfg Config, task pluginAgentTask) {
 	if err := validatePluginAgentTask(task); err != nil {
-		reportPluginAgentTaskResult(cfg, invalidPluginAgentTaskResult(task, err))
+		enqueuePluginAgentTaskResult(cfg, invalidPluginAgentTaskResult(task, err))
 		return
 	}
 	if !reservePluginAgentTask(task.TaskID) {
@@ -122,7 +148,7 @@ func enqueuePluginAgentTask(cfg Config, task pluginAgentTask) {
 	select {
 	case pluginAgentTaskQueue <- pluginAgentTaskJob{cfg: cfg, task: task}:
 	default:
-		reportPluginAgentTaskResult(cfg, invalidPluginAgentTaskResult(task, errors.New("插件任务队列已满，请稍后重试")))
+		enqueuePluginAgentTaskResult(cfg, invalidPluginAgentTaskResult(task, errors.New("插件任务队列已满，请稍后重试")))
 	}
 }
 
@@ -161,7 +187,7 @@ func validatePluginAgentTask(task pluginAgentTask) error {
 		return errors.New("插件任务参数过多")
 	}
 	for _, argument := range task.Arguments {
-		if len(argument) > 2000 || strings.ContainsRune(argument, '\x00') {
+		if len(argument) > 24*1024 || strings.ContainsRune(argument, '\x00') {
 			return errors.New("插件任务参数不合法")
 		}
 	}
@@ -195,6 +221,29 @@ func pluginAgentTaskTimeout(task pluginAgentTask) time.Duration {
 	return time.Duration(value) * time.Millisecond
 }
 
+func validatePluginAgentTaskVersion(task pluginAgentTask) error {
+	expected := strings.TrimSpace(task.PluginVersion)
+	if expected == "" {
+		return nil
+	}
+	manifestPath := filepath.Join(pluginAgentTaskRoot, task.PluginID, "manifest.json")
+	content, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("插件尚未同步或 manifest 不可用: %w", err)
+	}
+	var manifest struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(content, &manifest); err != nil {
+		return fmt.Errorf("插件 manifest 无效: %w", err)
+	}
+	actual := strings.TrimSpace(manifest.Version)
+	if actual != expected {
+		return fmt.Errorf("插件版本不一致: Agent=%s 面板=%s", actual, expected)
+	}
+	return nil
+}
+
 func invalidPluginAgentTaskResult(task pluginAgentTask, err error) pluginAgentTaskResult {
 	now := time.Now().Format(time.RFC3339Nano)
 	message := "插件任务无效"
@@ -226,6 +275,9 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 		StartedAt: started.Format(time.RFC3339Nano),
 	}
 	if err := validatePluginAgentTask(task); err != nil {
+		return invalidPluginAgentTaskResult(task, err)
+	}
+	if err := validatePluginAgentTaskVersion(task); err != nil {
 		return invalidPluginAgentTaskResult(task, err)
 	}
 	entryPath := filepath.Join(filepath.Clean(task.WorkingDirectory), filepath.Clean(task.Entry))
@@ -285,11 +337,20 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 }
 
 func reportPluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
-	if err := post(cfg, "/api/agent/plugin-action-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
-		if isTransientAgentCommError(err) {
-			logAgentCommError("plugin-action-result", err)
-		} else {
-			logf("plugin action result report failed task=%s plugin=%s action=%s: %v", result.TaskID, result.PluginID, result.ActionID, err)
+	delay := time.Second
+	for attempt := 1; attempt <= pluginAgentResultReportAttempts; attempt++ {
+		err := post(cfg, "/api/agent/plugin-action-result", map[string]any{"result": result}, &map[string]any{})
+		if err == nil {
+			return
+		}
+		if !isTransientAgentCommError(err) || attempt == pluginAgentResultReportAttempts {
+			logf("plugin action result report failed task=%s plugin=%s action=%s attempt=%d/%d: %v", result.TaskID, result.PluginID, result.ActionID, attempt, pluginAgentResultReportAttempts, err)
+			return
+		}
+		logAgentCommError("plugin-action-result", err)
+		time.Sleep(delay)
+		if delay < 16*time.Second {
+			delay *= 2
 		}
 	}
 }

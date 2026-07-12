@@ -13,6 +13,7 @@ import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
 import { checkPanelUpdateTask, startPanelUpgradeTask } from "./_core/systemRouter";
 import { requireRuleProtocolEnabled } from "./forwardProtocolSettings";
+import { reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "./portReservations";
 
 const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 
@@ -739,9 +740,11 @@ async function withTemporaryProcessingMessage<T>(
   } finally {
     completed = true;
     clearTimeout(timer);
-    if (sendPending) await sendPending.catch(() => undefined);
-    if (processingMessage?.message_id) {
-      await deleteMessage(chatId, processingMessage.message_id).catch(() => undefined);
+    const pendingSend = sendPending as Promise<void> | null;
+    if (pendingSend) await pendingSend.catch(() => undefined);
+    const sentMessage = processingMessage as TelegramSentMessage | null;
+    if (sentMessage?.message_id) {
+      await deleteMessage(chatId, sentMessage.message_id).catch(() => undefined);
     }
   }
 }
@@ -3477,6 +3480,9 @@ async function executePendingManageAction(pending: PendingManageAction, callback
           )
         : entryPolicy;
 
+      let sourcePortReservation: HostPortReservation | null = null;
+      let tunnelExitPortReservation: HostPortReservation | null = null;
+      try {
       if (sourcePort === 0) {
         let randomRangeStart = tunnelId > 0 ? Number((tunnel as any)?.portRangeStart || 0) || null : null;
         let randomRangeEnd = tunnelId > 0 ? Number((tunnel as any)?.portRangeEnd || 0) || null : null;
@@ -3484,26 +3490,44 @@ async function executePendingManageAction(pending: PendingManageAction, callback
           randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
           randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
         }
-        const randomPort = await db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd, "both");
-        if (!randomPort) throw new Error("该主机端口范围内暂无可用入口端口。");
-        sourcePort = Number(randomPort);
+        sourcePortReservation = await reserveAvailableHostPort({
+          hostId,
+          protocol: "both",
+          findPort: (reservedPorts) => db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd, "both", reservedPorts),
+          isUsed: (port) => db.isPortUsedOnHost(hostId, port, undefined, "both"),
+        });
+        if (!sourcePortReservation) throw new Error("该主机端口范围内暂无可用入口端口。");
+        sourcePort = sourcePortReservation.port;
       } else {
         if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
           throw new Error(portPolicyErrorMessage(effectivePolicy, "入口端口"));
         }
-        const used = await db.isPortUsedOnHost(hostId, sourcePort, undefined, "both");
-        if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再试。`);
+        sourcePortReservation = await reserveSpecificHostPort({
+          hostId,
+          port: sourcePort,
+          protocol: "both",
+          isUsed: (port) => db.isPortUsedOnHost(hostId, port, undefined, "both"),
+        });
+        if (!sourcePortReservation) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再试。`);
       }
 
       let tunnelExitPort: number | null = null;
       if (tunnelId > 0) {
         const exitHost = await db.getHostById(Number((tunnel as any)?.exitHostId || 0));
-        tunnelExitPort = await db.findAvailableTunnelExitPort(
-          Number((tunnel as any)?.exitHostId || 0),
-          (exitHost as any)?.portRangeStart,
-          (exitHost as any)?.portRangeEnd,
-        );
-        if (!tunnelExitPort) throw new Error("隧道出口主机没有可用出口端口。");
+        const exitHostId = Number((tunnel as any)?.exitHostId || 0);
+        tunnelExitPortReservation = await reserveAvailableHostPort({
+          hostId: exitHostId,
+          protocol: "both",
+          findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+            exitHostId,
+            (exitHost as any)?.portRangeStart,
+            (exitHost as any)?.portRangeEnd,
+            reservedPorts,
+          ),
+          isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, undefined, "both"),
+        });
+        if (!tunnelExitPortReservation) throw new Error("隧道出口主机没有可用出口端口。");
+        tunnelExitPort = tunnelExitPortReservation.port;
       }
 
       const ruleName = `TG-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${sourcePort}`;
@@ -3570,6 +3594,10 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         `入口端口：${aiCode(`:${sourcePort}`)}`,
         tunnelId > 0 ? `隧道：${aiCode(`#${tunnelId} ${(tunnel as any)?.name || ""}`.trim())}` : "",
       ].filter(Boolean).join("\n");
+      } finally {
+        tunnelExitPortReservation?.release();
+        sourcePortReservation?.release();
+      }
     }
 
     if (pending.action === "rule_delete") {

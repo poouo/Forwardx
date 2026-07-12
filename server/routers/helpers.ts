@@ -87,7 +87,7 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
   return { tunnel, isTrafficBillingResource };
 }
 
-export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
+export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, options?: { urgent?: boolean }) {
   if (tunnel?.id) clearTunnelRuntimeStatus(Number(tunnel.id));
   const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
   const extraExitRows = tunnel?.id ? await db.getTunnelExitNodes(Number(tunnel.id)) : [];
@@ -119,12 +119,12 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const tunnelName = String(tunnel?.name || `隧道 #${tunnel?.id || "-"}`).trim();
   const pushed = uniqueHostIds.map((hostId) => ({
     hostId,
-    pushed: pushAgentRefresh(hostId, `${reason}-host-${hostId}`),
+    pushed: pushAgentRefresh(hostId, `${reason}-host-${hostId}`, { urgent: options?.urgent === true }),
   }));
   const allPushed = pushed.every((item) => item.pushed);
   appendPanelLog(
     allPushed ? "info" : "warn",
-    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
+    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} urgent=${options?.urgent === true} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
   const entryHostIdSet = new Set(entryHostIds);
   return {

@@ -25,13 +25,15 @@ import {
   updateForwardRule,
 } from "./forwardRuleRepository";
 import { getHostById, getHosts } from "./hostRepository";
-import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
+import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, isPortUsedOnHost, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { findTrafficBillingResourceForRule, settleTrafficBillingRuleOnDelete, trafficBillingResourceCandidatesForRule } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latencyProbe";
 import { notifyForwardGroupSwitch } from "../forwardGroupSwitchNotifier";
+import { withKeyedTaskLock } from "../keyedTaskLock";
+import { reserveAvailableHostPort, type HostPortReservation } from "../portReservations";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -942,6 +944,19 @@ export async function getForwardGroupDefaultHostId(groupId: number) {
   throw new Error("Forward group has no valid entry agent");
 }
 
+export async function getForwardGroupRuleEntryHostIds(groupId: number) {
+  const group = await getForwardGroupById(groupId);
+  if (!group) throw new Error("Forward group does not exist");
+  const members = sortedMembers(group);
+  const portMembers = groupModeOf(group) === "chain"
+    ? [...(await chainEntryMembers(group)), ...members]
+    : members;
+  const hostIds = await Promise.all(portMembers
+    .filter((member: any) => member?.isEnabled !== false)
+    .map((member: any) => memberEntryHostId(member)));
+  return Array.from(new Set(hostIds.filter((hostId) => Number.isInteger(hostId) && hostId > 0)));
+}
+
 async function existingChildRule(templateRuleId: number, memberId: number, hostId?: number | null) {
   const db = await getDb();
   const conds: any[] = [
@@ -1335,6 +1350,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   );
   if (used) throw new Error(`Entry agent port ${templateRule.sourcePort} is already used`);
 
+  let tunnelExitPortReservation: HostPortReservation | null = null;
+  try {
   let tunnelId: number | null = null;
   let tunnelExitPort: number | null = null;
   let tunnel: any = null;
@@ -1346,14 +1363,21 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     tunnelExitPort = Number(existing?.tunnelExitPort || 0) || null;
     if (!tunnelExitPort) {
       const exit = await getHostById(Number(tunnel.exitHostId));
-      tunnelExitPort = await findAvailableTunnelExitPort(
-        Number(tunnel.exitHostId),
-        (exit as any)?.portRangeStart,
-        (exit as any)?.portRangeEnd,
-        [],
-        [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean),
-      );
-      if (!tunnelExitPort) throw new Error("Tunnel exit agent has no available port");
+      const excludeRuleIds = [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean);
+      tunnelExitPortReservation = await reserveAvailableHostPort({
+        hostId: Number(tunnel.exitHostId),
+        protocol: "both",
+        findPort: (reservedPorts) => findAvailableTunnelExitPort(
+          Number(tunnel.exitHostId),
+          (exit as any)?.portRangeStart,
+          (exit as any)?.portRangeEnd,
+          reservedPorts,
+          excludeRuleIds,
+        ),
+        isUsed: (port) => isPortUsedOnHost(Number(tunnel.exitHostId), port, excludeRuleIds, "both"),
+      });
+      if (!tunnelExitPortReservation) throw new Error("Tunnel exit agent has no available port");
+      tunnelExitPort = tunnelExitPortReservation.port;
     }
   }
   const protocol = String(templateRule.protocol || "both");
@@ -1433,6 +1457,9 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   }
   await refreshRuleEndpoints({ ...payload, id: ruleId }, "forward-group-child-created");
   return ruleId;
+  } finally {
+    tunnelExitPortReservation?.release();
+  }
 }
 
 async function ensureChainRuleForTemplate(
@@ -1596,6 +1623,7 @@ async function removeManagedRule(ruleId: number) {
 }
 
 export async function syncForwardGroupRules(groupId: number, options: SyncForwardGroupRulesOptions = {}) {
+  return withKeyedTaskLock(`forward-group-sync:${groupId}`, async () => {
   const group = await getForwardGroupById(groupId);
   if (!group) return;
   const db = await getDb();
@@ -1717,6 +1745,7 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
       }
     }
   }
+  });
 }
 
 export async function syncForwardGroupTemplateRule(templateRuleId: number) {

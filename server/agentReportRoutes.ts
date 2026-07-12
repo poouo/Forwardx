@@ -160,17 +160,19 @@ function logTcpingReportSummary(
 
 function compactTrafficStats(value: unknown): AgentTrafficStat[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((row) => {
-      if (!Array.isArray(row)) return null;
-      return {
-        ruleId: Number(row[0]),
-        bytesIn: Number(row[1]) || 0,
-        bytesOut: Number(row[2]) || 0,
-        connections: Number(row[3]) || 0,
-      };
-    })
-    .filter((row): row is AgentTrafficStat => !!row && Number.isFinite(Number(row.ruleId)));
+  const stats: AgentTrafficStat[] = [];
+  for (const row of value) {
+    if (!Array.isArray(row)) continue;
+    const ruleId = Number(row[0]);
+    if (!Number.isFinite(ruleId)) continue;
+    stats.push({
+      ruleId,
+      bytesIn: Number(row[1]) || 0,
+      bytesOut: Number(row[2]) || 0,
+      connections: Number(row[3]) || 0,
+    });
+  }
+  return stats;
 }
 
 function compactHostTraffic(value: unknown): AgentHostTrafficStat | null {
@@ -315,6 +317,7 @@ agentRouter.post("/api/agent/plugin-action-result", async (req: Request, res: Re
       finishedAt: result.finishedAt ? String(result.finishedAt) : undefined,
       error: result.error ? String(result.error).slice(0, 4000) : undefined,
     });
+    if (ok) await db.syncPluginAgentActionState(String(result.pluginId), String(result.groupId));
     res.json({ success: ok });
   } catch (error) {
     console.error("[Agent Plugin Action] Error:", error);

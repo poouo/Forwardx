@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "id": "china-region-whitelist",
   "name": "ForwardX 中国区域白名单",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
-  "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。\n\n安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 面板和 Agent 下发的非交互使用方式。",
+  "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则应用到选中的 Agent 主机。\n\n安装后先在“插件使用”中选择需要同步插件程序和数据的主机，再通过“Agent 资源管理”逐台读取、编辑、应用或清理实际配置。每台 Agent 的配置和状态彼此独立。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 自动展示在线、执行、规则挂载、持久化和失败状态。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 通用 Agent 动态资源管理的非交互入口。",
   "author": "poouo",
   "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
-  "releaseDate": "2026-07-11",
-  "updatedAt": "2026-07-11",
-  "changelog": "修复全国与省份同时选择时省级白名单被全国 CIDR 覆盖的问题，并优化主机规则状态展示。",
+  "releaseDate": "2026-07-12",
+  "updatedAt": "2026-07-12",
+  "changelog": "接入通用 Agent 动态资源管理，支持按主机实时读取、编辑、应用和清理白名单配置，并保留每台主机的独立配置。",
   "tags": ["whitelist", "china-region", "firewall", "agent"],
   "license": "Unknown",
   "homepage": "https://github.com/poouo/Forwardx",
@@ -32,7 +32,7 @@
       "description": "应用前可以先输出将执行的 nftables/iptables 命令。"
     }
   ],
-  "permissions": ["data:whitelist", "agent:execute"],
+  "permissions": ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive"],
   "extensionPoints": ["data.whitelist"],
   "usageViews": [
     {
@@ -58,45 +58,58 @@
       "assetSelector": {
         "hidden": true
       },
-      "operationSelector": {
-        "label": "执行方式",
-        "defaultValue": "sync",
-        "options": [
-          {
-            "value": "sync",
-            "label": "仅同步配置",
-            "description": "只把脚本、数据和配置写入主机，不修改防火墙。"
-          },
-          {
-            "value": "dry-run",
-            "label": "预演规则",
-            "description": "输出将要执行的规则命令，适合正式应用前检查。"
-          },
-          {
-            "value": "apply",
-            "label": "应用规则",
-            "description": "按当前配置应用白名单规则，并尽量配置开机恢复。"
-          },
-          {
-            "value": "clear",
-            "label": "清理规则",
-            "description": "清理该插件创建的防火墙规则和持久化配置。"
-          },
-          {
-            "value": "update-asn",
-            "label": "更新 ASN",
-            "description": "重新同步已配置 ASN 的前缀并恢复规则。"
-          }
-        ]
+      "noteField": {
+        "label": "备注",
+        "placeholder": "例如：限制入口机只允许国内访问"
       },
+      "footer": {
+        "title": "保存后会随 Agent 心跳同步插件程序和数据。",
+        "description": "每台主机的白名单配置请在下方 Agent 资源管理中读取、编辑和应用。",
+        "submitLabel": "保存主机范围"
+      }
+    }
+  ],
+  "resourceSchemas": [
+    {
+      "id": "whitelist-host-manager",
+      "type": "agent-resource",
+      "title": "白名单配置",
+      "description": "实时读取并管理所选 Agent 上实际生效的区域白名单配置。",
+      "usageViewId": "sync-to-hosts",
+      "rowKey": "id",
+      "listSourceId": "whitelist-list",
+      "detailSourceId": "whitelist-detail",
+      "emptyText": "Agent 上没有可管理的白名单配置",
+      "sources": [
+        {
+          "id": "whitelist-list",
+          "actionId": "read-agent-status",
+          "triggers": ["onOpen", "onHostSelected"],
+          "itemsPath": "items",
+          "cacheTtlMs": 5000
+        },
+        {
+          "id": "whitelist-detail",
+          "actionId": "read-whitelist-detail",
+          "triggers": ["manual"],
+          "selectionInputKey": "id"
+        }
+      ],
+      "columns": [
+        { "key": "name", "label": "配置", "type": "text", "path": "name" },
+        { "key": "applied", "label": "规则状态", "type": "status", "path": "applied", "trueLabel": "已生效", "falseLabel": "未生效" },
+        { "key": "backend", "label": "防火墙", "type": "code", "path": "backend" },
+        { "key": "ruleCount", "label": "CIDR 数量", "type": "number", "path": "ruleCount" },
+        { "key": "serviceActive", "label": "持久化", "type": "boolean", "path": "serviceActive", "trueLabel": "已启用", "falseLabel": "未启用" }
+      ],
       "fields": [
         {
-          "key": "region-codes",
+          "key": "regions",
           "label": "全局白名单区域",
           "type": "multi-select",
-          "description": "全国与省份互斥；选择省份后仅使用所选省份 CIDR。",
           "required": true,
           "defaultValue": ["CN"],
+          "description": "全国与省份互斥；选择省份后仅使用所选省份 CIDR。",
           "options": [
             { "value": "CN", "label": "全国（中国大陆 CN）" },
             { "value": "110000", "label": "北京市" },
@@ -132,22 +145,10 @@
             { "value": "650000", "label": "新疆维吾尔自治区" }
           ]
         },
+        { "key": "asns", "label": "额外 ASN 白名单", "type": "textarea", "placeholder": "AS16509 AS14061", "description": "多个 ASN 可用空格、逗号或换行分隔。" },
+        { "key": "portPolicies", "label": "端口优先白名单", "type": "textarea", "placeholder": "22=上海市,AS16509;10000-20000=广东省", "description": "端口策略优先于全局白名单。" },
         {
-          "key": "asns",
-          "label": "额外 ASN 白名单",
-          "type": "textarea",
-          "description": "多个 ASN 可用空格、逗号或换行分隔，例如 AS16509 AS14061。",
-          "placeholder": "AS16509"
-        },
-        {
-          "key": "port-policies",
-          "label": "端口优先白名单",
-          "type": "textarea",
-          "description": "端口策略优先于全局白名单，支持省份、ASN、IPv4 或 CIDR。",
-          "placeholder": "22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省"
-        },
-        {
-          "key": "forward-mode",
+          "key": "forwardMode",
           "label": "DNAT/FORWARD 托管",
           "type": "select",
           "defaultValue": "all",
@@ -158,14 +159,14 @@
           ]
         },
         {
-          "key": "forward-ifaces",
+          "key": "forwardInterfaces",
           "label": "指定接口",
           "type": "text",
-          "description": "当上方选择“只托管指定接口”时填写，例如 tun0 wg0。",
-          "placeholder": "tun0 wg0"
+          "placeholder": "tun0 wg0",
+          "visibleWhen": [{ "field": "forwardMode", "operator": "eq", "value": "selected" }]
         },
         {
-          "key": "firewall-backend",
+          "key": "configuredBackend",
           "label": "防火墙后端",
           "type": "select",
           "defaultValue": "auto",
@@ -176,14 +177,19 @@
           ]
         }
       ],
-      "noteField": {
-        "label": "备注",
-        "placeholder": "例如：限制入口机只允许国内访问"
-      },
-      "footer": {
-        "title": "保存后会随 Agent 心跳下发到主机。",
-        "description": "默认执行方式是仅同步配置；需要正式生效时选择“应用规则”后再保存。",
-        "submitLabel": "保存并下发"
+      "operations": {
+        "update": {
+          "actionId": "save-whitelist-config",
+          "label": "保存并应用",
+          "refreshAfter": ["whitelist-list", "whitelist-detail"]
+        },
+        "delete": {
+          "actionId": "delete-whitelist-config",
+          "label": "清理规则",
+          "description": "清除该 Agent 上由插件创建的白名单规则和配置。",
+          "confirmRequired": true,
+          "refreshAfter": ["whitelist-list"]
+        }
       }
     }
   ],
@@ -200,15 +206,83 @@
       "id": "read-agent-status",
       "label": "读取主机状态",
       "type": "agent.request",
+      "intent": "read",
       "description": "从已选主机读取实际白名单配置、防火墙后端、规则数量和持久化状态。",
       "agent": {
         "executor": "script",
         "interpreter": "bash",
-        "target": "usage-hosts",
+        "target": "selected-hosts",
+        "usageViewId": "sync-to-hosts",
+        "entry": "forwardx-agent-run.sh",
+        "arguments": ["resource-list-json"],
+        "timeoutMs": 15000,
+        "outputType": "json"
+      }
+    },
+    {
+      "id": "read-whitelist-detail",
+      "label": "读取白名单详情",
+      "type": "agent.request",
+      "intent": "read",
+      "agent": {
+        "executor": "script",
+        "interpreter": "bash",
+        "target": "selected-hosts",
         "usageViewId": "sync-to-hosts",
         "entry": "forwardx-agent-run.sh",
         "arguments": ["status-json"],
         "timeoutMs": 15000,
+        "outputType": "json"
+      },
+      "resultSchema": {
+        "type": "table",
+        "itemsPath": "items",
+        "fields": [
+          { "key": "name", "label": "配置" },
+          { "key": "applied", "label": "规则状态", "type": "statusBadge", "trueLabel": "已生效", "falseLabel": "未生效" },
+          { "key": "backend", "label": "防火墙", "type": "code" },
+          { "key": "ruleCount", "label": "CIDR 数量", "type": "number" }
+        ]
+      }
+    },
+    {
+      "id": "save-whitelist-config",
+      "label": "保存并应用白名单",
+      "type": "agent.request",
+      "intent": "write",
+      "agent": {
+        "executor": "script",
+        "interpreter": "bash",
+        "target": "selected-hosts",
+        "usageViewId": "sync-to-hosts",
+        "entry": "forwardx-agent-run.sh",
+        "arguments": ["resource-save", "{{input.payload}}"],
+        "timeoutMs": 30000,
+        "outputType": "json"
+      },
+      "resultSchema": {
+        "type": "keyValue",
+        "fields": [
+          { "key": "applied", "label": "规则状态", "type": "statusBadge", "trueLabel": "已生效", "falseLabel": "未生效" },
+          { "key": "backend", "label": "防火墙", "type": "code" },
+          { "key": "ruleCount", "label": "CIDR 数量", "type": "number" },
+          { "key": "configPath", "label": "配置路径", "type": "code", "copyable": true }
+        ]
+      }
+    },
+    {
+      "id": "delete-whitelist-config",
+      "label": "清理白名单规则",
+      "type": "agent.request",
+      "intent": "write",
+      "agent": {
+        "executor": "script",
+        "interpreter": "bash",
+        "target": "selected-hosts",
+        "usageViewId": "sync-to-hosts",
+        "entry": "forwardx-agent-run.sh",
+        "arguments": ["resource-delete"],
+        "timeoutMs": 30000,
         "outputType": "json"
       }
     },

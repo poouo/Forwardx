@@ -99,9 +99,14 @@ export const pluginsRouter = router({
       pluginId: z.string().trim().min(1).max(128),
       actionId: z.string().trim().min(1).max(128),
       input: z.record(z.unknown()).optional(),
+      hostIds: z.array(z.number().int().positive()).max(512).optional(),
+      resourceViewId: z.string().trim().min(1).max(128).optional(),
     }))
     .mutation(async ({ input }) => {
-      return pluginRepo.runPluginAction(input.pluginId, input.actionId, input.input);
+      return pluginRepo.runPluginAction(input.pluginId, input.actionId, input.input, {
+        hostIds: input.hostIds,
+        resourceViewId: input.resourceViewId,
+      });
     }),
 
   agentActionStatus: adminProcedure
@@ -111,6 +116,15 @@ export const pluginsRouter = router({
     }))
     .query(async ({ input }) => {
       return pluginRepo.getPluginAgentActionStatus(input.pluginId, input.groupId);
+    }),
+
+  agentResourceStates: adminProcedure
+    .input(z.object({
+      pluginId: z.string().trim().min(1).max(128),
+      resourceViewId: z.string().trim().min(1).max(128),
+    }))
+    .query(async ({ input }) => {
+      return pluginRepo.getPluginAgentResourceStates(input.pluginId, input.resourceViewId);
     }),
 
   usage: adminProcedure

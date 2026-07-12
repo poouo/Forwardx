@@ -10,6 +10,10 @@ type AgentEventClient = {
   res: Response;
 };
 
+type AgentRefreshOptions = {
+  urgent?: boolean;
+};
+
 const agentEventClients = new Map<number, AgentEventClient>();
 const hostMetricsWatchUntil = new Map<number, number>();
 const hostTcpingRequestUntil = new Map<number, number>();
@@ -45,18 +49,19 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
   return true;
 }
 
-export function pushAgentRefresh(hostId: number, reason: string) {
+export function pushAgentRefresh(hostId: number, reason: string, options: AgentRefreshOptions = {}) {
   const id = Number(hostId);
   const now = Date.now();
+  const urgent = options.urgent === true;
   const last = hostRefreshPushedAt.get(id) || 0;
-  if (now - last < AGENT_REFRESH_COALESCE_MS) {
+  if (!urgent && now - last < AGENT_REFRESH_COALESCE_MS) {
     if (VERBOSE_AGENT_EVENTS) {
       console.info(`[AgentEvent] host=${id} event=agent-refresh coalesced reason=${reason}`);
     }
     return true;
   }
   hostRefreshPushedAt.set(id, now);
-  return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now() });
+  return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now(), urgent });
 }
 
 export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string, releaseVersion?: string | null) {

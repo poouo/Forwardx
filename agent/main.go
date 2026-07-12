@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.149"
+var Version = "2.2.150"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -181,6 +181,7 @@ var agentMemoryPrunedAt time.Time
 var actionPendingCount int64
 var heartbeatWakeCh = make(chan struct{}, 1)
 var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
+var heartbeatUrgentWakeFromSSE atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
@@ -204,6 +205,25 @@ var localRuntimeReadinessCacheMu sync.Mutex
 var localRuntimeReadinessCacheResult *localRuntimeReadiness
 var localRuntimeReadinessCachedAt time.Time
 var localRuntimeReadinessCacheInvalid bool
+
+// Closing and replacing this channel broadcasts readiness invalidation to every
+// waiter. A buffered single-value channel only wakes one worker and leaves the
+// rest waiting for the polling interval.
+var managedRuntimeListenReadyMu sync.Mutex
+var managedRuntimeListenReadyCh = make(chan struct{})
+
+func managedRuntimeListenReadySignal() <-chan struct{} {
+	managedRuntimeListenReadyMu.Lock()
+	defer managedRuntimeListenReadyMu.Unlock()
+	return managedRuntimeListenReadyCh
+}
+
+func broadcastManagedRuntimeListenReady() {
+	managedRuntimeListenReadyMu.Lock()
+	close(managedRuntimeListenReadyCh)
+	managedRuntimeListenReadyCh = make(chan struct{})
+	managedRuntimeListenReadyMu.Unlock()
+}
 
 type actionJob struct {
 	cfg              Config
@@ -496,6 +516,11 @@ func invalidateLocalRuntimeReadinessCache() {
 	localRuntimeReadinessCacheMu.Lock()
 	localRuntimeReadinessCacheInvalid = true
 	localRuntimeReadinessCacheMu.Unlock()
+	desiredRuntimeReadyMu.Lock()
+	desiredNginxRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
+	desiredGostRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
+	desiredRuntimeReadyMu.Unlock()
+	broadcastManagedRuntimeListenReady()
 }
 
 func (r *localRuntimeReadiness) managedServiceActiveCached(name string) bool {
@@ -1315,6 +1340,11 @@ type agentEventMessage struct {
 	Data json.RawMessage `json:"data"`
 }
 
+type agentRefreshEvent struct {
+	Reason string `json:"reason"`
+	Urgent bool   `json:"urgent"`
+}
+
 // agentDesiredStatePush 是服务端经 SSE 下发的 desiredState 推送载荷，
 // 包含 desired state 及 running rules，让 Agent 无需等待下一个心跳即可立即执行。
 type agentDesiredStatePush struct {
@@ -1514,14 +1544,17 @@ func main() {
 
 	_ = register(cfg)
 	resetDesiredActionRecordsAfterAgentUpgrade()
+	startDesiredActionRecordsFlusher()
 	startActionStatusReporter()
 	startPluginAgentTaskWorkers()
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
+	lastFullHeartbeatAt := time.Time{}
 	for {
 		pending := atomic.LoadInt64(&actionPendingCount)
 		fromSSE := heartbeatWakeFromSSE.Swap(false)
+		urgentRefresh := heartbeatUrgentWakeFromSSE.Swap(false)
 		if pending > 0 {
 			if shouldLogAgentReport("heartbeat-pending-continue", agentReportLogInterval) {
 				logf("heartbeat continue while actions pending=%d queued=%d workers=%d/%d fromSSE=%v", pending, len(actionQueue), atomic.LoadInt64(&actionWorkerStartedCount), actionWorkerConcurrency, fromSSE)
@@ -1529,12 +1562,13 @@ func main() {
 		}
 		// SSE 唤醒 + 有 actions 正在处理：只发轻量 keepalive（不做 readiness 扫描，
 		// 仅上报指标并告知面板 Agent 正忙）。完整心跳由定时器或下一次 SSE 唤醒触发。
-		if fromSSE && pending > 0 {
+		if shouldUseBusyHeartbeat(fromSSE, urgentRefresh, pending, lastFullHeartbeatAt, time.Now()) {
 			if err := heartbeatKeepalive(cfg); err != nil {
 				logAgentCommError("heartbeat-keepalive", err)
 			}
 		} else {
-			nextInterval, err := heartbeat(cfg)
+			nextInterval, err := heartbeat(cfg, fromSSE || urgentRefresh)
+			lastFullHeartbeatAt = time.Now()
 			if err != nil {
 				logAgentCommError("heartbeat", err)
 			}
@@ -1567,8 +1601,15 @@ func wakeHeartbeat() {
 // wakeHeartbeatFromSSE 由 SSE 推送触发，标记本次唤醒来源为 SSE。
 // 主循环据此判断：若 Agent 正忙（actions pending），只发轻量 keepalive，
 // 避免在 churn 窗口内重复执行 ss/systemctl/config 全扫描。
-func wakeHeartbeatFromSSE() {
+func shouldUseBusyHeartbeat(fromSSE bool, urgentRefresh bool, pending int64, lastFullHeartbeatAt time.Time, now time.Time) bool {
+	return fromSSE && !urgentRefresh && pending > 0 && !lastFullHeartbeatAt.IsZero() && now.Sub(lastFullHeartbeatAt) < actionBacklogKeepaliveInterval
+}
+
+func wakeHeartbeatFromSSE(urgent bool) {
 	heartbeatWakeFromSSE.Store(true)
+	if urgent {
+		heartbeatUrgentWakeFromSSE.Store(true)
+	}
 	wakeHeartbeat()
 }
 
@@ -1821,7 +1862,7 @@ func defaultIPv6NetworkInterface(raw []byte) string {
 	return ""
 }
 
-func heartbeat(cfg Config) (int, error) {
+func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
@@ -1888,6 +1929,9 @@ func heartbeat(cfg Config) (int, error) {
 			"cpuInfo":      currentStatic.CPUInfo,
 			"agentVersion": Version,
 		}
+	}
+	if len(forceReconcile) > 0 && forceReconcile[0] {
+		payload["forceReconcile"] = true
 	}
 	if (!compactEnabled || shouldReportStatic) && primaryIP != "" {
 		payload["ip"] = primaryIP
@@ -2664,7 +2708,11 @@ func runAgentEventStream(cfg Config) error {
 						go selfUpgrade(cfg, &up)
 					}
 				} else if msg.Type == "agent-refresh" {
-					wakeHeartbeatFromSSE()
+					var refresh agentRefreshEvent
+					if err := json.Unmarshal(msg.Data, &refresh); err != nil {
+						logf("decode agent-refresh payload: %v", err)
+					}
+					wakeHeartbeatFromSSE(refresh.Urgent)
 				} else if msg.Type == "agent-desired-state" {
 					var push agentDesiredStatePush
 					if err := json.Unmarshal(msg.Data, &push); err != nil {
@@ -2732,6 +2780,10 @@ func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
 }
 
 func handleAction(cfg Config, a action) bool {
+	return handleActionWithRuntimeGate(cfg, a, nil)
+}
+
+func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()) bool {
 	ok := true
 	actionMessage := &actionMessage{}
 	skippedStaleRemove := false
@@ -2756,6 +2808,7 @@ func handleAction(cfg Config, a action) bool {
 			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		}
 		rememberRuntimeActionResult(a, ok)
+		invalidateLocalRuntimeReadinessCache()
 		if a.ReportStatus != nil && *a.ReportStatus {
 			if !ok {
 				message := strings.TrimSpace(a.FailureMessage)
@@ -2801,6 +2854,9 @@ func handleAction(cfg Config, a action) bool {
 			ok = failoverOK && ok
 		}
 		runPostCommands(a.PostCommands, actionMessage)
+		if releaseRuntimeGate != nil {
+			releaseRuntimeGate()
+		}
 		if ok && shouldVerifyManagedRuntimeListen(a) && !waitForManagedRuntimeActionListenReady(a, 12*time.Second) {
 			ok = false
 			message := fmt.Sprintf("managed runtime listener not ready after apply port=%d protocol=%s forwardType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), strings.TrimSpace(a.ForwardType))
@@ -2829,6 +2885,9 @@ func handleAction(cfg Config, a action) bool {
 			if shouldReportActionStatus(a) && !actionRequiresKernelForwardConsistency(a) {
 				removeState(a.SourcePort)
 			}
+		}
+		if releaseRuntimeGate != nil {
+			releaseRuntimeGate()
 		}
 	}
 	if ok && !skippedStaleRemove && actionRequiresKernelForwardConsistency(a) && !newKernelForwardSnapshot().desiredActionConsistent(a) {
@@ -2875,15 +2934,29 @@ func shouldVerifyManagedRuntimeListen(a action) bool {
 }
 
 func waitForManagedRuntimeActionListenReady(a action, timeout time.Duration) bool {
+	if managedRuntimeActionListenReady(a) {
+		return true
+	}
 	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return managedRuntimeActionListenReady(a)
+		}
+		// 优先响应 invalidateLocalRuntimeReadinessCache 发出的信号（另一个 worker
+		// 刚完成了影响 runtime 的动作），其次是 200ms 周期 tick，最后是超时。
+		signal := managedRuntimeListenReadySignal()
+		select {
+		case <-signal:
+		case <-ticker.C:
+		case <-time.After(remaining):
+			return managedRuntimeActionListenReady(a)
+		}
 		if managedRuntimeActionListenReady(a) {
 			return true
 		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -3116,7 +3189,19 @@ func runtimeActionServicesHealthy(a action) bool {
 		}
 		return true
 	}
-	for _, name := range requiredSharedRuntimeServicesFromLocalConfig() {
+	services := requiredSharedRuntimeServicesFromLocalConfig()
+	switch strings.TrimSpace(a.ForwardType) {
+	case "nginx-runtime-sync":
+		services = requiredNginxRuntimeServicesFromLocalConfig()
+	case "gost-runtime-sync":
+		services = requiredGostRuntimeServicesFromLocalConfig()
+		// Panels before the split runtime protocol included Nginx commands in the
+		// gost action. Keep that payload compatible during rolling upgrades.
+		if runtimeActionReferencesNginx(a) {
+			services = append(services, requiredNginxRuntimeServicesFromLocalConfig()...)
+		}
+	}
+	for _, name := range services {
 		if !managedServiceActive(name) {
 			return false
 		}
@@ -3144,6 +3229,12 @@ func requiredRuntimeServicesFromLocalConfig() []string {
 }
 
 func requiredSharedRuntimeServicesFromLocalConfig() []string {
+	services := requiredGostRuntimeServicesFromLocalConfig()
+	services = append(services, requiredNginxRuntimeServicesFromLocalConfig()...)
+	return services
+}
+
+func requiredGostRuntimeServicesFromLocalConfig() []string {
 	services := []string{}
 	if gostRuntimeConfigHasServices(runtimeConfigPath) {
 		services = append(services, runtimeServiceName)
@@ -3151,10 +3242,23 @@ func requiredSharedRuntimeServicesFromLocalConfig() []string {
 	if gostRuntimeConfigHasServices(tunnelRuntimeConfigPath) {
 		services = append(services, tunnelRuntimeServiceName)
 	}
-	if nginxRuntimeConfigHasServers(nginxConfigPath) {
-		services = append(services, nginxServiceName)
-	}
 	return services
+}
+
+func requiredNginxRuntimeServicesFromLocalConfig() []string {
+	if nginxRuntimeConfigHasServers(nginxConfigPath) {
+		return []string{nginxServiceName}
+	}
+	return nil
+}
+
+func runtimeActionReferencesNginx(a action) bool {
+	for _, command := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
+		if strings.Contains(command, nginxConfigPath) || strings.Contains(command, nginxServiceName) {
+			return true
+		}
+	}
+	return false
 }
 
 func managedMimicServicesFromLocalConfig() []string {

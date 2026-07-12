@@ -9,6 +9,7 @@ import {
   runForwardGroupChainSelfTest,
   updateForwardGroupFromInput,
 } from "../services/forwardGroupService";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
 const failoverTargetSchema = z.object({
@@ -146,10 +147,10 @@ export const forwardGroupsRouter = router({
 
   update: adminProcedure
     .input(baseSchema.extend({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
       await updateForwardGroupFromInput(input.id, input);
       return { success: true };
-    }),
+    })),
 
   deleteImpact: adminProcedure
     .input(z.object({ id: z.number() }))
@@ -161,25 +162,25 @@ export const forwardGroupsRouter = router({
 
   delete: adminProcedure
     .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
       return deleteForwardGroupWithImpact(input.id, input.confirmRules);
-    }),
+    })),
 
   reorder: adminProcedure
     .input(z.object({ groupId: z.number(), memberIds: z.array(z.number()).min(1) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.groupId}`, async () => {
       await db.reorderForwardGroupMembers(input.groupId, input.memberIds);
       await db.runForwardGroupFailover(input.groupId, { forcePriority: true, forceSync: true });
       return { success: true };
-    }),
+    })),
 
   sync: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
       await db.syncForwardGroupRules(input.id);
       await db.runForwardGroupFailover(input.id, { forcePriority: true, forceSync: true });
       return { success: true };
-    }),
+    })),
 
   runFailover: adminProcedure.mutation(async () => {
     await db.runForwardGroupFailoverSweep({ manual: true });

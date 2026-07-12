@@ -304,7 +304,7 @@ async function seedHosts(adminId: number) {
       stoppedAt: daysFromNow(58),
       trafficLimit: Math.round(720 * 1024 ** 3),
       portRangeStart: 10000,
-      portRangeEnd: 19999,
+      portRangeEnd: 29999,
       ddnsEnabled: true,
       ddnsDomain: "hk-entry.dev.forwardx.local",
       ddnsRecordType: "A",
@@ -337,7 +337,9 @@ async function seedHosts(adminId: number) {
       purchasedAt: daysFromNow(-90),
       stoppedAt: daysFromNow(120),
       trafficLimit: Math.round(1.4 * 1024 ** 4),
-      portAllowlist: "21000,22000,23000",
+      portRangeStart: 10000,
+      portRangeEnd: 29999,
+      portAllowlist: "32000,33000",
       ddnsEnabled: true,
       ddnsDomain: "jp-exit.dev.forwardx.local",
       ddnsRecordType: "AAAA",
@@ -409,7 +411,7 @@ async function seedHosts(adminId: number) {
       purchasedAt: daysFromNow(-180),
       stoppedAt: daysFromNow(-1),
       trafficLimit: 0,
-      portRangeStart: 30000,
+      portRangeStart: 10000,
       portRangeEnd: 39999,
       ddnsEnabled: false,
       networkInterface: "eth1",
@@ -1299,16 +1301,15 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     tcpFastOpen: true,
     zeroCopy: true,
     lastStatus: "degraded",
-    lastMessage: "Chain works, US tail is marked offline for UI testing",
+    lastMessage: "Entry nodes feed JP relay; US tail is marked offline for UI testing",
     isEnabled: true,
     sortOrder: 2,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
   await addForwardGroupMembers(longChainGroupId, [
-    { hostId: hostIds[0], connectHost: "10.10.1.10", latency: 20, priority: 1 },
-    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 43, priority: 2 },
-    { hostId: hostIds[3], connectHost: "172.86.92.18", latency: null, status: "failed", chinaStatus: "failed", priority: 3 },
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 43, priority: 1 },
+    { hostId: hostIds[3], connectHost: "172.86.92.18", latency: null, status: "failed", chinaStatus: "failed", priority: 2 },
   ]);
   await addGroupLatency(longChainGroupId, 112, true);
 

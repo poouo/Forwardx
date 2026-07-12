@@ -10,6 +10,8 @@ import {
 } from "./tunnelRuntimeStatus";
 import { getAgentHostFromRequest } from "./agentAuth";
 import { notifyForwardRuleError } from "./forwardRuleErrorNotifier";
+import { mapWithConcurrency } from "./asyncPool";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
@@ -73,12 +75,34 @@ async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
   return true;
 }
 
-async function getTunnelExtraExitHostIds(tunnelId: number) {
-  const rows = await hopRepo.getTunnelExitNodes(Number(tunnelId));
+function getTunnelListenerPortsForHost(tunnel: any, hops: any[], extraExitNodes: any[], hostId: number) {
+  const ports = new Set<number>();
+  for (const hop of hops || []) {
+    if (Number(hop?.hostId) !== Number(hostId)) continue;
+    const port = Number(hop?.listenPort || 0);
+    if (port > 0) ports.add(port);
+  }
+  for (const exitNode of extraExitNodes || []) {
+    if (exitNode?.isEnabled === false || Number(exitNode?.hostId) !== Number(hostId)) continue;
+    const port = Number(exitNode?.listenPort || 0);
+    if (port > 0) ports.add(port);
+  }
+  if (Number(tunnel?.exitHostId) === Number(hostId)) {
+    const port = Number(tunnel?.listenPort || 0);
+    if (port > 0) ports.add(port);
+  }
+  return Array.from(ports).sort((a, b) => a - b);
+}
+
+function getTunnelExtraExitHostIdsFromNodes(rows: any[]) {
   return (rows || [])
     .filter((row: any) => row?.isEnabled !== false)
-    .map((row: any) => Number(row.hostId))
+    .map((row: any) => Number(row.hostId || 0))
     .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
+}
+
+async function getTunnelExtraExitHostIds(tunnelId: number) {
+  return getTunnelExtraExitHostIdsFromNodes(await hopRepo.getTunnelExitNodes(Number(tunnelId)));
 }
 
 async function getTunnelEntryHostIds(tunnel: any) {
@@ -106,6 +130,17 @@ type AgentStatusApplyResult = {
   body: Record<string, any>;
 };
 
+function agentStatusTaskKey(hostIdValue: unknown, payload: Record<string, any>) {
+  const hostId = Number(hostIdValue || 0);
+  const statusType = String(payload.statusType || (Number(payload.ruleId) > 0 ? "rule" : "tunnel"));
+  const resourceId = statusType === "runtime"
+    ? String(payload.forwardType || "runtime")
+    : statusType === "tunnel"
+      ? Number(payload.tunnelId || 0)
+      : Number(payload.ruleId || 0);
+  return `agent-status:${hostId}:${statusType}:${resourceId}`;
+}
+
 async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatusApplyResult> {
   const { ruleId, tunnelId, statusType, isRunning } = payload || {};
   const rawMessage = typeof payload?.message === "string" ? payload.message.trim() : "";
@@ -127,7 +162,8 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     }
     const tunnel = await db.getTunnelById(tunnelId);
     const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
-    const extraExitHostIds = tunnel ? await getTunnelExtraExitHostIds(Number(tunnel.id)) : [];
+    const extraExitNodes = tunnel ? await hopRepo.getTunnelExitNodes(Number(tunnel.id)) : [];
+    const extraExitHostIds = getTunnelExtraExitHostIdsFromNodes(extraExitNodes || []);
     const isTunnelHop = Array.isArray(hops)
       && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
     const isExtraExit = extraExitHostIds.includes(Number(host.id));
@@ -135,6 +171,18 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     const isEntryHost = tunnelEntryHostIds.includes(Number(host.id));
     if (!tunnel || (!isEntryHost && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
       return { status: 404, body: { error: "tunnel not found" } };
+    }
+    const reportedPort = Number(payload?.sourcePort || 0);
+    const expectedPorts = getTunnelListenerPortsForHost(tunnel, hops || [], extraExitNodes || [], Number(host.id));
+    if (reportedPort > 0 && expectedPorts.length > 0 && !expectedPorts.includes(reportedPort)) {
+      const expectedText = expectedPorts.join(",");
+      if (shouldLogStatus(`tunnel:${tunnelId}:stale-port:${host.id}`, `reported=${reportedPort}:expected=${expectedText}`)) {
+        appendPanelLog(
+          "info",
+          `[Tunnel] status ignored stale listener tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} reportedPort=${reportedPort} expectedPorts=${expectedText}`,
+        );
+      }
+      return { status: 200, body: { success: true, ignored: true, stale: true } };
     }
     const hopHostIds = Array.isArray(hops)
       ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
@@ -226,6 +274,18 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
       );
     }
     return { status: 200, body: { success: true, ignored: true } };
+  }
+
+  const reportedRulePort = Number(payload?.sourcePort || 0);
+  const currentRulePort = Number((rule as any).sourcePort || 0);
+  if (reportedRulePort > 0 && currentRulePort > 0 && reportedRulePort !== currentRulePort) {
+    if (shouldLogStatus(`rule:${ruleId}:stale-port:${host.id}`, `reported=${reportedRulePort}:current=${currentRulePort}`)) {
+      appendPanelLog(
+        "info",
+        `[Rule] status ignored stale listener rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedPort=${reportedRulePort} currentPort=${currentRulePort}`,
+      );
+    }
+    return { status: 200, body: { success: true, ignored: true, stale: true } };
   }
 
   const wasRunning = !!(rule as any).isRunning;
@@ -339,16 +399,21 @@ agentRouter.post("/api/agent/rule-status-batch", async (req: Request, res: Respo
       res.status(400).json({ error: `statuses must contain 1-${AGENT_STATUS_BATCH_MAX_SIZE} items` });
       return;
     }
+    const outcomes = await mapWithConcurrency(statuses, 16, async (payload, index) => {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return { index, result: { status: 400, body: { error: "invalid status payload" } } as AgentStatusApplyResult };
+      }
+      const statusPayload = payload as Record<string, any>;
+      const result = await withKeyedTaskLock(
+        agentStatusTaskKey(host.id, statusPayload),
+        () => applyAgentRuleStatus(host, statusPayload),
+      );
+      return { index, result };
+    });
     let accepted = 0;
     let ignored = 0;
     const rejected: Array<{ index: number; status: number; error: string }> = [];
-    for (let index = 0; index < statuses.length; index += 1) {
-      const payload = statuses[index];
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-        rejected.push({ index, status: 400, error: "invalid status payload" });
-        continue;
-      }
-      const result = await applyAgentRuleStatus(host, payload);
+    for (const { index, result } of outcomes) {
       if (result.status >= 400) {
         rejected.push({ index, status: result.status, error: String(result.body?.error || "status rejected") });
         continue;
@@ -371,7 +436,13 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
 
-    const result = await applyAgentRuleStatus(host, req.body);
+    const statusPayload = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, any>
+      : {};
+    const result = await withKeyedTaskLock(
+      agentStatusTaskKey(host.id, statusPayload),
+      () => applyAgentRuleStatus(host, statusPayload),
+    );
     res.status(result.status).json(result.body);
   } catch (error) {
     console.error("[Agent Rule Status] Error:", error);

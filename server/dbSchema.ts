@@ -73,6 +73,7 @@ export const MIGRATION_TABLES = [
   "announcement_reads",
   "plugins",
   "plugin_assets",
+  "plugin_agent_states",
 ] as const;
 
 const tables: TableDef[] = [
@@ -305,6 +306,7 @@ const tables: TableDef[] = [
   { name: "announcement_reads", columns: [c("id", "id"), c("announcementId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("dismissedAt", "epoch", { notNull: true, default: "now" })], unique: [["announcementId", "userId"]], indexes: [["userId", "announcementId"]] },
   { name: "plugins", columns: [c("id", "id"), c("pluginId", "varchar", { length: 128, notNull: true }), c("name", "text", { notNull: true }), c("version", "varchar", { length: 64, notNull: true, default: "0.0.0" }), c("description", "text"), c("author", "text"), c("homepage", "text"), c("repository", "text"), c("sourceType", "varchar", { length: 32, notNull: true, default: "github" }), c("sourceUrl", "text"), c("branch", "varchar", { length: 128 }), c("manifestPath", "text"), c("manifestJson", "text", { notNull: true }), c("permissionsJson", "text"), c("extensionPointsJson", "text"), c("status", "varchar", { length: 32, notNull: true, default: "disabled" }), c("installedAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }), c("lastCheckedAt", "epoch"), c("latestVersion", "varchar", { length: 64 }), c("lastError", "text")], unique: [["pluginId"]], indexes: [["status"], ["sourceType"]] },
   { name: "plugin_assets", columns: [c("id", "id"), c("pluginId", "varchar", { length: 128, notNull: true }), c("path", "text", { notNull: true }), c("contentType", "varchar", { length: 128 }), c("size", "int", { notNull: true, default: 0 }), c("sha256", "varchar", { length: 64 }), c("content", "text"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["pluginId", "path"]], indexes: [["pluginId"]] },
+  { name: "plugin_agent_states", columns: [c("id", "id"), c("pluginId", "varchar", { length: 128, notNull: true }), c("resourceViewId", "varchar", { length: 128, notNull: true }), c("hostId", "int", { notNull: true }), c("pluginVersion", "varchar", { length: 64 }), c("actionId", "varchar", { length: 128 }), c("groupId", "varchar", { length: 64 }), c("taskId", "varchar", { length: 64 }), c("status", "varchar", { length: 32, notNull: true, default: "idle" }), c("dataJson", "text"), c("output", "text"), c("error", "text"), c("startedAt", "epoch"), c("finishedAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["pluginId", "resourceViewId", "hostId"]], indexes: [["hostId"], ["pluginId", "resourceViewId"], ["groupId"]] },
 ];
 
 const seedSettings = [

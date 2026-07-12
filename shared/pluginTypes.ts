@@ -10,7 +10,11 @@ export const PLUGIN_PERMISSION_KEYS = [
   "read:traffic",
   "write:settings",
   "net:http",
+  "agent:read",
+  "agent:write",
   "agent:execute",
+  "secret:reveal",
+  "ui:interactive",
   "data:whitelist",
   "ui:page",
   "ui:settings",
@@ -92,8 +96,62 @@ export type PluginAgentInterpreter = typeof PLUGIN_AGENT_INTERPRETERS[number];
 export const PLUGIN_AGENT_OUTPUT_TYPES = ["json", "text"] as const;
 export type PluginAgentOutputType = typeof PLUGIN_AGENT_OUTPUT_TYPES[number];
 
-export const PLUGIN_AGENT_TARGETS = ["usage-hosts"] as const;
+export const PLUGIN_AGENT_TARGETS = ["usage-hosts", "selected-hosts"] as const;
 export type PluginAgentTarget = typeof PLUGIN_AGENT_TARGETS[number];
+
+export const PLUGIN_ACTION_INTENTS = ["read", "write", "execute"] as const;
+export type PluginActionIntent = typeof PLUGIN_ACTION_INTENTS[number];
+
+export const PLUGIN_RESOURCE_VIEW_TYPES = ["agent-resource"] as const;
+export type PluginResourceViewType = typeof PLUGIN_RESOURCE_VIEW_TYPES[number];
+
+export const PLUGIN_RESOURCE_SOURCE_TRIGGERS = ["onOpen", "onHostSelected", "manual"] as const;
+export type PluginResourceSourceTrigger = typeof PLUGIN_RESOURCE_SOURCE_TRIGGERS[number];
+
+export const PLUGIN_RESOURCE_COLUMN_TYPES = [
+  "text",
+  "number",
+  "boolean",
+  "status",
+  "secret",
+  "code",
+  "datetime",
+] as const;
+export type PluginResourceColumnType = typeof PLUGIN_RESOURCE_COLUMN_TYPES[number];
+
+export const PLUGIN_RESOURCE_FIELD_TYPES = [
+  "text",
+  "textarea",
+  "password",
+  "number",
+  "boolean",
+  "select",
+  "multi-select",
+] as const;
+export type PluginResourceFieldType = typeof PLUGIN_RESOURCE_FIELD_TYPES[number];
+
+export const PLUGIN_RESOURCE_CONDITION_OPERATORS = [
+  "eq",
+  "neq",
+  "in",
+  "not-in",
+  "truthy",
+  "falsy",
+] as const;
+export type PluginResourceConditionOperator = typeof PLUGIN_RESOURCE_CONDITION_OPERATORS[number];
+
+export const PLUGIN_RESULT_SCHEMA_TYPES = ["keyValue", "table"] as const;
+export type PluginResultSchemaType = typeof PLUGIN_RESULT_SCHEMA_TYPES[number];
+
+export const PLUGIN_RESULT_FIELD_TYPES = [
+  "text",
+  "number",
+  "boolean",
+  "statusBadge",
+  "code",
+  "datetime",
+] as const;
+export type PluginResultFieldType = typeof PLUGIN_RESULT_FIELD_TYPES[number];
 
 export const PLUGIN_USAGE_VIEW_TYPES = [
   "host-asset-sync",
@@ -177,9 +235,118 @@ export type PluginActionDefinition = {
   type: PluginActionType;
   description?: string;
   confirmRequired?: boolean;
+  intent?: PluginActionIntent;
   inputSchema?: PluginSettingField[];
   request?: PluginHttpRequestDefinition;
   agent?: PluginAgentRequestDefinition;
+  resultSchema?: PluginResultSchemaDefinition;
+};
+
+export type PluginResultFieldDefinition = {
+  key: string;
+  label: string;
+  path?: string;
+  type?: PluginResultFieldType;
+  copyable?: boolean;
+  secret?: boolean;
+  revealable?: boolean;
+  openable?: boolean;
+  trueLabel?: string;
+  falseLabel?: string;
+};
+
+export type PluginResultSchemaDefinition = {
+  type: PluginResultSchemaType;
+  resultPath?: string;
+  itemsPath?: string;
+  emptyText?: string;
+  fields: PluginResultFieldDefinition[];
+};
+
+export type PluginResourceCondition = {
+  field: string;
+  operator?: PluginResourceConditionOperator;
+  value?: unknown;
+};
+
+export type PluginResourceOptionsSource = {
+  sourceId: string;
+  path?: string;
+  valueKey?: string;
+  labelKey?: string;
+  disabledKey?: string;
+};
+
+export type PluginResourceFieldDefinition = {
+  key: string;
+  label: string;
+  type: PluginResourceFieldType;
+  description?: string;
+  placeholder?: string;
+  required?: boolean;
+  readOnly?: boolean;
+  secret?: boolean;
+  defaultValue?: string | number | boolean | string[];
+  min?: number;
+  max?: number;
+  options?: PluginSettingOption[];
+  optionsSource?: PluginResourceOptionsSource;
+  visibleWhen?: PluginResourceCondition[];
+  disabledWhen?: PluginResourceCondition[];
+};
+
+export type PluginResourceColumnDefinition = {
+  key: string;
+  label: string;
+  type?: PluginResourceColumnType;
+  path?: string;
+  width?: number;
+  copyable?: boolean;
+  secret?: boolean;
+  trueLabel?: string;
+  falseLabel?: string;
+};
+
+export type PluginResourceDataSourceDefinition = {
+  id: string;
+  actionId: string;
+  triggers?: PluginResourceSourceTrigger[];
+  resultPath?: string;
+  itemsPath?: string;
+  selectionInputKey?: string;
+  selectionValuePath?: string;
+  cacheTtlMs?: number;
+};
+
+export type PluginResourceOperationDefinition = {
+  actionId: string;
+  label?: string;
+  description?: string;
+  confirmRequired?: boolean;
+  refreshSources?: string[];
+  refreshAfter?: string[];
+};
+
+export type PluginResourceViewDefinition = {
+  id: string;
+  type: PluginResourceViewType;
+  title: string;
+  description?: string;
+  usageViewId?: string;
+  rowKey?: string;
+  idInputKey?: string;
+  listSourceId: string;
+  detailSourceId?: string;
+  emptyText?: string;
+  sources: PluginResourceDataSourceDefinition[];
+  columns?: PluginResourceColumnDefinition[];
+  fields?: PluginResourceFieldDefinition[];
+  operations?: {
+    create?: PluginResourceOperationDefinition;
+    update?: PluginResourceOperationDefinition;
+    delete?: PluginResourceOperationDefinition;
+    execute?: PluginResourceOperationDefinition[];
+  };
 };
 
 export type PluginAssetDeclaration = {
@@ -284,6 +451,9 @@ export type ForwardxPluginManifest = {
   pages?: PluginPageDefinition[];
   actions?: PluginActionDefinition[];
   usageViews?: PluginUsageViewDefinition[];
+  resourceSchema?: PluginResourceViewDefinition | PluginResourceViewDefinition[];
+  resourceSchemas?: PluginResourceViewDefinition[];
+  resourceViews?: PluginResourceViewDefinition[];
   assets?: PluginAssetDeclaration[];
   data?: {
     type?: "generic";
@@ -333,22 +503,22 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     detailsMarkdown: [
       "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。",
       "",
-      "安装后进入“插件使用”，选择主机、执行方式和白名单范围即可。默认只同步脚本、数据和配置，不会直接修改防火墙；需要正式生效时再选择“应用规则”。",
+      "安装后先在“插件使用”中选择同步插件程序和数据的主机，再通过“Agent 资源管理”逐台读取、编辑、应用或清理实际白名单配置。",
       "",
       "- 支持全国或按省份选择全局入站白名单。",
       "- 支持额外 ASN 和端口优先白名单。",
       "- 支持 nftables 或 iptables/ipset。",
-      "- 支持状态查看、规则预演、应用规则、清理规则和更新 ASN。",
+      "- 支持按 Agent 独立管理配置并实时查看应用和失败状态。",
     ].join("\n"),
-    version: "0.3.1",
-    releaseDate: "2026-07-11",
-    updatedAt: "2026-07-11",
-    changelog: "修复全国与省份同时选择时省级白名单被全国 CIDR 覆盖的问题，并优化主机规则状态展示。",
+    version: "0.4.0",
+    releaseDate: "2026-07-12",
+    updatedAt: "2026-07-12",
+    changelog: "接入通用 Agent 动态资源管理，支持按主机实时读取、编辑、应用和清理白名单配置。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },
-      { title: "Agent 下发", description: "面板生成配置后由 Agent 同步脚本、数据和规则操作。" },
-      { title: "规则预演", description: "应用前可以先输出将执行的 nftables/iptables 命令。" },
+      { title: "Agent 管理", description: "按 Agent 实时读取、编辑、应用和清理独立配置。" },
+      { title: "实时状态", description: "展示防火墙后端、规则数量、持久化状态和执行错误。" },
     ],
     logo: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
     tags: ["whitelist", "china-region", "firewall", "agent"],
@@ -363,7 +533,7 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     packagePath: "plugins/packages/china-region-whitelist.tar.gz",
     bundledPath: "plugins/china-region-whitelist",
     category: "data",
-    permissions: ["data:whitelist", "agent:execute"],
+    permissions: ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive"],
     extensionPoints: ["data.whitelist"],
     official: true,
     builtIn: true,
@@ -383,5 +553,5 @@ export const PLUGIN_SECURITY_MODEL = {
   maxAssetBytes: 512 * 1024,
   maxPackageBytes: 5 * 1024 * 1024,
   maxHttpResponseBytes: 256 * 1024,
-  description: "ForwardX 插件由面板解释 manifest。普通插件不执行面板后端代码；声明 net:http 后可发起受控 HTTP 请求；声明 agent:execute 后可让 Agent 在独立任务队列中执行插件包内固定脚本入口，并限制目录、参数、超时和输出大小。",
+  description: "ForwardX 插件由面板解释 manifest。普通插件不执行面板后端代码；声明 net:http 后可发起受控 HTTP 请求；声明 agent:read、agent:write 或 agent:execute 后可让 Agent 在独立任务队列中执行插件包内固定脚本入口，并限制目标主机、目录、参数、超时和输出大小。",
 } as const;

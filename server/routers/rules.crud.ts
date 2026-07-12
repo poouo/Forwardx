@@ -8,6 +8,14 @@ import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseA
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 import { isTelegramBotReady } from "../telegramReady";
+import {
+  releaseHostPortReservations,
+  reserveAvailableHostPort,
+  reserveSpecificHostPort,
+  tryReserveHostPort,
+  type HostPortReservation,
+} from "../portReservations";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -502,6 +510,10 @@ export const crudRulesRouter = router({
         }
       }
       if (input.forwardGroupId) {
+        const forwardGroupId = Number(input.forwardGroupId);
+        return withKeyedTaskLock(`forward-group:${forwardGroupId}`, async () => {
+        const groupReservations: HostPortReservation[] = [];
+        try {
         if (input.sourcePort === 0) throw new Error("转发组规则需要指定固定入口端口");
         const sourcePort = input.sourcePort;
         if (ctx.user.role !== "admin") {
@@ -523,21 +535,21 @@ export const crudRulesRouter = router({
           }
         }
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, input.forwardGroupId);
+          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, forwardGroupId);
           if (!hasPermission) throw new Error("无权使用该转发组");
-          const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
+          const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, forwardGroupId);
           if (planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
             throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
           }
         }
-        const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort, protocol: input.protocol });
+        const group = await db.validateForwardGroupRuleConfig(forwardGroupId, { sourcePort, protocol: input.protocol });
         const isForwardChain = (group as any).groupMode === "chain";
         const isPortGroup = (group as any).groupMode === "port";
         if (ctx.user.role !== "admin") {
           const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, ctx.user.id);
           await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
         }
-        const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
+        const hostId = await db.getForwardGroupDefaultHostId(forwardGroupId);
         const forwardType = lockedForwardTypeForGroup(group, input.forwardType);
         const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
         if (!isForwardChain && !groupIsTunnel) {
@@ -569,6 +581,17 @@ export const crudRulesRouter = router({
           }
         }
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
+        const entryHostIds = await db.getForwardGroupRuleEntryHostIds(forwardGroupId);
+        for (const entryHostId of entryHostIds) {
+          const reservation = await reserveSpecificHostPort({
+            hostId: entryHostId,
+            port: sourcePort,
+            protocol: input.protocol,
+            isUsed: (port) => db.isPortUsedOnHost(entryHostId, port, undefined, input.protocol),
+          });
+          if (!reservation) throw new Error(`入口 Agent 端口 ${sourcePort} 已被占用或正在分配`);
+          groupReservations.push(reservation);
+        }
         const id = await db.createForwardRule({
           hostId,
           name: input.name,
@@ -579,7 +602,7 @@ export const crudRulesRouter = router({
           gostRelayPort: null,
           tunnelId: null,
           tunnelExitPort: null,
-          forwardGroupId: input.forwardGroupId,
+          forwardGroupId,
           forwardGroupRuleId: null,
           forwardGroupMemberId: null,
           isForwardGroupTemplate: true,
@@ -612,9 +635,13 @@ export const crudRulesRouter = router({
           isRunning: false,
           userId: ctx.user.id,
         } as any);
-        await db.syncForwardGroupRules(input.forwardGroupId);
-        await db.runForwardGroupFailover(input.forwardGroupId);
+        await db.syncForwardGroupRules(forwardGroupId);
+        await db.runForwardGroupFailover(forwardGroupId);
         return { id, sourcePort };
+        } finally {
+          releaseHostPortReservations(groupReservations);
+        }
+        });
       }
 
       if (input.tunnelId && input.forwardType !== "gost") {
@@ -696,6 +723,8 @@ export const crudRulesRouter = router({
         : entryPolicy;
 
       let sourcePort = input.sourcePort;
+      let sourcePortReservation: HostPortReservation | null = null;
+      let tunnelExitPortReservation: HostPortReservation | null = null;
       // 源端口为 0 时随机分配
       if (sourcePort === 0) {
         let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
@@ -704,20 +733,37 @@ export const crudRulesRouter = router({
           randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
           randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
         }
-        const randomPort = await db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd, input.protocol);
-        if (!randomPort) throw new Error("该主机端口区间内已无可用端口");
-        sourcePort = randomPort;
+        sourcePortReservation = await reserveAvailableHostPort({
+          hostId: input.hostId,
+          protocol: input.protocol,
+          findPort: (reservedPorts) => db.findAvailablePort(
+            input.hostId!,
+            randomRangeStart,
+            randomRangeEnd,
+            input.protocol,
+            reservedPorts,
+          ),
+          isUsed: (port) => db.isPortUsedOnHost(input.hostId!, port, undefined, input.protocol),
+        });
+        if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
+        sourcePort = sourcePortReservation.port;
       } else {
         if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
           throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
         }
-        // 检查端口是否已被占用
+        sourcePortReservation = tryReserveHostPort(input.hostId, sourcePort, input.protocol);
+        if (!sourcePortReservation) {
+          throw new Error(`端口 ${sourcePort} 正在被其他请求分配，请稍后重试`);
+        }
         const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
         if (used) {
+          sourcePortReservation.release();
+          sourcePortReservation = null;
           throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
         }
       }
 
+      try {
       const gostRelayHost = null;
       const gostRelayPort = null;
       let tunnelExitPort: number | null = null;
@@ -737,12 +783,19 @@ export const crudRulesRouter = router({
           throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
         }
         const exit = await db.getHostById(tunnel.exitHostId);
-        tunnelExitPort = await db.findAvailableTunnelExitPort(
-          tunnel.exitHostId,
-          (exit as any)?.portRangeStart,
-          (exit as any)?.portRangeEnd,
-        );
-        if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
+        tunnelExitPortReservation = await reserveAvailableHostPort({
+          hostId: Number(tunnel.exitHostId),
+          protocol: "both",
+          findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+            tunnel.exitHostId,
+            (exit as any)?.portRangeStart,
+            (exit as any)?.portRangeEnd,
+            reservedPorts,
+          ),
+          isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, undefined, "both"),
+        });
+        if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
+        tunnelExitPort = tunnelExitPortReservation.port;
       }
 
       const runtimeOptionInput = tunnelId ? tunnelRuntimeOptionInput(selectedTunnelForRule) : input;
@@ -777,6 +830,10 @@ export const crudRulesRouter = router({
         if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
       }
       return { id, sourcePort };
+      } finally {
+        tunnelExitPortReservation?.release();
+        sourcePortReservation?.release();
+      }
     }),
   update: protectedProcedure
     .input(z.object({
@@ -806,7 +863,41 @@ export const crudRulesRouter = router({
       ...transportTuningInputShape,
       isEnabled: z.boolean().optional(),
     }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
+      const heldReservations: HostPortReservation[] = [];
+      const reserveRulePort = async (hostId: number, port: number, protocol: "tcp" | "udp" | "both", excludeRuleIds: number | number[]) => {
+        const existing = heldReservations.find((reservation) => (
+          reservation.hostId === Number(hostId)
+          && reservation.port === Number(port)
+          && reservation.protocol === protocol
+        ));
+        if (existing) return existing;
+        const reservation = await reserveSpecificHostPort({
+          hostId,
+          port,
+          protocol,
+          isUsed: (candidate) => db.isPortUsedOnHost(hostId, candidate, excludeRuleIds, protocol),
+        });
+        if (reservation) heldReservations.push(reservation);
+        return reservation;
+      };
+      const reserveForwardGroupEntryPorts = async (
+        groupId: number,
+        port: number,
+        protocol: "tcp" | "udp" | "both",
+        excludeRuleIds: number[],
+      ) => {
+        const hostIds = await db.getForwardGroupRuleEntryHostIds(groupId);
+        const outcomes = await Promise.allSettled(hostIds.map((hostId) => (
+          reserveRulePort(hostId, port, protocol, excludeRuleIds)
+        )));
+        const failed = outcomes.find((outcome) => outcome.status === "rejected") as PromiseRejectedResult | undefined;
+        if (failed) throw failed.reason;
+        if (outcomes.some((outcome) => outcome.status === "fulfilled" && !outcome.value)) {
+          throw new Error(`Port ${port} is already used or being allocated on a forward-group entry host`);
+        }
+      };
+      try {
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) throw new Error("规则不存在");
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
@@ -881,8 +972,8 @@ export const crudRulesRouter = router({
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }
-          const used = await db.isPortUsedOnHost(nextHostId, nextSourcePort, excludeRuleIds, nextProtocol);
-          if (used) throw new Error(`Port ${nextSourcePort} is already used`);
+          const sourceReservation = await reserveRulePort(nextHostId, nextSourcePort, nextProtocol, excludeRuleIds);
+          if (!sourceReservation) throw new Error(`Port ${nextSourcePort} is already used or being allocated`);
           if (!nextTunnelId) {
             const host = await db.getHostById(nextHostId);
             assertNoDirectSelfForwardLoop({
@@ -898,14 +989,29 @@ export const crudRulesRouter = router({
           if (nextTunnelId) {
             const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId)).tunnel;
             const exit = await db.getHostById(tunnel.exitHostId);
-            tunnelExitPort = Number((rule as any).tunnelExitPort || 0) || await db.findAvailableTunnelExitPort(
-              tunnel.exitHostId,
-              (exit as any)?.portRangeStart,
-              (exit as any)?.portRangeEnd,
-              [],
-              excludeRuleIds,
-            );
-            if (!tunnelExitPort) throw new Error("Tunnel exit agent has no available port");
+            const existingExitPort = Number((rule as any).tunnelExitPort || 0);
+            const exitReservation = existingExitPort > 0
+              ? await reserveSpecificHostPort({
+                  hostId: Number(tunnel.exitHostId),
+                  port: existingExitPort,
+                  protocol: "both",
+                  isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, excludeRuleIds, "both"),
+                })
+              : await reserveAvailableHostPort({
+                  hostId: Number(tunnel.exitHostId),
+                  protocol: "both",
+                  findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+                    tunnel.exitHostId,
+                    (exit as any)?.portRangeStart,
+                    (exit as any)?.portRangeEnd,
+                    reservedPorts,
+                    excludeRuleIds,
+                  ),
+                  isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, excludeRuleIds, "both"),
+                });
+            if (!exitReservation) throw new Error("Tunnel exit agent has no available port");
+            heldReservations.push(exitReservation);
+            tunnelExitPort = exitReservation.port;
           }
 
           const failoverData = normalizeFailoverInput({
@@ -989,6 +1095,13 @@ export const crudRulesRouter = router({
         }
         const nextForwardType = lockedForwardTypeForGroup(group, input.forwardType ?? (rule as any).forwardType);
         const nextProtocol = input.protocol ?? (rule as any).protocol;
+        const childRules = await db.getForwardGroupChildRulesForTemplate(input.id);
+        await reserveForwardGroupEntryPorts(
+          activeGroupId,
+          Number(input.sourcePort ?? (rule as any).sourcePort),
+          nextProtocol,
+          [Number(rule.id), ...(childRules as any[]).map((child: any) => Number(child.id))].filter(Boolean),
+        );
         const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
         const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
         const groupSupportsFailover = !isForwardChain && nextProtocol === "tcp" && nextForwardType === "gost" && (!groupIsTunnel || groupTunnelSupportsFailover);
@@ -1105,6 +1218,7 @@ export const crudRulesRouter = router({
         }
         const nextForwardType = lockedForwardTypeForGroup(group, input.forwardType ?? (rule as any).forwardType);
         const nextProtocol = input.protocol ?? (rule as any).protocol;
+        await reserveForwardGroupEntryPorts(groupId, sourcePort, nextProtocol, [Number(rule.id)]);
         const nextMainBackupEnabled = false;
         requireMainBackupAllowed({
           enabled: nextMainBackupEnabled,
@@ -1287,8 +1401,8 @@ export const crudRulesRouter = router({
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }
-          const used = await db.isPortUsedOnHost(nextHostIdForRule, nextSourcePortForRule, rule.id, nextProtocolForRule);
-          if (used) {
+          const sourceReservation = await reserveRulePort(nextHostIdForRule, nextSourcePortForRule, nextProtocolForRule, rule.id);
+          if (!sourceReservation) {
             throw new Error(`端口 ${nextSourcePortForRule} 已被其他规则占用`);
           }
         }
@@ -1405,14 +1519,21 @@ export const crudRulesRouter = router({
           }
           if (nextTunnelId !== (rule as any).tunnelId || !(rule as any).tunnelExitPort) {
             const exit = await db.getHostById(tunnel.exitHostId);
-            (data as any).tunnelExitPort = await db.findAvailableTunnelExitPort(
-              tunnel.exitHostId,
-              (exit as any)?.portRangeStart,
-              (exit as any)?.portRangeEnd,
-              [],
-              [Number(rule.id)],
-            );
-            if (!(data as any).tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
+            const reservation = await reserveAvailableHostPort({
+              hostId: Number(tunnel.exitHostId),
+              protocol: "both",
+              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+                tunnel.exitHostId,
+                (exit as any)?.portRangeStart,
+                (exit as any)?.portRangeEnd,
+                reservedPorts,
+                [Number(rule.id)],
+              ),
+              isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, [Number(rule.id)], "both"),
+            });
+            if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
+            heldReservations.push(reservation);
+            (data as any).tunnelExitPort = reservation.port;
           }
         } else {
           (data as any).tunnelExitPort = null;
@@ -1427,8 +1548,8 @@ export const crudRulesRouter = router({
           tunnelId: nextTunnelIdForRule,
           tunnel: selectedTunnelForRule,
         });
-        const used = await db.isPortUsedOnHost(nextHostIdForRule, sourcePort, rule.id, nextProtocolForRule);
-        if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
+        const sourceReservation = await reserveRulePort(nextHostIdForRule, sourcePort, nextProtocolForRule, rule.id);
+        if (!sourceReservation) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;
         (data as any).disabledByTunnel = false;
         (data as any).protocolBlockReason = null;
@@ -1511,10 +1632,13 @@ export const crudRulesRouter = router({
         }
       }
       return { success: true, reset: keyFieldChanged && !failoverHotUpdate, hotUpdated: failoverHotUpdate };
-    }),
+      } finally {
+        releaseHostPortReservations(heldReservations);
+      }
+    })),
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) throw new Error("规则不存在");
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
@@ -1545,10 +1669,12 @@ export const crudRulesRouter = router({
       await db.markForwardRulePendingDelete(input.id);
       pushAgentRefresh(rule.hostId, "forward-rule-deleted");
       return { success: true };
-    }),
+    })),
   toggle: protectedProcedure
     .input(z.object({ id: z.number(), isEnabled: z.boolean() }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
+      let sourcePortReservation: HostPortReservation | null = null;
+      try {
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) throw new Error("规则不存在");
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
@@ -1627,13 +1753,21 @@ export const crudRulesRouter = router({
             throw new Error("套餐已到期，请续费后再启用规则");
           }
         }
-        const used = await db.isPortUsedOnHost(rule.hostId, rule.sourcePort, rule.id, (rule as any).protocol);
-        if (used) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
+        sourcePortReservation = await reserveSpecificHostPort({
+          hostId: Number(rule.hostId),
+          port: Number(rule.sourcePort),
+          protocol: (rule as any).protocol,
+          isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol),
+        });
+        if (!sourcePortReservation) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
         await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
       } else {
         await db.toggleForwardRule(input.id, false);
       }
       pushAgentRefresh(Number(rule.hostId), input.isEnabled ? "forward-rule-enabled" : "forward-rule-disabled");
       return { success: true };
-    })
+      } finally {
+        sourcePortReservation?.release();
+      }
+    }))
 });

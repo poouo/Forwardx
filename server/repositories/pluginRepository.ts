@@ -2,12 +2,13 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import zlib from "zlib";
-import { eq } from "drizzle-orm";
-import { hosts, pluginAssets, plugins } from "../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { hosts, pluginAgentStates, pluginAssets, plugins } from "../../drizzle/schema";
 import {
   BUILTIN_PLUGIN_STORE_ITEMS,
   DEFAULT_PLUGIN_MANIFEST,
   PLUGIN_ACTION_TYPES,
+  PLUGIN_ACTION_INTENTS,
   PLUGIN_AGENT_EXECUTORS,
   PLUGIN_AGENT_INTERPRETERS,
   PLUGIN_AGENT_OUTPUT_TYPES,
@@ -18,6 +19,13 @@ import {
   PLUGIN_HTTP_RESPONSE_TYPES,
   PLUGIN_MANIFEST_VERSION,
   PLUGIN_PERMISSION_KEYS,
+  PLUGIN_RESOURCE_COLUMN_TYPES,
+  PLUGIN_RESOURCE_CONDITION_OPERATORS,
+  PLUGIN_RESOURCE_FIELD_TYPES,
+  PLUGIN_RESOURCE_SOURCE_TRIGGERS,
+  PLUGIN_RESOURCE_VIEW_TYPES,
+  PLUGIN_RESULT_FIELD_TYPES,
+  PLUGIN_RESULT_SCHEMA_TYPES,
   PLUGIN_USAGE_VIEW_TYPES,
   PLUGIN_USAGE_FIELD_TYPES,
   PLUGIN_SECURITY_MODEL,
@@ -32,6 +40,15 @@ import {
   type PluginHttpRequestDefinition,
   type PluginPageDefinition,
   type PluginPermissionKey,
+  type PluginResourceColumnDefinition,
+  type PluginResourceCondition,
+  type PluginResourceDataSourceDefinition,
+  type PluginResourceFieldDefinition,
+  type PluginResourceOperationDefinition,
+  type PluginResourceOptionsSource,
+  type PluginResourceViewDefinition,
+  type PluginResultFieldDefinition,
+  type PluginResultSchemaDefinition,
   type PluginSettingField,
   type PluginStoreItem,
   type PluginUsageFieldDefinition,
@@ -42,7 +59,8 @@ import {
 } from "../../shared/pluginTypes";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
-import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup } from "../pluginAgentTasks";
+import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup, type PluginAgentTaskGroup } from "../pluginAgentTasks";
+import { isFreshHostHeartbeat } from "./hostRepository";
 import { assertSafePluginHttpUrl } from "../ssrf";
 
 const GITHUB_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i;
@@ -57,8 +75,13 @@ const MAX_PLUGIN_PAGES = 12;
 const MAX_PLUGIN_ACTIONS = 20;
 const MAX_PLUGIN_FEATURES = 12;
 const MAX_PLUGIN_USAGE_VIEWS = 8;
+const MAX_PLUGIN_RESOURCE_VIEWS = 8;
+const MAX_PLUGIN_RESOURCE_SOURCES = 16;
+const MAX_PLUGIN_RESOURCE_COLUMNS = 24;
 const MAX_PLUGIN_PACKAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PLUGIN_HTTP_TEMPLATE_BYTES = 64 * 1024;
+const MAX_PLUGIN_AGENT_INPUT_BYTES = 64 * 1024;
+const MAX_PLUGIN_AGENT_ARGUMENT_BYTES = 24 * 1024;
 const MAX_PLUGIN_HTTP_RESPONSE_BYTES = PLUGIN_SECURITY_MODEL.maxHttpResponseBytes;
 const MAX_PLUGIN_HTTP_TIMEOUT_MS = 30 * 1000;
 const DEFAULT_PLUGIN_HTTP_TIMEOUT_MS = 10 * 1000;
@@ -492,7 +515,7 @@ function normalizePluginAgentRequest(value: unknown): PluginAgentRequestDefiniti
     usageViewId: normalizePluginId(raw.usageViewId).slice(0, 80) || undefined,
     entry,
     arguments: Array.isArray(raw.arguments || raw.args)
-      ? (raw.arguments || raw.args).slice(0, 24).map((item: unknown) => String(item ?? "").slice(0, 512))
+      ? (raw.arguments || raw.args).slice(0, 24).map((item: unknown) => String(item ?? "").slice(0, MAX_PLUGIN_AGENT_ARGUMENT_BYTES))
       : [],
     timeoutMs,
     outputType,
@@ -528,6 +551,44 @@ function normalizePluginPages(value: unknown): PluginPageDefinition[] {
   });
 }
 
+function normalizePluginResultSchema(value: unknown): PluginResultSchemaDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  if (!PLUGIN_RESULT_SCHEMA_TYPES.includes(raw.type)) return undefined;
+  const allowedFieldTypes = new Set<string>(PLUGIN_RESULT_FIELD_TYPES);
+  const seen = new Set<string>();
+  const fields: PluginResultFieldDefinition[] = Array.isArray(raw.fields)
+    ? raw.fields.slice(0, MAX_PLUGIN_RESOURCE_COLUMNS).flatMap((item: any) => {
+        const key = normalizeResourceKey(item?.key, 80);
+        if (!key || seen.has(key)) return [];
+        seen.add(key);
+        const type = allowedFieldTypes.has(String(item?.type || ""))
+          ? String(item.type) as PluginResultFieldDefinition["type"]
+          : "text";
+        return [{
+          key,
+          label: String(item?.label || key).trim().slice(0, 100) || key,
+          path: normalizeResourceKey(item?.path, 160) || key,
+          type,
+          copyable: item?.copyable === true,
+          secret: item?.secret === true,
+          revealable: item?.revealable === true,
+          openable: item?.openable === true,
+          trueLabel: normalizeOptionalText(item?.trueLabel, 80),
+          falseLabel: normalizeOptionalText(item?.falseLabel, 80),
+        }];
+      })
+    : [];
+  if (!fields.length) return undefined;
+  return {
+    type: raw.type,
+    resultPath: normalizeResourceKey(raw.resultPath, 160),
+    itemsPath: normalizeResourceKey(raw.itemsPath, 160),
+    emptyText: normalizeOptionalText(raw.emptyText, 180),
+    fields,
+  };
+}
+
 function normalizePluginActions(value: unknown): PluginActionDefinition[] {
   if (!Array.isArray(value)) return [];
   const allowedTypes = new Set<string>(PLUGIN_ACTION_TYPES);
@@ -544,15 +605,241 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
       type: type as PluginActionDefinition["type"],
       description: String(item?.description || "").trim().slice(0, 240) || undefined,
       confirmRequired: item?.confirmRequired === true,
+      intent: PLUGIN_ACTION_INTENTS.includes(item?.intent) ? item.intent : undefined,
       inputSchema: normalizeSettingFields(item?.inputSchema || item?.inputs),
       request: normalizeHttpRequest(item?.request),
       agent: normalizePluginAgentRequest(item?.agent),
+      resultSchema: normalizePluginResultSchema(item?.resultSchema),
     };
     if (action.type === "agent.request" && !action.agent) return [];
     if (!action.inputSchema?.length) delete (action as any).inputSchema;
     if (!action.request) delete (action as any).request;
     if (!action.agent) delete (action as any).agent;
+    if (!action.resultSchema) delete (action as any).resultSchema;
     return [action];
+  });
+}
+
+function normalizeResourceKey(value: unknown, maxLength = 120) {
+  const key = String(value || "").trim().slice(0, maxLength);
+  if (!key || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key)) return undefined;
+  if (key.split(".").some((part) => ["__proto__", "prototype", "constructor"].includes(part))) return undefined;
+  return key;
+}
+
+function normalizeResourceConditions(value: unknown): PluginResourceCondition[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const operators = new Set<string>(PLUGIN_RESOURCE_CONDITION_OPERATORS);
+  const conditions = value.slice(0, 8).flatMap((item: any) => {
+    const field = normalizeResourceKey(item?.field, 80);
+    if (!field) return [];
+    const operator = operators.has(String(item?.operator || ""))
+      ? String(item.operator) as PluginResourceCondition["operator"]
+      : "eq";
+    let conditionValue: unknown = item?.value;
+    if (Array.isArray(conditionValue)) {
+      conditionValue = conditionValue.slice(0, 40).map((entry) => (
+        typeof entry === "boolean" || typeof entry === "number" ? entry : String(entry ?? "").slice(0, 240)
+      ));
+    } else if (!["string", "number", "boolean", "undefined"].includes(typeof conditionValue)) {
+      conditionValue = undefined;
+    } else if (typeof conditionValue === "string") {
+      conditionValue = conditionValue.slice(0, 1000);
+    }
+    return [{ field, operator, value: conditionValue }];
+  });
+  return conditions.length ? conditions : undefined;
+}
+
+function normalizeResourceOptionsSource(value: unknown): PluginResourceOptionsSource | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  const sourceId = normalizePluginId(raw.sourceId).slice(0, 80);
+  if (!sourceId) return undefined;
+  return {
+    sourceId,
+    path: normalizeResourceKey(raw.path, 160),
+    valueKey: normalizeResourceKey(raw.valueKey, 80) || "value",
+    labelKey: normalizeResourceKey(raw.labelKey, 80) || "label",
+    disabledKey: normalizeResourceKey(raw.disabledKey, 80),
+  };
+}
+
+function normalizeResourceFields(value: unknown): PluginResourceFieldDefinition[] {
+  if (!Array.isArray(value)) return [];
+  const allowedTypes = new Set<string>(PLUGIN_RESOURCE_FIELD_TYPES);
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PLUGIN_FIELDS).flatMap((item: any) => {
+    const key = normalizeResourceKey(item?.key, 80);
+    const type = String(item?.type || "text").trim();
+    if (!key || seen.has(key) || !allowedTypes.has(type)) return [];
+    seen.add(key);
+    const options = Array.isArray(item?.options)
+      ? item.options.slice(0, 100).flatMap((option: any) => {
+          const optionValue = String(option?.value ?? "").trim().slice(0, 240);
+          if (!optionValue) return [];
+          return [{ value: optionValue, label: String(option?.label || optionValue).trim().slice(0, 240) || optionValue }];
+        })
+      : undefined;
+    let defaultValue: PluginResourceFieldDefinition["defaultValue"];
+    if (type === "boolean") defaultValue = item?.defaultValue === true;
+    else if (type === "number" && Number.isFinite(Number(item?.defaultValue))) defaultValue = Number(item.defaultValue);
+    else if (type === "multi-select") defaultValue = Array.isArray(item?.defaultValue)
+      ? item.defaultValue.slice(0, 100).map((entry: unknown) => String(entry ?? "").slice(0, 240))
+      : [];
+    else if (typeof item?.defaultValue === "string") defaultValue = item.defaultValue.slice(0, type === "textarea" ? 10000 : 1000);
+    return [{
+      key,
+      label: String(item?.label || key).trim().slice(0, 100) || key,
+      type: type as PluginResourceFieldDefinition["type"],
+      description: normalizeOptionalText(item?.description, 300),
+      placeholder: normalizeOptionalText(item?.placeholder, 200),
+      required: item?.required === true,
+      readOnly: item?.readOnly === true,
+      secret: item?.secret === true || type === "password",
+      defaultValue,
+      min: Number.isFinite(Number(item?.min)) ? Number(item.min) : undefined,
+      max: Number.isFinite(Number(item?.max)) ? Number(item.max) : undefined,
+      options,
+      optionsSource: normalizeResourceOptionsSource(item?.optionsSource),
+      visibleWhen: normalizeResourceConditions(item?.visibleWhen),
+      disabledWhen: normalizeResourceConditions(item?.disabledWhen),
+    }];
+  });
+}
+
+function normalizeResourceColumns(value: unknown): PluginResourceColumnDefinition[] {
+  if (!Array.isArray(value)) return [];
+  const allowedTypes = new Set<string>(PLUGIN_RESOURCE_COLUMN_TYPES);
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PLUGIN_RESOURCE_COLUMNS).flatMap((item: any) => {
+    const key = normalizeResourceKey(item?.key, 80);
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    const type = allowedTypes.has(String(item?.type || ""))
+      ? String(item.type) as PluginResourceColumnDefinition["type"]
+      : "text";
+    return [{
+      key,
+      label: String(item?.label || key).trim().slice(0, 100) || key,
+      type,
+      path: normalizeResourceKey(item?.path, 160) || key,
+      width: Number.isFinite(Number(item?.width)) ? Math.max(60, Math.min(600, Math.floor(Number(item.width)))) : undefined,
+      copyable: item?.copyable === true,
+      secret: item?.secret === true || type === "secret",
+      trueLabel: normalizeOptionalText(item?.trueLabel, 80),
+      falseLabel: normalizeOptionalText(item?.falseLabel, 80),
+    }];
+  });
+}
+
+function normalizeResourceSources(value: unknown): PluginResourceDataSourceDefinition[] {
+  if (!Array.isArray(value)) return [];
+  const allowedTriggers = new Set<string>(PLUGIN_RESOURCE_SOURCE_TRIGGERS);
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PLUGIN_RESOURCE_SOURCES).flatMap((item: any) => {
+    const id = normalizePluginId(item?.id).slice(0, 80);
+    const actionId = normalizePluginId(item?.actionId).slice(0, 80);
+    if (!id || !actionId || seen.has(id)) return [];
+    seen.add(id);
+    const triggers = Array.isArray(item?.triggers)
+      ? Array.from(new Set(item.triggers.map((trigger: unknown) => String(trigger || "")).filter((trigger: string) => allowedTriggers.has(trigger)))) as PluginResourceDataSourceDefinition["triggers"]
+      : ["onHostSelected"] as PluginResourceDataSourceDefinition["triggers"];
+    return [{
+      id,
+      actionId,
+      triggers: triggers?.length ? triggers : ["manual"],
+      resultPath: normalizeResourceKey(item?.resultPath, 160),
+      itemsPath: normalizeResourceKey(item?.itemsPath, 160),
+      selectionInputKey: normalizeResourceKey(item?.selectionInputKey, 80),
+      selectionValuePath: normalizeResourceKey(item?.selectionValuePath, 160),
+      cacheTtlMs: Number.isFinite(Number(item?.cacheTtlMs))
+        ? Math.max(0, Math.min(5 * 60 * 1000, Math.floor(Number(item.cacheTtlMs))))
+        : 0,
+    }];
+  });
+}
+
+function normalizeResourceOperation(value: unknown): PluginResourceOperationDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as any;
+  const actionId = normalizePluginId(raw.actionId).slice(0, 80);
+  if (!actionId) return undefined;
+  const refreshAfter = Array.isArray(raw.refreshAfter || raw.refreshSources)
+    ? Array.from(new Set<string>((raw.refreshAfter || raw.refreshSources).map((item: unknown) => normalizePluginId(item).slice(0, 80)).filter(Boolean))).slice(0, 16)
+    : undefined;
+  return {
+    actionId,
+    label: normalizeOptionalText(raw.label, 100),
+    description: normalizeOptionalText(raw.description, 240),
+    confirmRequired: raw.confirmRequired === true,
+    refreshSources: refreshAfter,
+    refreshAfter,
+  };
+}
+
+function normalizePluginResourceViews(value: unknown): PluginResourceViewDefinition[] {
+  const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  if (!entries.length) return [];
+  const allowedTypes = new Set<string>(PLUGIN_RESOURCE_VIEW_TYPES);
+  const seen = new Set<string>();
+  return entries.slice(0, MAX_PLUGIN_RESOURCE_VIEWS).flatMap((item: any) => {
+    const id = normalizePluginId(item?.id).slice(0, 80);
+    const type = String(item?.type || "agent-resource").trim();
+    if (!id || seen.has(id) || !allowedTypes.has(type)) return [];
+    const declaredSources = Array.isArray(item?.sources) ? [...item.sources] : [];
+    const onOpenActionId = normalizePluginId(typeof item?.onOpen === "string" ? item.onOpen : item?.onOpen?.actionId).slice(0, 80);
+    if (onOpenActionId && !declaredSources.some((source: any) => source?.id === (item?.listSourceId || "list"))) {
+      declaredSources.push({
+        id: item?.listSourceId || "list",
+        actionId: onOpenActionId,
+        triggers: ["onOpen", "onHostSelected"],
+        resultPath: item?.resultPath,
+        itemsPath: item?.itemsPath,
+        cacheTtlMs: item?.cacheTtlMs,
+      });
+    }
+    const detailActionId = normalizePluginId(typeof item?.detailAction === "string" ? item.detailAction : item?.detailAction?.actionId).slice(0, 80);
+    if (detailActionId && !declaredSources.some((source: any) => source?.id === (item?.detailSourceId || "detail"))) {
+      declaredSources.push({
+        id: item?.detailSourceId || "detail",
+        actionId: detailActionId,
+        triggers: ["manual"],
+        resultPath: item?.detailAction?.resultPath,
+        selectionInputKey: item?.detailAction?.inputKey || item?.idInputKey || item?.rowKey || "id",
+        selectionValuePath: item?.rowKey || "id",
+      });
+    }
+    const sources = normalizeResourceSources(declaredSources);
+    const sourceIds = new Set(sources.map((source) => source.id));
+    const listSourceId = normalizePluginId(item?.listSourceId || (onOpenActionId ? "list" : sources[0]?.id)).slice(0, 80);
+    if (!listSourceId || !sourceIds.has(listSourceId)) return [];
+    const detailSourceId = normalizePluginId(item?.detailSourceId || (detailActionId ? "detail" : "")).slice(0, 80);
+    seen.add(id);
+    const execute = Array.isArray(item?.operations?.execute)
+      ? item.operations.execute.slice(0, 12).map(normalizeResourceOperation).filter(Boolean) as PluginResourceOperationDefinition[]
+      : undefined;
+    return [{
+      id,
+      type: type as PluginResourceViewDefinition["type"],
+      title: String(item?.title || id).trim().slice(0, 120) || id,
+      description: normalizeOptionalText(item?.description, 300),
+      usageViewId: normalizePluginId(item?.usageViewId).slice(0, 80) || undefined,
+      rowKey: normalizeResourceKey(item?.rowKey, 80) || "id",
+      idInputKey: normalizeResourceKey(item?.idInputKey, 80) || normalizeResourceKey(item?.rowKey, 80) || "id",
+      listSourceId,
+      detailSourceId: detailSourceId && sourceIds.has(detailSourceId) ? detailSourceId : undefined,
+      emptyText: normalizeOptionalText(item?.emptyText, 180),
+      sources,
+      columns: normalizeResourceColumns(item?.columns),
+      fields: normalizeResourceFields(item?.fields),
+      operations: {
+        create: normalizeResourceOperation(item?.operations?.create),
+        update: normalizeResourceOperation(item?.operations?.update),
+        delete: normalizeResourceOperation(item?.operations?.delete),
+        execute,
+      },
+    }];
   });
 }
 
@@ -796,6 +1083,10 @@ function normalizeManifest(input: any, fallback?: Partial<ForwardxPluginManifest
   const merged = { ...(fallback || {}), ...(input || {}) };
   const id = assertPluginId(merged.id);
   const name = String(merged.name || id).trim().slice(0, 120) || id;
+  const permissions = uniqueValidPermissions(merged.permissions);
+  const resourceSchemas = permissions.includes("ui:interactive") && permissions.includes("read:hosts")
+    ? normalizePluginResourceViews(merged.resourceSchemas ?? merged.resourceSchema ?? merged.resourceViews)
+    : [];
   const manifest: ForwardxPluginManifest = {
     ...DEFAULT_PLUGIN_MANIFEST,
     schemaVersion: PLUGIN_MANIFEST_VERSION,
@@ -815,16 +1106,22 @@ function normalizeManifest(input: any, fallback?: Partial<ForwardxPluginManifest
     homepage: String(merged.homepage || "").trim().slice(0, 512) || undefined,
     repository: String(merged.repository || "").trim().slice(0, 512) || undefined,
     minPanelVersion: String(merged.minPanelVersion || "").trim().slice(0, 64) || undefined,
-    permissions: uniqueValidPermissions(merged.permissions),
+    permissions,
     extensionPoints: uniqueValidExtensionPoints(merged.extensionPoints),
     settingsSchema: normalizeSettingFields(merged.settingsSchema),
     pages: normalizePluginPages(merged.pages),
     actions: normalizePluginActions(merged.actions),
     usageViews: normalizePluginUsageViews(merged.usageViews),
+    resourceSchemas,
+    resourceViews: resourceSchemas,
     assets: normalizePluginAssets(merged.assets),
     data: normalizePluginData(merged.data),
   };
   return manifest;
+}
+
+export function normalizePluginManifest(input: unknown, fallback?: Partial<ForwardxPluginManifest>) {
+  return normalizeManifest(input, fallback);
 }
 
 function githubRepoParts(repository: string) {
@@ -1404,6 +1701,167 @@ async function upsertPluginAsset(pluginId: string, assetPath: string, content: s
   }
 }
 
+function pluginAgentStateEpoch(value: unknown, fallback = Math.floor(Date.now() / 1000)) {
+  const time = value ? new Date(value as any).getTime() : NaN;
+  return Number.isFinite(time) ? Math.floor(time / 1000) : fallback;
+}
+
+function pluginAgentStateData(value: unknown) {
+  if (value === undefined) return null;
+  try {
+    const encoded = JSON.stringify(value);
+    return Buffer.byteLength(encoded, "utf8") <= 256 * 1024 ? encoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function pluginAgentResultEffective(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.applied === true || record.effective === true) return true;
+  const status = String(record.status || "").trim().toLowerCase();
+  if (["applied", "effective", "active"].includes(status)) return true;
+  const items = Array.isArray(record.items) ? record.items : [];
+  return items.length > 0 && items.every((item) => pluginAgentResultEffective(item));
+}
+
+async function upsertQueuedPluginAgentState(input: {
+  pluginId: string;
+  resourceViewId: string;
+  pluginVersion: string;
+  actionId: string;
+  groupId: string;
+  taskId: string;
+  hostId: number;
+  status: string;
+  createdAt: string;
+}) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const createdAt = pluginAgentStateEpoch(input.createdAt, nowSec);
+  const values = [
+    input.pluginId,
+    input.resourceViewId,
+    input.hostId,
+    input.pluginVersion || null,
+    input.actionId,
+    input.groupId,
+    input.taskId,
+    input.status,
+    null,
+    null,
+    null,
+    null,
+    null,
+    createdAt,
+    nowSec,
+  ];
+  if (getDatabaseKind() === "sqlite") {
+    await executeRaw(
+      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pluginId, resourceViewId, hostId) DO UPDATE SET pluginVersion=excluded.pluginVersion, actionId=excluded.actionId, groupId=excluded.groupId, taskId=excluded.taskId, status=excluded.status, dataJson=NULL, output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=excluded.createdAt, updatedAt=excluded.updatedAt",
+      values,
+    );
+  } else if (getDatabaseKind() === "postgresql") {
+    await executeRaw(
+      'INSERT INTO plugin_agent_states ("pluginId", "resourceViewId", "hostId", "pluginVersion", "actionId", "groupId", "taskId", status, "dataJson", output, error, "startedAt", "finishedAt", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ("pluginId", "resourceViewId", "hostId") DO UPDATE SET "pluginVersion"=excluded."pluginVersion", "actionId"=excluded."actionId", "groupId"=excluded."groupId", "taskId"=excluded."taskId", status=excluded.status, "dataJson"=NULL, output=NULL, error=NULL, "startedAt"=NULL, "finishedAt"=NULL, "createdAt"=excluded."createdAt", "updatedAt"=excluded."updatedAt"',
+      values,
+    );
+  } else {
+    await executeRaw(
+      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE pluginVersion=VALUES(pluginVersion), actionId=VALUES(actionId), groupId=VALUES(groupId), taskId=VALUES(taskId), status=VALUES(status), dataJson=NULL, output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=VALUES(createdAt), updatedAt=VALUES(updatedAt)",
+      values,
+    );
+  }
+}
+
+async function rememberPluginAgentTaskGroup(group: PluginAgentTaskGroup) {
+  if (!group.contextId) return;
+  await Promise.all(group.results.map((result) => upsertQueuedPluginAgentState({
+    pluginId: group.pluginId,
+    resourceViewId: group.contextId,
+    pluginVersion: group.pluginVersion,
+    actionId: group.actionId,
+    groupId: group.groupId,
+    taskId: result.taskId,
+    hostId: result.hostId,
+    status: result.status,
+    createdAt: group.createdAt,
+  })));
+}
+
+export async function syncPluginAgentActionState(pluginId: string, groupId: string) {
+  const group = getPluginAgentTaskGroup(groupId);
+  if (!group || group.pluginId !== normalizePluginId(pluginId) || !group.contextId) return group;
+  const db = await getDb();
+  if (!db) return group;
+  await Promise.all(group.results.map(async (result) => {
+    await db.update(pluginAgentStates).set({
+      pluginVersion: group.pluginVersion || null,
+      actionId: group.actionId,
+      status: result.status === "success" && pluginAgentResultEffective(result.data) ? "effective" : result.status,
+      dataJson: pluginAgentStateData(result.data),
+      output: String(result.output || "").slice(0, 64 * 1024) || null,
+      error: String(result.error || result.stderr || "").slice(0, 8 * 1024) || null,
+      startedAt: result.startedAt ? new Date(result.startedAt) : null,
+      finishedAt: result.finishedAt ? new Date(result.finishedAt) : null,
+      updatedAt: nowDate(),
+    } as any).where(and(
+      eq(pluginAgentStates.pluginId, group.pluginId),
+      eq(pluginAgentStates.resourceViewId, group.contextId),
+      eq(pluginAgentStates.hostId, result.hostId),
+      eq(pluginAgentStates.groupId, group.groupId),
+      eq(pluginAgentStates.taskId, result.taskId),
+    ));
+  }));
+  return group;
+}
+
+export async function getPluginAgentResourceStates(pluginId: string, resourceViewId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const id = assertPluginId(pluginId);
+  const viewId = normalizePluginId(resourceViewId).slice(0, 80);
+  if (!viewId) throw new Error("插件资源视图 ID 无效");
+  const plugin = await getPlugin(id);
+  if (!plugin || !pluginHasPermission(plugin, "ui:interactive") || !pluginHasPermission(plugin, "read:hosts")) {
+    throw new Error("插件没有声明 Agent 交互资源权限");
+  }
+  if (!(plugin.manifest.resourceSchemas || plugin.manifest.resourceViews || []).some((view: PluginResourceViewDefinition) => view.id === viewId)) {
+    throw new Error("插件资源视图不存在");
+  }
+  const rows = await db.select().from(pluginAgentStates).where(and(
+    eq(pluginAgentStates.pluginId, id),
+    eq(pluginAgentStates.resourceViewId, viewId),
+  ));
+  const staleBefore = Date.now() - 2 * 60 * 1000;
+  return rows.map((row: any) => {
+    let data: unknown;
+    try {
+      data = row.dataJson ? JSON.parse(row.dataJson) : undefined;
+    } catch {
+      data = undefined;
+    }
+    const updatedAt = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    const stale = (row.status === "queued" || row.status === "running") && updatedAt > 0 && updatedAt < staleBefore;
+    return {
+      pluginId: row.pluginId,
+      resourceViewId: row.resourceViewId,
+      hostId: Number(row.hostId),
+      pluginVersion: row.pluginVersion || null,
+      actionId: row.actionId || null,
+      groupId: row.groupId || null,
+      taskId: row.taskId || null,
+      status: stale ? "timeout" : row.status,
+      data,
+      output: row.output || "",
+      error: stale ? (row.error || "Agent 操作长时间未返回结果") : (row.error || ""),
+      startedAt: row.startedAt || null,
+      finishedAt: row.finishedAt || null,
+      updatedAt: row.updatedAt || null,
+    };
+  });
+}
+
 async function prunePluginDataAssets(pluginId: string, keepPaths: string[]) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -1532,6 +1990,7 @@ export function getPluginDeveloperCapabilities() {
     settingFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
     pageContentTypes: PLUGIN_PAGE_CONTENT_TYPES,
     actionTypes: PLUGIN_ACTION_TYPES,
+    actionIntents: PLUGIN_ACTION_INTENTS,
     actionInputFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
     httpMethods: PLUGIN_HTTP_METHODS,
     httpResponseTypes: PLUGIN_HTTP_RESPONSE_TYPES,
@@ -1540,6 +1999,13 @@ export function getPluginDeveloperCapabilities() {
     agentInterpreters: PLUGIN_AGENT_INTERPRETERS,
     agentOutputTypes: PLUGIN_AGENT_OUTPUT_TYPES,
     agentTargets: PLUGIN_AGENT_TARGETS,
+    resourceViewTypes: PLUGIN_RESOURCE_VIEW_TYPES,
+    resourceSourceTriggers: PLUGIN_RESOURCE_SOURCE_TRIGGERS,
+    resourceColumnTypes: PLUGIN_RESOURCE_COLUMN_TYPES,
+    resourceFieldTypes: PLUGIN_RESOURCE_FIELD_TYPES,
+    resourceConditionOperators: PLUGIN_RESOURCE_CONDITION_OPERATORS,
+    resultSchemaTypes: PLUGIN_RESULT_SCHEMA_TYPES,
+    resultFieldTypes: PLUGIN_RESULT_FIELD_TYPES,
     agentMinimumVersion: AGENT_PLUGIN_TASK_VERSION,
   };
 }
@@ -1585,6 +2051,7 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
       ip: hosts.ip,
       isOnline: hosts.isOnline,
       lastHeartbeat: hosts.lastHeartbeat,
+      agentVersion: hosts.agentVersion,
     }).from(hosts),
     db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, id)),
   ]);
@@ -1606,7 +2073,28 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
       contentType: asset.contentType,
     }))
     .sort((a: any, b: any) => String(a.path).localeCompare(String(b.path), "zh-Hans-CN"));
-  return { plugin, usageView, usage, hosts: hostRows, assets };
+  const selectedHostIds = new Set(usage.enabled ? usage.hostIds : []);
+  const usageUpdatedAt = usage.updatedAt ? new Date(usage.updatedAt).getTime() : 0;
+  const pluginUpdatedAt = plugin.updatedAt ? new Date(plugin.updatedAt).getTime() : 0;
+  const pluginSyncRequiredAt = Math.max(usageUpdatedAt, pluginUpdatedAt);
+  return {
+    plugin,
+    usageView,
+    usage,
+    hosts: hostRows.map((host: any) => {
+      const lastHeartbeatAt = host.lastHeartbeat ? new Date(host.lastHeartbeat).getTime() : 0;
+      const selected = selectedHostIds.has(Number(host.id));
+      return {
+        ...host,
+        isOnline: !!host.isOnline && isFreshHostHeartbeat(host.lastHeartbeat),
+        pluginSelected: selected,
+        pluginSyncPending: selected && pluginSyncRequiredAt > 0 && (!Number.isFinite(lastHeartbeatAt) || lastHeartbeatAt < pluginSyncRequiredAt),
+        pluginVersion: plugin.version,
+        agentPluginSupported: isAgentVersionAtLeast(host.agentVersion, AGENT_PLUGIN_TASK_VERSION),
+      };
+    }),
+    assets,
+  };
 }
 
 export async function savePluginUsage(pluginId: string, usageViewId: string | null | undefined, input: Partial<HostAssetSyncUsageConfig>) {
@@ -1915,8 +2403,14 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
     if (isChinaRegionWhitelist) {
       const config = buildChinaRegionWhitelistConfig(usage, targetDir);
       commands.push(...writeTextFileCommands(`${targetDir}/forwardx-generated.conf`, config));
-      commands.push(...writeTextFileCommands("/etc/china-region-whitelist.conf", config));
-      commands.push(...buildChinaRegionWhitelistOperationCommands(usage, targetDir, operationSignature));
+      const hasInteractiveResources = (plugin.manifest.resourceViews || []).some((view: PluginResourceViewDefinition) => view.usageViewId === usageView.id);
+      if (hasInteractiveResources) {
+        commands.push(`if [ ! -s /etc/china-region-whitelist.conf ]; then cp ${shellQuote(`${targetDir}/forwardx-generated.conf`)} /etc/china-region-whitelist.conf; fi`);
+        commands.push(`echo ${shellQuote("[ForwardX Plugin] china-region-whitelist assets synced; per-host config preserved")}`);
+      } else {
+        commands.push(...writeTextFileCommands("/etc/china-region-whitelist.conf", config));
+        commands.push(...buildChinaRegionWhitelistOperationCommands(usage, targetDir, operationSignature));
+      }
     }
     tasks.push({ pluginId: plugin.pluginId, usageViewId: usageView.id, forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`, commands });
   }
@@ -2141,6 +2635,7 @@ export async function uninstallPlugin(pluginId: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const id = assertPluginId(pluginId);
+  await db.delete(pluginAgentStates).where(eq(pluginAgentStates.pluginId, id));
   await db.delete(pluginAssets).where(eq(pluginAssets.pluginId, id));
   await db.delete(plugins).where(eq(plugins.pluginId, id));
 }
@@ -2317,6 +2812,41 @@ function normalizeActionInputValues(fields: PluginSettingField[] | undefined, va
   return result;
 }
 
+function normalizeAgentResourceInputValue(value: unknown, depth = 0): unknown {
+  if (depth > 5 || value === undefined || value === null) return value === null ? null : undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return value.replace(/\u0000/g, "").slice(0, 16_000);
+  if (Array.isArray(value)) {
+    return value.slice(0, 200)
+      .map((item) => normalizeAgentResourceInputValue(item, depth + 1))
+      .filter((item) => item !== undefined);
+  }
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      const safeKey = normalizeResourceKey(key, 80);
+      if (!safeKey) continue;
+      const normalized = normalizeAgentResourceInputValue(item, depth + 1);
+      if (normalized !== undefined) result[safeKey] = normalized;
+    }
+    return result;
+  }
+  return undefined;
+}
+
+function normalizeAgentResourceInput(value: unknown) {
+  const normalized = normalizeAgentResourceInputValue(value);
+  const result = normalized && typeof normalized === "object" && !Array.isArray(normalized)
+    ? normalized as Record<string, unknown>
+    : {};
+  const encoded = JSON.stringify(result);
+  if (Buffer.byteLength(encoded, "utf8") > MAX_PLUGIN_AGENT_INPUT_BYTES) {
+    throw new Error("插件资源操作参数过大");
+  }
+  return result;
+}
+
 function pluginHasPermission(plugin: any, permission: PluginPermissionKey) {
   const manifestPermissions = Array.isArray(plugin?.manifest?.permissions) ? plugin.manifest.permissions : [];
   const rowPermissions = Array.isArray(plugin?.permissions) ? plugin.permissions : [];
@@ -2363,8 +2893,19 @@ function templateLookup(path: string, context: { settings: Record<string, unknow
   if (!match) return "";
   const [, scope, key] = match;
   const normalizedKey = normalizePluginId(key).slice(0, 80);
-  if (scope === "settings") return context.settings[key] ?? context.settings[normalizedKey] ?? "";
-  if (scope === "input") return context.input[key] ?? context.input[normalizedKey] ?? "";
+  const nestedValue = (root: Record<string, unknown>) => {
+    if (Object.prototype.hasOwnProperty.call(root, key)) return root[key];
+    if (Object.prototype.hasOwnProperty.call(root, normalizedKey)) return root[normalizedKey];
+    let current: unknown = root;
+    for (const segment of key.split(".")) {
+      if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+      if (["__proto__", "prototype", "constructor"].includes(segment)) return undefined;
+      current = (current as Record<string, unknown>)[segment];
+    }
+    return current;
+  };
+  if (scope === "settings") return nestedValue(context.settings) ?? "";
+  if (scope === "input") return nestedValue(context.input) ?? "";
   if (scope === "plugin") {
     if (key === "id") return context.plugin?.pluginId || context.plugin?.manifest?.id || "";
     if (key === "name") return context.plugin?.name || context.plugin?.manifest?.name || "";
@@ -2553,8 +3094,35 @@ async function executePluginHttpAction(plugin: any, action: PluginActionDefiniti
   };
 }
 
-async function executePluginAgentAction(plugin: any, action: PluginActionDefinition, input: unknown) {
-  if (!pluginHasPermission(plugin, "agent:execute")) throw new Error("插件未声明 agent:execute 权限，不能向 Agent 下发操作");
+async function executePluginAgentAction(
+  plugin: any,
+  action: PluginActionDefinition,
+  input: unknown,
+  options: { hostIds?: number[]; resourceViewId?: string } = {},
+) {
+  const resourceViewId = normalizePluginId(options.resourceViewId).slice(0, 80);
+  const resourceView: PluginResourceViewDefinition | undefined = resourceViewId
+    ? (plugin.manifest.resourceViews || []).find((view: PluginResourceViewDefinition) => view.id === resourceViewId)
+    : undefined;
+  if (resourceViewId && !resourceView) throw new Error("插件没有声明该动态资源视图");
+  if (resourceView) {
+    const linkedActionIds = new Set<string>([
+      ...resourceView.sources.map((source: PluginResourceDataSourceDefinition) => source.actionId),
+      resourceView.operations?.create?.actionId,
+      resourceView.operations?.update?.actionId,
+      resourceView.operations?.delete?.actionId,
+      ...(resourceView.operations?.execute || []).map((operation: PluginResourceOperationDefinition) => operation.actionId),
+    ].filter(Boolean) as string[]);
+    if (!linkedActionIds.has(action.id)) throw new Error("该动作不属于当前插件资源视图");
+  }
+  const requiredPermission: PluginPermissionKey = action.intent === "read"
+    ? "agent:read"
+    : action.intent === "write"
+      ? "agent:write"
+      : "agent:execute";
+  if (!pluginHasPermission(plugin, requiredPermission)) {
+    throw new Error(`插件未声明 ${requiredPermission} 权限，不能向 Agent 下发该操作`);
+  }
   if (!action.agent) throw new Error("插件动作缺少 Agent 请求定义");
   const usageView = (plugin.manifest.usageViews || []).find((item: PluginUsageViewDefinition) => item.id === action.agent?.usageViewId)
     || firstHostAssetSyncView(plugin.manifest);
@@ -2563,19 +3131,45 @@ async function executePluginAgentAction(plugin: any, action: PluginActionDefinit
   if (!usage.enabled || usage.hostIds.length === 0) throw new Error("请先在插件使用页启用配置并选择生效主机");
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const hostRows = await db.select({ id: hosts.id, name: hosts.name, agentVersion: hosts.agentVersion }).from(hosts);
+  const hostRows = await db.select({
+    id: hosts.id,
+    name: hosts.name,
+    agentVersion: hosts.agentVersion,
+    isOnline: hosts.isOnline,
+    lastHeartbeat: hosts.lastHeartbeat,
+  }).from(hosts);
   const selectedHostIds = new Set(usage.hostIds);
-  const targetHosts = hostRows.filter((host: any) => selectedHostIds.has(Number(host.id)));
+  const requestedHostIds = normalizePositiveIds(options.hostIds);
+  if (action.agent.target === "selected-hosts" && requestedHostIds.length === 0) {
+    throw new Error("该插件操作需要先选择目标 Agent");
+  }
+  const requestedHostIdSet = new Set(requestedHostIds);
+  const targetHosts = hostRows.filter((host: any) => (
+    selectedHostIds.has(Number(host.id))
+    && (requestedHostIds.length === 0 || requestedHostIdSet.has(Number(host.id)))
+  ));
+  if (requestedHostIds.some((hostId) => !selectedHostIds.has(hostId))) {
+    throw new Error("目标 Agent 不在该插件已保存的生效主机范围内");
+  }
   if (targetHosts.length === 0) throw new Error("插件配置中的目标主机已不存在");
+  if (requestedHostIds.length > 0) {
+    const offlineHosts = targetHosts.filter((host: any) => !host.isOnline || !isFreshHostHeartbeat(host.lastHeartbeat));
+    if (offlineHosts.length > 0) {
+      const names = offlineHosts.slice(0, 5).map((host: any) => String(host.name || `主机 ${host.id}`)).join("、");
+      throw new Error(`${names} 当前离线，无法执行实时插件操作`);
+    }
+  }
   const unsupportedHosts = targetHosts.filter((host: any) => !isAgentVersionAtLeast(host.agentVersion, AGENT_PLUGIN_TASK_VERSION));
   if (unsupportedHosts.length > 0) {
     const names = unsupportedHosts.slice(0, 5).map((host: any) => String(host.name || `主机 ${host.id}`)).join("、");
     const suffix = unsupportedHosts.length > 5 ? ` 等 ${unsupportedHosts.length} 台主机` : "";
     throw new Error(`${names}${suffix} 需要先升级到 Agent v${AGENT_PLUGIN_TASK_VERSION} 才能执行插件操作`);
   }
-  const actionInput = normalizeActionInputValues(action.inputSchema, input);
+  const actionInput = resourceView
+    ? normalizeAgentResourceInput(input)
+    : normalizeActionInputValues(action.inputSchema, input);
   const context = { settings: pluginSettingsValues(plugin.manifest), input: actionInput, plugin };
-  const renderedArguments = (action.agent.arguments || []).map((argument) => renderTemplateString(argument, context).slice(0, 2000));
+  const renderedArguments = (action.agent.arguments || []).map((argument) => renderTemplateString(argument, context).slice(0, MAX_PLUGIN_AGENT_ARGUMENT_BYTES));
   const workingDirectory = hostAssetSyncDir(plugin.pluginId, usageView);
   const expectedRoot = `${PLUGIN_HOST_ASSET_ROOT}/${plugin.pluginId}`;
   if (workingDirectory !== expectedRoot && !workingDirectory.startsWith(`${expectedRoot}/`)) {
@@ -2585,6 +3179,7 @@ async function executePluginAgentAction(plugin: any, action: PluginActionDefinit
     pluginId: plugin.pluginId,
     pluginVersion: plugin.version,
     actionId: action.id,
+    contextId: resourceViewId,
     executor: action.agent.executor,
     interpreter: action.agent.interpreter || "bash",
     workingDirectory,
@@ -2594,6 +3189,7 @@ async function executePluginAgentAction(plugin: any, action: PluginActionDefinit
     outputType: action.agent.outputType || "json",
     hosts: targetHosts,
   });
+  await rememberPluginAgentTaskGroup(group);
   return {
     ok: true,
     message: `已向 ${targetHosts.length} 台主机下发插件操作`,
@@ -2606,7 +3202,12 @@ async function executePluginAgentAction(plugin: any, action: PluginActionDefinit
   };
 }
 
-export async function runPluginAction(pluginId: string, actionId: string, input?: unknown) {
+export async function runPluginAction(
+  pluginId: string,
+  actionId: string,
+  input?: unknown,
+  options: { hostIds?: number[]; resourceViewId?: string } = {},
+) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
   if (plugin.status !== "enabled") throw new Error("插件未启用");
@@ -2616,7 +3217,7 @@ export async function runPluginAction(pluginId: string, actionId: string, input?
     return executePluginHttpAction(plugin, action, input);
   }
   if (action.type === "agent.request") {
-    return executePluginAgentAction(plugin, action, input);
+    return executePluginAgentAction(plugin, action, input, options);
   }
   if (action.type === "noop") {
     return { ok: true, message: "动作已执行（noop）" };
@@ -2647,7 +3248,7 @@ export async function runPluginAction(pluginId: string, actionId: string, input?
 export async function getPluginAgentActionStatus(pluginId: string, groupId: string) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
-  const group = getPluginAgentTaskGroup(groupId);
+  const group = await syncPluginAgentActionState(plugin.pluginId, groupId);
   if (!group || group.pluginId !== plugin.pluginId) return null;
   return group;
 }

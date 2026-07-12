@@ -15,6 +15,13 @@ import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from ".
 import { structuredLinkTestMessage } from "../linkTestMessages";
 import { isValidHostOrIp } from "../networkAddress";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
+import {
+  releaseHostPortReservations,
+  reserveAvailableHostPort,
+  reserveSpecificHostPort,
+  type HostPortReservation,
+} from "../portReservations";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
@@ -117,13 +124,13 @@ function normalizeNginxCertInput(input: { certPem?: unknown; certKeyPem?: unknow
   return { certPem, certKeyPem };
 }
 
-async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
+async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string, options?: { urgent?: boolean }) {
   clearTunnelRuntimeStatus(tunnelId);
   const uniqueHostIds = Array.from(new Set(hostIds.map((hostId) => Number(hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
   for (const hostId of uniqueHostIds) {
-    pushAgentRefresh(hostId, reason);
+    pushAgentRefresh(hostId, reason, { urgent: options?.urgent === true });
   }
-  appendPanelLog("info", `[Tunnel] refresh runtime tunnel=${tunnelId} reason=${reason} hosts=${uniqueHostIds.join(",") || "-"}`);
+  appendPanelLog("info", `[Tunnel] refresh runtime tunnel=${tunnelId} reason=${reason} urgent=${options?.urgent === true} hosts=${uniqueHostIds.join(",") || "-"}`);
 }
 
 const normalizeTunnelConnect = (connectHost?: string | null) => {
@@ -263,6 +270,8 @@ async function buildExtraExitNodes(ctx: any, options: {
   exits?: Array<{ hostId: number; connectHost?: string | null }> | null;
   existingNodes?: any[];
   explicitListenPort?: number;
+  excludeRuleIds?: number[];
+  reservations: HostPortReservation[];
 }) {
   if (!options.enabled) return [];
   const raw = Array.isArray(options.exits) ? options.exits : [];
@@ -291,14 +300,40 @@ async function buildExtraExitNodes(ctx: any, options: {
       if (!isPortAllowedByPolicy(explicitListenPort, policy)) {
         throw new Error(portPolicyErrorMessage(policy, `负载出口 ${host?.name || hostId} 监听端口`));
       }
-      const used = await db.isPortUsedOnHost(hostId, explicitListenPort);
-      if (used) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${explicitListenPort} 已被转发规则占用`);
-      const tunnelUsed = await db.isTunnelListenPortUsed(hostId, explicitListenPort, options.tunnelId);
-      if (tunnelUsed) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${explicitListenPort} 已被其他隧道占用`);
+      const reservation = await reserveSpecificHostPort({
+        hostId,
+        port: explicitListenPort,
+        protocol: "both",
+        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
+      });
+      if (!reservation) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${explicitListenPort} 已被占用或正在分配`);
+      options.reservations.push(reservation);
+    } else if (listenPort > 0) {
+      const reservation = await reserveSpecificHostPort({
+        hostId,
+        port: listenPort,
+        protocol: "both",
+        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
+      });
+      if (!reservation) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${listenPort} 已被占用或正在分配`);
+      options.reservations.push(reservation);
     }
     if (!listenPort) {
-      listenPort = await db.findAvailableTunnelExitPort(hostId, (host as any)?.portRangeStart, (host as any)?.portRangeEnd) ?? 0;
-      if (!listenPort) throw new Error(`出口 Agent ${host?.name || hostId} 已无可用隧道端口`);
+      const reservation = await reserveAvailableHostPort({
+        hostId,
+        protocol: "both",
+        findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+          hostId,
+          (host as any)?.portRangeStart,
+          (host as any)?.portRangeEnd,
+          reservedPorts,
+          options.excludeRuleIds,
+        ),
+        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
+      });
+      if (!reservation) throw new Error(`出口 Agent ${host?.name || hostId} 已无可用隧道端口`);
+      options.reservations.push(reservation);
+      listenPort = reservation.port;
     }
     nodes.push({
       seq: i + 1,
@@ -510,6 +545,8 @@ export const tunnelsRouter = router({
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        const heldReservations: HostPortReservation[] = [];
+        try {
         const normalizedMode = normalizeTunnelMode(input.mode);
         const certDomain = normalizedMode === "nginx_stream" ? normalizeCertDomain((input as any).certDomain) : null;
         const nginxCert = normalizeNginxCertInput(input as any, normalizedMode === "nginx_stream");
@@ -546,13 +583,24 @@ export const tunnelsRouter = router({
             if (!isPortAllowedByPolicy(listenPort, policy)) {
               throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
             }
-            const used = await db.isPortUsedOnHost(exitHostId, listenPort);
-            if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
-            const tunnelUsed = await db.isTunnelListenPortUsed(exitHostId, listenPort);
-            if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
+            const reservation = await reserveSpecificHostPort({
+              hostId: exitHostId,
+              port: listenPort,
+              protocol: "both",
+              isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, undefined, "both"),
+            });
+            if (!reservation) throw new Error(`出口 Agent 端口 ${listenPort} 已被占用或正在分配`);
+            heldReservations.push(reservation);
           } else {
-            listenPort = await db.findAvailableTunnelExitPort(exitHostId, exit?.portRangeStart, exit?.portRangeEnd) ?? 0;
-            if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+            const reservation = await reserveAvailableHostPort({
+              hostId: exitHostId,
+              protocol: "both",
+              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(exitHostId, exit?.portRangeStart, exit?.portRangeEnd, reservedPorts),
+              isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, undefined, "both"),
+            });
+            if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
+            heldReservations.push(reservation);
+            listenPort = reservation.port;
           }
         }
         const secret = crypto.randomBytes(32).toString("hex");
@@ -569,6 +617,7 @@ export const tunnelsRouter = router({
           mode: normalizedMode,
           exits: input.loadBalanceExits || [],
           explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
+          reservations: heldReservations,
         });
         const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
         const mimicPort = runtimeOptions.udpOverTcp
@@ -625,8 +674,15 @@ export const tunnelsRouter = router({
               port = listenPort; // Last hop = exit listen port (auto-assigned above)
             } else {
               const host = await db.getHostById(hopHostIds[i]) as any;
-              port = await db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd) ?? 0;
-              if (!port) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
+              const reservation = await reserveAvailableHostPort({
+                hostId: hopHostIds[i],
+                protocol: "both",
+                findPort: (reservedPorts) => db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd, reservedPorts),
+                isUsed: (candidate) => db.isPortUsedOnHost(hopHostIds[i], candidate, undefined, "both"),
+              });
+              if (!reservation) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
+              heldReservations.push(reservation);
+              port = reservation.port;
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
             const hopHost = await db.getHostById(hopHostIds[i]) as any;
@@ -637,11 +693,14 @@ export const tunnelsRouter = router({
         }
         const ensuredMimic = runtimeOptions.udpOverTcp ? await ensureConfiguredMimicPorts(id) : null;
         if (hopHostIds) {
-          await refreshTunnelRuntimeHosts(id, [...hopHostIds, ...extraExitNodes.map((node) => node.hostId)], "tunnel-created");
+          await refreshTunnelRuntimeHosts(id, [...hopHostIds, ...extraExitNodes.map((node) => node.hostId)], "tunnel-created", { urgent: true });
         } else {
-          await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
+          await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created", { urgent: true });
         }
         return { id, listenPort, mimicPort: Number(ensuredMimic?.tunnel?.mimicPort || mimicPort || 0) };
+        } finally {
+          releaseHostPortReservations(heldReservations);
+        }
       }),
     update: protectedProcedure
       .input(z.object({
@@ -679,7 +738,9 @@ export const tunnelsRouter = router({
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
+        const heldReservations: HostPortReservation[] = [];
+        try {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
@@ -690,6 +751,11 @@ export const tunnelsRouter = router({
         const nextModeForRuntime = normalizeTunnelMode(input.mode ?? (tunnel as any).mode);
         const referencedRules = await db.getForwardRulesByTunnel(input.id);
         const activeReferencedRuleCount = (referencedRules as any[]).filter((rule) => !rule?.pendingDelete).length;
+        const primaryManagedTunnelRuleId = (referencedRules as any[])
+          .filter((rule: any) => rule && !rule.pendingDelete && rule.isEnabled && String(rule.forwardType || "") === "gost")
+          .map((rule: any) => Number(rule.id || 0))
+          .filter((ruleId: number) => ruleId > 0)
+          .sort((a: number, b: number) => a - b)[0] || 0;
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
@@ -783,27 +849,47 @@ export const tunnelsRouter = router({
         if (nextPortRangeStart != null && nextPortRangeEnd != null && nextPortRangeStart > nextPortRangeEnd) {
           throw new Error("隧道可用端口范围起始值不能大于结束值");
         }
-        if ((data as any).listenPort !== undefined || hopHostIds) {
+        const exitHostChanged = Number(exitHostId) !== Number((tunnel as any).exitHostId || 0);
+        if ((data as any).listenPort !== undefined || exitHostChanged) {
           const listenPort = Number((data as any).listenPort) || 0;
           if (listenPort <= 0) {
-            (data as any).listenPort = await db.findAvailableTunnelExitPort(
-              exitHostId,
-              (exit as any).portRangeStart,
-              (exit as any).portRangeEnd,
-            );
-            if (!(data as any).listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+            const reservation = await reserveAvailableHostPort({
+              hostId: exitHostId,
+              protocol: "both",
+              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+                exitHostId,
+                (exit as any).portRangeStart,
+                (exit as any).portRangeEnd,
+                reservedPorts,
+              ),
+              isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, primaryManagedTunnelRuleId || undefined, "both", id),
+            });
+            if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
+            heldReservations.push(reservation);
+            (data as any).listenPort = reservation.port;
           } else {
-            const policy = portPolicyFrom(exit as any);
-            if (!isPortAllowedByPolicy(listenPort, policy)) {
-              throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
+            const listenerChanged = listenPort !== Number((tunnel as any).listenPort || 0)
+              || exitHostId !== Number((tunnel as any).exitHostId || 0);
+            if (listenerChanged) {
+              const policy = portPolicyFrom(exit as any);
+              if (!isPortAllowedByPolicy(listenPort, policy)) {
+                throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
+              }
+              const reservation = await reserveSpecificHostPort({
+                hostId: exitHostId,
+                port: listenPort,
+                protocol: "both",
+                isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, primaryManagedTunnelRuleId || undefined, "both", id),
+              });
+              if (!reservation) throw new Error(`出口 Agent 端口 ${listenPort} 已被占用或正在分配`);
+              heldReservations.push(reservation);
             }
-            const used = await db.isPortUsedOnHost(exitHostId, listenPort);
-            if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
-            const tunnelUsed = await db.isTunnelListenPortUsed(exitHostId, listenPort, id);
-            if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
             (data as any).listenPort = listenPort;
           }
         }
+        // When a user selects automatic allocation, the resolved primary port
+        // must also replace the saved ports for every load-balanced exit.
+        const sharedExitListenPort = Number((data as any).listenPort || 0);
         if (nextMimicEnabled && (data as any).mimicPort !== undefined) {
           (data as any).mimicPort = await validateMimicUdpPort({
             port: (data as any).mimicPort,
@@ -847,7 +933,9 @@ export const tunnelsRouter = router({
           mode: nextModeForRuntime,
           exits: requestedExtraExits,
           existingNodes: existingExtraExitNodes,
-          explicitListenPort: Number((input as any).listenPort || 0) > 0 ? Number((input as any).listenPort || 0) : 0,
+          explicitListenPort: sharedExitListenPort,
+          excludeRuleIds: primaryManagedTunnelRuleId > 0 ? [primaryManagedTunnelRuleId] : [],
+          reservations: heldReservations,
         });
         (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
         (data as any).loadBalanceStrategy = (data as any).loadBalanceEnabled ? nextLoadBalanceStrategy : "round_robin";
@@ -898,10 +986,26 @@ export const tunnelsRouter = router({
               port = Number((data as any).listenPort) || Number((tunnel as any).listenPort) || 0;
             } else {
               port = existingPortByHostId.get(hopIdsToWrite[i]) || 0;
-              if (!port) {
+              if (port > 0) {
+                const reservation = await reserveSpecificHostPort({
+                  hostId: hopIdsToWrite[i],
+                  port,
+                  protocol: "both",
+                  isUsed: (candidate) => db.isPortUsedOnHost(hopIdsToWrite[i], candidate, undefined, "both", id),
+                });
+                if (!reservation) throw new Error(`主机 ${hopIdsToWrite[i]} 端口 ${port} 已被占用或正在分配`);
+                heldReservations.push(reservation);
+              } else {
                 const hopHost = await db.getHostById(hopIdsToWrite[i]) as any;
-                port = await db.findAvailableTunnelExitPort(hopIdsToWrite[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
-                if (!port) throw new Error(`主机 ${hopHost?.name || hopIdsToWrite[i]} 已无可用端口`);
+                const reservation = await reserveAvailableHostPort({
+                  hostId: hopIdsToWrite[i],
+                  protocol: "both",
+                  findPort: (reservedPorts) => db.findAvailableTunnelExitPort(hopIdsToWrite[i], hopHost?.portRangeStart, hopHost?.portRangeEnd, reservedPorts),
+                  isUsed: (candidate) => db.isPortUsedOnHost(hopIdsToWrite[i], candidate, undefined, "both", id),
+                });
+                if (!reservation) throw new Error(`主机 ${hopHost?.name || hopIdsToWrite[i]} 已无可用端口`);
+                heldReservations.push(reservation);
+                port = reservation.port;
               }
             }
             const normalizedHopConnectHost = i > 0 ? normalizedRequestedHopConnectHosts[i] : null;
@@ -957,10 +1061,13 @@ export const tunnelsRouter = router({
             ...existingExtraHostIds,
             ...nextExtraHostIds,
           ];
-          await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
+          await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated", { urgent: true });
         }
         return { success: true, reset: keyChanged, syncedRuleCount: modeChanged ? activeReferencedRuleCount : 0 };
-      }),
+        } finally {
+          releaseHostPortReservations(heldReservations);
+        }
+      })),
     deleteImpact: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
@@ -971,7 +1078,7 @@ export const tunnelsRouter = router({
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
@@ -980,13 +1087,13 @@ export const tunnelsRouter = router({
           throw new Error(`此链路仍有关联转发规则 ${impact.forwardRuleCount} 条，请确认后再删除`);
         }
         clearTunnelRuntimeStatus(input.id);
-        await pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
+        await pushTunnelEndpointRefresh(tunnel, "tunnel-deleted", { urgent: true });
         await db.deleteTunnel(input.id);
         return { success: true };
-      }),
+      })),
     test: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("Tunnel not found");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("No permission to test this tunnel");
@@ -1032,13 +1139,20 @@ export const tunnelsRouter = router({
             }
           } else {
             // Legacy/broken data fallback: allocate a valid exit listen port on demand.
-            const allocated = await db.findAvailableTunnelExitPort(
-              tunnel.exitHostId,
-              (exit as any).portRangeStart,
-              (exit as any).portRangeEnd,
-            );
-            if (allocated) {
-              targetPort = Number(allocated) || 0;
+            const reservation = await reserveAvailableHostPort({
+              hostId: Number(tunnel.exitHostId),
+              protocol: "both",
+              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
+                tunnel.exitHostId,
+                (exit as any).portRangeStart,
+                (exit as any).portRangeEnd,
+                reservedPorts,
+              ),
+              isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, undefined, "both", Number(tunnel.id)),
+            });
+            if (reservation) {
+              try {
+              targetPort = reservation.port;
               await db.updateTunnel(tunnel.id, { listenPort: targetPort, isRunning: false } as any);
               if (Array.isArray(tunnelHops) && tunnelHops.length > 0) {
                 const repairedHops = tunnelHops.map((hop: any, idx: number) => ({
@@ -1051,6 +1165,9 @@ export const tunnelsRouter = router({
               }
               appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort auto-assigned: ${targetPort}`);
               await pushTunnelEndpointRefresh(tunnel as any, "tunnel-test-port-repair");
+              } finally {
+                reservation.release();
+              }
             }
           }
         }
@@ -1354,6 +1471,6 @@ export const tunnelsRouter = router({
         await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
         appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-agent TCPing from entryHost=${entry.id} to exit ${target}:${targetPort}`);
         return { success: false, latencyMs: null, message, pending: true };
-      }),
+      })),
   });
 
