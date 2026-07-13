@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.152"
+var Version = "2.2.153"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -258,9 +258,12 @@ type runtimeActionState struct {
 }
 
 type Config struct {
-	PanelURL string `json:"panelUrl"`
-	Token    string `json:"token"`
-	Interval int    `json:"interval"`
+	PanelURL                  string `json:"panelUrl"`
+	Token                     string `json:"token"`
+	Interval                  int    `json:"interval"`
+	MigrationFallbackPanelURL string `json:"migrationFallbackPanelUrl,omitempty"`
+	PanelMigrationID          string `json:"panelMigrationId,omitempty"`
+	PanelMigrationStartedAt   int64  `json:"panelMigrationStartedAt,omitempty"`
 }
 
 type envelope struct {
@@ -278,25 +281,32 @@ type panelErrorResp struct {
 }
 
 type heartbeatResp struct {
-	Actions            []action                `json:"actions"`
-	DesiredState       *desiredState           `json:"desiredState,omitempty"`
-	SelfTests          []selfTest              `json:"selfTests"`
-	RunningRules       []runningRule           `json:"runningRules"`
-	TunnelProbes       []tunnelProbe           `json:"tunnelProbes"`
-	ForwardGroupProbes []forwardGroupProbe     `json:"forwardGroupProbes"`
-	HostProbeServices  []hostProbeServiceProbe `json:"hostProbeServices"`
-	GuardRules         []guardRule             `json:"guardRules"`
-	DNSWatch           []dnsWatchItem          `json:"dnsWatch"`
-	LookingGlassTests  []lookingGlassTask      `json:"lookingGlassTests"`
-	Iperf3Tasks        []iperf3Task            `json:"iperf3Tasks"`
-	PluginTasks        []pluginAgentTask       `json:"pluginTasks"`
-	AgentUpgrade       *agentUpgrade           `json:"agentUpgrade"`
-	StateSignatures    map[string]string       `json:"stateSignatures,omitempty"`
-	RequestLocalState  bool                    `json:"requestLocalState,omitempty"`
-	PanelURL           string                  `json:"panelUrl"`
-	ForceTCPing        bool                    `json:"forceTcping"`
-	NextInterval       int                     `json:"nextInterval"`
-	CompactReports     bool                    `json:"compactReports"`
+	Actions            []action                 `json:"actions"`
+	DesiredState       *desiredState            `json:"desiredState,omitempty"`
+	SelfTests          []selfTest               `json:"selfTests"`
+	RunningRules       []runningRule            `json:"runningRules"`
+	TunnelProbes       []tunnelProbe            `json:"tunnelProbes"`
+	ForwardGroupProbes []forwardGroupProbe      `json:"forwardGroupProbes"`
+	HostProbeServices  []hostProbeServiceProbe  `json:"hostProbeServices"`
+	GuardRules         []guardRule              `json:"guardRules"`
+	DNSWatch           []dnsWatchItem           `json:"dnsWatch"`
+	LookingGlassTests  []lookingGlassTask       `json:"lookingGlassTests"`
+	Iperf3Tasks        []iperf3Task             `json:"iperf3Tasks"`
+	PluginTasks        []pluginAgentTask        `json:"pluginTasks"`
+	AgentUpgrade       *agentUpgrade            `json:"agentUpgrade"`
+	StateSignatures    map[string]string        `json:"stateSignatures,omitempty"`
+	RequestLocalState  bool                     `json:"requestLocalState,omitempty"`
+	PanelURL           string                   `json:"panelUrl"`
+	ForceTCPing        bool                     `json:"forceTcping"`
+	NextInterval       int                      `json:"nextInterval"`
+	CompactReports     bool                     `json:"compactReports"`
+	PanelMigration     *panelMigrationDirective `json:"panelMigration,omitempty"`
+}
+
+type panelMigrationDirective struct {
+	ID               string `json:"id"`
+	State            string `json:"state"`
+	FallbackPanelURL string `json:"fallbackPanelUrl,omitempty"`
 }
 
 type heartbeatStateSnapshot struct {
@@ -1650,6 +1660,7 @@ func main() {
 	cfg.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
 	activeConfigPath = resolvedConfigPath
 	setRuntimePanelURL(cfg.PanelURL)
+	initializePanelMigration(cfg)
 
 	if *onceRegister {
 		if err := register(cfg); err != nil {
@@ -1680,13 +1691,19 @@ func main() {
 		// 仅上报指标并告知面板 Agent 正忙）。完整心跳由定时器或下一次 SSE 唤醒触发。
 		if shouldUseBusyHeartbeat(fromSSE, urgentRefresh, pending, lastFullHeartbeatAt, time.Now()) {
 			if err := heartbeatKeepalive(cfg); err != nil {
+				recordPanelMigrationHeartbeatFailure(cfg, err)
 				logAgentCommError("heartbeat-keepalive", err)
+			} else {
+				recordPanelMigrationHeartbeatSuccess()
 			}
 		} else {
 			nextInterval, err := heartbeat(cfg, fromSSE || urgentRefresh)
 			lastFullHeartbeatAt = time.Now()
 			if err != nil {
+				recordPanelMigrationHeartbeatFailure(cfg, err)
 				logAgentCommError("heartbeat", err)
+			} else {
+				recordPanelMigrationHeartbeatSuccess()
 			}
 			if nextInterval <= 0 {
 				nextInterval = cfg.Interval
@@ -2096,6 +2113,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		currentStatic.Initialized = true
 		heartbeatStaticReport = currentStatic
 	}
+	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
+		return cfg.Interval, nil
+	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
@@ -2258,6 +2278,9 @@ func heartbeatKeepalive(cfg Config) error {
 		currentStatic.ReportedAt = time.Now()
 		currentStatic.Initialized = true
 		heartbeatStaticReport = currentStatic
+	}
+	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
+		return nil
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.RequestLocalState {
@@ -2809,6 +2832,8 @@ func runAgentEventStream(cfg Config) error {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
+	recordPanelMigrationStreamConnection(true)
+	defer recordPanelMigrationStreamConnection(false)
 
 	scanner := newAgentEventStreamScanner(resp.Body)
 	var data strings.Builder
@@ -2838,6 +2863,13 @@ func runAgentEventStream(cfg Config) error {
 						logf("decode agent-desired-state payload: %v", err)
 					} else {
 						go handleAgentDesiredStatePush(cfg, push)
+					}
+				} else if msg.Type == "agent-panel-migration" {
+					var directive panelMigrationDirective
+					if err := json.Unmarshal(msg.Data, &directive); err != nil {
+						logf("decode agent-panel-migration payload: %v", err)
+					} else if handlePanelMigrationDirective(cfg, &directive) {
+						return io.EOF
 					}
 				}
 			}

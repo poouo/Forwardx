@@ -42,6 +42,9 @@ ForwardX 只使用用户提供的 MySQL 数据库：
 | `server/scheduler.ts` | 后台定时任务：流量重置、到期检查、自测超时、TCPing 清理、邮件提醒 |
 | `server/routers.ts` | tRPC 根路由组合层 |
 | `server/routers/*` | 鉴权、初始化、仪表盘、用户、主机、规则、隧道、套餐、Token、公告 |
+| `server/ai/*` | AI 配置、模型客户端、限流、审计和 Skill 注册 |
+| `server/services/userCommandService.ts` | 网页与 AI 共用的用户余额、权限、续期和流量命令 |
+| `server/keyedTaskDispatcher.ts` | 同一会话顺序执行、不同会话受控并发的任务调度器 |
 | `server/agentRoutes.ts` | Agent 专用 HTTP API |
 | `server/agentEvents.ts` | Agent SSE 连接、刷新推送、升级推送、前台指标观察状态 |
 | `server/agentInstallScripts.ts` | Agent 安装/升级脚本生成器 |
@@ -71,6 +74,25 @@ ForwardX 只使用用户提供的 MySQL 数据库：
 - `billing.ts`：余额、账单、兑换码、折扣码。
 - `announcements.ts`：登录公告和普通公告。
 - `agentTokens.ts`：Agent Token 和安装脚本。
+
+## AI 助手
+
+AI 助手目前通过 Telegram 使用。模型只负责识别意图和提取参数，面板数据查询、权限检查和写操作均在本地执行。
+
+```text
+Telegram -> 会话调度器 -> ForwardX Core Skill -> 本地查询/命令服务 -> Repository / Agent
+                              |
+                              +-> 模型只返回结构化意图
+```
+
+- `server/ai/settings.ts` 统一解析 DeepSeek、SiliconFlow 和自定义 OpenAI 兼容配置，并使用短期缓存减少重复数据库读取。
+- `server/ai/client.ts` 提供结构化请求、12 秒总超时、瞬时错误重试、兼容端点降级和熔断保护。
+- `server/ai/managePresets.ts` 定义 AI 管理参数的常用档位、自定义输入提示和受限回调解析，Telegram 仅负责渲染并推进会话。
+- `server/ai/skills/forwardxCore.ts` 定义项目术语、可用查询、管理动作和 Zod 输出结构。
+- `server/ai/audit.ts` 将查询、预览、确认执行、拒绝和失败写入面板日志，但不记录用户的完整对话内容或 API Key。
+- `server/keyedTaskDispatcher.ts` 保证同一聊天中的消息按顺序执行，同时允许不同聊天并行处理。
+
+AI 写操作必须经过参数校验、资源权限检查、操作预览和二次确认。金额、续期、兑换码数量和折扣等有限参数会优先提供常用档位，同时保留自定义文本输入；目标地址、端口和用户等离散参数仍使用精确输入或资源列表。确认时会重新读取用户及资源权限，不能依赖模型输出绕过权限。规则创建、启停、删除以及用户管理操作与网页端共用相同命令实现，避免两套逻辑产生差异。
 
 ## Agent API
 

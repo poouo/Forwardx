@@ -76,6 +76,33 @@ function scopeText(service: any, hostsById: Map<number, any>) {
   return "所有主机";
 }
 
+function serviceMatchesSearchQuery(service: any, query: string, hostsById: Map<number, any>) {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const scopeHostIds = [
+    ...(Array.isArray(service?.hostIds) ? service.hostIds : []),
+    ...(Array.isArray(service?.excludeHostIds) ? service.excludeHostIds : []),
+  ].map(Number).filter(Boolean);
+  const scopeHostValues = scopeHostIds.flatMap((hostId) => {
+    const host = hostsById.get(hostId);
+    return [hostId, host?.name, host?.entryIp, host?.ipv4, host?.ipv6, host?.ip];
+  });
+  const status = service?.isEnabled !== false ? "启用 已启用" : "停用 已停用 禁用";
+  const method = service?.method === "ping" ? "ping" : "tcping tcp";
+  const haystack = [
+    service?.id,
+    service?.name,
+    method,
+    service?.targetIp,
+    service?.targetPort,
+    serviceTarget(service),
+    status,
+    scopeText(service, hostsById),
+    ...scopeHostValues,
+  ].filter((value) => value !== null && value !== undefined).join(" ").toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function ServiceActionButtons({
   service,
   onEdit,
@@ -209,6 +236,8 @@ type HostProbeServiceManagerProps = {
   viewMode?: HostProbeServiceViewMode;
   onViewModeChange?: (viewMode: HostProbeServiceViewMode) => void;
   hideViewModeToggle?: boolean;
+  searchQuery?: string;
+  onFilterStatsChange?: (stats: { filtered: number; total: number }) => void;
 };
 
 export default function HostProbeServiceManager({
@@ -217,6 +246,8 @@ export default function HostProbeServiceManager({
   viewMode: controlledViewMode,
   onViewModeChange,
   hideViewModeToggle = false,
+  searchQuery = "",
+  onFilterStatsChange,
 }: HostProbeServiceManagerProps) {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
@@ -224,6 +255,17 @@ export default function HostProbeServiceManager({
   const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const serviceItems = useMemo(() => (services as any[] | undefined) || [], [services]);
   const hostsById = useMemo(() => new Map((hosts as any[]).map((host) => [Number(host.id), host])), [hosts]);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const isTextFiltered = normalizedSearchQuery.length > 0;
+  const filteredServiceItems = useMemo(
+    () => isTextFiltered
+      ? serviceItems.filter((service) => serviceMatchesSearchQuery(service, normalizedSearchQuery, hostsById))
+      : serviceItems,
+    [hostsById, isTextFiltered, normalizedSearchQuery, serviceItems],
+  );
+  useEffect(() => {
+    onFilterStatsChange?.({ filtered: filteredServiceItems.length, total: serviceItems.length });
+  }, [filteredServiceItems.length, onFilterStatsChange, serviceItems.length]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
@@ -280,9 +322,9 @@ export default function HostProbeServiceManager({
     onError: (err) => toast.error(err.message || "更新服务顺序失败"),
   });
   const serviceSortable = useSortableReorder({
-    items: serviceItems,
+    items: filteredServiceItems,
     getId: (service: any) => Number(service.id),
-    disabled: serviceItems.length < 2,
+    disabled: isTextFiltered || filteredServiceItems.length < 2,
     onReorder: (nextServices) => {
       reorderServicesMutation.mutate({ ids: nextServices.map((service: any) => Number(service.id)) });
     },
@@ -408,15 +450,18 @@ export default function HostProbeServiceManager({
             <div className="p-4">
               <DataSectionLoading label="正在加载服务" />
             </div>
-          ) : serviceItems.length === 0 ? (
+          ) : filteredServiceItems.length === 0 ? (
             <div className="flex min-h-[220px] flex-col items-center justify-center text-muted-foreground">
               <RadioTower className="mb-3 h-9 w-9 opacity-40" />
-              <p className="text-sm">暂无服务</p>
+              <p className="text-sm">{isTextFiltered && serviceItems.length > 0 ? "未找到匹配服务" : "暂无服务"}</p>
+              {isTextFiltered && serviceItems.length > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground/60">调整筛选内容或清空搜索</p>
+              )}
             </div>
           ) : viewMode === "card" ? (
-            <SortableReorderContext sortable={serviceSortable} ids={serviceItems.map((service) => Number(service.id))} strategy="rect">
+            <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="rect">
               <div key="host-probe-service-card-view" className="standard-card-grid card-mode-transition gap-4 p-3">
-                {serviceItems.map((service) => (
+                {filteredServiceItems.map((service) => (
                   <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
@@ -438,9 +483,9 @@ export default function HostProbeServiceManager({
             </SortableReorderContext>
           ) : (
             <div key="host-probe-service-table-view" className="card-mode-transition">
-            <SortableReorderContext sortable={serviceSortable} ids={serviceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
+            <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
               <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
-                {serviceItems.map((service) => (
+                {filteredServiceItems.map((service) => (
                   <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
@@ -473,9 +518,9 @@ export default function HostProbeServiceManager({
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
-                <SortableReorderContext sortable={serviceSortable} ids={serviceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
+                <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
                 <TableBody>
-                  {serviceItems.map((service) => (
+                  {filteredServiceItems.map((service) => (
                     <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled} itemKind="row">
                       {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                     <TableRow

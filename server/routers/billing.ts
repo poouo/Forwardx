@@ -3,6 +3,8 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
+import { adjustUserBalanceCommand, setUserBalanceCommand } from "../services/userCommandService";
+import { clearForwardxAiSettingsCache } from "../ai/settings";
 
 const dateInput = z.string().trim().optional().nullable();
 
@@ -31,6 +33,7 @@ export const billingRouter = router({
     .mutation(async ({ input }) => {
       if (input.redemptionEnabled !== undefined) await db.setSetting("redemptionEnabled", input.redemptionEnabled ? "true" : "false");
       if (input.discountEnabled !== undefined) await db.setSetting("discountEnabled", input.discountEnabled ? "true" : "false");
+      clearForwardxAiSettingsCache();
       appendPanelLog("info", `[Billing] feature status updated redemption=${input.redemptionEnabled ?? "-"} discount=${input.discountEnabled ?? "-"}`);
       return {
         redemptionEnabled: (await db.getSetting("redemptionEnabled")) !== "false",
@@ -70,17 +73,15 @@ export const billingRouter = router({
       description: z.string().trim().max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const result = await db.addUserBalance(input.userId, input.amountCents, {
-        type: "admin_recharge",
+      const result = await adjustUserBalanceCommand({
+        actor: ctx.user,
+        targetUserId: input.userId,
+        amountCents: input.amountCents,
         description: input.description || "管理员手动充值",
-        operatorUserId: ctx.user.id,
-      } as any);
-      const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(input.userId, "balance-recharged-forward-restored");
-      }
+        reasonPrefix: "balance-recharged",
+      });
       appendPanelLog("info", `[Balance] admin recharge user=${input.userId} amount=${input.amountCents} operator=${ctx.user.id}`);
-      return { ...result, forwardAccessRestored: recovery.restored };
+      return result;
     }),
 
 
@@ -91,19 +92,15 @@ export const billingRouter = router({
       description: z.string().trim().max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const result = await db.setUserBalance(input.userId, input.balanceCents, {
-        type: "admin_adjust",
+      const result = await setUserBalanceCommand({
+        actor: ctx.user,
+        targetUserId: input.userId,
+        balanceCents: input.balanceCents,
         description: input.description || "管理员手动修改余额",
-        operatorUserId: ctx.user.id,
-      } as any);
-      const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(input.userId, "balance-adjusted-forward-restored");
-      } else if (recovery.reason === "traffic_billing_balance") {
-        await refreshUserForwardEndpoints(input.userId, "balance-adjusted-forward-paused");
-      }
+        reasonPrefix: "balance-adjusted",
+      });
       appendPanelLog("info", `[Balance] admin set user=${input.userId} balance=${input.balanceCents} delta=${result.amountCents} operator=${ctx.user.id}`);
-      return { ...result, forwardAccessRestored: recovery.restored };
+      return result;
     }),
   purchasePlanWithBalance: protectedProcedure
     .input(z.object({

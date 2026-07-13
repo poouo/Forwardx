@@ -471,6 +471,333 @@ async function markTemplateChildrenPendingDelete(templateRuleId: number, reason:
   return childRules;
 }
 
+export async function deleteForwardRuleForActor(
+  actor: { id: number; role: string },
+  ruleId: number,
+  options: { reasonPrefix?: string } = {},
+) {
+  return withKeyedTaskLock(`rule:${ruleId}`, async () => {
+    const rule = await db.getForwardRuleById(ruleId);
+    if (!rule || (rule as any).pendingDelete) throw new Error("规则不存在或已删除");
+    if (actor.role !== "admin" && rule.userId !== actor.id) throw new Error("无权操作此规则");
+    if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接删除");
+    const reasonPrefix = String(options.reasonPrefix || "forward-rule").trim() || "forward-rule";
+    let chargedCents = 0;
+    let balanceAfterCents: number | null = null;
+    const collectBilling = (billed: any) => {
+      if (!billed) return;
+      chargedCents += Math.max(0, Number(billed.amountCents || 0));
+      if (Number.isFinite(Number(billed.balanceAfterCents))) balanceAfterCents = Number(billed.balanceAfterCents);
+    };
+
+    if ((rule as any).isForwardGroupTemplate) {
+      const childRules = await db.getForwardGroupChildRulesForTemplate(ruleId);
+      for (const child of childRules as any[]) {
+        collectBilling(await settleTrafficBillingForDeletedRule(child));
+        const childTunnelId = Number((child as any).tunnelId || 0);
+        if (childTunnelId > 0) {
+          const tunnel = await db.getTunnelById(childTunnelId);
+          await db.updateTunnel(childTunnelId, { isRunning: false } as any);
+          if (tunnel) await pushTunnelEndpointRefresh(tunnel, `${reasonPrefix}-group-deleted`);
+        }
+        await db.markForwardRulePendingDelete(Number(child.id));
+        pushAgentRefresh(Number(child.hostId), `${reasonPrefix}-group-deleted`);
+      }
+      collectBilling(await settleTrafficBillingForDeletedRule(rule));
+      await db.markForwardRulePendingDelete(ruleId);
+      await db.runForwardGroupFailover(Number((rule as any).forwardGroupId || 0));
+      return { success: true, rule, childRules, chargedCents, balanceAfterCents };
+    }
+
+    collectBilling(await settleTrafficBillingForDeletedRule(rule));
+    if ((rule as any).tunnelId) {
+      const tunnel = await db.getTunnelById((rule as any).tunnelId);
+      await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+      if (tunnel) await pushTunnelEndpointRefresh(tunnel, `${reasonPrefix}-deleted`);
+    }
+    await db.markForwardRulePendingDelete(ruleId);
+    pushAgentRefresh(rule.hostId, `${reasonPrefix}-deleted`);
+    return { success: true, rule, childRules: [] as any[], chargedCents, balanceAfterCents };
+  });
+}
+
+export async function toggleForwardRuleForActor(
+  actor: { id: number; role: string },
+  ruleId: number,
+  isEnabled: boolean,
+  options: { reasonPrefix?: string } = {},
+) {
+  return withKeyedTaskLock(`rule:${ruleId}`, async () => {
+    let sourcePortReservation: HostPortReservation | null = null;
+    try {
+      const rule = await db.getForwardRuleById(ruleId);
+      if (!rule) throw new Error("规则不存在");
+      if (actor.role !== "admin" && rule.userId !== actor.id) throw new Error("无权操作此规则");
+      if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接开关");
+      if ((rule as any).isForwardGroupTemplate) {
+        if (actor.role !== "admin") {
+          const groupId = Number((rule as any).forwardGroupId || 0);
+          const hasPermission = groupId ? await db.checkUserForwardGroupPermission(actor.id, groupId) : false;
+          if (!hasPermission) throw new Error("无权操作该转发组规则");
+          if (isEnabled) {
+            const owner = await requireForwardAccessReady(actor.id);
+            const group = await db.getForwardGroupById(groupId);
+            const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, actor.id);
+            await requireTrafficBillingBalanceForRule(actor.id, isTrafficBillingRule);
+            if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
+              throw new Error("套餐已到期，请续费后再启用规则");
+            }
+          }
+        }
+        if (isEnabled) {
+          const groupId = Number((rule as any).forwardGroupId || 0);
+          const group = await db.validateForwardGroupRuleConfig(groupId, {
+            sourcePort: rule.sourcePort,
+            protocol: (rule as any).protocol,
+            excludeTemplateRuleId: rule.id,
+          });
+          const isForwardChain = (group as any).groupMode === "chain";
+          const isPortGroup = (group as any).groupMode === "port";
+          const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
+          const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
+          requireMainBackupAllowed({
+            enabled: isForwardChain || (groupIsTunnel && !groupTunnelSupportsFailover) ? false : (rule as any).failoverEnabled,
+            protocol: (rule as any).protocol,
+            forwardType: !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
+            isTunnelRoute: groupIsTunnel,
+            isPortForwardGroup: isPortGroup,
+            isAdmin: actor.role === "admin",
+          });
+          await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
+        } else {
+          await db.toggleForwardRule(ruleId, false);
+        }
+        await db.syncForwardGroupRules(Number((rule as any).forwardGroupId));
+        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId));
+        return { success: true, rule };
+      }
+
+      await requireRuleProtocolEnabled(rule);
+      let toggleTunnelForRule: any = null;
+      const reasonPrefix = String(options.reasonPrefix || "forward-rule").trim() || "forward-rule";
+      if ((rule as any).tunnelId) {
+        toggleTunnelForRule = await db.getTunnelById((rule as any).tunnelId);
+        await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+        if (toggleTunnelForRule) await pushTunnelEndpointRefresh(toggleTunnelForRule, `${reasonPrefix}-toggled`);
+      }
+      if (isEnabled) {
+        requireMainBackupAllowed({
+          enabled: (rule as any).failoverEnabled,
+          protocol: (rule as any).protocol,
+          forwardType: (rule as any).forwardType,
+          tunnelId: (rule as any).tunnelId,
+          tunnelMode: toggleTunnelForRule?.mode,
+          isAdmin: actor.role === "admin",
+        });
+        await assertRulePortWithinEntryPolicy({
+          hostId: Number(rule.hostId),
+          sourcePort: Number(rule.sourcePort),
+          tunnelId: Number((rule as any).tunnelId || 0) || null,
+        });
+        if (actor.role !== "admin") {
+          const activeTunnelId = Number((rule as any).tunnelId || 0);
+          const actorContext = { user: actor };
+          const resourceAccess = activeTunnelId
+            ? await requireTunnelUseOrTrafficBillingAccess(actorContext, activeTunnelId)
+            : await requireHostUseAccess(actorContext, rule.hostId);
+          const owner = await requireForwardAccessReady(actor.id, { allowTrafficBillingRecovery: !!resourceAccess.isTrafficBillingResource });
+          await requireTrafficBillingBalanceForRule(actor.id, !!resourceAccess.isTrafficBillingResource);
+          if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
+            throw new Error("套餐已到期，请续费后再启用规则");
+          }
+        }
+        sourcePortReservation = await reserveSpecificHostPort({
+          hostId: Number(rule.hostId),
+          port: Number(rule.sourcePort),
+          protocol: (rule as any).protocol,
+          isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol),
+        });
+        if (!sourcePortReservation) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
+        await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
+      } else {
+        await db.toggleForwardRule(ruleId, false);
+      }
+      pushAgentRefresh(Number(rule.hostId), `${reasonPrefix}-${isEnabled ? "enabled" : "disabled"}`);
+      return { success: true, rule };
+    } finally {
+      sourcePortReservation?.release();
+    }
+  });
+}
+
+export async function createDirectForwardRuleForActor(
+  actor: { id: number; role: string; allowedForwardTypes?: string | null },
+  input: any,
+  options: { reasonPrefix?: string } = {},
+) {
+  await requireRuleTelegramNotifyReady(!!input.telegramErrorNotifyEnabled);
+  let currentUser = await db.getUserById(actor.id);
+  if (actor.role !== "admin") {
+    const allowedRaw = actor.allowedForwardTypes;
+    if (allowedRaw !== null && allowedRaw !== undefined) {
+      const allowed = new Set(allowedRaw.split(",").map((value) => value.trim()).filter(Boolean));
+      if (!allowed.has(input.forwardType)) throw new Error(`您没有使用 ${input.forwardType} 转发方式的权限，请联系管理员`);
+    }
+  }
+  if (input.tunnelId && input.forwardType !== "gost") {
+    throw new Error("隧道转发必须使用已创建的隧道协议，请先创建隧道后再选择使用。");
+  }
+  const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
+  if (!input.hostId) throw new Error("请选择所属主机");
+  const actorContext = { user: actor };
+  let selectedTunnelForRule: any = null;
+  let isTrafficBillingRule = false;
+  if (tunnelId) {
+    const access = await requireTunnelUseOrTrafficBillingAccess(actorContext, tunnelId);
+    selectedTunnelForRule = access.tunnel;
+    isTrafficBillingRule = access.isTrafficBillingResource;
+    if (!selectedTunnelForRule.isEnabled) throw new Error("所选隧道已停用");
+    if (selectedTunnelForRule.entryHostId !== input.hostId) {
+      throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
+    }
+  } else {
+    const access = await requireHostUseAccess(actorContext, input.hostId);
+    isTrafficBillingRule = access.isTrafficBillingResource;
+    if (actor.role !== "admin" && !isTrafficBillingRule) {
+      throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
+    }
+  }
+  requireMainBackupAllowed({
+    enabled: input.failoverEnabled,
+    protocol: input.protocol,
+    forwardType: input.forwardType,
+    tunnelId,
+    tunnelMode: selectedTunnelForRule?.mode,
+    isAdmin: actor.role === "admin",
+  });
+  if (actor.role !== "admin") {
+    currentUser = await requireForwardAccessReady(actor.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
+    await requireTrafficBillingBalanceForRule(actor.id, isTrafficBillingRule);
+    if (String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" && !(currentUser as any)?.canAddRules) {
+      throw new Error("无权使用 ForwardX 加密隧道");
+    }
+  }
+  if (actor.role !== "admin" && currentUser?.expiresAt && new Date(currentUser.expiresAt) <= new Date()) {
+    throw new Error("您的账户已到期，无法添加规则");
+  }
+  if (currentUser && currentUser.maxRules > 0) {
+    const ruleCount = await db.getUserRuleCount(actor.id);
+    if (ruleCount >= currentUser.maxRules) throw new Error(`您已达到最大规则数量限制（${currentUser.maxRules} 条）`);
+  }
+  if (currentUser && currentUser.maxPorts > 0) {
+    const portCount = await db.getUserPortCount(actor.id);
+    if (portCount >= currentUser.maxPorts) throw new Error(`您已达到最大端口数量限制（${currentUser.maxPorts} 个）`);
+  }
+  await requireRuleProtocolEnabled({ forwardType: input.forwardType, tunnelId }, selectedTunnelForRule);
+  if (!isTrafficBillingRule && Number((currentUser as any)?.trafficLimit || 0) > 0 && Number((currentUser as any)?.trafficUsed || 0) >= Number((currentUser as any)?.trafficLimit || 0)) {
+    throw new Error("您的流量已用完，无法添加规则");
+  }
+  const host = await db.getHostById(input.hostId);
+  if (!host) throw new Error("主机不存在");
+  const entryPolicy = selectedTunnelForRule
+    ? combinePortPolicies(
+      portPolicyFrom(host as any),
+      portPolicyFrom({
+        portRangeStart: (selectedTunnelForRule as any).portRangeStart,
+        portRangeEnd: (selectedTunnelForRule as any).portRangeEnd,
+      }),
+    )
+    : portPolicyFrom(host as any);
+  const planRange = actor.role !== "admin"
+    ? await db.getUserPlanPortRange(actor.id, input.hostId, tunnelId ?? undefined)
+    : null;
+  const effectivePolicy = planRange
+    ? combinePortPolicies(entryPolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }))
+    : entryPolicy;
+
+  let sourcePort = Number(input.sourcePort || 0);
+  let sourcePortReservation: HostPortReservation | null = null;
+  let tunnelExitPortReservation: HostPortReservation | null = null;
+  if (sourcePort === 0) {
+    let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
+    let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
+    if (planRange) {
+      randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
+      randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
+    }
+    sourcePortReservation = await reserveAvailableHostPort({
+      hostId: input.hostId,
+      protocol: input.protocol,
+      findPort: (reservedPorts) => db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd, input.protocol, reservedPorts),
+      isUsed: (port) => db.isPortUsedOnHost(input.hostId, port, undefined, input.protocol),
+    });
+    if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
+    sourcePort = sourcePortReservation.port;
+  } else {
+    if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
+    sourcePortReservation = tryReserveHostPort(input.hostId, sourcePort, input.protocol);
+    if (!sourcePortReservation) throw new Error(`端口 ${sourcePort} 正在被其他请求分配，请稍后重试`);
+    const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
+    if (used) {
+      sourcePortReservation.release();
+      sourcePortReservation = null;
+      throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
+    }
+  }
+
+  try {
+    let tunnelExitPort: number | null = null;
+    assertNoDirectSelfForwardLoop({ host, sourcePort, targetIp: input.targetIp, targetPort: input.targetPort, tunnelId });
+    if (tunnelId) {
+      const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(actorContext, tunnelId)).tunnel;
+      if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
+      if (tunnel.entryHostId !== input.hostId) throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
+      const exit = await db.getHostById(tunnel.exitHostId);
+      tunnelExitPortReservation = await reserveAvailableHostPort({
+        hostId: Number(tunnel.exitHostId),
+        protocol: "both",
+        findPort: (reservedPorts) => db.findAvailableTunnelExitPort(tunnel.exitHostId, (exit as any)?.portRangeStart, (exit as any)?.portRangeEnd, reservedPorts),
+        isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, undefined, "both"),
+      });
+      if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
+      tunnelExitPort = tunnelExitPortReservation.port;
+    }
+    const runtimeOptionInput = tunnelId ? tunnelRuntimeOptionInput(selectedTunnelForRule) : input;
+    const proxyProtocol = normalizeProxyProtocolInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, clearUnsupported: !!tunnelId });
+    const transportTuning = normalizeTransportTuningInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx", clearUnsupported: !!tunnelId });
+    const id = await db.createForwardRule({
+      ...input,
+      ...normalizeFailoverInput(input, input.protocol),
+      ...proxyProtocol,
+      ...transportTuning,
+      telegramErrorNotifyEnabled: !!input.telegramErrorNotifyEnabled,
+      blockHttp: false,
+      blockSocks: false,
+      blockTls: false,
+      sourcePort,
+      targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId }),
+      gostMode: "direct",
+      gostRelayHost: null,
+      gostRelayPort: null,
+      tunnelId,
+      tunnelExitPort,
+      userId: actor.id,
+    });
+    if (tunnelId) {
+      const tunnel = await db.getTunnelById(tunnelId);
+      if (tunnel) await db.reconcileForwardRuleTunnelExits({ ...input, id, tunnelExitPort, sourcePort, tunnelId }, tunnel);
+      await db.updateTunnel(tunnelId, { isRunning: false } as any);
+      if (tunnel) await pushTunnelEndpointRefresh(tunnel, `${options.reasonPrefix || "forward-rule"}-created`);
+    } else {
+      pushAgentRefresh(Number(input.hostId), `${options.reasonPrefix || "forward-rule"}-created`);
+    }
+    return { id, sourcePort };
+  } finally {
+    tunnelExitPortReservation?.release();
+    sourcePortReservation?.release();
+  }
+}
+
 export const crudRulesRouter = router({
   create: protectedProcedure
     .input(z.object({
@@ -644,196 +971,7 @@ export const crudRulesRouter = router({
         });
       }
 
-      if (input.tunnelId && input.forwardType !== "gost") {
-        throw new Error("隧道转发必须使用已创建的隧道协议，请先创建隧道后再选择使用。");
-      }
-      const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
-      if (!input.hostId) throw new Error("请选择所属主机");
-      let selectedTunnelForRule: any = null;
-      let isTrafficBillingRule = false;
-      if (tunnelId) {
-        const access = await requireTunnelUseOrTrafficBillingAccess(ctx, tunnelId);
-        selectedTunnelForRule = access.tunnel;
-        isTrafficBillingRule = access.isTrafficBillingResource;
-        if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
-        if (selectedTunnelForRule.entryHostId !== input.hostId) {
-          throw new Error("Tunnel entry host must match the rule host");
-        }
-      } else {
-        const access = await requireHostUseAccess(ctx, input.hostId);
-        isTrafficBillingRule = access.isTrafficBillingResource;
-        if (ctx.user.role !== "admin" && !isTrafficBillingRule) {
-          throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
-        }
-      }
-      requireMainBackupAllowed({
-        enabled: input.failoverEnabled,
-        protocol: input.protocol,
-        forwardType: input.forwardType,
-        tunnelId,
-        tunnelMode: selectedTunnelForRule?.mode,
-        isAdmin: ctx.user.role === "admin",
-      });
-      if (ctx.user.role !== "admin") {
-        currentUser = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
-        await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
-        if (String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" && !(currentUser as any)?.canAddRules) {
-          throw new Error("No permission to use custom encrypted tunnels");
-        }
-      }
-      // 检查用户是否已到期
-      if (ctx.user.role !== "admin" && currentUser?.expiresAt && new Date(currentUser.expiresAt) <= new Date()) {
-        throw new Error("您的账户已到期，无法添加规则");
-      }
-
-      // 检查用户规则数量限制
-      if (currentUser && currentUser.maxRules > 0) {
-        const ruleCount = await db.getUserRuleCount(ctx.user.id);
-        if (ruleCount >= currentUser.maxRules) {
-          throw new Error(`您已达到最大规则数量限制（${currentUser.maxRules} 条）`);
-        }
-      }
-      // 检查用户端口数量限制
-      if (currentUser && currentUser.maxPorts > 0) {
-        const portCount = await db.getUserPortCount(ctx.user.id);
-        if (portCount >= currentUser.maxPorts) {
-          throw new Error(`您已达到最大端口数量限制（${currentUser.maxPorts} 个）`);
-        }
-      }
-      await requireRuleProtocolEnabled({ forwardType: input.forwardType, tunnelId }, selectedTunnelForRule);
-      if (!isTrafficBillingRule && Number((currentUser as any)?.trafficLimit || 0) > 0 && Number((currentUser as any)?.trafficUsed || 0) >= Number((currentUser as any)?.trafficLimit || 0)) {
-        throw new Error("您的流量已用完，无法添加规则");
-      }
-      const host = await db.getHostById(input.hostId);
-      if (!host) throw new Error("主机不存在");
-      const entryPolicy = selectedTunnelForRule
-        ? combinePortPolicies(
-          portPolicyFrom(host as any),
-          portPolicyFrom({
-            portRangeStart: (selectedTunnelForRule as any).portRangeStart,
-            portRangeEnd: (selectedTunnelForRule as any).portRangeEnd,
-          }),
-        )
-        : portPolicyFrom(host as any);
-      const planRange = ctx.user.role !== "admin"
-        ? await db.getUserPlanPortRange(ctx.user.id, input.hostId, tunnelId ?? undefined)
-        : null;
-      const effectivePolicy = planRange
-        ? combinePortPolicies(entryPolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }))
-        : entryPolicy;
-
-      let sourcePort = input.sourcePort;
-      let sourcePortReservation: HostPortReservation | null = null;
-      let tunnelExitPortReservation: HostPortReservation | null = null;
-      // 源端口为 0 时随机分配
-      if (sourcePort === 0) {
-        let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
-        let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
-        if (planRange) {
-          randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
-          randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
-        }
-        sourcePortReservation = await reserveAvailableHostPort({
-          hostId: input.hostId,
-          protocol: input.protocol,
-          findPort: (reservedPorts) => db.findAvailablePort(
-            input.hostId!,
-            randomRangeStart,
-            randomRangeEnd,
-            input.protocol,
-            reservedPorts,
-          ),
-          isUsed: (port) => db.isPortUsedOnHost(input.hostId!, port, undefined, input.protocol),
-        });
-        if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
-        sourcePort = sourcePortReservation.port;
-      } else {
-        if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
-          throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
-        }
-        sourcePortReservation = tryReserveHostPort(input.hostId, sourcePort, input.protocol);
-        if (!sourcePortReservation) {
-          throw new Error(`端口 ${sourcePort} 正在被其他请求分配，请稍后重试`);
-        }
-        const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
-        if (used) {
-          sourcePortReservation.release();
-          sourcePortReservation = null;
-          throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
-        }
-      }
-
-      try {
-      const gostRelayHost = null;
-      const gostRelayPort = null;
-      let tunnelExitPort: number | null = null;
-
-      assertNoDirectSelfForwardLoop({
-        host,
-        sourcePort,
-        targetIp: input.targetIp,
-        targetPort: input.targetPort,
-        tunnelId,
-      });
-
-      if (tunnelId) {
-        const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, tunnelId)).tunnel;
-        if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
-        if (tunnel.entryHostId !== input.hostId) {
-          throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
-        }
-        const exit = await db.getHostById(tunnel.exitHostId);
-        tunnelExitPortReservation = await reserveAvailableHostPort({
-          hostId: Number(tunnel.exitHostId),
-          protocol: "both",
-          findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
-            tunnel.exitHostId,
-            (exit as any)?.portRangeStart,
-            (exit as any)?.portRangeEnd,
-            reservedPorts,
-          ),
-          isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, undefined, "both"),
-        });
-        if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
-        tunnelExitPort = tunnelExitPortReservation.port;
-      }
-
-      const runtimeOptionInput = tunnelId ? tunnelRuntimeOptionInput(selectedTunnelForRule) : input;
-      const proxyProtocol = normalizeProxyProtocolInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, clearUnsupported: !!tunnelId });
-      const transportTuning = normalizeTransportTuningInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx", clearUnsupported: !!tunnelId });
-
-      const id = await db.createForwardRule({
-        ...input,
-        ...normalizeFailoverInput(input, input.protocol),
-        ...proxyProtocol,
-        ...transportTuning,
-        telegramErrorNotifyEnabled: !!input.telegramErrorNotifyEnabled,
-        blockHttp: false,
-        blockSocks: false,
-        blockTls: false,
-        sourcePort,
-        targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId }),
-        gostMode: "direct",
-        gostRelayHost,
-        gostRelayPort,
-        tunnelId,
-        tunnelExitPort,
-        userId: ctx.user.id,
-      });
-      if (tunnelId) {
-        const tunnel = await db.getTunnelById(tunnelId);
-        if (tunnel) await db.reconcileForwardRuleTunnelExits({ ...input, id, tunnelExitPort, sourcePort, tunnelId }, tunnel);
-      }
-      if (tunnelId) {
-        const tunnel = await db.getTunnelById(tunnelId);
-        await db.updateTunnel(tunnelId, { isRunning: false } as any);
-        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
-      }
-      return { id, sourcePort };
-      } finally {
-        tunnelExitPortReservation?.release();
-        sourcePortReservation?.release();
-      }
+      return createDirectForwardRuleForActor(ctx.user, input);
     }),
   update: protectedProcedure
     .input(z.object({
@@ -1638,136 +1776,8 @@ export const crudRulesRouter = router({
     })),
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
-      const rule = await db.getForwardRuleById(input.id);
-      if (!rule) throw new Error("规则不存在");
-      if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
-      if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接删除");
-      if ((rule as any).isForwardGroupTemplate) {
-        const childRules = await db.getForwardGroupChildRulesForTemplate(input.id);
-        for (const child of childRules as any[]) {
-          await settleTrafficBillingForDeletedRule(child);
-          if ((child as any).tunnelId) {
-            const tunnel = await db.getTunnelById((child as any).tunnelId);
-            await db.updateTunnel((child as any).tunnelId, { isRunning: false } as any);
-            if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-group-rule-deleted");
-          }
-          await db.markForwardRulePendingDelete(Number(child.id));
-          pushAgentRefresh(Number(child.hostId), "forward-group-rule-deleted");
-        }
-        await settleTrafficBillingForDeletedRule(rule);
-        await db.markForwardRulePendingDelete(input.id);
-        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId || 0));
-        return { success: true };
-      }
-      await settleTrafficBillingForDeletedRule(rule);
-      if ((rule as any).tunnelId) {
-        const tunnel = await db.getTunnelById((rule as any).tunnelId);
-        await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-deleted");
-      }
-      await db.markForwardRulePendingDelete(input.id);
-      pushAgentRefresh(rule.hostId, "forward-rule-deleted");
-      return { success: true };
-    })),
+    .mutation(async ({ input, ctx }) => deleteForwardRuleForActor(ctx.user, input.id)),
   toggle: protectedProcedure
     .input(z.object({ id: z.number(), isEnabled: z.boolean() }))
-    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
-      let sourcePortReservation: HostPortReservation | null = null;
-      try {
-      const rule = await db.getForwardRuleById(input.id);
-      if (!rule) throw new Error("规则不存在");
-      if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
-      if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接开关");
-      if ((rule as any).isForwardGroupTemplate) {
-        if (ctx.user.role !== "admin") {
-          const groupId = Number((rule as any).forwardGroupId || 0);
-          const hasPermission = groupId ? await db.checkUserForwardGroupPermission(ctx.user.id, groupId) : false;
-          if (!hasPermission) throw new Error("无权操作该转发组规则");
-          if (input.isEnabled) {
-            const owner = await requireForwardAccessReady(ctx.user.id);
-            const group = await db.getForwardGroupById(groupId);
-            const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, ctx.user.id);
-            await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
-            if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
-              throw new Error("套餐已到期，请续费后再启用规则");
-            }
-          }
-        }
-        if (input.isEnabled) {
-          const groupId = Number((rule as any).forwardGroupId || 0);
-          const group = await db.validateForwardGroupRuleConfig(groupId, {
-            sourcePort: rule.sourcePort,
-            protocol: (rule as any).protocol,
-            excludeTemplateRuleId: rule.id,
-          });
-          const isForwardChain = (group as any).groupMode === "chain";
-          const isPortGroup = (group as any).groupMode === "port";
-          const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
-          const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
-          requireMainBackupAllowed({
-            enabled: isForwardChain || (groupIsTunnel && !groupTunnelSupportsFailover) ? false : (rule as any).failoverEnabled,
-            protocol: (rule as any).protocol,
-            forwardType: !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
-            isTunnelRoute: groupIsTunnel,
-            isPortForwardGroup: isPortGroup,
-            isAdmin: ctx.user.role === "admin",
-          });
-          await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
-        } else {
-          await db.toggleForwardRule(input.id, false);
-        }
-        await db.syncForwardGroupRules(Number((rule as any).forwardGroupId));
-        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId));
-        return { success: true };
-      }
-      await requireRuleProtocolEnabled(rule);
-      let toggleTunnelForRule: any = null;
-      if ((rule as any).tunnelId) {
-        toggleTunnelForRule = await db.getTunnelById((rule as any).tunnelId);
-        await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (toggleTunnelForRule) await pushTunnelEndpointRefresh(toggleTunnelForRule, "forward-rule-toggled");
-      }
-      if (input.isEnabled) {
-        requireMainBackupAllowed({
-          enabled: (rule as any).failoverEnabled,
-          protocol: (rule as any).protocol,
-          forwardType: (rule as any).forwardType,
-          tunnelId: (rule as any).tunnelId,
-          tunnelMode: toggleTunnelForRule?.mode,
-          isAdmin: ctx.user.role === "admin",
-        });
-        await assertRulePortWithinEntryPolicy({
-          hostId: Number(rule.hostId),
-          sourcePort: Number(rule.sourcePort),
-          tunnelId: Number((rule as any).tunnelId || 0) || null,
-        });
-        if (ctx.user.role !== "admin") {
-          const activeTunnelId = Number((rule as any).tunnelId || 0);
-          const resourceAccess = activeTunnelId
-            ? await requireTunnelUseOrTrafficBillingAccess(ctx, activeTunnelId)
-            : await requireHostUseAccess(ctx, rule.hostId);
-          const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!resourceAccess.isTrafficBillingResource });
-          await requireTrafficBillingBalanceForRule(ctx.user.id, !!resourceAccess.isTrafficBillingResource);
-          if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
-            throw new Error("套餐已到期，请续费后再启用规则");
-          }
-        }
-        sourcePortReservation = await reserveSpecificHostPort({
-          hostId: Number(rule.hostId),
-          port: Number(rule.sourcePort),
-          protocol: (rule as any).protocol,
-          isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol),
-        });
-        if (!sourcePortReservation) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
-        await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
-      } else {
-        await db.toggleForwardRule(input.id, false);
-      }
-      pushAgentRefresh(Number(rule.hostId), input.isEnabled ? "forward-rule-enabled" : "forward-rule-disabled");
-      return { success: true };
-      } finally {
-        sourcePortReservation?.release();
-      }
-    }))
+    .mutation(async ({ input, ctx }) => toggleForwardRuleForActor(ctx.user, input.id, input.isEnabled))
 });

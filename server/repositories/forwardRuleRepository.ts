@@ -307,6 +307,33 @@ export async function purgeSettledPendingForwardRuleDeletes() {
   return count;
 }
 
+export async function markOrphanedForwardGroupTemplatesPendingDelete(hostId?: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const conds: any[] = [
+    eq(forwardRules.isForwardGroupTemplate, true),
+    eq(forwardRules.pendingDelete, false),
+    sql`(${forwardRules.forwardGroupId} IS NULL OR NOT EXISTS (
+      SELECT 1 FROM ${forwardGroups} WHERE ${forwardGroups.id} = ${forwardRules.forwardGroupId}
+    ))`,
+  ];
+  if (hostId) conds.push(eq(forwardRules.hostId, hostId));
+  const templates = await db.select({ id: forwardRules.id }).from(forwardRules).where(and(...conds));
+  let count = 0;
+  for (const template of templates as any[]) {
+    const id = Number(template.id || 0);
+    if (id <= 0) continue;
+    const children = await db
+      .select({ id: forwardRules.id, pendingDelete: forwardRules.pendingDelete })
+      .from(forwardRules)
+      .where(eq(forwardRules.forwardGroupRuleId, id));
+    if ((children as any[]).some((child: any) => !boolValue(child.pendingDelete))) continue;
+    await deleteForwardRule(id);
+    count += 1;
+  }
+  return count;
+}
+
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;

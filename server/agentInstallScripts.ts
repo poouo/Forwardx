@@ -14,6 +14,9 @@ type AgentInstallScriptOptions = {
   githubAcceleratorUrl?: string | null;
   preferPanelInstall?: boolean;
   installNginx?: boolean;
+  migrationFallbackPanelUrl?: string | null;
+  panelMigrationId?: string | null;
+  panelMigrationStartedAt?: number | null;
 };
 
 function shellQuote(value: string) {
@@ -39,6 +42,9 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
   const defaultGithubAcceleratorEnabled = !!options.githubAcceleratorEnabled && !!defaultGithubAcceleratorUrl;
   const defaultPreferPanelInstall = !!options.preferPanelInstall;
   const defaultInstallNginx = !!options.installNginx;
+  const migrationFallbackPanelUrl = String(options.migrationFallbackPanelUrl || "").trim().replace(/\/+$/, "");
+  const panelMigrationId = String(options.panelMigrationId || "").trim();
+  const panelMigrationStartedAt = Math.max(0, Math.floor(Number(options.panelMigrationStartedAt) || 0));
   const lines = [
     '#!/bin/bash',
     '# ForwardX Agent (Go) 一键安装/管理脚本',
@@ -62,6 +68,9 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     'FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-$FORWARDX_AGENT_PANEL_FIRST_DEFAULT}"',
     `FORWARDX_INSTALL_NGINX_DEFAULT="${defaultInstallNginx ? "true" : "false"}"`,
     'FORWARDX_INSTALL_NGINX="${FORWARDX_INSTALL_NGINX:-$FORWARDX_INSTALL_NGINX_DEFAULT}"',
+    `MIGRATION_FALLBACK_PANEL_URL=${shellQuote(migrationFallbackPanelUrl)}`,
+    `PANEL_MIGRATION_ID=${shellQuote(panelMigrationId)}`,
+    `PANEL_MIGRATION_STARTED_AT="${panelMigrationStartedAt}"`,
     'FORWARDX_INSTALL_MIMIC="${FORWARDX_INSTALL_MIMIC:-ask}"',
     'FORWARDX_MIMIC_INSTALLER_URL="${FORWARDX_MIMIC_INSTALLER_URL:-https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-mimic.sh}"',
     "FORWARDX_CURL_CONNECT_TIMEOUT=\"${FORWARDX_CURL_CONNECT_TIMEOUT:-15}\"",
@@ -102,6 +111,13 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '  if [ -n "$CFG" ] && command -v jq >/dev/null 2>&1; then',
     '    jq -r ".${KEY} // empty" "$CFG" 2>/dev/null || true',
     '  fi',
+    '}',
+    '',
+    'apply_panel_migration_config() {',
+    '  [ -f "$CONFIG_DIR/config.json" ] || return 0',
+    '  command -v jq >/dev/null 2>&1 || return 0',
+    "  jq --arg fallback \"$MIGRATION_FALLBACK_PANEL_URL\" --arg migrationId \"$PANEL_MIGRATION_ID\" --arg startedAt \"$PANEL_MIGRATION_STARTED_AT\" 'if $fallback != \"\" and $migrationId != \"\" then .migrationFallbackPanelUrl = $fallback | .panelMigrationId = $migrationId | .panelMigrationStartedAt = ($startedAt | tonumber) else del(.migrationFallbackPanelUrl, .panelMigrationId, .panelMigrationStartedAt) end' \"$CONFIG_DIR/config.json\" > \"$CONFIG_DIR/config.json.tmp\" && mv \"$CONFIG_DIR/config.json.tmp\" \"$CONFIG_DIR/config.json\"",
+    '  chmod 600 "$CONFIG_DIR/config.json" 2>/dev/null || true',
     '}',
     '',
     'migrate_legacy_config() {',
@@ -1173,6 +1189,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '  "interval": 30',
     '}',
     'EOF',
+    '  apply_panel_migration_config',
     '  chmod 600 "$CONFIG_DIR/config.json" 2>/dev/null || true',
     '  echo "[信息] 配置文件已写入: $CONFIG_DIR/config.json"',
     '',
@@ -1275,6 +1292,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '          mv "$CONFIG_DIR/config.json.tmp" "$CONFIG_DIR/config.json"',
     '      fi',
     '      chmod 600 "$CONFIG_DIR/config.json" 2>/dev/null || true',
+    '      apply_panel_migration_config',
     '    fi',
     '',
     '    # 重启服务',

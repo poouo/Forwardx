@@ -103,7 +103,7 @@ import {
   Wifi,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
@@ -1113,6 +1113,7 @@ function HostTrafficSummaryCard({
 
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "groups" | "services" | "tokens";
+type HostManageFilterStats = { filtered: number; total: number };
 type HostDialogTab = "basic" | "other";
 
 const HOST_MANAGE_TABS_ADMIN = ["hosts", "groups", "tokens", "services"] as const;
@@ -1126,6 +1127,13 @@ const HOST_MANAGE_TAB_ITEMS_ADMIN = [
 const HOST_MANAGE_TAB_ITEMS_USER = [
   { value: "hosts", label: "主机管理", icon: Server },
 ] as const satisfies readonly SlidingTabItem<HostManageTab>[];
+
+const HOST_MANAGE_FILTER_CONFIG: Record<HostManageTab, { placeholder: string; unit: string }> = {
+  hosts: { placeholder: "搜索主机 / IP / 系统 / Agent 版本", unit: "台" },
+  groups: { placeholder: "搜索分组 / 主机名称 / 状态", unit: "组" },
+  tokens: { placeholder: "搜索 Token / 备注 / 状态 / 关联主机", unit: "个" },
+  services: { placeholder: "搜索服务 / 目标地址 / 类型 / 主机范围", unit: "项" },
+};
 
 const HOST_DIALOG_TABS = [
   { value: "basic", label: "基础信息", icon: Server },
@@ -1380,7 +1388,38 @@ function HostsContent() {
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
   const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
-  const [hostSearchQuery, setHostSearchQuery] = useState("");
+  const [manageSearchQueries, setManageSearchQueries] = useState<Record<HostManageTab, string>>({
+    hosts: "",
+    groups: "",
+    tokens: "",
+    services: "",
+  });
+  const [manageFilterStats, setManageFilterStats] = useState<Record<HostManageTab, HostManageFilterStats>>({
+    hosts: { filtered: 0, total: 0 },
+    groups: { filtered: 0, total: 0 },
+    tokens: { filtered: 0, total: 0 },
+    services: { filtered: 0, total: 0 },
+  });
+  const updateManageFilterStats = useCallback((tab: HostManageTab, stats: HostManageFilterStats) => {
+    setManageFilterStats((current) => {
+      const previous = current[tab];
+      if (previous.filtered === stats.filtered && previous.total === stats.total) return current;
+      return { ...current, [tab]: stats };
+    });
+  }, []);
+  const updateGroupFilterStats = useCallback(
+    (stats: HostManageFilterStats) => updateManageFilterStats("groups", stats),
+    [updateManageFilterStats],
+  );
+  const updateTokenFilterStats = useCallback(
+    (stats: HostManageFilterStats) => updateManageFilterStats("tokens", stats),
+    [updateManageFilterStats],
+  );
+  const updateServiceFilterStats = useCallback(
+    (stats: HostManageFilterStats) => updateManageFilterStats("services", stats),
+    [updateManageFilterStats],
+  );
+  const hostSearchQuery = manageSearchQueries.hosts;
   const { data: hostGroups = [], isLoading: isHostGroupsLoading } = trpc.hosts.hostGroups.useQuery(undefined, {
     enabled: user?.role === "admin",
     staleTime: 30_000,
@@ -1429,6 +1468,11 @@ function HostsContent() {
     if (!normalizedHostSearchQuery) return groupFilteredDisplayHosts;
     return groupFilteredDisplayHosts.filter((host: any) => hostMatchesTextFilter(host, normalizedHostSearchQuery));
   }, [groupFilteredDisplayHosts, normalizedHostSearchQuery]);
+  const activeManageSearchQuery = manageSearchQueries[activeManageTab];
+  const activeManageFilterConfig = HOST_MANAGE_FILTER_CONFIG[activeManageTab];
+  const activeManageFilterStats = activeManageTab === "hosts"
+    ? { filtered: filteredDisplayHosts.length, total: groupFilteredDisplayHosts.length }
+    : manageFilterStats[activeManageTab];
   const hasFilteredDisplayHosts = filteredDisplayHosts.length > 0;
   const isHostGroupFiltered = selectedHostGroupId !== "all";
   const filteredHostIds = useMemo(
@@ -1838,6 +1882,7 @@ function HostsContent() {
   const canDragFilteredHosts = user?.role === "admin" || filteredDisplayHosts.every((host: any) => Number(host.userId) === Number(user?.id));
   const hostSortingEnabled = !!hostSortMode
     && canDragFilteredHosts
+    && !isHostTextFiltered
     && viewMode !== "map"
     && viewMode !== "flat-map"
     && filteredDisplayHosts.length > 1;
@@ -2171,36 +2216,37 @@ function HostsContent() {
         </div>
       </div>
 
-      {activeManageTab === "hosts" && (
-        <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">筛选:</span>
-          </div>
-          <div className="relative w-full sm:w-[260px] lg:w-[320px]">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={hostSearchQuery}
-              onChange={(event) => setHostSearchQuery(event.target.value)}
-              placeholder={"搜索主机 / IP / 系统 / Agent 版本"}
-              className="h-8 w-full pl-8 pr-8 text-xs"
-            />
-            {hostSearchQuery ? (
-              <button
-                type="button"
-                aria-label="清空搜索"
-                className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                onClick={() => setHostSearchQuery("")}
-              >
-                <XCircle className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {filteredDisplayHosts.length} / {groupFilteredDisplayHosts.length} {"\u53f0"}
-          </span>
+      <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm text-muted-foreground">筛选:</span>
         </div>
-      )}
+        <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={activeManageSearchQuery}
+            onChange={(event) => {
+              const value = event.target.value;
+              setManageSearchQueries((current) => ({ ...current, [activeManageTab]: value }));
+            }}
+            placeholder={activeManageFilterConfig.placeholder}
+            className="h-8 w-full pl-8 pr-8 text-xs"
+          />
+          {activeManageSearchQuery ? (
+            <button
+              type="button"
+              aria-label="清空搜索"
+              className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => setManageSearchQueries((current) => ({ ...current, [activeManageTab]: "" }))}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {activeManageFilterStats.filtered} / {activeManageFilterStats.total} {activeManageFilterConfig.unit}
+        </span>
+      </div>
 
       <Tabs
         value={activeManageTab}
@@ -2606,6 +2652,8 @@ function HostsContent() {
               hideViewModeToggle
               viewMode={tokenViewMode}
               onViewModeChange={handleTokenViewModeChange}
+              searchQuery={manageSearchQueries.tokens}
+              onFilterStatsChange={updateTokenFilterStats}
             />
           </TabsContent>
         )}
@@ -2619,6 +2667,8 @@ function HostsContent() {
               createSignal={hostGroupCreateSignal}
               onCreateSignalHandled={() => setHostGroupCreateSignal(0)}
               viewMode={hostGroupViewMode}
+              searchQuery={manageSearchQueries.groups}
+              onFilterStatsChange={updateGroupFilterStats}
             />
           </TabsContent>
         )}
@@ -2634,6 +2684,8 @@ function HostsContent() {
               viewMode={serviceViewMode}
               onViewModeChange={handleServiceViewModeChange}
               hideViewModeToggle
+              searchQuery={manageSearchQueries.services}
+              onFilterStatsChange={updateServiceFilterStats}
             />
           </TabsContent>
         )}

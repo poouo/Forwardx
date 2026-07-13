@@ -5,6 +5,11 @@ import { FORWARD_TYPES } from "../../shared/forwardTypes";
 import { isValidAvatarValue } from "../../shared/avatar";
 import { ensureAdminOrSelf, refreshUserForwardEndpoints } from "./helpers";
 import { getEmailConfig, sendMail } from "../email";
+import {
+  resetUserTrafficCommand,
+  setUserAccountEnabledCommand,
+  setUserForwardAccessCommand,
+} from "../services/userCommandService";
 
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
@@ -346,46 +351,23 @@ export const usersRouter = router({
     setForwardAccess: adminProcedure
       .input(z.object({ userId: z.number(), enabled: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
-        const target = await db.getUserById(input.userId);
-        if (!target) throw new Error("用户不存在");
-        if (target.role === "admin") throw new Error("管理员默认拥有全部权限");
-        await db.updateUserManualEntitlements(input.userId, {
-          manualCanAddRules: input.enabled,
-          manualAllowForwardXTunnel: input.enabled,
-          forwardAccessPauseReason: input.enabled ? null : "manual",
-        });
-        if (!input.enabled) {
-          await db.disableAllUserRules(input.userId);
-        }
-        await refreshUserForwardEndpoints(input.userId, input.enabled ? "user-forward-enabled" : "user-forward-disabled");
+        await setUserForwardAccessCommand({ actor: ctx.user, targetUserId: input.userId, enabled: input.enabled });
         console.info(`[Users] Forward access ${input.enabled ? "enabled" : "disabled"} userId=${input.userId} ${actorLabel(ctx)}`);
         return { success: true };
       }),
     setAccountEnabled: adminProcedure
       .input(z.object({ userId: z.number(), enabled: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
-        if (input.userId === ctx.user.id && !input.enabled) {
-          throw new Error("不能禁用当前登录账户");
-        }
-        const target = await db.getUserById(input.userId);
-        if (!target) throw new Error("用户不存在");
-        await db.setUserAccountEnabled(input.userId, input.enabled);
-        if (!input.enabled) {
-          await refreshUserForwardEndpoints(input.userId, "user-account-disabled");
-        }
+        const result = await setUserAccountEnabledCommand({ actor: ctx.user, targetUserId: input.userId, enabled: input.enabled });
         console.info(`[Users] Account ${input.enabled ? "enabled" : "disabled"} userId=${input.userId} ${actorLabel(ctx)}`);
-        return { success: true };
+        return { success: true, forwardAccessRestored: result.forwardAccessRestored };
       }),
     /** 手动重置用户流量 */
     resetTraffic: adminProcedure
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        await db.resetUserTraffic(input.userId);
-        const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
-        if (recovery.restored) {
-          await refreshUserForwardEndpoints(input.userId, "user-traffic-reset-forward-restored");
-        }
+        const result = await resetUserTrafficCommand({ actor: ctx.user, targetUserId: input.userId });
         console.info(`[Users] Reset traffic userId=${input.userId} ${actorLabel(ctx)}`);
-        return { success: true, forwardAccessRestored: recovery.restored };
+        return { success: true, forwardAccessRestored: result.forwardAccessRestored };
       }),
   });

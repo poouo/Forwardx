@@ -4,19 +4,28 @@ import { MIGRATION_TABLES, ensureDatabaseSchema } from "./dbSchema";
 import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
 import { countAll, quoteIdentifier } from "./dbCompat";
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
-import { getHosts, requestHostAgentUpgrade } from "./db";
-import { pushAgentUpgrade } from "./agentEvents";
+import { clearHostAgentUpgradeRequest, getHosts, HOST_ONLINE_TTL_MS, requestHostAgentUpgrade } from "./db";
+import { pushAgentPanelMigration, pushAgentUpgrade } from "./agentEvents";
 import { assertSafeOutboundUrl } from "./ssrf";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
 import { ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import {
+  abortTakeoverToken,
   consumeApprovedMigrationRequest,
   consumeTakeoverToken,
   createMigrationRequest,
   getMigrationRequest,
+  prepareTakeoverToken,
+  validatePreparedTakeoverToken,
 } from "./migrationCodes";
+import {
+  invalidatePanelMigrationAgentStateCache,
+  setPanelMigrationAgentDirective,
+} from "./panelMigrationAgentState";
+import { markLocalSetupComplete } from "./setupState";
+import { startBackgroundServices } from "./backgroundServices";
 
 export type MigrationJobStatus = "pending" | "running" | "success" | "failed";
 
@@ -62,6 +71,12 @@ export interface MigrationImportResult {
   panelUrl?: string;
 }
 
+export interface MigrationImportedIds {
+  hosts: Record<number, number>;
+  tunnels: Record<number, number>;
+  forwardRules: Record<number, number>;
+}
+
 export interface EncryptedPanelBackup {
   format: "forwardx-panel-backup";
   version: 1;
@@ -94,6 +109,16 @@ export interface MigrationJob {
 }
 
 const jobs = new Map<string, MigrationJob>();
+const migrationJobProbeTokens = new Map<string, string>();
+
+const configuredMigrationRuntimeTimeoutMs = Number(process.env.FORWARDX_MIGRATION_RUNTIME_TIMEOUT_MS);
+const MIGRATION_RUNTIME_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.isFinite(configuredMigrationRuntimeTimeoutMs) && configuredMigrationRuntimeTimeoutMs > 0
+    ? configuredMigrationRuntimeTimeoutMs
+    : 15 * 60 * 1000,
+);
+const MIGRATION_RUNTIME_POLL_MS = 2_000;
 
 function normalizePanelUrl(url: string) {
   const value = url.trim().replace(/\/+$/, "");
@@ -174,8 +199,8 @@ function mapId(maps: ImportMaps, table: string, value: unknown) {
 }
 
 function mapOptionalId(maps: ImportMaps, table: string, value: unknown) {
-  if (value === null || value === undefined || value === "") return null;
-  return mapId(maps, table, value);
+  if (value === null || value === undefined || value === "" || value === 0 || value === "0") return null;
+  return mapRequiredId(maps, table, value);
 }
 
 function mapRequiredId(maps: ImportMaps, table: string, value: unknown) {
@@ -401,7 +426,10 @@ const IMPORT_TABLE_ORDER = [
   "agent_tokens",
   "user_host_permissions",
   "user_tunnel_permissions",
+  "user_forward_group_permissions",
+  "host_probe_services",
   "host_metrics",
+  "host_probe_service_stats",
   "host_traffic_counters",
   "user_traffic_counters",
   "forward_rule_traffic_counters",
@@ -411,6 +439,7 @@ const IMPORT_TABLE_ORDER = [
   "tcping_stats",
   "forward_tests",
   "forward_group_events",
+  "ip_geo_cache",
   "subscription_plans",
   "subscription_plan_hosts",
   "subscription_plan_tunnels",
@@ -430,8 +459,35 @@ const IMPORT_TABLE_ORDER = [
   "user_traffic_billing_permissions",
   "announcements",
   "announcement_reads",
+  "plugins",
+  "plugin_store_sources",
+  "plugin_assets",
+  "plugin_agent_states",
   "system_settings",
 ] as const;
+
+const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
+  "host_metrics",
+  "host_probe_service_stats",
+  "host_traffic_counters",
+  "user_traffic_counters",
+  "forward_rule_traffic_counters",
+  "traffic_stats",
+  "tunnel_latency_stats",
+  "forward_group_latency_stats",
+  "ip_geo_cache",
+  "tcping_stats",
+  "forward_tests",
+  "forward_group_events",
+  "system_settings",
+]);
+
+const missingImportTables = MIGRATION_TABLES.filter(
+  (table) => !(IMPORT_TABLE_ORDER as readonly string[]).includes(table),
+);
+if (missingImportTables.length > 0) {
+  throw new Error(`Migration import order is incomplete: ${missingImportTables.join(", ")}`);
+}
 
 function sortedSnapshotRows(snapshot: MigrationSnapshot, table: string) {
   return [...(snapshot.tables?.[table] || [])].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
@@ -491,7 +547,31 @@ function mappedResourceId(maps: ImportMaps, resourceType: unknown, resourceId: u
   const type = String(resourceType || "");
   if (type === "host") return mapRequiredId(maps, "hosts", resourceId);
   if (type === "tunnel") return mapRequiredId(maps, "tunnels", resourceId);
+  if (type === "forward_group") return mapRequiredId(maps, "forward_groups", resourceId);
   return toNumberId(resourceId);
+}
+
+function mapStoredHostIds(maps: ImportMaps, value: unknown) {
+  if (value === null || value === undefined || value === "") return value;
+  let parsed: unknown[];
+  if (Array.isArray(value)) {
+    parsed = value;
+  } else {
+    const raw = String(value).trim();
+    if (raw.startsWith("[")) {
+      try {
+        const json = JSON.parse(raw);
+        if (!Array.isArray(json)) throw new Error("invalid host list");
+        parsed = json;
+      } catch {
+        throw new Error("主机范围格式无效");
+      }
+    } else {
+      parsed = raw.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  const mapped = Array.from(new Set(parsed.map((hostId) => mapRequiredId(maps, "hosts", hostId))));
+  return mapped.length > 0 ? mapped.sort((a, b) => a - b).join(",") : null;
 }
 
 async function prepareImportRow(table: string, source: Record<string, any>, maps: ImportMaps): Promise<PreparedImportRow | null> {
@@ -629,6 +709,22 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
       return { row, existingWhere: { userId: row.userId, tunnelId: row.tunnelId } };
 
+    case "user_forward_group_permissions":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      row.forwardGroupId = mapRequiredId(maps, "forward_groups", source.forwardGroupId);
+      return { row, existingWhere: { userId: row.userId, forwardGroupId: row.forwardGroupId } };
+
+    case "host_probe_services":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      row.hostIds = mapStoredHostIds(maps, source.hostIds);
+      row.excludeHostIds = mapStoredHostIds(maps, source.excludeHostIds);
+      return { row };
+
+    case "host_probe_service_stats":
+      row.serviceId = mapRequiredId(maps, "host_probe_services", source.serviceId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row };
+
     case "forward_group_events":
       row.groupId = mapRequiredId(maps, "forward_groups", source.groupId);
       row.memberId = mapOptionalId(maps, "forward_group_members", source.memberId);
@@ -729,6 +825,36 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.userId = mapRequiredId(maps, "users", source.userId);
       return { row, existingWhere: { announcementId: row.announcementId, userId: row.userId } };
 
+    case "ip_geo_cache":
+      return { row, existingWhere: row.address ? { address: row.address } : undefined };
+
+    case "plugins":
+      if (!row.pluginId) return null;
+      return { row, existingWhere: { pluginId: row.pluginId } };
+
+    case "plugin_store_sources":
+      return {
+        row,
+        existingWhere: row.repository
+          ? { repository: row.repository, branch: row.branch, catalogPath: row.catalogPath }
+          : undefined,
+      };
+
+    case "plugin_assets":
+      if (!row.pluginId || !row.path) return null;
+      return { row, existingWhere: { pluginId: row.pluginId, path: row.path } };
+
+    case "plugin_agent_states":
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return {
+        row,
+        existingWhere: {
+          pluginId: row.pluginId,
+          resourceViewId: row.resourceViewId,
+          hostId: row.hostId,
+        },
+      };
+
     case "system_settings": {
       const key = String(source.key || "");
       if (!key) return null;
@@ -746,6 +872,12 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
         "panelPublicUrl",
         "migratedToPanelUrl",
         "migratedAt",
+        "panelMigrationId",
+        "panelMigrationPhase",
+        "panelMigrationSourceUrl",
+        "panelMigrationStartedAt",
+        "agentMigrationTargetPanelUrl",
+        "agentMigrationTargetExpiresAt",
       ]);
       if (skippedKeys.has(key)) return null;
       return { row: { key, value: source.value ?? null, updatedAt: source.updatedAt || nowDate() }, existingWhere: { key } };
@@ -835,10 +967,12 @@ export async function importMigrationSnapshot(
   options: {
     targetPanelUrl?: string;
     onProgress?: (progress: number, step: string) => void;
+    onImportedIds?: (ids: MigrationImportedIds) => void;
   } | ((progress: number, step: string) => void) = {},
 ): Promise<MigrationImportResult> {
   const onProgress = typeof options === "function" ? options : options.onProgress;
   const targetPanelUrl = typeof options === "function" ? undefined : options.targetPanelUrl;
+  const onImportedIds = typeof options === "function" ? undefined : options.onImportedIds;
   await connectDatabase();
   await ensureDatabaseSchema();
   if (!snapshot || snapshot.version !== 1 || !snapshot.tables || typeof snapshot.tables !== "object") {
@@ -867,6 +1001,9 @@ export async function importMigrationSnapshot(
       processed += 1;
       const oldId = toNumberId(source.id);
       try {
+        if (table !== "system_settings" && !oldId) {
+          throw new Error("源数据缺少有效 ID");
+        }
         const prepared = await prepareImportRow(table, source, maps);
         if (!prepared) {
           incrementCounter(skipped, table);
@@ -887,7 +1024,8 @@ export async function importMigrationSnapshot(
           continue;
         }
         const newId = await insertImportRow(table, prepared.row);
-        if (oldId && newId) maps[table].set(oldId, newId);
+        if (!newId) throw new Error("写入后未返回有效 ID");
+        if (oldId) maps[table].set(oldId, newId);
         incrementCounter(inserted, table);
       } catch (error) {
         incrementCounter(skipped, table);
@@ -895,6 +1033,18 @@ export async function importMigrationSnapshot(
       }
     }
   }
+
+  const criticalSkipped = Object.entries(skipped)
+    .filter(([table, count]) => count > 0 && !BEST_EFFORT_MIGRATION_TABLES.has(table as MigrationTableName));
+  if (criticalSkipped.length > 0) {
+    throw new Error(`关键数据导入不完整：${criticalSkipped.map(([table, count]) => `${table} ${count} 条`).join("，")}`);
+  }
+
+  onImportedIds?.({
+    hosts: Object.fromEntries(maps.hosts || []),
+    tunnels: Object.fromEntries(maps.tunnels || []),
+    forwardRules: Object.fromEntries(maps.forward_rules || []),
+  });
 
   onProgress?.(92, "正在修复关联关系");
   await fixDeferredForwardGroupReferences(snapshot, maps);
@@ -949,9 +1099,12 @@ export async function importMigrationSnapshot(
   };
 }
 
-export async function announcePanelMigration(targetPanelUrl: string, options: { forceAgentSwitch?: boolean } = {}) {
+export async function announcePanelMigration(
+  targetPanelUrl: string,
+  options: { forceAgentSwitch?: boolean; updatePanelPublicUrl?: boolean } = {},
+) {
   const normalized = normalizePanelUrl(targetPanelUrl);
-  await setSetting("panelPublicUrl", normalized);
+  if (options.updatePanelPublicUrl !== false) await setSetting("panelPublicUrl", normalized);
   const hosts = await getHosts();
   const targetVersion = options.forceAgentSwitch ? "9999.0.0" : AGENT_VERSION;
   for (const host of hosts as any[]) {
@@ -961,13 +1114,24 @@ export async function announcePanelMigration(targetPanelUrl: string, options: { 
   return { hostCount: hosts.length, panelUrl: normalized };
 }
 
+async function cancelPanelMigrationAnnouncement() {
+  const hosts = await getHosts();
+  for (const host of hosts as any[]) {
+    await clearHostAgentUpgradeRequest(Number(host.id));
+  }
+  await setSetting("agentMigrationTargetPanelUrl", null);
+  await setSetting("agentMigrationTargetExpiresAt", null);
+  invalidatePanelMigrationAgentStateCache();
+  return hosts.length;
+}
+
 async function markPanelAsMigrated(targetPanelUrl: string) {
   await connectDatabase();
   await ensureDatabaseSchema();
   const normalized = normalizePanelUrl(targetPanelUrl);
-  await setSetting("panelPublicUrl", normalized);
   await setSetting("migratedToPanelUrl", normalized);
   await setSetting("migratedAt", String(Math.floor(nowDate().getTime() / 1000)));
+  await setSetting("panelPublicUrl", normalized);
 }
 
 async function fetchSnapshotFromOldPanelWithApproval(input: {
@@ -977,7 +1141,7 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
   onPendingApproval?: () => void;
 }) {
   const url = `${normalizePanelUrl(input.oldPanelUrl)}/api/migration/export`;
-  await assertSafeOutboundUrl(url, { purpose: "面板迁移请求" });
+  await assertSafeOutboundUrl(url, { allowPrivate: true, purpose: "面板迁移请求" });
   const normalizedTargetPanelUrl = normalizePanelUrl(input.targetPanelUrl);
   let requestId = "";
   const deadline = Date.now() + 6 * 60 * 1000;
@@ -1013,28 +1177,214 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
   throw new Error("等待旧面板管理员确认迁移超时，请重新生成迁移码");
 }
 
-async function finalizeOldPanelTakeover(input: {
+type OldPanelTakeoverInput = {
   oldPanelUrl: string;
   targetPanelUrl: string;
-  takeoverToken?: string;
-}) {
-  if (!input.takeoverToken) return null;
-  const url = `${normalizePanelUrl(input.oldPanelUrl)}/api/migration/takeover-complete`;
-  await assertSafeOutboundUrl(url, { purpose: "面板迁移请求" });
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    redirect: "manual",
-    body: JSON.stringify({
-      takeoverToken: input.takeoverToken,
-      targetPanelUrl: input.targetPanelUrl,
-    }),
-  });
+  takeoverToken: string;
+  migrationId: string;
+};
+
+async function postOldPanelTakeover(path: string, input: OldPanelTakeoverInput) {
+  const url = `${normalizePanelUrl(input.oldPanelUrl)}${path}`;
+  await assertSafeOutboundUrl(url, { allowPrivate: true, purpose: "面板迁移请求" });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  let resp: globalThis.Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      redirect: "manual",
+      signal: controller.signal,
+      body: JSON.stringify({
+        takeoverToken: input.takeoverToken,
+        targetPanelUrl: input.targetPanelUrl,
+        fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
+        migrationId: input.migrationId,
+      }),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   const body = await resp.text();
   if (!resp.ok) {
-    throw new Error(body || `旧面板接管确认返回 ${resp.status}`);
+    let message = body;
+    try {
+      message = JSON.parse(body)?.error || body;
+    } catch {
+      // Keep the original response text.
+    }
+    throw new Error(message || `旧面板迁移接口返回 ${resp.status}`);
   }
   return body ? JSON.parse(body) : null;
+}
+
+async function prepareOldPanelTakeover(input: OldPanelTakeoverInput) {
+  return postOldPanelTakeover("/api/migration/takeover-prepare", input);
+}
+
+async function abortOldPanelTakeover(input: OldPanelTakeoverInput) {
+  return postOldPanelTakeover("/api/migration/takeover-abort", input);
+}
+
+async function finalizeOldPanelTakeover(input: OldPanelTakeoverInput) {
+  let lastError: unknown;
+  let attempt = 0;
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    try {
+      return await postOldPanelTakeover("/api/migration/takeover-complete", input);
+    } catch (error) {
+      lastError = error;
+      const delay = Math.min(10_000, 1000 * attempt);
+      if (Date.now() + delay < deadline) await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
+type MigrationRuntimeExpectations = {
+  hostIds: number[];
+  ruleIds: number[];
+  tunnelIds: number[];
+  allImportedHostIds: number[];
+};
+
+function migrationBool(value: unknown) {
+  return value === true || value === 1 || value === "1" || String(value || "").toLowerCase() === "true";
+}
+
+function migrationTimeMs(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  const parsed = new Date(String(value || "")).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function buildMigrationRuntimeExpectations(
+  snapshot: MigrationSnapshot,
+  importedIds: MigrationImportedIds,
+): MigrationRuntimeExpectations {
+  const exportedAt = Number(snapshot.exportedAt || Date.now());
+  const onlineHostOldIds = new Set<number>();
+  for (const host of snapshot.tables.hosts || []) {
+    const id = toNumberId(host.id);
+    const heartbeatAt = migrationTimeMs(host.lastHeartbeat);
+    if (id && migrationBool(host.isOnline) && heartbeatAt > 0 && exportedAt - heartbeatAt <= HOST_ONLINE_TTL_MS) {
+      onlineHostOldIds.add(id);
+    }
+  }
+  const hostIds = Array.from(onlineHostOldIds)
+    .map((id) => Number(importedIds.hosts[id] || 0))
+    .filter((id) => id > 0);
+  const ruleIds = (snapshot.tables.forward_rules || [])
+    .filter((rule) => migrationBool(rule.isEnabled) && migrationBool(rule.isRunning) && !migrationBool(rule.pendingDelete))
+    .map((rule) => Number(importedIds.forwardRules[Number(rule.id)] || 0))
+    .filter((id) => id > 0);
+  const tunnelIds = (snapshot.tables.tunnels || [])
+    .filter((tunnel) => migrationBool(tunnel.isEnabled) && migrationBool(tunnel.isRunning))
+    .map((tunnel) => Number(importedIds.tunnels[Number(tunnel.id)] || 0))
+    .filter((id) => id > 0);
+  if ((ruleIds.length > 0 || tunnelIds.length > 0) && hostIds.length === 0) {
+    throw new Error("旧面板存在运行中的转发，但没有可验证的在线 Agent；请先恢复 Agent 在线后再迁移");
+  }
+  return {
+    hostIds: Array.from(new Set(hostIds)),
+    ruleIds: Array.from(new Set(ruleIds)),
+    tunnelIds: Array.from(new Set(tunnelIds)),
+    allImportedHostIds: Array.from(new Set(Object.values(importedIds.hosts).map(Number).filter((id) => id > 0))),
+  };
+}
+
+async function readyIds(
+  table: string,
+  ids: number[],
+  predicate: (row: Record<string, any>) => boolean,
+) {
+  if (ids.length === 0) return 0;
+  const rows = await queryRaw<Record<string, any>>(
+    `SELECT * FROM ${quote(table)} WHERE ${quote("id")} IN (${ids.map(() => "?").join(", ")})`,
+    ids,
+  );
+  return rows.filter(predicate).length;
+}
+
+async function getMigrationRuntimeReadiness(expectations: MigrationRuntimeExpectations, switchedAt: number) {
+  const [hostsReady, rulesReady, tunnelsReady] = await Promise.all([
+    readyIds("hosts", expectations.hostIds, (row) => (
+      migrationBool(row.isOnline) && migrationTimeMs(row.lastHeartbeat) >= switchedAt - 5_000
+    )),
+    readyIds("forward_rules", expectations.ruleIds, (row) => migrationBool(row.isRunning)),
+    readyIds("tunnels", expectations.tunnelIds, (row) => migrationBool(row.isRunning)),
+  ]);
+  return {
+    hostsReady,
+    rulesReady,
+    tunnelsReady,
+    complete: hostsReady === expectations.hostIds.length
+      && rulesReady === expectations.ruleIds.length
+      && tunnelsReady === expectations.tunnelIds.length,
+  };
+}
+
+async function waitForMigratedRuntime(
+  job: MigrationJob,
+  expectations: MigrationRuntimeExpectations,
+  switchedAt: number,
+) {
+  const deadline = Date.now() + MIGRATION_RUNTIME_TIMEOUT_MS;
+  let stablePasses = 0;
+  while (Date.now() < deadline) {
+    const readiness = await getMigrationRuntimeReadiness(expectations, switchedAt);
+    setJob(job, {
+      progress: 99,
+      step: `正在验证新面板运行状态：主机 ${readiness.hostsReady}/${expectations.hostIds.length}，规则 ${readiness.rulesReady}/${expectations.ruleIds.length}，隧道 ${readiness.tunnelsReady}/${expectations.tunnelIds.length}`,
+    });
+    stablePasses = readiness.complete ? stablePasses + 1 : 0;
+    if (stablePasses >= 2) return readiness;
+    await new Promise((resolve) => setTimeout(resolve, MIGRATION_RUNTIME_POLL_MS));
+  }
+  const readiness = await getMigrationRuntimeReadiness(expectations, switchedAt);
+  throw new Error(
+    `新面板运行验证超时：主机 ${readiness.hostsReady}/${expectations.hostIds.length}，规则 ${readiness.rulesReady}/${expectations.ruleIds.length}，隧道 ${readiness.tunnelsReady}/${expectations.tunnelIds.length}；已取消接管，旧面板不会停用或删除数据`,
+  );
+}
+
+async function verifyTargetPanelIdentity(job: MigrationJob, targetPanelUrl: string) {
+  const probeToken = migrationJobProbeTokens.get(job.id);
+  if (!probeToken) throw new Error("新面板验证令牌已失效");
+  const url = `${normalizePanelUrl(targetPanelUrl)}/api/migration/target-probe`;
+  await assertSafeOutboundUrl(url, { allowPrivate: true, purpose: "新面板地址验证" });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      redirect: "manual",
+      signal: controller.signal,
+      body: JSON.stringify({ jobId: job.id, probeToken }),
+    });
+    const body = await resp.text();
+    const result = body ? JSON.parse(body) : {};
+    if (!resp.ok || result.jobId !== job.id || result.appVersion !== APP_VERSION) {
+      throw new Error(result.error || `目标地址返回 ${resp.status}`);
+    }
+  } catch (error) {
+    if ((error as any)?.name === "AbortError") throw new Error("新面板公开地址连接超时");
+    throw new Error(`新面板公开地址验证失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function pushMigrationDirectiveToHosts(
+  hostIds: number[],
+  directive: { id: string; state: "preparing" | "committed" | "aborted"; fallbackPanelUrl?: string },
+) {
+  for (const hostId of hostIds) pushAgentPanelMigration(hostId, directive);
 }
 
 export function startPanelMigration(input: {
@@ -1042,6 +1392,8 @@ export function startPanelMigration(input: {
   migrationCode: string;
   targetPanelUrl: string;
 }) {
+  const activeJob = [...jobs.values()].find((item) => item.status === "pending" || item.status === "running");
+  if (activeJob) throw new Error(`已有迁移任务正在执行：${activeJob.step}`);
   const job: MigrationJob = {
     id: nodeCrypto.randomUUID(),
     status: "pending",
@@ -1050,45 +1402,107 @@ export function startPanelMigration(input: {
     startedAt: Date.now(),
   };
   jobs.set(job.id, job);
+  migrationJobProbeTokens.set(job.id, nodeCrypto.randomBytes(32).toString("hex"));
 
   void (async () => {
+    let takeoverInput: OldPanelTakeoverInput | null = null;
+    let takeoverPrepareStarted = false;
+    let commitStarted = false;
+    let expectations: MigrationRuntimeExpectations | null = null;
     try {
       setJob(job, { status: "running", progress: 10, step: "正在连接旧面板" });
       const snapshot = await fetchSnapshotFromOldPanelWithApproval({
         ...input,
         onPendingApproval: () => setJob(job, { progress: 20, step: "等待旧面板管理员确认迁移请求" }),
       });
+      if (!snapshot.takeoverToken) throw new Error("旧面板未提供安全接管令牌，请先升级旧面板后再迁移");
       setJob(job, { progress: 35, step: "已获取旧面板数据，正在准备新数据库" });
+      let importedIds: MigrationImportedIds | null = null;
       const imported = await importMigrationSnapshot(snapshot, {
         targetPanelUrl: input.targetPanelUrl,
         onProgress: (progress, step) => setJob(job, { progress, step }),
+        onImportedIds: (ids) => { importedIds = ids; },
       });
-      setJob(job, { progress: 94, step: "正在写入新面板地址" });
+      if (!importedIds) throw new Error("迁移数据关联映射生成失败");
+      expectations = buildMigrationRuntimeExpectations(snapshot, importedIds);
+      setJob(job, { progress: 98, step: "正在验证新面板公开地址" });
       await setSetting("panelPublicUrl", normalizePanelUrl(input.targetPanelUrl));
       await setSetting("setupDataChoice", "use-existing");
-      setJob(job, { progress: 96, step: "正在通知旧面板切换 Agent" });
-      await finalizeOldPanelTakeover({
+      await verifyTargetPanelIdentity(job, input.targetPanelUrl);
+
+      const switchedAt = Date.now();
+      takeoverInput = {
         oldPanelUrl: input.oldPanelUrl,
         targetPanelUrl: input.targetPanelUrl,
         takeoverToken: snapshot.takeoverToken,
+        migrationId: job.id,
+      };
+      await setPanelMigrationAgentDirective({
+        id: job.id,
+        state: "preparing",
+        fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
+        startedAt: Math.floor(switchedAt / 1000),
       });
+      setJob(job, { progress: 98, step: "正在预切换 Agent，旧面板继续保留运行" });
+      takeoverPrepareStarted = true;
+      await prepareOldPanelTakeover(takeoverInput);
+      await waitForMigratedRuntime(job, expectations, switchedAt);
+
+      setJob(job, { progress: 99, step: "新面板运行正常，正在完成接管" });
+      await setPanelMigrationAgentDirective({
+        id: job.id,
+        state: "committing",
+        fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
+        startedAt: Math.floor(switchedAt / 1000),
+      });
+      commitStarted = true;
+      await finalizeOldPanelTakeover({
+        ...takeoverInput,
+      });
+      startBackgroundServices();
+      await setPanelMigrationAgentDirective({ id: job.id, state: "committed" });
+      pushMigrationDirectiveToHosts(expectations.allImportedHostIds, { id: job.id, state: "committed" });
+      markLocalSetupComplete();
       setJob(job, {
         status: "success",
         progress: 100,
         step: imported.mode === "incremental" ? "增量迁移完成" : "迁移完成",
         message: imported.mode === "incremental"
-          ? "新面板已有业务数据已保留，旧面板数据已增量导入。"
-          : "旧面板数据已导入，旧面板已进入迁移失效状态。",
+          ? "新面板已有业务数据已保留，旧面板数据已增量导入并通过运行验证；旧面板数据仍完整保留。"
+          : "新面板已通过 Agent 和转发运行验证；旧面板数据仍完整保留，可由用户确认后手动处理。",
         finishedAt: Date.now(),
       });
     } catch (error) {
+      if (takeoverPrepareStarted && takeoverInput && !commitStarted) {
+        await setPanelMigrationAgentDirective({
+          id: job.id,
+          state: "aborted",
+          fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
+          startedAt: Math.floor(Date.now() / 1000),
+        }).catch(() => undefined);
+        if (expectations) {
+          pushMigrationDirectiveToHosts(expectations.allImportedHostIds, {
+            id: job.id,
+            state: "aborted",
+            fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
+          });
+        }
+        await abortOldPanelTakeover(takeoverInput).catch((abortError) => {
+          console.warn(`[Migration] old panel abort failed: ${abortError instanceof Error ? abortError.message : String(abortError)}`);
+        });
+      }
+      const errorMessage = error instanceof Error ? error.message : String(error);
       setJob(job, {
         status: "failed",
         progress: Math.max(job.progress, 1),
         step: "迁移失败",
-        error: error instanceof Error ? error.message : String(error),
+        error: commitStarted
+          ? `新面板已通过运行验证，但旧面板的最终接管确认未完成：${errorMessage}。Agent 暂时保持在新面板且保留回退信息，请勿删除旧面板，先恢复新旧面板连通性。`
+          : errorMessage,
         finishedAt: Date.now(),
       });
+    } finally {
+      migrationJobProbeTokens.delete(job.id);
     }
   })();
 
@@ -1096,6 +1510,30 @@ export function startPanelMigration(input: {
 }
 
 export const migrationRouter = Router();
+
+migrationRouter.post("/api/migration/target-probe", async (req: Request, res: Response) => {
+  try {
+    const jobId = String(req.body?.jobId || "");
+    const probeToken = String(req.body?.probeToken || "");
+    const expectedToken = migrationJobProbeTokens.get(jobId);
+    const job = jobs.get(jobId);
+    if (!job || !expectedToken || probeToken.length !== expectedToken.length) {
+      res.status(404).json({ error: "迁移验证任务不存在" });
+      return;
+    }
+    const tokenMatches = nodeCrypto.timingSafeEqual(Buffer.from(probeToken), Buffer.from(expectedToken));
+    if (!tokenMatches || (job.status !== "pending" && job.status !== "running")) {
+      res.status(404).json({ error: "迁移验证任务不存在" });
+      return;
+    }
+    await connectDatabase();
+    await ensureDatabaseSchema();
+    await queryRaw("SELECT 1 AS healthy");
+    res.json({ success: true, jobId, appVersion: APP_VERSION, database: "ready" });
+  } catch (error) {
+    res.status(503).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 migrationRouter.post("/api/migration/export", async (req: Request, res: Response) => {
   try {
@@ -1140,6 +1578,59 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
   }
 });
 
+migrationRouter.post("/api/migration/takeover-prepare", async (req: Request, res: Response) => {
+  try {
+    const takeoverToken = String(req.body?.takeoverToken || "");
+    const targetPanelUrl = normalizePanelUrl(String(req.body?.targetPanelUrl || ""));
+    if (!takeoverToken || !targetPanelUrl) {
+      res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
+      return;
+    }
+    const migratedToPanelUrl = normalizePanelUrl((await getAllSettings()).migratedToPanelUrl || "");
+    if (migratedToPanelUrl && migratedToPanelUrl !== targetPanelUrl) {
+      res.status(409).json({ error: `旧面板已经迁移到其他地址：${migratedToPanelUrl}` });
+      return;
+    }
+    if (!prepareTakeoverToken(takeoverToken, targetPanelUrl)) {
+      res.status(401).json({ error: "接管令牌无效、已过期或目标面板不匹配" });
+      return;
+    }
+    if (migratedToPanelUrl === targetPanelUrl) {
+      res.json({ success: true, phase: "prepared", panelUrl: targetPanelUrl, alreadyCompleted: true, oldPanelActive: false, dataPreserved: true });
+      return;
+    }
+    await setSetting("agentMigrationTargetPanelUrl", targetPanelUrl);
+    await setSetting("agentMigrationTargetExpiresAt", String(Math.floor(Date.now() / 1000) + 60 * 60));
+    invalidatePanelMigrationAgentStateCache();
+    const takeover = await announcePanelMigration(targetPanelUrl, {
+      forceAgentSwitch: true,
+      updatePanelPublicUrl: false,
+    });
+    res.json({ success: true, phase: "prepared", ...takeover, oldPanelActive: true, dataPreserved: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+migrationRouter.post("/api/migration/takeover-abort", async (req: Request, res: Response) => {
+  try {
+    const takeoverToken = String(req.body?.takeoverToken || "");
+    const targetPanelUrl = normalizePanelUrl(String(req.body?.targetPanelUrl || ""));
+    if (!takeoverToken || !targetPanelUrl) {
+      res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
+      return;
+    }
+    if (!abortTakeoverToken(takeoverToken, targetPanelUrl)) {
+      res.status(401).json({ error: "接管令牌无效、已过期或目标面板不匹配" });
+      return;
+    }
+    const hostCount = await cancelPanelMigrationAnnouncement();
+    res.json({ success: true, phase: "aborted", hostCount, oldPanelActive: true, dataPreserved: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 migrationRouter.post("/api/migration/takeover-complete", async (req: Request, res: Response) => {
   try {
     const takeoverToken = String(req.body?.takeoverToken || "");
@@ -1148,13 +1639,27 @@ migrationRouter.post("/api/migration/takeover-complete", async (req: Request, re
       res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
       return;
     }
-    if (!consumeTakeoverToken(takeoverToken)) {
+    const normalizedTarget = normalizePanelUrl(targetPanelUrl);
+    const alreadyMigratedTo = normalizePanelUrl((await getAllSettings()).migratedToPanelUrl || "");
+    if (alreadyMigratedTo === normalizedTarget) {
+      await markPanelAsMigrated(normalizedTarget);
+      await setSetting("agentMigrationTargetPanelUrl", null);
+      await setSetting("agentMigrationTargetExpiresAt", null);
+      invalidatePanelMigrationAgentStateCache();
+      res.json({ success: true, panelUrl: normalizedTarget, alreadyCompleted: true, dataPreserved: true });
+      return;
+    }
+    if (!validatePreparedTakeoverToken(takeoverToken, normalizedTarget)) {
       res.status(401).json({ error: "接管令牌无效、已过期或已使用" });
       return;
     }
-    await markPanelAsMigrated(targetPanelUrl);
-    const takeover = await announcePanelMigration(targetPanelUrl, { forceAgentSwitch: true });
-    res.json({ success: true, ...takeover });
+    await markPanelAsMigrated(normalizedTarget);
+    consumeTakeoverToken(takeoverToken, normalizedTarget);
+    await setSetting("agentMigrationTargetPanelUrl", null);
+    await setSetting("agentMigrationTargetExpiresAt", null);
+    invalidatePanelMigrationAgentStateCache();
+    const takeover = await announcePanelMigration(normalizedTarget, { forceAgentSwitch: true });
+    res.json({ success: true, ...takeover, dataPreserved: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

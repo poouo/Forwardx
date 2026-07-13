@@ -52,6 +52,8 @@ type AgentTokenManagerProps = {
   viewMode?: AgentTokenViewMode;
   onViewModeChange?: (viewMode: AgentTokenViewMode) => void;
   onCreateSignalHandled?: () => void;
+  searchQuery?: string;
+  onFilterStatsChange?: (stats: { filtered: number; total: number }) => void;
 };
 
 export type AgentTokenViewMode = "card" | "table";
@@ -125,6 +127,28 @@ function isTokenHostOnline(host: any) {
   if (!host?.isOnline || !host.lastHeartbeat) return false;
   const heartbeatAt = new Date(host.lastHeartbeat).getTime();
   return Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt <= HOST_ONLINE_TTL_MS;
+}
+
+function tokenMatchesSearchQuery(tokenItem: any, query: string) {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const host = tokenItem?.host;
+  const status = !host
+    ? tokenItem?.isUsed ? "已使用 已绑定 关联主机不存在" : "未使用 未绑定 可用"
+    : isTokenHostOnline(host) ? "已使用 已绑定 在线" : "已使用 已绑定 离线";
+  const haystack = [
+    tokenItem?.id,
+    tokenItem?.token,
+    tokenItem?.description,
+    status,
+    host?.id,
+    host?.name,
+    host?.entryIp,
+    host?.ipv4,
+    host?.ipv6,
+    host?.ip,
+  ].filter((value) => value !== null && value !== undefined).join(" ").toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
 }
 
 function TokenStatusBadge({ tokenItem }: { tokenItem: any }) {
@@ -393,6 +417,8 @@ export default function AgentTokenManager({
   viewMode: controlledViewMode,
   onViewModeChange,
   onCreateSignalHandled,
+  searchQuery = "",
+  onFilterStatsChange,
 }: AgentTokenManagerProps) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -443,6 +469,17 @@ export default function AgentTokenManager({
     }
   );
   const tokenItems = useMemo(() => (tokens as any[] | undefined) || [], [tokens]);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const isTextFiltered = normalizedSearchQuery.length > 0;
+  const filteredTokenItems = useMemo(
+    () => isTextFiltered
+      ? tokenItems.filter((tokenItem: any) => tokenMatchesSearchQuery(tokenItem, normalizedSearchQuery))
+      : tokenItems,
+    [isTextFiltered, normalizedSearchQuery, tokenItems],
+  );
+  useEffect(() => {
+    onFilterStatsChange?.({ filtered: filteredTokenItems.length, total: tokenItems.length });
+  }, [filteredTokenItems.length, onFilterStatsChange, tokenItems.length]);
 
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const configuredPanelUrl = normalizeConfigUrl(systemSettings?.panelPublicUrl || "");
@@ -534,9 +571,9 @@ export default function AgentTokenManager({
     onError: (err) => toast.error(err.message || "更新 Token 顺序失败"),
   });
   const tokenSortable = useSortableReorder({
-    items: tokenItems,
+    items: filteredTokenItems,
     getId: (tokenItem: any) => Number(tokenItem.id),
-    disabled: tokenItems.length < 2,
+    disabled: isTextFiltered || filteredTokenItems.length < 2,
     onReorder: (nextTokens) => {
       reorderTokenMutation.mutate({ ids: nextTokens.map((tokenItem: any) => Number(tokenItem.id)) });
     },
@@ -688,12 +725,12 @@ export default function AgentTokenManager({
             <div className="p-4">
               <DataSectionLoading label="正在加载 Agent Token" />
             </div>
-          ) : tokenItems.length > 0 ? (
+          ) : filteredTokenItems.length > 0 ? (
             <>
               {viewMode === "card" ? (
-                <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="rect">
+                <SortableReorderContext sortable={tokenSortable} ids={filteredTokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="rect">
                   <div key="agent-token-card-view" className="standard-card-grid card-mode-transition gap-4 p-3">
-                    {tokenItems.map((tokenItem: any) => (
+                    {filteredTokenItems.map((tokenItem: any) => (
                       <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled}>
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                           <div {...itemProps}>
@@ -714,9 +751,9 @@ export default function AgentTokenManager({
                 </SortableReorderContext>
               ) : (
               <div key="agent-token-table-view" className="card-mode-transition">
-              <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
+              <SortableReorderContext sortable={tokenSortable} ids={filteredTokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
                 <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
-                  {tokenItems.map((tokenItem: any) => (
+                  {filteredTokenItems.map((tokenItem: any) => (
                     <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled}>
                       {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                         <div {...itemProps}>
@@ -748,9 +785,9 @@ export default function AgentTokenManager({
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
+                  <SortableReorderContext sortable={tokenSortable} ids={filteredTokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
                   <TableBody>
-                    {tokenItems.map((tokenItem: any) => (
+                    {filteredTokenItems.map((tokenItem: any) => (
                       <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled} itemKind="row">
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <TableRow
@@ -810,9 +847,9 @@ export default function AgentTokenManager({
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <Key className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">暂无 Token</p>
+              <p className="text-lg font-medium">{isTextFiltered && tokenItems.length > 0 ? "未找到匹配 Token" : "暂无 Token"}</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                添加主机后会生成 Agent 安装命令
+                {isTextFiltered && tokenItems.length > 0 ? "调整筛选内容或清空搜索" : "添加主机后会生成 Agent 安装命令"}
               </p>
               {showCreateButton && (
                 <Button

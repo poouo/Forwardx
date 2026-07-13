@@ -23,6 +23,7 @@ import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRunti
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
+import { markOrphanedForwardGroupTemplatesPendingDelete } from "./forwardRuleRepository";
 
 // ==================== Host Queries ====================
 
@@ -296,13 +297,19 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
   const db = await getDb();
   if (!db) return { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 };
   await repairPortForwardRuleHostReferences();
-  const managedRuleSql = sql`${forwardRules.forwardGroupRuleId} IS NOT NULL OR ${forwardRules.id} IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)`;
+  await markOrphanedForwardGroupTemplatesPendingDelete(hostId);
+  const managedRuleSql = sql`
+    ${forwardRules.forwardGroupId} IS NOT NULL
+    OR ${forwardRules.forwardGroupRuleId} IS NOT NULL
+    OR ${forwardRules.forwardGroupMemberId} IS NOT NULL
+    OR ${forwardRules.isForwardGroupTemplate} = ${sqlBool(true)}
+    OR ${forwardRules.id} IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)
+  `;
   const [ruleRows, managedRows, pendingRows] = await Promise.all([
     db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
       AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
-      AND ${forwardRules.forwardGroupRuleId} IS NULL
-      AND ${forwardRules.id} NOT IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)
+      AND NOT (${managedRuleSql})
     `),
     db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}

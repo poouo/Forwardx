@@ -25,11 +25,8 @@ import { createInitialAdmin, hasAdminUser, updateInitialAdmin } from "../db";
 import { getAllSettings, setSettings } from "../repositories/settingsRepository";
 import { getMigrationJob, startPanelMigration } from "../migration";
 import {
-  consumeSetupBootstrapToken,
-  ensureSetupBootstrapToken,
   hasLocalSetupCompleteMarker,
   markLocalSetupComplete,
-  verifySetupBootstrapToken,
 } from "../setupState";
 import { startBackgroundServices } from "../backgroundServices";
 import { isDevPanelMode } from "../devPanel";
@@ -85,10 +82,7 @@ const databaseConfigInput = z.discriminatedUnion("type", [
     }),
   }),
 ]);
-const bootstrapTokenInput = z.object({
-  bootstrapToken: z.string().trim().min(32).max(256).optional(),
-});
-const databaseSetupInput = databaseConfigInput.and(bootstrapTokenInput);
+const databaseSetupInput = databaseConfigInput;
 
 async function ensureSetupSchemaReady() {
   const db = await getDb();
@@ -114,7 +108,6 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: "new-panel",
       setupComplete: true,
-      bootstrapRequired: false,
       config: maskDatabaseConfig(readDatabaseConfig()),
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -124,7 +117,6 @@ async function setupStatus() {
 
   const config = readDatabaseConfig();
   if (!config) {
-    ensureSetupBootstrapToken();
     return {
       databaseConfigured: false,
       databaseConnected: false,
@@ -136,7 +128,6 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: null,
       setupComplete: false,
-      bootstrapRequired: true,
       config: null,
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -149,7 +140,6 @@ async function setupStatus() {
     if (!db) throw new Error("数据库未连接");
     await ensureSetupSchemaReady();
     const hasAdmin = await hasAdminUser();
-    if (!hasAdmin) ensureSetupBootstrapToken();
     const settings = await getAllSettings();
     const setupDataChoice = settings.setupDataChoice || null;
     const fastSetupComplete = hasAdmin && (setupDataChoice === "use-existing" || setupDataChoice === "new-panel");
@@ -166,14 +156,12 @@ async function setupStatus() {
       existingData,
       setupDataChoice,
       setupComplete: fastSetupComplete || (hasAdmin && !hasExistingData),
-      bootstrapRequired: !hasAdmin,
       config: maskDatabaseConfig(config),
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
       error: null,
     };
   } catch (error) {
-    ensureSetupBootstrapToken();
     const needsRestart = error instanceof DatabaseDialectMismatchError || getConfiguredDatabaseKind() !== getDatabaseKind();
     return {
       databaseConfigured: true,
@@ -186,7 +174,6 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: null,
       setupComplete: false,
-      bootstrapRequired: true,
       config: maskDatabaseConfig(config),
       needsRestart,
       defaultSqlitePath: defaultSqlitePath(),
@@ -197,33 +184,21 @@ async function setupStatus() {
 
 async function ensureSetupWriteAllowed(
   ctx: { user?: { role?: string } | null },
-  bootstrapToken?: string,
   options: { allowDatabaseRecovery?: boolean } = {},
 ) {
   if (ctx.user?.role === "admin") return;
   if (hasLocalSetupCompleteMarker()) {
     throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
   }
-  const assertBootstrapToken = () => {
-    ensureSetupBootstrapToken();
-    if (!verifySetupBootstrapToken(bootstrapToken)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_BOOTSTRAP_TOKEN_REQUIRED" });
-    }
-  };
   const config = readDatabaseConfig();
   if (!config) {
-    assertBootstrapToken();
     return;
   }
   try {
     await ensureSetupSchemaReady();
-    if (!await hasAdminUser()) {
-      assertBootstrapToken();
-      return;
-    }
+    if (!await hasAdminUser()) return;
   } catch {
     if (options.allowDatabaseRecovery && isDatabaseSetupPendingConfig()) {
-      assertBootstrapToken();
       return;
     }
     throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
@@ -337,7 +312,7 @@ export const setupRouter = router({
   testDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken, { allowDatabaseRecovery: true });
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       await testDatabaseConnection(input as DatabaseConfig);
       return { success: true };
     }),
@@ -345,22 +320,22 @@ export const setupRouter = router({
   saveDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken, { allowDatabaseRecovery: true });
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       return saveDatabase(input as DatabaseConfig);
     }),
 
   testMysql: publicProcedure
-    .input(mysqlConfigInput.and(bootstrapTokenInput))
+    .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken, { allowDatabaseRecovery: true });
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       await testDatabaseConnection({ type: "mysql", mysql: input });
       return { success: true };
     }),
 
   saveMysql: publicProcedure
-    .input(mysqlConfigInput.and(bootstrapTokenInput))
+    .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken, { allowDatabaseRecovery: true });
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       return saveDatabase({ type: "mysql", mysql: input });
     }),
 
@@ -369,9 +344,9 @@ export const setupRouter = router({
       oldPanelUrl: z.string().trim().min(1, "请输入旧面板地址"),
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码"),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址"),
-    }).and(bootstrapTokenInput))
+    }))
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
+      await ensureSetupWriteAllowed(ctx);
       await reconnectDatabase();
       await ensureDatabaseSchema();
       const job = startPanelMigration(input);
@@ -379,22 +354,19 @@ export const setupRouter = router({
     }),
 
   migrationStatus: publicProcedure
-    .input(z.object({ jobId: z.string().min(1) }).and(bootstrapTokenInput))
-    .query(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
-      return getMigrationJob(input.jobId);
-    }),
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(({ input }) => getMigrationJob(input.jobId)),
 
-  useExistingData: publicProcedure.input(bootstrapTokenInput).mutation(async ({ input, ctx }) => {
-    await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
+  useExistingData: publicProcedure.mutation(async ({ ctx }) => {
+    await ensureSetupWriteAllowed(ctx);
     await reconnectDatabase();
     await ensureDatabaseSchema();
     await setSettings({ setupDataChoice: "use-existing" });
     return setupStatus();
   }),
 
-  resetExistingData: publicProcedure.input(bootstrapTokenInput).mutation(async ({ input, ctx }) => {
-    await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
+  resetExistingData: publicProcedure.mutation(async ({ ctx }) => {
+    await ensureSetupWriteAllowed(ctx);
     await clearExistingPanelData();
     return setupStatus();
   }),
@@ -404,15 +376,14 @@ export const setupRouter = router({
       email: z.string().email("请输入有效邮箱地址").max(320),
       password: z.string().min(8, "密码至少 8 位").max(128),
       name: z.string().trim().max(64).optional(),
-    }).and(bootstrapTokenInput))
+    }))
     .mutation(async ({ input, ctx }) => {
-    await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
+    await ensureSetupWriteAllowed(ctx);
     await reconnectDatabase();
     await ensureDatabaseSchema();
     const id = await createInitialAdmin(input);
     await setSettings({ setupDataChoice: "new-panel" });
     markLocalSetupComplete();
-    consumeSetupBootstrapToken();
     return { id, success: true };
   }),
 
@@ -421,9 +392,9 @@ export const setupRouter = router({
       email: z.string().email("请输入有效邮箱地址").max(320),
       password: z.string().max(128).optional(),
       name: z.string().trim().max(64).optional(),
-    }).and(bootstrapTokenInput))
+    }))
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, input.bootstrapToken);
+      await ensureSetupWriteAllowed(ctx);
       await reconnectDatabase();
       await ensureDatabaseSchema();
       if (input.password && input.password.length < 8) {
@@ -433,7 +404,6 @@ export const setupRouter = router({
       const existingData = await getExistingDataSummary();
       await setSettings({ setupDataChoice: existingData.hasExistingData ? "use-existing" : "new-panel" });
       markLocalSetupComplete();
-      consumeSetupBootstrapToken();
       return { id, success: true };
     }),
 });

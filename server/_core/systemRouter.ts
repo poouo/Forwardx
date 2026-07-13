@@ -44,6 +44,22 @@ import {
 import { getAvatarDataUrlByteLength, isValidBrandLogoValue } from "../../shared/avatar";
 import { generateSelfSignedPanelSslCertificate, readPanelSslSettings, validatePanelSslConfig } from "../panelSsl";
 import {
+  DEFAULT_AI_PROVIDER,
+  DEFAULT_DEEPSEEK_MAX_TOKENS,
+  DEFAULT_DEEPSEEK_TEMPERATURE,
+  buildAiProviderConfigMap,
+  clearForwardxAiSettingsCache,
+  getAiProviderDefaultBaseUrl,
+  getAiProviderDefaultModel,
+  getAiProviderSettingKeys,
+  normalizeAiApiKey,
+  normalizeAiProvider,
+  normalizeDeepSeekNumber,
+  readAiProviderConfig,
+  type AiProvider,
+  type AiProviderConfigRuntime,
+} from "../ai/settings";
+import {
   AGENT_VERSION,
   ANDROID_APK_RELEASE_VERSION,
   ANDROID_APP_VERSION,
@@ -159,14 +175,6 @@ function normalizePublicHostMonitorTitle(value: unknown) {
   return String(value || "").trim().slice(0, 80);
 }
 const aiProviderSchema = z.enum(["deepseek", "siliconflow", "custom"]);
-type AiProvider = z.infer<typeof aiProviderSchema>;
-const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
-const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
-const DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1";
-const DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B";
-const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
-const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const logPageInputSchema = z.object({
   level: panelLogLevelSchema.default("all"),
   limit: z.number().int().min(1).max(500).default(200),
@@ -1253,40 +1261,6 @@ function normalizeOptionalHttpUrl(value: string) {
   return trimmed.replace(/\/+$/, "");
 }
 
-function normalizeDeepSeekNumber(value: string | null | undefined, fallback: number, min: number, max: number) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
-}
-
-function normalizeAiProvider(value: unknown): AiProvider {
-  const raw = String(value || "").trim().toLowerCase();
-  if (raw === "siliconflow") return "siliconflow";
-  if (raw === "custom") return "custom";
-  return DEFAULT_AI_PROVIDER;
-}
-
-function normalizeAiApiKey(value: unknown) {
-  let raw = String(value || "").trim();
-  if (!raw) return "";
-  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
-  raw = raw.replace(/^bearer\s+/i, "").trim();
-  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return raw;
-}
-
-function getAiProviderDefaultBaseUrl(provider: AiProvider) {
-  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
-  if (provider === "custom") return DEFAULT_DEEPSEEK_BASE_URL;
-  return DEFAULT_DEEPSEEK_BASE_URL;
-}
-
-function getAiProviderDefaultModel(provider: AiProvider) {
-  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_MODEL;
-  if (provider === "custom") return DEFAULT_DEEPSEEK_MODEL;
-  return DEFAULT_DEEPSEEK_MODEL;
-}
-
 type AiProviderConfigView = {
   provider: AiProvider;
   configured: boolean;
@@ -1295,65 +1269,11 @@ type AiProviderConfigView = {
   model: string;
 };
 
-type AiProviderConfigRuntime = AiProviderConfigView & {
-  apiKey: string;
-};
-
-const AI_PROVIDER_SETTING_KEYS: Record<AiProvider, { apiKey: string; baseUrl: string; model: string }> = {
-  deepseek: {
-    apiKey: "deepseekApiKeyDeepseek",
-    baseUrl: "deepseekBaseUrlDeepseek",
-    model: "deepseekModelDeepseek",
-  },
-  siliconflow: {
-    apiKey: "deepseekApiKeySiliconflow",
-    baseUrl: "deepseekBaseUrlSiliconflow",
-    model: "deepseekModelSiliconflow",
-  },
-  custom: {
-    apiKey: "deepseekApiKeyCustom",
-    baseUrl: "deepseekBaseUrlCustom",
-    model: "deepseekModelCustom",
-  },
-};
-
-function getAiProviderSettingKeys(provider: AiProvider) {
-  return AI_PROVIDER_SETTING_KEYS[provider];
-}
-
-function readAiProviderConfig(all: Record<string, string | null>, provider: AiProvider): AiProviderConfigRuntime {
-  const providerKeys = getAiProviderSettingKeys(provider);
-  const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
-  const defaultModel = getAiProviderDefaultModel(provider);
-  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? normalizeAiApiKey(all.deepseekApiKey) : "";
-  const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekBaseUrl || "").trim() : "";
-  const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekModel || "").trim() : "";
-  const apiKey = normalizeAiApiKey(all[providerKeys.apiKey]) || legacyApiKey;
-  const baseUrl = String(all[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
-  const model = String(all[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
-  return {
-    provider,
-    apiKey,
-    configured: !!apiKey,
-    apiKeyMasked: maskSecret(apiKey),
-    baseUrl,
-    model,
-  };
-}
-
-function buildAiProviderConfigMap(all: Record<string, string | null>): Record<AiProvider, AiProviderConfigRuntime> {
-  return {
-    deepseek: readAiProviderConfig(all, "deepseek"),
-    siliconflow: readAiProviderConfig(all, "siliconflow"),
-    custom: readAiProviderConfig(all, "custom"),
-  };
-}
-
 function toAiProviderConfigView(config: AiProviderConfigRuntime): AiProviderConfigView {
   return {
     provider: config.provider,
     configured: config.configured,
-    apiKeyMasked: config.apiKeyMasked,
+    apiKeyMasked: maskSecret(config.apiKey),
     baseUrl: config.baseUrl,
     model: config.model,
   };
@@ -1845,7 +1765,7 @@ export const systemRouter = router({
         provider: aiProvider,
         enabled: all.deepseekAiEnabled === "true",
         configured: aiActiveConfig.configured,
-        apiKeyMasked: aiActiveConfig.apiKeyMasked,
+        apiKeyMasked: maskSecret(aiActiveConfig.apiKey),
         baseUrl: aiActiveConfig.baseUrl,
         model: aiActiveConfig.model,
         providers: {
@@ -2294,6 +2214,7 @@ export const systemRouter = router({
           if (nextProvider === DEFAULT_AI_PROVIDER) next.deepseekApiKey = submittedApiKey;
         }
         await db.setSettings(next);
+        clearForwardxAiSettingsCache();
         console.info("[Settings] AI model settings updated");
       }
       if (input.ddns) {

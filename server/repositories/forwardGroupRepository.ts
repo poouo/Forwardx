@@ -1944,15 +1944,16 @@ export async function deleteForwardGroup(id: number) {
     const billingResource = await findTrafficBillingResourceForRule(template);
     const fallback = trafficBillingResourceCandidatesForRule(template)[0];
     const resource = billingResource || fallback;
-    if (!resource) continue;
-    const billed = await settleTrafficBillingRuleOnDelete({
-      userId: Number((template as any).userId),
-      ruleId: Number((template as any).id),
-      resourceType: resource.resourceType,
-      resourceId: resource.resourceId,
-    });
-    if (billed && Number(billed.balanceAfterCents) < 0) {
-      await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");
+    if (resource) {
+      const billed = await settleTrafficBillingRuleOnDelete({
+        userId: Number((template as any).userId),
+        ruleId: Number((template as any).id),
+        resourceType: resource.resourceType,
+        resourceId: resource.resourceId,
+      });
+      if (billed && Number(billed.balanceAfterCents) < 0) {
+        await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");
+      }
     }
     await markForwardRulePendingDelete(Number(template.id));
   }

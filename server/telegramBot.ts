@@ -1,25 +1,41 @@
 import * as db from "./db";
-import { requireMainBackupAllowed } from "./routers/rules.crud";
+import { createDirectForwardRuleForActor, deleteForwardRuleForActor, toggleForwardRuleForActor } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
 import { pushAgentRefresh, pushAgentUpgrade } from "./agentEvents";
-import { pushTunnelEndpointRefresh, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./routers/helpers";
+import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
 import { createTelegramWebAppLoginChallenge } from "./telegramWebAppLogin";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
-import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "./portPolicy";
 import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
 import { checkPanelUpdateTask, startPanelUpgradeTask } from "./_core/systemRouter";
-import { requireRuleProtocolEnabled } from "./forwardProtocolSettings";
-import { reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "./portReservations";
-
-const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
-
-function isMainBackupGostTunnelMode(mode: unknown) {
-  return mainBackupGostTunnelModes.has(String(mode || "").toLowerCase());
-}
+import { forwardxAiClient } from "./ai/client";
+import { appendAiAudit } from "./ai/audit";
+import { SlidingWindowRateLimiter } from "./ai/rateLimiter";
+import { getForwardxAiSettings as getDeepSeekSettings } from "./ai/settings";
+import {
+  getManagePresetGroup,
+  normalizeManagePresetCustomPatch,
+  parseManagePresetSelection,
+  type ManagePresetField,
+} from "./ai/managePresets";
+import {
+  buildForwardxManageIntentPrompt,
+  buildForwardxQueryIntentPrompt,
+  forwardxManageIntentResponseSchema,
+  forwardxQueryIntentResponseSchema,
+} from "./ai/skills/forwardxCore";
+import { KeyedTaskDispatcher } from "./keyedTaskDispatcher";
+import {
+  adjustUserBalanceCommand,
+  renewUserCommand,
+  resetUserTrafficCommand,
+  setUserAccountEnabledCommand,
+  setUserBalanceCommand,
+  setUserForwardAccessCommand,
+} from "./services/userCommandService";
 
 type TelegramUser = {
   id: number;
@@ -156,7 +172,7 @@ type ManageActionPrepareResult = {
   error?: string;
 };
 
-type ManageClarifyField = "target" | "amountYuan" | "codeCount" | "discountPercent" | "forwardMode" | "tunnel" | "host" | "ruleId";
+type ManageClarifyField = "target" | "forwardMode" | "tunnel" | "host" | "ruleId" | ManagePresetField;
 
 type PendingManageClarifySession = {
   actorUserId: number;
@@ -201,29 +217,14 @@ const RULE_PAGE_SIZE = 10;
 const AI_QUERY_RESULT_LIMIT = 10;
 const AI_PROCESSING_MESSAGE_DELAY_MS = 800;
 const AI_PROCESSING_MESSAGE_TEXT = "正在处理，请稍候…";
-type AiProvider = "deepseek" | "siliconflow" | "custom";
-type DeepSeekSettings = {
-  provider: AiProvider;
-  enabled: boolean;
-  apiKey: string;
-  baseUrl: string;
-  chatCompletionsUrl: string;
-  model: string;
-  maxTokens: number;
-  temperature: number;
-  telegramUserManageEnabled: boolean;
-  telegramAutoRecallEnabled: boolean;
-  telegramAutoRecallSeconds: number;
-  redemptionEnabled: boolean;
-  discountEnabled: boolean;
-};
-const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
-const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
-const DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1";
-const DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B";
-const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
-const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
+const AI_INTERACTION_RATE_LIMIT = 20;
+const AI_INTERACTION_RATE_WINDOW_MS = 60 * 1000;
+const TELEGRAM_UPDATE_CONCURRENCY = 8;
+const aiInteractionRateLimiter = new SlidingWindowRateLimiter({
+  limit: AI_INTERACTION_RATE_LIMIT,
+  windowMs: AI_INTERACTION_RATE_WINDOW_MS,
+});
+const telegramUpdateDispatcher = new KeyedTaskDispatcher(TELEGRAM_UPDATE_CONCURRENCY);
 const MANAGE_ACTION_CONFIRM_TTL_MS = 10 * 60 * 1000;
 const MANAGE_CLARIFY_TTL_MS = 60 * 1000;
 const MANAGE_BALANCE_MAX_CENTS = 100_000_000;
@@ -387,24 +388,6 @@ function pickManageRuleForwardType(actor: any, mode: ManageForwardMode) {
       : "当前账户没有可用的端口转发类型权限，请联系管理员授权。");
   }
   return selected;
-}
-
-async function settleTrafficBillingForDeletedRuleByTelegram(rule: any) {
-  const billingResource = await db.findTrafficBillingResourceForRule(rule);
-  const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
-  const resource = billingResource || fallback;
-  if (!resource) return null;
-  const billed = await db.settleTrafficBillingRuleOnDelete({
-    userId: Number(rule?.userId || 0),
-    ruleId: Number(rule?.id || 0),
-    resourceType: resource.resourceType,
-    resourceId: resource.resourceId,
-  });
-  if (billed && Number((billed as any).balanceAfterCents) < 0) {
-    await db.setUserForwardAccess(Number(rule?.userId || 0), false, "traffic_billing_balance");
-    await refreshUserForwardEndpoints(Number(rule?.userId || 0), "telegram-traffic-billing-delete-balance-negative");
-  }
-  return billed;
 }
 
 function cleanupExpiredPendingManageActions() {
@@ -1328,13 +1311,11 @@ async function renewalConfirmText(userId: number) {
   return { target, text, nextExpiresAt };
 }
 
-async function renewUserOneMonth(userId: number) {
+async function renewUserOneMonth(actor: any, userId: number) {
   const target = await db.getUserById(userId);
   if (!target) throw new Error("用户不存在");
   const { nextExpiresAt } = getRenewalDates(target, 1);
-  await db.updateUserTrafficSettings(userId, {
-    expiresAt: nextExpiresAt,
-  });
+  await renewUserCommand({ actor, targetUserId: userId, expiresAt: nextExpiresAt, reasonPrefix: "telegram-command-user-renewed" });
   return { target, nextExpiresAt };
 }
 
@@ -1449,104 +1430,9 @@ async function confirmMobileLogin(chatId: number | string, messageId: number, co
   deleteMessageLater(chatId, messageId, LOGIN_SUCCESS_MESSAGE_DELETE_MS);
 }
 
-function normalizeDeepSeekNumber(value: unknown, fallback: number, min: number, max: number) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(max, Math.max(min, numeric));
-}
-
-function normalizeAiProvider(value: unknown): AiProvider {
-  const raw = String(value || "").trim().toLowerCase();
-  if (raw === "siliconflow") return "siliconflow";
-  if (raw === "custom") return "custom";
-  return DEFAULT_AI_PROVIDER;
-}
-
-function normalizeAiApiKey(value: unknown) {
-  let raw = String(value || "").trim();
-  if (!raw) return "";
-  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
-  raw = raw.replace(/^bearer\s+/i, "").trim();
-  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return raw;
-}
-
-function getAiProviderDefaultBaseUrl(provider: AiProvider) {
-  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
-  return DEFAULT_DEEPSEEK_BASE_URL;
-}
-
-function getAiProviderDefaultModel(provider: AiProvider) {
-  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_MODEL;
-  return DEFAULT_DEEPSEEK_MODEL;
-}
-
-const AI_PROVIDER_SETTING_KEYS: Record<AiProvider, { apiKey: string; baseUrl: string; model: string }> = {
-  deepseek: {
-    apiKey: "deepseekApiKeyDeepseek",
-    baseUrl: "deepseekBaseUrlDeepseek",
-    model: "deepseekModelDeepseek",
-  },
-  siliconflow: {
-    apiKey: "deepseekApiKeySiliconflow",
-    baseUrl: "deepseekBaseUrlSiliconflow",
-    model: "deepseekModelSiliconflow",
-  },
-  custom: {
-    apiKey: "deepseekApiKeyCustom",
-    baseUrl: "deepseekBaseUrlCustom",
-    model: "deepseekModelCustom",
-  },
-};
-
-function getAiProviderSettingKeys(provider: AiProvider) {
-  return AI_PROVIDER_SETTING_KEYS[provider];
-}
-
-function buildAiChatCompletionsUrl(baseUrl: string) {
-  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
-  if (/\/chat\/completions$/i.test(normalized)) return normalized;
-  return `${normalized}/chat/completions`;
-}
-
-function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
-  const numeric = Math.floor(Number(value));
-  if (!Number.isFinite(numeric)) return 60;
-  return Math.min(1200, Math.max(30, numeric));
-}
-
-async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
-  const settings = await db.getAllSettings();
-  const provider = normalizeAiProvider(settings.deepseekProvider);
-  const providerKeys = getAiProviderSettingKeys(provider);
-  const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
-  const defaultModel = getAiProviderDefaultModel(provider);
-  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? normalizeAiApiKey(settings.deepseekApiKey) : "";
-  const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekBaseUrl || "").trim() : "";
-  const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekModel || "").trim() : "";
-  const apiKey = normalizeAiApiKey(settings[providerKeys.apiKey]) || legacyApiKey;
-  const baseUrl = String(settings[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
-  const model = String(settings[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
-  return {
-    provider,
-    enabled: settings.deepseekAiEnabled === "true",
-    apiKey,
-    baseUrl,
-    chatCompletionsUrl: buildAiChatCompletionsUrl(baseUrl),
-    model,
-    maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
-    temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
-    telegramUserManageEnabled: settings.telegramAiUserManageEnabled !== "false",
-    telegramAutoRecallEnabled: settings.telegramAiAutoRecallEnabled === "true",
-    telegramAutoRecallSeconds: normalizeTelegramAiAutoRecallSeconds(settings.telegramAiAutoRecallSeconds),
-    redemptionEnabled: settings.redemptionEnabled !== "false",
-    discountEnabled: settings.discountEnabled !== "false",
-  };
-}
-
 async function getTelegramAiAutoRecallConfig() {
   const deepseek = await getDeepSeekSettings();
-  const seconds = normalizeTelegramAiAutoRecallSeconds(deepseek.telegramAutoRecallSeconds);
+  const seconds = deepseek.telegramAutoRecallSeconds;
   return {
     enabled: !!deepseek.telegramAutoRecallEnabled,
     delayMs: seconds * 1000,
@@ -1788,21 +1674,6 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
   };
 }
 
-function extractAiJsonObject(content: string) {
-  const trimmed = content.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
-  }
-}
-
 function extractRuleId(text: string) {
   const match = text.match(/(?:规则|rule)\s*#?\s*([0-9零〇一二两三四五六七八九十百千]+)/i)
     || text.match(/第\s*([0-9零〇一二两三四五六七八九十百千]+)\s*条?\s*(?:规则|rule)/i)
@@ -1907,52 +1778,48 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
   const settings = await getDeepSeekSettings().catch(() => null);
   if (!settings?.enabled || !settings.apiKey) return fallback;
   try {
-    const resp = await fetch(settings.chatCompletionsUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You classify ForwardX Telegram user messages into read-only query intents.",
-              "Return only JSON with keys: intent, id, keyword, ruleStatus, rankMetric, rankOrder, limit.",
-              "Allowed intents: usage, rules, rule_detail, rule_usage, rule_rank, hosts, tunnels, forward_groups, users, account, help, unsupported.",
-              "For rule status queries such as 异常规则有没有 / 未运行规则 / 等待应用规则 / 停用规则 / 运行中的规则, classify as rules and set ruleStatus to abnormal/pending/disabled/running.",
-              "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
-              "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
-              "Use rule_rank when the user asks which rules rank highest/lowest by traffic, connections, or latency; set rankMetric to traffic/connections/latency and rankOrder to desc/asc.",
-              "For examples like 哪个规则流量最多 or 规则延迟最高的前5条, classify as rule_rank, not rules.",
-              "Recognize rule id formats such as 第9条规则 / 9号规则 / 规则#9 and include id.",
-              "If the message asks for rules filtered by a user or host, classify it as rules, not users or hosts.",
-              "For user detail queries like 用户1/用户一的使用详情, classify as users and return keyword as the precise user token (for example 1).",
-              "Do not use vague words like now/current/all/my as keyword; leave keyword empty for list-all queries.",
-              "Do not erase explicit ids or keywords from the user message.",
-              "If the user asks to enable, disable, create, update, delete, reset, renew, redeem, or otherwise change data, return unsupported.",
-              "Do not answer the user. Do not include markdown.",
-            ].join(" "),
-          },
-          { role: "user", content: text.slice(0, 500) },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0,
-        max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
-      }),
+    const parsed = await forwardxAiClient.requestStructuredJson({
+      operation: "telegram.query-intent",
+      settings,
+      systemPrompt: buildForwardxQueryIntentPrompt(),
+      userText: text,
+      schema: forwardxQueryIntentResponseSchema,
     });
-    if (!resp.ok) throw new Error(`AI HTTP ${resp.status}`);
-    const json = await resp.json().catch(() => null) as any;
-    const content = String(json?.choices?.[0]?.message?.content || "");
-    const parsed = extractAiJsonObject(content);
-    if (!parsed) return fallback;
     return normalizeAiQueryIntent(parsed, fallback);
   } catch (error) {
     console.warn("[TelegramBot] AI query intent fallback:", error);
+    appendAiAudit({ phase: "intent", result: "fallback", intent: fallback.intent, detail: error instanceof Error ? error.message : String(error) });
     return fallback;
   }
+}
+
+function managePresetClarifyUi(
+  action: ManageActionKind,
+  sourceText: string,
+  missingFields: readonly ManageClarifyField[],
+) {
+  const group = getManagePresetGroup({ action, sourceText, missingFields });
+  if (!group) return null;
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  for (let index = 0; index < group.choices.length; index += 2) {
+    rows.push(group.choices.slice(index, index + 2).map((choice) => ({
+      text: choice.label,
+      callback_data: `fx:op:clarify:preset:${group.field}:${choice.value}`,
+    })));
+  }
+  rows.push([{ text: "✏️ 自定义输入", callback_data: `fx:op:clarify:custom:${group.field}` }]);
+  rows.push([{ text: "❌ 取消本次操作", callback_data: "fx:op:clarify:cancel" }]);
+  const remainingCount = missingFields.filter((field) => field !== group.field).length;
+  const nextHint = remainingCount > 0
+    ? "选择后会继续补充下一项；也可以直接发送完整信息。"
+    : "也可以不点击按钮，直接发送自定义内容。";
+  return {
+    field: group.field,
+    customPrompt: group.customPrompt,
+    text: `${group.prompt}\n${nextHint}\n\n${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+    keyboard: { inline_keyboard: rows } as InlineKeyboardMarkup,
+    choices: group.choices,
+  };
 }
 
 function normalizeManageTargetKeyword(value: unknown) {
@@ -2430,7 +2297,7 @@ function mergeManageActionIntent(base: ManageActionIntent, patch: Partial<Manage
 function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
   const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!raw) return { intent: { action: "none" }, writeLike: false };
-  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|新增|添加|创建|删除|移除|调整|规则|转发|注册|开放注册|自助注册|折扣码|优惠码|兑换码|代金码)/i.test(raw);
+  const writeLike = /(充值|充钱|设置余额|调整余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|关掉|打开|重置|清零|扣除|扣减|减少|增加|新增|添加|创建|删除|移除|去掉|开放注册|自助注册|折扣码|优惠码|兑换码|代金码|enable|disable|delete|remove|reset|renew|create|add|update|edit)/i.test(raw);
   const enableVerb = /(开启|启用|恢复|打开)/i.test(raw);
   const disableVerb = /(关闭|停用|禁用|暂停)/i.test(raw);
   const createVerb = /(新增|添加|增加|创建|加一个|开一个|新建)/i.test(raw);
@@ -2540,59 +2407,22 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
   const settings = await getDeepSeekSettings().catch(() => null);
   if (!settings?.enabled || !settings.apiKey) return fallback;
   try {
-    const resp = await fetch(settings.chatCompletionsUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You classify ForwardX Telegram write-operation intents.",
-              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,ruleId,tunnel,host,forwardMode,sourcePort,targetIp,targetPort,codeCount,discountPercent,writeLike.",
-              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,rule_create,rule_delete,tunnel_rules_enable,tunnel_rules_disable,traffic_reset,redeem_code_generate_balance,discount_code_generate_percent,registration_enable,registration_disable.",
-              "target should be user id/username/email/remark keyword when possible.",
-              "durationUnit must be one of day,month,year.",
-              "Use rule_enable/rule_disable when user asks to enable/disable a specific rule by id.",
-              "Use rule_create for add/create forwarding rule requests.",
-              "Use rule_delete for delete/remove forwarding rule requests.",
-              "forwardMode should be host or tunnel when user states port-forward/tunnel-forward explicitly.",
-              "sourcePort can be 0 when user asks random source port.",
-              "targetIp and targetPort should be extracted when user provides destination endpoint.",
-              "Use tunnel_rules_enable/tunnel_rules_disable when user asks to batch enable/disable rules in a tunnel, and include tunnel keyword.",
-              "ruleId should be numeric when available.",
-              "For recharge/add/subtract balance use balance_adjust.",
-              "For set balance directly use balance_set.",
-              "Use redeem_code_generate_balance when user asks to create/generate balance redemption codes; include amountYuan (face value in CNY) and codeCount when available.",
-              "Use registration_enable/registration_disable when user asks to enable/disable public/self-service user registration.",
-              "Use discount_code_generate_percent when user asks to create/generate discount codes; discountPercent means off-percent (e.g. 20 means 20% off, equivalent to 8-zhe), include codeCount when available.",
-              "If message is not a write operation, action should be none and writeLike false.",
-              "Do not answer user; do not use markdown.",
-            ].join(" "),
-          },
-          { role: "user", content: text.slice(0, 500) },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0,
-        max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
-      }),
+    const parsed = await forwardxAiClient.requestStructuredJson({
+      operation: "telegram.manage-intent",
+      settings,
+      systemPrompt: buildForwardxManageIntentPrompt(),
+      userText: text,
+      schema: forwardxManageIntentResponseSchema,
     });
-    if (!resp.ok) throw new Error(`AI HTTP ${resp.status}`);
-    const json = await resp.json().catch(() => null) as any;
-    const content = String(json?.choices?.[0]?.message?.content || "");
-    const parsed = extractAiJsonObject(content);
-    if (!parsed) return fallback;
     const intent = normalizeManageActionIntent(parsed, fallback.intent);
+    const modelWriteLike = parsed.writeLike === true || parsed.writeLike === "true";
     return {
       intent,
-      writeLike: Boolean(parsed?.writeLike) || fallback.writeLike || intent.action !== "none",
+      writeLike: modelWriteLike || fallback.writeLike || intent.action !== "none",
     };
   } catch (error) {
     console.warn("[TelegramBot] AI manage intent fallback:", error);
+    appendAiAudit({ phase: "intent", result: "fallback", action: fallback.intent.action, detail: error instanceof Error ? error.message : String(error) });
     return fallback;
   }
 }
@@ -2798,6 +2628,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
           ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
           ...(codeCount ? { codeCount } : {}),
         };
+        const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
         let text = `请补充余额兑换码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
         if (missingFields.includes("amountYuan") && missingFields.includes("codeCount")) {
           text = `请补充兑换码面额和数量，例如“50 元 20 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
@@ -2811,8 +2642,8 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
             actor,
             intent: nextIntent,
             missingFields,
-            text,
-            keyboard: manageClarifyCancelKeyboard(),
+            text: presetUi?.text || text,
+            keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
           },
         };
       }
@@ -2853,6 +2684,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
         ...(discountPercent ? { discountPercent } : {}),
         ...(codeCount ? { codeCount } : {}),
       };
+      const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
       let text = `请补充折扣码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
       if (missingFields.includes("discountPercent") && missingFields.includes("codeCount")) {
         text = `请补充折扣力度和数量，例如“8 折 10 个”或“减 20% 10 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
@@ -2866,8 +2698,8 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
           actor,
           intent: nextIntent,
           missingFields,
-          text,
-          keyboard: manageClarifyCancelKeyboard(),
+          text: presetUi?.text || text,
+          keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
         },
       };
     }
@@ -3199,15 +3031,17 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   if (action === "balance_set" || action === "balance_adjust") {
     const amountYuan = Number(intent.amountYuan);
     if (!Number.isFinite(amountYuan)) {
+      const missingFields: ManageClarifyField[] = ["amountYuan"];
+      const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
       return {
         clarify: {
           actor,
           intent: { ...intent, action, target: targetKeyword || intent.target },
-          missingFields: ["amountYuan"],
-          text: action === "balance_set"
+          missingFields,
+          text: presetUi?.text || (action === "balance_set"
             ? `请补充要设置的余额金额（单位：元），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`
-            : `请补充要调整的金额（单位：元，可正可负），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
-          keyboard: manageClarifyCancelKeyboard(),
+            : `请补充要调整的金额（单位：元，可正可负），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`),
+          keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
         },
       };
     }
@@ -3225,11 +3059,26 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   let durationValue: number | undefined;
   let durationUnit: ManageDurationUnit | undefined;
   if (action === "renew") {
-    durationValue = Math.max(1, Math.floor(Number(intent.durationValue || 1)));
-    const rawUnit = String(intent.durationUnit || "month");
-    durationUnit = rawUnit === "day" || rawUnit === "year" || rawUnit === "month"
+    const parsedDurationValue = Math.floor(Number(intent.durationValue));
+    const rawUnit = String(intent.durationUnit || "");
+    const parsedDurationUnit = rawUnit === "day" || rawUnit === "year" || rawUnit === "month"
       ? (rawUnit as ManageDurationUnit)
-      : "month";
+      : undefined;
+    if (!Number.isFinite(parsedDurationValue) || parsedDurationValue <= 0 || !parsedDurationUnit) {
+      const missingFields: ManageClarifyField[] = ["duration"];
+      const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
+      return {
+        clarify: {
+          actor,
+          intent: { ...intent, action, target: targetKeyword || intent.target },
+          missingFields,
+          text: presetUi?.text || `请补充续期时长，例如“1个月”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+          keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
+        },
+      };
+    }
+    durationValue = parsedDurationValue;
+    durationUnit = parsedDurationUnit;
   }
 
   const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
@@ -3341,7 +3190,7 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
   return lines.join("\n");
 }
 
-async function executePendingManageAction(pending: PendingManageAction, callbackUser: any) {
+async function executePendingManageActionUnchecked(pending: PendingManageAction, callbackUser: any) {
   const actor = (await db.getUserById(Number(callbackUser?.id || 0)).catch(() => null)) || callbackUser;
   if (Number(actor?.id || 0) !== Number(pending.actorUserId || 0)) {
     throw new Error("只有原发起人可以确认该操作。");
@@ -3393,272 +3242,51 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       const tunnelId = mode === "tunnel" ? Number(pending.tunnelId || 0) : 0;
       const targetIp = normalizeManageTargetIp(pending.targetIp || "");
       const targetPort = parseManagePort(pending.targetPort);
-      let sourcePort = Number(pending.sourcePort ?? 0);
+      const sourcePort = Number(pending.sourcePort ?? 0);
       if (!Number.isFinite(hostId) || hostId <= 0) throw new Error("入口主机无效。");
       if (!targetIp || !isValidManageRuleTargetHost(targetIp)) throw new Error("目标地址格式无效，请输入 IP 或域名。");
       if (!targetPort) throw new Error("目标端口无效，请输入 1-65535。");
       if (!(sourcePort === 0 || parseManagePort(sourcePort))) {
         throw new Error("源端口无效，请输入 1-65535，或省略源端口使用随机端口。");
       }
-
-      let host = await db.getHostById(hostId).catch(() => null);
-      if (!host) throw new Error("入口主机不存在。");
-
-      let tunnel: any = null;
-      let isTrafficBillingRule = false;
-      if (tunnelId > 0) {
-        const access = await requireTunnelUseOrTrafficBillingAccess(
-          { user: { id: Number(actor.id), role: String(actor.role || "user") } },
-          tunnelId,
-        );
-        tunnel = access.tunnel;
-        isTrafficBillingRule = !!access.isTrafficBillingResource;
-        if (!(tunnel as any)?.isEnabled) throw new Error("所选隧道已停用。");
-        if (Number((tunnel as any)?.entryHostId || 0) !== hostId) {
-          throw new Error("所选隧道入口主机与规则入口主机不一致。");
-        }
-      } else {
-        const access = await requireHostUseAccess(
-          { user: { id: Number(actor.id), role: String(actor.role || "user") } },
-          hostId,
-        );
-        host = access.host;
-        isTrafficBillingRule = !!access.isTrafficBillingResource;
-      }
-
-      if (String(actor?.role) !== "admin") {
-        const check = await db.ensureUserForwardAccessReady(Number(actor.id), { allowTrafficBillingRecovery: isTrafficBillingRule });
-        if (!check.allowed) throw new Error(check.message || "转发权限已暂停，请续费后再添加规则。");
-        const owner = check.user || await db.getUserById(Number(actor.id));
-        if (owner?.expiresAt && new Date(owner.expiresAt) <= new Date()) {
-          throw new Error("账户已到期，无法添加规则。");
-        }
-        if (Number((owner as any)?.maxRules || 0) > 0) {
-          const ruleCount = await db.getUserRuleCount(Number(actor.id));
-          if (ruleCount >= Number((owner as any).maxRules)) {
-            throw new Error(`你已达到最大规则数量限制（${Number((owner as any).maxRules)} 条）。`);
-          }
-        }
-        if (Number((owner as any)?.maxPorts || 0) > 0) {
-          const portCount = await db.getUserPortCount(Number(actor.id));
-          if (portCount >= Number((owner as any).maxPorts)) {
-            throw new Error(`你已达到最大端口数量限制（${Number((owner as any).maxPorts)} 个）。`);
-          }
-        }
-        if (isTrafficBillingRule && Number((owner as any)?.balanceCents || 0) <= 0) {
-          throw new Error("流量计费余额不足，请充值后再使用该计费资源。");
-        }
-        if (!isTrafficBillingRule && Number((owner as any)?.trafficLimit || 0) > 0) {
-          if (Number((owner as any)?.trafficUsed || 0) >= Number((owner as any)?.trafficLimit || 0)) {
-            throw new Error("流量已用完，无法添加规则。");
-          }
-        }
-      }
-
       const forwardType = pickManageRuleForwardType(actor, mode);
-      await requireRuleProtocolEnabled({ forwardType, tunnelId: tunnelId || null }, tunnel || undefined);
-
-      const entryPolicy = tunnelId > 0
-        ? combinePortPolicies(
-            portPolicyFrom(host as any),
-            portPolicyFrom({
-              portRangeStart: (tunnel as any)?.portRangeStart,
-              portRangeEnd: (tunnel as any)?.portRangeEnd,
-            }),
-          )
-        : portPolicyFrom(host as any);
-      const planRange = String(actor?.role) !== "admin"
-        ? await db.getUserPlanPortRange(Number(actor.id), hostId, tunnelId || undefined)
-        : null;
-      const effectivePolicy = planRange
-        ? combinePortPolicies(
-            entryPolicy,
-            portPolicyFrom({
-              portRangeStart: planRange.start,
-              portRangeEnd: planRange.end,
-            }),
-          )
-        : entryPolicy;
-
-      let sourcePortReservation: HostPortReservation | null = null;
-      let tunnelExitPortReservation: HostPortReservation | null = null;
-      try {
-      if (sourcePort === 0) {
-        let randomRangeStart = tunnelId > 0 ? Number((tunnel as any)?.portRangeStart || 0) || null : null;
-        let randomRangeEnd = tunnelId > 0 ? Number((tunnel as any)?.portRangeEnd || 0) || null : null;
-        if (planRange) {
-          randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
-          randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
-        }
-        sourcePortReservation = await reserveAvailableHostPort({
-          hostId,
-          protocol: "both",
-          findPort: (reservedPorts) => db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd, "both", reservedPorts),
-          isUsed: (port) => db.isPortUsedOnHost(hostId, port, undefined, "both"),
-        });
-        if (!sourcePortReservation) throw new Error("该主机端口范围内暂无可用入口端口。");
-        sourcePort = sourcePortReservation.port;
-      } else {
-        if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
-          throw new Error(portPolicyErrorMessage(effectivePolicy, "入口端口"));
-        }
-        sourcePortReservation = await reserveSpecificHostPort({
-          hostId,
-          port: sourcePort,
-          protocol: "both",
-          isUsed: (port) => db.isPortUsedOnHost(hostId, port, undefined, "both"),
-        });
-        if (!sourcePortReservation) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再试。`);
-      }
-
-      let tunnelExitPort: number | null = null;
-      if (tunnelId > 0) {
-        const exitHost = await db.getHostById(Number((tunnel as any)?.exitHostId || 0));
-        const exitHostId = Number((tunnel as any)?.exitHostId || 0);
-        tunnelExitPortReservation = await reserveAvailableHostPort({
-          hostId: exitHostId,
-          protocol: "both",
-          findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
-            exitHostId,
-            (exitHost as any)?.portRangeStart,
-            (exitHost as any)?.portRangeEnd,
-            reservedPorts,
-          ),
-          isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, undefined, "both"),
-        });
-        if (!tunnelExitPortReservation) throw new Error("隧道出口主机没有可用出口端口。");
-        tunnelExitPort = tunnelExitPortReservation.port;
-      }
-
       const ruleName = `TG-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${sourcePort}`;
-      const id = await db.createForwardRule({
+      const created = await createDirectForwardRuleForActor(actor, {
         hostId,
         name: shortText(ruleName, 64),
         forwardType,
         protocol: "both",
         gostMode: "direct",
-        gostRelayHost: null,
-        gostRelayPort: null,
         tunnelId: tunnelId || null,
-        tunnelExitPort: tunnelExitPort ?? null,
         forwardGroupId: null,
-        forwardGroupRuleId: null,
-        forwardGroupMemberId: null,
-        isForwardGroupTemplate: false,
         sourcePort,
         targetIp,
         targetPort,
-        blockHttp: false,
-        blockSocks: false,
-        blockTls: false,
-        proxyProtocolReceive: false,
-        proxyProtocolSend: false,
-        proxyProtocolExitReceive: false,
-        proxyProtocolExitSend: false,
-        proxyProtocolVersion: 1,
-        tcpFastOpen: false,
-        zeroCopy: false,
+        telegramErrorNotifyEnabled: false,
         failoverEnabled: false,
         failoverStrategy: "fallback",
-        failoverTargets: null,
+        failoverTargets: [],
         failoverSeconds: 60,
         recoverSeconds: 120,
         autoFailback: true,
-        isEnabled: true,
-        isRunning: false,
-        userId: Number(actor.id),
-      } as any);
-
-      if (tunnelId > 0) {
-        const tunnelForSync = tunnel || await db.getTunnelById(tunnelId);
-        if (tunnelForSync) {
-          await db.reconcileForwardRuleTunnelExits(
-            { id, hostId, tunnelId, sourcePort, targetIp, targetPort, tunnelExitPort },
-            tunnelForSync,
-          );
-          await db.updateTunnel(tunnelId, { isRunning: false } as any);
-          await pushTunnelEndpointRefresh(tunnelForSync, "telegram-rule-created");
-        } else {
-          pushAgentRefresh(hostId, "telegram-rule-created");
-        }
-      } else {
-        pushAgentRefresh(hostId, "telegram-rule-created");
-      }
-
-      const createdRule = await db.getForwardRuleById(Number(id)).catch(() => null);
+      }, { reasonPrefix: "telegram-rule" });
+      const tunnel = tunnelId > 0 ? await db.getTunnelById(tunnelId).catch(() => null) : null;
+      const createdRule = await db.getForwardRuleById(Number(created.id)).catch(() => null);
       return [
         "<b>执行成功</b>",
         `操作：新增转发规则`,
-        `规则：${aiCode(createdRule ? formatManageRulePreview(createdRule) : `#${id} :${sourcePort} -> ${targetIp}:${targetPort}`)}`,
+        `规则：${aiCode(createdRule ? formatManageRulePreview(createdRule) : `#${created.id} :${created.sourcePort} -> ${targetIp}:${targetPort}`)}`,
         `转发方式：${escapeHtml(manageForwardModeLabel(mode))}`,
-        `入口端口：${aiCode(`:${sourcePort}`)}`,
+        `入口端口：${aiCode(`:${created.sourcePort}`)}`,
         tunnelId > 0 ? `隧道：${aiCode(`#${tunnelId} ${(tunnel as any)?.name || ""}`.trim())}` : "",
       ].filter(Boolean).join("\n");
-      } finally {
-        tunnelExitPortReservation?.release();
-        sourcePortReservation?.release();
-      }
     }
 
     if (pending.action === "rule_delete") {
       const ruleId = Number(pending.ruleId || 0);
       if (!Number.isFinite(ruleId) || ruleId <= 0) throw new Error("规则 ID 无效。");
-      const rule = await db.getForwardRuleById(ruleId);
-      if (!rule || (rule as any)?.pendingDelete) throw new Error("规则不存在或已删除。");
-      if (String(actor?.role) !== "admin" && Number((rule as any).userId) !== Number(actor.id)) {
-        throw new Error("规则不存在或无权操作。");
-      }
-      if ((rule as any).forwardGroupRuleId) {
-        throw new Error("转发组成员规则由系统维护，不支持在机器人中直接删除。");
-      }
-
-      let chargedCents = 0;
-      let balanceAfterCents: number | null = null;
-      const collectBilling = (billed: any) => {
-        if (!billed) return;
-        chargedCents += Math.max(0, Number((billed as any).amountCents || 0));
-        if (Number.isFinite(Number((billed as any).balanceAfterCents))) {
-          balanceAfterCents = Number((billed as any).balanceAfterCents);
-        }
-      };
-
-      if ((rule as any).isForwardGroupTemplate) {
-        const childRules = await db.getForwardGroupChildRulesForTemplate(ruleId);
-        for (const child of childRules as any[]) {
-          collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(child));
-          const childTunnelId = Number((child as any).tunnelId || 0);
-          if (childTunnelId > 0) {
-            const tunnel = await db.getTunnelById(childTunnelId);
-            await db.updateTunnel(childTunnelId, { isRunning: false } as any);
-            if (tunnel) await pushTunnelEndpointRefresh(tunnel, "telegram-forward-group-rule-deleted");
-          }
-          await db.markForwardRulePendingDelete(Number((child as any).id || 0));
-          pushAgentRefresh(Number((child as any).hostId || 0), "telegram-forward-group-rule-deleted");
-        }
-        collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(rule));
-        await db.markForwardRulePendingDelete(ruleId);
-        const groupId = Number((rule as any).forwardGroupId || 0);
-        if (groupId > 0) await db.runForwardGroupFailover(groupId, { manual: true });
-        return [
-          "<b>执行成功</b>",
-          `操作：删除转发规则`,
-          `规则：${aiCode(formatManageRulePreview(rule))}`,
-          `已联动删除子规则：<b>${(childRules as any[]).length}</b> 条`,
-          chargedCents > 0 ? `删除结算扣费：<b>${formatMoneyCny(chargedCents)}</b>` : "",
-          balanceAfterCents !== null ? `当前余额：<b>${formatMoneyCny(balanceAfterCents)}</b>` : "",
-        ].filter(Boolean).join("\n");
-      }
-
-      collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(rule));
-      const tunnelId = Number((rule as any).tunnelId || 0);
-      if (tunnelId > 0) {
-        const tunnel = await db.getTunnelById(tunnelId);
-        await db.updateTunnel(tunnelId, { isRunning: false } as any);
-        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "telegram-rule-deleted");
-      }
-      await db.markForwardRulePendingDelete(ruleId);
-      pushAgentRefresh(Number((rule as any).hostId || 0), "telegram-rule-deleted");
-
+      const result = await deleteForwardRuleForActor(actor, ruleId, { reasonPrefix: "telegram-rule" });
+      const rule = result.rule;
       const targetUser = Number((rule as any).userId || 0) > 0
         ? await db.getUserById(Number((rule as any).userId)).catch(() => null)
         : null;
@@ -3667,8 +3295,9 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         `操作：删除转发规则`,
         targetUser ? `用户：${formatUserLabel(targetUser)}` : "",
         `规则：${aiCode(formatManageRulePreview(rule))}`,
-        chargedCents > 0 ? `删除结算扣费：<b>${formatMoneyCny(chargedCents)}</b>` : "",
-        balanceAfterCents !== null ? `当前余额：<b>${formatMoneyCny(balanceAfterCents)}</b>` : "",
+        result.childRules.length > 0 ? `已联动删除子规则：<b>${result.childRules.length}</b> 条` : "",
+        result.chargedCents > 0 ? `删除结算扣费：<b>${formatMoneyCny(result.chargedCents)}</b>` : "",
+        result.balanceAfterCents !== null ? `当前余额：<b>${formatMoneyCny(result.balanceAfterCents)}</b>` : "",
       ].filter(Boolean).join("\n");
     }
 
@@ -3808,17 +3437,13 @@ async function executePendingManageAction(pending: PendingManageAction, callback
     case "balance_set": {
       const amountCents = Math.round(Number(pending.amountCents || 0));
       if (!Number.isFinite(amountCents) || amountCents < 0) throw new Error("余额金额无效。");
-      const result = await db.setUserBalance(Number(target.id), amountCents, {
-        type: "admin_adjust",
+      const result = await setUserBalanceCommand({
+        actor,
+        targetUserId: Number(target.id),
+        balanceCents: amountCents,
         description: `Telegram 余额设置：${sourceText}`,
-        operatorUserId: Number(actor.id),
-      } as any);
-      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-set-forward-restored");
-      } else if (recovery.reason === "traffic_billing_balance") {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-set-forward-paused");
-      }
+        reasonPrefix: "telegram-balance-set",
+      });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3829,17 +3454,13 @@ async function executePendingManageAction(pending: PendingManageAction, callback
     case "balance_adjust": {
       const amountCents = Math.round(Number(pending.amountCents || 0));
       if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("调整金额无效。");
-      const result = await db.addUserBalance(Number(target.id), amountCents, {
-        type: amountCents > 0 ? "admin_recharge" : "admin_adjust",
+      const result = await adjustUserBalanceCommand({
+        actor,
+        targetUserId: Number(target.id),
+        amountCents,
         description: `Telegram 余额调整：${sourceText}`,
-        operatorUserId: Number(actor.id),
-      } as any);
-      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-adjust-forward-restored");
-      } else if (recovery.reason === "traffic_billing_balance") {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-adjust-forward-paused");
-      }
+        reasonPrefix: "telegram-balance-adjust",
+      });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3852,11 +3473,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       const durationValue = Math.max(1, Math.floor(Number(pending.durationValue || 1)));
       const durationUnit: ManageDurationUnit = pending.durationUnit || "month";
       const { nextExpiresAt } = getRenewalDatesByDuration(target, durationValue, durationUnit);
-      await db.updateUserTrafficSettings(Number(target.id), { expiresAt: nextExpiresAt });
-      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-renewed-forward-restored");
-      }
+      await renewUserCommand({ actor, targetUserId: Number(target.id), expiresAt: nextExpiresAt, reasonPrefix: "telegram-user-renewed" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3865,10 +3482,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       ].join("\n");
     }
     case "account_disable": {
-      if (Number(target.id) === Number(actor.id)) throw new Error("不能停用当前登录账号。");
-      if (String(target.role) === "admin") throw new Error("管理员账号不能通过机器人停用。");
-      await db.setUserAccountEnabled(Number(target.id), false);
-      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-account-disabled");
+      await setUserAccountEnabledCommand({ actor, targetUserId: Number(target.id), enabled: false, reasonPrefix: "telegram-user-account" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3876,11 +3490,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       ].join("\n");
     }
     case "account_enable": {
-      await db.setUserAccountEnabled(Number(target.id), true);
-      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-account-enabled-forward-restored");
-      }
+      await setUserAccountEnabledCommand({ actor, targetUserId: Number(target.id), enabled: true, reasonPrefix: "telegram-user-account" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3888,9 +3498,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       ].join("\n");
     }
     case "forward_disable": {
-      if (String(target.role) === "admin") throw new Error("管理员账号不能关闭转发权限。");
-      await db.setUserForwardAccess(Number(target.id), false, "manual");
-      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-forward-disabled");
+      await setUserForwardAccessCommand({ actor, targetUserId: Number(target.id), enabled: false, reasonPrefix: "telegram-user-forward" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3898,9 +3506,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       ].join("\n");
     }
     case "forward_enable": {
-      if (String(target.role) === "admin") throw new Error("管理员账号默认拥有转发权限。");
-      await db.setUserForwardAccess(Number(target.id), true);
-      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-forward-enabled");
+      await setUserForwardAccessCommand({ actor, targetUserId: Number(target.id), enabled: true, reasonPrefix: "telegram-user-forward" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3908,11 +3514,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       ].join("\n");
     }
     case "traffic_reset": {
-      await db.resetUserTraffic(Number(target.id));
-      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
-      if (recovery.restored) {
-        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-traffic-reset-forward-restored");
-      }
+      await resetUserTrafficCommand({ actor, targetUserId: Number(target.id), reasonPrefix: "telegram-user-traffic-reset" });
       return [
         "<b>执行成功</b>",
         `用户：${formatUserLabel(target)}`,
@@ -3921,6 +3523,42 @@ async function executePendingManageAction(pending: PendingManageAction, callback
     }
     default:
       throw new Error("暂不支持的管理操作。");
+  }
+}
+
+async function executePendingManageAction(pending: PendingManageAction, callbackUser: any) {
+  const startedAt = Date.now();
+  try {
+    const result = await executePendingManageActionUnchecked(pending, callbackUser);
+    appendAiAudit({
+      phase: "execute",
+      result: "success",
+      actorUserId: Number(callbackUser?.id || pending.actorUserId || 0) || null,
+      actorRole: String(callbackUser?.role || pending.actorRole || ""),
+      action: pending.action,
+      ruleId: pending.ruleId,
+      tunnelId: pending.tunnelId,
+      hostId: pending.hostId,
+      targetUserId: pending.targetUserId,
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    appendAiAudit({
+      phase: "execute",
+      result: /(权限|无权|只有|禁止|不允许)/.test(detail) ? "denied" : "failed",
+      actorUserId: Number(callbackUser?.id || pending.actorUserId || 0) || null,
+      actorRole: String(callbackUser?.role || pending.actorRole || ""),
+      action: pending.action,
+      ruleId: pending.ruleId,
+      tunnelId: pending.tunnelId,
+      hostId: pending.hostId,
+      targetUserId: pending.targetUserId,
+      durationMs: Date.now() - startedAt,
+      detail,
+    });
+    throw error;
   }
 }
 
@@ -3942,10 +3580,13 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
       await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
       return true;
     }
-    const mergedIntent = mergeManageActionIntent(
-      activeClarify.intent,
-      extractManageIntentPatchFromText(query, activeClarify.missingFields || []),
-    );
+    const extractedPatch = extractManageIntentPatchFromText(query, activeClarify.missingFields || []);
+    const contextualPatch = normalizeManagePresetCustomPatch({
+      action: activeClarify.action,
+      sourceText: activeClarify.sourceText,
+      missingFields: activeClarify.missingFields,
+    }, extractedPatch);
+    const mergedIntent = mergeManageActionIntent(activeClarify.intent, contextualPatch);
     const mergedSourceText = `${activeClarify.sourceText}\n补充：${query}`.slice(0, 500);
     const prepared = await prepareManageAction(user, mergedSourceText, mergedIntent);
     if (prepared.clarify) {
@@ -3975,6 +3616,17 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
     }
     clearPendingManageClarifySession(message.chat.id, user.id);
     const pending = createPendingManageAction(prepared.prepared.pending);
+    appendAiAudit({
+      phase: "preview",
+      result: "success",
+      actorUserId: Number(user.id),
+      actorRole: String(user.role || ""),
+      action: pending.action,
+      ruleId: pending.ruleId,
+      tunnelId: pending.tunnelId,
+      hostId: pending.hostId,
+      targetUserId: pending.targetUserId,
+    });
     const sent = await sendMessage(
       message.chat.id,
       manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
@@ -4014,6 +3666,17 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
     return true;
   }
   const pending = createPendingManageAction(prepared.prepared.pending);
+  appendAiAudit({
+    phase: "preview",
+    result: "success",
+    actorUserId: Number(user.id),
+    actorRole: String(user.role || ""),
+    action: pending.action,
+    ruleId: pending.ruleId,
+    tunnelId: pending.tunnelId,
+    hostId: pending.hostId,
+    targetUserId: pending.targetUserId,
+  });
   const sent = await sendMessage(
     message.chat.id,
     manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
@@ -4786,16 +4449,51 @@ async function handleAiQuery(message: TelegramMessage, user: any, rawText: strin
 }
 
 async function handleAiInteraction(message: TelegramMessage, user: any, rawText: string) {
+  const rateLimit = aiInteractionRateLimiter.consume(`user:${Number(user?.id || 0) || message.chat.id}`);
+  if (!rateLimit.allowed) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000));
+    appendAiAudit({
+      phase: "rate_limit",
+      result: "denied",
+      actorUserId: Number(user?.id || 0) || null,
+      actorRole: String(user?.role || ""),
+      detail: `retryAfterSeconds=${retryAfterSeconds}`,
+    });
+    const sent = await sendMessage(message.chat.id, `AI 请求过于频繁，请 ${retryAfterSeconds} 秒后再试。`);
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return;
+  }
+
+  const startedAt = Date.now();
   let text: string;
+  let manageHandled = false;
   try {
     await withTemporaryProcessingMessage(message.chat.id, async () => {
-      if (await tryHandleManageAction(message, user, rawText)) return;
+      manageHandled = await tryHandleManageAction(message, user, rawText);
+      if (manageHandled) return;
       text = await aiQueryText(user, rawText);
       const sent = await sendMessage(message.chat.id, text);
       await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
     });
+    if (!manageHandled) {
+      appendAiAudit({
+        phase: "query",
+        result: "success",
+        actorUserId: Number(user?.id || 0) || null,
+        actorRole: String(user?.role || ""),
+        durationMs: Date.now() - startedAt,
+      });
+    }
   } catch (error: any) {
     console.warn("[TelegramBot] AI query failed:", error);
+    appendAiAudit({
+      phase: manageHandled ? "preview" : "query",
+      result: "failed",
+      actorUserId: Number(user?.id || 0) || null,
+      actorRole: String(user?.role || ""),
+      durationMs: Date.now() - startedAt,
+      detail: error?.message || String(error),
+    });
     text = `查询失败：${escapeHtml(error?.message || "请稍后重试")}`;
     const sent = await sendMessage(message.chat.id, text);
     await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
@@ -4859,143 +4557,26 @@ async function handleRedeem(message: TelegramMessage, user: any, code?: string) 
   }
 }
 
-async function refreshRuleEndpoint(rule: any, reason: string) {
-  if (rule.tunnelId) {
-    const tunnel = await db.getTunnelById(Number(rule.tunnelId));
-    await db.updateTunnel(Number(rule.tunnelId), { isRunning: false } as any);
-    if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
-  } else {
-    pushAgentRefresh(Number(rule.hostId), reason);
-  }
-}
-
-async function refreshUserForwardEndpoints(userId: number, reason: string) {
-  const rules = await db.getForwardRulesForUserSync(userId);
-  await db.resetForwardRulesForUserSync(userId);
-  const hostIds = new Set<number>();
-  const tunnelIds = new Set<number>();
-  for (const rule of rules as any[]) {
-    if (rule.tunnelId) tunnelIds.add(Number(rule.tunnelId));
-    else if (rule.hostId) hostIds.add(Number(rule.hostId));
-  }
-  for (const tunnelId of tunnelIds) {
-    const tunnel = await db.getTunnelById(tunnelId);
-    await db.updateTunnel(tunnelId, { isRunning: false } as any);
-    if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
-  }
-  for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
-}
-
-async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
-  let group: any = null;
-  let ruleTunnelForPolicy: any = null;
-  let mainBackupTunnelMode: string | null | undefined = undefined;
-  if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
-    group = await db.getForwardGroupById(Number((rule as any).forwardGroupId));
-    await db.validateForwardGroupRuleConfig(Number((rule as any).forwardGroupId), {
-      sourcePort: Number(rule.sourcePort),
-      protocol: (rule as any).protocol,
-      excludeTemplateRuleId: Number(rule.id),
-    });
-    if (group?.groupType === "tunnel") {
-      const tunnelMembers = (Array.isArray(group.members) ? group.members : [])
-        .filter((member: any) => member?.isEnabled !== false && Number(member?.tunnelId || 0) > 0);
-      mainBackupTunnelMode = tunnelMembers.length > 0 ? "tls" : "unsupported";
-      for (const member of tunnelMembers) {
-        const tunnel = await db.getTunnelById(Number(member.tunnelId));
-        if (!isMainBackupGostTunnelMode((tunnel as any)?.mode)) {
-          mainBackupTunnelMode = String((tunnel as any)?.mode || "unsupported");
-          break;
-        }
-      }
-    }
-  } else {
-    let policy = portPolicyFrom(null);
-    if (Number((rule as any).tunnelId || 0) > 0) {
-      ruleTunnelForPolicy = await db.getTunnelById(Number((rule as any).tunnelId));
-      mainBackupTunnelMode = ruleTunnelForPolicy?.mode;
-      const entryHost = await db.getHostById(Number((ruleTunnelForPolicy as any)?.entryHostId || rule.hostId));
-      policy = combinePortPolicies(
-        portPolicyFrom(entryHost as any),
-        portPolicyFrom({
-          portRangeStart: (ruleTunnelForPolicy as any)?.portRangeStart,
-          portRangeEnd: (ruleTunnelForPolicy as any)?.portRangeEnd,
-        }),
-      );
-    } else {
-      const host = await db.getHostById(Number(rule.hostId));
-      policy = portPolicyFrom(host as any);
-    }
-    const sourcePort = Number(rule.sourcePort);
-    if (!isPortAllowedByPolicy(sourcePort, policy)) {
-      throw new Error(`${portPolicyErrorMessage(policy, "入口端口")}，请修改端口后再启用`);
-    }
-  }
-  requireMainBackupAllowed({
-    enabled: (rule as any).failoverEnabled,
-    protocol: (rule as any).protocol,
-    forwardType: group?.groupType === "tunnel" ? "gost" : (rule as any).forwardType,
-    tunnelId: (rule as any).tunnelId,
-    tunnelMode: mainBackupTunnelMode,
-    isTunnelRoute: group?.groupType === "tunnel",
-    isPortForwardGroup: group?.groupMode === "port",
-    isAdmin: user.role === "admin",
-  });
-  if (user.role !== "admin") {
-    const check = await db.ensureUserForwardAccessReady(Number(user.id));
-    if (!check.allowed) throw new Error(check.message || "你的转发权限已停用，无法启用规则");
-    const owner = check.user || await db.getUserById(Number(user.id));
-    if (owner?.expiresAt && new Date(owner.expiresAt) <= new Date()) throw new Error("账户已到期，无法启用规则");
-    if (Number(owner?.trafficLimit) > 0 && Number(owner?.trafficUsed) >= Number(owner?.trafficLimit)) throw new Error("流量已用完，无法启用规则");
-  }
-  const used = await db.isPortUsedOnHost(Number(rule.hostId), Number(rule.sourcePort), Number(rule.id), (rule as any).protocol);
-  if (used) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
-}
-
 async function handleRuleToggle(message: TelegramMessage, user: any, ruleIdRaw: string | undefined, enabled: boolean) {
   const ruleId = Number(ruleIdRaw);
   if (!Number.isFinite(ruleId) || ruleId <= 0) {
     await sendMessage(message.chat.id, `请发送 ${enabled ? "/enable" : "/disable"} 规则ID，例如：${enabled ? "/enable" : "/disable"} 12`);
     return;
   }
-  const rule = await db.getForwardRuleById(ruleId);
-  if (!rule || (user.role !== "admin" && rule.userId !== user.id)) {
-    await sendMessage(message.chat.id, "规则不存在或无权操作。");
-    return;
+  try {
+    const result = await toggleForwardRuleForActor(user, ruleId, enabled, { reasonPrefix: "telegram-rule" });
+    await sendMessage(message.chat.id, `规则 #${result.rule.id} ${enabled ? "已启用，等待 Agent 应用配置" : "已停用"}。`);
+  } catch (error: any) {
+    await sendMessage(message.chat.id, error?.message || `无法${enabled ? "启用" : "停用"}规则。`);
   }
-  if (enabled) {
-    try {
-      await assertRuleCanBeEnabledFromTelegram(user, rule);
-    } catch (error: any) {
-      await sendMessage(message.chat.id, error?.message || "无法启用规则。");
-      return;
-    }
-  }
-  if (enabled) {
-    await db.updateForwardRule(rule.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
-  } else {
-    await db.toggleForwardRule(rule.id, false);
-  }
-  await refreshRuleEndpoint(rule, enabled ? "telegram-rule-enabled" : "telegram-rule-disabled");
-  await sendMessage(message.chat.id, `规则 #${rule.id} ${enabled ? "已启用，等待 Agent 应用配置" : "已停用"}。`);
 }
 
 async function toggleRuleForUser(user: any, ruleId: number, enabled: boolean) {
   if (!Number.isFinite(ruleId) || ruleId <= 0) {
     throw new Error("规则 ID 无效");
   }
-  const rule = await db.getForwardRuleById(ruleId);
-  if (!rule || (user.role !== "admin" && rule.userId !== user.id)) {
-    throw new Error("规则不存在或无权操作");
-  }
-  if (enabled) await assertRuleCanBeEnabledFromTelegram(user, rule);
-  if (enabled) {
-    await db.updateForwardRule(rule.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
-  } else {
-    await db.toggleForwardRule(rule.id, false);
-  }
-  await refreshRuleEndpoint(rule, enabled ? "telegram-rule-enabled" : "telegram-rule-disabled");
-  return rule;
+  const result = await toggleForwardRuleForActor(user, ruleId, enabled, { reasonPrefix: "telegram-rule" });
+  return result.rule;
 }
 
 async function handleLogin(message: TelegramMessage, user: any) {
@@ -5037,19 +4618,18 @@ async function handleUsers(message: TelegramMessage) {
   await sendMessage(message.chat.id, view.text, view.keyboard);
 }
 
-async function handleReset(message: TelegramMessage, userIdRaw: string | undefined) {
+async function handleReset(message: TelegramMessage, actor: any, userIdRaw: string | undefined) {
   const userId = Number(userIdRaw);
   if (!Number.isFinite(userId) || userId <= 0) {
     await sendMessage(message.chat.id, "请发送 /reset 用户ID，例如：/reset 8");
     return;
   }
-  const user = await db.getUserById(userId);
-  if (!user) {
-    await sendMessage(message.chat.id, "用户不存在。");
-    return;
+  try {
+    const result = await resetUserTrafficCommand({ actor, targetUserId: userId, reasonPrefix: "telegram-command-traffic-reset" });
+    await sendMessage(message.chat.id, `用户 #${userId} ${escapeHtml(result.target.name || result.target.username)} 的流量已重置。`);
+  } catch (error: any) {
+    await sendMessage(message.chat.id, error?.message || "重置用户流量失败。");
   }
-  await db.resetUserTraffic(userId);
-  await sendMessage(message.chat.id, `用户 #${userId} ${escapeHtml(user.name || user.username)} 的流量已重置。`);
 }
 
 async function handleRenew(message: TelegramMessage, userIdRaw: string | undefined) {
@@ -5343,7 +4923,7 @@ async function handleMessage(message: TelegramMessage) {
   }
 
   if (user.role === "admin" && command === "/users") return handleUsers(message);
-  if (user.role === "admin" && command === "/reset") return handleReset(message, args[0]);
+  if (user.role === "admin" && command === "/reset") return handleReset(message, user, args[0]);
   if (user.role === "admin" && command === "/renew") return handleRenew(message, args[0]);
   if (user.role === "admin" && command === "/updatepanel") return handleUpdatePanel(message, user);
   if (user.role === "admin" && command === "/updateagent") return handleUpdateAgent(message, user);
@@ -5514,7 +5094,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       await editMessage(chatId, messageId, "用户不存在。", userManageBackKeyboard(page));
       return;
     }
-    await db.resetUserTraffic(userId);
+    await resetUserTrafficCommand({ actor: user, targetUserId: userId, reasonPrefix: "telegram-menu-traffic-reset" });
     const detail = await adminUserText(userId);
     await editMessage(chatId, messageId, `已重置用户 #${userId} 的流量。\n\n${detail.text}`, await adminUserKeyboard(userId, page));
     return;
@@ -5537,8 +5117,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       return;
     }
     const enabled = enabledRaw === "1";
-    await db.setUserForwardAccess(userId, enabled);
-    await refreshUserForwardEndpoints(userId, enabled ? "telegram-user-forward-enabled" : "telegram-user-forward-disabled");
+    await setUserForwardAccessCommand({ actor: user, targetUserId: userId, enabled, reasonPrefix: "telegram-menu-user-forward" });
     const detail = await adminUserText(userId);
     await editMessage(chatId, messageId, `已${enabled ? "启用" : "停用"}用户 #${userId} 的转发权限。\n\n${detail.text}`, await adminUserKeyboard(userId, page));
     return;
@@ -5551,7 +5130,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
     const [, , , , userIdRaw, pageRaw] = data.split(":");
     const userId = Number(userIdRaw);
     const page = Number(pageRaw || 0);
-    const result = await renewUserOneMonth(userId);
+    const result = await renewUserOneMonth(user, userId);
     const detail = await adminUserText(userId);
     await editMessage(
       chatId,
@@ -5589,8 +5168,47 @@ async function handleCallback(query: TelegramCallbackQuery) {
       return;
     }
 
+    if (action.startsWith("custom:")) {
+      const field = action.slice("custom:".length) as ManagePresetField;
+      const presetUi = managePresetClarifyUi(session.action, session.sourceText, session.missingFields);
+      if (!presetUi || presetUi.field !== field) {
+        await editMessage(chatId, messageId, "该输入项已经变化，请根据当前提示重新选择。", manageClarifyCancelKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      createPendingManageClarifySession(
+        chatId,
+        user,
+        session.sourceText,
+        session.intent,
+        session.missingFields,
+      );
+      await editMessage(
+        chatId,
+        messageId,
+        `${presetUi.customPrompt}\n\n发送“取消”可结束本次操作，${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+        manageClarifyCancelKeyboard(),
+      );
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+
     const nextIntent: ManageActionIntent = { ...session.intent };
-    if (action.startsWith("mode:")) {
+    const presetMatch = action.match(/^preset:([^:]+):([^:]+)$/);
+    if (presetMatch) {
+      const field = presetMatch[1] as ManagePresetField;
+      const value = presetMatch[2];
+      const presetUi = managePresetClarifyUi(session.action, session.sourceText, session.missingFields);
+      const isCurrentChoice = presetUi?.field === field
+        && presetUi.choices.some((choice) => choice.value === value);
+      const patch = isCurrentChoice ? parseManagePresetSelection(field, value) : null;
+      if (!patch) {
+        await editMessage(chatId, messageId, "预设选项无效或已经过期，请根据当前提示重新选择。", manageClarifyCancelKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      Object.assign(nextIntent, patch);
+    } else if (action.startsWith("mode:")) {
       const modeRaw = action.slice("mode:".length);
       if (modeRaw !== "host" && modeRaw !== "tunnel") {
         await editMessage(chatId, messageId, "转发模式选项无效，请重新选择。", manageClarifyModeKeyboard());
@@ -5709,6 +5327,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
   }
   switch (data) {
     case "fx:menu":
+      clearPendingManageClarifySession(chatId, user.id);
       await editMainMenu(chatId, messageId, user);
       return;
     case "fx:user":
@@ -5752,6 +5371,22 @@ async function handleCallback(query: TelegramCallbackQuery) {
   }
 }
 
+function telegramUpdateQueueKey(update: TelegramUpdate) {
+  const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id;
+  return chatId ? `telegram-chat:${chatId}` : `telegram-update:${update.update_id}`;
+}
+
+async function processTelegramUpdate(update: TelegramUpdate) {
+  try {
+    if (update.message) await handleMessage(update.message);
+    if (update.callback_query) await handleCallback(update.callback_query);
+  } catch (error) {
+    console.error("[Telegram] Failed to handle message:", error);
+    const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id;
+    if (chatId) await sendMessage(chatId, `操作失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`).catch(() => undefined);
+  }
+}
+
 async function pollOnce() {
   const settings = await getTelegramSettings();
   if (!settings.enabled || !settings.token) {
@@ -5770,14 +5405,9 @@ async function pollOnce() {
   });
   for (const update of updates) {
     updateOffset = Math.max(updateOffset, update.update_id + 1);
-    try {
-      if (update.message) await handleMessage(update.message);
-      if (update.callback_query) await handleCallback(update.callback_query);
-    } catch (error) {
-      console.error("[Telegram] Failed to handle message:", error);
-      const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id;
-      if (chatId) await sendMessage(chatId, `操作失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`).catch(() => undefined);
-    }
+    void telegramUpdateDispatcher
+      .enqueue(telegramUpdateQueueKey(update), () => processTelegramUpdate(update))
+      .catch((error) => console.error("[Telegram] Update dispatcher failed:", error));
   }
 }
 

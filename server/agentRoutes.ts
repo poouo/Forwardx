@@ -10,7 +10,7 @@ import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncrypti
 import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
-import { resolveAgentTokenFromAuthorization } from "./agentAuth";
+import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
 import { normalizeAgentAddress, normalizeAgentText } from "./agentInputValidation";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
@@ -19,6 +19,7 @@ import { invalidateAgentDesiredStateCache, registerAgentHeartbeatRoute } from ".
 import { handleHostAddressChanged, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
+import { getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -360,17 +361,41 @@ registerAgentStatusRoutes(agentApiRouter);
 registerAgentSelfTestRoutes(agentApiRouter);
 registerAgentReportRoutes(agentApiRouter);
 
+agentApiRouter.post("/api/agent/migration-rollback", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostFromRequest(req);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    await db.clearHostAgentUpgradeRequest(Number(host.id));
+    res.json({ success: true, hostId: Number(host.id) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 agentRouter.use(agentApiRouter);
 
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
   const panelUrl = await resolvePanelUrl(req);
   const settings = await db.getAllSettings();
+  const panelMigration = await getPanelMigrationAgentDirective();
+  const abortedFallbackActive = panelMigration?.state === "aborted"
+    && !!panelMigration.startedAt
+    && Math.floor(Date.now() / 1000) - panelMigration.startedAt <= 60 * 60;
+  const migrationFallbackEnabled = panelMigration?.state === "preparing"
+    || panelMigration?.state === "committing"
+    || abortedFallbackActive;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.send(generateInstallScript(panelUrl, {
     githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
     githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
     preferPanelInstall: settings.agentPreferPanelInstall === "true",
     installNginx: isNginxForwardProtocolEnabled(parseForwardProtocolSettings(settings.forwardProtocols)),
+    migrationFallbackPanelUrl: migrationFallbackEnabled ? panelMigration?.fallbackPanelUrl : undefined,
+    panelMigrationId: migrationFallbackEnabled ? panelMigration?.id : undefined,
+    panelMigrationStartedAt: migrationFallbackEnabled ? panelMigration?.startedAt : undefined,
   }));
 });
 

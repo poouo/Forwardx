@@ -51,6 +51,21 @@ function groupHostIds(group: HostGroupView | null | undefined) {
   return uniqueHostIds((group.members || []).map((member) => member.hostId));
 }
 
+function groupMatchesSearchQuery(group: HostGroupView, query: string, hostsById: Map<number, any>) {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const memberValues = groupHostIds(group).flatMap((hostId) => {
+    const host = hostsById.get(hostId);
+    return [hostId, host?.name, host?.entryIp, host?.ipv4, host?.ipv6, host?.ip];
+  });
+  const status = group.isEnabled !== false ? "启用 已启用" : "停用 已停用 禁用";
+  const haystack = [group.id, group.name, status, ...memberValues]
+    .filter((value) => value !== null && value !== undefined)
+    .join(" ")
+    .toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function buildGroupUpdatePayload(group: HostGroupView, isEnabled = group.isEnabled !== false) {
   return {
     id: Number(group.id),
@@ -149,6 +164,8 @@ export default function HostGroupManager({
   createSignal,
   onCreateSignalHandled,
   viewMode = "card",
+  searchQuery = "",
+  onFilterStatsChange,
 }: {
   hosts: any[];
   groups: HostGroupView[];
@@ -156,6 +173,8 @@ export default function HostGroupManager({
   createSignal: number;
   onCreateSignalHandled: () => void;
   viewMode?: HostGroupViewMode;
+  searchQuery?: string;
+  onFilterStatsChange?: (stats: { filtered: number; total: number }) => void;
 }) {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
@@ -177,6 +196,17 @@ export default function HostGroupManager({
     () => [...(groups || [])].sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(b.id || 0) - Number(a.id || 0)),
     [groups],
   );
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const isTextFiltered = normalizedSearchQuery.length > 0;
+  const filteredGroups = useMemo(
+    () => isTextFiltered
+      ? sortedGroups.filter((group) => groupMatchesSearchQuery(group, normalizedSearchQuery, hostsById))
+      : sortedGroups,
+    [hostsById, isTextFiltered, normalizedSearchQuery, sortedGroups],
+  );
+  useEffect(() => {
+    onFilterStatsChange?.({ filtered: filteredGroups.length, total: sortedGroups.length });
+  }, [filteredGroups.length, onFilterStatsChange, sortedGroups.length]);
 
   const createMutation = trpc.hosts.createHostGroup.useMutation({
     onSuccess: () => {
@@ -228,9 +258,9 @@ export default function HostGroupManager({
     onError: (err) => toast.error(err.message || "更新分组顺序失败"),
   });
   const groupSortable = useSortableReorder({
-    items: sortedGroups,
+    items: filteredGroups,
     getId: (group) => Number(group.id),
-    disabled: sortedGroups.length < 2,
+    disabled: isTextFiltered || filteredGroups.length < 2,
     onReorder: (nextGroups) => {
       reorderGroupsMutation.mutate({ ids: nextGroups.map((group) => Number(group.id)) });
     },
@@ -311,9 +341,11 @@ export default function HostGroupManager({
         <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
           <FolderKanban className="h-5 w-5" />
         </span>
-        <p className="mt-3 text-sm font-semibold">暂无自定义分组</p>
+        <p className="mt-3 text-sm font-semibold">{isTextFiltered && sortedGroups.length > 0 ? "未找到匹配分组" : "暂无自定义分组"}</p>
         <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
-          未创建分组时，主机管理默认展示全部主机；需要按业务、地区或用途筛选时再添加分组。
+          {isTextFiltered && sortedGroups.length > 0
+            ? "调整筛选内容或清空搜索"
+            : "未创建分组时，主机管理默认展示全部主机；需要按业务、地区或用途筛选时再添加分组。"}
         </p>
       </CardContent>
     </Card>
@@ -362,12 +394,12 @@ export default function HostGroupManager({
         <DataSectionLoading label="正在加载主机分组" minHeight="min-h-[220px]" />
       ) : viewMode === "table" ? (
         <div key="host-group-table-view" className="card-mode-transition">
-          {sortedGroups.length === 0 ? (
+          {filteredGroups.length === 0 ? (
             <div className="sm:hidden">{renderEmptyState()}</div>
           ) : (
-            <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+            <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
               <div className="grid grid-cols-1 gap-4 sm:hidden">
-                {sortedGroups.map((group) => (
+                {filteredGroups.map((group) => (
                   <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
@@ -397,15 +429,15 @@ export default function HostGroupManager({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedGroups.length === 0 ? (
+                    {filteredGroups.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={6}>
                           {renderEmptyState("border-0 bg-transparent shadow-none")}
                         </TableCell>
                       </TableRow>
                     ) : (
-                      <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
-                        {sortedGroups.map((group) => {
+                      <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+                        {filteredGroups.map((group) => {
                       const hostIds = groupHostIds(group);
                       return (
                         <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled} itemKind="row">
@@ -449,12 +481,12 @@ export default function HostGroupManager({
           </Card>
         </div>
       ) : (
-        sortedGroups.length === 0 ? (
+        filteredGroups.length === 0 ? (
           renderEmptyState("col-span-full")
         ) : (
-          <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="rect">
+          <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="rect">
             <div key="host-group-card-view" className="standard-card-grid gap-4">
-              {sortedGroups.map((group) => (
+              {filteredGroups.map((group) => (
                 <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
                   {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                     <div {...itemProps}>

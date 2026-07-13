@@ -1530,7 +1530,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               在线迁移接收
             </CardTitle>
             <CardDescription>
-              在新面板填写旧面板地址和迁移码，在线拉取旧面板数据。
+              拉取旧面板数据，并在新面板运行验证通过后完成接管。
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -1568,7 +1568,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
                 </div>
                 <Progress value={migrationJob.progress} className="mt-3" />
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {migrationJob.error || migrationJob.message || "在线迁移过程中请保持新旧面板可访问。"}
+                  {migrationJob.error || migrationJob.message || "验证完成前请保持新旧面板可访问。"}
                 </p>
               </div>
             )}
@@ -1900,7 +1900,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             <ShieldCheck className="h-4 w-4" />
             <AlertTitle>{hasExistingData ? "将执行增量迁移" : "将执行完整迁移"}</AlertTitle>
             <AlertDescription>
-              在线迁移完成后旧面板会通知 Agent 切换到当前面板，旧面板随后会进入迁移失效状态。
+              Agent 和原有转发恢复后才会完成接管；旧面板数据不会自动删除。
             </AlertDescription>
           </Alert>
           <DialogFooter>

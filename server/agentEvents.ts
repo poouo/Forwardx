@@ -72,6 +72,13 @@ export function pushAgentUpgrade(hostId: number, targetVersion: string | null, p
   });
 }
 
+export function pushAgentPanelMigration(
+  hostId: number,
+  data: { id: string; state: "preparing" | "committed" | "aborted"; fallbackPanelUrl?: string },
+) {
+  return sendAgentEvent(hostId, "agent-panel-migration", data);
+}
+
 export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {
   const newlyWatched: number[] = [];
   const now = Date.now();

@@ -518,6 +518,7 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 	defer cancel()
 	commandArgs := append([]string{entryPath}, task.Arguments...)
 	command := exec.CommandContext(ctx, task.Interpreter, commandArgs...)
+	configurePluginTaskCommand(command)
 	command.Dir = filepath.Clean(task.WorkingDirectory)
 	command.Env = append(os.Environ(),
 		"FORWARDX_PLUGIN_ID="+task.PluginID,

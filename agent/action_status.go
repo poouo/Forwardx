@@ -7,13 +7,15 @@ import (
 	"time"
 )
 
-const actionStatusBatchSize = 100
-const actionStatusFlushInterval = 250 * time.Millisecond
+const actionStatusBatchSize = 200
+const actionStatusFlushInterval = 100 * time.Millisecond
+const actionStatusRetryMinDelay = time.Second
+const actionStatusRetryMaxDelay = 30 * time.Second
 
 type actionStatusPayload struct {
 	RuleID      int    `json:"ruleId"`
 	TunnelID    int    `json:"tunnelId"`
-	StatusType  string `json:"statusType"`
+	StatusType  string `json:"statusType,omitempty"`
 	SourcePort  int    `json:"sourcePort,omitempty"`
 	IsRunning   bool   `json:"isRunning"`
 	Message     string `json:"message,omitempty"`
@@ -25,6 +27,8 @@ type actionStatusReport struct {
 	cfg     Config
 	payload actionStatusPayload
 }
+
+type queuedActionStatusReport = actionStatusReport
 
 var actionStatusReportsMu sync.Mutex
 var actionStatusReports = map[string]actionStatusReport{}
@@ -59,7 +63,16 @@ func enqueueActionStatusReport(cfg Config, a action, running bool, message strin
 		actionStatusReportOrder = append(actionStatusReportOrder, key)
 	}
 	actionStatusReports[key] = actionStatusReport{key: key, cfg: cfg, payload: payload}
+	pending := len(actionStatusReports)
 	actionStatusReportsMu.Unlock()
+	if pending >= actionStatusBatchSize {
+		wakeActionStatusReporter()
+		return
+	}
+	wakeActionStatusReporter()
+}
+
+func wakeActionStatusReporter() {
 	select {
 	case actionStatusReporterWake <- struct{}{}:
 	default:
@@ -79,17 +92,18 @@ func takeActionStatusReports(limit int) []actionStatusReport {
 		limit = len(actionStatusReportOrder)
 	}
 	reports := make([]actionStatusReport, 0, limit)
-	for _, key := range actionStatusReportOrder[:limit] {
-		if report, exists := actionStatusReports[key]; exists {
-			reports = append(reports, report)
-			delete(actionStatusReports, key)
+	consumed := 0
+	for consumed < len(actionStatusReportOrder) && len(reports) < limit {
+		key := actionStatusReportOrder[consumed]
+		consumed++
+		report, ok := actionStatusReports[key]
+		if !ok {
+			continue
 		}
+		delete(actionStatusReports, key)
+		reports = append(reports, report)
 	}
-	// 仅拷贝剩余部分，释放旧 slice 的前段内存。
-	remaining := actionStatusReportOrder[limit:]
-	newOrder := make([]string, len(remaining))
-	copy(newOrder, remaining)
-	actionStatusReportOrder = newOrder
+	actionStatusReportOrder = append([]string(nil), actionStatusReportOrder[consumed:]...)
 	return reports
 }
 
@@ -99,91 +113,123 @@ func pendingActionStatusReportCount() int {
 	return len(actionStatusReports)
 }
 
-func resetActionStatusReportsForTest() {
-	actionStatusReportsMu.Lock()
-	actionStatusReports = map[string]actionStatusReport{}
-	actionStatusReportOrder = nil
-	actionStatusReportsMu.Unlock()
-}
-
 func restoreActionStatusReports(reports []actionStatusReport) {
 	if len(reports) == 0 {
 		return
 	}
 	actionStatusReportsMu.Lock()
 	defer actionStatusReportsMu.Unlock()
-	// 收集需要恢复的 key（去重），从后往前迭代维持原始优先级顺序。
 	toRestore := make([]string, 0, len(reports))
 	for index := len(reports) - 1; index >= 0; index-- {
 		report := reports[index]
-		if _, exists := actionStatusReports[report.key]; exists {
+		if _, newerExists := actionStatusReports[report.key]; newerExists {
 			continue
 		}
 		actionStatusReports[report.key] = report
 		toRestore = append(toRestore, report.key)
 	}
-	if len(toRestore) == 0 {
-		return
-	}
-	// toRestore 是倒序的，反转后得到原始顺序，一次性前插到队列头部，O(N)。
 	for i, j := 0, len(toRestore)-1; i < j; i, j = i+1, j-1 {
 		toRestore[i], toRestore[j] = toRestore[j], toRestore[i]
 	}
-	actionStatusReportOrder = append(toRestore, actionStatusReportOrder...)
+	if len(toRestore) > 0 {
+		actionStatusReportOrder = append(toRestore, actionStatusReportOrder...)
+	}
+}
+
+func requeueActionStatusReports(reports []queuedActionStatusReport) {
+	restoreActionStatusReports(reports)
 }
 
 func startActionStatusReporter() {
 	actionStatusReporterOnce.Do(func() {
-		go func() {
-			ticker := time.NewTicker(actionStatusFlushInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-actionStatusReporterWake:
-				case <-ticker.C:
-				}
-				flushActionStatusReports()
-			}
-		}()
+		go actionStatusReporterLoop()
 	})
 }
 
-func flushActionStatusReports() {
+func actionStatusReporterLoop() {
+	retryDelay := actionStatusRetryMinDelay
 	for {
-		reports := takeActionStatusReports(actionStatusBatchSize)
-		if len(reports) == 0 {
-			return
-		}
-		cfg := reports[0].cfg
-		batch := make([]actionStatusPayload, 0, len(reports))
-		remaining := make([]actionStatusReport, 0)
-		for _, report := range reports {
-			if strings.TrimSpace(report.cfg.PanelURL) != strings.TrimSpace(cfg.PanelURL) || report.cfg.Token != cfg.Token {
-				remaining = append(remaining, report)
-				continue
+		<-actionStatusReporterWake
+		time.Sleep(actionStatusFlushInterval)
+		for {
+			reports := takeActionStatusReports(actionStatusBatchSize)
+			if len(reports) == 0 {
+				break
 			}
-			batch = append(batch, report.payload)
-		}
-		if len(remaining) > 0 {
-			restoreActionStatusReports(remaining)
-		}
-		if len(batch) == 0 {
-			return
-		}
-		if err := post(cfg, "/api/agent/rule-status-batch", map[string]any{"statuses": batch}, &map[string]any{}); err != nil {
-			if isTransientAgentCommError(err) {
-				logAgentCommError("rule-status-batch", err)
-			} else {
-				logf("rule status batch report failed count=%d: %v", len(batch), err)
-			}
-			failed := make([]actionStatusReport, 0, len(batch))
-			for _, report := range reports {
-				if strings.TrimSpace(report.cfg.PanelURL) == strings.TrimSpace(cfg.PanelURL) && report.cfg.Token == cfg.Token {
-					failed = append(failed, report)
+			if err := sendActionStatusReports(reports); err != nil {
+				restoreActionStatusReports(reports)
+				if shouldLogAgentReport("action-status-batch-failed", agentReportLogInterval) {
+					logf("action status batch failed count=%d pending=%d retry=%s: %v", len(reports), pendingActionStatusReportCount(), retryDelay, err)
 				}
+				time.Sleep(retryDelay)
+				if retryDelay < actionStatusRetryMaxDelay {
+					retryDelay *= 2
+					if retryDelay > actionStatusRetryMaxDelay {
+						retryDelay = actionStatusRetryMaxDelay
+					}
+				}
+				wakeActionStatusReporter()
+				break
 			}
-			restoreActionStatusReports(failed)
-			return
+			retryDelay = actionStatusRetryMinDelay
+			if agentVerboseLogs {
+				logf("action status batch reported count=%d pending=%d", len(reports), pendingActionStatusReportCount())
+			}
 		}
 	}
+}
+
+func sendActionStatusReports(reports []queuedActionStatusReport) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	type reportGroup struct {
+		cfg     Config
+		reports []queuedActionStatusReport
+	}
+	groupsByKey := map[string]*reportGroup{}
+	groupOrder := make([]string, 0, 2)
+	for _, report := range reports {
+		key := strings.TrimSpace(report.cfg.PanelURL) + "\x00" + report.cfg.Token
+		group := groupsByKey[key]
+		if group == nil {
+			group = &reportGroup{cfg: report.cfg}
+			groupsByKey[key] = group
+			groupOrder = append(groupOrder, key)
+		}
+		group.reports = append(group.reports, report)
+	}
+	for _, key := range groupOrder {
+		group := groupsByKey[key]
+		statuses := make([]actionStatusPayload, 0, len(group.reports))
+		for _, report := range group.reports {
+			statuses = append(statuses, report.payload)
+		}
+		var out map[string]any
+		err := post(group.cfg, "/api/agent/rule-status-batch", map[string]any{"statuses": statuses}, &out)
+		if err == nil {
+			continue
+		}
+		if !actionStatusBatchUnsupported(err) {
+			return err
+		}
+		for _, report := range group.reports {
+			var singleOut map[string]any
+			if singleErr := post(report.cfg, "/api/agent/rule-status", report.payload, &singleOut); singleErr != nil {
+				return singleErr
+			}
+		}
+	}
+	return nil
+}
+
+func actionStatusBatchUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "404") ||
+		strings.Contains(message, "405") ||
+		strings.Contains(message, "not found") ||
+		strings.Contains(message, "invalid encrypted request")
 }

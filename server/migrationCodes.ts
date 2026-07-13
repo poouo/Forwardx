@@ -1,5 +1,11 @@
 const migrationCodes = new Map<string, { expiresAt: number; createdAt: number }>();
-const takeoverTokens = new Map<string, { expiresAt: number; createdAt: number }>();
+const takeoverTokens = new Map<string, {
+  expiresAt: number;
+  createdAt: number;
+  targetPanelUrl: string;
+  status: "issued" | "prepared";
+  preparedAt?: number;
+}>();
 const migrationRequests = new Map<string, {
   id: string;
   code: string;
@@ -11,7 +17,8 @@ const migrationRequests = new Map<string, {
   rejectedAt?: number;
 }>();
 const MIGRATION_CODE_TTL_MS = 5 * 60 * 1000;
-const TAKEOVER_TOKEN_TTL_MS = 5 * 60 * 1000;
+const TAKEOVER_TOKEN_TTL_MS = 60 * 60 * 1000;
+const PREPARED_TAKEOVER_TTL_MS = 60 * 60 * 1000;
 const MIGRATION_CODE_LENGTH = 24;
 
 function cleanupMigrationCodes() {
@@ -31,6 +38,10 @@ function cleanupMigrationCodes() {
 
 function normalizeCode(code: string) {
   return code.trim().toUpperCase();
+}
+
+function normalizePanelUrl(url: string) {
+  return String(url || "").trim().replace(/\/+$/, "");
 }
 
 function randomToken(length = 48) {
@@ -154,7 +165,12 @@ export function consumeApprovedMigrationRequest(requestId: string, code: string,
   migrationRequests.set(request.id, request);
   const now = Date.now();
   const takeoverToken = randomToken(48);
-  const takeoverEntry = { createdAt: now, expiresAt: now + TAKEOVER_TOKEN_TTL_MS };
+  const takeoverEntry = {
+    createdAt: now,
+    expiresAt: now + TAKEOVER_TOKEN_TTL_MS,
+    targetPanelUrl: normalizePanelUrl(targetPanelUrl),
+    status: "issued" as const,
+  };
   takeoverTokens.set(takeoverToken, takeoverEntry);
   return {
     takeoverToken,
@@ -168,7 +184,12 @@ export function consumeMigrationCodeForTakeover(code: string) {
   if (!entry) return null;
   const now = Date.now();
   const takeoverToken = randomToken(48);
-  const takeoverEntry = { createdAt: now, expiresAt: now + TAKEOVER_TOKEN_TTL_MS };
+  const takeoverEntry = {
+    createdAt: now,
+    expiresAt: now + TAKEOVER_TOKEN_TTL_MS,
+    targetPanelUrl: "",
+    status: "issued" as const,
+  };
   takeoverTokens.set(takeoverToken, takeoverEntry);
   return {
     takeoverToken,
@@ -177,10 +198,52 @@ export function consumeMigrationCodeForTakeover(code: string) {
   };
 }
 
-export function consumeTakeoverToken(token: string) {
+export function prepareTakeoverToken(token: string, targetPanelUrl: string) {
   cleanupMigrationCodes();
   const normalized = normalizeCode(token);
   const entry = takeoverTokens.get(normalized);
+  const target = normalizePanelUrl(targetPanelUrl);
+  if (!entry || entry.expiresAt <= Date.now()) return null;
+  if (entry.targetPanelUrl && entry.targetPanelUrl !== target) return null;
+  const anotherPrepared = [...takeoverTokens.entries()].some(([candidateToken, candidate]) => (
+    candidateToken !== normalized && candidate.status === "prepared" && candidate.expiresAt > Date.now()
+  ));
+  if (anotherPrepared) return null;
+  const now = Date.now();
+  entry.status = "prepared";
+  entry.preparedAt = entry.preparedAt || now;
+  entry.targetPanelUrl = target;
+  entry.expiresAt = now + PREPARED_TAKEOVER_TTL_MS;
+  takeoverTokens.set(normalized, entry);
+  return { ...entry };
+}
+
+export function abortTakeoverToken(token: string, targetPanelUrl: string) {
+  cleanupMigrationCodes();
+  const normalized = normalizeCode(token);
+  const entry = takeoverTokens.get(normalized);
+  if (!entry || entry.targetPanelUrl !== normalizePanelUrl(targetPanelUrl)) return false;
   takeoverTokens.delete(normalized);
-  return !!entry && entry.expiresAt > Date.now();
+  return true;
+}
+
+export function validatePreparedTakeoverToken(token: string, targetPanelUrl: string) {
+  cleanupMigrationCodes();
+  const entry = takeoverTokens.get(normalizeCode(token));
+  return !!entry
+    && entry.expiresAt > Date.now()
+    && entry.status === "prepared"
+    && entry.targetPanelUrl === normalizePanelUrl(targetPanelUrl);
+}
+
+export function consumeTakeoverToken(token: string, targetPanelUrl = "") {
+  cleanupMigrationCodes();
+  const normalized = normalizeCode(token);
+  const entry = takeoverTokens.get(normalized);
+  const target = normalizePanelUrl(targetPanelUrl);
+  if (!entry || entry.expiresAt <= Date.now()) return false;
+  if (target && entry.targetPanelUrl && entry.targetPanelUrl !== target) return false;
+  if (entry.status !== "prepared") return false;
+  takeoverTokens.delete(normalized);
+  return true;
 }

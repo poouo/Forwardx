@@ -4,6 +4,7 @@ import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
 import { AGENT_PLUGIN_TASK_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
+import { getAgentMigrationSwitchTarget, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 import * as hopRepo from "./repositories/tunnelRepository";
 import crypto from "crypto";
 import {
@@ -4553,9 +4554,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       await db.clearHostAgentUpgradeRequest(host.id);
     }
     const panelUrl = await resolveAgentAdvertisedPanelUrl();
-    const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted ? {
+    const agentMigrationTargetPanelUrl = await getAgentMigrationSwitchTarget();
+    const panelMigration = await getPanelMigrationAgentDirective();
+    const staleMigrationUpgrade = (host as any).agentUpgradeRequested
+      && requestedTargetVersion === "9999.0.0"
+      && !agentMigrationTargetPanelUrl;
+    if (staleMigrationUpgrade) await db.clearHostAgentUpgradeRequest(host.id);
+    const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted && !staleMigrationUpgrade ? {
       targetVersion: requestedTargetVersion,
-      panelUrl,
+      panelUrl: agentMigrationTargetPanelUrl || panelUrl,
       releaseVersion: (host as any).agentUpgradeReleaseVersion || null,
     } : null;
 
@@ -4957,6 +4964,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       pluginTasks,
       agentUpgrade,
       panelUrl,
+      panelMigration,
       forceTcping,
       nextInterval,
       requestLocalState: localRuntimeState.requestLocalState,
