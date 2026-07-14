@@ -110,6 +110,10 @@ function pluginSourceLabel(sourceType?: string) {
   return "GitHub";
 }
 
+function pluginSupportsUpdates(plugin?: PluginRow) {
+  return plugin?.sourceType === "github" || plugin?.sourceType === "local";
+}
+
 function formatBytes(bytes: number) {
   const value = Number(bytes || 0);
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
@@ -765,6 +769,11 @@ export default function Plugins() {
   const [activePageId, setActivePageId] = useState("");
   const [activeAssetPath, setActiveAssetPath] = useState("");
   const [activeResourceViewId, setActiveResourceViewId] = useState("");
+  const [checkingPluginId, setCheckingPluginId] = useState("");
+  const [updatingPluginId, setUpdatingPluginId] = useState("");
+  const automaticUpdateCheckStartedRef = useRef(false);
+  const manualUpdateCheckRef = useRef(false);
+  const updateStartedAtRef = useRef(0);
 
   const selectedPlugin = useMemo(
     () => plugins.find((plugin: PluginRow) => plugin.pluginId === selectedPluginId) || plugins[0],
@@ -801,6 +810,7 @@ export default function Plugins() {
     : [];
   const usageAssetMode = hostAssetSyncUsageView?.assetMode === "all-plugin-assets" ? "all-plugin-assets" : "selected-assets";
   const usageUsesAllAssets = usageAssetMode === "all-plugin-assets";
+  const usageUsesAllHosts = hostAssetSyncUsageView?.hostScope === "all";
   const usageAssetSelectorHidden = usageUsesAllAssets || hostAssetSyncUsageView?.assetSelector?.hidden === true;
 
   const { data: assets = [], isLoading: assetsLoading } = trpc.plugins.assets.useQuery(
@@ -818,6 +828,21 @@ export default function Plugins() {
       refetchOnWindowFocus: false,
     },
   );
+  const storeItemByPluginId = useMemo(
+    () => new Map(storeItems.map((item: any) => [String(item.id), item])),
+    [storeItems],
+  );
+  const availablePluginUpdates = useMemo(
+    () => plugins.filter((plugin: PluginRow) => plugin.hasUpdate === true),
+    [plugins],
+  );
+  const selectedPluginStoreItem = selectedPlugin ? storeItemByPluginId.get(selectedPlugin.pluginId) as any : null;
+  const selectedPluginSourceLabel = selectedPluginStoreItem?.official
+    ? "官方插件商店"
+    : selectedPluginStoreItem?.storeSourceName || pluginSourceLabel(selectedPlugin?.sourceType);
+  const selectedPluginHasUpdate = selectedPlugin?.hasUpdate === true;
+  const selectedPluginUpdating = !!selectedPlugin && updatingPluginId === selectedPlugin.pluginId;
+  const selectedPluginChecking = !!selectedPlugin && checkingPluginId === selectedPlugin.pluginId;
   const savedUsage = (pluginUsage as any)?.usage;
   const savedUsageEnabled = savedUsage?.enabled === true;
   const savedUsageHostCount = Array.isArray(savedUsage?.hostIds) ? savedUsage.hostIds.length : 0;
@@ -948,20 +973,45 @@ export default function Plugins() {
     onError: (error) => toast.error(error.message || "卸载失败"),
   });
 
+  const checkAllUpdatesMutation = trpc.plugins.checkUpdates.useMutation({
+    onSuccess: async (result) => {
+      if (result.updates > 0) {
+        toast.info(`发现 ${result.updates} 个插件新版本`);
+      } else if (manualUpdateCheckRef.current) {
+        toast.success("所有插件均为最新版本");
+      }
+      if (result.failed > 0 && manualUpdateCheckRef.current) {
+        toast.error(`${result.failed} 个插件检查失败，请查看插件详情`);
+      }
+      await invalidatePluginQueries();
+    },
+    onError: (error) => {
+      if (manualUpdateCheckRef.current) toast.error(error.message || "检查插件更新失败");
+    },
+    onSettled: () => {
+      manualUpdateCheckRef.current = false;
+    },
+  });
+
   const checkUpdateMutation = trpc.plugins.checkUpdate.useMutation({
     onSuccess: async (result) => {
       toast.success(result.hasUpdate ? `发现新版本 ${result.latestVersion}` : "当前已是最新");
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "检查更新失败"),
+    onSettled: () => setCheckingPluginId(""),
   });
 
   const updateFromGithubMutation = trpc.plugins.updateFromGithub.useMutation({
-    onSuccess: async () => {
-      toast.success("插件已更新");
+    onSuccess: async (plugin) => {
+      toast.success(`插件已更新到 v${(plugin as any)?.version || "最新版本"}`);
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "更新失败"),
+    onSettled: () => {
+      const remaining = Math.max(0, 1200 - (Date.now() - updateStartedAtRef.current));
+      setTimeout(() => setUpdatingPluginId(""), remaining);
+    },
   });
 
   const saveSettingMutation = trpc.plugins.saveSetting.useMutation({
@@ -1004,6 +1054,13 @@ export default function Plugins() {
       setSelectedPluginId(plugins[0].pluginId);
     }
   }, [plugins, selectedPluginId]);
+
+  useEffect(() => {
+    if (activeSection !== "manage" || pluginsLoading || plugins.length === 0) return;
+    if (automaticUpdateCheckStartedRef.current) return;
+    automaticUpdateCheckStartedRef.current = true;
+    checkAllUpdatesMutation.mutate();
+  }, [activeSection, plugins.length, pluginsLoading]);
 
   useEffect(() => {
     if (!selectedPlugin) {
@@ -1118,11 +1175,29 @@ export default function Plugins() {
     || setEnabledMutation.isPending
     || setTrustedMutation.isPending
     || uninstallMutation.isPending
-    || checkUpdateMutation.isPending
     || updateFromGithubMutation.isPending
     || saveSettingMutation.isPending
     || saveUsageMutation.isPending
     || runActionMutation.isPending;
+
+  const handleCheckAllUpdates = () => {
+    if (checkAllUpdatesMutation.isPending) return;
+    manualUpdateCheckRef.current = true;
+    checkAllUpdatesMutation.mutate();
+  };
+
+  const handleCheckPluginUpdate = (plugin: PluginRow) => {
+    if (!pluginSupportsUpdates(plugin) || checkUpdateMutation.isPending) return;
+    setCheckingPluginId(plugin.pluginId);
+    checkUpdateMutation.mutate({ pluginId: plugin.pluginId });
+  };
+
+  const handleUpdatePlugin = (plugin: PluginRow) => {
+    if (!pluginSupportsUpdates(plugin) || updateFromGithubMutation.isPending || updatingPluginId) return;
+    updateStartedAtRef.current = Date.now();
+    setUpdatingPluginId(plugin.pluginId);
+    updateFromGithubMutation.mutate({ pluginId: plugin.pluginId });
+  };
 
   const handleAddStoreSources = () => {
     const repositories = Array.from(new Set(storeRepositoryList
@@ -1200,7 +1275,7 @@ export default function Plugins() {
 
   const handleSaveUsage = () => {
     if (!selectedPlugin || !hostAssetSyncUsageView) return;
-    if (usageDraft.enabled && usageDraft.hostIds.length === 0) {
+    if (usageDraft.enabled && !usageUsesAllHosts && usageDraft.hostIds.length === 0) {
       toast.error("请选择至少一台生效主机");
       return;
     }
@@ -1227,11 +1302,29 @@ export default function Plugins() {
       pluginId: selectedPlugin.pluginId,
       usageViewId: hostAssetSyncUsageView.id,
       enabled: usageDraft.enabled,
-      hostIds: usageDraft.hostIds,
+      hostIds: usageUsesAllHosts ? [] : usageDraft.hostIds,
       assetPaths: usageUsesAllAssets ? [] : usageDraft.assetPaths,
       operation: usageDraft.operation || usageOperationOptions[0]?.value || undefined,
       fieldValues: usageDraft.fieldValues,
       note: usageDraft.note,
+    });
+  };
+
+  const handleAllHostsUsageToggle = (enabled: boolean) => {
+    if (!selectedPlugin || !hostAssetSyncUsageView || !usageUsesAllHosts) return;
+    const previousEnabled = usageDraft.enabled;
+    setUsageDraft((current) => ({ ...current, enabled }));
+    saveUsageMutation.mutate({
+      pluginId: selectedPlugin.pluginId,
+      usageViewId: hostAssetSyncUsageView.id,
+      enabled,
+      hostIds: [],
+      assetPaths: usageUsesAllAssets ? [] : usageDraft.assetPaths,
+      operation: usageDraft.operation || usageOperationOptions[0]?.value || undefined,
+      fieldValues: usageDraft.fieldValues,
+      note: usageDraft.note,
+    }, {
+      onError: () => setUsageDraft((current) => ({ ...current, enabled: previousEnabled })),
     });
   };
 
@@ -1355,6 +1448,67 @@ export default function Plugins() {
     }
     if (pluginUsageLoading) {
       return <DataSectionLoading label="正在加载使用配置" minHeight="min-h-[220px]" />;
+    }
+    if (usageUsesAllHosts) {
+      return (
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 border-b border-border/40 pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-300">
+                <ShieldCheck className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium">{hostAssetSyncUsageView?.title || "主机资源管理"}</p>
+                  <Badge variant="outline" className="font-normal">{usageHosts.length} 台主机</Badge>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {hostAssetSyncUsageView?.description || "插件资源自动同步到所有 Agent，各主机配置独立管理。"}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center justify-between gap-3 sm:justify-end">
+              <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
+              <Switch
+                checked={usageDraft.enabled}
+                disabled={saveUsageMutation.isPending}
+                onCheckedChange={handleAllHostsUsageToggle}
+              />
+            </div>
+          </div>
+
+          {selectedPlugin.status !== "enabled" && (
+            <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "请先启用插件，Agent 才会接收资源和操作。"}</AlertDescription>
+            </Alert>
+          )}
+
+          {pluginResourceViews.length > 0 && savedUsageEnabled && activeResourceView ? (
+            <div className="space-y-3">
+              {pluginResourceViews.length > 1 && (
+                <Tabs value={activeResourceView.id} onValueChange={setActiveResourceViewId}>
+                  <TabsList>
+                    {pluginResourceViews.map((view: any) => <TabsTrigger key={view.id} value={view.id}>{view.title}</TabsTrigger>)}
+                  </TabsList>
+                </Tabs>
+              )}
+              <AgentResourceManager
+                plugin={selectedPlugin}
+                view={activeResourceView}
+                usage={savedUsage}
+                hosts={usageHosts}
+                hostScope="all"
+              />
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-border/60 px-4 py-12 text-center text-sm text-muted-foreground">
+              {saveUsageMutation.isPending ? "正在更新插件状态..." : "启用后可按主机管理白名单规则"}
+            </div>
+          )}
+        </div>
+      );
     }
     return (
       <>
@@ -2067,12 +2221,29 @@ export default function Plugins() {
         {activeSection === "manage" && (
         <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Puzzle className="h-4 w-4 text-primary" />
-                已安装插件
-              </CardTitle>
-              <CardDescription>{plugins.length} 个插件</CardDescription>
+            <CardHeader className="flex-row items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Puzzle className="h-4 w-4 text-primary" />
+                  已安装插件
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {plugins.length} 个插件{availablePluginUpdates.length > 0 ? ` · ${availablePluginUpdates.length} 个可更新` : ""}
+                </CardDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-2"
+                title="检查所有插件更新"
+                aria-label="检查所有插件更新"
+                disabled={checkAllUpdatesMutation.isPending || updateFromGithubMutation.isPending}
+                onClick={handleCheckAllUpdates}
+              >
+                <RefreshCw className={cn("h-4 w-4", checkAllUpdatesMutation.isPending && "animate-spin")} />
+                <span className="hidden sm:inline">{checkAllUpdatesMutation.isPending ? "检查中" : "检查更新"}</span>
+              </Button>
             </CardHeader>
             <CardContent className="space-y-3">
               {pluginsLoading ? (
@@ -2080,6 +2251,10 @@ export default function Plugins() {
               ) : plugins.length ? (
                 plugins.map((plugin: PluginRow) => {
                   const active = selectedPlugin?.pluginId === plugin.pluginId;
+                  const hasUpdate = plugin.hasUpdate === true;
+                  const updating = updatingPluginId === plugin.pluginId;
+                  const checking = checkingPluginId === plugin.pluginId;
+                  const storeItem = storeItemByPluginId.get(plugin.pluginId) as any;
                   return (
                     <button
                       key={plugin.pluginId}
@@ -2087,7 +2262,11 @@ export default function Plugins() {
                       onClick={() => setSelectedPluginId(plugin.pluginId)}
                       className={cn(
                         "w-full rounded-xl border p-4 text-left transition-colors",
-                        active ? "border-primary/40 bg-primary/5" : "border-border/40 bg-muted/20 hover:bg-muted/35",
+                        updating
+                          ? "border-primary/50 bg-primary/10"
+                          : active
+                            ? "border-primary/40 bg-primary/5"
+                            : "border-border/40 bg-muted/20 hover:bg-muted/35",
                       )}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -2098,11 +2277,22 @@ export default function Plugins() {
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
                             {plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                            {updating ? (
+                              <Badge className="gap-1.5 bg-primary text-primary-foreground">
+                                <Loader2 className="h-3 w-3 animate-spin" />更新中
+                              </Badge>
+                            ) : hasUpdate ? (
+                              <Badge className="bg-primary text-primary-foreground">有更新 v{plugin.latestVersion}</Badge>
+                            ) : checking ? (
+                              <Badge variant="outline" className="gap-1.5">
+                                <Loader2 className="h-3 w-3 animate-spin" />检查中
+                              </Badge>
+                            ) : null}
                           </div>
                           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                            <span>v{plugin.version}</span>
-                            <span>{pluginSourceLabel(plugin.sourceType)}</span>
+                            <span>v{plugin.version}{hasUpdate ? ` → v${plugin.latestVersion}` : ""}</span>
+                            <span>{storeItem?.official ? "官方" : storeItem?.storeSourceName || pluginSourceLabel(plugin.sourceType)}</span>
                             <span>{formatTime(plugin.updatedAt)}</span>
                           </div>
                         </div>
@@ -2133,10 +2323,17 @@ export default function Plugins() {
                           {pluginStatusLabel(selectedPlugin.status)}
                         </Badge>
                         {selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                        {selectedPluginUpdating ? (
+                          <Badge className="gap-1.5 bg-primary text-primary-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />更新中
+                          </Badge>
+                        ) : selectedPluginHasUpdate ? (
+                          <Badge className="bg-primary text-primary-foreground">有更新 v{selectedPlugin.latestVersion}</Badge>
+                        ) : null}
                       </CardTitle>
                       <CardDescription>{selectedPlugin.description || selectedPlugin.pluginId}</CardDescription>
                       <p className="text-xs text-muted-foreground">
-                        开发者：{selectedManifest.author || selectedPlugin.author || "未知"}
+                        开发者：{selectedManifest.author || selectedPlugin.author || "未知"} · {selectedPluginSourceLabel}
                       </p>
                     </div>
                   </div>
@@ -2168,16 +2365,26 @@ export default function Plugins() {
                     >
                       {selectedPlugin.status === "enabled" ? "停用" : "启用"}
                     </Button>
-                    {selectedPlugin.sourceType === "github" && (
+                    {pluginSupportsUpdates(selectedPlugin) && (
                       <>
-                        <Button variant="outline" size="sm" className="gap-2" disabled={isBusy} onClick={() => checkUpdateMutation.mutate({ pluginId: selectedPlugin.pluginId })}>
-                          <RefreshCw className={cn("h-4 w-4", checkUpdateMutation.isPending && "animate-spin")} />
-                          检查
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          disabled={isBusy || checkUpdateMutation.isPending || checkAllUpdatesMutation.isPending}
+                          onClick={() => handleCheckPluginUpdate(selectedPlugin)}
+                        >
+                          <RefreshCw className={cn("h-4 w-4", selectedPluginChecking && "animate-spin")} />
+                          {selectedPluginChecking ? "检查中" : "检查更新"}
                         </Button>
-                        <Button variant="outline" size="sm" className="gap-2" disabled={isBusy} onClick={() => updateFromGithubMutation.mutate({ pluginId: selectedPlugin.pluginId })}>
-                          <Download className="h-4 w-4" />
-                          更新
-                        </Button>
+                        {(selectedPluginHasUpdate || selectedPluginUpdating) && (
+                          <Button size="sm" className="gap-2" disabled={isBusy || selectedPluginUpdating} onClick={() => handleUpdatePlugin(selectedPlugin)}>
+                            {selectedPluginUpdating
+                              ? <Loader2 className="h-4 w-4 animate-spin" />
+                              : <Download className="h-4 w-4" />}
+                            {selectedPluginUpdating ? "更新中" : `更新到 v${selectedPlugin.latestVersion}`}
+                          </Button>
+                        )}
                       </>
                     )}
                     <Button variant="ghost" size="sm" className="gap-2 text-destructive hover:text-destructive" disabled={isBusy} onClick={() => handleUninstall(selectedPlugin)}>
@@ -2187,6 +2394,22 @@ export default function Plugins() {
                   </div>
                 </CardHeader>
                 <CardContent>
+                  {selectedPluginUpdating && (
+                    <div className="mb-4 border-y border-primary/20 bg-primary/5 px-3 py-3" aria-live="polite">
+                      <div className="flex items-center gap-3">
+                        <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium">正在更新 {selectedPlugin.name}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                            下载并校验 v{selectedPlugin.latestVersion || "最新版本"} 插件包
+                          </p>
+                          <div className="mt-2 h-1 overflow-hidden rounded-full bg-primary/15">
+                            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <Tabs defaultValue="overview" className="space-y-4">
                     <TabsList className="grid w-full grid-cols-5">
                       <TabsTrigger value="overview">概览</TabsTrigger>
@@ -2217,7 +2440,7 @@ export default function Plugins() {
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                           <p className="text-xs text-muted-foreground">来源</p>
-                          <p className="mt-1 text-sm">{pluginSourceLabel(selectedPlugin.sourceType)}</p>
+                          <p className="mt-1 text-sm">{selectedPluginSourceLabel}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                           <p className="text-xs text-muted-foreground">发布日期</p>

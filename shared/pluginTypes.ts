@@ -469,6 +469,7 @@ export type PluginUsageViewDefinition = {
   title: string;
   description?: string;
   storageKey?: string;
+  hostScope?: "selected" | "all";
   enableLabel?: string;
   targetDirectory?: string;
   assetMode?: "selected-assets" | "all-plugin-assets";
@@ -570,21 +571,21 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
   {
     id: "china-region-whitelist",
     name: "ForwardX 中国区域白名单",
-    description: "为 ForwardX 面板适配的中国区域白名单插件，可在插件内选择主机并下发白名单防火墙配置。",
+    description: "按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。",
     detailsMarkdown: [
-      "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则下发到选中的 Agent 主机。",
+      "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则应用到 Agent 主机。",
       "",
-      "安装后在“插件使用”中选择同步插件程序和数据的主机，保存后即可在当前插件下方的“Agent 节点管理”中新增、查看、修改或删除实际白名单配置。",
+      "启用后，插件程序和数据会自动同步到所有 Agent。左侧展示全部主机并支持筛选；点击主机后，可在右侧新增、查看、修改、删除和刷新实际白名单规则。",
       "",
       "- 支持全国或按省份选择全局入站白名单。",
       "- 支持额外 ASN 和端口优先白名单。",
       "- 支持 nftables 或 iptables/ipset。",
       "- 支持按 Agent 独立管理配置并实时查看应用和失败状态。",
     ].join("\n"),
-    version: "0.5.0",
+    version: "0.6.0",
     releaseDate: "2026-07-12",
-    updatedAt: "2026-07-12",
-    changelog: "新增插件内 Agent 节点管理区域，支持按主机新增、查看、修改和删除省份白名单，并展示实际配置区域。",
+    updatedAt: "2026-07-14",
+    changelog: "重做白名单管理界面：左侧展示并筛选全部主机，右侧按当前主机新增、修改、删除和刷新规则。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },

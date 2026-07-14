@@ -62,7 +62,7 @@ import {
 import type { TrpcContext } from "../_core/context";
 import { appendPanelLog } from "../_core/panelLogger";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
-import { AGENT_PLUGIN_TASK_VERSION, isAgentVersionAtLeast } from "../agentRouteUtils";
+import { AGENT_PLUGIN_TASK_VERSION, compareVersions, isAgentVersionAtLeast } from "../agentRouteUtils";
 import { getAgentPluginInventory } from "../agentPluginInventory";
 import { pushAgentRefresh } from "../agentEvents";
 import { mapWithConcurrency } from "../asyncPool";
@@ -79,6 +79,7 @@ const DEFAULT_THIRD_PARTY_STORE_PATH = "forwardx-store.json";
 const MAX_PLUGIN_STORE_SOURCES = 32;
 const MAX_PLUGIN_STORE_ITEMS_PER_SOURCE = 200;
 const PLUGIN_STORE_SYNC_CONCURRENCY = 6;
+const PLUGIN_UPDATE_CHECK_CONCURRENCY = 4;
 const MAX_PLUGIN_UPLOAD_BYTES = PLUGIN_SECURITY_MODEL.maxUploadBytes;
 const MAX_PLUGIN_ASSET_BYTES = PLUGIN_SECURITY_MODEL.maxAssetBytes;
 const MAX_PLUGIN_ASSETS = 96;
@@ -201,6 +202,30 @@ function normalizeUsageAssetPaths(values: unknown) {
 
 function usageViewAssetMode(view?: PluginUsageViewDefinition | null) {
   return view?.assetMode === "all-plugin-assets" ? "all-plugin-assets" : "selected-assets";
+}
+
+export function pluginVersionHasUpdate(currentVersion: unknown, latestVersion: unknown) {
+  const current = String(currentVersion || "").trim();
+  const latest = String(latestVersion || "").trim();
+  return !!current && !!latest && compareVersions(latest, current) > 0;
+}
+
+function usageViewHostScope(view?: PluginUsageViewDefinition | null) {
+  return view?.hostScope === "all" ? "all" : "selected";
+}
+
+export function resolvePluginUsageHostIds(
+  view: PluginUsageViewDefinition | null | undefined,
+  usage: Pick<HostAssetSyncUsageConfig, "enabled" | "hostIds">,
+  knownHostIds: number[],
+) {
+  if (!usage.enabled) return [];
+  const known = Array.from(new Set(knownHostIds
+    .map((hostId) => Math.floor(Number(hostId)))
+    .filter((hostId) => Number.isInteger(hostId) && hostId > 0)));
+  if (usageViewHostScope(view) === "all") return known;
+  const selected = new Set(normalizePositiveIds(usage.hostIds));
+  return known.filter((hostId) => selected.has(hostId));
 }
 
 function defaultUsageOperation(view?: PluginUsageViewDefinition | null) {
@@ -1064,6 +1089,7 @@ function normalizePluginUsageViews(value: unknown): PluginUsageViewDefinition[] 
       title: String(item?.title || id).trim().slice(0, 120) || id,
       description: normalizeOptionalText(item?.description, 300),
       storageKey: normalizeUsageStorageKey(item?.storageKey),
+      hostScope: item?.hostScope === "all" ? "all" : "selected",
       enableLabel: normalizeOptionalText(item?.enableLabel, 80),
       targetDirectory: undefined,
       assetMode: item?.assetMode === "all-plugin-assets" ? "all-plugin-assets" : "selected-assets",
@@ -1839,7 +1865,7 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
         id: "overview",
         title: "插件说明",
         contentType: "markdown",
-        content: "该插件由 ForwardX 内置适配，用于把中国区域白名单脚本、预制数据和配置下发到选中的 Agent 主机。",
+        content: "该插件由 ForwardX 内置适配，用于按主机管理中国区域白名单规则和实时状态。",
       },
     ],
     actions: [
@@ -1872,29 +1898,14 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
         id: "sync-to-hosts",
         type: "host-asset-sync",
         storageKey: "chinaRegionWhitelistUsage",
-        title: "主机白名单同步",
-        description: "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /var/lib/forwardx-agent/plugins/china-region-whitelist。",
-        enableLabel: "启用同步",
-        hostSelector: {
-          title: "生效主机",
-          selectedLabel: "已选",
-          selectAllLabel: "全选",
-          clearLabel: "清空",
-        },
-        assetSelector: {
-          title: "同步内容",
-          selectedLabel: "已选",
-          clearLabel: "清空",
-        },
-        noteField: {
-          label: "备注",
-          placeholder: "例如：同步到国内入口主机，供后续规则或脚本读取",
-        },
-        footer: {
-          title: "当前方式：同步文件到主机本地目录。",
-          description: "保存后，目标主机下次 Agent 心跳会收到更新。",
-          submitLabel: "保存使用配置",
-        },
+        title: "中国区域白名单",
+        description: "插件资源自动同步到所有 Agent；选择左侧主机后，可独立管理该主机的白名单规则。",
+        hostScope: "all",
+        enableLabel: "启用",
+        targetDirectory: "/var/lib/forwardx-agent/plugins/china-region-whitelist",
+        assetMode: "all-plugin-assets",
+        preserveAssetPaths: true,
+        assetSelector: { hidden: true },
       },
     ],
     data: {
@@ -2263,6 +2274,7 @@ function normalizePluginRow(row: any) {
   } as any);
   return {
     ...row,
+    hasUpdate: pluginVersionHasUpdate(row?.version, row?.latestVersion),
     trusted: row?.trusted === true || Number(row?.trusted || 0) === 1,
     manifest,
     permissions: parseJson<PluginPermissionKey[]>(row?.permissionsJson, []),
@@ -2386,7 +2398,12 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
       contentType: asset.contentType,
     }))
     .sort((a: any, b: any) => String(a.path).localeCompare(String(b.path), "zh-Hans-CN"));
-  const selectedHostIds = new Set(usage.enabled ? usage.hostIds : []);
+  const effectiveHostIds = resolvePluginUsageHostIds(
+    usageView,
+    usage,
+    hostRows.map((host: any) => Number(host.id)),
+  );
+  const selectedHostIds = new Set(effectiveHostIds);
   const usageUpdatedAt = usage.updatedAt ? new Date(usage.updatedAt).getTime() : 0;
   const pluginUpdatedAt = plugin.updatedAt ? new Date(plugin.updatedAt).getTime() : 0;
   const pluginSyncRequiredAt = Math.max(usageUpdatedAt, pluginUpdatedAt);
@@ -2397,7 +2414,7 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
   return {
     plugin,
     usageView,
-    usage,
+    usage: { ...usage, hostIds: effectiveHostIds },
     hosts: hostRows.map((host: any) => {
       const lastHeartbeatAt = host.lastHeartbeat ? new Date(host.lastHeartbeat).getTime() : 0;
       const selected = selectedHostIds.has(Number(host.id));
@@ -2434,10 +2451,12 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   const key = usageStorageKey(plugin, usageView.id);
   const previousUsage = normalizeHostAssetSyncUsage(pluginSettingsValues(plugin.manifest)[key], usageView);
   const knownHosts = await db.select({ id: hosts.id }).from(hosts);
-  const knownHostIds = new Set(knownHosts.map((host: any) => Number(host.id)));
+  const knownHostIdList = knownHosts.map((host: any) => Number(host.id));
+  const knownHostIds = new Set(knownHostIdList);
   const knownAssetRows = await db.select({ path: pluginAssets.path, size: pluginAssets.size }).from(pluginAssets).where(eq(pluginAssets.pluginId, id));
   const knownAssetSizeByPath = new Map<string, number>(knownAssetRows.map((asset: any) => [String(asset.path || ""), Number(asset.size || 0)]));
   const allAssetsMode = usageViewAssetMode(usageView) === "all-plugin-assets";
+  const allHostsMode = usageViewHostScope(usageView) === "all";
   const knownAssetPaths = new Set<string>(knownAssetRows.map((asset: any) => String(asset.path || "")).filter((path: string) => (
     allAssetsMode
       ? isHostSyncAssetCandidate(path, knownAssetSizeByPath.get(path) || 0)
@@ -2445,7 +2464,7 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   )));
   const nextUsage = normalizeHostAssetSyncUsage({
     enabled: input.enabled === true,
-    hostIds: normalizePositiveIds(input.hostIds).filter((hostId) => knownHostIds.has(hostId)),
+    hostIds: allHostsMode ? [] : normalizePositiveIds(input.hostIds).filter((hostId) => knownHostIds.has(hostId)),
     assetPaths: allAssetsMode ? [] : normalizeUsageAssetPaths(input.assetPaths).filter((path) => knownAssetPaths.has(path)),
     mode: "sync-files",
     operation: input.operation,
@@ -2456,7 +2475,7 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   if (id === "china-region-whitelist" && nextUsage.fieldValues) {
     nextUsage.fieldValues["region-codes"] = chinaRegionWhitelistCodes(nextUsage);
   }
-  if (nextUsage.enabled && nextUsage.hostIds.length === 0) throw new Error("请选择至少一台生效主机");
+  if (nextUsage.enabled && !allHostsMode && nextUsage.hostIds.length === 0) throw new Error("请选择至少一台生效主机");
   if (nextUsage.enabled && !allAssetsMode && nextUsage.assetPaths.length === 0) throw new Error("请选择至少一个白名单文件");
   if (nextUsage.enabled) {
     for (const field of usageView.fields || []) {
@@ -2476,10 +2495,12 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   if (nextUsage.enabled && totalSelectedBytes > MAX_WHITELIST_USAGE_SYNC_BYTES) {
     throw new Error(`选中的白名单文件总大小不能超过 ${formatByteLimit(MAX_WHITELIST_USAGE_SYNC_BYTES)}，请减少同步文件数量`);
   }
-  const nextActiveHostIds = new Set(nextUsage.enabled ? nextUsage.hostIds : []);
+  const previousActiveHostIds = resolvePluginUsageHostIds(usageView, previousUsage, knownHostIdList);
+  const nextActiveHostIdList = resolvePluginUsageHostIds(usageView, nextUsage, knownHostIdList);
+  const nextActiveHostIds = new Set(nextActiveHostIdList);
   nextUsage.cleanupHostIds = Array.from(new Set([
     ...(previousUsage.cleanupHostIds || []),
-    ...(previousUsage.enabled ? previousUsage.hostIds : []),
+    ...previousActiveHostIds,
   ]))
     .filter((hostId) => knownHostIds.has(hostId) && !nextActiveHostIds.has(hostId))
     .slice(0, MAX_WHITELIST_USAGE_HOSTS);
@@ -2490,8 +2511,8 @@ export async function savePluginUsage(pluginId: string, usageViewId: string | nu
   await db.update(plugins).set({ manifestJson: JSON.stringify(manifest, null, 2), updatedAt: nowDate(), lastError: null } as any)
     .where(eq(plugins.pluginId, id));
   const refreshHostIds = new Set([
-    ...(previousUsage.enabled ? previousUsage.hostIds : []),
-    ...(nextUsage.enabled ? nextUsage.hostIds : []),
+    ...previousActiveHostIds,
+    ...nextActiveHostIdList,
     ...(nextUsage.cleanupHostIds || []),
   ]);
   for (const hostId of refreshHostIds) {
@@ -2690,9 +2711,10 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
     const pluginRootDir = path.posix.dirname(targetDir);
     const backupDir = `${pluginRootDir}/.previous-${plugin.pluginId}`;
     const hasSyncTargets = allAssetsMode || usage.assetPaths.length > 0;
+    const hostInScope = usageViewHostScope(usageView) === "all" || usage.hostIds.includes(currentHostId);
     const isChinaRegionWhitelist = plugin.pluginId === "china-region-whitelist";
     const shouldCleanup = usage.cleanupHostIds?.includes(currentHostId)
-      || ((plugin.status !== "enabled" || !usage.enabled || !hasSyncTargets) && usage.hostIds.includes(currentHostId));
+      || ((plugin.status !== "enabled" || !usage.enabled || !hasSyncTargets) && hostInScope);
     if (shouldCleanup) {
       const commands = isChinaRegionWhitelist
         ? [
@@ -2715,7 +2737,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       });
       continue;
     }
-    if (plugin.status !== "enabled" || !usage.enabled || !usage.hostIds.includes(currentHostId) || !hasSyncTargets) continue;
+    if (plugin.status !== "enabled" || !usage.enabled || !hostInScope || !hasSyncTargets) continue;
     const rows = await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, plugin.pluginId));
     const preservePaths = allAssetsMode || usageView.preserveAssetPaths === true;
     const syncFiles = pluginHostSyncFiles(usageView, usage, rows);
@@ -3014,7 +3036,25 @@ export async function setPluginEnabled(pluginId: string, enabled: boolean) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const id = assertPluginId(pluginId);
+  const plugin = await getPlugin(id);
+  if (!plugin) throw new Error("插件不存在");
   await db.update(plugins).set({ status: enabled ? "enabled" : "disabled", updatedAt: nowDate(), lastError: null } as any).where(eq(plugins.pluginId, id));
+  const usageView = firstHostAssetSyncView(plugin.manifest);
+  if (usageView) {
+    const usage = normalizeHostAssetSyncUsage(
+      pluginSettingsValues(plugin.manifest)[usageStorageKey(plugin, usageView.id)],
+      usageView,
+    );
+    const hostRows = await db.select({ id: hosts.id }).from(hosts);
+    const refreshHostIds = resolvePluginUsageHostIds(
+      usageView,
+      usage,
+      hostRows.map((host: any) => Number(host.id)),
+    );
+    for (const hostId of refreshHostIds) {
+      pushAgentRefresh(hostId, `plugin-${id}-${enabled ? "enabled" : "disabled"}`, { urgent: true });
+    }
+  }
   return await getPlugin(id);
 }
 
@@ -3038,51 +3078,100 @@ export async function uninstallPlugin(pluginId: string) {
   await db.delete(plugins).where(eq(plugins.pluginId, id));
 }
 
-export async function checkPluginUpdate(pluginId: string) {
+export async function checkPluginUpdate(pluginId: string, options: { refreshStores?: boolean } = {}) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
+  if (options.refreshStores) await refreshPluginStoreItems();
+  const storeItem = await findStoreFallbackItem({
+    id: plugin.pluginId,
+    repository: plugin.manifest?.data?.repository || plugin.repository || plugin.sourceUrl,
+  });
+  let latestVersion = String(storeItem?.version || "").trim();
+  let manifestPath = storeItem?.manifestPath || plugin.manifestPath || null;
+  let source = storeItem?.official ? "official" : storeItem?.storeSourceId ? "third-party" : "github";
+  let sourceName = storeItem?.official ? "官方插件商店" : storeItem?.storeSourceName || "GitHub";
   const bundledPath = await bundledPathForPlugin(plugin);
   if (bundledPath) {
     const files = await localBundledPluginFiles(bundledPath);
     const manifestFile = pluginPackageManifest(files);
     const manifest = normalizeManifest(manifestFile.manifest, { repository: FORWARDX_REPO_URL });
-    await db.update(plugins).set({
-      latestVersion: manifest.version,
-      manifestPath: manifestFile.path,
-      sourceUrl: bundledPath,
-      lastCheckedAt: nowDate(),
-      lastError: null,
-    } as any).where(eq(plugins.pluginId, plugin.pluginId));
-    return { currentVersion: plugin.version, latestVersion: manifest.version, hasUpdate: manifest.version !== plugin.version };
+    if (!latestVersion || compareVersions(manifest.version, latestVersion) > 0) {
+      latestVersion = manifest.version;
+      manifestPath = manifestFile.path;
+      source = "local";
+      sourceName = "面板内置插件";
+    }
   }
-  if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
+  if (!latestVersion && plugin.sourceType !== "github") {
     throw new Error("只有 GitHub 来源插件支持在线检查更新");
   }
-  const branch = String(plugin.branch || "main");
-  const storeItem = await findStoreFallbackItem({ id: plugin.pluginId, repository: plugin.manifest?.data?.repository || plugin.repository || plugin.sourceUrl });
-  const sourceUrl = storeItem?.packageRepository || plugin.sourceUrl;
-  const sourceBranch = storeItem?.packageBranch || branch;
-  const preferredManifestPath = storeItem?.packageRepository ? storeItem.manifestPath : plugin.manifestPath;
-  let manifest: ForwardxPluginManifest;
-  let manifestPath = preferredManifestPath || null;
-  try {
-    const fetched = await tryFetchGithubManifest(sourceUrl, sourceBranch, preferredManifestPath);
-    manifest = normalizeManifest(fetched.manifest, { repository: sourceUrl });
+  if (!latestVersion) {
+    const sourceUrl = String(plugin.sourceUrl || "").trim();
+    if (!sourceUrl) throw new Error("插件缺少可检查更新的 GitHub 来源");
+    const fetched = await tryFetchGithubManifest(sourceUrl, String(plugin.branch || "main"), plugin.manifestPath);
+    const manifest = normalizeManifest(fetched.manifest, { repository: sourceUrl });
+    latestVersion = manifest.version;
     manifestPath = fetched.path;
-  } catch (error) {
-    if (!storeItem) throw error;
-    manifest = builtinFallbackManifest(storeItem);
-    manifestPath = storeItem.manifestPath || null;
+    source = "github";
+    sourceName = "GitHub";
   }
   await db.update(plugins).set({
-    latestVersion: manifest.version,
+    latestVersion,
     manifestPath,
     lastCheckedAt: nowDate(),
     lastError: null,
   } as any).where(eq(plugins.pluginId, plugin.pluginId));
-  return { currentVersion: plugin.version, latestVersion: manifest.version, hasUpdate: manifest.version !== plugin.version };
+  return {
+    pluginId: plugin.pluginId,
+    name: plugin.name,
+    currentVersion: plugin.version,
+    latestVersion,
+    hasUpdate: pluginVersionHasUpdate(plugin.version, latestVersion),
+    source,
+    sourceName,
+  };
+}
+
+export async function checkAllPluginUpdates() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const store = await refreshPluginStoreItems();
+  const installed = await listPlugins();
+  const candidates = installed.filter((plugin: any) => plugin.sourceType === "github" || plugin.sourceType === "local");
+  const results = await mapWithConcurrency(candidates, PLUGIN_UPDATE_CHECK_CONCURRENCY, async (plugin: any) => {
+    try {
+      return { ok: true as const, ...(await checkPluginUpdate(plugin.pluginId)) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db.update(plugins).set({
+        lastCheckedAt: nowDate(),
+        lastError: message.slice(0, 1000),
+      } as any).where(eq(plugins.pluginId, plugin.pluginId));
+      return {
+        ok: false as const,
+        pluginId: plugin.pluginId,
+        name: plugin.name,
+        currentVersion: plugin.version,
+        latestVersion: String(plugin.latestVersion || ""),
+        hasUpdate: pluginVersionHasUpdate(plugin.version, plugin.latestVersion),
+        error: message,
+      };
+    }
+  });
+  return {
+    checkedAt: new Date().toISOString(),
+    checked: results.length,
+    unsupported: installed.length - candidates.length,
+    updates: results.filter((result: any) => result.hasUpdate).length,
+    failed: results.filter((result: any) => !result.ok).length,
+    results,
+    store: {
+      official: store.official,
+      sources: store.sources,
+    },
+  };
 }
 
 export async function refreshPluginAssets(pluginId: string) {
@@ -3105,19 +3194,69 @@ export async function refreshPluginAssets(pluginId: string) {
   return syncResult;
 }
 
+async function finalizePluginUpdate(pluginId: string, expectedVersion?: string | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const installed = await getPlugin(pluginId);
+  if (!installed) throw new Error("插件更新后未找到安装记录");
+  const expected = String(expectedVersion || "").trim();
+  if (expected && compareVersions(installed.version, expected) < 0) {
+    const message = `插件包版本 v${installed.version} 低于商店声明版本 v${expected}`;
+    await db.update(plugins).set({
+      latestVersion: expected,
+      lastCheckedAt: nowDate(),
+      lastError: message,
+    } as any).where(eq(plugins.pluginId, installed.pluginId));
+    throw new Error(message);
+  }
+  await db.update(plugins).set({
+    latestVersion: installed.version,
+    lastCheckedAt: nowDate(),
+    lastError: null,
+  } as any).where(eq(plugins.pluginId, installed.pluginId));
+  const refreshed = await getPlugin(installed.pluginId);
+  const usageView = firstHostAssetSyncView(refreshed?.manifest);
+  if (refreshed && usageView) {
+    const usage = normalizeHostAssetSyncUsage(
+      pluginSettingsValues(refreshed.manifest)[usageStorageKey(refreshed, usageView.id)],
+      usageView,
+    );
+    const hostRows = await db.select({ id: hosts.id }).from(hosts);
+    for (const hostId of resolvePluginUsageHostIds(usageView, usage, hostRows.map((host: any) => Number(host.id)))) {
+      pushAgentRefresh(hostId, `plugin-${installed.pluginId}-updated`, { urgent: true });
+    }
+  }
+  return refreshed;
+}
+
 export async function updatePluginFromGithub(pluginId: string) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
+  await refreshPluginStoreItems();
+  const storeItem = await findStoreFallbackItem({
+    id: plugin.pluginId,
+    repository: plugin.manifest?.data?.repository || plugin.repository || plugin.sourceUrl,
+  });
   const bundledPath = await bundledPathForPlugin(plugin);
+  const expectedVersion = pluginVersionHasUpdate(plugin.version, storeItem?.version)
+    ? String(storeItem?.version || "")
+    : pluginVersionHasUpdate(plugin.version, plugin.latestVersion)
+      ? String(plugin.latestVersion || "")
+      : "";
+  if (storeItem && pluginVersionHasUpdate(plugin.version, storeItem.version)) {
+    const updated = await installPluginFromStoreItem(storeItem);
+    return finalizePluginUpdate(updated?.pluginId || plugin.pluginId, expectedVersion);
+  }
   if (bundledPath) {
-    return installBundledPluginFromLocal({ bundledPath });
+    const updated = await installBundledPluginFromLocal({ bundledPath });
+    return finalizePluginUpdate(updated?.pluginId || plugin.pluginId, expectedVersion);
   }
   if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
     throw new Error("只有 GitHub 来源插件支持在线更新");
   }
-  const storeItem = await findStoreFallbackItem({ id: plugin.pluginId, repository: plugin.manifest?.data?.repository || plugin.repository || plugin.sourceUrl });
   if (storeItem?.packagePath || storeItem?.packageUrl) {
-    return installPluginFromStoreItem(storeItem);
+    const updated = await installPluginFromStoreItem(storeItem);
+    return finalizePluginUpdate(updated?.pluginId || plugin.pluginId, expectedVersion);
   }
   const updated = await installPluginFromGithub({
     repository: plugin.sourceUrl,
@@ -3125,7 +3264,7 @@ export async function updatePluginFromGithub(pluginId: string) {
     manifestPath: plugin.manifestPath || undefined,
     fallbackStoreId: plugin.pluginId,
   });
-  return updated;
+  return finalizePluginUpdate(updated?.pluginId || plugin.pluginId, expectedVersion);
 }
 
 export async function savePluginSetting(pluginId: string, key: string, value: unknown) {
@@ -3526,7 +3665,11 @@ async function executePluginAgentAction(
     || firstHostAssetSyncView(plugin.manifest);
   if (!usageView || usageView.type !== "host-asset-sync") throw new Error("Agent 动作需要关联主机使用页");
   const usage = normalizeHostAssetSyncUsage(pluginSettingsValues(plugin.manifest)[usageStorageKey(plugin, usageView.id)], usageView);
-  if (!usage.enabled || usage.hostIds.length === 0) throw new Error("请先在插件使用页启用配置并选择生效主机");
+  if (!usage.enabled || (usageViewHostScope(usageView) !== "all" && usage.hostIds.length === 0)) {
+    throw new Error(usageViewHostScope(usageView) === "all"
+      ? "请先在插件使用页启用配置"
+      : "请先在插件使用页启用配置并选择生效主机");
+  }
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const [hostRows, syncAssetRows] = await Promise.all([
@@ -3550,7 +3693,11 @@ async function executePluginAgentAction(
     hostAssetSyncDir(plugin.pluginId, usageView),
     pluginHostSyncFiles(usageView, usage, syncAssetRows).files,
   );
-  const selectedHostIds = new Set(usage.hostIds);
+  const selectedHostIds = new Set(resolvePluginUsageHostIds(
+    usageView,
+    usage,
+    hostRows.map((host: any) => Number(host.id)),
+  ));
   const requestedHostIds = normalizePositiveIds(options.hostIds);
   if (action.agent.target === "selected-hosts" && requestedHostIds.length === 0) {
     throw new Error("该插件操作需要先选择目标 Agent");
@@ -3561,7 +3708,9 @@ async function executePluginAgentAction(
     && (requestedHostIds.length === 0 || requestedHostIdSet.has(Number(host.id)))
   ));
   if (requestedHostIds.some((hostId) => !selectedHostIds.has(hostId))) {
-    throw new Error("目标 Agent 不在该插件已保存的生效主机范围内");
+    throw new Error(usageViewHostScope(usageView) === "all"
+      ? "目标 Agent 不存在"
+      : "目标 Agent 不在该插件已保存的生效主机范围内");
   }
   if (targetHosts.length === 0) throw new Error("插件配置中的目标主机已不存在");
   if (requestedHostIds.length > 0) {

@@ -245,11 +245,13 @@ export function AgentResourceManager({
   view,
   usage,
   hosts,
+  hostScope = "selected",
 }: {
   plugin: any;
   view: PluginResourceViewDefinition;
   usage: any;
   hosts: any[];
+  hostScope?: "selected" | "all";
 }) {
   const utils = trpc.useUtils();
   const confirm = useConfirmDialog();
@@ -271,8 +273,10 @@ export function AgentResourceManager({
 
   const selectedHostIds = useMemo(() => new Set((usage?.enabled ? usage?.hostIds : []).map(Number)), [usage?.enabled, usage?.hostIds]);
   const resourceHosts = useMemo(
-    () => hosts.filter((host) => selectedHostIds.has(Number(host.id))),
-    [hosts, selectedHostIds],
+    () => usage?.enabled && hostScope === "all"
+      ? hosts
+      : hosts.filter((host) => selectedHostIds.has(Number(host.id))),
+    [hostScope, hosts, selectedHostIds, usage?.enabled],
   );
   const selectedHost = resourceHosts.find((host) => Number(host.id) === selectedHostId) || null;
   const activeTasks = useMemo(
@@ -354,6 +358,12 @@ export function AgentResourceManager({
     const firstOnline = resourceHosts.find((host) => host.isOnline && host.agentPluginSupported && !host.pluginSyncPending);
     setSelectedHostId(Number(firstOnline?.id || resourceHosts[0]?.id || 0));
   }, [resourceHosts, selectedHostId]);
+
+  useEffect(() => {
+    if (!hostSearchQuery.trim() || filteredResourceHosts.length === 0) return;
+    if (filteredResourceHosts.some((host) => Number(host.id) === selectedHostId)) return;
+    setSelectedHostId(Number(filteredResourceHosts[0]?.id || 0));
+  }, [filteredResourceHosts, hostSearchQuery, selectedHostId]);
 
   const sourceCacheKey = useCallback((hostId: number, sourceId: string) => (
     `${plugin?.pluginId || "plugin"}:${view.id}:${hostId}:${sourceId}`
@@ -846,7 +856,11 @@ export function AgentResourceManager({
                 <Server className="h-4 w-4 text-primary" />
                 <span className="text-sm font-medium">主机</span>
               </div>
-              <span className="text-xs tabular-nums text-muted-foreground">{resourceHosts.length}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {filteredResourceHosts.length === resourceHosts.length
+                  ? resourceHosts.length
+                  : `${filteredResourceHosts.length}/${resourceHosts.length}`}
+              </span>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -879,14 +893,16 @@ export function AgentResourceManager({
                   )} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{taskStatusLabel(status)}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {host.ip || host.ipv4 || host.ipv6 || "未设置 IP"} · {taskStatusLabel(status)}
+                    </span>
                   </span>
                 </button>
               );
             })}
             {!filteredResourceHosts.length && (
               <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                {resourceHosts.length ? "没有匹配的主机" : "尚未选择生效主机"}
+                {resourceHosts.length ? "没有匹配的主机" : hostScope === "all" ? "暂无主机" : "尚未选择生效主机"}
               </div>
             )}
           </div>
@@ -895,14 +911,29 @@ export function AgentResourceManager({
         <section className="min-w-0">
           <div className="flex flex-col gap-3 border-b border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 flex-1">
-              <div className="lg:hidden">
-                <Label className="mb-2 block text-xs">管理节点</Label>
+              <div className="space-y-2 lg:hidden">
+                <Label className="block text-xs">管理主机</Label>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={hostSearchQuery}
+                    onChange={(event) => setHostSearchQuery(event.target.value)}
+                    placeholder="筛选主机"
+                    className="h-9 pl-8 text-sm"
+                  />
+                </div>
                 <Select value={selectedHostId ? String(selectedHostId) : ""} onValueChange={(value) => setSelectedHostId(Number(value))}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="选择 Agent" /></SelectTrigger>
+                  <SelectTrigger className="w-full">
+                    <span className="min-w-0 truncate text-left">
+                      {selectedHost
+                        ? `${selectedHost.name || `主机 ${selectedHost.id}`} · ${taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}`
+                        : "选择 Agent"}
+                    </span>
+                  </SelectTrigger>
                   <SelectContent>
-                    {resourceHosts.map((host) => (
+                    {filteredResourceHosts.map((host) => (
                       <SelectItem key={host.id} value={String(host.id)}>
-                        {host.name || `主机 ${host.id}`} · {taskStatusLabel(resourceHostStatus(host, resourceStateByHostId.get(Number(host.id))))}
+                        {host.name || `主机 ${host.id}`} · {host.ip || host.ipv4 || host.ipv6 || "无 IP"} · {taskStatusLabel(resourceHostStatus(host, resourceStateByHostId.get(Number(host.id))))}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -910,7 +941,9 @@ export function AgentResourceManager({
               </div>
               <div className="hidden min-w-0 lg:block">
                 <p className="truncate text-sm font-semibold">{selectedHost?.name || "请选择主机"}</p>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">{view.title}</p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {selectedHost ? `${selectedHost.ip || selectedHost.ipv4 || selectedHost.ipv6 || "未设置 IP"} · ` : ""}{view.title}
+                </p>
               </div>
               {latestTaskState && (
                 <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">

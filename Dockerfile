@@ -13,7 +13,7 @@ COPY . .
 RUN pnpm build
 
 # ---------- 1b. Agent/runtime assets ----------
-FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS agent-assets
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent-assets
 WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git g++ g++-aarch64-linux-gnu \

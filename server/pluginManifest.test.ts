@@ -8,6 +8,8 @@ import {
   buildPluginTextFileCommands,
   normalizePluginManifest,
   normalizePluginStoreCatalog,
+  pluginVersionHasUpdate,
+  resolvePluginUsageHostIds,
 } from "./repositories/pluginRepository";
 
 test("plugin sync commands compress, chunk, and restore large text assets", () => {
@@ -167,7 +169,8 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.5.0");
+  assert.equal(manifest.version, "0.6.0");
+  assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
   assert.equal(schema.operations?.create?.actionId, "save-whitelist-config");
@@ -176,6 +179,25 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const regions = schema.fields?.find((field) => field.key === "regions");
   assert.equal(regions?.options?.find((option) => option.value === "CN")?.exclusive, true);
   assert.equal(regions?.options?.some((option) => option.value === "440000"), true);
+});
+
+test("plugin all-host scope resolves current hosts without persisting selections", () => {
+  const allHostsView = normalizePluginManifest({
+    id: "all-hosts-demo",
+    name: "All hosts demo",
+    version: "1.0.0",
+    usageViews: [{ id: "hosts", type: "host-asset-sync", title: "Hosts", hostScope: "all" }],
+  }).usageViews?.[0];
+  const selectedView = normalizePluginManifest({
+    id: "selected-hosts-demo",
+    name: "Selected hosts demo",
+    version: "1.0.0",
+    usageViews: [{ id: "hosts", type: "host-asset-sync", title: "Hosts" }],
+  }).usageViews?.[0];
+
+  assert.deepEqual(resolvePluginUsageHostIds(allHostsView, { enabled: true, hostIds: [] }, [1, 2, 3]), [1, 2, 3]);
+  assert.deepEqual(resolvePluginUsageHostIds(allHostsView, { enabled: false, hostIds: [1] }, [1, 2]), []);
+  assert.deepEqual(resolvePluginUsageHostIds(selectedView, { enabled: true, hostIds: [2, 9] }, [1, 2, 3]), [2]);
 });
 
 test("trusted panel actions retain only fixed operations and declared permissions", () => {
@@ -222,4 +244,11 @@ test("third-party store catalog annotates source and defaults package repository
   assert.equal(catalog.items[0]?.storeSourceId, 7);
   assert.equal(catalog.items[0]?.storeSourceName, "Community Store");
   assert.equal(catalog.items[0]?.packageRepository, "https://github.com/example/community-store");
+});
+
+test("plugin update comparison only accepts a newer version", () => {
+  assert.equal(pluginVersionHasUpdate("1.9.0", "1.10.0"), true);
+  assert.equal(pluginVersionHasUpdate("v2.0.0", "2.0.0"), false);
+  assert.equal(pluginVersionHasUpdate("2.1.0", "2.0.9"), false);
+  assert.equal(pluginVersionHasUpdate("2.1.0", ""), false);
 });
