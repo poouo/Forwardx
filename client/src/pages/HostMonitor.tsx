@@ -770,10 +770,10 @@ function HostMonitorDetail({
         <Card className="overflow-hidden border-border/40 bg-card/70 backdrop-blur-md">
           <CardContent className="p-0">
             {services.length > 0 && (
-              <div className="grid border-b border-border/40 md:grid-cols-[120px_minmax(0,1fr)]">
-                <div className="flex min-h-[72px] flex-row items-center justify-between gap-3 border-b border-border/40 p-3 md:min-h-[92px] md:flex-col md:items-start md:justify-center md:border-b-0 md:border-r md:p-4">
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-bold md:text-lg">{detailHost?.name || "主机"}</p>
+              <div className="grid min-w-0 overflow-hidden border-b border-border/40 md:grid-cols-[minmax(0,180px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+                <div className="flex min-h-[72px] min-w-0 flex-row items-center justify-between gap-3 overflow-hidden border-b border-border/40 p-3 md:min-h-[92px] md:flex-col md:items-start md:justify-center md:border-b-0 md:border-r md:p-4">
+                  <div className="min-w-0 flex-1 overflow-hidden md:w-full md:flex-none">
+                    <p className="block max-w-full truncate text-base font-bold md:text-lg" title={detailHost?.name || "主机"}>{detailHost?.name || "主机"}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{services.length} 个监控服务</p>
                   </div>
                   <button
@@ -786,7 +786,7 @@ function HostMonitorDetail({
                     清除筛选
                   </button>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid min-w-0 grid-cols-2 overflow-hidden xl:grid-cols-4">
                   {services.map((service, index) => {
                     const serviceId = Number(service.id);
                     const active = selectedServiceIds.size === 0 || selectedServiceIds.has(serviceId);
@@ -798,16 +798,16 @@ function HostMonitorDetail({
                         key={service.id}
                         type="button"
                         className={cn(
-                          "min-h-[84px] border-b border-r border-border/40 p-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 odd:last:border-r-0 sm:min-h-[92px] sm:p-4 sm:last:border-r-0",
+                          "min-h-[84px] min-w-0 overflow-hidden border-b border-r border-border/40 p-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 odd:last:border-r-0 sm:min-h-[92px] sm:p-4 sm:last:border-r-0",
                           active ? "bg-background/20" : "bg-muted/20 opacity-50",
                         )}
                         onClick={() => toggleService(serviceId)}
                         aria-pressed={active}
                         title={active ? "点击取消筛选" : "点击筛选该服务"}
                       >
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="h-2 w-2 rounded-full" style={{ background: serviceChartColors[index % serviceChartColors.length] }} />
-                          <span className="truncate">{service.name}</span>
+                        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: serviceChartColors[index % serviceChartColors.length] }} />
+                          <span className="min-w-0 truncate" title={service.name}>{service.name}</span>
                         </div>
                         <p className={`mt-2 text-xl font-bold tabular-nums sm:text-2xl ${timeout ? "text-destructive" : ""}`}>{timeout ? "超时" : latency}</p>
                         <p className="mt-1 truncate text-[11px] text-muted-foreground sm:text-xs">{latest?.recordedAt ? formatFullDateTime(latest.recordedAt) : "暂无上报"}</p>

@@ -152,6 +152,12 @@ export const forwardGroupsRouter = router({
       return { success: true };
     })),
 
+  toggle: adminProcedure
+    .input(z.object({ id: z.number().int().positive(), isEnabled: z.boolean() }))
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
+      return db.setForwardGroupEnabled(input.id, input.isEnabled);
+    })),
+
   deleteImpact: adminProcedure
     .input(z.object({ id: z.number() }))
     .query(async ({ input }) => {

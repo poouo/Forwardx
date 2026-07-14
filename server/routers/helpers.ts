@@ -107,7 +107,7 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, opt
         .map((member: any) => Number(member.hostId))
         .filter((id: number) => Number.isFinite(id) && id > 0)
       : [];
-    if (groupHostIds.length > 0) entryHostIds = groupHostIds;
+    if (groupHostIds.length > 0) entryHostIds = Array.from(new Set([...entryHostIds, ...groupHostIds]));
   }
   const hostIds = [
     ...(hopHostIds.length >= 3

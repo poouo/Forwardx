@@ -8,7 +8,7 @@ GO_HOME_ROOT="${HOME:-}"
 XDG_CACHE_ROOT="${XDG_CACHE_HOME:-}"
 REQUESTED_TAG="${1:-}"
 MIN_GO_MAJOR=1
-MIN_GO_MINOR=22
+MIN_GO_MINOR=23
 GOST_VERSION="${GOST_VERSION:-3.2.6}"
 GOST_VERSION="${GOST_VERSION#v}"
 AGENT_VERSION="$(sed -nE "s/.*AGENT_VERSION[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$ROOT_DIR/shared/versions.ts" | head -n 1)"

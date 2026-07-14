@@ -8,6 +8,7 @@ import { hashPassword } from "./password";
 import { randomAvataaarsValue } from "../shared/avatar";
 import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
 import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
+import { AGENT_VERSION } from "../shared/versions";
 
 export const DEV_PANEL_FLAG = "FORWARDX_DEV_PANEL";
 export const DEV_ADMIN_USERNAME = "dev.admin@forwardx.local";
@@ -297,7 +298,7 @@ async function seedHosts(adminId: number) {
       osInfo: "Ubuntu 24.04 LTS",
       cpuInfo: "Intel Xeon Gold 6148",
       memoryTotal: 8 * 1024 ** 3,
-      agentVersion: "2.2.129",
+      agentVersion: AGENT_VERSION,
       isOnline: true,
       lastHeartbeat: now,
       purchasedAt: daysFromNow(-28),
@@ -331,7 +332,7 @@ async function seedHosts(adminId: number) {
       osInfo: "Debian 12",
       cpuInfo: "AMD EPYC 7763",
       memoryTotal: 16 * 1024 ** 3,
-      agentVersion: "2.2.125",
+      agentVersion: AGENT_VERSION,
       isOnline: true,
       lastHeartbeat: now,
       purchasedAt: daysFromNow(-90),
@@ -366,7 +367,7 @@ async function seedHosts(adminId: number) {
       osInfo: "AlmaLinux 9",
       cpuInfo: "Ampere Altra",
       memoryTotal: 12 * 1024 ** 3,
-      agentVersion: "2.2.129",
+      agentVersion: AGENT_VERSION,
       agentUpgradeRequested: true,
       agentUpgradeTargetVersion: "2.2.129",
       agentUpgradeReleaseVersion: "2.3.219",
@@ -807,6 +808,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     userId: adminId,
     name: "Multi-entry / multi-exit TLS",
     entryGroupId,
+    exitGroupId,
     entryHostId: hostIds[0],
     exitHostId: hostIds[1],
     mode: "tls",
@@ -2175,8 +2177,8 @@ async function seedSettings() {
     publicHostMonitorEnabled: "true",
     publicHostMonitorPath: "dev",
     publicHostMonitorTitle: "ForwardX Dev Host Monitor",
-    latestAgentVersion: "2.2.129",
-    agentVersion: "2.2.129",
+    latestAgentVersion: AGENT_VERSION,
+    agentVersion: AGENT_VERSION,
     telegramBotEnabled: "false",
     systemAnnouncementEnabled: "true",
     allowMultiDeviceLogin: "true",

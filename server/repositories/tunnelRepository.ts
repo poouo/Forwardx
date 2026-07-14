@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import {
   tunnels,
   InsertTunnel,
@@ -65,6 +65,60 @@ export async function getTunnelById(id: number) {
   if (!db) return undefined;
   const r = await db.select().from(tunnels).where(eq(tunnels.id, id)).limit(1);
   return r[0];
+}
+
+export async function backfillTunnelExitGroupReferences() {
+  const db = await getDb();
+  if (!db) return 0;
+  const exitGroups = await db
+    .select({ id: forwardGroups.id })
+    .from(forwardGroups)
+    .where(eq(forwardGroups.groupMode, "exit"));
+  if (exitGroups.length === 0) return 0;
+
+  const groupIds: number[] = exitGroups.map((group: any) => Number(group.id)).filter((id: number) => id > 0);
+  const members = await db
+    .select({
+      groupId: forwardGroupMembers.groupId,
+      hostId: forwardGroupMembers.hostId,
+      priority: forwardGroupMembers.priority,
+      isEnabled: forwardGroupMembers.isEnabled,
+    })
+    .from(forwardGroupMembers)
+    .where(sql`${forwardGroupMembers.groupId} IN (${sql.join(groupIds.map((id: number) => sql`${id}`), sql`, `)})`);
+  const groupIdsBySignature = new Map<string, number[]>();
+  for (const group of exitGroups as any[]) {
+    const signature = (members as any[])
+      .filter((member) => Number(member.groupId) === Number(group.id) && member.isEnabled !== false && Number(member.hostId || 0) > 0)
+      .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+      .map((member) => Number(member.hostId))
+      .join(",");
+    if (!signature) continue;
+    const ids = groupIdsBySignature.get(signature) || [];
+    ids.push(Number(group.id));
+    groupIdsBySignature.set(signature, ids);
+  }
+
+  const legacyTunnels = await db
+    .select({ id: tunnels.id, exitHostId: tunnels.exitHostId })
+    .from(tunnels)
+    .where(sql`${tunnels.exitGroupId} IS NULL`);
+  let updated = 0;
+  for (const tunnel of legacyTunnels as any[]) {
+    const exitNodes = await getTunnelExitNodes(Number(tunnel.id));
+    const signature = [
+      Number(tunnel.exitHostId || 0),
+      ...(exitNodes as any[])
+        .filter((node) => node.isEnabled !== false && Number(node.hostId || 0) > 0)
+        .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))
+        .map((node) => Number(node.hostId)),
+    ].filter((id) => id > 0).join(",");
+    const matches = groupIdsBySignature.get(signature) || [];
+    if (matches.length !== 1) continue;
+    await db.update(tunnels).set({ exitGroupId: matches[0], updatedAt: nowDate() } as any).where(eq(tunnels.id, Number(tunnel.id)));
+    updated += 1;
+  }
+  return updated;
 }
 
 export async function createTunnel(data: InsertTunnel) {
@@ -329,28 +383,97 @@ export async function disableForwardRulesByTunnel(tunnelId: number) {
   if (!db) return;
   await db.update(forwardRules).set({
     isEnabled: false,
+    isRunning: false,
     disabledByTunnel: true,
     updatedAt: nowDate(),
   }).where(and(
     eq(forwardRules.tunnelId, tunnelId),
-    eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
+    or(
+      eq(forwardRules.isEnabled, true),
+      eq(forwardRules.disabledByGroup, true),
+      eq(forwardRules.disabledByTunnel, true),
+    ),
   ));
+}
+
+async function isForwardGroupRuntimeEnabled(groupId: number) {
+  const db = await getDb();
+  if (!db || groupId <= 0) return true;
+  const group = (await db.select({
+    isEnabled: forwardGroups.isEnabled,
+    groupMode: forwardGroups.groupMode,
+    entryGroupId: forwardGroups.entryGroupId,
+  }).from(forwardGroups).where(eq(forwardGroups.id, groupId)).limit(1))[0] as any;
+  if (!group || !group.isEnabled) return false;
+  if (String(group.groupMode || "") !== "chain" || Number(group.entryGroupId || 0) <= 0) return true;
+  const entryGroup = (await db.select({
+    isEnabled: forwardGroups.isEnabled,
+    groupMode: forwardGroups.groupMode,
+  }).from(forwardGroups).where(eq(forwardGroups.id, Number(group.entryGroupId))).limit(1))[0] as any;
+  return !!entryGroup?.isEnabled && String(entryGroup.groupMode || "") === "entry";
+}
+
+async function canRestoreForwardRuleAfterTunnel(rule: any) {
+  if (rule.disabledByUser || rule.disabledByGroup || String(rule.protocolBlockReason || "").trim()) return false;
+  const groupId = Number(rule.forwardGroupId || 0);
+  if (groupId > 0 && !(await isForwardGroupRuntimeEnabled(groupId))) return false;
+
+  const db = await getDb();
+  if (!db) return false;
+  const templateId = Number(rule.forwardGroupRuleId || 0);
+  if (templateId > 0) {
+    const template = (await db.select({
+      isEnabled: forwardRules.isEnabled,
+      pendingDelete: forwardRules.pendingDelete,
+      disabledByGroup: forwardRules.disabledByGroup,
+      disabledByUser: forwardRules.disabledByUser,
+      protocolBlockReason: forwardRules.protocolBlockReason,
+    }).from(forwardRules).where(eq(forwardRules.id, templateId)).limit(1))[0] as any;
+    if (
+      !template
+      || template.pendingDelete
+      || !template.isEnabled
+      || template.disabledByGroup
+      || template.disabledByUser
+      || String(template.protocolBlockReason || "").trim()
+    ) return false;
+  }
+
+  const memberId = Number(rule.forwardGroupMemberId || 0);
+  if (memberId > 0) {
+    const member = (await db.select({ isEnabled: forwardGroupMembers.isEnabled })
+      .from(forwardGroupMembers)
+      .where(eq(forwardGroupMembers.id, memberId))
+      .limit(1))[0] as any;
+    if (!member?.isEnabled) return false;
+  }
+  return true;
 }
 
 export async function restoreForwardRulesByTunnel(tunnelId: number) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({
-    isEnabled: true,
-    disabledByTunnel: false,
-    isRunning: false,
-    updatedAt: nowDate(),
-  }).where(and(
+  const rules = await db.select().from(forwardRules).where(and(
     eq(forwardRules.tunnelId, tunnelId),
-    eq(forwardRules.disabledByTunnel, true),
     eq(forwardRules.pendingDelete, false),
+    or(
+      eq(forwardRules.disabledByTunnel, true),
+      and(
+        sql`${forwardRules.forwardGroupRuleId} IS NOT NULL`,
+        eq(forwardRules.isEnabled, false),
+      ),
+    ),
   ));
+  for (const rule of rules as any[]) {
+    const isEnabled = await canRestoreForwardRuleAfterTunnel(rule);
+    await db.update(forwardRules).set({
+      isEnabled,
+      disabledByTunnel: false,
+      isRunning: false,
+      updatedAt: nowDate(),
+    }).where(eq(forwardRules.id, Number(rule.id)));
+  }
 }
 
 export async function findAvailableTunnelExitPort(

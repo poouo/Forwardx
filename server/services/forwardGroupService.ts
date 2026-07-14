@@ -105,12 +105,12 @@ function memberPrioritySignature(members: ForwardGroupMemberRequest[]) {
     .join("|");
 }
 
-async function assertEntryGroupReference(entryGroupId: number | null, userId?: number) {
+async function assertEntryGroupReference(entryGroupId: number | null, userId?: number, requireEnabled = true) {
   if (!entryGroupId) return null;
   const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
   if (!entryGroup || String(entryGroup.groupMode || "") !== "entry") throw new Error("入口组不存在或类型不正确");
   if (userId && Number(entryGroup.userId) !== Number(userId)) throw new Error("无权使用该入口组");
-  if (!entryGroup.isEnabled) throw new Error("入口组未启用");
+  if (requireEnabled && !entryGroup.isEnabled) throw new Error("入口组未启用");
   if (!String(entryGroup.domain || "").trim()) throw new Error("入口组未配置入口域名");
   return entryGroup;
 }
@@ -140,7 +140,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
   const groupType: ForwardGroupType = groupMode === "port" || groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
   const entryGroupId = groupMode === "chain" ? Number(input.entryGroupId || 0) || null : null;
-  await assertEntryGroupReference(entryGroupId, userId);
+  await assertEntryGroupReference(entryGroupId, userId, input.isEnabled !== false);
   const domain = groupMode === "entry" || groupMode === "failover" ? input.domain?.trim() || null : null;
   if (groupMode === "entry" && !domain) throw new Error("入口组需要指定入口域名");
   const ddnsAutoResolveEnabled = groupMode === "entry" ? input.ddnsAutoResolveEnabled !== false : true;
@@ -221,15 +221,25 @@ export async function createForwardGroupFromInput(input: ForwardGroupInput, user
 
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
   const existing = await db.getForwardGroupById(id) as any;
+  if (!existing) throw new Error("转发资源不存在");
   const normalized = await normalizeForwardGroupInput(input);
+  const desiredEnabled = !!normalized.data.isEnabled;
+  const enabledChanged = !!existing.isEnabled !== desiredEnabled;
   const memberPriorityChanged = memberPrioritySignature((existing?.members || []) as ForwardGroupMemberRequest[])
     !== memberPrioritySignature(normalized.members as ForwardGroupMemberRequest[]);
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
-  await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
-  await db.replaceForwardGroupMembers(id, normalized.members as any);
+  await db.updateForwardGroup(id, {
+    ...normalized.data,
+    isEnabled: enabledChanged ? !!existing.isEnabled : desiredEnabled,
+  } as any, { skipSync: true });
+  await db.replaceForwardGroupMembers(id, normalized.members as any, { skipSync: enabledChanged });
   if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
+  if (enabledChanged) {
+    await db.setForwardGroupEnabled(id, desiredEnabled);
+    return;
+  }
   if (normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") await db.syncForwardGroupRules(id);
   else await db.runForwardGroupFailover(id, {
     forcePriority: memberPriorityChanged,

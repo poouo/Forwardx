@@ -7,6 +7,6 @@ import (
 	"strconv"
 )
 
-func listenTCP(port int, _ bool) (net.Listener, error) {
-	return net.Listen("tcp", ":"+strconv.Itoa(port))
+func listenTCP(host string, port int, _ bool) (net.Listener, error) {
+	return net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 }

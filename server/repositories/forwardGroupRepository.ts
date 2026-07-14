@@ -25,7 +25,19 @@ import {
   updateForwardRule,
 } from "./forwardRuleRepository";
 import { getHostById, getHosts } from "./hostRepository";
-import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, isPortUsedOnHost, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
+import {
+  disableForwardRulesByTunnel,
+  findAvailableTunnelExitPort,
+  getTunnelById,
+  getTunnelExitNodes,
+  getTunnelHops,
+  getTunnels,
+  isPortUsedOnHost,
+  reconcileForwardRuleTunnelExits,
+  resetForwardRulesByTunnel,
+  restoreForwardRulesByTunnel,
+  updateTunnel,
+} from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { findTrafficBillingResourceForRule, settleTrafficBillingRuleOnDelete, trafficBillingResourceCandidatesForRule } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
@@ -103,6 +115,8 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     "udpOverTcp",
     "failoverEnabled",
     "autoFailback",
+    "isEnabled",
+    "disabledByGroup",
   ];
   return numberKeys.every((key) => nullableNumber(existing?.[key]) === nullableNumber(payload?.[key]))
     && stringKeys.every((key) => nullableString(existing?.[key]) === nullableString(payload?.[key]))
@@ -393,6 +407,49 @@ async function syncChainsUsingEntryGroup(entryGroupId: number, options: SyncForw
   }
 }
 
+async function groupHostIds(groupId: unknown) {
+  const id = Number(groupId || 0);
+  if (!Number.isFinite(id) || id <= 0) return [] as number[];
+  const group = await getForwardGroupById(id) as any;
+  if (!group) return [] as number[];
+  return sortedMembers(group)
+    .filter((member: any) => member?.memberType === "host")
+    .map((member: any) => Number(member.hostId || 0))
+    .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
+}
+
+async function refreshControlledTunnelRuntime(
+  tunnel: any,
+  reason: string,
+  options: { resetRules?: boolean; extraHostIds?: number[] } = {},
+) {
+  const tunnelId = Number(tunnel?.id || 0);
+  if (!Number.isFinite(tunnelId) || tunnelId <= 0) return;
+  clearTunnelRuntimeStatus(tunnelId);
+  await updateTunnel(tunnelId, { isRunning: false } as any);
+  if (options.resetRules) await resetForwardRulesByTunnel(tunnelId);
+
+  const hostIds = new Set<number>(options.extraHostIds || []);
+  for (const value of [tunnel?.entryHostId, tunnel?.exitHostId]) {
+    const hostId = Number(value || 0);
+    if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
+  }
+  for (const hostId of await groupHostIds(tunnel?.entryGroupId)) hostIds.add(hostId);
+  for (const hostId of await groupHostIds(tunnel?.exitGroupId)) hostIds.add(hostId);
+
+  const hops = await getTunnelHops(tunnelId).catch(() => []);
+  for (const hop of hops as any[]) {
+    const hostId = Number(hop?.hostId || 0);
+    if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
+  }
+  const extraExits = await getTunnelExitNodes(tunnelId).catch(() => []);
+  for (const node of extraExits as any[]) {
+    const hostId = Number(node?.hostId || 0);
+    if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
+  }
+  for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`);
+}
+
 async function refreshTunnelsUsingEntryGroup(entryGroupId: number, reason = "entry-group-updated") {
   const id = Number(entryGroupId);
   if (!Number.isFinite(id) || id <= 0) return;
@@ -400,43 +457,10 @@ async function refreshTunnelsUsingEntryGroup(entryGroupId: number, reason = "ent
   const affectedTunnels = allTunnels.filter((tunnel: any) => Number(tunnel?.entryGroupId || 0) === id);
   if (affectedTunnels.length === 0) return;
 
-  const entryGroup = await getForwardGroupById(id) as any;
-  const entryHostIds = new Set<number>();
-  if (entryGroup && entryGroup.isEnabled && groupModeOf(entryGroup) === "entry") {
-    for (const member of sortedMembers(entryGroup, true) as any[]) {
-      if (member?.memberType !== "host") continue;
-      const hostId = Number(member.hostId || 0);
-      if (Number.isFinite(hostId) && hostId > 0) entryHostIds.add(hostId);
-    }
-  }
+  const entryHostIds = await groupHostIds(id);
 
   for (const tunnel of affectedTunnels) {
-    const tunnelId = Number(tunnel?.id || 0);
-    if (!Number.isFinite(tunnelId) || tunnelId <= 0) continue;
-    clearTunnelRuntimeStatus(tunnelId);
-    await updateTunnel(tunnelId, { isRunning: false } as any);
-    await resetForwardRulesByTunnel(tunnelId);
-
-    const hostIds = new Set<number>(entryHostIds);
-    const primaryEntryHostId = Number(tunnel?.entryHostId || 0);
-    if (hostIds.size === 0 && Number.isFinite(primaryEntryHostId) && primaryEntryHostId > 0) hostIds.add(primaryEntryHostId);
-
-    const exitHostId = Number(tunnel?.exitHostId || 0);
-    if (Number.isFinite(exitHostId) && exitHostId > 0) hostIds.add(exitHostId);
-
-    const hops = await getTunnelHops(tunnelId).catch(() => []);
-    for (const hop of hops as any[]) {
-      const hostId = Number(hop?.hostId || 0);
-      if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
-    }
-
-    const extraExits = await getTunnelExitNodes(tunnelId).catch(() => []);
-    for (const node of extraExits as any[]) {
-      const hostId = Number(node?.hostId || 0);
-      if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
-    }
-
-    for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`);
+    await refreshControlledTunnelRuntime(tunnel, reason, { resetRules: true, extraHostIds: entryHostIds });
   }
 }
 
@@ -1178,6 +1202,7 @@ export async function findAvailableForwardGroupPort(
 export async function validateForwardGroupRuleConfig(groupId: number, config: ForwardGroupRuleConfig) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
+  if (!(await forwardGroupRuntimeDependenciesEnabled(group))) throw new Error("转发资源未启用或关联入口组已停用");
   const sourcePort = Number(config.sourcePort || 0);
   const protocol = normalizeRuleProtocol(config.protocol);
   if (!Number.isInteger(sourcePort) || sourcePort < 1 || sourcePort > 65535) {
@@ -1329,12 +1354,214 @@ async function refreshForwardChainRuntime(groupId: number, reason: string) {
   }
 }
 
+async function dependentChainGroupIds(entryGroupId: number) {
+  const db = await getDb();
+  if (!db) return [] as number[];
+  const rows = await db.select({ id: forwardGroups.id }).from(forwardGroups).where(and(
+    eq(forwardGroups.groupMode, "chain"),
+    eq(forwardGroups.entryGroupId, entryGroupId),
+  ));
+  return (rows as any[]).map((row) => Number(row.id || 0)).filter((id) => id > 0);
+}
+
+async function forwardGroupRuntimeDependenciesEnabled(group: any) {
+  if (!group?.isEnabled) return false;
+  if (groupModeOf(group) !== "chain") return true;
+  const entryGroupId = Number(group?.entryGroupId || 0);
+  if (entryGroupId <= 0) return true;
+  const entryGroup = await getForwardGroupById(entryGroupId) as any;
+  return !!entryGroup?.isEnabled && groupModeOf(entryGroup) === "entry";
+}
+
+async function refreshControlledForwardRules(rules: any[], reason: string) {
+  const hostIds = new Set<number>();
+  const tunnelIds = new Set<number>();
+  for (const rule of rules) {
+    if (rule?.isForwardGroupTemplate) continue;
+    const hostId = Number(rule?.hostId || 0);
+    if (hostId > 0) hostIds.add(hostId);
+    const tunnelId = Number(rule?.tunnelId || 0);
+    if (tunnelId > 0) tunnelIds.add(tunnelId);
+  }
+  for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
+  for (const tunnelId of tunnelIds) {
+    const tunnel = await getTunnelById(tunnelId);
+    if (tunnel) await refreshControlledTunnelRuntime(tunnel, reason);
+  }
+}
+
+async function disableForwardRulesByGroupIds(groupIds: number[], reason: string) {
+  const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => id > 0)));
+  if (ids.length === 0) return 0;
+  const db = await getDb();
+  if (!db) return 0;
+  const rules = await db.select().from(forwardRules).where(and(
+    inArray(forwardRules.forwardGroupId, ids),
+    eq(forwardRules.pendingDelete, false),
+  ));
+  const controlledRules = (rules as any[]).filter((rule) => (
+    !!rule.isEnabled || !!rule.disabledByTunnel || !!rule.disabledByGroup
+  ));
+  const controlledIds = controlledRules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
+  if (controlledIds.length > 0) {
+    await db.update(forwardRules).set({
+      isEnabled: false,
+      isRunning: false,
+      disabledByGroup: true,
+      updatedAt: nowDate(),
+    } as any).where(inArray(forwardRules.id, controlledIds));
+    await refreshControlledForwardRules(controlledRules, reason);
+  }
+  return controlledIds.length;
+}
+
+async function restoreForwardRulesByGroupId(groupId: number, reason: string) {
+  const group = await getForwardGroupById(groupId) as any;
+  if (!group || !(await forwardGroupRuntimeDependenciesEnabled(group))) return 0;
+  const db = await getDb();
+  if (!db) return 0;
+  const rules = await db.select().from(forwardRules).where(and(
+    eq(forwardRules.forwardGroupId, groupId),
+    eq(forwardRules.disabledByGroup, true),
+    eq(forwardRules.pendingDelete, false),
+  ));
+  for (const rule of rules as any[]) {
+    const isTemplate = !!rule.isForwardGroupTemplate;
+    const canEnableTemplate = isTemplate
+      && !rule.disabledByTunnel
+      && !rule.disabledByUser
+      && !String(rule.protocolBlockReason || "").trim();
+    await db.update(forwardRules).set({
+      isEnabled: canEnableTemplate,
+      isRunning: false,
+      disabledByGroup: false,
+      updatedAt: nowDate(),
+    } as any).where(eq(forwardRules.id, Number(rule.id)));
+  }
+  await syncForwardGroupRules(groupId);
+  await refreshControlledForwardRules(rules as any[], reason);
+  return rules.length;
+}
+
+async function tunnelGroupDependenciesEnabled(tunnel: any) {
+  const refs: Array<{ id: number; mode: "entry" | "exit" }> = [
+    { id: Number(tunnel?.entryGroupId || 0), mode: "entry" },
+    { id: Number(tunnel?.exitGroupId || 0), mode: "exit" },
+  ];
+  for (const ref of refs) {
+    if (ref.id <= 0) continue;
+    const group = await getForwardGroupById(ref.id) as any;
+    if (!group?.isEnabled || groupModeOf(group) !== ref.mode) return false;
+  }
+  return true;
+}
+
+async function setTunnelsEnabledByGroup(groupId: number, groupMode: "entry" | "exit", isEnabled: boolean) {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db.select().from(tunnels).where(
+    groupMode === "entry" ? eq(tunnels.entryGroupId, groupId) : eq(tunnels.exitGroupId, groupId),
+  );
+  let changed = 0;
+  for (const row of rows as any[]) {
+    const tunnelId = Number(row.id || 0);
+    if (tunnelId <= 0) continue;
+    await withKeyedTaskLock(`tunnel:${tunnelId}`, async () => {
+      const tunnel = await getTunnelById(tunnelId) as any;
+      if (!tunnel) return;
+      if (!isEnabled) {
+        if (!tunnel.isEnabled && !tunnel.disabledByGroup) return;
+        await updateTunnel(tunnelId, {
+          isEnabled: false,
+          isRunning: false,
+          disabledByGroup: true,
+        } as any);
+        await disableForwardRulesByTunnel(tunnelId);
+        await refreshControlledTunnelRuntime({ ...tunnel, isEnabled: false, disabledByGroup: true }, `${groupMode}-group-disabled`, { resetRules: true });
+        changed += 1;
+        return;
+      }
+      if (!tunnel.disabledByGroup || !(await tunnelGroupDependenciesEnabled(tunnel))) return;
+      await updateTunnel(tunnelId, {
+        isEnabled: true,
+        isRunning: false,
+        disabledByGroup: false,
+      } as any);
+      await restoreForwardRulesByTunnel(tunnelId);
+      await refreshControlledTunnelRuntime({ ...tunnel, isEnabled: true, disabledByGroup: false }, `${groupMode}-group-enabled`, { resetRules: true });
+      changed += 1;
+    });
+  }
+  return changed;
+}
+
+export async function setForwardGroupEnabled(groupId: number, isEnabled: boolean) {
+  const group = await getForwardGroupById(groupId) as any;
+  if (!group) throw new Error("转发资源不存在");
+  const mode = groupModeOf(group);
+  const wasEnabled = !!group.isEnabled;
+  if (isEnabled && mode === "chain" && Number(group.entryGroupId || 0) > 0) {
+    const entryGroup = await getForwardGroupById(Number(group.entryGroupId)) as any;
+    if (!entryGroup?.isEnabled || groupModeOf(entryGroup) !== "entry") {
+      throw new Error("关联入口组未启用，请先开启入口组");
+    }
+  }
+
+  const ruleGroupIds = mode === "entry"
+    ? await dependentChainGroupIds(groupId)
+    : isCollectionGroupMode(mode)
+      ? []
+      : [groupId];
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(forwardGroups).set({
+    isEnabled,
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardGroups.id, groupId));
+
+  let affectedRules = 0;
+  let affectedTunnels = 0;
+  try {
+    if (!isEnabled) {
+      affectedRules = await disableForwardRulesByGroupIds(ruleGroupIds, `${mode}-group-disabled`);
+      for (const id of ruleGroupIds) await syncForwardGroupRules(id);
+      if (mode === "entry" || mode === "exit") {
+        affectedTunnels = await setTunnelsEnabledByGroup(groupId, mode, false);
+      }
+    } else {
+      for (const id of ruleGroupIds) {
+        affectedRules += await restoreForwardRulesByGroupId(id, `${mode}-group-enabled`);
+      }
+      if (mode === "entry" || mode === "exit") {
+        affectedTunnels = await setTunnelsEnabledByGroup(groupId, mode, true);
+      }
+      if (mode === "failover" || mode === "entry" || mode === "exit") {
+        await runForwardGroupFailover(groupId, { manual: true, forceSync: true });
+      }
+    }
+  } catch (error) {
+    if (isEnabled && !wasEnabled) {
+      try {
+        await db.update(forwardGroups).set({ isEnabled: false, updatedAt: nowDate() } as any).where(eq(forwardGroups.id, groupId));
+        await disableForwardRulesByGroupIds(ruleGroupIds, `${mode}-group-enable-rollback`);
+        for (const id of ruleGroupIds) await syncForwardGroupRules(id);
+        if (mode === "entry" || mode === "exit") await setTunnelsEnabledByGroup(groupId, mode, false);
+      } catch (rollbackError) {
+        appendPanelLog("warn", `[ForwardGroup] enable rollback failed group=${groupId}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    throw error;
+  }
+  await insertForwardGroupEvent(groupId, null, isEnabled ? "enabled" : "disabled", isEnabled ? "链路资源已启用。" : "链路资源已停用，关联规则已受控关闭。");
+  return { success: true, affectedRules, affectedTunnels };
+}
+
 async function ensureMemberRuleForTemplate(group: any, templateRule: any, member: any, options: SyncForwardGroupRulesOptions = {}) {
   const existing = await existingChildRule(Number(templateRule.id), Number(member.id));
   const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled;
   if (!enabled) {
     if (existing) {
-      await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: !!existing.isRunning } as any);
+      await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
       await refreshRuleEndpoints(existing, "forward-group-child-disabled");
     }
     return null;
@@ -1360,7 +1587,13 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     tunnelId = Number(member.tunnelId);
     tunnel = await getTunnelById(tunnelId);
     if (!tunnel) throw new Error("Tunnel does not exist");
-    if (!tunnel.isEnabled) throw new Error(`Tunnel ${tunnel.name} is disabled`);
+    if (!tunnel.isEnabled) {
+      if (existing) {
+        await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
+        await refreshRuleEndpoints(existing, "forward-group-tunnel-disabled");
+      }
+      return null;
+    }
     tunnelExitPort = Number(existing?.tunnelExitPort || 0) || null;
     if (!tunnelExitPort) {
       const exit = await getHostById(Number(tunnel.exitHostId));
@@ -1397,6 +1630,9 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const childFailoverEnabled = member.memberType === "tunnel" ? templateFailoverEnabled && tunnelFailoverSupported : directFailoverEnabled;
   const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel && tunnelMode !== "nginx_stream" && tunnelMode !== "nginx_tls";
   const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
+  const blockedByAnotherController = !!existing?.disabledByUser
+    || !!existing?.disabledByTunnel
+    || !!String(existing?.protocolBlockReason || "").trim();
 
   const payload: any = {
     hostId,
@@ -1434,7 +1670,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     failoverSeconds: Number((failoverRuntimeSource as any).failoverSeconds || 60),
     recoverSeconds: Number((failoverRuntimeSource as any).recoverSeconds || 120),
     autoFailback: (failoverRuntimeSource as any).autoFailback !== false,
-    isEnabled: true,
+    isEnabled: !blockedByAnotherController,
+    disabledByGroup: false,
     isRunning: false,
     pendingDelete: false,
     userId: Number(templateRule.userId),
@@ -1487,7 +1724,7 @@ async function ensureChainRuleForTemplate(
   const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled && !!sourceMember.isEnabled;
   if (!enabled) {
     if (existing) {
-      await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: !!existing.isRunning } as any);
+      await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
       await refreshRuleEndpoints(existing, "forward-chain-child-disabled");
     }
     return null;
@@ -1525,6 +1762,9 @@ async function ensureChainRuleForTemplate(
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
   const chainProxyProtocolSupported = protocolTcpSupported && (chainForwardType === "gost" || chainForwardType === "realm");
   const chainRealmOptimizationSupported = protocolTcpSupported && chainForwardType === "realm";
+  const blockedByAnotherController = !!existing?.disabledByUser
+    || !!existing?.disabledByTunnel
+    || !!String(existing?.protocolBlockReason || "").trim();
 
   const payload: any = {
     hostId,
@@ -1562,7 +1802,8 @@ async function ensureChainRuleForTemplate(
     failoverSeconds: 60,
     recoverSeconds: 120,
     autoFailback: true,
-    isEnabled: true,
+    isEnabled: !blockedByAnotherController,
+    disabledByGroup: false,
     isRunning: false,
     pendingDelete: false,
     userId: Number(templateRule.userId),
@@ -1651,6 +1892,26 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
         await removeManagedRule(Number(member.ruleId));
         await db.update(forwardGroupMembers).set({ ruleId: null, updatedAt: nowDate() } as any).where(eq(forwardGroupMembers.id, member.id));
       }
+    }
+    return;
+  }
+
+  const runtimeDependenciesEnabled = await forwardGroupRuntimeDependenciesEnabled(group);
+  const hasEnabledTemplates = (templates as any[]).some((template) => !!template.isEnabled);
+  if (!runtimeDependenciesEnabled || !hasEnabledTemplates) {
+    const childRules = (await getForwardGroupChildRules(groupId) as any[]).filter((rule) => !rule.pendingDelete);
+    const childIds = childRules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
+    if (childIds.length > 0) {
+      await db.update(forwardRules).set({
+        isEnabled: false,
+        isRunning: false,
+        updatedAt: nowDate(),
+      } as any).where(inArray(forwardRules.id, childIds));
+      await refreshControlledForwardRules(childRules, "forward-group-runtime-disabled");
+    }
+    const templateIds = (templates as any[]).map((template) => Number(template.id || 0)).filter((id) => id > 0);
+    if (templateIds.length > 0) {
+      await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() } as any).where(inArray(forwardRules.id, templateIds));
     }
     return;
   }
@@ -1871,7 +2132,11 @@ export async function updateForwardGroup(id: number, data: Partial<InsertForward
   }
 }
 
-export async function replaceForwardGroupMembers(groupId: number, members: ForwardGroupMemberInput[]) {
+export async function replaceForwardGroupMembers(
+  groupId: number,
+  members: ForwardGroupMemberInput[],
+  options: { skipSync?: boolean } = {},
+) {
   if (members.length === 0) throw new Error("转发组至少需要一个成员");
   const group = await getForwardGroupById(groupId);
   const groupMode = groupModeOf(group);
@@ -1923,6 +2188,7 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
       });
     }
   }
+  if (options.skipSync) return;
   if (isCollectionGroupMode(groupMode)) {
     await runForwardGroupFailover(groupId, { forceSync: true, manual: true });
     if (groupMode === "entry") {

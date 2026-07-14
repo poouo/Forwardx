@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -90,7 +91,7 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 	}
 	defer target.Close()
 	go func() {
-		buf := make([]byte, 2048)
+		buf := make([]byte, 65535)
 		for {
 			n, addr, err := target.ReadFromUDP(buf)
 			if err != nil {
@@ -142,17 +143,15 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err := client.Write([]byte("udp-forwardx")); err != nil {
-		t.Fatal(err)
+	if reply := udpRoundTrip(t, client, []byte("udp-forwardx")); string(reply) != "udp-forwardx" {
+		t.Fatalf("unexpected udp echo %q", string(reply))
 	}
-	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 64)
-	n, err := client.Read(buf)
-	if err != nil {
-		t.Fatal(err)
+	largePayload := make([]byte, 32*1024+137)
+	for i := range largePayload {
+		largePayload[i] = byte(i % 251)
 	}
-	if string(buf[:n]) != "udp-forwardx" {
-		t.Fatalf("unexpected udp echo %q", string(buf[:n]))
+	if reply := udpRoundTrip(t, client, largePayload); !bytes.Equal(reply, largePayload) {
+		t.Fatalf("large udp echo mismatch: got=%d want=%d", len(reply), len(largePayload))
 	}
 }
 
@@ -181,7 +180,7 @@ func TestForwardXBothSplitUDPWirePorts(t *testing.T) {
 		}
 	}()
 	go func() {
-		buf := make([]byte, 2048)
+		buf := make([]byte, 65535)
 		for {
 			n, addr, err := targetUDP.ReadFromUDP(buf)
 			if err != nil {
@@ -275,7 +274,7 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 	}
 	defer target.Close()
 	go func() {
-		buf := make([]byte, 2048)
+		buf := make([]byte, 65535)
 		for {
 			n, addr, err := target.ReadFromUDP(buf)
 			if err != nil {
@@ -345,17 +344,15 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err := client.Write([]byte("udp-relay-forwardx")); err != nil {
-		t.Fatal(err)
+	if reply := udpRoundTrip(t, client, []byte("udp-relay-forwardx")); string(reply) != "udp-relay-forwardx" {
+		t.Fatalf("unexpected udp relay echo %q", string(reply))
 	}
-	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 64)
-	n, err := client.Read(buf)
-	if err != nil {
-		t.Fatal(err)
+	largePayload := make([]byte, 24*1024+73)
+	for i := range largePayload {
+		largePayload[i] = byte((i * 7) % 251)
 	}
-	if string(buf[:n]) != "udp-relay-forwardx" {
-		t.Fatalf("unexpected udp relay echo %q", string(buf[:n]))
+	if reply := udpRoundTrip(t, client, largePayload); !bytes.Equal(reply, largePayload) {
+		t.Fatalf("large relay udp echo mismatch: got=%d want=%d", len(reply), len(largePayload))
 	}
 }
 
@@ -409,6 +406,136 @@ func TestFXPUDPv3EncryptsAuthenticatesAndRejectsReplay(t *testing.T) {
 	}
 	if replay.accept(1) {
 		t.Fatal("replay window accepted an expired sequence")
+	}
+}
+
+func TestFXPUDPFragmentsStayWithinSafeWireSizeAndReassembleOutOfOrder(t *testing.T) {
+	payload := make([]byte, fxpUDPMaxDatagramPayload)
+	for i := range payload {
+		payload[i] = byte((i * 13) % 251)
+	}
+	var sequence atomic.Uint64
+	sequence.Store(400)
+	frames, err := sealFXPUDPDatagrams(fxpUDPPacket{
+		packetType: fxpUDPTypeData,
+		tunnelID:   51,
+		ruleID:     52,
+		sessionID:  53,
+		payload:    payload,
+	}, "udp-fragment-test-key", &sequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFragments, err := fxpUDPFragmentCount(len(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != wantFragments || len(frames) <= 1 {
+		t.Fatalf("fragment count = %d, want %d", len(frames), wantFragments)
+	}
+
+	packets := make([]fxpUDPPacket, len(frames))
+	for i, frame := range frames {
+		if len(frame) > fxpUDPMaxWirePacketSize {
+			t.Fatalf("fragment %d wire size = %d, max %d", i, len(frame), fxpUDPMaxWirePacketSize)
+		}
+		packets[i], err = openFXPUDPPacket(frame, "udp-fragment-test-key")
+		if err != nil {
+			t.Fatalf("open fragment %d: %v", i, err)
+		}
+		if int(packets[i].fragment) != i || int(packets[i].fragments) != len(frames) {
+			t.Fatalf("fragment metadata %d = %d/%d", i, packets[i].fragment, packets[i].fragments)
+		}
+		if packets[i].sequence != 401 {
+			t.Fatalf("fragment %d sequence = %d, want logical datagram sequence 401", i, packets[i].sequence)
+		}
+	}
+
+	var reassembler udpFragmentReassembler
+	var replay udpReplayWindow
+	var reassembled []byte
+	for i := len(packets) - 1; i >= 0; i-- {
+		if result, ok := reassembler.accept(packets[i], &replay); ok {
+			if reassembled != nil {
+				t.Fatal("fragment set produced more than one datagram")
+			}
+			reassembled = result
+		}
+	}
+	if !bytes.Equal(reassembled, payload) {
+		t.Fatalf("reassembled payload mismatch: got=%d want=%d", len(reassembled), len(payload))
+	}
+	for i := len(packets) - 1; i >= 0; i-- {
+		if _, ok := reassembler.accept(packets[i], &replay); ok {
+			t.Fatal("replayed fragment set was accepted")
+		}
+	}
+}
+
+func TestFXPUDPSmallDatagramKeepsLegacyHeader(t *testing.T) {
+	var sequence atomic.Uint64
+	frames, err := sealFXPUDPDatagrams(fxpUDPPacket{
+		packetType: fxpUDPTypeReturn,
+		tunnelID:   61,
+		ruleID:     62,
+		sessionID:  63,
+		payload:    []byte("small-compatible-payload"),
+	}, "udp-small-test-key", &sequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("small datagram produced %d frames", len(frames))
+	}
+	if frames[0][4] != fxpUDPVersion || frames[0][6] != 0 || frames[0][7] != 0 {
+		t.Fatalf("small datagram changed legacy header: version=%d fragments=%d/%d", frames[0][4], frames[0][6], frames[0][7])
+	}
+}
+
+func TestFXPUDPReassemblesAdjacentLargeDatagramsOutOfOrder(t *testing.T) {
+	var sequence atomic.Uint64
+	seal := func(fill byte) []fxpUDPPacket {
+		payload := bytes.Repeat([]byte{fill}, 32*1024)
+		frames, err := sealFXPUDPDatagrams(fxpUDPPacket{
+			packetType: fxpUDPTypeData,
+			tunnelID:   71,
+			ruleID:     72,
+			sessionID:  73,
+			payload:    payload,
+		}, "udp-adjacent-test-key", &sequence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packets := make([]fxpUDPPacket, len(frames))
+		for i, frame := range frames {
+			packets[i], err = openFXPUDPPacket(frame, "udp-adjacent-test-key")
+			if err != nil {
+				t.Fatalf("open fragment %d: %v", i, err)
+			}
+		}
+		return packets
+	}
+	first := seal(0x11)
+	second := seal(0x22)
+	var reassembler udpFragmentReassembler
+	var replay udpReplayWindow
+	for _, test := range []struct {
+		name    string
+		packets []fxpUDPPacket
+		fill    byte
+	}{
+		{name: "second", packets: second, fill: 0x22},
+		{name: "first", packets: first, fill: 0x11},
+	} {
+		var payload []byte
+		for i := len(test.packets) - 1; i >= 0; i-- {
+			if result, ok := reassembler.accept(test.packets[i], &replay); ok {
+				payload = result
+			}
+		}
+		if !bytes.Equal(payload, bytes.Repeat([]byte{test.fill}, 32*1024)) {
+			t.Fatalf("%s datagram did not survive cross-datagram reordering", test.name)
+		}
 	}
 }
 
@@ -943,6 +1070,31 @@ func waitForUDP(t *testing.T, port int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("udp port %d did not open", port)
+}
+
+func udpRoundTrip(t *testing.T, client *net.UDPConn, payload []byte) []byte {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	buf := make([]byte, 65535)
+	for time.Now().Before(deadline) {
+		if _, err := client.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		attemptDeadline := time.Now().Add(200 * time.Millisecond)
+		if attemptDeadline.After(deadline) {
+			attemptDeadline = deadline
+		}
+		_ = client.SetReadDeadline(attemptDeadline)
+		n, err := client.Read(buf)
+		if err == nil {
+			return append([]byte(nil), buf[:n]...)
+		}
+		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+			t.Fatal(err)
+		}
+	}
+	t.Fatalf("udp round trip timed out after 3s")
+	return nil
 }
 
 func waitForTCP(t *testing.T, port int) {

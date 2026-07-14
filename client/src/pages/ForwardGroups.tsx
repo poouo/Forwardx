@@ -852,6 +852,7 @@ export function ForwardGroupsContent({
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
+  const [pendingToggleGroupIds, setPendingToggleGroupIds] = useState<Set<number>>(() => new Set());
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
@@ -944,10 +945,27 @@ export function ForwardGroupsContent({
       const enabledMembers = members.filter((member: any) => member.isEnabled !== false);
       const enabledMemberIds = enabledMembers.map((member: any) => Number(member.id || 0)).filter((id: number) => id > 0);
       if (!group.isEnabled) {
-        map.set(Number(group.id), makeState("disabled", mode === "port" ? "端口转发已停用" : "转发组已停用"));
+        const disabledLabel = mode === "port"
+          ? "端口转发"
+          : mode === "chain"
+            ? "转发链"
+            : mode === "entry"
+              ? "入口组"
+              : mode === "exit"
+                ? "出口组"
+                : "转发组";
+        map.set(Number(group.id), makeState("disabled", `${disabledLabel}已停用`));
         continue;
       }
       if (mode === "chain") {
+        const entryGroupId = Number(group.entryGroupId || 0);
+        if (entryGroupId > 0) {
+          const entryGroup = (groups || []).find((item: any) => Number(item.id) === entryGroupId);
+          if (!entryGroup?.isEnabled || normalizeGroupMode(entryGroup.groupMode) !== "entry") {
+            map.set(Number(group.id), makeState("unavailable", "关联入口组未启用。"));
+            continue;
+          }
+        }
         const minMembers = Number(group.entryGroupId || 0) > 0 ? 1 : 2;
         map.set(Number(group.id), enabledMembers.length >= minMembers
           ? makeState("available", enabledMembers.length > 0 ? "转发链配置可用，链路状态在转发规则内判定。" : "转发链已保存。", enabledMemberIds)
@@ -1199,11 +1217,46 @@ export function ForwardGroupsContent({
   const updateMutation = trpc.forwardGroups.update.useMutation({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
+      utils.tunnels.list.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
       toast.success(`${currentModeMeta.title}已更新`);
     },
     onError: (e) => toast.error(e.message || "更新失败"),
+  });
+
+  const toggleMutation = trpc.forwardGroups.toggle.useMutation({
+    onMutate: async ({ id, isEnabled }) => {
+      const groupId = Number(id);
+      setPendingToggleGroupIds((current) => new Set(current).add(groupId));
+      await utils.forwardGroups.list.cancel();
+      const previous = utils.forwardGroups.list.getData();
+      if (previous) {
+        utils.forwardGroups.list.setData(
+          undefined,
+          previous.map((group: any) => Number(group.id) === groupId ? { ...group, isEnabled } : group) as any,
+        );
+      }
+      return { previous };
+    },
+    onSuccess: (_data, variables) => {
+      toast.success(variables.isEnabled ? "已启用" : "已停用，关联规则正在受控关闭");
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previous) utils.forwardGroups.list.setData(undefined, context.previous as any);
+      toast.error(error.message || "操作失败");
+    },
+    onSettled: (_data, _error, variables) => {
+      const groupId = Number(variables?.id || 0);
+      setPendingToggleGroupIds((current) => {
+        const next = new Set(current);
+        next.delete(groupId);
+        return next;
+      });
+      utils.forwardGroups.list.invalidate();
+      utils.tunnels.list.invalidate();
+      utils.rules.list.invalidate();
+    },
   });
 
   const deleteMutation = trpc.forwardGroups.delete.useMutation({
@@ -1542,6 +1595,21 @@ export function ForwardGroupsContent({
     else createMutation.mutate(payload);
   };
 
+  const renderGroupEnabledSwitch = (group: any) => {
+    const groupId = Number(group?.id || 0);
+    const enabled = !!group?.isEnabled;
+    return (
+      <Switch
+        checked={enabled}
+        disabled={!groupId || pendingToggleGroupIds.has(groupId)}
+        onCheckedChange={(checked) => toggleMutation.mutate({ id: groupId, isEnabled: checked })}
+        className="scale-75"
+        title={enabled ? "关闭后该资源及关联规则将停止下发和转发" : "开启后将恢复此前由该资源受控关闭的规则"}
+        aria-label={`${enabled ? "停用" : "启用"}${group?.name || "链路资源"}`}
+      />
+    );
+  };
+
   const groupStatusBadge = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
     const configState = getGroupConfigState(group);
@@ -1616,6 +1684,7 @@ export function ForwardGroupsContent({
   const groupStatusMessage = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
     const templateRuleCount = Number(group.templateRuleCount || 0);
+    if (!group.isEnabled) return getGroupConfigState(group).message;
     if ((mode === "port" || mode === "chain") && templateRuleCount > 0) return `已被 ${templateRuleCount} 条转发规则引用`;
     if (mode === "port") return getGroupConfigState(group).message;
     if (mode === "failover" || mode === "entry" || mode === "exit") return getGroupConfigState(group).message;
@@ -1886,6 +1955,7 @@ export function ForwardGroupsContent({
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
                         {groupKindBadge(group)}
+                        {groupStatusBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
                       {groupRuntimeBadges(group)}
@@ -1896,7 +1966,7 @@ export function ForwardGroupsContent({
                         visible={isDragging}
                         className="bg-card/70"
                       />
-                      {groupStatusBadge(group)}
+                      {renderGroupEnabledSwitch(group)}
                     </div>
                   </div>
 
@@ -1982,6 +2052,7 @@ export function ForwardGroupsContent({
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
                         {groupKindBadge(group)}
+                        {groupStatusBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
                       {groupRuntimeBadges(group)}
@@ -1992,7 +2063,7 @@ export function ForwardGroupsContent({
                         visible={isDragging}
                         className="bg-card/70"
                       />
-                      {groupStatusBadge(group)}
+                      {renderGroupEnabledSwitch(group)}
                     </div>
                   </div>
 
@@ -2092,7 +2163,12 @@ export function ForwardGroupsContent({
                           className="mx-auto"
                         />
                       </TableCell>
-                      <TableCell className="py-3">{groupStatusBadge(group)}</TableCell>
+                      <TableCell className="py-3">
+                        <div className="flex items-center gap-1.5">
+                          {renderGroupEnabledSwitch(group)}
+                          {groupStatusBadge(group)}
+                        </div>
+                      </TableCell>
                       <TableCell className="max-w-[13rem] py-3">
                         <div className="line-clamp-1 font-medium">{group.name}</div>
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>

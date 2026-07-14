@@ -104,7 +104,7 @@ const (
 	fxpHandshakeWindow   = 5 * time.Minute
 	fxpTCPKeepAlive      = 30 * time.Second
 	fxpHalfCloseLinger   = 30 * time.Second
-	fxpUDPIdleTimeout    = 2 * time.Minute
+	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
 	fxpRuntimeVersion    = "2.2.102"
@@ -311,6 +311,10 @@ func udpListenPort(cfg config) int {
 	return cfg.ListenPort
 }
 
+func listenAddress(host string, port int) string {
+	return net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port))
+}
+
 func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
 	ip := remoteIP(remoteAddr)
 	if g.maxConnections > 0 && g.active.Load() >= g.maxConnections {
@@ -496,7 +500,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		log.Printf("entry load balance exits=%s strategy=round", formatEndpointList(selector))
 	}
 	if protocolHas(cfg, "tcp") {
-		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
+		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("entry tcp listen :%d: %w", cfg.ListenPort, err)
 		}
@@ -515,7 +519,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	}
 	if protocolHas(cfg, "udp") {
 		port := udpListenPort(cfg)
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+		addr, err := net.ResolveUDPAddr("udp", listenAddress(cfg.ListenHost, port))
 		if err != nil {
 			return err
 		}
@@ -1197,7 +1201,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	if protocolHas(cfg, "tcp") {
-		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
+		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("exit tcp listen :%d: %w", cfg.ListenPort, err)
 		}
@@ -1216,7 +1220,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 	}
 	if protocolHas(cfg, "udp") {
 		port := udpListenPort(cfg)
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+		addr, err := net.ResolveUDPAddr("udp", listenAddress(cfg.ListenHost, port))
 		if err != nil {
 			return err
 		}
@@ -1418,7 +1422,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		log.Printf("relay load balance exits=%s strategy=round", formatEndpointList(selector))
 	}
 	if protocolHas(cfg, "tcp") {
-		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
+		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
 		}
@@ -1437,7 +1441,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	}
 	if protocolHas(cfg, "udp") {
 		port := udpListenPort(cfg)
-		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+		addr, err := net.ResolveUDPAddr("udp", listenAddress(cfg.ListenHost, port))
 		if err != nil {
 			return err
 		}

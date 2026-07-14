@@ -160,19 +160,10 @@
 
   @keyframes forwardx-stat-value-change {
     0% {
-      opacity: 0;
-      filter: blur(1.2px);
-      transform: translate3d(0, 0.55em, 0) scale(0.985);
-    }
-    58% {
-      opacity: 1;
-      filter: blur(0);
-      transform: translate3d(0, -0.08em, 0) scale(1);
+      transform: translate3d(0, 0.28em, 0);
     }
     100% {
-      opacity: 1;
-      filter: blur(0);
-      transform: translate3d(0, 0, 0) scale(1);
+      transform: translate3d(0, 0, 0);
     }
   }
 
@@ -188,11 +179,12 @@
     vertical-align: bottom;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1, "kern" 1;
-    will-change: transform, opacity, filter;
+    backface-visibility: hidden;
+    will-change: transform;
   }
 
   .forwardx-stat-value[data-changing="true"][data-loading="false"] .forwardx-stat-value-inner {
-    animation: forwardx-stat-value-change 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: forwardx-stat-value-change 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .route-content-enter {

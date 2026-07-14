@@ -22,6 +22,7 @@ type config struct {
 	RuleID                   int            `json:"ruleId"`
 	ListenPort               int            `json:"listenPort"`
 	UDPListenPort            int            `json:"udpListenPort,omitempty"`
+	ListenHost               string         `json:"listenHost,omitempty"`
 	Protocol                 string         `json:"protocol"`
 	ExitHost                 string         `json:"exitHost"`
 	ExitPort                 int            `json:"exitPort"`

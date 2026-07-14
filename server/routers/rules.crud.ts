@@ -568,7 +568,7 @@ export async function toggleForwardRuleForActor(
             isPortForwardGroup: isPortGroup,
             isAdmin: actor.role === "admin",
           });
-          await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
+          await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any);
         } else {
           await db.toggleForwardRule(ruleId, false);
         }
@@ -618,7 +618,7 @@ export async function toggleForwardRuleForActor(
           isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol),
         });
         if (!sourcePortReservation) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
-        await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
+        await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any);
       } else {
         await db.toggleForwardRule(ruleId, false);
       }
@@ -1191,6 +1191,7 @@ export const crudRulesRouter = router({
           if (data.isEnabled) {
             data.disabledByUser = false;
             data.disabledByTunnel = false;
+            data.disabledByGroup = false;
             data.protocolBlockReason = null;
           }
 
@@ -1423,6 +1424,7 @@ export const crudRulesRouter = router({
         if (data.isEnabled) {
           data.disabledByUser = false;
           data.disabledByTunnel = false;
+          data.disabledByGroup = false;
           data.protocolBlockReason = null;
         }
         await db.updateForwardRule(input.id, data);
@@ -1690,6 +1692,7 @@ export const crudRulesRouter = router({
         if (!sourceReservation) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;
         (data as any).disabledByTunnel = false;
+        (data as any).disabledByGroup = false;
         (data as any).protocolBlockReason = null;
       }
       // 关键字段变更时重置 isRunning

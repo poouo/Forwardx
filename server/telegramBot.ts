@@ -3850,6 +3850,7 @@ function effectiveRuleStatusInfo(rule: any, summary?: AiRuleTrafficSummary): { k
   if (!rule?.isEnabled) {
     if (rule?.disabledByUser) return { kind: "disabled", label: "已手动停用" };
     if (rule?.disabledByTunnel) return { kind: "disabled", label: "隧道/链路停用" };
+    if (rule?.disabledByGroup) return { kind: "disabled", label: "转发资源停用" };
     return { kind: "disabled", label: "已停用" };
   }
   if (summary?.latestLatencyIsTimeout) {

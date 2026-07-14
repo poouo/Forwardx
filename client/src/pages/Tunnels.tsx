@@ -90,6 +90,7 @@ import {
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
   isNginxForwardProtocolEnabled,
+  normalizeForwardXVersion,
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
   type ForwardType,
@@ -146,6 +147,7 @@ type TunnelForm = {
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp" | "nginx_stream" | "nginx_tls";
+  forwardxVersion: "v1" | "v2";
   certDomain: string;
   certPem: string;
   certKeyPem: string;
@@ -299,6 +301,7 @@ const defaultForm: TunnelForm = {
   hopHostIds: [],
   hopConnectHosts: [],
   mode: "forwardx",
+  forwardxVersion: "v1",
   certDomain: "",
   certPem: "",
   certKeyPem: "",
@@ -762,10 +765,11 @@ function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
     : "forwardx";
 }
 
-function getTunnelModeDisplay(mode: unknown, showNginxLabel = true) {
+function getTunnelModeDisplay(mode: unknown, showNginxLabel = true, forwardxVersion: unknown = "v1") {
   const normalized = String(mode || "").toLowerCase() as TunnelForm["mode"];
   const label = tunnelModeLabels[normalized] || String(mode || "").toUpperCase();
   if (isNginxTunnelModeValue(normalized)) return showNginxLabel ? "Nginx" : "Stream";
+  if (normalized === "forwardx") return normalizeForwardXVersion(forwardxVersion) === "v2" ? "ForwardX V2" : "ForwardX V1";
   return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
 }
 
@@ -1984,7 +1988,7 @@ function linkForwardGroupSearchParts(
         tunnel?.id,
         tunnel?.name,
         tunnel?.listenPort,
-        getTunnelModeDisplay(tunnel?.mode),
+        getTunnelModeDisplay(tunnel?.mode, true, tunnel?.forwardxVersion),
         getTunnelRouteText(tunnel, hosts),
       ];
     }
@@ -2063,7 +2067,7 @@ function tunnelMatchesLinkSearch(
     tunnel?.id,
     tunnel?.name,
     tunnel?.mode,
-    getTunnelModeDisplay(tunnel?.mode, nginxTunnelEnabled),
+    getTunnelModeDisplay(tunnel?.mode, nginxTunnelEnabled, tunnel?.forwardxVersion),
     tunnel?.listenPort,
     tunnel?.rateLimitMbps,
     tunnel?.trafficMultiplier,
@@ -2285,6 +2289,8 @@ function TunnelsContent() {
     };
   };
   const inferExitGroupIdForTunnel = (tunnel: any, hopIds: number[]) => {
+    const persistedGroupId = Number(tunnel?.exitGroupId || 0);
+    if (persistedGroupId > 0 && exitGroupById.has(persistedGroupId)) return persistedGroupId;
     const activeExitIds = [
       Number(hopIds[hopIds.length - 1] || tunnel?.exitHostId || 0),
       ...((Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits : [])
@@ -2482,6 +2488,7 @@ function TunnelsContent() {
       hopHostIds: displayRoute.hopHostIds,
       hopConnectHosts: displayRoute.hopConnectHosts,
       mode,
+      forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
       certDomain: String(tunnel.certDomain || ""),
       certPem: String(tunnel.certPem || ""),
       certKeyPem: String(tunnel.certKeyPem || ""),
@@ -2548,6 +2555,7 @@ function TunnelsContent() {
   const updateMutation = trpc.tunnels.update.useMutation({
     onSuccess: (result: any) => {
       utils.tunnels.list.invalidate();
+      utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
       setShowDialog(false);
       resetForm();
@@ -2737,11 +2745,12 @@ function TunnelsContent() {
     const payload: any = {
       name: submitForm.name,
       mode: normalizeTunnelModeForForm(submitForm.mode),
+      forwardxVersion: submitForm.mode === "forwardx" ? submitForm.forwardxVersion : "v1",
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
       listenPort: submitForm.listenPort,
-      mimicPort: transportTuningSupported && submitForm.udpOverTcp ? submitForm.mimicPort : 0,
+      mimicPort: transportTuningSupported && (submitForm.udpOverTcp || submitForm.forwardxVersion === "v2") ? submitForm.mimicPort : 0,
       rateLimitMbps,
       trafficMultiplier,
       networkType: isMultiHopTunnel
@@ -2756,6 +2765,7 @@ function TunnelsContent() {
       tcpFastOpen: transportTuningSupported && submitForm.tcpFastOpen,
       udpOverTcp: transportTuningSupported && submitForm.udpOverTcp,
       entryGroupId: submitForm.entryGroupId || null,
+      exitGroupId: submitForm.exitGroupId || null,
       entryHostId,
       exitHostId,
       hopHostIds: orderedHopHostIds,
@@ -3113,7 +3123,7 @@ function TunnelsContent() {
             "需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；未安装时开启会下发失败提示。UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。",
           )}
         </div>
-        {form.udpOverTcp && (
+        {form.udpOverTcp && form.forwardxVersion === "v1" && (
           <label className="flex min-h-12 items-center justify-between gap-3 rounded-md border border-primary/25 bg-primary/5 px-3 py-2">
             <span className="min-w-0">
               <span className="block text-sm font-medium">mimic UDP 线路端口</span>
@@ -3507,7 +3517,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
+                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}
                         </Badge>
                       </div>
                     </div>
@@ -3607,7 +3617,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
+                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}
                         </Badge>
                       </div>
                     </div>
@@ -3711,7 +3721,7 @@ function TunnelsContent() {
                       <TableCell className="hidden py-3 md:table-cell">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px]">
-                            {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
+                            {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}
                           </Badge>
                         </div>
                       </TableCell>
@@ -4118,6 +4128,52 @@ function TunnelsContent() {
                         </button>}
                       </div>
                     </div>
+                    {form.mode === "forwardx" && (
+                      <div className="space-y-2">
+                        <Label>ForwardX 版本</Label>
+                        <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
+                          <button
+                            type="button"
+                            aria-pressed={form.forwardxVersion === "v1"}
+                            className={segmentedOptionClassName(form.forwardxVersion === "v1")}
+                            onClick={() => setForm((prev) => ({
+                              ...prev,
+                              forwardxVersion: "v1",
+                              mimicPort: prev.udpOverTcp ? prev.mimicPort : 0,
+                            }))}
+                          >
+                            <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1")} />
+                            <span>V1 原版</span>
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={form.forwardxVersion === "v2"}
+                            className={segmentedOptionClassName(form.forwardxVersion === "v2")}
+                            onClick={() => setForm((prev) => ({ ...prev, forwardxVersion: "v2" }))}
+                          >
+                            <Network className={segmentedIconClassName(form.forwardxVersion === "v2")} />
+                            <span>V2 WireGuard</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {form.mode === "forwardx" && form.forwardxVersion === "v2" && (
+                      <div className="space-y-2">
+                        <Label>WireGuard UDP 端口</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={65535}
+                          inputMode="numeric"
+                          value={form.mimicPort > 0 ? form.mimicPort : ""}
+                          placeholder="自动分配"
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setForm((prev) => ({ ...prev, mimicPort: value === "" ? 0 : Number.parseInt(value, 10) || 0 }));
+                          }}
+                        />
+                      </div>
+                    )}
                     {gostTunnelModes.includes(form.mode) && enabledGostTunnelModes.length === 0 && (
                       <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
                         {unsupportedProtocolTitle}

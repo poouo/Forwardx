@@ -50,20 +50,21 @@ type trafficCounters struct {
 }
 
 type tcpingTask struct {
-	Kind        string
-	RuleID      int
-	TunnelID    int
-	GroupID     int
-	MemberID    int
-	ProbeType   string
-	ServiceID   int
-	Method      string
-	TargetIP    string
-	TargetPort  int
-	HopIndex    int
-	HopCount    int
-	SeriesKey   string
-	SeriesLabel string
+	Kind            string
+	RuleID          int
+	TunnelID        int
+	GroupID         int
+	MemberID        int
+	ProbeType       string
+	ServiceID       int
+	Method          string
+	TargetIP        string
+	TargetPort      int
+	HopIndex        int
+	HopCount        int
+	SeriesKey       string
+	SeriesLabel     string
+	WireGuardPeerID string
 }
 
 type tcpingTaskResult struct {
@@ -209,14 +210,15 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			continue
 		}
 		tunnelTasks = append(tunnelTasks, tcpingTask{
-			Kind:        "tunnel",
-			TunnelID:    probe.TunnelID,
-			TargetIP:    probe.TargetIP,
-			TargetPort:  probe.TargetPort,
-			HopIndex:    probe.HopIndex,
-			HopCount:    probe.HopCount,
-			SeriesKey:   probe.SeriesKey,
-			SeriesLabel: probe.SeriesLabel,
+			Kind:            "tunnel",
+			TunnelID:        probe.TunnelID,
+			TargetIP:        probe.TargetIP,
+			TargetPort:      probe.TargetPort,
+			HopIndex:        probe.HopIndex,
+			HopCount:        probe.HopCount,
+			SeriesKey:       probe.SeriesKey,
+			SeriesLabel:     probe.SeriesLabel,
+			WireGuardPeerID: probe.WireGuardPeerID,
 		})
 	}
 
@@ -461,6 +463,8 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	var reachable bool
 	if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
+	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
+		latency, reachable = wireGuardTCPLatency(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingProbeTimeout)
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
 	}

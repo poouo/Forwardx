@@ -9,8 +9,8 @@ import (
 
 const tcpFastOpenBacklog = 256
 
-func listenTCP(port int, fastOpen bool) (net.Listener, error) {
-	address := ":" + strconv.Itoa(port)
+func listenTCP(host string, port int, fastOpen bool) (net.Listener, error) {
+	address := net.JoinHostPort(host, strconv.Itoa(port))
 	if !fastOpen {
 		return net.Listen("tcp", address)
 	}

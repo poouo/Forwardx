@@ -22,9 +22,13 @@ import {
   type HostPortReservation,
 } from "../portReservations";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { normalizeForwardXVersion } from "../../shared/forwardTypes";
+import { AGENT_FORWARDX_WIREGUARD_VERSION, isForwardXWireGuardV2 } from "../forwardXWireGuard";
+import { isAgentVersionAtLeast } from "../agentRouteUtils";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
+const forwardXVersionSchema = z.enum(["v1", "v2"]);
 const proxyProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
 const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
 const MAX_TUNNEL_HOPS = 10;
@@ -35,6 +39,17 @@ const tunnelQueryCache = createQueryCache(300);
 function normalizeTunnelMode(mode: unknown) {
   const value = String(mode || "").trim().toLowerCase();
   return value === "nginx_tls" ? "nginx_stream" : value;
+}
+
+async function requireForwardXWireGuardAgentVersions(hostIds: number[]) {
+  const ids = Array.from(new Set(hostIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const hosts = await Promise.all(ids.map(async (id) => ({ id, host: await db.getHostById(id) as any })));
+  const unsupported = hosts.filter(({ host }) => (
+    !host || !isAgentVersionAtLeast(String(host.agentVersion || ""), AGENT_FORWARDX_WIREGUARD_VERSION)
+  ));
+  if (unsupported.length === 0) return;
+  const labels = unsupported.map(({ id, host }) => host?.name || host?.ip || `主机 ${id}`).slice(0, 5);
+  throw new Error(`ForwardX V2 需要链路内所有 Agent 升级到 v${AGENT_FORWARDX_WIREGUARD_VERSION} 或更高版本：${labels.join("、")}`);
 }
 
 function isTunnelProxyProtocolSupported(mode: unknown) {
@@ -90,7 +105,7 @@ async function validateMimicUdpPort(input: {
 
 async function ensureConfiguredMimicPorts(tunnelId: number) {
   const tunnel = await db.getTunnelById(tunnelId) as any;
-  if (!tunnel || !isTunnelForwardXMode(tunnel.mode) || !tunnel.udpOverTcp) return null;
+  if (!tunnel || !isTunnelForwardXMode(tunnel.mode) || (!tunnel.udpOverTcp && !isForwardXWireGuardV2(tunnel))) return null;
   const [hops, exitNodes] = await Promise.all([
     hopRepo.getTunnelHops(tunnelId),
     hopRepo.getTunnelExitNodes(tunnelId),
@@ -187,12 +202,23 @@ function normalizeTunnelLoadBalanceStrategy(value: unknown) {
   return parsed.success ? parsed.data : "round_robin";
 }
 
-async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined) {
+async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined, requireEnabled = false) {
   const id = Number(entryGroupId || 0);
   if (!id) return null;
   const group = await db.getForwardGroupById(id) as any;
   if (!group || String(group.groupMode || "failover") !== "entry") throw new Error("入口组不存在或类型不正确");
   if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) throw new Error("无权使用此入口组");
+  if (requireEnabled && !group.isEnabled) throw new Error("入口组未启用");
+  return group;
+}
+
+async function requireExitGroupAccess(ctx: any, exitGroupId: number | null | undefined, requireEnabled = false) {
+  const id = Number(exitGroupId || 0);
+  if (!id) return null;
+  const group = await db.getForwardGroupById(id) as any;
+  if (!group || String(group.groupMode || "failover") !== "exit") throw new Error("出口组不存在或类型不正确");
+  if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) throw new Error("无权使用此出口组");
+  if (requireEnabled && !group.isEnabled) throw new Error("出口组未启用");
   return group;
 }
 
@@ -514,9 +540,11 @@ export const tunnelsRouter = router({
       .input(z.object({
         name: z.string().min(1).max(128),
         entryGroupId: z.number().nullable().optional(),
+        exitGroupId: z.number().nullable().optional(),
         entryHostId: z.number(),
         exitHostId: z.number(),
         mode: tunnelModeSchema.default("forwardx"),
+        forwardxVersion: forwardXVersionSchema.optional().default("v1"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
         mimicPort: z.number().int().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
@@ -548,6 +576,7 @@ export const tunnelsRouter = router({
         const heldReservations: HostPortReservation[] = [];
         try {
         const normalizedMode = normalizeTunnelMode(input.mode);
+        const forwardxVersion = normalizedMode === "forwardx" ? normalizeForwardXVersion(input.forwardxVersion) : "v1";
         const certDomain = normalizedMode === "nginx_stream" ? normalizeCertDomain((input as any).certDomain) : null;
         const nginxCert = normalizeNginxCertInput(input as any, normalizedMode === "nginx_stream");
         const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 3) ? input.hopHostIds : null;
@@ -568,7 +597,8 @@ export const tunnelsRouter = router({
           if (!entry || !exit) throw new Error("主机不存在");
         }
         await requireTunnelProtocolEnabled({ ...input, mode: normalizedMode });
-        await requireEntryGroupAccess(ctx, input.entryGroupId);
+        await requireEntryGroupAccess(ctx, input.entryGroupId, true);
+        await requireExitGroupAccess(ctx, input.exitGroupId, true);
 
         // Determine entry/exit host IDs
         const entryHostId = hopHostIds ? hopHostIds[0] : input.entryHostId;
@@ -619,8 +649,20 @@ export const tunnelsRouter = router({
           explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
           reservations: heldReservations,
         });
+        if (forwardxVersion === "v2") {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            entryGroupId: input.entryGroupId ?? null,
+            entryHostId,
+          });
+          await requireForwardXWireGuardAgentVersions([
+            ...entryHostIds,
+            ...(hopHostIds || []),
+            exitHostId,
+            ...extraExitNodes.map((node) => node.hostId),
+          ]);
+        }
         const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
-        const mimicPort = runtimeOptions.udpOverTcp
+        const mimicPort = (runtimeOptions.udpOverTcp || forwardxVersion === "v2")
           ? await validateMimicUdpPort({
             port: input.mimicPort,
             exitHostId,
@@ -640,9 +682,11 @@ export const tunnelsRouter = router({
         const id = await db.createTunnel({
           ...tunnelInput,
           entryGroupId: input.entryGroupId ?? null,
+          exitGroupId: input.exitGroupId ?? null,
           entryHostId,
           exitHostId,
           mode: normalizedMode,
+          forwardxVersion,
           certDomain,
           certPem: nginxCert.certPem,
           certKeyPem: nginxCert.certKeyPem,
@@ -691,12 +735,17 @@ export const tunnelsRouter = router({
           }
           await hopRepo.createTunnelHops(id, hops);
         }
-        const ensuredMimic = runtimeOptions.udpOverTcp ? await ensureConfiguredMimicPorts(id) : null;
-        if (hopHostIds) {
-          await refreshTunnelRuntimeHosts(id, [...hopHostIds, ...extraExitNodes.map((node) => node.hostId)], "tunnel-created", { urgent: true });
-        } else {
-          await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created", { urgent: true });
-        }
+        const ensuredMimic = (runtimeOptions.udpOverTcp || forwardxVersion === "v2") ? await ensureConfiguredMimicPorts(id) : null;
+        const createdTunnel = await db.getTunnelById(id);
+        await pushTunnelEndpointRefresh(createdTunnel || {
+          id,
+          name: input.name,
+          entryGroupId: input.entryGroupId ?? null,
+          exitGroupId: input.exitGroupId ?? null,
+          entryHostId,
+          exitHostId,
+          loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
+        }, "tunnel-created", { urgent: true });
         return { id, listenPort, mimicPort: Number(ensuredMimic?.tunnel?.mimicPort || mimicPort || 0) };
         } finally {
           releaseHostPortReservations(heldReservations);
@@ -707,9 +756,11 @@ export const tunnelsRouter = router({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
         entryGroupId: z.number().nullable().optional(),
+        exitGroupId: z.number().nullable().optional(),
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
         mode: tunnelModeSchema.optional(),
+        forwardxVersion: forwardXVersionSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
         mimicPort: z.number().int().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
@@ -749,6 +800,9 @@ export const tunnelsRouter = router({
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const nextModeForRuntime = normalizeTunnelMode(input.mode ?? (tunnel as any).mode);
+        const nextForwardXVersion = nextModeForRuntime === "forwardx"
+          ? normalizeForwardXVersion((input as any).forwardxVersion ?? (tunnel as any).forwardxVersion)
+          : "v1";
         const referencedRules = await db.getForwardRulesByTunnel(input.id);
         const activeReferencedRuleCount = (referencedRules as any[]).filter((rule) => !rule?.pendingDelete).length;
         const primaryManagedTunnelRuleId = (referencedRules as any[])
@@ -758,6 +812,7 @@ export const tunnelsRouter = router({
           .sort((a: number, b: number) => a - b)[0] || 0;
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
+        if ((input as any).exitGroupId !== undefined) await requireExitGroupAccess(ctx, (input as any).exitGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
           ? ((input as any).hopHostIds as number[]).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
           : undefined;
@@ -803,6 +858,9 @@ export const tunnelsRouter = router({
         if ((data as any).mode !== undefined) {
           (data as any).mode = normalizeTunnelMode((data as any).mode);
         }
+        if ((data as any).forwardxVersion !== undefined || (data as any).mode !== undefined) {
+          (data as any).forwardxVersion = nextForwardXVersion;
+        }
         if ((data as any).trafficMultiplier !== undefined) {
           (data as any).trafficMultiplier = normalizeTrafficMultiplier((data as any).trafficMultiplier);
         }
@@ -825,7 +883,11 @@ export const tunnelsRouter = router({
         }
         const runtimeOptionsChanged = tunnelRuntimeKeys.some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         const modeChanged = (data as any).mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode);
-        const nextMimicEnabled = nextModeForRuntime === "forwardx" && !!(data as any).udpOverTcp;
+        const forwardXVersionChanged = nextForwardXVersion !== normalizeForwardXVersion((tunnel as any).forwardxVersion);
+        const nextUdpOverTcp = (data as any).udpOverTcp !== undefined ? !!(data as any).udpOverTcp : !!(tunnel as any).udpOverTcp;
+        const nextMimicEnabled = nextModeForRuntime === "forwardx" && nextUdpOverTcp;
+        const nextWireGuardEnabled = nextModeForRuntime === "forwardx" && nextForwardXVersion === "v2";
+        const nextDedicatedUdpPortEnabled = nextMimicEnabled || nextWireGuardEnabled;
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
           (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
@@ -890,7 +952,7 @@ export const tunnelsRouter = router({
         // When a user selects automatic allocation, the resolved primary port
         // must also replace the saved ports for every load-balanced exit.
         const sharedExitListenPort = Number((data as any).listenPort || 0);
-        if (nextMimicEnabled && (data as any).mimicPort !== undefined) {
+        if (nextDedicatedUdpPortEnabled && (data as any).mimicPort !== undefined) {
           (data as any).mimicPort = await validateMimicUdpPort({
             port: (data as any).mimicPort,
             exitHostId,
@@ -898,8 +960,8 @@ export const tunnelsRouter = router({
             listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
             tunnelId: id,
           });
-        } else if (!nextMimicEnabled) {
-          delete (data as any).mimicPort;
+        } else if (!nextDedicatedUdpPortEnabled) {
+          (data as any).mimicPort = 0;
         }
         if ((data as any).networkType !== undefined || (data as any).connectHost !== undefined) {
           const nextConnectHost = (data as any).connectHost !== undefined ? (data as any).connectHost : (tunnel as any).connectHost;
@@ -939,6 +1001,29 @@ export const tunnelsRouter = router({
         });
         (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
         (data as any).loadBalanceStrategy = (data as any).loadBalanceEnabled ? nextLoadBalanceStrategy : "round_robin";
+        const nextTunnelEnabled = (data as any).isEnabled !== undefined ? !!(data as any).isEnabled : !!(tunnel as any).isEnabled;
+        const nextEntryGroupId = (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId;
+        const nextExitGroupId = (data as any).exitGroupId !== undefined ? (data as any).exitGroupId : (tunnel as any).exitGroupId;
+        if (nextTunnelEnabled) {
+          await requireEntryGroupAccess(ctx, nextEntryGroupId, true);
+          await requireExitGroupAccess(ctx, nextExitGroupId, true);
+        }
+        if ((data as any).isEnabled !== undefined) (data as any).disabledByGroup = false;
+        if (nextWireGuardEnabled && nextTunnelEnabled) {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            ...tunnel,
+            ...data,
+            entryHostId,
+            exitHostId,
+            entryGroupId: (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId,
+          });
+          await requireForwardXWireGuardAgentVersions([
+            ...entryHostIds,
+            ...normalizedRequestedHopIds,
+            exitHostId,
+            ...extraExitNodes.map((node) => node.hostId),
+          ]);
+        }
         const hopChanged = (requestedHopHostIds !== undefined || (hopConnectHostsProvided && existingHopHostIds.length >= 3))
           ? (
             JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
@@ -958,14 +1043,14 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
-        let keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
-        if (runtimeOptionsChanged || modeChanged) {
+        if (runtimeOptionsChanged || modeChanged || forwardXVersionChanged) {
           await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
-          if (modeChanged && activeReferencedRuleCount > 0) {
-            appendPanelLog("info", `[Tunnel] mode changed tunnel=${id} from=${normalizeTunnelMode((tunnel as any).mode)} to=${nextModeForRuntime}; synced ${activeReferencedRuleCount} referenced rule(s)`);
+          if ((modeChanged || forwardXVersionChanged) && activeReferencedRuleCount > 0) {
+            appendPanelLog("info", `[Tunnel] transport changed tunnel=${id} mode=${nextModeForRuntime} forwardx=${nextForwardXVersion}; synced ${activeReferencedRuleCount} referenced rule(s)`);
           }
         }
         const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
@@ -1022,7 +1107,7 @@ export const tunnelsRouter = router({
           await hopRepo.clearTunnelExitNodes(id);
           await hopRepo.clearForwardRuleTunnelExitsByTunnel(id);
         }
-        const ensuredMimic = nextMimicEnabled ? await ensureConfiguredMimicPorts(id) : null;
+        const ensuredMimic = nextDedicatedUdpPortEnabled ? await ensureConfiguredMimicPorts(id) : null;
         if (ensuredMimic?.changed && !keyChanged) {
           keyChanged = true;
           await db.updateTunnel(id, { isRunning: false } as any);
@@ -1063,7 +1148,7 @@ export const tunnelsRouter = router({
           ];
           await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated", { urgent: true });
         }
-        return { success: true, reset: keyChanged, syncedRuleCount: modeChanged ? activeReferencedRuleCount : 0 };
+        return { success: true, reset: keyChanged, syncedRuleCount: (modeChanged || forwardXVersionChanged) ? activeReferencedRuleCount : 0 };
         } finally {
           releaseHostPortReservations(heldReservations);
         }
@@ -1213,6 +1298,7 @@ export const tunnelsRouter = router({
               tunnelId: tunnel.id,
               targetIp: nextAddr,
               targetPort: nextPort,
+              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(nextHop.hostId || 0)) : undefined,
               hopLabel,
               routeLabel,
               batchId,
@@ -1273,6 +1359,7 @@ export const tunnelsRouter = router({
               tunnelId: tunnel.id,
               targetIp: firstTarget,
               targetPort: firstTargetPort,
+              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(nextHostId) : undefined,
               hopLabel,
               routeLabel,
               batchId,
@@ -1321,6 +1408,7 @@ export const tunnelsRouter = router({
                 tunnelId: tunnel.id,
                 targetIp: nextAddr,
                 targetPort: nextPort,
+                wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(nextHop.hostId || 0)) : undefined,
                 hopLabel,
                 routeLabel,
                 batchId,
@@ -1369,6 +1457,7 @@ export const tunnelsRouter = router({
             tunnelId: tunnel.id,
             targetIp: target,
             targetPort,
+            wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(tunnel.exitHostId || 0)) : undefined,
             hopLabel: `出口 1/${extraExitEndpoints.length + 1} ${tunnel.entryHostId}->${tunnel.exitHostId}`,
             routeLabel: primaryRouteLabel,
             batchId,
@@ -1424,6 +1513,7 @@ export const tunnelsRouter = router({
               tunnelId: tunnel.id,
               targetIp: endpointTarget,
               targetPort: endpointPort,
+              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(endpoint.hostId) : undefined,
               hopLabel,
               routeLabel,
               batchId,
@@ -1459,6 +1549,7 @@ export const tunnelsRouter = router({
           tunnelId: tunnel.id,
           targetIp: target,
           targetPort,
+          wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(tunnel.exitHostId || 0)) : undefined,
         };
         await db.createForwardTest({
           ruleId: 0,

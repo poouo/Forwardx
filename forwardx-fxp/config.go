@@ -23,6 +23,7 @@ func readConfig(path string) (config, error) {
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
 	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
+	cfg.ListenHost = strings.TrimSpace(cfg.ListenHost)
 	cfg.ProxyProtocolVersion = normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion)
 	if cfg.UDPListenPort <= 0 {
 		cfg.UDPListenPort = cfg.ListenPort
@@ -67,6 +68,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.UDPListenPort < 0 || cfg.UDPListenPort > 65535 {
 		return fmt.Errorf("bad udp listen port %d", cfg.UDPListenPort)
+	}
+	if cfg.ListenHost != "" && cfg.ListenHost != "127.0.0.1" && cfg.ListenHost != "::1" {
+		return fmt.Errorf("unsupported listen host %q", cfg.ListenHost)
 	}
 	if cfg.Role == "entry" {
 		if cfg.ExitHost == "" || cfg.ExitPort <= 0 || cfg.ExitPort > 65535 {

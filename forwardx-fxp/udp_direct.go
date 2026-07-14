@@ -23,7 +23,6 @@ const (
 	fxpUDPTypeData   = byte(1)
 	fxpUDPTypeReturn = byte(2)
 	fxpUDPHeaderSize = 32
-	fxpUDPMaxPayload = 65535 - fxpUDPHeaderSize - 16 // AES-GCM authentication tag
 	fxpUDPReplayBits = 64
 )
 
@@ -33,12 +32,14 @@ type fxpUDPPacket struct {
 	ruleID     int
 	sessionID  uint64
 	sequence   uint64
+	fragment   uint8
+	fragments  uint8
 	payload    []byte
 }
 
-// udpReplayWindow admits each authenticated packet sequence once while allowing
-// bounded UDP reordering. The session key includes the session ID and direction,
-// so a sequence is never reused with the same AEAD key.
+// udpReplayWindow admits each authenticated datagram sequence once while allowing
+// bounded UDP reordering. Fragments share that sequence and use their index in
+// the AEAD nonce, so a nonce is never reused within the session direction.
 type udpReplayWindow struct {
 	mu          sync.Mutex
 	initialized bool
@@ -81,67 +82,71 @@ func (w *udpReplayWindow) accept(sequence uint64) bool {
 }
 
 type udpDirectEntrySession struct {
+	key             string
+	sessionID       uint64
+	clientAddr      *net.UDPAddr
+	conn            *net.UDPConn
+	remoteAddr      *net.UDPAddr
+	endpoint        exitEndpoint
+	endpointIndex   int
+	cfg             config
+	inLimiter       *limiter
+	outLimiter      *limiter
+	counter         *trafficCounter
+	stopReporting   func()
+	send            chan []byte
+	recv            chan []byte
+	done            chan struct{}
+	closeOnce       sync.Once
+	lastActivity    atomic.Int64
+	sendSequence    atomic.Uint64
+	returnReplay    udpReplayWindow
+	returnFragments udpFragmentReassembler
+	remove          func(*udpDirectEntrySession)
+}
+
+type udpDirectExitSession struct {
 	key           string
 	sessionID     uint64
-	clientAddr    *net.UDPAddr
+	peerAddr      *net.UDPAddr
 	conn          *net.UDPConn
-	remoteAddr    *net.UDPAddr
-	endpoint      exitEndpoint
-	endpointIndex int
-	cfg           config
-	inLimiter     *limiter
-	outLimiter    *limiter
-	counter       *trafficCounter
-	stopReporting func()
+	target        *net.UDPConn
 	send          chan []byte
-	recv          chan []byte
+	cfg           config
+	ruleID        int
+	targetIP      string
+	targetPort    int
 	done          chan struct{}
 	closeOnce     sync.Once
 	lastActivity  atomic.Int64
 	sendSequence  atomic.Uint64
-	returnReplay  udpReplayWindow
-	remove        func(*udpDirectEntrySession)
-}
-
-type udpDirectExitSession struct {
-	key          string
-	sessionID    uint64
-	peerAddr     *net.UDPAddr
-	conn         *net.UDPConn
-	target       *net.UDPConn
-	send         chan []byte
-	cfg          config
-	ruleID       int
-	targetIP     string
-	targetPort   int
-	done         chan struct{}
-	closeOnce    sync.Once
-	lastActivity atomic.Int64
-	sendSequence atomic.Uint64
-	dataReplay   udpReplayWindow
-	remove       func(*udpDirectExitSession)
+	dataReplay    udpReplayWindow
+	dataFragments udpFragmentReassembler
+	remove        func(*udpDirectExitSession)
 }
 
 type udpDirectRelaySession struct {
-	key            string
-	sessionID      uint64
-	upstreamAddr   *net.UDPAddr
-	downstreamAddr *net.UDPAddr
-	conn           *net.UDPConn
-	cfg            config
-	ruleID         int
-	endpoint       exitEndpoint
-	endpointIndex  int
-	downstreamSend chan []byte
-	upstreamSend   chan []byte
-	done           chan struct{}
-	closeOnce      sync.Once
-	lastActivity   atomic.Int64
-	downstreamSeq  atomic.Uint64
-	upstreamSeq    atomic.Uint64
-	dataReplay     udpReplayWindow
-	returnReplay   udpReplayWindow
-	remove         func(*udpDirectRelaySession)
+	key             string
+	sessionID       uint64
+	upstreamAddr    *net.UDPAddr
+	downstreamAddr  *net.UDPAddr
+	conn            *net.UDPConn
+	cfg             config
+	ruleID          int
+	endpoint        exitEndpoint
+	endpointIndex   int
+	downstreamSend  chan []byte
+	upstreamSend    chan []byte
+	done            chan struct{}
+	closeOnce       sync.Once
+	lastActivity    atomic.Int64
+	downstreamSeq   atomic.Uint64
+	upstreamSeq     atomic.Uint64
+	dataReplay      udpReplayWindow
+	returnReplay    udpReplayWindow
+	dataFragments   udpFragmentReassembler
+	returnFragments udpFragmentReassembler
+	remove          func(*udpDirectRelaySession)
 }
 
 func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
@@ -292,23 +297,24 @@ func (s *udpDirectEntrySession) writeLoop() {
 		case payload := <-s.send:
 			s.touch()
 			s.inLimiter.wait(len(payload))
-			packet, err := sealFXPUDPPacket(fxpUDPPacket{
+			packets, err := sealFXPUDPDatagrams(fxpUDPPacket{
 				packetType: fxpUDPTypeData,
 				tunnelID:   s.cfg.TunnelID,
 				ruleID:     s.cfg.RuleID,
 				sessionID:  s.sessionID,
-				sequence:   s.sendSequence.Add(1),
 				payload:    payload,
-			}, udpEndpointKey(s.endpoint, s.cfg.Key))
+			}, udpEndpointKey(s.endpoint, s.cfg.Key), &s.sendSequence)
 			if err != nil {
 				log.Printf("entry udp direct seal failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
 				s.close()
 				return
 			}
-			if _, err := s.conn.WriteToUDP(packet, s.remoteAddr); err != nil {
-				log.Printf("entry udp direct send failed tunnel=%d rule=%d client=%s exit=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.remoteAddr, err)
-				s.close()
-				return
+			for _, packet := range packets {
+				if _, err := s.conn.WriteToUDP(packet, s.remoteAddr); err != nil {
+					log.Printf("entry udp direct send failed tunnel=%d rule=%d client=%s exit=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.remoteAddr, err)
+					s.close()
+					return
+				}
 			}
 			s.counter.in.Add(uint64(len(payload)))
 		}
@@ -316,13 +322,14 @@ func (s *udpDirectEntrySession) writeLoop() {
 }
 
 func (s *udpDirectEntrySession) handleResponse(packet fxpUDPPacket) {
-	if !s.returnReplay.accept(packet.sequence) {
+	payload, ok := s.returnFragments.accept(packet, &s.returnReplay)
+	if !ok {
 		return
 	}
 	select {
 	case <-s.done:
 		return
-	case s.recv <- packet.payload:
+	case s.recv <- payload:
 	default:
 		fxpUDPDropLog.Printf("entry udp direct response queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 	}
@@ -449,10 +456,11 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 				closeCreated.close()
 			}
 		}
-		if !session.dataReplay.accept(packet.sequence) {
+		payload, ok := session.dataFragments.accept(packet, &session.dataReplay)
+		if !ok {
 			continue
 		}
-		session.forwardToTarget(packet.payload)
+		session.forwardToTarget(payload)
 	}
 }
 
@@ -548,23 +556,24 @@ func (s *udpDirectExitSession) readTargetLoop() {
 		if n <= 0 {
 			continue
 		}
-		packet, err := sealFXPUDPPacket(fxpUDPPacket{
+		packets, err := sealFXPUDPDatagrams(fxpUDPPacket{
 			packetType: fxpUDPTypeReturn,
 			tunnelID:   s.cfg.TunnelID,
 			ruleID:     s.ruleID,
 			sessionID:  s.sessionID,
-			sequence:   s.sendSequence.Add(1),
 			payload:    append([]byte(nil), buf[:n]...),
-		}, s.cfg.Key)
+		}, s.cfg.Key, &s.sendSequence)
 		if err != nil {
 			log.Printf("exit udp direct seal failed tunnel=%d rule=%d peer=%s: %v", s.cfg.TunnelID, s.ruleID, s.peerAddr, err)
 			s.close()
 			return
 		}
-		if _, err := s.conn.WriteToUDP(packet, s.peerAddr); err != nil {
-			log.Printf("exit udp direct peer write failed tunnel=%d rule=%d peer=%s: %v", s.cfg.TunnelID, s.ruleID, s.peerAddr, err)
-			s.close()
-			return
+		for _, packet := range packets {
+			if _, err := s.conn.WriteToUDP(packet, s.peerAddr); err != nil {
+				log.Printf("exit udp direct peer write failed tunnel=%d rule=%d peer=%s: %v", s.cfg.TunnelID, s.ruleID, s.peerAddr, err)
+				s.close()
+				return
+			}
 		}
 		s.touch()
 	}
@@ -717,13 +726,14 @@ func (s *udpDirectRelaySession) start() {
 }
 
 func (s *udpDirectRelaySession) forwardToDownstream(packet fxpUDPPacket) {
-	if !s.dataReplay.accept(packet.sequence) {
+	payload, ok := s.dataFragments.accept(packet, &s.dataReplay)
+	if !ok {
 		return
 	}
 	select {
 	case <-s.done:
 		return
-	case s.downstreamSend <- packet.payload:
+	case s.downstreamSend <- payload:
 	default:
 		fxpUDPDropLog.Printf("relay udp direct downstream queue full tunnel=%d rule=%d upstream=%s downstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.downstreamAddr)
 	}
@@ -741,35 +751,37 @@ func (s *udpDirectRelaySession) downstreamWriteLoop() {
 }
 
 func (s *udpDirectRelaySession) writeDownstream(payload []byte) {
-	packet, err := sealFXPUDPPacket(fxpUDPPacket{
+	packets, err := sealFXPUDPDatagrams(fxpUDPPacket{
 		packetType: fxpUDPTypeData,
 		tunnelID:   s.cfg.TunnelID,
 		ruleID:     s.ruleID,
 		sessionID:  s.sessionID,
-		sequence:   s.downstreamSeq.Add(1),
 		payload:    payload,
-	}, udpEndpointKey(s.endpoint, s.cfg.RelayKey))
+	}, udpEndpointKey(s.endpoint, s.cfg.RelayKey), &s.downstreamSeq)
 	if err != nil {
 		log.Printf("relay udp direct downstream seal failed tunnel=%d rule=%d upstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, err)
 		s.close()
 		return
 	}
-	if _, err := s.conn.WriteToUDP(packet, s.downstreamAddr); err != nil {
-		log.Printf("relay udp direct downstream write failed tunnel=%d rule=%d downstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.downstreamAddr, err)
-		s.close()
-		return
+	for _, packet := range packets {
+		if _, err := s.conn.WriteToUDP(packet, s.downstreamAddr); err != nil {
+			log.Printf("relay udp direct downstream write failed tunnel=%d rule=%d downstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.downstreamAddr, err)
+			s.close()
+			return
+		}
 	}
 	s.touch()
 }
 
 func (s *udpDirectRelaySession) forwardToUpstream(packet fxpUDPPacket) {
-	if !s.returnReplay.accept(packet.sequence) {
+	payload, ok := s.returnFragments.accept(packet, &s.returnReplay)
+	if !ok {
 		return
 	}
 	select {
 	case <-s.done:
 		return
-	case s.upstreamSend <- packet.payload:
+	case s.upstreamSend <- payload:
 	default:
 		fxpUDPDropLog.Printf("relay udp direct upstream queue full tunnel=%d rule=%d upstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr)
 	}
@@ -787,23 +799,24 @@ func (s *udpDirectRelaySession) upstreamWriteLoop() {
 }
 
 func (s *udpDirectRelaySession) writeUpstream(payload []byte) {
-	packet, err := sealFXPUDPPacket(fxpUDPPacket{
+	packets, err := sealFXPUDPDatagrams(fxpUDPPacket{
 		packetType: fxpUDPTypeReturn,
 		tunnelID:   s.cfg.TunnelID,
 		ruleID:     s.ruleID,
 		sessionID:  s.sessionID,
-		sequence:   s.upstreamSeq.Add(1),
 		payload:    payload,
-	}, s.cfg.Key)
+	}, s.cfg.Key, &s.upstreamSeq)
 	if err != nil {
 		log.Printf("relay udp direct upstream seal failed tunnel=%d rule=%d upstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, err)
 		s.close()
 		return
 	}
-	if _, err := s.conn.WriteToUDP(packet, s.upstreamAddr); err != nil {
-		log.Printf("relay udp direct upstream write failed tunnel=%d rule=%d upstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, err)
-		s.close()
-		return
+	for _, packet := range packets {
+		if _, err := s.conn.WriteToUDP(packet, s.upstreamAddr); err != nil {
+			log.Printf("relay udp direct upstream write failed tunnel=%d rule=%d upstream=%s: %v", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, err)
+			s.close()
+			return
+		}
 	}
 	s.touch()
 }
@@ -867,7 +880,7 @@ func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndp
 }
 
 func sealFXPUDPPacket(packet fxpUDPPacket, key string) ([]byte, error) {
-	if len(packet.payload) > fxpUDPMaxPayload {
+	if len(packet.payload) > fxpUDPMaxSinglePayload {
 		return nil, fmt.Errorf("udp payload too large: %d", len(packet.payload))
 	}
 	header, err := fxpUDPHeader(packet)
@@ -878,19 +891,21 @@ func sealFXPUDPPacket(packet fxpUDPPacket, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ciphertext := aead.Seal(nil, fxpUDPNonce(packet.sequence), packet.payload, header)
+	ciphertext := aead.Seal(nil, fxpUDPNonce(packet.sequence, packet.fragment), packet.payload, header)
 	return append(header, ciphertext...), nil
 }
 
 func openFXPUDPPacket(raw []byte, key string) (fxpUDPPacket, error) {
-	if len(raw) < fxpUDPHeaderSize+16 {
+	if len(raw) < fxpUDPHeaderSize+fxpUDPAuthTagSize {
 		return fxpUDPPacket{}, errors.New("udp packet too small")
 	}
-	if !fxpUDPHasMagic(raw) || raw[4] != fxpUDPVersion || raw[6] != 0 || raw[7] != 0 {
+	if !fxpUDPHasMagic(raw) || raw[4] != fxpUDPVersion {
 		return fxpUDPPacket{}, errors.New("invalid udp packet header")
 	}
 	packet := fxpUDPPacket{
 		packetType: raw[5],
+		fragment:   raw[6],
+		fragments:  raw[7],
 		tunnelID:   int(binary.BigEndian.Uint32(raw[8:12])),
 		ruleID:     int(binary.BigEndian.Uint32(raw[12:16])),
 		sessionID:  binary.BigEndian.Uint64(raw[16:24]),
@@ -903,7 +918,7 @@ func openFXPUDPPacket(raw []byte, key string) (fxpUDPPacket, error) {
 	if err != nil {
 		return fxpUDPPacket{}, err
 	}
-	payload, err := aead.Open(nil, fxpUDPNonce(packet.sequence), raw[fxpUDPHeaderSize:], raw[:fxpUDPHeaderSize])
+	payload, err := aead.Open(nil, fxpUDPNonce(packet.sequence, packet.fragment), raw[fxpUDPHeaderSize:], raw[:fxpUDPHeaderSize])
 	if err != nil {
 		return fxpUDPPacket{}, errors.New("invalid udp packet authentication")
 	}
@@ -918,10 +933,15 @@ func fxpUDPHeader(packet fxpUDPPacket) ([]byte, error) {
 	if packet.tunnelID < 0 || packet.ruleID < 0 || packet.sessionID == 0 || packet.sequence == 0 {
 		return nil, errors.New("invalid udp packet fields")
 	}
+	if !validFXPUDPFragmentMetadata(packet.fragment, packet.fragments) {
+		return nil, errors.New("invalid udp fragment metadata")
+	}
 	header := make([]byte, fxpUDPHeaderSize)
 	copy(header[0:4], []byte(fxpUDPMagic))
 	header[4] = fxpUDPVersion
 	header[5] = packet.packetType
+	header[6] = packet.fragment
+	header[7] = packet.fragments
 	binary.BigEndian.PutUint32(header[8:12], uint32(packet.tunnelID))
 	binary.BigEndian.PutUint32(header[12:16], uint32(packet.ruleID))
 	binary.BigEndian.PutUint64(header[16:24], packet.sessionID)
@@ -948,8 +968,9 @@ func fxpUDPAEAD(key string, packet fxpUDPPacket) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func fxpUDPNonce(sequence uint64) []byte {
+func fxpUDPNonce(sequence uint64, fragment uint8) []byte {
 	nonce := make([]byte, 12)
+	nonce[3] = fragment
 	binary.BigEndian.PutUint64(nonce[4:], sequence)
 	return nonce
 }

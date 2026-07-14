@@ -48,6 +48,7 @@ export type SelfTestMeta =
       tunnelId: number;
       targetIp?: string;
       targetPort?: number;
+      wireGuardPeerId?: string;
     }
   | {
       kind: "tunnel-hop";
@@ -60,6 +61,7 @@ export type SelfTestMeta =
       groupKey?: string;
       groupLabel?: string;
       latencyMode?: "sum" | "max" | "multi-source";
+      wireGuardPeerId?: string;
     }
   | {
       kind: "forward-via-tunnel";

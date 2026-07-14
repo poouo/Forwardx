@@ -34,7 +34,7 @@ export type JsonLogPageResult<T extends FileLogEntry = FileLogEntry> = {
 export function getLogDir() {
   const configured = process.env.FORWARDX_LOG_DIR?.trim();
   if (configured) return configured;
-  if (fs.existsSync("/data")) return "/data/logs";
+  if (process.platform !== "win32" && fs.existsSync("/data")) return "/data/logs";
   return path.resolve(process.cwd(), "data", "logs");
 }
 

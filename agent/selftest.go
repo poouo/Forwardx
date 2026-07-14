@@ -91,7 +91,12 @@ func handleSelfTest(cfg Config, t selfTest) {
 		return
 	}
 
-	latency, reachable, resolvedTarget := tcpLatencyResolved(t.TargetIP, t.TargetPort, 3*time.Second)
+	latency, reachable, resolvedTarget := 0, false, ""
+	if t.WireGuardPeerID != "" && t.TunnelID > 0 {
+		latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, 3*time.Second)
+	} else {
+		latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, 3*time.Second)
+	}
 	target := net.JoinHostPort(t.TargetIP, strconv.Itoa(t.TargetPort))
 	msg := ""
 	if reachable {

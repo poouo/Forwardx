@@ -309,6 +309,12 @@ func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapsh
 		return kernelSnapshot.desiredActionConsistent(a)
 	}
 	if strings.TrimSpace(a.StatusType) == "runtime" {
+		if isWireGuardRuntimeAction(a) {
+			if a.Op == "remove" {
+				return !wireGuardRuntimeReady(a.TunnelID, nil)
+			}
+			return wireGuardRuntimeReady(a.TunnelID, a.WireGuard)
+		}
 		return !a.ForceRuntimeSync
 	}
 	if strings.TrimSpace(a.Op) == "apply" {
@@ -337,11 +343,7 @@ func desiredActionKey(a action) string {
 		}
 	}
 	if statusType == "runtime" {
-		name := strings.TrimSpace(a.ForwardType)
-		if name == "" {
-			name = "runtime"
-		}
-		return "runtime:" + name
+		return "runtime:" + runtimeActionKey(a)
 	}
 	if statusType == "tunnel" && a.TunnelID > 0 {
 		return fmt.Sprintf("tunnel:%d:%d:%s", a.TunnelID, a.SourcePort, a.ForwardType)
@@ -995,7 +997,7 @@ func isSharedRuntimeSyncAction(a action) bool {
 		return false
 	}
 	switch strings.TrimSpace(a.ForwardType) {
-	case "gost-runtime-sync", "nginx-runtime-sync":
+	case "gost-runtime-sync", "nginx-runtime-sync", "forwardx-wireguard":
 		return true
 	default:
 		return false
@@ -1096,11 +1098,7 @@ func acquireSharedRuntimeSyncGate(a action) func() {
 func actionSerialKeys(a action) []string {
 	statusType := strings.TrimSpace(a.StatusType)
 	if statusType == "runtime" {
-		name := strings.TrimSpace(a.ForwardType)
-		if name == "" {
-			name = "runtime"
-		}
-		return []string{"runtime:" + name}
+		return []string{"runtime:" + runtimeActionKey(a)}
 	}
 	keys := make([]string, 0, 2)
 	if a.RuleID > 0 {
@@ -1294,11 +1292,7 @@ func actionStaleKeys(a action) []string {
 		}
 	}
 	if statusType == "runtime" {
-		name := strings.TrimSpace(a.ForwardType)
-		if name == "" {
-			name = "runtime"
-		}
-		return []string{"runtime:" + name}
+		return []string{"runtime:" + runtimeActionKey(a)}
 	}
 	if statusType == "tunnel" && a.TunnelID > 0 {
 		keys = append(keys, fmt.Sprintf("tunnel:%d:%d", a.TunnelID, a.SourcePort))

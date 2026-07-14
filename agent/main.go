@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.153"
+var Version = "2.2.154"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1346,30 +1346,31 @@ type selfTestResp struct {
 }
 
 type action struct {
-	TunnelID         int           `json:"tunnelId"`
-	StatusType       string        `json:"statusType"`
-	RuleID           int           `json:"ruleId"`
-	PluginID         string        `json:"pluginId,omitempty"`
-	IssuedAt         int64         `json:"issuedAt,omitempty"`
-	KnownRunning     bool          `json:"knownRunning,omitempty"`
-	Op               string        `json:"op"`
-	ForwardType      string        `json:"forwardType"`
-	SourcePort       int           `json:"sourcePort"`
-	TargetIP         string        `json:"targetIp"`
-	TargetPort       int           `json:"targetPort"`
-	Protocol         string        `json:"protocol"`
-	PreCommands      []string      `json:"preCommands"`
-	ServiceName      string        `json:"svcName"`
-	ServiceNameExtra string        `json:"svcNameExtra"`
-	Unit             string        `json:"unit"`
-	UnitExtra        string        `json:"unitExtra"`
-	Commands         []string      `json:"commands"`
-	PostCommands     []string      `json:"postCommands"`
-	Fxp              *fxpSpec      `json:"fxp,omitempty"`
-	Failover         *failoverSpec `json:"failover,omitempty"`
-	ReportStatus     *bool         `json:"reportStatus,omitempty"`
-	FailureMessage   string        `json:"failureMessage,omitempty"`
-	ForceRuntimeSync bool          `json:"forceRuntimeSync,omitempty"`
+	TunnelID         int            `json:"tunnelId"`
+	StatusType       string         `json:"statusType"`
+	RuleID           int            `json:"ruleId"`
+	PluginID         string         `json:"pluginId,omitempty"`
+	IssuedAt         int64          `json:"issuedAt,omitempty"`
+	KnownRunning     bool           `json:"knownRunning,omitempty"`
+	Op               string         `json:"op"`
+	ForwardType      string         `json:"forwardType"`
+	SourcePort       int            `json:"sourcePort"`
+	TargetIP         string         `json:"targetIp"`
+	TargetPort       int            `json:"targetPort"`
+	Protocol         string         `json:"protocol"`
+	PreCommands      []string       `json:"preCommands"`
+	ServiceName      string         `json:"svcName"`
+	ServiceNameExtra string         `json:"svcNameExtra"`
+	Unit             string         `json:"unit"`
+	UnitExtra        string         `json:"unitExtra"`
+	Commands         []string       `json:"commands"`
+	PostCommands     []string       `json:"postCommands"`
+	Fxp              *fxpSpec       `json:"fxp,omitempty"`
+	WireGuard        *wireGuardSpec `json:"wireGuard,omitempty"`
+	Failover         *failoverSpec  `json:"failover,omitempty"`
+	ReportStatus     *bool          `json:"reportStatus,omitempty"`
+	FailureMessage   string         `json:"failureMessage,omitempty"`
+	ForceRuntimeSync bool           `json:"forceRuntimeSync,omitempty"`
 }
 
 type desiredState struct {
@@ -1413,14 +1414,15 @@ type failoverSpec struct {
 }
 
 type tunnelProbe struct {
-	TunnelID    int    `json:"tunnelId"`
-	TargetIP    string `json:"targetIp"`
-	TargetPort  int    `json:"targetPort"`
-	Protocol    string `json:"protocol"`
-	HopIndex    int    `json:"hopIndex"`
-	HopCount    int    `json:"hopCount"`
-	SeriesKey   string `json:"seriesKey"`
-	SeriesLabel string `json:"seriesLabel"`
+	TunnelID        int    `json:"tunnelId"`
+	TargetIP        string `json:"targetIp"`
+	TargetPort      int    `json:"targetPort"`
+	Protocol        string `json:"protocol"`
+	HopIndex        int    `json:"hopIndex"`
+	HopCount        int    `json:"hopCount"`
+	SeriesKey       string `json:"seriesKey"`
+	SeriesLabel     string `json:"seriesLabel"`
+	WireGuardPeerID string `json:"wireGuardPeerId,omitempty"`
 }
 
 type hostProbeServiceProbe struct {
@@ -1488,26 +1490,31 @@ func (e migratedPanelError) Error() string {
 }
 
 type selfTest struct {
-	TestID      int    `json:"testId"`
-	RuleID      int    `json:"ruleId"`
-	ForwardType string `json:"forwardType"`
-	SourcePort  int    `json:"sourcePort"`
-	Protocol    string `json:"protocol"`
-	Method      string `json:"method"`
-	TargetIP    string `json:"targetIp"`
-	TargetPort  int    `json:"targetPort"`
+	TestID          int    `json:"testId"`
+	RuleID          int    `json:"ruleId"`
+	ForwardType     string `json:"forwardType"`
+	SourcePort      int    `json:"sourcePort"`
+	Protocol        string `json:"protocol"`
+	Method          string `json:"method"`
+	TargetIP        string `json:"targetIp"`
+	TargetPort      int    `json:"targetPort"`
+	TunnelID        int    `json:"tunnelId,omitempty"`
+	WireGuardPeerID string `json:"wireGuardPeerId,omitempty"`
 }
 
 type fxpSpec struct {
 	Role                     string            `json:"role"`
+	TransportVersion         string            `json:"transportVersion,omitempty"`
 	TunnelID                 int               `json:"tunnelId"`
 	RuleID                   int               `json:"ruleId"`
 	ListenPort               int               `json:"listenPort"`
 	UDPListenPort            int               `json:"udpListenPort,omitempty"`
+	ListenHost               string            `json:"listenHost,omitempty"`
 	Protocol                 string            `json:"protocol"`
 	ExitHost                 string            `json:"exitHost"`
 	ExitPort                 int               `json:"exitPort"`
 	UDPExitPort              int               `json:"udpExitPort,omitempty"`
+	ExitPeerID               string            `json:"exitPeerId,omitempty"`
 	Exits                    []fxpExitEndpoint `json:"exits,omitempty"`
 	TargetIP                 string            `json:"targetIp"`
 	TargetPort               int               `json:"targetPort"`
@@ -1532,6 +1539,7 @@ type fxpSpec struct {
 	RelayExitHost            string            `json:"relayExitHost,omitempty"`
 	RelayExitPort            int               `json:"relayExitPort,omitempty"`
 	UDPRelayExitPort         int               `json:"udpRelayExitPort,omitempty"`
+	RelayPeerID              string            `json:"relayPeerId,omitempty"`
 	RelayKey                 string            `json:"relayKey,omitempty"`
 	DNSGeneration            int               `json:"dnsGeneration,omitempty"`
 }
@@ -1541,6 +1549,7 @@ type fxpExitEndpoint struct {
 	Port    int    `json:"port"`
 	UDPPort int    `json:"udpPort,omitempty"`
 	Key     string `json:"key,omitempty"`
+	PeerID  string `json:"peerId,omitempty"`
 }
 
 type fxpUDPTarget struct {
@@ -2950,11 +2959,27 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 	skippedStaleRemove := false
 	if strings.TrimSpace(a.StatusType) == "runtime" {
 		mimicAction := isMimicRuntimeAction(a)
+		wireGuardAction := isWireGuardRuntimeAction(a)
 		if shouldSkipRuntimeAction(a) {
 			if mimicAction && shouldLogAgentReport("mimic-runtime-skip", agentReportLogInterval) {
 				logf("mimic runtime sync skipped; cached state healthy diagnostics=%s", mimicRuntimeDiagnostics())
 			}
 			return true
+		}
+		if wireGuardAction {
+			if a.Op == "remove" {
+				stopWireGuardRuntime(a.TunnelID)
+				ok = true
+			} else if a.WireGuard == nil {
+				ok = false
+				actionMessage.set("wireguard runtime config missing tunnel=%d", a.TunnelID)
+			} else if err := applyWireGuardRuntime(*a.WireGuard); err != nil {
+				ok = false
+				actionMessage.set("wireguard runtime apply failed tunnel=%d: %v", a.TunnelID, err)
+			}
+			rememberRuntimeActionResult(a, ok)
+			invalidateLocalRuntimeReadinessCache()
+			return ok
 		}
 		if mimicAction {
 			logf("mimic runtime sync start commands=%d diagnosticsBefore=%s", len(a.Commands), mimicRuntimeDiagnostics())
@@ -3427,10 +3452,7 @@ func shouldSkipRuntimeAction(a action) bool {
 	if a.ForceRuntimeSync {
 		return false
 	}
-	key := strings.TrimSpace(a.ForwardType)
-	if key == "" {
-		key = "runtime"
-	}
+	key := runtimeActionKey(a)
 	signature := actionCommandSignature(a)
 	now := time.Now()
 	runtimeActionMu.Lock()
@@ -3447,10 +3469,7 @@ func shouldSkipRuntimeAction(a action) bool {
 }
 
 func rememberRuntimeActionResult(a action, ok bool) {
-	key := strings.TrimSpace(a.ForwardType)
-	if key == "" {
-		key = "runtime"
-	}
+	key := runtimeActionKey(a)
 	signature := actionCommandSignature(a)
 	runtimeActionMu.Lock()
 	state := runtimeActionCache[key]
@@ -3466,7 +3485,28 @@ func isMimicRuntimeAction(a action) bool {
 	return strings.TrimSpace(a.ForwardType) == "mimic-runtime-sync"
 }
 
+func isWireGuardRuntimeAction(a action) bool {
+	return strings.TrimSpace(a.ForwardType) == "forwardx-wireguard"
+}
+
+func runtimeActionKey(a action) string {
+	key := strings.TrimSpace(a.ForwardType)
+	if key == "" {
+		key = "runtime"
+	}
+	if isWireGuardRuntimeAction(a) && a.TunnelID > 0 {
+		return key + ":" + strconv.Itoa(a.TunnelID)
+	}
+	return key
+}
+
 func runtimeActionServicesHealthy(a action) bool {
+	if isWireGuardRuntimeAction(a) {
+		if a.Op == "remove" {
+			return !wireGuardRuntimeReady(a.TunnelID, nil)
+		}
+		return wireGuardRuntimeReady(a.TunnelID, a.WireGuard)
+	}
 	if isMimicRuntimeAction(a) {
 		for _, name := range managedMimicServicesFromLocalConfig() {
 			if ok, reason := mimicRuntimeServiceHealth(name); !ok {
@@ -3828,6 +3868,11 @@ func actionCommandSignature(a action) string {
 	}
 	if a.Fxp != nil {
 		if raw, err := json.Marshal(a.Fxp); err == nil {
+			write(string(raw))
+		}
+	}
+	if a.WireGuard != nil {
+		if raw, err := json.Marshal(a.WireGuard); err == nil {
 			write(string(raw))
 		}
 	}
@@ -5537,10 +5582,17 @@ func fxpServerID(spec fxpSpec) string {
 
 func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
+	spec.TransportVersion = strings.ToLower(strings.TrimSpace(spec.TransportVersion))
+	if spec.TransportVersion != forwardXWireGuardVersion {
+		spec.TransportVersion = "v1"
+	}
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
+	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
+	spec.ExitPeerID = strings.TrimSpace(spec.ExitPeerID)
 	spec.TargetIP = strings.TrimSpace(spec.TargetIP)
 	spec.RelayExitHost = strings.TrimSpace(spec.RelayExitHost)
+	spec.RelayPeerID = strings.TrimSpace(spec.RelayPeerID)
 	if spec.UDPListenPort <= 0 {
 		spec.UDPListenPort = spec.ListenPort
 	}
@@ -5552,6 +5604,7 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 	}
 	for i := range spec.Exits {
 		spec.Exits[i].Host = strings.TrimSpace(spec.Exits[i].Host)
+		spec.Exits[i].PeerID = strings.TrimSpace(spec.Exits[i].PeerID)
 		if spec.Exits[i].UDPPort <= 0 {
 			spec.Exits[i].UDPPort = spec.Exits[i].Port
 		}
@@ -5578,14 +5631,17 @@ func fxpServerSignature(spec fxpSpec) string {
 	spec = normalizeFXPSpec(spec)
 	parts := []string{
 		spec.Role,
+		spec.TransportVersion,
 		strconv.Itoa(spec.TunnelID),
 		strconv.Itoa(spec.RuleID),
 		strconv.Itoa(spec.ListenPort),
 		strconv.Itoa(spec.UDPListenPort),
+		spec.ListenHost,
 		spec.Protocol,
 		spec.ExitHost,
 		strconv.Itoa(spec.ExitPort),
 		strconv.Itoa(spec.UDPExitPort),
+		spec.ExitPeerID,
 		spec.TargetIP,
 		strconv.Itoa(spec.TargetPort),
 		spec.Key,
@@ -5606,11 +5662,12 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		strconv.Itoa(spec.UDPRelayExitPort),
+		spec.RelayPeerID,
 		spec.RelayKey,
 		strconv.Itoa(spec.DNSGeneration),
 	}
 	for _, exit := range spec.Exits {
-		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key))
+		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key), strings.TrimSpace(exit.PeerID))
 	}
 	for _, target := range spec.UDPTargets {
 		parts = append(parts, strconv.Itoa(target.RuleID), strings.TrimSpace(target.TargetIP), strconv.Itoa(target.TargetPort))
@@ -5705,6 +5762,9 @@ func killFXPByConfigPath(configPath string) {
 }
 
 func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
+	if spec.TransportVersion == forwardXWireGuardVersion {
+		return false
+	}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return false
@@ -5807,6 +5867,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		return false
 	}
 	spec = normalizeFXPSpec(spec)
+	originalSpec := spec
 
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)
@@ -5851,8 +5912,22 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d listen=:%d udpListen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.UDPListenPort, owner)
 		return false
 	}
+	if spec.TransportVersion == forwardXWireGuardVersion {
+		prepared, err := prepareFXPWireGuard(spec)
+		if err != nil {
+			actionMessage.set("fxp wireguard prepare failed role=%s tunnel=%d rule=%d: %v", spec.Role, spec.TunnelID, spec.RuleID, err)
+			return false
+		}
+		spec = prepared
+	}
+	releaseWireGuardRef := func() {
+		if originalSpec.TransportVersion == forwardXWireGuardVersion {
+			releaseWireGuardRuntimeRef(originalSpec.TunnelID, id)
+		}
+	}
 
 	if err := os.MkdirAll("/run/forwardx-agent", 0700); err != nil {
+		releaseWireGuardRef()
 		actionMessage.set("fxp create runtime dir failed: %v", err)
 		return false
 	}
@@ -5885,10 +5960,12 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	)
 	cfgBytes, err := json.Marshal(spec)
 	if err != nil {
+		releaseWireGuardRef()
 		actionMessage.set("fxp marshal config failed: %v", err)
 		return false
 	}
 	if err := os.WriteFile(configPath, cfgBytes, 0600); err != nil {
+		releaseWireGuardRef()
 		actionMessage.set("fxp write config failed: %v", err)
 		return false
 	}
@@ -5897,6 +5974,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	cmd.Stdout = fxpLogWriter{message: actionMessage}
 	cmd.Stderr = fxpLogWriter{message: actionMessage}
 	if err := cmd.Start(); err != nil {
+		releaseWireGuardRef()
 		_ = os.Remove(configPath)
 		actionMessage.set("fxp runtime start failed: %v", err)
 		return false
@@ -5908,6 +5986,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}()
 	select {
 	case err := <-exited:
+		releaseWireGuardRef()
 		_ = os.Remove(configPath)
 		if err != nil {
 			actionMessage.set("fxp runtime exited immediately: %v", err)
@@ -5922,7 +6001,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 
 	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: spec}
+	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: originalSpec}
 	fxpMu.Unlock()
 	go func() {
 		err := <-exited
@@ -5935,6 +6014,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		if err != nil {
 			logf("fxp runtime exited tunnel=%d rule=%d: %v", spec.TunnelID, spec.RuleID, err)
 		}
+		releaseWireGuardRef()
 	}()
 	logf("fxp %s started tunnel=%d rule=%d listen=:%d protocol=%s runtime=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, runtimePath)
 	return true
@@ -5953,6 +6033,9 @@ func stopFXP(spec fxpSpec) {
 		configPath := fxpConfigPath(spec)
 		killFXPByConfigPath(configPath)
 		_ = os.Remove(configPath)
+		if spec.TransportVersion == forwardXWireGuardVersion {
+			releaseWireGuardRuntimeRef(spec.TunnelID, id)
+		}
 		return
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
@@ -5964,6 +6047,25 @@ func stopFXP(spec fxpSpec) {
 	}
 	if s.configPath != "" {
 		_ = os.Remove(s.configPath)
+	}
+	if s.spec.TransportVersion == forwardXWireGuardVersion {
+		releaseWireGuardRuntimeRef(s.spec.TunnelID, id)
+	}
+}
+
+func stopFXPByTunnelTransport(tunnelID int, transportVersion string) {
+	transportVersion = strings.ToLower(strings.TrimSpace(transportVersion))
+	fxpMu.Lock()
+	specs := make([]fxpSpec, 0)
+	for _, process := range fxpServers {
+		if process == nil || process.spec.TunnelID != tunnelID || process.spec.TransportVersion != transportVersion {
+			continue
+		}
+		specs = append(specs, process.spec)
+	}
+	fxpMu.Unlock()
+	for _, spec := range specs {
+		stopFXP(spec)
 	}
 }
 

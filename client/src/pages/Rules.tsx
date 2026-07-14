@@ -316,7 +316,7 @@ const defaultForm: RuleFormData = {
 
 const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const nginxTunnelModes = new Set(["nginx_stream", "nginx_tls"]);
-const unsupportedProtocolTitle = "当前不支持，请联系管理员";
+const unsupportedProtocolTitle = "当前转发方式已停用，请编辑并切换到可用资源";
 const desktopRuleTypeLabels = {
   local: "端口转发",
   tunnel: "隧道转发",
@@ -2164,7 +2164,8 @@ function RulesContent() {
     refetchOnWindowFocus: false,
   });
   const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
-    staleTime: 60000,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10000,
     refetchOnWindowFocus: false,
   });
   const { data: users } = trpc.users.list.useQuery(undefined, {
@@ -2196,6 +2197,7 @@ function RulesContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [legacyLocalRuleEditId, setLegacyLocalRuleEditId] = useState<number | null>(null);
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
   const [resetTrafficTarget, setResetTrafficTarget] = useState<{ scope: "all" } | { scope: "rule"; rule: any } | null>(null);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
@@ -2486,6 +2488,7 @@ function RulesContent() {
   const resetForm = () => {
     setForm({ ...defaultForm, failoverTargetsText: "" });
     setEditingId(null);
+    setLegacyLocalRuleEditId(null);
     setPortStatus("idle");
   };
 
@@ -2580,10 +2583,11 @@ function RulesContent() {
   };
 
   const openEdit = (rule: any) => {
-    if (!isRuleSupported(rule)) return;
     const editForwardGroup = rule.forwardGroupId
       ? (forwardGroups || []).find((group: any) => Number(group.id) === Number(rule.forwardGroupId))
       : null;
+    const isLegacyLocalRule = !Number(rule.forwardGroupId || 0)
+      && !(rule.forwardType === "gost" && Number(rule.tunnelId || 0) > 0);
     setForm({
       hostId: rule.hostId,
       name: rule.name,
@@ -2619,6 +2623,7 @@ function RulesContent() {
       autoFailback: rule.autoFailback !== false,
     });
     setEditingId(rule.id);
+    setLegacyLocalRuleEditId(isLegacyLocalRule ? Number(rule.id) : null);
     setPortStatus("idle");
     setShowDialog(true);
   };
@@ -2637,12 +2642,14 @@ function RulesContent() {
     }
   );
 
+  const isLegacyLocalRuleEdit = editingId !== null && legacyLocalRuleEditId === editingId;
+
   // 获取当前选中主机的端口区间
   const selectedHost = useMemo(() => {
-    if (isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId)) return null;
+    if (isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId) || (isLegacyLocalRuleEdit && form.routeMode === "local")) return null;
     if (!form.hostId || !hosts) return null;
     return hosts.find((h: any) => h.id === form.hostId) || null;
-  }, [form.forwardGroupId, form.hostId, form.routeMode, hosts]);
+  }, [form.forwardGroupId, form.hostId, form.routeMode, hosts, isLegacyLocalRuleEdit]);
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
@@ -2829,7 +2836,8 @@ function RulesContent() {
     return forwardGroupById.get(Number(form.forwardGroupId)) || null;
   }, [form.forwardGroupId, forwardGroupById]);
   const routeModeLocked = false;
-  const isForwardGroupRouteMode = isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId);
+  const isForwardGroupRouteMode = isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId)
+    || (isLegacyLocalRuleEdit && form.routeMode === "local");
   const effectiveRouteForwardType = useMemo<ForwardType>(() => {
     if (form.routeMode === "tunnel") return "gost";
     if (isForwardGroupRouteMode) {
@@ -3031,6 +3039,7 @@ function RulesContent() {
     if (!isForwardGroupRouteMode) return;
     const candidates = form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups;
     if (!selectedForwardGroup && candidates.length > 0) {
+      if (isLegacyLocalRuleEdit && form.routeMode === "local" && !form.forwardGroupId) return;
       setForm((prev) => ({ ...prev, forwardGroupId: Number(candidates[0].id) }));
       return;
     }
@@ -3047,7 +3056,7 @@ function RulesContent() {
     if (selectedForwardGroup && form.forwardType !== groupForwardType) {
       setForm((prev) => ({ ...prev, forwardType: groupForwardType }));
     }
-  }, [availablePortForwardGroups, availableFailoverForwardGroups, availableForwardChainGroups, form.forwardType, form.routeMode, isForwardGroupRouteMode, selectedForwardGroup]);
+  }, [availablePortForwardGroups, availableFailoverForwardGroups, availableForwardChainGroups, form.forwardGroupId, form.forwardType, form.routeMode, isForwardGroupRouteMode, isLegacyLocalRuleEdit, selectedForwardGroup]);
 
   useEffect(() => {
     if (!form.failoverEnabled || canUseMainBackup) return;
@@ -5035,6 +5044,17 @@ function RulesContent() {
   const getForwardGroupName = (groupId: number) => {
     return forwardGroupById.get(Number(groupId))?.name || `转发组 #${groupId}`;
   };
+  const getRuleResourceName = (rule: any) => {
+    const forwardGroupId = Number(rule?.forwardGroupId || 0);
+    if (forwardGroupId > 0) return getForwardGroupName(forwardGroupId);
+
+    const tunnelId = Number(rule?.tunnelId || 0);
+    if (tunnelId > 0) {
+      return getTunnelSelectName(tunnelById.get(tunnelId) || { id: tunnelId });
+    }
+
+    return getRuleEntryHostName(rule);
+  };
   const getForwardGroupMemberLabel = (member: any) => {
     if (member.memberType === "host") {
       return member.hostId ? getHostName(member.hostId) : "主机成员";
@@ -5680,19 +5700,24 @@ function RulesContent() {
     if (!supported) {
       return (
         <div className="flex items-center justify-end gap-1 whitespace-nowrap">
-          {renderUnsupportedHint(
-            <span className="inline-flex">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-destructive hover:text-destructive"
-                onClick={() => setDeleteRule(rule)}
-                title={unsupportedProtocolTitle}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </span>
-          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => openEdit(rule)}
+            title="编辑并切换到可用转发资源"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-destructive hover:text-destructive"
+            onClick={() => setDeleteRule(rule)}
+            title="删除规则"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
       );
     }
@@ -5893,8 +5918,8 @@ function RulesContent() {
           </TableCell>
         )}
         <TableCell className="px-3 py-2">
-          <span className="block truncate text-sm text-muted-foreground" title={rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}>
-            {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
+          <span className="block truncate text-sm text-muted-foreground" title={getRuleResourceName(rule)}>
+            {getRuleResourceName(rule)}
           </span>
         </TableCell>
         <TableCell className="px-3 py-2">{renderTableTransferEntry(rule)}</TableCell>
@@ -5941,7 +5966,7 @@ function RulesContent() {
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">{rule.name}</div>
                   <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                    {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
+                    {getRuleResourceName(rule)}
                   </div>
                 </div>
               </div>
@@ -6024,7 +6049,7 @@ function RulesContent() {
                   <div className="mt-1 text-xs text-muted-foreground">用户: {getRuleOwnerName(rule)}</div>
                 )}
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
+                  {getRuleResourceName(rule)}
                 </div>
                 {!supported && (
                   <div className="mt-1 text-[11px] text-destructive">
@@ -6275,15 +6300,18 @@ function RulesContent() {
       )}
 
       {/* 转发流量汇总 */}
-      <div className="grid grid-cols-3 gap-2 sm:gap-4">
+      <div className="grid grid-cols-3 gap-1.5 sm:gap-4">
         <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">入向流量</p>
-              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-3 sm:p-4">
+            <div className="w-full min-w-0 sm:flex-1">
+              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">入向流量</p>
+              <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                    <span className="sm:hidden">总</span>
+                    <span className="hidden sm:inline">累计</span>
+                  </span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(totalTrafficTotals.bytesIn)}
@@ -6292,11 +6320,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
                     fallbackValue="0 B"
-                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
                   />
                 </div>
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(dailyTrafficTotals.bytesIn)}
@@ -6305,22 +6333,25 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
                     fallbackValue="0 B"
-                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
                   />
                 </div>
               </div>
             </div>
-            <ArrowDownToLine className="h-5 w-5 shrink-0 text-chart-2 sm:h-6 sm:w-6" />
+            <ArrowDownToLine className="hidden h-6 w-6 shrink-0 text-chart-2 sm:block" />
           </CardContent>
         </Card>
         <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between gap-3 p-3 sm:gap-4 sm:p-4">
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">出向流量</p>
-              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
+            <div className="w-full min-w-0 sm:flex-1">
+              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">出向流量</p>
+              <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                    <span className="sm:hidden">总</span>
+                    <span className="hidden sm:inline">累计</span>
+                  </span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(totalTrafficTotals.bytesOut)}
@@ -6329,11 +6360,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
                     fallbackValue="0 B"
-                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
                   />
                 </div>
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(dailyTrafficTotals.bytesOut)}
@@ -6342,22 +6373,25 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
                     fallbackValue="0 B"
-                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
                   />
                 </div>
               </div>
             </div>
-            <ArrowUpFromLine className="h-5 w-5 shrink-0 text-chart-4 sm:h-6 sm:w-6" />
+            <ArrowUpFromLine className="hidden h-6 w-6 shrink-0 text-chart-4 sm:block" />
           </CardContent>
         </Card>
         <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between gap-3 p-3 sm:gap-4 sm:p-4">
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">连接次数</p>
-              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
+            <div className="w-full min-w-0 sm:flex-1">
+              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">连接次数</p>
+              <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                    <span className="sm:hidden">总</span>
+                    <span className="hidden sm:inline">累计</span>
+                  </span>
                   <AnimatedStatValue
                     as="span"
                     value={totalTrafficTotals.connections.toLocaleString()}
@@ -6366,11 +6400,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
                     fallbackValue="0"
-                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
                   />
                 </div>
-                <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
+                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={dailyTrafficTotals.connections.toLocaleString()}
@@ -6379,12 +6413,12 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
                     fallbackValue="0"
-                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
                   />
                 </div>
               </div>
             </div>
-            <Activity className="h-5 w-5 shrink-0 text-chart-3 sm:h-6 sm:w-6" />
+            <Activity className="hidden h-6 w-6 shrink-0 text-chart-3 sm:block" />
           </CardContent>
         </Card>
       </div>
@@ -6493,7 +6527,7 @@ function RulesContent() {
                           <TableHead className="whitespace-nowrap text-center">状态</TableHead>
                           <TableHead>规则</TableHead>
                           {user?.role === "admin" && <TableHead>用户</TableHead>}
-                          <TableHead>主机</TableHead>
+                          <TableHead>所属资源</TableHead>
                           <TableHead>转发入口</TableHead>
                           <TableHead>转发出口</TableHead>
                           <TableHead>链路</TableHead>
@@ -6677,7 +6711,7 @@ function RulesContent() {
                 <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                     <div className="space-y-2">
-                      <Label>{form.routeMode === "local" ? "使用端口转发" : form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
+                      <Label>{form.routeMode === "local" ? (isLegacyLocalRuleEdit ? "迁移到新版端口转发" : "使用端口转发") : form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
                       <Select
                         value={form.forwardGroupId ? String(form.forwardGroupId) : undefined}
                         disabled={(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).length === 0}
@@ -6706,9 +6740,17 @@ function RulesContent() {
                     </div>
                     <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
                       {form.routeMode === "local" ? <ArrowRightLeft className="h-3.5 w-3.5" /> : form.routeMode === "chain" ? <GitBranch className="h-3.5 w-3.5" /> : <Layers3 className="h-3.5 w-3.5" />}
-                      {FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}
+                      {isLegacyLocalRuleEdit && !selectedForwardGroup ? "待选择" : FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}
                     </Badge>
                   </div>
+                  {isLegacyLocalRuleEdit && form.routeMode === "local" && (
+                    <p className="text-xs text-amber-600">
+                      旧版端口转发规则需要选择新版端口转发，保存后会保留当前目标地址和端口配置。
+                    </p>
+                  )}
+                  {form.routeMode === "local" && availablePortForwardGroups.length === 0 && (
+                    <p className="text-xs text-amber-600">暂无可用端口转发，请先在链路管理中创建并启用。</p>
+                  )}
                   {selectedForwardGroup && (
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       {(selectedForwardGroup.members || []).slice(0, 4).map((member: any, index: number) => (

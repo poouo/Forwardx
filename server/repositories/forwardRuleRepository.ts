@@ -340,6 +340,7 @@ export async function toggleForwardRule(id: number, isEnabled: boolean) {
   await db.update(forwardRules).set({
     isEnabled,
     disabledByTunnel: false,
+    disabledByGroup: false,
     disabledByUser: false,
     ...(isEnabled ? { isRunning: false, protocolBlockReason: null } : {}),
     updatedAt: nowDate(),

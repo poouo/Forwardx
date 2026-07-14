@@ -26,6 +26,7 @@ import { purgeSettledPendingForwardRuleDeletes } from "./repositories/forwardRul
 import { markLocalSetupComplete } from "./setupState";
 import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
+import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -180,6 +181,14 @@ async function backfillHostManagementSortOrder() {
   console.log("[Database] Backfilled host management display order");
 }
 
+async function backfillTunnelExitGroups() {
+  const marker = "tunnel-exit-group-reference-v1";
+  if (await getSetting(marker)) return;
+  const count = await backfillTunnelExitGroupReferences();
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  if (count > 0) console.log(`[Database] Backfilled tunnel exit group references count=${count}`);
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -214,6 +223,9 @@ export async function initDatabase() {
     });
     await backfillHostManagementSortOrder().catch((error) => {
       console.warn("[Database] Host management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillTunnelExitGroups().catch((error) => {
+      console.warn("[Database] Tunnel exit group reference backfill skipped:", error instanceof Error ? error.message : String(error));
     });
     await backfillTrafficBillingRuleUsageFromStats().catch((error) => {
       console.warn("[TrafficBilling] Rule usage backfill skipped:", error instanceof Error ? error.message : String(error));
