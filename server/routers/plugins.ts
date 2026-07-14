@@ -108,8 +108,12 @@ export const pluginsRouter = router({
   checkUpdate: adminProcedure
     .input(z.object({ pluginId: z.string().trim().min(1).max(128) }))
     .mutation(async ({ input }) => {
-      return pluginRepo.checkPluginUpdate(input.pluginId);
+      return pluginRepo.checkPluginUpdate(input.pluginId, { refreshStores: true });
     }),
+
+  checkUpdates: adminProcedure.mutation(async () => {
+    return pluginRepo.checkAllPluginUpdates();
+  }),
 
   updateFromGithub: adminProcedure
     .input(z.object({ pluginId: z.string().trim().min(1).max(128) }))

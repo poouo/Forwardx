@@ -2995,6 +2995,75 @@ function TunnelsContent() {
       </div>
     );
   };
+  const renderForwardXVersionOptions = () => {
+    if (form.mode !== "forwardx") return null;
+    return (
+      <>
+        <div className="space-y-2">
+          <Label>隧道版本</Label>
+          <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
+            <button
+              type="button"
+              aria-pressed={form.forwardxVersion === "v1"}
+              className={segmentedOptionClassName(
+                form.forwardxVersion === "v1",
+                false,
+                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
+              )}
+              onClick={() => setForm((prev) => ({
+                ...prev,
+                forwardxVersion: "v1",
+                mimicPort: prev.udpOverTcp ? prev.mimicPort : 0,
+              }))}
+            >
+              <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1", "mt-0.5")} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">V1 原版</span>
+                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
+                  FXP 原生传输，兼容现有链路
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={form.forwardxVersion === "v2"}
+              className={segmentedOptionClassName(
+                form.forwardxVersion === "v2",
+                false,
+                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
+              )}
+              onClick={() => setForm((prev) => ({ ...prev, forwardxVersion: "v2" }))}
+            >
+              <Network className={segmentedIconClassName(form.forwardxVersion === "v2", "mt-0.5")} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">V2 WireGuard</span>
+                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
+                  内置 UDP 承载，无需系统 WireGuard
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
+        {form.forwardxVersion === "v2" && (
+          <div className="space-y-2">
+            <Label>WireGuard UDP 端口</Label>
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              inputMode="numeric"
+              value={form.mimicPort > 0 ? form.mimicPort : ""}
+              placeholder="自动分配"
+              onChange={(event) => {
+                const value = event.target.value;
+                setForm((prev) => ({ ...prev, mimicPort: value === "" ? 0 : Number.parseInt(value, 10) || 0 }));
+              }}
+            />
+          </div>
+        )}
+      </>
+    );
+  };
   const renderTunnelRuntimeOptions = () => {
     const proxySupported = isTunnelProxyProtocolSupported(form.mode);
     const transportTuningSupported = isTunnelTransportTuningSupported(form.mode);
@@ -4128,52 +4197,6 @@ function TunnelsContent() {
                         </button>}
                       </div>
                     </div>
-                    {form.mode === "forwardx" && (
-                      <div className="space-y-2">
-                        <Label>ForwardX 版本</Label>
-                        <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
-                          <button
-                            type="button"
-                            aria-pressed={form.forwardxVersion === "v1"}
-                            className={segmentedOptionClassName(form.forwardxVersion === "v1")}
-                            onClick={() => setForm((prev) => ({
-                              ...prev,
-                              forwardxVersion: "v1",
-                              mimicPort: prev.udpOverTcp ? prev.mimicPort : 0,
-                            }))}
-                          >
-                            <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1")} />
-                            <span>V1 原版</span>
-                          </button>
-                          <button
-                            type="button"
-                            aria-pressed={form.forwardxVersion === "v2"}
-                            className={segmentedOptionClassName(form.forwardxVersion === "v2")}
-                            onClick={() => setForm((prev) => ({ ...prev, forwardxVersion: "v2" }))}
-                          >
-                            <Network className={segmentedIconClassName(form.forwardxVersion === "v2")} />
-                            <span>V2 WireGuard</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {form.mode === "forwardx" && form.forwardxVersion === "v2" && (
-                      <div className="space-y-2">
-                        <Label>WireGuard UDP 端口</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={65535}
-                          inputMode="numeric"
-                          value={form.mimicPort > 0 ? form.mimicPort : ""}
-                          placeholder="自动分配"
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setForm((prev) => ({ ...prev, mimicPort: value === "" ? 0 : Number.parseInt(value, 10) || 0 }));
-                          }}
-                        />
-                      </div>
-                    )}
                     {gostTunnelModes.includes(form.mode) && enabledGostTunnelModes.length === 0 && (
                       <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
                         {unsupportedProtocolTitle}
@@ -4194,6 +4217,7 @@ function TunnelsContent() {
                     )}
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {renderTunnelRuntimeOptions()}
+                    {renderForwardXVersionOptions()}
                     {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
                         <Label>出口组负载模式</Label>
@@ -4510,6 +4534,7 @@ function TunnelsContent() {
             )}
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {renderTunnelRuntimeOptions()}
+            {renderForwardXVersionOptions()}
             {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
                 <Label>出口组负载模式</Label>
