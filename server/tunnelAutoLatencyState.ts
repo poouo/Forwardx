@@ -1,5 +1,6 @@
 type AutoHopResult = {
   hopCount: number;
+  generation: string;
   latencyMs: number | null;
   isTimeout: boolean;
   recordedAt: number;
@@ -9,26 +10,26 @@ const byTunnel = new Map<number, Map<number, AutoHopResult>>();
 
 const AUTO_HOP_TTL_MS = 5 * 60 * 1000;
 
-function cleanupTunnelHopResults(tunnelId: number, hopCount: number, now: number) {
+function cleanupTunnelHopResults(tunnelId: number, hopCount: number, generation: string, now: number) {
   const hops = byTunnel.get(tunnelId);
   if (!hops) return;
   for (const [idx, result] of hops.entries()) {
-    if (idx >= hopCount || result.hopCount !== hopCount || now - result.recordedAt > AUTO_HOP_TTL_MS) {
+    if (idx >= hopCount || result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) {
       hops.delete(idx);
     }
   }
   if (hops.size === 0) byTunnel.delete(tunnelId);
 }
 
-function aggregateTunnelHopResults(tunnelId: number, hopCount: number, now: number) {
-  cleanupTunnelHopResults(tunnelId, hopCount, now);
+function aggregateTunnelHopResults(tunnelId: number, hopCount: number, generation: string, now: number) {
+  cleanupTunnelHopResults(tunnelId, hopCount, generation, now);
   const hops = byTunnel.get(tunnelId);
   if (!hops) return null;
 
   const results: AutoHopResult[] = [];
   for (let i = 0; i < hopCount; i++) {
     const result = hops.get(i);
-    if (!result || result.hopCount !== hopCount || now - result.recordedAt > AUTO_HOP_TTL_MS) return null;
+    if (!result || result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) return null;
     results.push(result);
   }
 
@@ -47,6 +48,7 @@ export function recordTunnelAutoHopLatency(input: {
   hopCount: number;
   latencyMs: number | null;
   isTimeout: boolean;
+  generation?: string | null;
 }): null | {
   success: boolean;
   latencyMs: number | null;
@@ -57,6 +59,7 @@ export function recordTunnelAutoHopLatency(input: {
   if (!Number.isFinite(tunnelId) || tunnelId <= 0) return null;
   if (!Number.isFinite(hopIndex) || hopIndex < 0) return null;
   if (!Number.isFinite(hopCount) || hopCount <= 0 || hopIndex >= hopCount) return null;
+  const generation = String(input.generation || `legacy:${hopCount}`).slice(0, 1024);
 
   const now = Date.now();
   let hops = byTunnel.get(tunnelId);
@@ -65,22 +68,25 @@ export function recordTunnelAutoHopLatency(input: {
     byTunnel.set(tunnelId, hops);
   }
   for (const [idx, result] of hops.entries()) {
-    if (result.hopCount !== hopCount || now - result.recordedAt > AUTO_HOP_TTL_MS) {
+    if (result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) {
       hops.delete(idx);
     }
   }
   hops.set(hopIndex, {
     hopCount,
+    generation,
     latencyMs: input.latencyMs,
     isTimeout: !!input.isTimeout,
     recordedAt: now,
   });
-  return aggregateTunnelHopResults(tunnelId, hopCount, now);
+  return aggregateTunnelHopResults(tunnelId, hopCount, generation, now);
 }
 
-export function getTunnelAutoHopAggregate(tunnelId: number, hopCount: number) {
+export function getTunnelAutoHopAggregate(tunnelId: number, hopCount: number, generation?: string) {
   const id = Number(tunnelId);
   const count = Number(hopCount);
   if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(count) || count <= 0) return null;
-  return aggregateTunnelHopResults(id, count, Date.now());
+  const hops = byTunnel.get(id);
+  const activeGeneration = String(generation || hops?.get(0)?.generation || `legacy:${count}`);
+  return aggregateTunnelHopResults(id, count, activeGeneration, Date.now());
 }

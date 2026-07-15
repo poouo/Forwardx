@@ -22,6 +22,9 @@ import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
 import { getAgentHostFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
+import { mapWithConcurrency } from "./asyncPool";
+import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -173,6 +176,66 @@ function compactTrafficStats(value: unknown): AgentTrafficStat[] {
     });
   }
   return stats;
+}
+
+async function tunnelEntryHostIds(tunnel: any) {
+  const ids = new Set<number>();
+  const primary = Number(tunnel?.entryHostId || 0);
+  if (primary > 0) ids.add(primary);
+  const entryGroupId = Number(tunnel?.entryGroupId || 0);
+  if (entryGroupId > 0) {
+    const group = await db.getForwardGroupById(entryGroupId) as any;
+    if (group?.isEnabled && String(group.groupMode || "") === "entry") {
+      for (const member of group.members || []) {
+        const hostId = member?.isEnabled !== false && member?.memberType === "host" ? Number(member.hostId || 0) : 0;
+        if (hostId > 0) ids.add(hostId);
+      }
+    }
+  }
+  return ids;
+}
+
+async function validateTunnelProbeSource(
+  hostId: number,
+  tunnel: any,
+  report: AgentTunnelTcpingResult,
+  context?: { hops: any[]; exitNodes: any[]; entryHostIds?: Set<number>; topologyKey?: string },
+) {
+  if (!tunnel?.isEnabled) return false;
+  const hops = context?.hops || await db.getTunnelHops(Number(tunnel.id)) as any[];
+  const exitNodes = context?.exitNodes || await db.getTunnelExitNodes(Number(tunnel.id)) as any[];
+  const topologyKey = String((report as any).topologyKey || "");
+  const expectedTopologyKey = context?.topologyKey || tunnelProbeTopologyKey(tunnel, hops, exitNodes);
+  if (topologyKey && topologyKey !== expectedTopologyKey) return false;
+  const hopIndex = Number(report.hopIndex);
+  const hopCount = Number(report.hopCount);
+  if (Number.isInteger(hopIndex) && Number.isInteger(hopCount) && hopCount > 0) {
+    if (!Array.isArray(hops) || hops.length - 1 !== hopCount || hopIndex < 0 || hopIndex >= hopCount) return false;
+    if (Number(hops[hopIndex]?.hostId || 0) !== Number(hostId)) return false;
+    const expectedPort = Number(hops[hopIndex + 1]?.listenPort || 0);
+    return !report.targetPort || expectedPort === Number(report.targetPort);
+  }
+  const entryHostIds = context?.entryHostIds || await tunnelEntryHostIds(tunnel);
+  if (!entryHostIds.has(Number(hostId))) return false;
+  const expectedPorts = new Set<number>([Number(tunnel.listenPort || 0)]);
+  for (const node of exitNodes) {
+    if (node?.isEnabled !== false && Number(node?.listenPort || 0) > 0) expectedPorts.add(Number(node.listenPort));
+  }
+  return !report.targetPort || expectedPorts.has(Number(report.targetPort));
+}
+
+function sameProbeTarget(left: unknown, right: unknown) {
+  return String(left || "").trim().replace(/^\[|\]$/g, "").toLowerCase()
+    === String(right || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+export function summarizeTunnelBranches(branches: Array<{ latencyMs: number | null; isTimeout: boolean }>) {
+  const successful = branches.filter((branch) => !branch.isTimeout && Number(branch.latencyMs || 0) > 0);
+  return {
+    unavailable: successful.length === 0,
+    partial: successful.length > 0 && successful.length < branches.length,
+    latencyMs: successful.length > 0 ? Math.max(...successful.map((branch) => Number(branch.latencyMs))) : null,
+  };
 }
 
 function compactHostTraffic(value: unknown): AgentHostTrafficStat | null {
@@ -362,18 +425,18 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 
     const quotaTrafficByUser = new Map<number, number>();
     const trafficBillingEnabled = await db.isTrafficBillingEnabled();
-    for (const stat of stats) {
+    await mapWithConcurrency(stats, 16, async (stat) => {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
       const rule = await db.getForwardRuleById(stat.ruleId);
       if (!rule) {
-        continue;
+        return;
       }
-      if ((rule as any).pendingDelete || !(rule as any).isRunning) {
-        continue;
+      if ((rule as any).pendingDelete || !(rule as any).isEnabled) {
+        return;
       }
       if (!await shouldAccountForwardRuleTraffic(rule)) {
-        continue;
+        return;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
       const tunnel = tunnelId > 0 ? await db.getTunnelById(tunnelId) : null;
@@ -389,7 +452,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             stat.connections || 0,
           );
         }
-        continue;
+        return;
       }
       await db.insertTrafficStat({
         ruleId: stat.ruleId,
@@ -402,6 +465,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       });
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
+        if (!(rule as any).isRunning) await db.updateRuleRunningStatus(Number(rule.id), true);
         logTrafficReportSample(
           `rule:${host.id}:${rule.id}`,
           `[Traffic] host=${host.id} rule=${rule.id}`,
@@ -413,35 +477,37 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           ? await db.findTrafficBillingResourceForRule(rule)
           : null;
         if (billingResource?.config) {
-          const user = await db.getUserById(Number(rule.userId));
-          if (user && Number((user as any).balanceCents || 0) <= 0) {
-            console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
-            await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-            await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
-            continue;
-          }
-          const billed = await db.billTrafficUsage({
-            userId: Number(rule.userId),
-            ruleId: Number(rule.id),
-            bytes: ruleBytes,
-            resourceType: billingResource.resourceType,
-            resourceId: billingResource.resourceId,
+          await withKeyedTaskLock(`traffic-billing-user:${Number(rule.userId)}`, async () => {
+            const user = await db.getUserById(Number(rule.userId));
+            if (user && Number((user as any).balanceCents || 0) <= 0) {
+              console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
+              await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+              await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
+              return;
+            }
+            const billed = await db.billTrafficUsage({
+              userId: Number(rule.userId),
+              ruleId: Number(rule.id),
+              bytes: ruleBytes,
+              resourceType: billingResource.resourceType,
+              resourceId: billingResource.resourceId,
+            });
+            if (billed && billed.balanceAfterCents < 0) {
+              console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
+              await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+              await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
+            }
           });
-          if (billed && billed.balanceAfterCents < 0) {
-            console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
-            await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-            await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
-          }
         } else {
           const quotaBytes = applyTrafficMultiplier(ruleBytes, await quotaTrafficMultiplierForRule(rule, tunnel));
           quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + quotaBytes);
         }
       }
-    }
+    });
 
     // 累加用户已用流量
-    for (const [userId, totalBytes] of quotaTrafficByUser.entries()) {
-      if (totalBytes <= 0) continue;
+    await mapWithConcurrency(Array.from(quotaTrafficByUser.entries()), 8, async ([userId, totalBytes]) => {
+      if (totalBytes <= 0) return;
       await db.addUserTraffic(userId, totalBytes);
 
       // 检查用户流量配额
@@ -460,7 +526,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           await refreshUserRuleAgents(user.id, "user-expired");
         }
       }
-    }
+    });
 
     res.json({ success: true });
   } catch (error) {
@@ -499,62 +565,76 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     }
     logTcpingReportSummary(host.id, results, tunnelResults, forwardGroupResults, serviceResults);
 
-    const tunnelBranchGroups = new Map<number, Array<{ key: string; label: string; latencyMs: number | null; isTimeout: boolean }>>();
-    for (const r of tunnelResults) {
-      const tunnelId = Number(r.tunnelId);
-      if (!tunnelId) continue;
-      const tunnel = await db.getTunnelById(tunnelId);
-      if (!tunnel) continue;
-      const latencyValue = typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null;
-      const isTimeout = !!r.isTimeout || latencyValue === null;
-      const seriesKey = cleanTunnelSeriesKey((r as any).seriesKey);
-      if (seriesKey) {
-        const label = cleanTunnelSeriesLabel((r as any).seriesLabel, seriesKey === "primary" ? "主出口" : seriesKey);
-        if (!tunnelBranchGroups.has(tunnelId)) tunnelBranchGroups.set(tunnelId, []);
-        tunnelBranchGroups.get(tunnelId)!.push({ key: seriesKey, label, latencyMs: latencyValue, isTimeout });
-        continue;
-      }
-      const hopIndex = Number((r as any).hopIndex);
-      const hopCount = Number((r as any).hopCount);
-      if (Number.isFinite(hopIndex) && Number.isFinite(hopCount) && hopCount > 0) {
-        const aggregate = recordTunnelAutoHopLatency({
-          tunnelId,
-          hopIndex,
-          hopCount,
-          latencyMs: latencyValue,
-          isTimeout,
-        });
-        if (!aggregate) continue;
+    const tunnelResultsById = new Map<number, AgentTunnelTcpingResult[]>();
+    for (const report of tunnelResults) {
+      const tunnelId = Number(report.tunnelId || 0);
+      if (tunnelId <= 0) continue;
+      const rows = tunnelResultsById.get(tunnelId) || [];
+      rows.push(report);
+      tunnelResultsById.set(tunnelId, rows);
+    }
+    await mapWithConcurrency(Array.from(tunnelResultsById.entries()), 12, async ([tunnelId, reports]) => {
+      const [tunnel, hops, exitNodes] = await Promise.all([
+        db.getTunnelById(tunnelId),
+        db.getTunnelHops(tunnelId),
+        db.getTunnelExitNodes(tunnelId),
+      ]) as [any, any[], any[]];
+      if (!tunnel) return;
+      const entryHostIds = await tunnelEntryHostIds(tunnel);
+      const topologyKey = tunnelProbeTopologyKey(tunnel, hops, exitNodes);
+      const branchByKey = new Map<string, { key: string; label: string; latencyMs: number | null; isTimeout: boolean }>();
+      for (const report of reports) {
+        if (!await validateTunnelProbeSource(Number(host.id), tunnel, report, { hops, exitNodes, entryHostIds, topologyKey })) continue;
+        const latencyValue = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
+        const isTimeout = !!report.isTimeout || latencyValue === null;
+        const seriesKey = cleanTunnelSeriesKey(report.seriesKey);
+        if (seriesKey) {
+          const label = cleanTunnelSeriesLabel(report.seriesLabel, seriesKey === "primary" ? "主出口" : seriesKey);
+          branchByKey.set(seriesKey, { key: seriesKey, label, latencyMs: latencyValue, isTimeout });
+          continue;
+        }
+        const hopIndex = Number(report.hopIndex);
+        const hopCount = Number(report.hopCount);
+        if (Number.isInteger(hopIndex) && Number.isInteger(hopCount) && hopCount > 0) {
+          const aggregate = recordTunnelAutoHopLatency({
+            tunnelId,
+            hopIndex,
+            hopCount,
+            latencyMs: latencyValue,
+            isTimeout,
+            generation: topologyKey,
+          });
+          if (!aggregate) continue;
+          await db.insertTunnelLatencyStat({
+            tunnelId,
+            latencyMs: aggregate.success ? aggregate.latencyMs : null,
+            isTimeout: !aggregate.success,
+            seriesKey: "total",
+            seriesLabel: "总延迟",
+          }, { preserveMessage: true });
+          if (aggregate.success && !tunnel.isRunning) {
+            await db.updateTunnelRunningStatus(tunnelId, true);
+            tunnel.isRunning = true;
+          }
+          continue;
+        }
         await db.insertTunnelLatencyStat({
           tunnelId,
-          latencyMs: aggregate.success ? aggregate.latencyMs : null,
-          isTimeout: !aggregate.success,
+          latencyMs: latencyValue,
+          isTimeout,
           seriesKey: "total",
           seriesLabel: "总延迟",
         }, { preserveMessage: true });
-        if (aggregate.success && !(tunnel as any).isRunning) {
+        if (!isTimeout && !tunnel.isRunning) {
           await db.updateTunnelRunningStatus(tunnelId, true);
+          tunnel.isRunning = true;
         }
-        continue;
       }
-      if (tunnel.entryHostId !== host.id) continue;
-      await db.insertTunnelLatencyStat({
-        tunnelId,
-        latencyMs: latencyValue,
-        isTimeout,
-        seriesKey: "total",
-        seriesLabel: "总延迟",
-      }, { preserveMessage: true });
-      if (!isTimeout && !(tunnel as any).isRunning) {
-        await db.updateTunnelRunningStatus(tunnelId, true);
-      }
-    }
 
-    for (const [tunnelId, branches] of tunnelBranchGroups.entries()) {
-      const tunnel = await db.getTunnelById(tunnelId) as any;
-      if (!tunnel || Number(tunnel.entryHostId) !== Number(host.id)) continue;
+      const branches = Array.from(branchByKey.values());
+      if (branches.length === 0) return;
       const recordedAt = new Date();
-      for (const branch of branches) {
+      await mapWithConcurrency(branches, 4, async (branch) => {
         await db.insertTunnelLatencyStat({
           tunnelId,
           latencyMs: branch.isTimeout ? null : branch.latencyMs,
@@ -563,102 +643,161 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           seriesLabel: branch.label,
           recordedAt,
         }, { preserveMessage: true, updateTunnel: false });
-      }
-      const failed = branches.length === 0 || branches.some((branch) => branch.isTimeout || !branch.latencyMs || branch.latencyMs <= 0);
-      const maxLatency = failed ? null : Math.max(...branches.map((branch) => Number(branch.latencyMs || 0)));
+      });
+      const summary = summarizeTunnelBranches(branches);
       await db.insertTunnelLatencyStat({
         tunnelId,
-        latencyMs: maxLatency,
-        isTimeout: failed,
+        latencyMs: summary.latencyMs,
+        isTimeout: summary.unavailable,
         seriesKey: "total",
-        seriesLabel: "最大延迟",
+        seriesLabel: summary.partial ? "可用出口最大延迟" : "最大延迟",
         recordedAt,
       }, { preserveMessage: true });
-      if (!failed && !(tunnel as any).isRunning) {
-        await db.updateTunnelRunningStatus(tunnelId, true);
-      }
+      if (!summary.unavailable && !tunnel.isRunning) await db.updateTunnelRunningStatus(tunnelId, true);
+    });
+    const chinaExpected = forwardGroupResults.some((report) => String(report.probeType || "") === "china")
+      ? await db.getForwardGroupChinaHealthProbesForHost(Number(host.id)) as any[]
+      : [];
+    const chinaExpectedByKey = new Map(chinaExpected.map((probe: any) => [
+      `${Number(probe.groupId)}:${Number(probe.memberId)}`,
+      probe,
+    ]));
+    const forwardGroupResultsById = new Map<number, AgentForwardGroupLatencyResult[]>();
+    for (const report of forwardGroupResults) {
+      const groupId = Number(report.groupId || 0);
+      if (groupId <= 0) continue;
+      const rows = forwardGroupResultsById.get(groupId) || [];
+      rows.push(report);
+      forwardGroupResultsById.set(groupId, rows);
     }
-    for (const r of forwardGroupResults) {
-      const groupId = Number(r.groupId);
-      if (!groupId) continue;
-      if (String((r as any).probeType || "") === "china") {
-        await db.updateForwardGroupMemberChinaHealth({
-          groupId,
-          memberId: Number((r as any).memberId || 0),
-          hostId: Number(host.id),
-          latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-          isTimeout: !!r.isTimeout,
-        });
-        continue;
-      }
+    await mapWithConcurrency(Array.from(forwardGroupResultsById.entries()), 12, async ([groupId, reports]) => {
       const group = await db.getForwardGroupById(groupId) as any;
-      if (!group || String(group.groupMode || "failover") !== "chain") continue;
-      const hopIndex = Number((r as any).hopIndex);
-      const hopCount = Number((r as any).hopCount);
-      if (!Number.isFinite(hopIndex) || !Number.isFinite(hopCount) || hopCount <= 0) continue;
-      const aggregate = recordForwardGroupAutoHopLatency({
-        groupId,
-        hopIndex,
-        hopCount,
-        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-        isTimeout: !!r.isTimeout,
-      });
-      if (!aggregate) continue;
-      await db.insertForwardGroupLatencyStat({
-        groupId,
-        latencyMs: aggregate.success ? aggregate.latencyMs : null,
-        isTimeout: !aggregate.success,
-      });
-    }
+      if (!group?.isEnabled) return;
+      const chainProbes = String(group.groupMode || "failover") === "chain"
+        ? await db.getForwardGroupChainProbes(groupId)
+        : [];
+      const topologyKey = forwardGroupProbeTopologyKey(groupId, chainProbes);
+      for (const report of reports) {
+        if (String(report.probeType || "") === "china") {
+          const expected = chinaExpectedByKey.get(`${groupId}:${Number(report.memberId || 0)}`) as any;
+          if (!expected) continue;
+          if (report.targetIp && !sameProbeTarget(report.targetIp, expected.targetIp)) continue;
+          if (report.targetPort && Number(report.targetPort) !== Number(expected.targetPort)) continue;
+          await db.updateForwardGroupMemberChinaHealth({
+            groupId,
+            memberId: Number(report.memberId || 0),
+            hostId: Number(host.id),
+            latencyMs: typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null,
+            isTimeout: !!report.isTimeout,
+          });
+          continue;
+        }
+        if (String(group.groupMode || "failover") !== "chain") continue;
+        if (report.topologyKey && report.topologyKey !== topologyKey) continue;
+        const hopIndex = Number(report.hopIndex);
+        const hopCount = Number(report.hopCount);
+        if (!Number.isInteger(hopIndex) || !Number.isInteger(hopCount) || hopCount <= 0) continue;
+        const expected = (chainProbes as any[]).find((probe: any) => (
+          Number(probe.fromHostId) === Number(host.id)
+          && Number(probe.hopIndex) === hopIndex
+          && Number(probe.hopCount) === hopCount
+          && (!report.targetIp || sameProbeTarget(report.targetIp, probe.targetIp))
+          && (!report.targetPort || Number(report.targetPort) === Number(probe.targetPort))
+        ));
+        if (!expected) continue;
+        const aggregate = recordForwardGroupAutoHopLatency({
+          groupId,
+          hopIndex,
+          hopCount,
+          latencyMs: typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null,
+          isTimeout: !!report.isTimeout,
+          generation: topologyKey,
+        });
+        if (!aggregate) continue;
+        await db.insertForwardGroupLatencyStat({
+          groupId,
+          latencyMs: aggregate.success ? aggregate.latencyMs : null,
+          isTimeout: !aggregate.success,
+        });
+      }
+    });
 
-    const serviceStats = [];
-    for (const r of serviceResults) {
-      const serviceId = Number(r.serviceId);
-      if (serviceId <= 0) continue;
-      const service = await db.getHostProbeServiceById(serviceId) as any;
-      if (!service || !service.isEnabled) continue;
-      serviceStats.push({
+    const expectedServices = serviceResults.length > 0 ? await db.getHostProbeTasksForHost(Number(host.id)) as any[] : [];
+    const expectedServiceById = new Map(expectedServices.map((service: any) => [Number(service.serviceId), service]));
+    const serviceStats = serviceResults.flatMap((report) => {
+      const serviceId = Number(report.serviceId || 0);
+      const expected = expectedServiceById.get(serviceId) as any;
+      if (!expected) return [];
+      if (report.targetIp && !sameProbeTarget(report.targetIp, expected.targetIp)) return [];
+      if (report.targetPort && Number(report.targetPort) !== Number(expected.targetPort || 0)) return [];
+      return [{
         serviceId,
         hostId: host.id,
-        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-        isTimeout: !!r.isTimeout,
-      });
-    }
+        latencyMs: typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null,
+        isTimeout: !!report.isTimeout,
+      }];
+    });
     if (serviceStats.length > 0) {
       await db.insertHostProbeServiceStats(serviceStats);
     }
 
-    const stats = [];
+    const stats: Array<{ ruleId: number; hostId: number; latencyMs: number | null; isTimeout: boolean }> = [];
     const tunnelLatencyById = new Map<number, number>();
-    for (const r of results) {
-      const ruleId = Number(r.ruleId);
-      if (ruleId <= 0) continue;
+    const tunnelContextById = new Map<number, Promise<{ tunnel: any; allowedHostIds: Set<number> } | null>>();
+    const getTunnelContext = (tunnelId: number) => {
+      let work = tunnelContextById.get(tunnelId);
+      if (!work) {
+        work = (async () => {
+          const tunnel = await db.getTunnelById(tunnelId) as any;
+          if (!tunnel) return null;
+          const allowedHostIds = await tunnelEntryHostIds(tunnel);
+          allowedHostIds.add(Number(tunnel.exitHostId || 0));
+          for (const hop of await db.getTunnelHops(tunnelId) as any[]) allowedHostIds.add(Number(hop?.hostId || 0));
+          for (const node of await db.getTunnelExitNodes(tunnelId) as any[]) {
+            if (node?.isEnabled !== false) allowedHostIds.add(Number(node?.hostId || 0));
+          }
+          return { tunnel, allowedHostIds };
+        })();
+        tunnelContextById.set(tunnelId, work);
+      }
+      return work;
+    };
+    const ruleStats = await mapWithConcurrency(results, 16, async (report) => {
+      const ruleId = Number(report.ruleId);
+      if (ruleId <= 0) return null;
       const rule = await db.getForwardRuleById(ruleId) as any;
-      const baseLatency = typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null;
+      if (!rule || rule.pendingDelete || !rule.isEnabled) return null;
+      if (report.sourcePort && Number(report.sourcePort) !== Number(rule.sourcePort || 0)) return null;
+      const tunnelId = Number(rule.tunnelId || 0);
+      const tunnelContext = tunnelId > 0 ? await getTunnelContext(tunnelId) : null;
+      const allowed = Number(rule.hostId || 0) === Number(host.id)
+        || !!tunnelContext?.allowedHostIds.has(Number(host.id));
+      if (!allowed) return null;
+      if (!tunnelId && report.targetPort && Number(report.targetPort) !== Number(rule.targetPort || 0)) return null;
+      const expectedMethod = String(rule.protocol || "").toLowerCase() === "udp" ? "ping" : "tcping";
+      if (report.method && String(report.method).toLowerCase() !== expectedMethod) return null;
+      const baseLatency = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
       let latencyMs = baseLatency;
-      if (!r.isTimeout && baseLatency && rule?.tunnelId) {
-        const tunnelId = Number(rule.tunnelId);
+      if (!report.isTimeout && baseLatency && tunnelId > 0) {
         let tunnelLatency = tunnelLatencyById.get(tunnelId);
         if (tunnelLatency === undefined) {
           const latest = await db.getLatestTunnelLatency(tunnelId) as any;
-          tunnelLatency = latest && !latest.isTimeout && typeof latest.latencyMs === "number"
+          const latestAt = latest?.recordedAt ? new Date(latest.recordedAt).getTime() : 0;
+          tunnelLatency = latest && Date.now() - latestAt <= 5 * 60 * 1000 && !latest.isTimeout && typeof latest.latencyMs === "number"
             ? Number(latest.latencyMs)
             : 0;
-          if (tunnelLatency <= 0) {
-            const tunnel = await db.getTunnelById(tunnelId) as any;
-            tunnelLatency = Number(tunnel?.lastLatencyMs) || 0;
-          }
           tunnelLatencyById.set(tunnelId, tunnelLatency);
         }
         if (tunnelLatency > 0) latencyMs = baseLatency + tunnelLatency;
       }
-      stats.push({
+      return {
         ruleId,
         hostId: host.id,
         latencyMs,
-        isTimeout: !!r.isTimeout,
-      });
-    }
+        isTimeout: !!report.isTimeout,
+      };
+    });
+    stats.push(...ruleStats.filter((stat): stat is NonNullable<typeof stat> => !!stat));
 
     if (stats.length > 0) {
       await db.insertTcpingStats(stats);

@@ -105,6 +105,8 @@ import {
   targetGeoNodeMeta,
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { resolveForwardRuleVisualStatus } from "@/lib/forwardRuleStatus";
+import { buildLinkAvailabilityIndex, resolveFreshLinkProbe } from "@/lib/linkAvailability";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { useIsMobile } from "@/hooks/useMobile";
 
@@ -2750,6 +2752,14 @@ function RulesContent() {
     (forwardGroups || []).forEach((group: any) => map.set(Number(group.id), group));
     return map;
   }, [forwardGroups]);
+  const linkAvailabilityIndex = useMemo(() => buildLinkAvailabilityIndex({
+    hosts,
+    tunnels,
+    groups: forwardGroups,
+    isTunnelSupported: (tunnel: any) => isProtocolEnabled(getTunnelProtocolKey(tunnel)),
+  }), [forwardGroups, getTunnelProtocolKey, hosts, isProtocolEnabled, tunnels]);
+  const tunnelAvailabilityById = linkAvailabilityIndex.tunnelAvailabilityById;
+  const groupAvailabilityById = linkAvailabilityIndex.groupAvailabilityById;
   useEffect(() => {
     if (!String(filterHost).startsWith("group:")) return;
     setFilterHost("all");
@@ -4129,13 +4139,18 @@ function RulesContent() {
     </span>
   );
   const getTunnelStatusText = (tunnel: any) => {
-    if (tunnel?.isRunning) return "运行中";
-    if (tunnel?.isEnabled) return "已启用";
-    return "已停用";
+    const state = tunnelAvailabilityById.get(Number(tunnel?.id || 0));
+    if (state?.status === "available") return "可用";
+    if (state?.status === "degraded") return "部分可用";
+    if (state?.status === "pending") return "等待检测";
+    if (state?.status === "unavailable") return "不可用";
+    return state?.message || "已停用";
   };
   const renderTunnelSelectStatusDot = (tunnel: any) => {
-    if (tunnel?.isRunning) return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" aria-hidden="true" />;
-    if (tunnel?.isEnabled) return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" aria-hidden="true" />;
+    const state = tunnelAvailabilityById.get(Number(tunnel?.id || 0));
+    if (state?.status === "available") return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" aria-hidden="true" />;
+    if (state?.status === "degraded" || state?.status === "pending") return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" aria-hidden="true" />;
+    if (state?.status === "unavailable") return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" aria-hidden="true" />;
     return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground/30" aria-hidden="true" />;
   };
   const renderTunnelSelectLabel = (tunnel: any) => (
@@ -4169,37 +4184,15 @@ function RulesContent() {
     }
     return `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员${billingText}`;
   };
-  const getForwardGroupConfigStatus = (group: any): "available" | "pending" | "unavailable" | "error" | "disabled" => {
-    if (!group) return "unavailable";
-    if (group.isEnabled === false) return "disabled";
-    const mode = normalizeForwardGroupModeForRule(group);
-    const runtimeConfigStatus = () => {
-      if (Number(group.templateRuleCount || 0) <= 0 || mode === "entry" || mode === "exit") return null;
-      const runtimeStatus = String(group.runtimeStatus || "").toLowerCase();
-      if (runtimeStatus === "running" || runtimeStatus === "idle") return "available" as const;
-      if (runtimeStatus === "degraded") return "error" as const;
-      if (runtimeStatus === "disabled") return "disabled" as const;
-      return "pending" as const;
-    };
-    if (isForwardChainGroup(group)) return runtimeConfigStatus() || "available";
-    const enabledMembers = Array.isArray(group.members) ? group.members.filter((member: any) => member.isEnabled !== false) : [];
-    if (enabledMembers.length === 0) return "unavailable";
-    if ((mode === "failover" || mode === "entry") && !String(group.domain || "").trim()) return "unavailable";
-    if (group.chinaHealthCheckEnabled) {
-      if (enabledMembers.some((member: any) => String(member.chinaHealthStatus || "unknown").toLowerCase() === "healthy")) {
-        return group.lastStatus === "error" ? "error" : runtimeConfigStatus() || "available";
-      }
-      if (enabledMembers.some((member: any) => String(member.chinaHealthStatus || "unknown").toLowerCase() !== "unhealthy")) return "pending";
-      return "unavailable";
-    }
-    return group.lastStatus === "error" ? "error" : runtimeConfigStatus() || "available";
-  };
+  const getForwardGroupConfigStatus = (group: any): "available" | "degraded" | "pending" | "unavailable" | "disabled" => (
+    groupAvailabilityById.get(Number(group?.id || 0))?.status || "unavailable"
+  );
   const getForwardGroupStatusText = (group: any) => {
     const status = getForwardGroupConfigStatus(group);
     if (status === "disabled") return "已停用";
-    if (status === "available") return isForwardChainGroup(group) ? "链路可用" : "配置可用";
+    if (status === "available") return "可用";
+    if (status === "degraded") return "部分可用";
     if (status === "pending") return "等待检测";
-    if (status === "error") return "异常";
     return "不可用";
   };
   const renderForwardGroupSelectStatusDot = (group: any) => {
@@ -4208,9 +4201,10 @@ function RulesContent() {
     if (status === "available") {
       return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" aria-hidden="true" />;
     }
-    if (status === "error" || status === "unavailable") {
+    if (status === "unavailable") {
       return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" aria-hidden="true" />;
     }
+    if (status === "degraded") return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" aria-hidden="true" />;
     return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" aria-hidden="true" />;
   };
   const renderForwardGroupSelectLabel = (group: any) => {
@@ -4596,28 +4590,24 @@ function RulesContent() {
 
   const getTransferResourceStatusMeta = (type: RuleTransferScopeType, resource: any) => {
     if (type === "tunnel") {
-      const hopIds = getTunnelHopIds(resource);
-      const hopHosts = hopIds
-        .map((hostId: number) => hosts?.find((host: any) => Number(host.id) === Number(hostId)))
-        .filter(Boolean);
-      const onlineCount = hopHosts.filter((host: any) => !!host?.isOnline).length;
-      if (hopHosts.length > 0 && onlineCount === hopHosts.length) {
+      const state = tunnelAvailabilityById.get(Number(resource?.id || 0));
+      if (state?.status === "available") {
         return {
-          label: "在线",
+          label: "可用",
           dotClassName: "bg-emerald-500",
           textClassName: "text-muted-foreground",
         };
       }
-      if (onlineCount > 0) {
+      if (state?.status === "degraded" || state?.status === "pending") {
         return {
-          label: "部分在线",
+          label: state.status === "degraded" ? "部分可用" : "检测中",
           dotClassName: "bg-amber-500",
           textClassName: "text-muted-foreground",
         };
       }
       return {
-        label: "离线",
-          dotClassName: "bg-muted-foreground/60",
+        label: state?.status === "disabled" ? "停用" : "不可用",
+        dotClassName: state?.status === "disabled" ? "bg-muted-foreground/60" : "bg-destructive",
         textClassName: "text-muted-foreground",
       };
     }
@@ -4625,22 +4615,15 @@ function RulesContent() {
     const status = getForwardGroupConfigStatus(resource);
     if (status === "available") {
       return {
-        label: "在线",
+        label: "可用",
         dotClassName: "bg-emerald-500",
         textClassName: "text-muted-foreground",
       };
     }
-    if (status === "pending") {
+    if (status === "pending" || status === "degraded") {
       return {
-        label: "检测中",
+        label: status === "degraded" ? "部分可用" : "检测中",
         dotClassName: "bg-amber-500",
-        textClassName: "text-muted-foreground",
-      };
-    }
-    if (status === "error") {
-      return {
-        label: "异常",
-        dotClassName: "bg-destructive",
         textClassName: "text-muted-foreground",
       };
     }
@@ -5304,40 +5287,42 @@ function RulesContent() {
   const renderStatusDot = (rule: any) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
-      if (!rule.isEnabled || group?.isEnabled === false) {
-        return <span title="规则已停用" className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
-      }
       const runtime = Array.isArray(group?.ruleRuntimeStatuses)
         ? group.ruleRuntimeStatuses.find((item: any) => Number(item.templateRuleId) === Number(rule.id))
         : null;
-      if (runtime?.status === "running") {
-        return <span title={`全部 ${Number(runtime.runningRuleCount || 0)} 个监听均已运行`} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+      const rawGroupStatus = getForwardGroupConfigStatus(group);
+      const groupStatus = rawGroupStatus === "degraded" ? "available" : rawGroupStatus;
+      const latest = trafficByRule.get(Number(rule.id));
+      const visual = resolveForwardRuleVisualStatus({
+        ruleEnabled: !!rule.isEnabled,
+        ruleRunning: !!rule.isRunning,
+        groupEnabled: group?.isEnabled !== false,
+        groupConfigStatus: groupStatus,
+        runtimeStatus: runtime?.status,
+        runningCount: runtime?.runningRuleCount,
+        expectedCount: runtime?.expectedRuleCount,
+        latestLatencyMs: latest?.latestLatencyMs,
+        latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
+        latestLatencyAt: latest?.latestLatencyAt,
+      });
+      if (visual.state === "running") {
+        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
       }
-      if (runtime?.status === "degraded") {
-        return <span title={`部分监听异常：${Number(runtime.runningRuleCount || 0)} / ${Number(runtime.expectedRuleCount || 0)} 运行中`} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
+      if (visual.state === "error") {
+        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
       }
-      if (runtime?.status === "pending") {
-        return <span title={`规则正在下发：${Number(runtime.runningRuleCount || 0)} / ${Number(runtime.expectedRuleCount || 0)} 运行中`} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+      if (visual.state === "pending") {
+        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
       }
-      if (runtime?.status === "disabled") {
-        return <span title="规则已停用" className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
-      }
-      const groupStatus = getForwardGroupConfigStatus(group);
-      if (groupStatus === "disabled") {
-        return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
-      }
-      if (groupStatus === "available") {
-        return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
-      }
-      if (groupStatus === "error" || groupStatus === "unavailable") {
-        return <span className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
-      }
-      if (groupStatus === "pending") {
-        return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
-      }
+      return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
     }
-    if (rule.isEnabled && rule.isRunning) {
-      return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+    const latest = trafficByRule.get(Number(rule.id));
+    const probe = resolveFreshLinkProbe(latest);
+    if (rule.isEnabled && (rule.isRunning || probe === "available")) {
+      return <span title={probe === "available" ? "最近一次端到端探测可达" : "Agent 已确认运行"} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+    }
+    if (rule.isEnabled && probe === "unavailable") {
+      return <span title="最近一次端到端探测不可达" className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
     }
     if (rule.isEnabled) {
       return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;

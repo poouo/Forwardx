@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ const (
 	agentStateDir        = "/var/lib/forwardx-agent"
 	tcpingRuleBatchSize  = 24
 	tcpingProbeBatchSize = 12
-	tcpingMaxConcurrency = 8
+	tcpingMaxConcurrency = 32
 	tcpingProbeTimeout   = 2 * time.Second
 	tcpingPingProbeCount = 5
 )
@@ -65,6 +66,9 @@ type tcpingTask struct {
 	SeriesKey       string
 	SeriesLabel     string
 	WireGuardPeerID string
+	SourcePort      int
+	ProbeKey        string
+	TopologyKey     string
 }
 
 type tcpingTaskResult struct {
@@ -201,6 +205,8 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			Method:     method,
 			TargetIP:   state.TargetIP,
 			TargetPort: state.TargetPort,
+			SourcePort: parseStatePort(state.Port),
+			ProbeKey:   fmt.Sprintf("rule:%d:%s:%d:%s", state.RuleID, strings.ToLower(strings.TrimSpace(state.TargetIP)), state.TargetPort, method),
 		})
 	}
 
@@ -214,11 +220,14 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			TunnelID:        probe.TunnelID,
 			TargetIP:        probe.TargetIP,
 			TargetPort:      probe.TargetPort,
+			Method:          "tcp",
 			HopIndex:        probe.HopIndex,
 			HopCount:        probe.HopCount,
 			SeriesKey:       probe.SeriesKey,
 			SeriesLabel:     probe.SeriesLabel,
 			WireGuardPeerID: probe.WireGuardPeerID,
+			ProbeKey:        probe.ProbeKey,
+			TopologyKey:     probe.TopologyKey,
 		})
 	}
 
@@ -234,6 +243,7 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 				ServiceID: probe.ServiceID,
 				Method:    method,
 				TargetIP:  probe.TargetIP,
+				ProbeKey:  fmt.Sprintf("service:%d:%s:ping", probe.ServiceID, strings.ToLower(strings.TrimSpace(probe.TargetIP))),
 			})
 			continue
 		}
@@ -246,6 +256,7 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			Method:     "tcping",
 			TargetIP:   probe.TargetIP,
 			TargetPort: probe.TargetPort,
+			ProbeKey:   fmt.Sprintf("service:%d:%s:%d:tcping", probe.ServiceID, strings.ToLower(strings.TrimSpace(probe.TargetIP)), probe.TargetPort),
 		})
 	}
 
@@ -262,34 +273,36 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			method = "tcp"
 		}
 		forwardGroupTasks = append(forwardGroupTasks, tcpingTask{
-			Kind:       "forwardGroup",
-			GroupID:    probe.GroupID,
-			MemberID:   probe.MemberID,
-			ProbeType:  probe.ProbeType,
-			Method:     method,
-			TargetIP:   probe.TargetIP,
-			TargetPort: probe.TargetPort,
-			HopIndex:   probe.HopIndex,
-			HopCount:   probe.HopCount,
+			Kind:        "forwardGroup",
+			GroupID:     probe.GroupID,
+			MemberID:    probe.MemberID,
+			ProbeType:   probe.ProbeType,
+			Method:      method,
+			TargetIP:    probe.TargetIP,
+			TargetPort:  probe.TargetPort,
+			HopIndex:    probe.HopIndex,
+			HopCount:    probe.HopCount,
+			ProbeKey:    probe.ProbeKey,
+			TopologyKey: probe.TopologyKey,
 		})
 	}
 
-	ruleLimit := tcpingRuleBatchSize
-	probeLimit := tcpingProbeBatchSize
+	cycleInterval := tcpingDueInterval(serviceProbes, len(ruleTasks), len(tunnelTasks)+len(forwardGroupTasks))
+	ruleRounds := tcpingRoundsForWindow(cycleInterval, 3*time.Minute)
+	ruleLimit := tcpingDynamicBatchLimit(len(ruleTasks), tcpingRuleBatchSize, ruleRounds, 256)
+	probeLimit := len(forwardGroupTasks)
+	serviceLimit := tcpingDynamicBatchLimit(len(serviceTasks), tcpingProbeBatchSize, 1, 96)
 	if force {
-		ruleLimit *= 2
-		probeLimit *= 2
+		ruleLimit = minInt(len(ruleTasks), ruleLimit*2)
+		serviceLimit = minInt(len(serviceTasks), serviceLimit*2)
 	}
-	tunnelProbeLimit := probeLimit
-	if len(tunnelTasks) > tunnelProbeLimit {
-		tunnelProbeLimit = len(tunnelTasks)
-	}
+	tunnelProbeLimit := len(tunnelTasks)
 	tcpingCursorMu.Lock()
 	selected := []tcpingTask{}
 	selected = append(selected, rotateTCPingTasks(ruleTasks, &tcpingRuleCursor, ruleLimit)...)
 	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, tunnelProbeLimit)...)
 	selected = append(selected, rotateTCPingTasks(forwardGroupTasks, &tcpingForwardGroupCursor, probeLimit)...)
-	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, probeLimit)...)
+	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, serviceLimit)...)
 	tcpingCursorMu.Unlock()
 	if len(selected) == 0 {
 		return
@@ -316,7 +329,7 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 func scheduleTCPingCollection(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
 	if !atomic.CompareAndSwapInt32(&tcpingCollectRunning, 0, 1) {
 		logVerbosef("tcping collect skip because previous run is still active")
-		return true
+		return false
 	}
 	probesCopy := append([]tunnelProbe(nil), probes...)
 	groupProbesCopy := append([]forwardGroupProbe(nil), groupProbes...)
@@ -330,6 +343,33 @@ func scheduleTCPingCollection(cfg Config, probes []tunnelProbe, groupProbes []fo
 		}
 	}()
 	return true
+}
+
+func tcpingDynamicBatchLimit(total, minimum, targetRounds, maximum int) int {
+	if total <= 0 {
+		return 0
+	}
+	if targetRounds <= 0 {
+		targetRounds = 1
+	}
+	limit := (total + targetRounds - 1) / targetRounds
+	if limit < minimum {
+		limit = minimum
+	}
+	if maximum > 0 && limit > maximum {
+		limit = maximum
+	}
+	if limit > total {
+		limit = total
+	}
+	return limit
+}
+
+func tcpingRoundsForWindow(interval time.Duration, window time.Duration) int {
+	if interval <= 0 || window <= interval {
+		return 1
+	}
+	return int((window + interval - 1) / interval)
 }
 
 func summarizeTCPingReport(results, tunnels, forwardGroups, services []map[string]any) (int, int, string) {
@@ -397,7 +437,18 @@ func readLocalRuleStates() []localRuleState {
 			Protocol:    protocol,
 		})
 	}
+	sort.Slice(states, func(i, j int) bool {
+		if states[i].RuleID != states[j].RuleID {
+			return states[i].RuleID < states[j].RuleID
+		}
+		return states[i].Port < states[j].Port
+	})
 	return states
+}
+
+func parseStatePort(value string) int {
+	port, _ := strconv.Atoi(strings.TrimSpace(value))
+	return port
 }
 
 func rotateTCPingTasks(tasks []tcpingTask, cursor *int, limit int) []tcpingTask {
@@ -472,6 +523,7 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	switch task.Kind {
 	case "rule":
 		payload["ruleId"] = task.RuleID
+		payload["sourcePort"] = task.SourcePort
 	case "tunnel":
 		payload["tunnelId"] = task.TunnelID
 		if task.HopCount > 0 {
@@ -500,6 +552,21 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 		payload["method"] = task.Method
 	default:
 		return tcpingTaskResult{}
+	}
+	if task.TargetIP != "" {
+		payload["targetIp"] = task.TargetIP
+	}
+	if task.TargetPort > 0 {
+		payload["targetPort"] = task.TargetPort
+	}
+	if task.Method != "" {
+		payload["method"] = task.Method
+	}
+	if task.ProbeKey != "" {
+		payload["probeKey"] = task.ProbeKey
+	}
+	if task.TopologyKey != "" {
+		payload["topologyKey"] = task.TopologyKey
 	}
 	if reachable {
 		payload["latencyMs"] = latency

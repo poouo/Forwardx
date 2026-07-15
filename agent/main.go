@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.155"
+var Version = "2.2.156"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1444,6 +1444,8 @@ type tunnelProbe struct {
 	SeriesKey       string `json:"seriesKey"`
 	SeriesLabel     string `json:"seriesLabel"`
 	WireGuardPeerID string `json:"wireGuardPeerId,omitempty"`
+	ProbeKey        string `json:"probeKey,omitempty"`
+	TopologyKey     string `json:"topologyKey,omitempty"`
 }
 
 type hostProbeServiceProbe struct {
@@ -1454,14 +1456,16 @@ type hostProbeServiceProbe struct {
 	IntervalSeconds int    `json:"intervalSeconds"`
 }
 type forwardGroupProbe struct {
-	GroupID    int    `json:"groupId"`
-	MemberID   int    `json:"memberId"`
-	ProbeType  string `json:"probeType"`
-	TargetIP   string `json:"targetIp"`
-	TargetPort int    `json:"targetPort"`
-	Method     string `json:"method"`
-	HopIndex   int    `json:"hopIndex"`
-	HopCount   int    `json:"hopCount"`
+	GroupID     int    `json:"groupId"`
+	MemberID    int    `json:"memberId"`
+	ProbeType   string `json:"probeType"`
+	TargetIP    string `json:"targetIp"`
+	TargetPort  int    `json:"targetPort"`
+	Method      string `json:"method"`
+	HopIndex    int    `json:"hopIndex"`
+	HopCount    int    `json:"hopCount"`
+	ProbeKey    string `json:"probeKey,omitempty"`
+	TopologyKey string `json:"topologyKey,omitempty"`
 }
 
 type dnsWatchItem struct {
@@ -2212,7 +2216,11 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		nextTrafficCollectInterval = collectTraffic(cfg)
 		lastTrafficCollectAt = time.Now()
 	}
-	tcpingInterval := tcpingDueInterval(state.HostProbeServices)
+	tcpingInterval := tcpingDueInterval(
+		state.HostProbeServices,
+		len(state.RunningRules),
+		len(state.TunnelProbes)+len(state.ForwardGroupProbes),
+	)
 	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
 		if scheduleTCPingCollection(cfg, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing) {
 			lastTCPingAt = time.Now()
@@ -2319,11 +2327,17 @@ func heartbeatKeepalive(cfg Config) error {
 	return nil
 }
 
-func tcpingDueInterval(serviceProbes []hostProbeServiceProbe) time.Duration {
-	if len(serviceProbes) == 0 {
-		return time.Minute
+func tcpingDueInterval(serviceProbes []hostProbeServiceProbe, ruleCount int, linkProbeCount int) time.Duration {
+	workCount := ruleCount + linkProbeCount
+	interval := time.Minute
+	switch {
+	case workCount >= 500:
+		interval = 15 * time.Second
+	case workCount >= 200:
+		interval = 20 * time.Second
+	case workCount >= 100:
+		interval = 30 * time.Second
 	}
-	interval := time.Duration(0)
 	for _, probe := range serviceProbes {
 		seconds := probe.IntervalSeconds
 		if seconds <= 0 {
@@ -2333,12 +2347,9 @@ func tcpingDueInterval(serviceProbes []hostProbeServiceProbe) time.Duration {
 			seconds = 5
 		}
 		duration := time.Duration(seconds) * time.Second
-		if interval == 0 || duration < interval {
+		if duration < interval {
 			interval = duration
 		}
-	}
-	if interval <= 0 {
-		return time.Minute
 	}
 	return interval
 }

@@ -9,7 +9,6 @@ import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 import * as hopRepo from "../repositories/tunnelRepository";
 import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
-import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
 import { createQueryCache } from "../queryCache";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 import { structuredLinkTestMessage } from "../linkTestMessages";
@@ -410,29 +409,6 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     if (normalizedExtraExitNodes.length > 0) {
       extraExitNodesByTunnel.set(Number(tunnel.id), normalizedExtraExitNodes);
       for (const node of normalizedExtraExitNodes) hostIds.add(Number(node.hostId));
-    }
-  }));
-  await Promise.all(tunnels.map(async (tunnel) => {
-    const hopIds = hopHostIdsByTunnel.get(Number(tunnel.id));
-    if (!hopIds || hopIds.length < 3) return;
-    const aggregate = getTunnelAutoHopAggregate(Number(tunnel.id), hopIds.length - 1);
-    if (!aggregate) return;
-    const currentLatency = typeof (tunnel as any).lastLatencyMs === "number" ? Number((tunnel as any).lastLatencyMs) : null;
-    const nextLatency = aggregate.success ? aggregate.latencyMs : null;
-    const shouldUpdate = currentLatency !== nextLatency;
-    const shouldMarkRunning = aggregate.success && !(tunnel as any).isRunning;
-    if (!shouldUpdate && !shouldMarkRunning) return;
-    if (shouldUpdate) {
-      await db.insertTunnelLatencyStat({
-        tunnelId: Number(tunnel.id),
-        latencyMs: aggregate.success ? aggregate.latencyMs : null,
-        isTimeout: !aggregate.success,
-      }, { preserveMessage: true });
-      (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
-    }
-    if (shouldMarkRunning) {
-      await db.updateTunnelRunningStatus(Number(tunnel.id), true);
-      (tunnel as any).isRunning = true;
     }
   }));
   const latestLatencyByTunnel = await db.getLatestTunnelLatencies(tunnels.map((tunnel) => Number(tunnel.id)));

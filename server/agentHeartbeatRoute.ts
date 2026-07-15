@@ -51,7 +51,6 @@ import {
   writeManagedServiceCmd,
 } from "./agentActionCommands";
 import { handleHostAddressChanged, hostIngressAddress, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
-import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { buildPluginHostAssetSyncActions } from "./repositories/pluginRepository";
@@ -68,6 +67,8 @@ import {
   type ForwardXWireGuardNodePlan,
 } from "./forwardXWireGuard";
 import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
+import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
+import { resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -2128,22 +2129,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .filter((tunnel: any) => tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel))
       .map(async (tunnel: any) => {
         const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        const topologyKey = tunnelProbeTopologyKey(
+          tunnel,
+          Array.isArray(hops) ? hops : [],
+          tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [],
+        );
         if (Array.isArray(hops) && hops.length >= 3) {
           const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
           if (hostIdx < 0 || hostIdx >= hops.length - 1) return null;
-          if (hostIdx === 0) {
-            const aggregate = getTunnelAutoHopAggregate(Number(tunnel.id), hops.length - 1);
-            if (aggregate) {
-              await db.insertTunnelLatencyStat({
-                tunnelId: Number(tunnel.id),
-                latencyMs: aggregate.success ? aggregate.latencyMs : null,
-                isTimeout: !aggregate.success,
-              }, { preserveMessage: true });
-              if (aggregate.success && !(tunnel as any).isRunning) {
-                await db.updateTunnelRunningStatus(Number(tunnel.id), true);
-              }
-            }
-          }
           const nextHop = hops[hostIdx + 1] as any;
           const targetIp = await getHopDialAddress(nextHop);
           const targetPort = Number(nextHop.listenPort) || 0;
@@ -2154,6 +2147,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: "tcp",
             hopIndex: hostIdx,
             hopCount: hops.length - 1,
+            probeKey: `tunnel:${Number(tunnel.id)}:host:${Number(host.id)}:hop:${hostIdx}/${hops.length - 1}:${String(targetIp).toLowerCase()}:${targetPort}`,
+            topologyKey,
             wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(nextHop?.hostId || 0)) : undefined,
           } : null;
         }
@@ -2164,6 +2159,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: primaryEndpoint?.host || "",
           targetPort: Number(primaryEndpoint?.port) || 0,
           protocol: "tcp",
+          probeKey: `tunnel:${Number(tunnel.id)}:host:${Number(host.id)}:direct:${String(primaryEndpoint?.host || "").toLowerCase()}:${Number(primaryEndpoint?.port) || 0}`,
+          topologyKey,
           wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(tunnel.exitHostId || 0)) : undefined,
         };
         if (!(tunnel as any).loadBalanceEnabled) return baseProbe;
@@ -2173,6 +2170,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ...baseProbe,
             seriesKey: "primary",
             seriesLabel: "主出口",
+            probeKey: `${baseProbe.probeKey}:primary`,
           });
         }
         const extraRoutes = await forwardXExtraExitRoutes(tunnel);
@@ -2185,6 +2183,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: "tcp",
             seriesKey: `exit-${index + 2}`,
             seriesLabel: `出口 ${index + 2}`,
+            probeKey: `tunnel:${Number(tunnel.id)}:host:${Number(host.id)}:direct:${String(route.host).toLowerCase()}:${Number(route.port) || 0}:exit-${index + 2}`,
+            topologyKey,
             wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number((route as any).hostId || 0)) : undefined,
           });
         });
@@ -3016,10 +3016,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
-      if (tunnel && (isGostTunnelMode(tunnel) || isNginxTunnelMode(tunnel))) {
-        return currentHostTunnelExitPortsForRule(rule, tunnel)[0] || 0;
-      }
-      return Number(rule.sourcePort) || 0;
+      return resolveRuleTrafficPortForHost({
+        sourcePort: rule.sourcePort,
+        usesTunnelRuntime: !!tunnel && (isGostTunnelMode(tunnel) || isNginxTunnelMode(tunnel)),
+        isEntry: !!tunnel && isCurrentHostTunnelEntry(tunnel),
+        exitPorts: tunnel ? currentHostTunnelExitPortsForRule(rule, tunnel) : [],
+      });
     };
     const runningRules: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
     const runningRuleSeen = new Set<string>();
@@ -3268,7 +3270,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && Number(local.ruleId || 0) === Number(rule.id)
         && (Number(local.tunnelId || 0) <= 0 || Number(local.tunnelId || 0) === Number(rule?.tunnelId || 0))
         && forwardTypeCompatible(local.forwardType, expectedForwardType)
-        && localTextCompatible(local.targetIp, processTarget(rule))
+        && (localTextCompatible(local.targetIp, processTarget(rule)) || localTextCompatible(local.targetIp, rule.targetIp))
         && localNumberCompatible(local.targetPort, rule.targetPort)
         && localProtocolCompatible(local.protocol, rule.protocol);
     };
@@ -4566,6 +4568,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .filter((group: any) => group && group.isEnabled && String(group.groupMode || "failover") === "chain");
     for (const group of chainGroupsForHost as any[]) {
       const probes = await db.getForwardGroupChainProbes(Number(group.id));
+      const topologyKey = forwardGroupProbeTopologyKey(Number(group.id), probes);
       for (const probe of probes) {
         if (Number(probe.fromHostId) !== Number(host.id)) continue;
         const key = `${probe.groupId}:${probe.hopIndex}:${probe.targetIp}:${probe.targetPort}:${probe.method}`;
@@ -4576,6 +4579,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           method: probe.method,
           hopIndex: probe.hopIndex,
           hopCount: probe.hopCount,
+          probeKey: `forward-group:${Number(probe.groupId)}:host:${Number(host.id)}:hop:${Number(probe.hopIndex)}/${Number(probe.hopCount)}:${String(probe.targetIp).toLowerCase()}:${Number(probe.targetPort) || 0}:${String(probe.method || "tcp").toLowerCase()}`,
+          topologyKey,
         });
       }
     }
@@ -4591,6 +4596,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         method: "tcp",
         hopIndex: 0,
         hopCount: 1,
+        probeKey: `forward-group:${Number(probe.groupId)}:host:${Number(host.id)}:china:${Number(probe.memberId)}:${String(probe.targetIp).toLowerCase()}:${Number(probe.targetPort) || 0}`,
+        topologyKey: `forward-group:${Number(probe.groupId)}:china:${Number(probe.memberId)}`,
       });
     }
     const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
@@ -4995,6 +5002,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           : AGENT_MIMIC_RUNTIME_RECONCILE_MS,
       )) {
         actions.push(mimicRuntimeSyncAction);
+      }
+    }
+
+    if (hasReportedRuntimeState) {
+      const recoverableRules = (rules as any[]).filter((rule: any) => (
+        rule
+        && rule.isEnabled
+        && !rule.pendingDelete
+        && !rule.isRunning
+        && !rule.tunnelId
+        && Number(rule.sourcePort || 0) > 0
+        && localRuleMatches(rule, String(rule.forwardType || ""), Number(rule.sourcePort))
+      ));
+      if (recoverableRules.length > 0) {
+        await mapWithConcurrency(recoverableRules, 16, async (rule: any) => {
+          await db.updateRuleRunningStatus(Number(rule.id), true);
+          rule.isRunning = true;
+        });
+        appendPanelLog(
+          "info",
+          `[AgentReconcile] host=${host.id} recovered running state from local listeners rules=${recoverableRules.map((rule: any) => Number(rule.id)).join(",")}`,
+        );
       }
     }
 

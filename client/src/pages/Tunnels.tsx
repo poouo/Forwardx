@@ -55,6 +55,7 @@ import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } 
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -682,7 +683,14 @@ function renderTunnelGlobeHostTooltip(point: TunnelGlobeHostPoint) {
   `;
 }
 
-function buildTunnelGlobeDataKey(tunnels: any[], chainGroups: any[], hosts: any[], isTunnelSupported: (tunnel: any) => boolean) {
+function buildTunnelGlobeDataKey(
+  tunnels: any[],
+  chainGroups: any[],
+  hosts: any[],
+  isTunnelSupported: (tunnel: any) => boolean,
+  tunnelAvailabilityById: Map<number, LinkAvailabilityResult>,
+  groupAvailabilityById: Map<number, LinkAvailabilityResult>,
+) {
   const hostParts = (hosts || [])
     .map((host: any) => [
       Number(host?.id || 0),
@@ -701,7 +709,7 @@ function buildTunnelGlobeDataKey(tunnels: any[], chainGroups: any[], hosts: any[
       tunnel?.name || "",
       tunnel?.mode || "",
       Number(!!isTunnelSupported(tunnel)),
-      Number(!!tunnel?.isRunning),
+      tunnelAvailabilityById.get(Number(tunnel?.id || 0))?.status || "",
       Number(!!tunnel?.isEnabled),
       getTunnelHopIds(tunnel).join(">"),
     ].join(":"))
@@ -710,6 +718,7 @@ function buildTunnelGlobeDataKey(tunnels: any[], chainGroups: any[], hosts: any[
     .map((group: any) => [
       Number(group?.id || 0),
       group?.name || "",
+      groupAvailabilityById.get(Number(group?.id || 0))?.status || "",
       Number(!!group?.isEnabled),
       [...(group?.members || [])]
         .sort((a: any, b: any) => Number(a?.priority || 0) - Number(b?.priority || 0))
@@ -861,6 +870,8 @@ function TunnelWorldGlobe({
   chainGroups,
   hosts,
   isTunnelSupported,
+  tunnelAvailabilityById,
+  groupAvailabilityById,
   onEditTunnel,
   onEditChain,
 }: {
@@ -868,6 +879,8 @@ function TunnelWorldGlobe({
   chainGroups: any[];
   hosts: any[];
   isTunnelSupported: (tunnel: any) => boolean;
+  tunnelAvailabilityById: Map<number, LinkAvailabilityResult>;
+  groupAvailabilityById: Map<number, LinkAvailabilityResult>;
   onEditTunnel: (tunnel: any) => void;
   onEditChain: (group: any) => void;
 }) {
@@ -879,9 +892,22 @@ function TunnelWorldGlobe({
   const [hoveredPoint, setHoveredPoint] = useState<TunnelGlobeHostPoint | null>(null);
   const [countries, setCountries] = useState<TunnelGlobeCountryFeature[]>([]);
   const globeDataKey = useMemo(
-    () => buildTunnelGlobeDataKey(tunnels, chainGroups, hosts, isTunnelSupported),
-    [chainGroups, hosts, isTunnelSupported, tunnels]
+    () => buildTunnelGlobeDataKey(tunnels, chainGroups, hosts, isTunnelSupported, tunnelAvailabilityById, groupAvailabilityById),
+    [chainGroups, groupAvailabilityById, hosts, isTunnelSupported, tunnelAvailabilityById, tunnels]
   );
+
+  const globeAvailabilityStyle = (state: LinkAvailabilityResult | undefined, enabled: boolean) => {
+    if (!enabled || state?.status === "disabled") {
+      return { statusText: "已停用", color: "#94a3b8", trackColor: "#475569", glowColor: "rgba(148,163,184,.6)" };
+    }
+    if (state?.status === "available") {
+      return { statusText: "可用", color: "#4ade80", trackColor: "#15803d", glowColor: "rgba(74,222,128,.85)" };
+    }
+    if (state?.status === "degraded" || state?.status === "pending") {
+      return { statusText: state.status === "degraded" ? "部分可用" : "检测中", color: "#fbbf24", trackColor: "#92400e", glowColor: "rgba(251,191,36,.78)" };
+    }
+    return { statusText: "不可用", color: "#fb7185", trackColor: "#9f1239", glowColor: "rgba(251,113,133,.76)" };
+  };
 
   const globeData = useMemo(() => {
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
@@ -905,8 +931,8 @@ function TunnelWorldGlobe({
         return;
       }
       const supported = isTunnelSupported(tunnel);
-      const active = supported && !!tunnel.isRunning;
       const enabled = supported && !!tunnel.isEnabled;
+      const style = globeAvailabilityStyle(tunnelAvailabilityById.get(Number(tunnel.id)), enabled);
       links.push({
         id: `tunnel:${tunnel.id}`,
         kind: "tunnel",
@@ -914,11 +940,11 @@ function TunnelWorldGlobe({
         name: String(tunnel.name || `隧道 #${tunnel.id}`),
         routeText: getTunnelRouteText(tunnel, hosts),
         routeHosts,
-        statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
+        statusText: !supported ? "协议未启用" : style.statusText,
         latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
-        color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
-        trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
-        glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
+        color: style.color,
+        trackColor: style.trackColor,
+        glowColor: style.glowColor,
       });
     });
 
@@ -932,6 +958,7 @@ function TunnelWorldGlobe({
         return;
       }
       const enabled = !!group.isEnabled;
+      const style = globeAvailabilityStyle(groupAvailabilityById.get(Number(group.id)), enabled);
       links.push({
         id: `chain:${group.id}`,
         kind: "chain",
@@ -939,11 +966,11 @@ function TunnelWorldGlobe({
         name: String(group.name || `转发链 #${group.id}`),
         routeText: routeHosts.map((host) => host.name).join(" -> "),
         routeHosts,
-        statusText: enabled ? "已启用" : "已停用",
+        statusText: style.statusText,
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
-        color: enabled ? "#14b8a6" : "#94a3b8",
-        trackColor: enabled ? "#0f766e" : "#475569",
-        glowColor: enabled ? "rgba(20,184,166,.78)" : "rgba(148,163,184,.6)",
+        color: style.color,
+        trackColor: style.trackColor,
+        glowColor: style.glowColor,
       });
     });
 
@@ -1012,18 +1039,18 @@ function TunnelWorldGlobe({
           return;
         }
         const supported = isTunnelSupported(tunnel);
-        const active = supported && !!tunnel.isRunning;
         const enabled = supported && !!tunnel.isEnabled;
+        const style = globeAvailabilityStyle(tunnelAvailabilityById.get(Number(tunnel.id)), enabled);
         map.set(link.id, {
           ...link,
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
           routeText: getTunnelRouteText(tunnel, hosts),
-          statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
+          statusText: !supported ? "协议未启用" : style.statusText,
           latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
-          color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
-          trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
-          glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
+          color: style.color,
+          trackColor: style.trackColor,
+          glowColor: style.glowColor,
         });
         return;
       }
@@ -1034,19 +1061,20 @@ function TunnelWorldGlobe({
         return;
       }
       const enabled = !!group.isEnabled;
+      const style = globeAvailabilityStyle(groupAvailabilityById.get(Number(group.id)), enabled);
       map.set(link.id, {
         ...link,
         item: group,
         name: String(group.name || `转发链 #${group.id}`),
-        statusText: enabled ? "已启用" : "已停用",
+        statusText: style.statusText,
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
-        color: enabled ? "#14b8a6" : "#94a3b8",
-        trackColor: enabled ? "#0f766e" : "#475569",
-        glowColor: enabled ? "rgba(20,184,166,.78)" : "rgba(148,163,184,.6)",
+        color: style.color,
+        trackColor: style.trackColor,
+        glowColor: style.glowColor,
       });
     });
     return map;
-  }, [chainGroups, globeData.links, isTunnelSupported, tunnels]);
+  }, [chainGroups, globeData.links, groupAvailabilityById, isTunnelSupported, tunnelAvailabilityById, tunnels]);
   const latestGlobeLink = (link: TunnelGlobeLink) => latestLinkById.get(link.id) || link;
 
   useEffect(() => {
@@ -2176,21 +2204,37 @@ function TunnelsContent() {
       ? "forwardx"
       : (enabledGostTunnelModes[0] || enabledNginxTunnelModes[0] || "forwardx");
   };
-  const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
   const portGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "port"), [forwardGroups]);
   const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "chain"), [forwardGroups]);
   const failoverGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "failover"), [forwardGroups]);
   const entryGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "entry"), [forwardGroups]);
   const exitGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "exit"), [forwardGroups]);
-  const activePortCount = useMemo(() => portGroups.filter((group: any) => group.isEnabled).length, [portGroups]);
-  const activeChainCount = useMemo(() => chainGroups.filter((group: any) => group.isEnabled).length, [chainGroups]);
-  const activeFailoverGroupCount = useMemo(() => failoverGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [failoverGroups]);
-  const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [entryGroups]);
   const usableEntryGroups = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [entryGroups]);
-  const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0).length, [exitGroups]);
   const usableExitGroups = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0), [exitGroups]);
   const entryGroupById = useMemo(() => new Map<number, any>(entryGroups.map((group: any) => [Number(group.id), group])), [entryGroups]);
   const exitGroupById = useMemo(() => new Map<number, any>(exitGroups.map((group: any) => [Number(group.id), group])), [exitGroups]);
+  const linkAvailabilityIndex = useMemo(() => buildLinkAvailabilityIndex({
+    hosts,
+    tunnels,
+    groups: forwardGroups,
+    isTunnelSupported: (tunnel: any) => {
+      const mode = String(tunnel?.mode || "").toLowerCase();
+      const key = mode === "nginx_tls" ? "nginx_stream" : mode;
+      return !key || forwardProtocolSettings[key as keyof typeof forwardProtocolSettings] !== false;
+    },
+  }), [forwardGroups, forwardProtocolSettings, hosts, tunnels]);
+  const tunnelAvailabilityById = linkAvailabilityIndex.tunnelAvailabilityById;
+  const groupAvailabilityById = linkAvailabilityIndex.groupAvailabilityById;
+  const isAvailableState = (state: LinkAvailabilityResult | undefined) => !!state?.available;
+  const activeCount = useMemo(
+    () => (tunnels || []).filter((tunnel: any) => isAvailableState(tunnelAvailabilityById.get(Number(tunnel.id)))).length,
+    [tunnelAvailabilityById, tunnels],
+  );
+  const activePortCount = useMemo(() => portGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [groupAvailabilityById, portGroups]);
+  const activeChainCount = useMemo(() => chainGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [chainGroups, groupAvailabilityById]);
+  const activeFailoverGroupCount = useMemo(() => failoverGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [failoverGroups, groupAvailabilityById]);
+  const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [entryGroups, groupAvailabilityById]);
+  const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [exitGroups, groupAvailabilityById]);
   const entryMembersForGroup = (groupId: number | null | undefined) => {
     const group = groupId ? entryGroupById.get(Number(groupId)) : null;
     return enabledHostGroupMembers(group);
@@ -2368,10 +2412,12 @@ function TunnelsContent() {
     [editingId, tunnels]
   );
   const renderTunnelStatusDot = (tunnel: any, supported = true) => {
-    if (!supported) return <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
-    if (tunnel.isRunning) return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
-    if (tunnel.isEnabled) return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
-    return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+    if (!supported) return <span title="当前转发协议未启用" className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
+    const state = tunnelAvailabilityById.get(Number(tunnel?.id || 0));
+    if (state?.status === "available") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+    if (state?.status === "degraded" || state?.status === "pending") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+    if (state?.status === "unavailable") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
+    return <span title={state?.message || "隧道已停用"} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
@@ -3283,16 +3329,16 @@ function TunnelsContent() {
           ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredExitGroups.length > 0 ? "list" : "empty"}`
           : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
-    ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-primary" }
+    ? { value: `${activeChainCount} / ${chainGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
     : activeSection === "ports"
-      ? { value: `${activePortCount} / ${portGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 启用", iconClass: "text-primary" }
+      ? { value: `${activePortCount} / ${portGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
       : activeSection === "groups"
-        ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-primary" }
+        ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
         : activeSection === "entries"
-          ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
+          ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 可用", iconClass: "text-emerald-500" }
           : activeSection === "exits"
             ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
-            : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
+            : { value: `${activeCount} / ${tunnels?.length ?? 0} 可用`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 可用", iconClass: "text-chart-2" };
   const linkSearchStats = activeSection === "ports"
     ? { filtered: filteredPortGroups.length, total: portGroups.length, unit: "条" }
     : activeSection === "chains"
@@ -3521,6 +3567,8 @@ function TunnelsContent() {
             chainGroups={filteredChainGroups}
             hosts={hosts || []}
             isTunnelSupported={isTunnelSupported}
+            tunnelAvailabilityById={tunnelAvailabilityById}
+            groupAvailabilityById={groupAvailabilityById}
             onEditTunnel={openEdit}
             onEditChain={handleGlobeChainEdit}
           />
@@ -3903,6 +3951,8 @@ function TunnelsContent() {
                   chainGroups={filteredChainGroups}
                   hosts={hosts || []}
                   isTunnelSupported={isTunnelSupported}
+                  tunnelAvailabilityById={tunnelAvailabilityById}
+                  groupAvailabilityById={groupAvailabilityById}
                   onEditTunnel={openEdit}
                   onEditChain={handleGlobeChainEdit}
                 />

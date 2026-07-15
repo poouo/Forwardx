@@ -1,5 +1,6 @@
 type AutoHopResult = {
   hopCount: number;
+  generation: string;
   latencyMs: number | null;
   isTimeout: boolean;
   recordedAt: number;
@@ -15,6 +16,7 @@ export function recordForwardGroupAutoHopLatency(input: {
   hopCount: number;
   latencyMs: number | null;
   isTimeout: boolean;
+  generation?: string | null;
 }): null | {
   success: boolean;
   latencyMs: number | null;
@@ -25,6 +27,7 @@ export function recordForwardGroupAutoHopLatency(input: {
   if (!Number.isFinite(groupId) || groupId <= 0) return null;
   if (!Number.isFinite(hopIndex) || hopIndex < 0) return null;
   if (!Number.isFinite(hopCount) || hopCount <= 0 || hopIndex >= hopCount) return null;
+  const generation = String(input.generation || `legacy:${hopCount}`).slice(0, 1024);
 
   const now = Date.now();
   let hops = byGroup.get(groupId);
@@ -33,12 +36,13 @@ export function recordForwardGroupAutoHopLatency(input: {
     byGroup.set(groupId, hops);
   }
   for (const [idx, result] of hops.entries()) {
-    if (result.hopCount !== hopCount || now - result.recordedAt > AUTO_HOP_TTL_MS) {
+    if (result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) {
       hops.delete(idx);
     }
   }
   hops.set(hopIndex, {
     hopCount,
+    generation,
     latencyMs: input.latencyMs,
     isTimeout: !!input.isTimeout,
     recordedAt: now,
@@ -48,7 +52,7 @@ export function recordForwardGroupAutoHopLatency(input: {
   const results: AutoHopResult[] = [];
   for (let i = 0; i < hopCount; i++) {
     const result = hops.get(i);
-    if (!result || result.hopCount !== hopCount || now - result.recordedAt > AUTO_HOP_TTL_MS) return null;
+    if (!result || result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) return null;
     results.push(result);
   }
 
