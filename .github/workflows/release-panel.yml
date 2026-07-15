@@ -3,8 +3,6 @@ name: Release Panel
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
       - "v*.*.*"
 
@@ -13,7 +11,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-panel-${{ github.ref_name }}
+  group: forwardx-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:

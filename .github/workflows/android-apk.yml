@@ -12,8 +12,6 @@ on:
           - release
           - debug
   push:
-    branches:
-      - main
     tags:
       - "v*.*.*"
 
@@ -21,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-apk-${{ github.ref_name }}
+  group: forwardx-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:

@@ -3,8 +3,6 @@ name: Release Agent
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
       - "v*.*.*"
 
@@ -12,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-agent-${{ github.ref_name }}
+  group: forwardx-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -86,7 +84,11 @@ jobs:
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
           else
-            gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --notes-file RELEASE_NOTES.md
+            if ! gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --notes-file RELEASE_NOTES.md; then
+              echo "Release creation raced with another publisher; checking the existing release..." >&2
+              gh release view "$RELEASE_VERSION" >/dev/null
+              gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+            fi
           fi
 
           upload_with_retry() {
