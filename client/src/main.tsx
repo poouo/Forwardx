@@ -38,6 +38,7 @@ const queryClient = new QueryClient({
         return failureCount < 1;
       },
       staleTime: 5_000,
+      gcTime: 30 * 60_000,
     },
   },
 });

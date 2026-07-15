@@ -20,6 +20,7 @@ func resetActionStatusReportsForTest() {
 	actionStatusReportsMu.Lock()
 	actionStatusReports = map[string]actionStatusReport{}
 	actionStatusReportOrder = nil
+	actionStatusLatestIssuedAt = map[string]int64{}
 	actionStatusReportsMu.Unlock()
 	for {
 		select {
@@ -42,6 +43,37 @@ func TestActionStatusReportsCoalesceLatestRuleState(t *testing.T) {
 	}
 	if !reports[0].payload.IsRunning || reports[0].payload.Message != "" {
 		t.Fatalf("latest rule status was not retained: %+v", reports[0].payload)
+	}
+}
+
+func TestActionStatusReportsRejectOlderCompletion(t *testing.T) {
+	resetActionStatusReportsForTest()
+	newer := action{StatusType: "rule", RuleID: 42, SourcePort: 10042, ForwardType: "nginx", IssuedAt: 200}
+	older := action{StatusType: "rule", RuleID: 42, SourcePort: 10042, ForwardType: "gost", IssuedAt: 100}
+	enqueueActionStatusReport(Config{}, newer, true, "")
+	enqueueActionStatusReport(Config{}, older, false, "old failure")
+
+	reports := takeActionStatusReports(actionStatusBatchSize)
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(reports))
+	}
+	if !reports[0].payload.IsRunning || reports[0].payload.IssuedAt != newer.IssuedAt {
+		t.Fatalf("older completion replaced the newer state: %+v", reports[0].payload)
+	}
+}
+
+func TestActionStatusRestoreRejectsOlderInFlightReport(t *testing.T) {
+	resetActionStatusReportsForTest()
+	older := action{StatusType: "rule", RuleID: 7, SourcePort: 10007, ForwardType: "gost", IssuedAt: 100}
+	newer := action{StatusType: "rule", RuleID: 7, SourcePort: 10007, ForwardType: "gost", IssuedAt: 200}
+	enqueueActionStatusReport(Config{}, older, false, "old failure")
+	inFlight := takeActionStatusReports(1)
+	enqueueActionStatusReport(Config{}, newer, true, "")
+	_ = takeActionStatusReports(1)
+	restoreActionStatusReports(inFlight)
+
+	if reports := takeActionStatusReports(1); len(reports) != 0 {
+		t.Fatalf("older in-flight report was restored after a newer state: %+v", reports)
 	}
 }
 

@@ -740,7 +740,7 @@ export default function Plugins() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
+  const { data: publicInfo, isLoading: publicInfoLoading } = trpc.system.publicInfo.useQuery(undefined, {
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -753,6 +753,8 @@ export default function Plugins() {
   const { data: plugins = [], isLoading: pluginsLoading } = trpc.plugins.list.useQuery(undefined, {
     enabled: publicInfo?.pluginsEnabled === true,
   });
+  const pluginListLoading = publicInfoLoading || pluginsLoading;
+  const pluginStoreLoading = publicInfoLoading || storeLoading;
   const [selectedPluginId, setSelectedPluginId] = useState("");
   const [activeSection, setActiveSection] = useState<PluginSection>("usage");
   const [storeRepositoryList, setStoreRepositoryList] = useState("");
@@ -1056,11 +1058,11 @@ export default function Plugins() {
   }, [plugins, selectedPluginId]);
 
   useEffect(() => {
-    if (activeSection !== "manage" || pluginsLoading || plugins.length === 0) return;
+    if (activeSection !== "manage" || pluginListLoading || plugins.length === 0) return;
     if (automaticUpdateCheckStartedRef.current) return;
     automaticUpdateCheckStartedRef.current = true;
     checkAllUpdatesMutation.mutate();
-  }, [activeSection, plugins.length, pluginsLoading]);
+  }, [activeSection, pluginListLoading, plugins.length]);
 
   useEffect(() => {
     if (!selectedPlugin) {
@@ -1467,12 +1469,13 @@ export default function Plugins() {
                 </p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center justify-between gap-3 sm:justify-end">
-              <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
+            <div className="flex shrink-0 items-center justify-end">
               <Switch
                 checked={usageDraft.enabled}
                 disabled={saveUsageMutation.isPending}
                 onCheckedChange={handleAllHostsUsageToggle}
+                title={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
+                aria-label={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
               />
             </div>
           </div>
@@ -1522,13 +1525,13 @@ export default function Plugins() {
                 </p>
               )}
             </div>
-            <div className="flex items-center gap-3 rounded-full border border-border/40 bg-background/70 px-3 py-2">
-              <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
-              <Switch
-                checked={usageDraft.enabled}
-                onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
-              />
-            </div>
+            <Switch
+              className="shrink-0"
+              checked={usageDraft.enabled}
+              onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
+              title={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
+              aria-label={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
+            />
           </div>
           {selectedPlugin.status !== "enabled" && (
             <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
@@ -1829,7 +1832,7 @@ export default function Plugins() {
     );
   };
 
-  if (publicInfo?.pluginsEnabled !== true) {
+  if (publicInfo && publicInfo.pluginsEnabled !== true) {
     return (
       <DashboardLayout>
         <Card>
@@ -1874,7 +1877,7 @@ export default function Plugins() {
                 <CardDescription>选择插件后在右侧使用它提供的功能。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                {pluginsLoading ? (
+                {pluginListLoading ? (
                   <DataSectionLoading label="正在加载插件" minHeight="min-h-[160px]" />
                 ) : plugins.length ? (
                   plugins.map((plugin: PluginRow) => {
@@ -1955,7 +1958,7 @@ export default function Plugins() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-3">
-              {storeLoading ? (
+              {pluginStoreLoading ? (
                 <DataSectionLoading label="正在加载商店" minHeight="min-h-[120px]" />
               ) : storeItems.length ? (
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -2246,7 +2249,7 @@ export default function Plugins() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-3">
-              {pluginsLoading ? (
+              {pluginListLoading ? (
                 <DataSectionLoading label="正在加载插件" minHeight="min-h-[160px]" />
               ) : plugins.length ? (
                 plugins.map((plugin: PluginRow) => {

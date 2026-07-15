@@ -1210,6 +1210,24 @@ type ForwardGroupLatencyChildRow = {
   memberId: number;
 };
 
+function selectPreferredForwardGroupLatencyChild(
+  childRows: ForwardGroupLatencyChildRow[],
+  preferredMemberIds: number[],
+  fallbackHasData?: (row: ForwardGroupLatencyChildRow) => boolean,
+) {
+  for (const memberId of preferredMemberIds) {
+    const normalizedMemberId = Number(memberId || 0);
+    if (normalizedMemberId <= 0) continue;
+    const matched = childRows.find((row) => Number(row.memberId) === normalizedMemberId);
+    if (matched) return matched;
+  }
+  if (fallbackHasData) {
+    const matched = childRows.find(fallbackHasData);
+    if (matched) return matched;
+  }
+  return childRows[0];
+}
+
 async function getFirstEnabledMemberByGroup(groupIds: number[]) {
   const db = await getDb();
   const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
@@ -1726,10 +1744,11 @@ export async function getTrafficSummaryByRule(opts: {
       Number(activeMemberByGroup.get(groupId) || 0),
       Number(firstMemberByGroup.get(groupId)?.id || 0),
     ].filter((id) => Number.isInteger(id) && id > 0)));
-    let selectedChild = preferredMemberIds
-      .map((memberId) => childRows.find((row) => Number(row.memberId) === Number(memberId)))
-      .find(Boolean);
-    if (!selectedChild) selectedChild = childRows.find((row) => latestByRawRule.has(row.id)) || childRows[0];
+    const selectedChild = selectPreferredForwardGroupLatencyChild(
+      childRows,
+      preferredMemberIds,
+      (row) => latestByRawRule.has(row.id),
+    );
     const latest = selectedChild ? latestByRawRule.get(selectedChild.id) : null;
     if (latest) {
       latestByRule.set(parentId, {
@@ -2200,6 +2219,7 @@ export async function getTcpingSeriesByRule(
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000); // 24h * 120 per hour max
   const q = quoteIdentifier;
+  let seriesRuleId = ruleId;
   const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
   if (chainGroupId) {
     const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, limit });
@@ -2210,6 +2230,7 @@ export async function getTcpingSeriesByRule(
       id: forwardRules.id,
       groupId: forwardRules.forwardGroupId,
       parentId: forwardRules.forwardGroupRuleId,
+      memberId: forwardRules.forwardGroupMemberId,
     })
     .from(forwardRules)
     .where(and(eq(forwardRules.forwardGroupRuleId, ruleId), eq(forwardRules.pendingDelete, false)))
@@ -2253,6 +2274,26 @@ export async function getTcpingSeriesByRule(
           recordedAt: bucket.recordedAt,
         }));
     }
+    const nonChainChildren = (childRows as any[])
+      .map((row: any) => ({
+        id: Number(row.id || 0),
+        groupId: Number(row.groupId || 0),
+        memberId: Number(row.memberId || 0),
+      }))
+      .filter((row: ForwardGroupLatencyChildRow) => row.id > 0 && groupModeById.get(row.groupId) !== "chain");
+    if (nonChainChildren.length > 0) {
+      const groupId = Number(nonChainChildren[0].groupId || 0);
+      const groupChildren = nonChainChildren.filter((row: ForwardGroupLatencyChildRow) => row.groupId === groupId);
+      const [activeMemberByGroup, firstMemberByGroup] = await Promise.all([
+        getActiveMemberByGroup([groupId]),
+        getFirstEnabledMemberByGroup([groupId]),
+      ]);
+      const selectedChild = selectPreferredForwardGroupLatencyChild(groupChildren, [
+        Number(activeMemberByGroup.get(groupId) || 0),
+        Number(firstMemberByGroup.get(groupId)?.id || 0),
+      ]);
+      if (selectedChild) seriesRuleId = selectedChild.id;
+    }
   }
   const page = limitOffset(limit);
   const rows = await queryRaw<any>(
@@ -2261,7 +2302,7 @@ export async function getTcpingSeriesByRule(
       WHERE ${q("ruleId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
       ${page.sql}`,
-    [ruleId, epochSeconds(since), ...page.params],
+    [seriesRuleId, epochSeconds(since), ...page.params],
   );
   return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),

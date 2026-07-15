@@ -69,7 +69,9 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  ArrowDown,
   ArrowDownToLine,
+  ArrowUp,
   ArrowUpFromLine,
   ArrowRightLeft,
   CalendarDays,
@@ -169,16 +171,6 @@ function parseCustomPortsInput(value: string) {
     invalid,
     normalized: normalizedPorts.join(","),
   };
-}
-
-function formatHostPortPolicy(host: any) {
-  const parts: string[] = [];
-  if ((host as any).portRangeStart != null && (host as any).portRangeEnd != null) {
-    parts.push(`${(host as any).portRangeStart}-${(host as any).portRangeEnd}`);
-  }
-  const custom = parseCustomPortsInput(String((host as any).portAllowlist || "")).normalized;
-  if (custom) parts.push(custom);
-  return parts.length > 0 ? parts.join(" + ") : "不限制";
 }
 
 function usePageVisible() {
@@ -857,13 +849,15 @@ function HostListResourceRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="grid cursor-help grid-cols-[3rem_minmax(70px,1fr)_2.75rem] items-center gap-1.5 rounded-sm px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" tabIndex={0} aria-label={tooltip}>
-          <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{label}</span>
+        <div className="min-w-0 cursor-help rounded-sm px-1 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" tabIndex={0} aria-label={tooltip}>
+          <div className="flex min-w-0 items-center justify-between gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{label}</span>
+            </div>
+            <span className="shrink-0 text-right text-[11px] font-semibold tabular-nums text-foreground">{formatUsagePercent(value)}</span>
           </div>
-          <Progress value={progressValue} className={cn(progressClass, "min-w-[70px]")} />
-          <span className="text-right text-[11px] font-semibold tabular-nums text-foreground">{formatUsagePercent(value)}</span>
+          <Progress value={progressValue} className={cn(progressClass, "mt-1.5 w-full min-w-0")} />
         </div>
       </TooltipTrigger>
       <TooltipContent collisionPadding={12} className="max-w-[260px] whitespace-pre-line text-xs">
@@ -892,7 +886,7 @@ function HostListResourceBundle({
 }) {
   return (
     <TooltipProvider delayDuration={120}>
-      <div className="min-w-[204px] space-y-0.5">
+      <div className="grid min-w-[300px] grid-cols-3 gap-1.5">
         <HostListResourceRow
           icon={Cpu}
           label="CPU"
@@ -931,15 +925,14 @@ function HostListFlowPair({
   outTitle?: string;
 }) {
   return (
-    <div className="min-w-[104px] space-y-1 text-xs tabular-nums">
-      <div className="flex items-center gap-1.5 text-emerald-500" title={inTitle || inValue}>
-        <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 truncate font-medium">{inValue}</span>
-      </div>
-      <div className="flex items-center gap-1.5 text-primary" title={outTitle || outValue}>
-        <ArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 truncate font-medium">{outValue}</span>
-      </div>
+    <div
+      className="mx-auto grid w-[96px] max-w-full grid-cols-[12px_minmax(0,1fr)] items-center gap-x-1.5 gap-y-1 text-xs tabular-nums"
+      title={`${inTitle || inValue}\n${outTitle || outValue}`}
+    >
+      <ArrowDown className="h-3 w-3 text-emerald-500" />
+      <span className="min-w-0 truncate text-right font-medium text-emerald-500">{inValue}</span>
+      <ArrowUp className="h-3 w-3 text-muted-foreground" />
+      <span className="min-w-0 truncate text-right font-medium text-foreground">{outValue}</span>
     </div>
   );
 }
@@ -947,10 +940,13 @@ function HostListFlowPair({
 function HostListStatusBadge({ host }: { host: any }) {
   const online = !!host?.isOnline;
   return (
-    <div className="inline-flex min-w-[68px] items-center justify-center gap-2 whitespace-nowrap rounded-full border border-border/50 bg-background/50 px-2.5 py-1 text-xs font-medium">
-      <span className={`h-2 w-2 rounded-full ${online ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
+    <span
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] font-medium leading-none"
+      title={online ? "Agent 在线" : "Agent 离线"}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-destructive"}`} />
       <span className={online ? "text-emerald-500" : "text-destructive"}>{online ? "在线" : "离线"}</span>
-    </div>
+    </span>
   );
 }
 
@@ -2418,26 +2414,40 @@ function HostsContent() {
                 {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
               </AutoAnimateContainer>
             )}
-            <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
+            <Card className="host-table-shell hidden overflow-hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                <Table className="w-max min-w-[900px] table-auto">
+                <Table className="host-management-table w-full min-w-[1340px] table-fixed">
+                  <colgroup>
+                    <col className="w-[320px]" />
+                    <col className="w-[128px]" />
+                    {/* The center columns divide only the width left after the pinned columns. */}
+                    <col style={{ width: "calc(25% - 11px)" }} />
+                    <col style={{ width: "calc(25% - 207px)" }} />
+                    <col style={{ width: "calc(25% - 207px)" }} />
+                    <col style={{ width: "calc(25% - 207px)" }} />
+                    <col className="w-[184px]" />
+                  </colgroup>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-[44px]" />
-                      <TableHead className="w-[128px] whitespace-nowrap text-center">状态</TableHead>
-                      <TableHead className="w-[280px] min-w-[280px]">设备名称</TableHead>
-                      <TableHead className="w-[218px] whitespace-nowrap">
+                      <TableHead className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-30 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card">
+                        设备名称
+                      </TableHead>
+                      <TableHead className="w-[128px] whitespace-nowrap text-center">运行信息</TableHead>
+                      <TableHead className="min-w-[204px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5" />{"\u8d44\u6e90"}</span>
                       </TableHead>
-                      <TableHead className="w-[116px] whitespace-nowrap">累计流量</TableHead>
-                      <TableHead className="w-[116px] whitespace-nowrap">
+                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
+                        <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="h-3.5 w-3.5" />累计流量</span>
+                      </TableHead>
+                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
                         <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />实时网络</span>
                       </TableHead>
-                      <TableHead className="w-[116px] whitespace-nowrap">
+                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
                         <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{"\u7cfb\u7edf\u7d2f\u8ba1"}</span>
                       </TableHead>
-                      <TableHead className="w-[168px] text-right">操作</TableHead>
+                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[184px] min-w-[184px] max-w-[184px] border-l border-border/60 bg-card px-2 text-right">
+                        操作
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
@@ -2461,19 +2471,51 @@ function HostsContent() {
                       <TableRow
                         {...itemProps}
                         className={cn(
-                          "group/sortable align-middle hover:bg-muted/25",
+                          "host-table-row align-middle hover:bg-transparent",
                           isDragging && "opacity-55 ring-1 ring-primary/35",
                           isDropTarget && "ring-1 ring-primary/45",
                         )}
                       >
-                        <TableCell className="w-[44px] px-2">
-                          {hostSortingEnabled && (
-                            <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
-                          )}
+                        <TableCell className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-20 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card px-3 py-2.5">
+                          <div className="flex min-w-0 items-center gap-2">
+                            {hostSortingEnabled && (
+                              <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="shrink-0" />
+                            )}
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/20 text-muted-foreground">
+                              <Server className="h-3.5 w-3.5" />
+                            </span>
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <HostListStatusBadge host={host} />
+                                <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name}</span>
+                              </div>
+                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
+                                {host.agentVersion && (
+                                  <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
+                                    v{host.agentVersion}
+                                  </span>
+                                )}
+                                {agentNeedsUpdate && (
+                                  <Badge variant="outline" className="h-4 shrink-0 border-amber-500/30 px-1 py-0 text-[9px] leading-none text-amber-500">
+                                    新版本
+                                  </Badge>
+                                )}
+                                {host.agentUpgradeRequested && (
+                                  <Badge variant="outline" className={`h-4 shrink-0 px-1 py-0 text-[9px] leading-none ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
+                                    {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                                  </Badge>
+                                )}
+                                <HostRegionBadge host={host} compact />
+                              </div>
+                              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={primaryAddressText}>
+                                <RadioTower className="h-3 w-3 shrink-0" />
+                                <span className="min-w-0 truncate font-mono">{primaryAddressText}</span>
+                              </div>
+                            </div>
+                          </div>
                         </TableCell>
-                        <TableCell className="w-[128px] whitespace-nowrap text-center">
+                        <TableCell className="w-[128px] whitespace-nowrap py-2.5 text-center">
                           <div className="flex flex-col items-center justify-center gap-1.5 text-center">
-                            <HostListStatusBadge host={host} />
                             <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium tabular-nums text-muted-foreground" title={uptimeTitle}>
                               <Clock className="h-3.5 w-3.5 shrink-0" />
                               <span>{uptimeText}</span>
@@ -2484,44 +2526,7 @@ function HostsContent() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell className="w-[280px] min-w-[280px]">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground shadow-sm">
-                              <Server className="h-4 w-4" />
-                            </span>
-                            <div className="min-w-0 space-y-0.5">
-                              <div className="flex min-w-0 items-center gap-2">
-                                <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name}</span>
-                                {host.agentVersion && (
-                                  <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
-                                    v{host.agentVersion}
-                                  </span>
-                                )}
-                                {agentNeedsUpdate && (
-                                  <Badge variant="outline" className="shrink-0 border-amber-500/30 text-[10px] text-amber-500">
-                                    新版本
-                                  </Badge>
-                                )}
-                                {host.agentUpgradeRequested && (
-                                  <Badge variant="outline" className={`shrink-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
-                                    {agentUpgradeTimedOut ? "升级失败" : "升级中"}
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                                <HostRegionBadge host={host} compact />
-                                <span className="rounded border border-border/40 bg-muted/25 px-1.5 py-0.5 font-mono" title={`端口策略：${formatHostPortPolicy(host)}`}>
-                                  {formatHostPortPolicy(host)}
-                                </span>
-                              </div>
-                              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={primaryAddressText}>
-                                <RadioTower className="h-3 w-3 shrink-0" />
-                                <span className="min-w-0 truncate font-mono">{primaryAddressText}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
+                        <TableCell className="px-3 py-2.5">
                           <HostListResourceBundle
                             cpuValue={latestMetric?.cpuUsage}
                             cpuDetail={host.cpuInfo ? String(host.cpuInfo) : undefined}
@@ -2532,7 +2537,7 @@ function HostsContent() {
                             isOnline={!!host.isOnline}
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="px-3 py-2.5">
                           <HostListFlowPair
                             inValue={formatBytes(Number(traffic?.bytesIn || 0))}
                             outValue={formatBytes(Number(traffic?.bytesOut || 0))}
@@ -2540,7 +2545,7 @@ function HostsContent() {
                             outTitle={`累计出向：${formatBytes(Number(traffic?.bytesOut || 0))}`}
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="px-3 py-2.5">
                           <HostListFlowPair
                             inValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedIn)}
                             outValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedOut)}
@@ -2548,7 +2553,7 @@ function HostsContent() {
                             outTitle="实时出向"
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="px-3 py-2.5">
                           <HostListFlowPair
                             inValue={formatOptionalBytes(latestMetric?.networkIn)}
                             outValue={formatOptionalBytes(latestMetric?.networkOut)}
@@ -2556,8 +2561,8 @@ function HostsContent() {
                             outTitle={systemNetworkTotalTitle(latestMetric)}
                           />
                         </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
+                        <TableCell className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-20 w-[184px] min-w-[184px] max-w-[184px] border-l border-border/60 bg-card px-2 py-2.5 text-right">
+                          <div className="flex items-center justify-end gap-0.5">
                             <Button
                               variant="ghost"
                               size="icon"
@@ -2623,7 +2628,6 @@ function HostsContent() {
                   </TableBody>
                   </SortableReorderContext>
                 </Table>
-                </div>
               </CardContent>
             </Card>
           </>

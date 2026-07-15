@@ -46,12 +46,22 @@ export function getTunnelHopIds(tunnel: any | null | undefined) {
   return [Number(tunnel?.entryHostId || 0), Number(tunnel?.exitHostId || 0)].filter((id) => id > 0);
 }
 
-export function getTunnelRouteText(tunnel: any | null | undefined, hosts: any[] | undefined) {
+export function getTunnelRouteText(
+  tunnel: any | null | undefined,
+  hosts: any[] | undefined,
+  exitGroupName?: string | null,
+) {
   const hopNames = getTunnelHopIds(tunnel)
     .map((hostId: number) => tunnelHopHostName(tunnel, hostId, hosts))
     .map((name: string) => String(name || "").trim())
     .filter(Boolean);
   if (hopNames.length === 0) return "-";
+  const normalizedExitGroupName = String(exitGroupName || "").trim();
+  if (normalizedExitGroupName) {
+    hopNames[hopNames.length - 1] = normalizedExitGroupName;
+    const exitNames = getTunnelExitNames(tunnel, hosts);
+    return `${hopNames.join(" -> ")}${exitNames.length > 0 ? `\uFF1B\u51FA\u53E3\uFF1A${exitNames.join(" / ")}` : ""}`;
+  }
   const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts)
     .filter((name) => !hopNames.includes(name));
   if (extraExitNames.length > 0) {

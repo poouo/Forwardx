@@ -1049,12 +1049,15 @@ function UsersContent() {
   const renderAccountEnabledControl = (u: any, compact = false) => {
     const enabled = u.accountEnabled !== false;
     const isSelf = u.id === currentUser?.id;
+    const title = isSelf
+      ? "不能停用当前登录账号"
+      : `${enabled ? "停用" : "启用"}账号 ${u.username || ""}`;
     return (
       <div
         className={
           compact
             ? "flex min-w-0 items-center justify-between gap-2 rounded-md border border-border/50 px-2 py-1.5"
-            : "flex min-w-[132px] items-center justify-end gap-2"
+            : "flex items-center justify-center"
         }
       >
         {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">账户</span>}
@@ -1063,17 +1066,9 @@ function UsersContent() {
           disabled={isSelf || accountEnabledPendingUserId === Number(u.id)}
           onCheckedChange={(checked) => updateAccountEnabledMutation.mutate({ userId: u.id, enabled: checked })}
           className="shrink-0"
+          title={title}
+          aria-label={title}
         />
-        <Badge
-          variant="outline"
-          className={
-            enabled
-              ? "h-5 w-fit shrink-0 whitespace-nowrap border-chart-2/30 px-2 py-0 text-[10px] text-chart-2"
-              : "h-5 w-fit shrink-0 whitespace-nowrap border-destructive/30 px-2 py-0 text-[10px] text-destructive"
-          }
-        >
-          {enabled ? (compact ? "启用" : "账户启用") : compact ? "禁用" : "账户禁用"}
-        </Badge>
       </div>
     );
   };

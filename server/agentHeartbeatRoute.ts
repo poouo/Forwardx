@@ -12,7 +12,7 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
-import { agentHeartbeatGate } from "./agentHeartbeatGate";
+import { agentHeartbeatGate, buildBusyAgentHeartbeatResponse } from "./agentHeartbeatGate";
 import { mapWithConcurrency } from "./asyncPool";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
@@ -67,6 +67,7 @@ import {
   isForwardXWireGuardV2,
   type ForwardXWireGuardNodePlan,
 } from "./forwardXWireGuard";
+import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -83,6 +84,7 @@ const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: 
 const agentRuntimeSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const fxpUdpTargetSignatureCache = new Map<string, string>();
+const agentRuntimeDriftLogCache = new Map<string, number>();
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
@@ -108,6 +110,7 @@ const MIMIC_CONFIG_DIR = "/etc/mimic";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const AGENT_DESIRED_STATE_VERSION = "2.2.134";
+const AGENT_STATE_SIGNATURE_VERSION = "2.2.137";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const AGENT_DESIRED_STATE_ACTIVE_RESEND_MS = 60 * 1000;
 const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
@@ -119,6 +122,7 @@ const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
 const AGENT_LEGACY_PLUGIN_SYNC_SETTLE_MS = 10 * 1000;
 const MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const SHARED_GOST_FORWARD_TYPES = new Set([
   "gost",
   "gost-tunnel",
@@ -136,6 +140,7 @@ const AGENT_STATE_SECTION_NAMES = [
   "guardRules",
   "dnsWatch",
 ] as const;
+const AGENT_STATE_SIGNATURE_SCHEMA = "v2";
 
 type AgentDnsWatch = {
   host: string;
@@ -220,7 +225,7 @@ function canonicalizeStateSection(value: any): any {
 function stableStateSignature(value: any) {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify(canonicalizeStateSection(value)))
+    .update(`${AGENT_STATE_SIGNATURE_SCHEMA}\n${JSON.stringify(canonicalizeStateSection(value))}`)
     .digest("hex");
 }
 
@@ -402,6 +407,20 @@ function shouldLogMimicRuntimePlan(hostId: number, signature: string) {
     return true;
   }
   return false;
+}
+
+function shouldLogAgentRuntimeDrift(hostId: number, ruleId: number) {
+  const key = `${hostId}:${ruleId}`;
+  const now = Date.now();
+  const last = agentRuntimeDriftLogCache.get(key) || 0;
+  if (now - last < AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS) return false;
+  agentRuntimeDriftLogCache.set(key, now);
+  if (agentRuntimeDriftLogCache.size > 5000) {
+    for (const [cachedKey, loggedAt] of agentRuntimeDriftLogCache) {
+      if (now - loggedAt > AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS * 2) agentRuntimeDriftLogCache.delete(cachedKey);
+    }
+  }
+  return true;
 }
 
 function shouldSendDesiredState(hostId: number, actions: any[], activeWorkActions: any[], now: number) {
@@ -854,6 +873,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime);
     const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
     const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
+    const supportsStateSignatures = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_STATE_SIGNATURE_VERSION);
     const supportsPluginTasks = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_PLUGIN_TASK_VERSION);
 
     await db.updateHostHeartbeat(host.id, {
@@ -915,26 +935,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     if (busyHeartbeat) {
       const panelUrl = await resolveAgentAdvertisedPanelUrl();
-      res.json({
-        success: true,
-        actions: [],
-        selfTests: [],
-        runningRules: [],
-        tunnelProbes: [],
-        forwardGroupProbes: [],
-        hostProbeServices: [],
-        guardRules: [],
-        dnsWatch: [],
-        lookingGlassTests: [],
-        iperf3Tasks: [],
-        pluginTasks: [],
-        agentUpgrade: null,
+      res.json(buildBusyAgentHeartbeatResponse({
         panelUrl,
-        forceTcping: false,
-        nextInterval: 5,
         requestLocalState: localRuntimeState.requestLocalState,
-        compactReports: true,
-      });
+      }));
       return;
     }
 
@@ -3583,6 +3587,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
+    const runtimeDriftedRuleIds: number[] = [];
     for (const rule of rules) {
       if ((rule as any)._skipRuntimeApply) continue;
       const ruleTunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
@@ -3684,6 +3689,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const shouldRepairLocalRule = rule.isEnabled
         && expectedRulePort > 0
         && !localRuleMatches(rule, expectedRuleForwardType, expectedRulePort);
+      if (shouldRepairLocalRule && rule.isRunning) {
+        runtimeDriftedRuleIds.push(Number(rule.id));
+        rule.isRunning = false;
+        if (shouldLogAgentRuntimeDrift(Number(host.id), Number(rule.id))) {
+          appendPanelLog(
+            "warn",
+            `[AgentRecovery] local listener missing; rule marked for reapply host=${host.id} name=${String(host.name || "-")} rule=${rule.id} port=${expectedRulePort} protocol=${String(rule.protocol || "-")} forwardType=${expectedRuleForwardType}`,
+          );
+        }
+      }
       if (rule.isEnabled && (!rule.isRunning || shouldRepairLocalRule || shouldRefreshTunnelEntryRule || shouldRefreshForwardXMultiHopRule || shouldRefreshGuardBackend)) {
         const cmds: string[] = [];
         if (useRuleGuard) {
@@ -4341,6 +4356,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     // 取走该主机的 pending 转发自测任务并标为 running
+    if (runtimeDriftedRuleIds.length > 0) await db.markForwardRulesNotRunning(runtimeDriftedRuleIds);
+
     for (const rule of tunnelExitRules) {
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
       const policy = tunnel ? await tunnelProtocolPolicy(tunnel) : emptyProtocolPolicy;
@@ -5085,6 +5102,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const sendDesiredState = supportsDesiredState
       && !deferActionsForLocalState
       && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt);
+    if (sendDesiredState) {
+      for (const action of orderedActions) {
+        agentStatusOrderGuard.expect(
+          agentStatusOrderingKey(Number(host.id), action),
+          action.issuedAt,
+          responseIssuedAt,
+        );
+      }
+    }
     const desiredState = sendDesiredState ? {
       version: 1,
       issuedAt: actionBatchIssuedAt,
@@ -5098,6 +5124,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       guardRules,
       dnsWatch: Array.from(dnsWatches.values()),
     }, agentStateSignatures);
+    const probeStateRefreshed = ["runningRules", "tunnelProbes", "forwardGroupProbes", "hostProbeServices"]
+      .some((name) => Object.prototype.hasOwnProperty.call(stateSections.payload, name));
     // 有 SSE 长连接时立即将 desiredState + runningRules 推送给 Agent，
     // 无需等待下一个心跳周期即可执行转发规则变更。
     // heartbeat response 里仍携带 desiredState 作为兜底（SSE 断开时的最终一致保证）。
@@ -5121,7 +5149,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       agentUpgrade,
       panelUrl,
       panelMigration,
-      forceTcping,
+      forceTcping: forceTcping || (supportsStateSignatures && probeStateRefreshed),
       nextInterval,
       requestLocalState: localRuntimeState.requestLocalState,
       compactReports: true,

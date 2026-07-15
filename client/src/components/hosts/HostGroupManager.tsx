@@ -107,16 +107,14 @@ function HostGroupEnabledSwitch({
 }) {
   const enabled = group.isEnabled !== false;
   return (
-    <label className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground">
-      <span className={enabled ? "font-medium text-chart-2" : "font-medium text-muted-foreground"}>{enabled ? "启用" : "停用"}</span>
-      <Switch
-        checked={enabled}
-        disabled={disabled}
-        onCheckedChange={(checked) => onToggle(group, checked)}
-        className="scale-75"
-        aria-label={`${enabled ? "停用" : "启用"}分组 ${group.name || ""}`}
-      />
-    </label>
+    <Switch
+      checked={enabled}
+      disabled={disabled}
+      onCheckedChange={(checked) => onToggle(group, checked)}
+      className="scale-75"
+      title={`${enabled ? "停用" : "启用"}主机分组 ${group.name || ""}`}
+      aria-label={`${enabled ? "停用" : "启用"}分组 ${group.name || ""}`}
+    />
   );
 }
 

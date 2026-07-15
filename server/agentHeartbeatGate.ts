@@ -36,4 +36,24 @@ export class AgentHeartbeatGate {
   }
 }
 
+export function buildBusyAgentHeartbeatResponse(input: {
+  panelUrl: string;
+  requestLocalState: boolean;
+}) {
+  return {
+    success: true,
+    actions: [],
+    selfTests: [],
+    lookingGlassTests: [],
+    iperf3Tasks: [],
+    pluginTasks: [],
+    agentUpgrade: null,
+    panelUrl: input.panelUrl,
+    forceTcping: false,
+    nextInterval: 5,
+    requestLocalState: input.requestLocalState,
+    compactReports: true,
+  };
+}
+
 export const agentHeartbeatGate = new AgentHeartbeatGate();

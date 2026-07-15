@@ -17,9 +17,12 @@ type actionStatusPayload struct {
 	TunnelID    int    `json:"tunnelId"`
 	StatusType  string `json:"statusType,omitempty"`
 	SourcePort  int    `json:"sourcePort,omitempty"`
+	TargetPort  int    `json:"targetPort,omitempty"`
 	IsRunning   bool   `json:"isRunning"`
 	Message     string `json:"message,omitempty"`
 	ForwardType string `json:"forwardType,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	IssuedAt    int64  `json:"issuedAt,omitempty"`
 }
 
 type actionStatusReport struct {
@@ -33,6 +36,7 @@ type queuedActionStatusReport = actionStatusReport
 var actionStatusReportsMu sync.Mutex
 var actionStatusReports = map[string]actionStatusReport{}
 var actionStatusReportOrder []string
+var actionStatusLatestIssuedAt = map[string]int64{}
 var actionStatusReporterOnce sync.Once
 var actionStatusReporterWake = make(chan struct{}, 1)
 
@@ -41,7 +45,10 @@ func actionStatusReportKey(payload actionStatusPayload) string {
 	if statusType == "" {
 		statusType = "rule"
 	}
-	return fmt.Sprintf("%s:%d:%d:%d:%s", statusType, payload.RuleID, payload.TunnelID, payload.SourcePort, strings.TrimSpace(payload.ForwardType))
+	if statusType == "runtime" {
+		return fmt.Sprintf("runtime:%s", strings.TrimSpace(payload.ForwardType))
+	}
+	return fmt.Sprintf("%s:%d:%d:%d", statusType, payload.RuleID, payload.TunnelID, payload.SourcePort)
 }
 
 func enqueueActionStatusReport(cfg Config, a action, running bool, message string) {
@@ -50,15 +57,26 @@ func enqueueActionStatusReport(cfg Config, a action, running bool, message strin
 		TunnelID:    a.TunnelID,
 		StatusType:  strings.TrimSpace(a.StatusType),
 		SourcePort:  a.SourcePort,
+		TargetPort:  a.TargetPort,
 		IsRunning:   running,
 		Message:     strings.TrimSpace(message),
 		ForwardType: strings.TrimSpace(a.ForwardType),
+		Protocol:    strings.TrimSpace(a.Protocol),
+		IssuedAt:    a.IssuedAt,
 	}
 	if payload.StatusType == "" {
 		payload.StatusType = "rule"
 	}
 	key := actionStatusReportKey(payload)
 	actionStatusReportsMu.Lock()
+	latestIssuedAt := actionStatusLatestIssuedAt[key]
+	if latestIssuedAt > 0 && (payload.IssuedAt <= 0 || payload.IssuedAt < latestIssuedAt) {
+		actionStatusReportsMu.Unlock()
+		return
+	}
+	if payload.IssuedAt > latestIssuedAt {
+		actionStatusLatestIssuedAt[key] = payload.IssuedAt
+	}
 	if _, exists := actionStatusReports[key]; !exists {
 		actionStatusReportOrder = append(actionStatusReportOrder, key)
 	}
@@ -122,6 +140,10 @@ func restoreActionStatusReports(reports []actionStatusReport) {
 	toRestore := make([]string, 0, len(reports))
 	for index := len(reports) - 1; index >= 0; index-- {
 		report := reports[index]
+		latestIssuedAt := actionStatusLatestIssuedAt[report.key]
+		if latestIssuedAt > 0 && (report.payload.IssuedAt <= 0 || report.payload.IssuedAt < latestIssuedAt) {
+			continue
+		}
 		if _, newerExists := actionStatusReports[report.key]; newerExists {
 			continue
 		}

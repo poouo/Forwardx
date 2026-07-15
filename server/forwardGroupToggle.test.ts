@@ -86,6 +86,13 @@ test("forward group and tunnel controlled toggles preserve independent restore c
       'SELECT "isEnabled", "disabledByGroup" FROM "tunnels" WHERE "id" = 30',
     ))[0];
 
+    const runtimeGroups = await forwardGroups.getForwardGroups(undefined, { includeRuntime: true });
+    const runtimeGroup = runtimeGroups.find((group) => Number(group.id) === 10);
+    assert.equal(runtimeGroup.runtimeStatus, "running");
+    assert.equal(runtimeGroup.runtimeExpectedRuleCount, 1);
+    assert.equal(runtimeGroup.runtimeRunningRuleCount, 1);
+    assert.equal(runtimeGroup.ruleRuntimeStatuses[0]?.templateRuleId, 100);
+
     await forwardGroups.setForwardGroupEnabled(10, false);
     assert.deepEqual(await ruleState(110), { isEnabled: 0, disabledByGroup: 1, disabledByTunnel: 0 });
 

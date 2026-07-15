@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.154"
+var Version = "2.2.155"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -384,23 +384,44 @@ func heartbeatStateSignaturePayload() map[string]string {
 func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
 	heartbeatStateMu.Lock()
 	defer heartbeatStateMu.Unlock()
+	hasStateSignature := func(name string) bool {
+		return strings.TrimSpace(resp.StateSignatures[name]) != ""
+	}
 	if resp.RunningRules != nil {
 		heartbeatStateCache.RunningRules = append([]runningRule(nil), resp.RunningRules...)
+		if !hasStateSignature("runningRules") {
+			delete(heartbeatStateSignatures, "runningRules")
+		}
 	}
 	if resp.TunnelProbes != nil {
 		heartbeatStateCache.TunnelProbes = append([]tunnelProbe(nil), resp.TunnelProbes...)
+		if !hasStateSignature("tunnelProbes") {
+			delete(heartbeatStateSignatures, "tunnelProbes")
+		}
 	}
 	if resp.ForwardGroupProbes != nil {
 		heartbeatStateCache.ForwardGroupProbes = append([]forwardGroupProbe(nil), resp.ForwardGroupProbes...)
+		if !hasStateSignature("forwardGroupProbes") {
+			delete(heartbeatStateSignatures, "forwardGroupProbes")
+		}
 	}
 	if resp.HostProbeServices != nil {
 		heartbeatStateCache.HostProbeServices = append([]hostProbeServiceProbe(nil), resp.HostProbeServices...)
+		if !hasStateSignature("hostProbeServices") {
+			delete(heartbeatStateSignatures, "hostProbeServices")
+		}
 	}
 	if resp.GuardRules != nil {
 		heartbeatStateCache.GuardRules = append([]guardRule(nil), resp.GuardRules...)
+		if !hasStateSignature("guardRules") {
+			delete(heartbeatStateSignatures, "guardRules")
+		}
 	}
 	if resp.DNSWatch != nil {
 		heartbeatStateCache.DNSWatch = append([]dnsWatchItem(nil), resp.DNSWatch...)
+		if !hasStateSignature("dnsWatch") {
+			delete(heartbeatStateSignatures, "dnsWatch")
+		}
 	}
 	if len(resp.StateSignatures) > 0 {
 		for key, value := range resp.StateSignatures {

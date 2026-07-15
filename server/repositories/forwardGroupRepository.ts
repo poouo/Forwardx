@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import {
   forwardGroupEvents,
   forwardGroupMembers,
@@ -47,6 +47,7 @@ import { notifyForwardGroupSwitch } from "../forwardGroupSwitchNotifier";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reserveAvailableHostPort, type HostPortReservation } from "../portReservations";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
+import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -502,7 +503,7 @@ function groupSwitchNotifyEnabled(group: any) {
   return !!group?.telegramSwitchNotifyEnabled;
 }
 
-export async function getForwardGroups(userId?: number) {
+export async function getForwardGroups(userId?: number, options: { includeRuntime?: boolean } = {}) {
   const db = await getDb();
   if (!db) return [];
   const groupRows = userId
@@ -510,15 +511,23 @@ export async function getForwardGroups(userId?: number) {
     : await db.select().from(forwardGroups).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
   if (groupRows.length === 0) return [];
   const ids = groupRows.map((g: any) => Number(g.id));
+  const relatedGroupIds = Array.from(new Set([
+    ...ids,
+    ...(options.includeRuntime
+      ? groupRows.map((group: any) => Number(group.entryGroupId || 0)).filter((id: number) => id > 0)
+      : []),
+  ]));
   const members = await db
     .select()
     .from(forwardGroupMembers)
-    .where(inArray(forwardGroupMembers.groupId, ids))
+    .where(inArray(forwardGroupMembers.groupId, relatedGroupIds))
     .orderBy(asc(forwardGroupMembers.priority));
   const templateRules = await db
     .select({
       id: forwardRules.id,
       forwardGroupId: forwardRules.forwardGroupId,
+      isEnabled: forwardRules.isEnabled,
+      pendingDelete: forwardRules.pendingDelete,
     })
     .from(forwardRules)
     .where(and(
@@ -526,6 +535,24 @@ export async function getForwardGroups(userId?: number) {
       eq(forwardRules.isForwardGroupTemplate, true),
       eq(forwardRules.pendingDelete, false),
     ));
+  const childRules = options.includeRuntime ? await db
+    .select({
+      id: forwardRules.id,
+      hostId: forwardRules.hostId,
+      forwardGroupId: forwardRules.forwardGroupId,
+      forwardGroupRuleId: forwardRules.forwardGroupRuleId,
+      forwardGroupMemberId: forwardRules.forwardGroupMemberId,
+      isEnabled: forwardRules.isEnabled,
+      isRunning: forwardRules.isRunning,
+      pendingDelete: forwardRules.pendingDelete,
+    })
+    .from(forwardRules)
+    .where(and(
+      inArray(forwardRules.forwardGroupId, ids),
+      eq(forwardRules.isForwardGroupTemplate, false),
+      isNotNull(forwardRules.forwardGroupRuleId),
+      eq(forwardRules.pendingDelete, false),
+    )) : [];
   const templateCountByGroup = new Map<number, number>();
   for (const rule of templateRules as any[]) {
     const groupId = Number(rule.forwardGroupId || 0);
@@ -546,24 +573,64 @@ export async function getForwardGroups(userId?: number) {
   for (const row of latencyRows as any[]) {
     latestLatencyByGroup.set(Number(row.groupId), row);
   }
+  const groupById = new Map((groupRows as any[]).map((group: any) => [Number(group.id), group]));
   const hydratedMembers = await Promise.all((members as any[]).map(async (member: any) => ({
     ...member,
     entryAddress: await memberEntryAddress(member).catch(() => ""),
-    ddnsValue: await memberDdnsValue(member, normalizeForwardGroupRecordType(groupRows.find((group: any) => Number(group.id) === Number(member.groupId))?.recordType)).catch(() => ""),
+    ddnsValue: await memberDdnsValue(member, normalizeForwardGroupRecordType(groupById.get(Number(member.groupId))?.recordType)).catch(() => ""),
   })));
+  const membersByGroupId = new Map<number, any[]>();
+  const templatesByGroupId = new Map<number, any[]>();
+  const childrenByGroupId = new Map<number, any[]>();
+  for (const member of hydratedMembers) {
+    const groupId = Number(member.groupId || 0);
+    if (!membersByGroupId.has(groupId)) membersByGroupId.set(groupId, []);
+    membersByGroupId.get(groupId)!.push(member);
+  }
+  for (const rule of templateRules as any[]) {
+    const groupId = Number(rule.forwardGroupId || 0);
+    if (!templatesByGroupId.has(groupId)) templatesByGroupId.set(groupId, []);
+    templatesByGroupId.get(groupId)!.push(rule);
+  }
+  for (const rule of childRules as any[]) {
+    const groupId = Number(rule.forwardGroupId || 0);
+    if (!childrenByGroupId.has(groupId)) childrenByGroupId.set(groupId, []);
+    childrenByGroupId.get(groupId)!.push(rule);
+  }
   return groupRows.map((group: any) => {
     const groupId = Number(group.id);
     const latestLatency = latestLatencyByGroup.get(groupId);
+    const groupMembers = membersByGroupId.get(groupId) || [];
+    const entryMembers = Number(group.entryGroupId || 0) > 0
+      ? membersByGroupId.get(Number(group.entryGroupId)) || []
+      : [];
+    const runtime = options.includeRuntime
+      ? summarizeForwardGroupRuntime({
+        group,
+        members: groupMembers,
+        entryMembers,
+        templateRules: templatesByGroupId.get(groupId) || [],
+        childRules: childrenByGroupId.get(groupId) || [],
+      })
+      : null;
     return {
       ...group,
       groupMode: groupModeOf(group),
       templateRuleCount: templateCountByGroup.get(groupId) || 0,
+      ...(runtime ? {
+        runtimeStatus: runtime.status,
+        runtimeExpectedRuleCount: runtime.expectedRuleCount,
+        runtimeConfiguredRuleCount: runtime.configuredRuleCount,
+        runtimeRunningRuleCount: runtime.runningRuleCount,
+        runtimeFailedRuleCount: runtime.failedRuleCount,
+        ruleRuntimeStatuses: runtime.ruleStatuses,
+      } : {}),
       latestLatencyMs: latestLatency?.latencyMs !== null && latestLatency?.latencyMs !== undefined
         ? Number(latestLatency.latencyMs)
         : null,
       latestLatencyIsTimeout: Number(latestLatency?.isTimeout || 0) === 1 || latestLatency?.isTimeout === true,
       latestLatencyAt: latestLatency?.recordedAt ?? null,
-      members: hydratedMembers.filter((m: any) => Number(m.groupId) === groupId),
+      members: groupMembers,
     };
   });
 }
@@ -1300,6 +1367,12 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     lastFailoverAt: group.lastFailoverAt,
     lastRecoverAt: group.lastRecoverAt,
     templateRuleCount: group.templateRuleCount,
+    runtimeStatus: group.runtimeStatus,
+    runtimeExpectedRuleCount: group.runtimeExpectedRuleCount,
+    runtimeConfiguredRuleCount: group.runtimeConfiguredRuleCount,
+    runtimeRunningRuleCount: group.runtimeRunningRuleCount,
+    runtimeFailedRuleCount: group.runtimeFailedRuleCount,
+    ruleRuntimeStatuses: group.ruleRuntimeStatuses,
     members: (group.members || []).map((member: any) => ({
       id: member.id,
       groupId: member.groupId,
@@ -2351,7 +2424,7 @@ async function latestTcping(ruleId: number) {
   return result[0];
 }
 
-async function evaluateMemberHealth(member: any, group: any) {
+async function evaluateMemberHealth(member: any, group: any, hostById: Map<number, any>) {
   const db = await getDb();
   const now = nowDate();
   const childRules = await getForwardGroupChildRulesForMember(Number(member.id));
@@ -2390,6 +2463,12 @@ async function evaluateMemberHealth(member: any, group: any) {
       healthy = true;
       const latencies: number[] = [];
       for (const rule of activeChildRules as any[]) {
+        const ruleHost = hostById.get(Number(rule.hostId || 0));
+        if (!ruleHost?.isOnline) {
+          healthy = false;
+          message = "Member Agent offline";
+          break;
+        }
         if (!dbBool(rule.isEnabled) || dbBool(rule.pendingDelete)) {
           healthy = false;
           message = "Member rule disabled";
@@ -2683,6 +2762,7 @@ async function syncSingleForwardGroupDdns(
 async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardGroupFailoverOptions = {}) {
   const db = await getDb();
   const ddnsSettings = await getDdnsSettings();
+  const hostById = new Map((await getHosts() as any[]).map((host: any) => [Number(host.id), host]));
   for (const group of groups as any[]) {
     if (!group.isEnabled) continue;
     const mode = groupModeOf(group);
@@ -2743,7 +2823,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
       }
     }
     const evaluated = [];
-    for (const member of members) evaluated.push(await evaluateMemberHealth(member, group));
+    for (const member of members) evaluated.push(await evaluateMemberHealth(member, group, hostById));
 
     if (!group.domain) {
       await db.update(forwardGroups).set({

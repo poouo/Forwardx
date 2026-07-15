@@ -12,6 +12,7 @@ import { getAgentHostFromRequest } from "./agentAuth";
 import { notifyForwardRuleError } from "./forwardRuleErrorNotifier";
 import { mapWithConcurrency } from "./asyncPool";
 import { withKeyedTaskLock } from "./keyedTaskLock";
+import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
 
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
@@ -130,22 +131,18 @@ type AgentStatusApplyResult = {
   body: Record<string, any>;
 };
 
-function agentStatusTaskKey(hostIdValue: unknown, payload: Record<string, any>) {
-  const hostId = Number(hostIdValue || 0);
-  const statusType = String(payload.statusType || (Number(payload.ruleId) > 0 ? "rule" : "tunnel"));
-  const resourceId = statusType === "runtime"
-    ? String(payload.forwardType || "runtime")
-    : statusType === "tunnel"
-      ? Number(payload.tunnelId || 0)
-      : Number(payload.ruleId || 0);
-  return `agent-status:${hostId}:${statusType}:${resourceId}`;
-}
-
 async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatusApplyResult> {
   const { ruleId, tunnelId, statusType, isRunning } = payload || {};
   const rawMessage = typeof payload?.message === "string" ? payload.message.trim() : "";
   const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
   const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
+  const statusOrderKey = agentStatusOrderingKey(host.id, payload || {});
+  if (!agentStatusOrderGuard.accept(statusOrderKey, payload?.issuedAt)) {
+    if (shouldLogStatus(`${statusOrderKey}:stale-epoch`, `issuedAt=${Number(payload?.issuedAt || 0)}`)) {
+      appendPanelLog("info", `[AgentStatus] ignored stale result ${hostLogText} key=${statusOrderKey} issuedAt=${Number(payload?.issuedAt || 0)}`);
+    }
+    return { status: 200, body: { success: true, ignored: true, stale: true } };
+  }
   if (statusType === "runtime") {
     const runtimeType = String(payload?.forwardType || "runtime").trim() || "runtime";
     if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}:message=${message}`, !isRunning || !!message)) {
@@ -291,6 +288,30 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     return { status: 200, body: { success: true, ignored: true, stale: true } };
   }
 
+  const reportedProtocol = String(payload?.protocol || "").trim().toLowerCase();
+  const currentProtocol = String((rule as any).protocol || "").trim().toLowerCase();
+  if (reportedProtocol && currentProtocol && reportedProtocol !== currentProtocol) {
+    if (shouldLogStatus(`rule:${ruleId}:stale-protocol:${host.id}`, `reported=${reportedProtocol}:current=${currentProtocol}`)) {
+      appendPanelLog(
+        "info",
+        `[Rule] status ignored stale protocol rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedProtocol=${reportedProtocol} currentProtocol=${currentProtocol}`,
+      );
+    }
+    return { status: 200, body: { success: true, ignored: true, stale: true } };
+  }
+
+  const reportedTargetPort = Number(payload?.targetPort || 0);
+  const currentTargetPort = Number((rule as any).targetPort || 0);
+  if (reportedTargetPort > 0 && currentTargetPort > 0 && reportedTargetPort !== currentTargetPort) {
+    if (shouldLogStatus(`rule:${ruleId}:stale-target-port:${host.id}`, `reported=${reportedTargetPort}:current=${currentTargetPort}`)) {
+      appendPanelLog(
+        "info",
+        `[Rule] status ignored stale target rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedTargetPort=${reportedTargetPort} currentTargetPort=${currentTargetPort}`,
+      );
+    }
+    return { status: 200, body: { success: true, ignored: true, stale: true } };
+  }
+
   const wasRunning = !!(rule as any).isRunning;
   await db.updateRuleRunningStatus(ruleId, !!isRunning);
   if (
@@ -408,7 +429,7 @@ agentRouter.post("/api/agent/rule-status-batch", async (req: Request, res: Respo
       }
       const statusPayload = payload as Record<string, any>;
       const result = await withKeyedTaskLock(
-        agentStatusTaskKey(host.id, statusPayload),
+        agentStatusOrderingKey(host.id, statusPayload),
         () => applyAgentRuleStatus(host, statusPayload),
       );
       return { index, result };
@@ -443,7 +464,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       ? req.body as Record<string, any>
       : {};
     const result = await withKeyedTaskLock(
-      agentStatusTaskKey(host.id, statusPayload),
+      agentStatusOrderingKey(host.id, statusPayload),
       () => applyAgentRuleStatus(host, statusPayload),
     );
     res.status(result.status).json(result.body);

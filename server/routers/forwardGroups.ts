@@ -82,10 +82,10 @@ async function assertForwardGroupAccess(
 
 export const forwardGroupsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.user.role === "admin") return db.getForwardGroups();
+    if (ctx.user.role === "admin") return db.getForwardGroups(undefined, { includeRuntime: true });
     const groupIds = await db.getUserAllowedForwardGroupIds(ctx.user.id);
     if (groupIds.length === 0) return [];
-    const groups = await db.getForwardGroups();
+    const groups = await db.getForwardGroups(undefined, { includeRuntime: true });
     const allowed = new Set(groupIds);
     return db.filterForwardGroupFieldsForUse((groups as any[]).filter((group: any) => allowed.has(Number(group.id))));
   }),

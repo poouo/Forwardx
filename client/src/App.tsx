@@ -76,9 +76,9 @@ function PluginsRoute() {
   });
 
   if (loading) return null;
-  if (user && publicInfo.isLoading && !publicInfo.data) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
+  if (publicInfo.isLoading && !publicInfo.data) return <PluginsPage />;
   if (publicInfo.data?.pluginsEnabled !== true) return <Redirect to="/settings" />;
   return <PluginsPage />;
 }

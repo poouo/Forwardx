@@ -104,7 +104,7 @@ import {
   hostNodeMeta,
   targetGeoNodeMeta,
 } from "@/lib/linkTestNodeMeta";
-import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { useIsMobile } from "@/hooks/useMobile";
 
@@ -2466,20 +2466,17 @@ function RulesContent() {
     const enabled = !!rule.isEnabled;
     const title = enabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发";
     const content = supported ? (
-      <label className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground" title={title}>
-        <span className={enabled ? "font-medium text-chart-2" : "font-medium text-muted-foreground"}>{enabled ? "启用" : "停用"}</span>
-        <Switch
-          checked={enabled}
-          disabled={pendingToggleRuleIds.has(Number(rule.id))}
-          onCheckedChange={(checked) => handleToggleRule(rule, checked)}
-          className="scale-75"
-          aria-label={`${enabled ? "停用" : "启用"}转发规则 ${rule.name || ""}`}
-        />
-      </label>
+      <Switch
+        checked={enabled}
+        disabled={pendingToggleRuleIds.has(Number(rule.id))}
+        onCheckedChange={(checked) => handleToggleRule(rule, checked)}
+        className="scale-75"
+        title={title}
+        aria-label={`${enabled ? "停用" : "启用"}转发规则 ${rule.name || ""}`}
+      />
     ) : (
-      <span className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground opacity-70">
-        <span className="font-medium text-muted-foreground">停用</span>
-        <Switch checked={false} disabled className="scale-75" />
+      <span className="inline-flex shrink-0" title={unsupportedProtocolTitle}>
+        <Switch checked={false} disabled className="scale-75" aria-label="当前协议不支持，规则已停用" />
       </span>
     );
     return supported ? content : renderUnsupportedHint(content);
@@ -4175,19 +4172,27 @@ function RulesContent() {
   const getForwardGroupConfigStatus = (group: any): "available" | "pending" | "unavailable" | "error" | "disabled" => {
     if (!group) return "unavailable";
     if (group.isEnabled === false) return "disabled";
-    if (isForwardChainGroup(group)) return "available";
     const mode = normalizeForwardGroupModeForRule(group);
+    const runtimeConfigStatus = () => {
+      if (Number(group.templateRuleCount || 0) <= 0 || mode === "entry" || mode === "exit") return null;
+      const runtimeStatus = String(group.runtimeStatus || "").toLowerCase();
+      if (runtimeStatus === "running" || runtimeStatus === "idle") return "available" as const;
+      if (runtimeStatus === "degraded") return "error" as const;
+      if (runtimeStatus === "disabled") return "disabled" as const;
+      return "pending" as const;
+    };
+    if (isForwardChainGroup(group)) return runtimeConfigStatus() || "available";
     const enabledMembers = Array.isArray(group.members) ? group.members.filter((member: any) => member.isEnabled !== false) : [];
     if (enabledMembers.length === 0) return "unavailable";
     if ((mode === "failover" || mode === "entry") && !String(group.domain || "").trim()) return "unavailable";
     if (group.chinaHealthCheckEnabled) {
       if (enabledMembers.some((member: any) => String(member.chinaHealthStatus || "unknown").toLowerCase() === "healthy")) {
-        return group.lastStatus === "error" ? "error" : "available";
+        return group.lastStatus === "error" ? "error" : runtimeConfigStatus() || "available";
       }
       if (enabledMembers.some((member: any) => String(member.chinaHealthStatus || "unknown").toLowerCase() !== "unhealthy")) return "pending";
       return "unavailable";
     }
-    return group.lastStatus === "error" ? "error" : "available";
+    return group.lastStatus === "error" ? "error" : runtimeConfigStatus() || "available";
   };
   const getForwardGroupStatusText = (group: any) => {
     const status = getForwardGroupConfigStatus(group);
@@ -4228,16 +4233,35 @@ function RulesContent() {
   };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
+    const exitGroup = Number(tunnel?.exitGroupId || 0) > 0
+      ? forwardGroupById.get(Number(tunnel.exitGroupId))
+      : null;
+    const exitGroupName = exitGroup ? getForwardGroupSelectName(exitGroup) : "";
+    const exitNames = exitGroupName ? getTunnelExitNames(tunnel, hosts) : [];
+    const routeTitle = getTunnelRouteText(tunnel, hosts, exitGroupName);
     return (
       <div
         className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
-        title={getTunnelRouteText(tunnel, hosts)}
+        title={routeTitle}
       >
         {hopIds.map((hostId: number, index: number) => (
           <Fragment key={`${tunnel?.id || "tunnel"}-${hostId}-${index}`}>
             {index > 0 && <ArrowRight className="h-3 w-3 shrink-0" />}
-            <span className={compact ? "max-w-[8rem] truncate" : "truncate"}>
-              {tunnelHopHostName(tunnel, hostId, hosts)}
+            <span
+              className={exitGroupName && index === hopIds.length - 1
+                ? (compact ? "min-w-0 max-w-full break-words" : "min-w-0 truncate")
+                : (compact ? "max-w-[8rem] truncate" : "truncate")}
+            >
+              {exitGroupName && index === hopIds.length - 1 ? (
+                <>
+                  {exitGroupName}
+                  {exitNames.length > 0 && (
+                    <span className="text-muted-foreground">
+                      {"\uFF1B\u51FA\u53E3\uFF1A"}{exitNames.join(" / ")}
+                    </span>
+                  )}
+                </>
+              ) : tunnelHopHostName(tunnel, hostId, hosts)}
             </span>
           </Fragment>
         ))}
@@ -5280,14 +5304,23 @@ function RulesContent() {
   const renderStatusDot = (rule: any) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
-      if (isForwardChainGroup(group)) {
-        if (rule.isEnabled && group?.isEnabled !== false) {
-          return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
-        }
-        if (rule.isEnabled) {
-          return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
-        }
-        return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+      if (!rule.isEnabled || group?.isEnabled === false) {
+        return <span title="规则已停用" className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+      }
+      const runtime = Array.isArray(group?.ruleRuntimeStatuses)
+        ? group.ruleRuntimeStatuses.find((item: any) => Number(item.templateRuleId) === Number(rule.id))
+        : null;
+      if (runtime?.status === "running") {
+        return <span title={`全部 ${Number(runtime.runningRuleCount || 0)} 个监听均已运行`} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+      }
+      if (runtime?.status === "degraded") {
+        return <span title={`部分监听异常：${Number(runtime.runningRuleCount || 0)} / ${Number(runtime.expectedRuleCount || 0)} 运行中`} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
+      }
+      if (runtime?.status === "pending") {
+        return <span title={`规则正在下发：${Number(runtime.runningRuleCount || 0)} / ${Number(runtime.expectedRuleCount || 0)} 运行中`} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+      }
+      if (runtime?.status === "disabled") {
+        return <span title="规则已停用" className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
       }
       const groupStatus = getForwardGroupConfigStatus(group);
       if (groupStatus === "disabled") {

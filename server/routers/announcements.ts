@@ -86,12 +86,12 @@ export const announcementsRouter = router({
   }),
 
   popup: protectedProcedure.query(async ({ ctx }) => {
-    return db.getUnreadPopupAnnouncement(ctx.user.id);
+    return (await db.getUnreadPopupAnnouncement(ctx.user.id)) ?? null;
   }),
 
   upgradePopup: protectedProcedure.query(async ({ ctx }) => {
     if (ctx.user.role !== "admin") return null;
-    return db.getUnreadUpgradeAnnouncement(ctx.user.id, APP_VERSION);
+    return (await db.getUnreadUpgradeAnnouncement(ctx.user.id, APP_VERSION)) ?? null;
   }),
 
   dismiss: protectedProcedure

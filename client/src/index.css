@@ -1360,3 +1360,51 @@
   }
 
 }
+
+/* Host list: keep pinned columns opaque while preserving one subtle row hover. */
+.host-table-shell {
+  isolation: isolate;
+}
+
+.host-table-row:hover {
+  background: color-mix(in oklab, var(--muted) 28%, var(--card));
+}
+
+.host-table-frozen-cell {
+  background: var(--card);
+  transition: background-color 150ms ease;
+}
+
+.host-table-row:hover > .host-table-frozen-cell {
+  background: color-mix(in oklab, var(--muted) 28%, var(--card));
+}
+
+.host-table-frozen-left::after,
+.host-table-frozen-right::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  content: "";
+  pointer-events: none;
+}
+
+.host-table-frozen-left::after {
+  right: 0;
+  transform: translateX(100%);
+  background: linear-gradient(to right, rgb(15 23 42 / 8%), transparent);
+}
+
+.host-table-frozen-right::before {
+  left: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(to left, rgb(15 23 42 / 8%), transparent);
+}
+
+.dark .host-table-frozen-left::after {
+  background: linear-gradient(to right, rgb(0 0 0 / 24%), transparent);
+}
+
+.dark .host-table-frozen-right::before {
+  background: linear-gradient(to left, rgb(0 0 0 / 24%), transparent);
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentHeartbeatGate } from "./agentHeartbeatGate";
+import { AgentHeartbeatGate, buildBusyAgentHeartbeatResponse } from "./agentHeartbeatGate";
 
 test("coalesces overlapping and recent heartbeats for one host without blocking", () => {
   let now = 10_000;
@@ -23,4 +23,25 @@ test("coalesces overlapping and recent heartbeats for one host without blocking"
   const nextRelease = gate.tryAcquire(1);
   assert.ok(nextRelease);
   nextRelease();
+});
+
+test("busy heartbeat responses preserve cached state sections on the Agent", () => {
+  const response = buildBusyAgentHeartbeatResponse({
+    panelUrl: "https://panel.example.test",
+    requestLocalState: false,
+  });
+  const stateSections = [
+    "runningRules",
+    "tunnelProbes",
+    "forwardGroupProbes",
+    "hostProbeServices",
+    "guardRules",
+    "dnsWatch",
+    "stateSignatures",
+  ];
+  for (const section of stateSections) {
+    assert.equal(section in response, false, `${section} must be omitted from a coalesced heartbeat`);
+  }
+  assert.equal(response.nextInterval, 5);
+  assert.equal(response.panelUrl, "https://panel.example.test");
 });

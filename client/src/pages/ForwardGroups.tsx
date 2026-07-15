@@ -938,6 +938,18 @@ export function ForwardGroupsContent({
       const tunnel = tunnelById.get(Number(member.tunnelId || 0));
       return forwardGroupRecordValueForHost(hostById.get(Number(tunnel?.entryHostId || 0)), recordType);
     };
+    const makeRuntimeAwareState = (group: any, message: string, memberIds: number[]) => {
+      if (Number(group?.templateRuleCount || 0) <= 0) return makeState("available", message, memberIds);
+      const runtimeStatus = String(group?.runtimeStatus || "").toLowerCase();
+      const running = Number(group?.runtimeRunningRuleCount || 0);
+      const expected = Number(group?.runtimeExpectedRuleCount || 0);
+      if (runtimeStatus === "running" || runtimeStatus === "idle") return makeState("available", message, memberIds);
+      if (runtimeStatus === "degraded") {
+        return makeState("error", `部分托管规则未监听（${running} / ${expected} 运行中），Agent 将自动重新下发。`, memberIds);
+      }
+      if (runtimeStatus === "disabled") return makeState("disabled", "转发资源已停用。", memberIds);
+      return makeState("pending", `规则正在下发（${running} / ${expected} 运行中）。`, memberIds);
+    };
     const map = new Map<number, ReturnType<typeof makeState>>();
     for (const group of groups || []) {
       const mode = normalizeGroupMode(group.groupMode);
@@ -968,13 +980,13 @@ export function ForwardGroupsContent({
         }
         const minMembers = Number(group.entryGroupId || 0) > 0 ? 1 : 2;
         map.set(Number(group.id), enabledMembers.length >= minMembers
-          ? makeState("available", enabledMembers.length > 0 ? "转发链配置可用，链路状态在转发规则内判定。" : "转发链已保存。", enabledMemberIds)
+          ? makeRuntimeAwareState(group, enabledMembers.length > 0 ? "转发链配置可用。" : "转发链已保存。", enabledMemberIds)
           : makeState("unavailable", Number(group.entryGroupId || 0) > 0 ? "转发链至少需要 1 个链路成员。" : "转发链至少需要 2 个链路成员。"));
         continue;
       }
       if (mode === "port") {
         map.set(Number(group.id), enabledMembers.length === 1
-          ? makeState("available", "端口转发已保存，可在转发规则中引用。", enabledMemberIds)
+          ? makeRuntimeAwareState(group, "端口转发已保存，可在转发规则中引用。", enabledMemberIds)
           : makeState("unavailable", "端口转发需要 1 台所属主机。"));
         continue;
       }
@@ -1019,7 +1031,7 @@ export function ForwardGroupsContent({
           map.set(Number(group.id), makeState("error", group.lastMessage || "DDNS 同步异常，请检查服务商配置。", usableIds));
         } else {
           const suffix = group.chinaHealthCheckEnabled ? "，入口健康度检测已通过。" : "。";
-          map.set(Number(group.id), makeState("available", `${usableIds.length} 个成员满足转发组配置${suffix}`, usableIds));
+          map.set(Number(group.id), makeRuntimeAwareState(group, `${usableIds.length} 个成员满足转发组配置${suffix}`, usableIds));
         }
       } else if (pendingChina > 0) {
         map.set(Number(group.id), makeState("pending", "等待入口健康度检测结果。"));

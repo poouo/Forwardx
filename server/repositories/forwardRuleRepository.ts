@@ -1,4 +1,4 @@
-﻿﻿import { and, desc, eq, sql } from "drizzle-orm";
+﻿﻿import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { queryRaw } from "../dbRuntime";
@@ -356,6 +356,17 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
     return;
   }
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+}
+
+export async function markForwardRulesNotRunning(ids: number[]) {
+  const db = await getDb();
+  if (!db) return 0;
+  const ruleIds = Array.from(new Set(ids
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (ruleIds.length === 0) return 0;
+  await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(inArray(forwardRules.id, ruleIds));
+  return ruleIds.length;
 }
 
 export async function disableForwardRuleByProtocolBlock(id: number, reason: string) {

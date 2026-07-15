@@ -151,16 +151,14 @@ function ServiceEnabledSwitch({
 }) {
   const enabled = service.isEnabled !== false;
   return (
-    <label className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground">
-      <span className={enabled ? "font-medium text-chart-2" : "font-medium text-muted-foreground"}>{enabled ? "启用" : "停用"}</span>
-      <Switch
-        checked={enabled}
-        disabled={disabled}
-        onCheckedChange={(checked) => onToggle(service, checked)}
-        className="scale-75"
-        aria-label={`${enabled ? "停用" : "启用"}服务 ${service.name || ""}`}
-      />
-    </label>
+    <Switch
+      checked={enabled}
+      disabled={disabled}
+      onCheckedChange={(checked) => onToggle(service, checked)}
+      className="scale-75"
+      title={`${enabled ? "停用" : "启用"}探测服务 ${service.name || ""}`}
+      aria-label={`${enabled ? "停用" : "启用"}服务 ${service.name || ""}`}
+    />
   );
 }
 
