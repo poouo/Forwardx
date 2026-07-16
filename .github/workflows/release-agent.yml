@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: forwardx-release-${{ github.ref_name }}
+  group: forwardx-release-agent-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -49,10 +49,6 @@ jobs:
       - name: Check version split
         run: npm run check:versions
 
-      - name: Prepare release notes
-        shell: bash
-        run: node scripts/extract-release-notes.mjs "${{ steps.release.outputs.version }}" > RELEASE_NOTES.md
-
       - name: Build Linux Agent binaries
         run: bash scripts/build-agent-release.sh
 
@@ -81,15 +77,16 @@ jobs:
             fi
           done
 
-          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
-          else
-            if ! gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --notes-file RELEASE_NOTES.md; then
-              echo "Release creation raced with another publisher; checking the existing release..." >&2
-              gh release view "$RELEASE_VERSION" >/dev/null
-              gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+          attempt=1
+          until gh release view "$RELEASE_VERSION" >/dev/null 2>&1; do
+            if [ "$attempt" -ge 120 ]; then
+              echo "::error::GitHub Release $RELEASE_VERSION was not created by the panel workflow within 30 minutes"
+              exit 1
             fi
-          fi
+            echo "Waiting for panel workflow to create GitHub Release $RELEASE_VERSION (attempt ${attempt}/120)..."
+            sleep 15
+            attempt=$((attempt + 1))
+          done
 
           upload_with_retry() {
             local attempt=1

@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: forwardx-release-${{ github.ref_name }}
+  group: forwardx-release-panel-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -91,13 +91,41 @@ jobs:
           name: forwardx-panel-bundle
           path: dist/panel/*.tar.gz
 
-      - name: Upload panel bundle to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release.outputs.version }}
-          body_path: RELEASE_NOTES.md
-          files: dist/panel/*.tar.gz
-          fail_on_unmatched_files: true
+      - name: Publish panel bundle to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          files=(dist/panel/*.tar.gz)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::Panel release bundle was not generated"
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$RELEASE_VERSION" \
+              --target "$GITHUB_SHA" \
+              --notes-file RELEASE_NOTES.md
+          fi
+
+          attempt=1
+          delay=8
+          until gh release upload "$RELEASE_VERSION" "${files[@]}" --clobber; do
+            if [ "$attempt" -ge 5 ]; then
+              echo "::error::Panel bundle upload failed after ${attempt} attempts"
+              exit 1
+            fi
+            echo "Panel bundle upload failed, retrying in ${delay}s (attempt ${attempt}/5)..."
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            delay=$((delay * 2))
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
