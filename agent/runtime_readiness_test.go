@@ -206,3 +206,40 @@ func TestFXPListenerConflictsAreProtocolAware(t *testing.T) {
 		t.Fatal("FXP listeners sharing a dedicated mimic UDP port were not considered conflicting")
 	}
 }
+
+func TestLocalGostRuleReadinessDistinguishesTunnelTransportFromEntryProtocols(t *testing.T) {
+	const port = 61083
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{
+			port: {`tcp LISTEN 0 4096 *:61083 *:* users:(("forwardx-runtim",pid=44,fd=5))`},
+		},
+		udpPorts: map[int][]string{},
+		usable:   true,
+	}
+	readiness := localRuntimeReadiness{
+		tunnelRuntimePorts:         map[int]bool{port: true},
+		tunnelRuntimePortProtocols: map[int]map[string]bool{port: {"tcp": true}},
+		tunnelRuntimeReady:         true,
+		listenSnapshot:             snapshot,
+	}
+
+	exitState := localRuleState{
+		Port:        "61083",
+		RuleID:      201,
+		Protocol:    "both",
+		ForwardType: "gost-tunnel-exit",
+	}
+	if !localRuleStateReady(exitState, &readiness) {
+		t.Fatal("GOST tunnel exit rejected its physical TCP/TLS transport listener")
+	}
+
+	entryState := localRuleState{
+		Port:        "61083",
+		RuleID:      202,
+		Protocol:    "both",
+		ForwardType: "gost",
+	}
+	if localRuleStateReady(entryState, &readiness) {
+		t.Fatal("ordinary GOST TCP+UDP entry was accepted without a UDP listener")
+	}
+}

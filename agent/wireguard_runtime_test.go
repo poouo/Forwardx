@@ -38,6 +38,67 @@ func testUDPPort(t *testing.T) int {
 	return port
 }
 
+func TestWireGuardUDPProxySessionOutgoingActivityPreventsExpiry(t *testing.T) {
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	session := newWireGuardUDPProxySession(connection)
+	defer session.close()
+
+	session.lastActivity.Store(time.Now().Add(-wireGuardUDPSessionIdleTimeout - time.Second).UnixNano())
+	if !session.idleExpired(time.Now()) {
+		t.Fatal("stale UDP proxy session should be expired")
+	}
+	if !session.enqueue([]byte("outgoing-activity")) {
+		t.Fatal("active UDP proxy session rejected a packet")
+	}
+	if session.idleExpired(time.Now()) {
+		t.Fatal("outgoing UDP traffic did not refresh session activity")
+	}
+	select {
+	case packet := <-session.send:
+		if string(packet) != "outgoing-activity" {
+			t.Fatalf("unexpected queued packet %q", packet)
+		}
+	default:
+		t.Fatal("outgoing UDP packet was not queued")
+	}
+
+	session.close()
+	if session.enqueue([]byte("after-close")) {
+		t.Fatal("closed UDP proxy session accepted a packet")
+	}
+}
+
+func TestWireGuardUDPProxySessionsWriteIndependently(t *testing.T) {
+	blockedConnection, blockedPeer := net.Pipe()
+	fastConnection, fastPeer := net.Pipe()
+	defer blockedPeer.Close()
+	defer fastPeer.Close()
+
+	blocked := newWireGuardUDPProxySession(blockedConnection)
+	fast := newWireGuardUDPProxySession(fastConnection)
+	defer blocked.close()
+	defer fast.close()
+	go blocked.writeLoop()
+	go fast.writeLoop()
+
+	if !blocked.enqueue([]byte("blocked")) {
+		t.Fatal("failed to queue blocked session packet")
+	}
+	if !fast.enqueue([]byte("fast")) {
+		t.Fatal("failed to queue fast session packet")
+	}
+	_ = fastPeer.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 16)
+	n, err := fastPeer.Read(buf)
+	if err != nil {
+		t.Fatalf("independent UDP session was blocked: %v", err)
+	}
+	if string(buf[:n]) != "fast" {
+		t.Fatalf("unexpected independent session payload %q", buf[:n])
+	}
+}
+
 func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 	leftPrivate, leftPublic := testWireGuardKeyPair(t)
 	rightPrivate, rightPublic := testWireGuardKeyPair(t)
@@ -151,5 +212,32 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 	}
 	if string(udpReply[:n]) != "wireguard-udp" {
 		t.Fatalf("unexpected udp reply %q", udpReply[:n])
+	}
+
+	const burstPackets = 128
+	_ = udpClient.SetDeadline(time.Now().Add(15 * time.Second))
+	for i := 0; i < burstPackets; i++ {
+		payload := []byte("burst-" + strconv.Itoa(i))
+		if _, err := udpClient.Write(payload); err != nil {
+			t.Fatalf("write UDP burst packet %d: %v", i, err)
+		}
+	}
+	seen := make(map[string]bool, burstPackets)
+	for i := 0; i < burstPackets; i++ {
+		n, err := udpClient.Read(udpReply)
+		if err != nil {
+			t.Fatalf("read UDP burst packet %d: %v", i, err)
+		}
+		payload := string(udpReply[:n])
+		if seen[payload] {
+			t.Fatalf("duplicate UDP burst payload %q", payload)
+		}
+		seen[payload] = true
+	}
+	for i := 0; i < burstPackets; i++ {
+		payload := "burst-" + strconv.Itoa(i)
+		if !seen[payload] {
+			t.Fatalf("missing UDP burst payload %q", payload)
+		}
 	}
 }

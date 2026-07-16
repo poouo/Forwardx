@@ -34,6 +34,7 @@ import {
   tunnelRuntimeFamily,
 } from "./tunnelRuntimePlan";
 import { gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
+import { planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
 import {
   buildCountingChainCmds,
   buildCountingCleanupCmds,
@@ -2275,13 +2276,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       addr: string,
       dialerType: string,
       tunnel: any,
-      connectorType: "relay" | "forward" = "relay",
+      connector?: Record<string, unknown>,
     ) => ({
       name,
       addr,
-      connector: connectorType === "forward"
-        ? { type: "forward" }
-        : { type: "relay", metadata: { nodelay: true } },
+      connector: connector || { type: "relay", metadata: { nodelay: true } },
       dialer: {
         type: dialerType,
         ...(tunnelDialerMetadata(tunnel.mode) ? { metadata: tunnelDialerMetadata(tunnel.mode) } : {}),
@@ -2289,6 +2288,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     });
     const buildLoadBalancedExitNodes = async (rule: any, tunnel: any, primaryHostOverride?: string) => {
       const nodes: any[] = [];
+      const protocolPlan = planGostTunnelRuleProtocol({
+        protocol: rule.protocol,
+        tunnelId: Number(tunnel.id),
+        ruleId: Number(rule.id),
+        secretSeed: tunnelSecretSeed(tunnel),
+      });
       for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
         const exitHost = endpoint.primary
           ? (String(primaryHostOverride || "").trim() || tunnelExitEndpointById.get(tunnel.id)?.host || await tunnelExitHostAddress(tunnel))
@@ -2300,7 +2305,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           endpointHostPort(exitHost, endpoint.listenPort),
           tunnelProtocolType(tunnel.mode),
           tunnel,
-          "forward",
+          protocolPlan.chainConnector,
         ));
       }
       return nodes;
@@ -2310,10 +2315,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       type: "relay",
       metadata: { nodelay: true, ...(metadata || {}) },
     });
-    const gostForwardHandler = (metadata?: Record<string, unknown>) => ({
-      type: "forward",
-      ...(metadata ? { metadata } : {}),
-    });
+    const gostTunnelExitTargetAddr = async (rule: any, tunnel: any) => {
+      const policy = await tunnelProtocolPolicy(tunnel);
+      const tunnelProxyPlan = tunnelProxyProtocolPlan(rule);
+      const useExitBridge = shouldUseProtocolGuard(rule, policy)
+        || !!tunnelProxyPlan.exitBridgeReceive
+        || !!tunnelProxyPlan.exitBridgeSend;
+      return useExitBridge
+        ? `127.0.0.1:${guardListenPort(rule)}`
+        : failoverTargetAddr(rule, "exitSend");
+    };
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
         const useRuleGuard = await shouldUseRuleGuard(r);
@@ -2330,6 +2341,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             && Number(firstHop.hostId) === Number(host.id);
           const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
           const tunnelProxyPlan = tunnel ? tunnelProxyProtocolPlan(r) : null;
+          const protocolPlan = tunnel ? planGostTunnelRuleProtocol({
+            protocol: r.protocol,
+            tunnelId: Number(tunnel.id),
+            ruleId: Number(r.id),
+            secretSeed: tunnelSecretSeed(tunnel),
+          }) : null;
           const handlerProxyMetadata = proto === "tcp"
             ? (tunnel ? tunnelProxyPlan?.entryHandler : maybeProxyProtocolMetadata(r, "send"))
             : undefined;
@@ -2358,17 +2375,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 dialer: { type: proto },
               }],
             };
-          } else if (useMultiHopEntry) {
+          } else if (!useMultiHopEntry && (!tunnelExitHost || tunnelExitEndpointsForRule(r, tunnel).length === 0)) {
+            return null;
+          } else if (useMultiHopEntry || protocolPlan?.entryNeedsTarget) {
             service.forwarder = {
               nodes: [{
                 name: `target-${r.id}`,
-                addr: failoverTargetAddr(r),
+                addr: protocolPlan?.entryNeedsTarget
+                  ? await gostTunnelExitTargetAddr(r, tunnel)
+                  : failoverTargetAddr(r),
                 connector: { type: proto },
                 dialer: { type: proto },
               }],
             };
-          } else if (!tunnelExitHost || tunnelExitEndpointsForRule(r, tunnel).length === 0) {
-            return null;
           }
           return applyGostLimiter(service, Number(r.userId), tunnel);
         }));
@@ -2529,33 +2548,34 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
         const exitPorts = currentHostTunnelExitPortsForRule(rule, tunnel);
         if (exitPorts.length === 0) return [];
-        const policy = await tunnelProtocolPolicy(tunnel);
-        const tunnelProxyPlan = tunnelProxyProtocolPlan(rule);
-        const useExitBridge = shouldUseProtocolGuard(rule, policy) || !!tunnelProxyPlan.exitBridgeReceive || !!tunnelProxyPlan.exitBridgeSend;
-        const targetAddr = useExitBridge
-          ? `127.0.0.1:${guardListenPort(rule)}`
-          : failoverTargetAddr(rule, "exitSend");
-        // Dial the real target with the rule's own protocol. A UDP-only rule must reach the
-        // target over UDP; forwarding it over a hardcoded TCP dialer silently breaks delivery.
-        // "both" still uses a single forward node here, so it stays TCP (pre-existing limitation).
-        const targetDialType = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "udp" : "tcp";
+        const protocolPlan = planGostTunnelRuleProtocol({
+          protocol: rule.protocol,
+          tunnelId: Number(tunnel.id),
+          ruleId: Number(rule.id),
+          secretSeed: tunnelSecretSeed(tunnel),
+        });
+        const targetAddr = protocolPlan.exitTargetDialType ? await gostTunnelExitTargetAddr(rule, tunnel) : "";
         return exitPorts.map((exitPort) => {
           return {
             name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}-${exitPort}`,
             addr: `:${exitPort}`,
-            handler: gostForwardHandler(),
+            handler: protocolPlan.exitHandler,
             listener: {
               type: tunnelProtocolType(tunnel.mode),
               ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
             },
-            forwarder: {
-              nodes: [{
-                name: `target-${rule.id}`,
-                addr: targetAddr,
-                connector: { type: targetDialType },
-                dialer: { type: targetDialType },
-              }],
-            },
+            ...(protocolPlan.exitTargetDialType
+              ? {
+                  forwarder: {
+                    nodes: [{
+                      name: `target-${rule.id}`,
+                      addr: targetAddr,
+                      connector: { type: protocolPlan.exitTargetDialType },
+                      dialer: { type: protocolPlan.exitTargetDialType },
+                    }],
+                  },
+                }
+              : {}),
           };
         });
       }))).flat();

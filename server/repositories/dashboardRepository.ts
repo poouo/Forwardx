@@ -4,6 +4,7 @@ import { getDb } from "../dbRuntime";
 import { sqlCountAll } from "../dbCompat";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
+import { resolveDashboardTrafficRuleIdentity } from "../dashboardTrafficIdentity";
 
 type DashboardTrafficBreakdownItem = {
   id: number;
@@ -24,6 +25,7 @@ type TrafficSummaryItem = {
 type RuleTrafficBucket = "tunnelRules" | "portRules" | "forwardGroupRules";
 
 type RuleTrafficMeta = {
+  trafficId: number;
   name: string;
   forwardType: string;
   tunnelId: number | null;
@@ -164,10 +166,29 @@ export async function getDashboardTrafficBreakdown(opts: {
       .where(sql`${forwardRules.id} IN (${sql.join(ruleIds.map((id) => sql`${id}`), sql`, `)})`)
     : [];
 
+  const templateRuleIds = Array.from(new Set((ruleRows as any[])
+    .map((row: any) => Number(row.forwardGroupRuleId || 0))
+    .filter((id: number) => Number.isInteger(id) && id > 0)));
+  const templateRows = templateRuleIds.length
+    ? await db
+      .select({
+        id: forwardRules.id,
+        name: forwardRules.name,
+      })
+      .from(forwardRules)
+      .where(sql`${forwardRules.id} IN (${sql.join(templateRuleIds.map((id) => sql`${id}`), sql`, `)})`)
+    : [];
+  const templateNames = new Map<number, string>((templateRows as any[]).map((row: any) => [
+    Number(row.id),
+    String(row.name || "").trim(),
+  ]));
+
   const ruleMeta = new Map<number, RuleTrafficMeta>();
   for (const row of ruleRows as any[]) {
+    const identity = resolveDashboardTrafficRuleIdentity(row.id, row, templateNames);
     ruleMeta.set(Number(row.id), {
-      name: row.name || `规则 #${row.id}`,
+      trafficId: identity.id,
+      name: identity.name,
       forwardType: String(row.forwardType || ""),
       tunnelId: row.tunnelId ? Number(row.tunnelId) : null,
       forwardGroupId: row.forwardGroupId ? Number(row.forwardGroupId) : null,
@@ -193,7 +214,7 @@ export async function getDashboardTrafficBreakdown(opts: {
     const bytesOut = Number(item.bytesOut) || 0;
     const rule = ruleMeta.get(ruleId);
     const bucket = getRuleTrafficBucket(rule);
-    addTraffic(totalsByBucket[bucket], ruleId, rule?.name || `规则 #${ruleId}`, bytesIn, bytesOut);
+    addTraffic(totalsByBucket[bucket], rule?.trafficId || ruleId, rule?.name || `规则 #${ruleId}`, bytesIn, bytesOut);
   }
 
   return {
