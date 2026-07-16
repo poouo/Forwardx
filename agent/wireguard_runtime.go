@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -25,7 +26,11 @@ const (
 	forwardXWireGuardVersion       = "v2"
 	wireGuardRuntimeWaitTimeout    = 12 * time.Second
 	wireGuardProxyDialTimeout      = 10 * time.Second
-	wireGuardUDPSessionIdleTimeout = 2 * time.Minute
+	wireGuardUDPSessionIdleTimeout = 10 * time.Minute
+	wireGuardUDPIdlePollInterval   = 15 * time.Second
+	wireGuardUDPProxyQueueSize     = 512
+	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
+	wireGuardUDPSessionBufferBytes = 512 * 1024
 	wireGuardRuntimeReleaseDelay   = time.Minute
 )
 
@@ -80,8 +85,9 @@ type wireGuardInboundProxy struct {
 
 type wireGuardUDPProxySession struct {
 	conn         net.Conn
-	clientAddr   net.Addr
-	lastActivity time.Time
+	send         chan []byte
+	done         chan struct{}
+	lastActivity atomic.Int64
 	closeOnce    sync.Once
 }
 
@@ -444,6 +450,81 @@ func (runtime *wireGuardRuntime) dialPeerUDP(peerID string, port int) (net.Conn,
 	return runtime.netstack.DialUDP(nil, &net.UDPAddr{IP: ip, Port: port})
 }
 
+func tuneWireGuardUDPConn(conn *net.UDPConn, bufferBytes int) {
+	if conn == nil || bufferBytes <= 0 {
+		return
+	}
+	_ = conn.SetReadBuffer(bufferBytes)
+	_ = conn.SetWriteBuffer(bufferBytes)
+}
+
+func newWireGuardUDPProxySession(conn net.Conn) *wireGuardUDPProxySession {
+	session := &wireGuardUDPProxySession{
+		conn: conn,
+		send: make(chan []byte, wireGuardUDPProxyQueueSize),
+		done: make(chan struct{}),
+	}
+	if udpConn, ok := conn.(*net.UDPConn); ok {
+		tuneWireGuardUDPConn(udpConn, wireGuardUDPSessionBufferBytes)
+	}
+	session.touch()
+	return session
+}
+
+func (session *wireGuardUDPProxySession) touch() {
+	session.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (session *wireGuardUDPProxySession) idleExpired(now time.Time) bool {
+	last := session.lastActivity.Load()
+	return last > 0 && now.Sub(time.Unix(0, last)) >= wireGuardUDPSessionIdleTimeout
+}
+
+func (session *wireGuardUDPProxySession) readDeadline(now time.Time) time.Time {
+	last := session.lastActivity.Load()
+	if last <= 0 {
+		return now.Add(wireGuardUDPIdlePollInterval)
+	}
+	idleDeadline := time.Unix(0, last).Add(wireGuardUDPSessionIdleTimeout)
+	pollDeadline := now.Add(wireGuardUDPIdlePollInterval)
+	if idleDeadline.Before(pollDeadline) {
+		return idleDeadline
+	}
+	return pollDeadline
+}
+
+func (session *wireGuardUDPProxySession) enqueue(payload []byte) bool {
+	select {
+	case <-session.done:
+		return false
+	default:
+	}
+	session.touch()
+	packet := append([]byte(nil), payload...)
+	select {
+	case <-session.done:
+		return false
+	case session.send <- packet:
+		return true
+	default:
+		return false
+	}
+}
+
+func (session *wireGuardUDPProxySession) writeLoop() {
+	for {
+		select {
+		case <-session.done:
+			return
+		case payload := <-session.send:
+			_ = session.conn.SetWriteDeadline(time.Now().Add(wireGuardProxyDialTimeout))
+			if _, err := session.conn.Write(payload); err != nil {
+				session.close()
+				return
+			}
+		}
+	}
+}
 func listenLoopbackTCPAndUDP() (net.Listener, *net.UDPConn, int, error) {
 	for attempt := 0; attempt < 32; attempt++ {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -453,6 +534,7 @@ func listenLoopbackTCPAndUDP() (net.Listener, *net.UDPConn, int, error) {
 		port := listener.Addr().(*net.TCPAddr).Port
 		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
 		if err == nil {
+			tuneWireGuardUDPConn(udpConn, wireGuardUDPProxyBufferBytes)
 			return listener, udpConn, port, nil
 		}
 		_ = listener.Close()
@@ -529,22 +611,23 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 				logf("wireguard udp proxy dial failed tunnel=%d peer=%s port=%d: %v", runtime.spec.TunnelID, proxy.peerID, proxy.udpPort, dialErr)
 				continue
 			}
-			session = &wireGuardUDPProxySession{conn: remote, clientAddr: clientAddr, lastActivity: time.Now()}
+			session = newWireGuardUDPProxySession(remote)
 			proxy.sessions[key] = session
-			go copyWireGuardUDPResponses(remote, proxy.udpConn, clientAddr, func() {
+			created := session
+			sessionKey := key
+			responseAddr := clientAddr
+			go created.writeLoop()
+			go copyWireGuardUDPResponses(created, proxy.udpConn, responseAddr, func() {
 				proxy.sessionsMu.Lock()
-				if proxy.sessions[key] == session {
-					delete(proxy.sessions, key)
+				if proxy.sessions[sessionKey] == created {
+					delete(proxy.sessions, sessionKey)
 				}
 				proxy.sessionsMu.Unlock()
 			})
 		}
-		session.lastActivity = time.Now()
-		remote := session.conn
 		proxy.sessionsMu.Unlock()
-		_ = remote.SetWriteDeadline(time.Now().Add(wireGuardProxyDialTimeout))
-		if _, err := remote.Write(buf[:n]); err != nil {
-			session.close()
+		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-outbound-queue:"+proxy.key, agentReportLogInterval) {
+			logf("wireguard udp outbound queue full tunnel=%d peer=%s; dropping packet", runtime.spec.TunnelID, proxy.peerID)
 		}
 	}
 }
@@ -618,56 +701,72 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 				logf("wireguard udp backend dial failed tunnel=%d port=%d: %v", runtime.spec.TunnelID, proxy.backendUDP, dialErr)
 				continue
 			}
-			session = &wireGuardUDPProxySession{conn: backend, clientAddr: peerAddr, lastActivity: time.Now()}
+			session = newWireGuardUDPProxySession(backend)
 			proxy.sessions[key] = session
-			go copyWireGuardPacketResponses(backend, proxy.udpConn, peerAddr, func() {
+			created := session
+			sessionKey := key
+			responseAddr := peerAddr
+			go created.writeLoop()
+			go copyWireGuardPacketResponses(created, proxy.udpConn, responseAddr, func() {
 				proxy.sessionsMu.Lock()
-				if proxy.sessions[key] == session {
-					delete(proxy.sessions, key)
+				if proxy.sessions[sessionKey] == created {
+					delete(proxy.sessions, sessionKey)
 				}
 				proxy.sessionsMu.Unlock()
 			})
 		}
-		session.lastActivity = time.Now()
-		backend := session.conn
 		proxy.sessionsMu.Unlock()
-		_ = backend.SetWriteDeadline(time.Now().Add(wireGuardProxyDialTimeout))
-		if _, err := backend.Write(buf[:n]); err != nil {
-			session.close()
+		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-inbound-queue:"+proxy.key, agentReportLogInterval) {
+			logf("wireguard udp inbound queue full tunnel=%d port=%d; dropping packet", runtime.spec.TunnelID, proxy.backendUDP)
 		}
 	}
 }
 
-func copyWireGuardUDPResponses(source net.Conn, target *net.UDPConn, clientAddr net.Addr, done func()) {
+func copyWireGuardUDPResponses(session *wireGuardUDPProxySession, target *net.UDPConn, clientAddr net.Addr, done func()) {
 	defer done()
-	defer source.Close()
+	defer session.close()
 	buf := make([]byte, 65535)
 	for {
-		_ = source.SetReadDeadline(time.Now().Add(wireGuardUDPSessionIdleTimeout))
-		n, err := source.Read(buf)
+		_ = session.conn.SetReadDeadline(session.readDeadline(time.Now()))
+		n, err := session.conn.Read(buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && !session.idleExpired(time.Now()) {
+				continue
+			}
 			return
 		}
-		_, _ = target.WriteTo(buf[:n], clientAddr)
+		session.touch()
+		if _, err := target.WriteTo(buf[:n], clientAddr); err != nil {
+			return
+		}
 	}
 }
 
-func copyWireGuardPacketResponses(source net.Conn, target net.PacketConn, clientAddr net.Addr, done func()) {
+func copyWireGuardPacketResponses(session *wireGuardUDPProxySession, target net.PacketConn, clientAddr net.Addr, done func()) {
 	defer done()
-	defer source.Close()
+	defer session.close()
 	buf := make([]byte, 65535)
 	for {
-		_ = source.SetReadDeadline(time.Now().Add(wireGuardUDPSessionIdleTimeout))
-		n, err := source.Read(buf)
+		_ = session.conn.SetReadDeadline(session.readDeadline(time.Now()))
+		n, err := session.conn.Read(buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && !session.idleExpired(time.Now()) {
+				continue
+			}
 			return
 		}
-		_, _ = target.WriteTo(buf[:n], clientAddr)
+		session.touch()
+		if _, err := target.WriteTo(buf[:n], clientAddr); err != nil {
+			return
+		}
 	}
 }
 
 func (session *wireGuardUDPProxySession) close() {
-	session.closeOnce.Do(func() { _ = session.conn.Close() })
+	session.closeOnce.Do(func() {
+		close(session.done)
+		_ = session.conn.Close()
+	})
 }
 
 func proxyWireGuardConnections(left, right net.Conn) {

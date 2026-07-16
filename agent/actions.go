@@ -515,10 +515,20 @@ func desiredGostRuntimeScope(forwardType string) string {
 	}
 }
 
+func gostRuntimeListenProtocol(forwardType string, protocol string) string {
+	switch strings.TrimSpace(forwardType) {
+	case "gost-tunnel-exit", "gost-tunnel-hop":
+		return "tcp"
+	default:
+		return normalizeRuntimeProtocol(protocol)
+	}
+}
+
 func desiredGostRuntimeReady(port int, protocol string, forwardType string) bool {
 	if port <= 0 {
 		return false
 	}
+	protocol = gostRuntimeListenProtocol(forwardType, protocol)
 	scope := desiredGostRuntimeScope(forwardType)
 	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, protocol, func() bool {
 		readiness := readLocalRuntimeReadinessCached()
@@ -589,7 +599,7 @@ func primeDesiredRuntimeReadyCacheForActions(actions []action) {
 			if ft != "nginx" && ft != "nginx-tunnel" && ft != "nginx-tunnel-exit" {
 				scope = desiredGostRuntimeScope(ft)
 			}
-			unique[portKey{a.SourcePort, normalizeRuntimeProtocol(a.Protocol), ft, scope}] = struct{}{}
+			unique[portKey{a.SourcePort, gostRuntimeListenProtocol(ft, a.Protocol), ft, scope}] = struct{}{}
 		}
 	}
 	if len(unique) == 0 {

@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.156"
+var Version = "2.2.157"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -751,7 +751,7 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	case "nftables":
 		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
-		return readiness.gostReadyForPort(port, state.Protocol)
+		return readiness.gostReadyForPort(port, gostRuntimeListenProtocol(forwardType, state.Protocol))
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return readiness.nginxReadyForPort(port, state.Protocol)
 	case "forwardx":
@@ -3194,7 +3194,7 @@ func managedRuntimeActionListenReady(a action) bool {
 
 func managedRuntimeActionReadinessDiagnostic(a action) string {
 	port := a.SourcePort
-	protocol := normalizeRuntimeProtocol(a.Protocol)
+	protocol := gostRuntimeListenProtocol(a.ForwardType, a.Protocol)
 	readiness := readLocalRuntimeReadiness()
 	configPath := ""
 	serviceName := ""
