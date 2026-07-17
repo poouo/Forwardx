@@ -10,7 +10,7 @@ import {
   LatencyTimeRangeSelect,
   type LatencyTimeRangeHours,
 } from "@/components/LatencyTimeRangeSelect";
-import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -840,9 +840,8 @@ export function ForwardGroupsContent({
   searchQuery = "",
 }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
-  const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
-  const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: tunnels } = trpc.tunnels.list.useQuery();
+  const { data: hosts } = trpc.hosts.options.useQuery();
+  const { data: tunnels } = trpc.tunnels.options.useQuery();
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -860,6 +859,36 @@ export function ForwardGroupsContent({
   const closeResetTimerRef = useRef<number | null>(null);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
+  const groupPageRequest = usePersistentPageRequest(`forwardx.forwardGroups.${activeGroupMode}.page`);
+  const groupPageFilterKey = `${activeGroupMode}:${searchQuery.trim()}`;
+  const previousGroupPageFilterKey = useRef(groupPageFilterKey);
+  useEffect(() => {
+    if (previousGroupPageFilterKey.current === groupPageFilterKey) return;
+    previousGroupPageFilterKey.current = groupPageFilterKey;
+    groupPageRequest.setPage(1);
+  }, [groupPageFilterKey, groupPageRequest.setPage]);
+  const groupPageInput = {
+    page: groupPageRequest.page,
+    pageSize: 12,
+    groupMode: activeGroupMode,
+    search: searchQuery,
+  } as const;
+  const groupPageQuery = trpc.forwardGroups.listPage.useQuery(groupPageInput, {
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const needsFullGroupList = showDialog || !!latencyGroup || !!testGroup || !!editRequest;
+  const fullGroupQuery = trpc.forwardGroups.list.useQuery(undefined, {
+    enabled: needsFullGroupList,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const pageGroups = (groupPageQuery.data?.items || []) as any[];
+  const relatedPageGroups = (groupPageQuery.data?.relatedGroups || []) as any[];
+  const groups = (fullGroupQuery.data || [...pageGroups, ...relatedPageGroups]) as any[];
+  const isLoading = groupPageQuery.isLoading;
   const telegramSettingsLoaded = settings !== undefined;
   const telegramReady = telegramSettingsLoaded && !!settings?.telegram?.enabled && !!settings?.telegram?.configured;
   const forwardProtocolSettings = useMemo(
@@ -913,13 +942,10 @@ export function ForwardGroupsContent({
       })),
     };
   };
-  const rawVisibleGroups = groupsByMode[activeGroupMode] || [];
+  const rawVisibleGroups = pageGroups;
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const visibleGroups = useMemo(() => {
-    if (!normalizedSearchQuery) return rawVisibleGroups;
-    return rawVisibleGroups.filter((group: any) => forwardGroupMatchesSearchQuery(group, normalizedSearchQuery, hosts, tunnels, groupsByMode));
-  }, [groupsByMode, hosts, normalizedSearchQuery, rawVisibleGroups, tunnels]);
-  const modeTotal = rawVisibleGroups.length;
+  const visibleGroups = rawVisibleGroups;
+  const modeTotal = Number(groupPageQuery.data?.scopeTotalItems || 0);
   const groupConfigStateById = useMemo(() => buildLinkAvailabilityIndex({
     hosts,
     tunnels,
@@ -945,13 +971,10 @@ export function ForwardGroupsContent({
     if (memberId > 0 && state.usableMemberIds.size > 0) return state.usableMemberIds.has(memberId);
     return member.isEnabled !== false && state.available;
   };
-  const activeCount = visibleGroups.filter((g: any) => {
-    return getGroupConfigState(g).available;
-  }).length;
-  const groupPagination = usePersistentPagination(visibleGroups, {
-    storageKey: `forwardx.forwardGroups.${activeGroupMode}.page`,
+  const activeCount = Number(groupPageQuery.data?.enabledItems || 0);
+  const groupPagination = useServerPagination(visibleGroups, Number(groupPageQuery.data?.totalItems || 0), groupPageRequest, {
     pageSize: 12,
-    isReady: !isLoading && !!groups,
+    isReady: !isLoading && !!groupPageQuery.data,
   });
   const pagedGroups = groupPagination.items;
   const testGroupDetail = useMemo(
@@ -1095,17 +1118,18 @@ export function ForwardGroupsContent({
 
   useEffect(() => {
     if (!editRequest || editRequest.requestKey === lastEditRequestKeyRef.current) return;
-    const group = rawVisibleGroups.find((item: any) => Number(item.id) === Number(editRequest.id));
+    const group = groups.find((item: any) => Number(item.id) === Number(editRequest.id));
     if (group) {
       lastEditRequestKeyRef.current = editRequest.requestKey;
       openEdit(group);
       onEditRequestConsumed?.();
     }
-  }, [editRequest?.id, editRequest?.requestKey, onEditRequestConsumed, rawVisibleGroups]);
+  }, [editRequest?.id, editRequest?.requestKey, groups, onEditRequestConsumed]);
 
   const createMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
       toast.success(`${currentModeMeta.title}已创建`);
@@ -1114,12 +1138,30 @@ export function ForwardGroupsContent({
   });
 
   const updateMutation = trpc.forwardGroups.update.useMutation({
-    onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
-      utils.tunnels.list.invalidate();
-      utils.rules.list.invalidate();
+    onSuccess: async (result) => {
+      const updatedGroup = result?.group;
+      const cachedGroups = utils.forwardGroups.list.getData();
+      if (updatedGroup && cachedGroups) {
+        utils.forwardGroups.list.setData(
+          undefined,
+          cachedGroups.map((group: any) => Number(group.id) === Number(updatedGroup.id)
+            ? { ...group, ...updatedGroup }
+            : group) as any,
+        );
+      }
       closeDialog();
       toast.success(`${currentModeMeta.title}已更新`);
+      await Promise.all([
+        utils.forwardGroups.list.invalidate(),
+        utils.forwardGroups.listPage.invalidate(),
+        utils.tunnels.list.invalidate(),
+        utils.tunnels.options.invalidate(),
+        utils.tunnels.listPage.invalidate(),
+        utils.tunnels.listAll.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.trafficBilling.configs.invalidate(),
+        utils.trafficBilling.storeResources.invalidate(),
+      ]);
     },
     onError: (e) => toast.error(e.message || "更新失败"),
   });
@@ -1153,7 +1195,10 @@ export function ForwardGroupsContent({
         return next;
       });
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
       utils.tunnels.list.invalidate();
+      utils.tunnels.options.invalidate();
+      utils.tunnels.listPage.invalidate();
       utils.rules.list.invalidate();
     },
   });
@@ -1161,6 +1206,7 @@ export function ForwardGroupsContent({
   const deleteMutation = trpc.forwardGroups.delete.useMutation({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       setDeleteGroup(null);
       toast.success("已删除，引用规则将同步清理");
@@ -1171,6 +1217,7 @@ export function ForwardGroupsContent({
   const syncMutation = trpc.forwardGroups.sync.useMutation({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       toast.success("已同步链路成员规则");
     },
@@ -1180,39 +1227,17 @@ export function ForwardGroupsContent({
   const runFailoverMutation = trpc.forwardGroups.runFailover.useMutation({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
       toast.success("已执行一次故障转移检查");
     },
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
   const reorderGroupsMutation = trpc.forwardGroups.reorderGroups.useMutation({
-    onMutate: async ({ groupMode, ids }) => {
-      await utils.forwardGroups.list.cancel();
-      const previous = utils.forwardGroups.list.getData();
-      if (previous) {
-        const order = new Map(ids.map((id, index) => [Number(id), index]));
-        const orderedModeGroups = previous
-          .filter((group: any) => normalizeGroupMode(group.groupMode) === groupMode)
-          .sort((a: any, b: any) => (order.get(Number(a.id)) ?? Number.MAX_SAFE_INTEGER) - (order.get(Number(b.id)) ?? Number.MAX_SAFE_INTEGER))
-          .map((group: any) => order.has(Number(group.id)) ? { ...group, sortOrder: order.get(Number(group.id)) } : group);
-        let modeIndex = 0;
-        utils.forwardGroups.list.setData(
-          undefined,
-          previous.map((group: any) => (
-            normalizeGroupMode(group.groupMode) === groupMode
-              ? orderedModeGroups[modeIndex++] || group
-              : group
-          )) as any,
-        );
-      }
-      return { previous };
-    },
-    onError: (e, _variables, context) => {
-      if (context?.previous) utils.forwardGroups.list.setData(undefined, context.previous as any);
-      toast.error(e.message || "排序保存失败");
-    },
+    onError: (e) => toast.error(e.message || "排序保存失败"),
     onSettled: () => {
       utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.listPage.invalidate();
     },
   });
   const groupSortable = useSortableReorder({
@@ -1223,6 +1248,7 @@ export function ForwardGroupsContent({
       reorderGroupsMutation.mutate({
         groupMode: activeGroupMode,
         ids: nextGroups.map((group: any) => Number(group.id)),
+        startIndex: (groupPagination.currentPage - 1) * groupPagination.pageSize,
       });
     },
   });

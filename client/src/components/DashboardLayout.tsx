@@ -84,7 +84,7 @@ import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sideb
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
-type SidebarNavItem = { icon: LucideIcon; label: string; path: string; menuKey?: SidebarMenuKey };
+type SidebarNavItem = { icon: LucideIcon; label: string; path: string; menuKey?: SidebarMenuKey; iconSrc?: string };
 
 const announcementsMenuItem: SidebarNavItem = { icon: Megaphone, label: "公告", path: "/announcements", menuKey: "announcements" };
 
@@ -96,13 +96,13 @@ const mainMenuItems: SidebarNavItem[] = [
 ];
 const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile", menuKey: "profile" };
 const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass", menuKey: "lookingGlass" };
+const pluginManagementMenuItem: SidebarNavItem = { icon: Puzzle, label: "插件管理", path: "/plugins", menuKey: "plugins" };
 
 const adminMenuItems: SidebarNavItem[] = [
   { icon: CreditCard, label: "支付对接", path: "/payments", menuKey: "payments" },
   { icon: WalletCards, label: "账单与兑换", path: "/billing", menuKey: "billing" },
   { icon: Package, label: "套餐管理", path: "/plans", menuKey: "plans" },
   { icon: Users, label: "用户管理", path: "/users", menuKey: "users" },
-  { icon: Puzzle, label: "插件管理", path: "/plugins", menuKey: "plugins" },
   lookingGlassMenuItem,
   { icon: Settings, label: "系统设置", path: "/settings", menuKey: "settings" },
 ];
@@ -391,6 +391,16 @@ function DashboardLayoutContent({
   }, []);
   const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
     enabled: !!user,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const { data: customSidebarPages = [] } = trpc.system.sidebarPages.useQuery(undefined, {
+    enabled: !!user,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const { data: pluginSidebarPages = [] } = trpc.plugins.sidebarPages.useQuery(undefined, {
+    enabled: isAdmin && publicInfo?.pluginsEnabled === true,
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -1047,11 +1057,34 @@ function DashboardLayoutContent({
   const visibleAnnouncementsMenuItems = isSidebarNavItemVisible(announcementsMenuItem) ? [announcementsMenuItem] : [];
   const visibleProfileMenuItems = isSidebarNavItemVisible(profileMenuItem) ? [profileMenuItem] : [];
   const visibleAdminMenuItems = filterSidebarNavItems(adminMenuItems);
-  const primaryMenuItems = [...visibleMainMenuItems, ...userStoreMenuItems, ...visibleAnnouncementsMenuItems];
+  const customPageMenuItems: SidebarNavItem[] = customSidebarPages.map((page: { id: string; name: string; iconDataUrl?: string }) => ({
+    icon: Globe2,
+    iconSrc: page.iconDataUrl,
+    label: page.name,
+    path: `/custom-pages/${page.id}`,
+  }));
+  const pluginPageMenuItems: SidebarNavItem[] = isAdmin
+    ? pluginSidebarPages.map((page: { pluginId: string; label: string; icon?: string }) => ({
+        icon: Puzzle,
+        iconSrc: page.icon || undefined,
+        label: page.label,
+        path: `/plugins/sidebar/${page.pluginId}`,
+      }))
+    : [];
+  const primaryMenuItems = [
+    ...visibleMainMenuItems,
+    ...userStoreMenuItems,
+    ...visibleAnnouncementsMenuItems,
+  ];
+  const otherMenuItems: SidebarNavItem[] = [
+    ...(isAdmin && isSidebarNavItemVisible(pluginManagementMenuItem) ? [pluginManagementMenuItem] : []),
+    ...pluginPageMenuItems,
+    ...customPageMenuItems,
+  ];
 
   const allMenuItems = isAdmin
-    ? [...primaryMenuItems, ...visibleProfileMenuItems, ...visibleAdminMenuItems]
-    : [...primaryMenuItems, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems];
+    ? [...primaryMenuItems, ...visibleProfileMenuItems, ...visibleAdminMenuItems, ...otherMenuItems]
+    : [...primaryMenuItems, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems, ...otherMenuItems];
 
   const currentPath = location.split("?")[0] || "/";
   const activeMenuItem = allMenuItems.find((item) => item.path === currentPath);
@@ -1169,7 +1202,15 @@ function DashboardLayoutContent({
           tooltip={item.label}
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
-          <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]")} />
+          {item.iconSrc ? (
+            <img
+              src={item.iconSrc}
+              alt=""
+              className={cn("sidebar-nav-icon h-4 w-4 shrink-0 rounded-[3px] object-contain", isDesktopCollapsed && "h-[18px] w-[18px]")}
+            />
+          ) : (
+            <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]")} />
+          )}
           <span className={cn(isDesktopCollapsed && "sr-only")}>{item.label}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
@@ -1327,6 +1368,17 @@ function DashboardLayoutContent({
               </SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(managementMenuItems)}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
+
+          {otherMenuItems.length > 0 && (
+            <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+                其他
+              </SidebarGroupLabel>
+              <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
+                {renderSidebarItems(otherMenuItems)}
               </SidebarMenu>
             </SidebarGroup>
           )}

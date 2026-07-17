@@ -13,6 +13,7 @@ import PersonalizationLayer from "./components/PersonalizationLayer";
 import Setup from "./pages/Setup";
 import AnnouncementsPage from "@/pages/Announcements";
 import BillingPage from "@/pages/Billing";
+import CustomSidebarPage from "@/pages/CustomSidebarPage";
 import EmailSettingsPage from "@/pages/EmailSettings";
 import ForwardGroupsPage from "@/pages/ForwardGroups";
 import HomePage from "@/pages/Home";
@@ -67,7 +68,7 @@ function LookingGlassRoute() {
   return <LookingGlassPage />;
 }
 
-function PluginsRoute() {
+function PluginsRoute({ sidebarPluginId }: { sidebarPluginId?: string }) {
   const { user, loading } = useAuth();
   const publicInfo = trpc.system.publicInfo.useQuery(undefined, {
     enabled: !!user,
@@ -78,9 +79,9 @@ function PluginsRoute() {
   if (loading) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
-  if (publicInfo.isLoading && !publicInfo.data) return <PluginsPage />;
+  if (publicInfo.isLoading && !publicInfo.data) return <PluginsPage sidebarPluginId={sidebarPluginId} />;
   if (publicInfo.data?.pluginsEnabled !== true) return <Redirect to="/settings" />;
-  return <PluginsPage />;
+  return <PluginsPage sidebarPluginId={sidebarPluginId} />;
 }
 
 function Router() {
@@ -102,12 +103,18 @@ function Router() {
       <Route path="/billing">{() => <AdminRoute component={BillingPage} />}</Route>
       <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBillingPage} />}</Route>
       <Route path="/plans">{() => <AdminRoute component={PlansPage} />}</Route>
-      <Route path="/plugins" component={PluginsRoute} />
+      <Route path="/plugins/sidebar/:pluginId">
+        {(params) => <PluginsRoute sidebarPluginId={params.pluginId} />}
+      </Route>
+      <Route path="/plugins">{() => <PluginsRoute />}</Route>
       <Route path="/store">{routeComponent(StorePage)}</Route>
       <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
       <Route path="/wallet">{routeComponent(WalletPage)}</Route>
       <Route path="/announcements">{routeComponent(AnnouncementsPage)}</Route>
       <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
+      <Route path="/custom-pages/:pageId">
+        {(params) => <CustomSidebarPage pageId={params.pageId} />}
+      </Route>
       <Route path="/404" component={NotFound} />
       <Route path="/:monitorPath">{routeComponent(HostMonitorPage)}</Route>
       <Route component={NotFound} />

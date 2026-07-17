@@ -751,7 +751,10 @@ export default function Plans() {
       setAssignPlanId("");
       setAssignDurationDays("30");
       utils.plans.subscriptions.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
     },
     onError: (error) => toast.error(error.message || "分配失败"),
   });

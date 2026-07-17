@@ -27,8 +27,10 @@ import {
   ExternalLink,
   Github,
   Loader2,
+  PanelLeft,
   PackagePlus,
   Play,
+  Power,
   Puzzle,
   RefreshCw,
   Server,
@@ -736,7 +738,7 @@ function ChinaWhitelistHostStatusSummary({
   );
 }
 
-export default function Plugins() {
+export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string }) {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -755,7 +757,7 @@ export default function Plugins() {
   });
   const pluginListLoading = publicInfoLoading || pluginsLoading;
   const pluginStoreLoading = publicInfoLoading || storeLoading;
-  const [selectedPluginId, setSelectedPluginId] = useState("");
+  const [selectedPluginId, setSelectedPluginId] = useState(sidebarPluginId || "");
   const [activeSection, setActiveSection] = useState<PluginSection>("usage");
   const [storeRepositoryList, setStoreRepositoryList] = useState("");
   const [customInstallOpen, setCustomInstallOpen] = useState(false);
@@ -778,8 +780,8 @@ export default function Plugins() {
   const updateStartedAtRef = useRef(0);
 
   const selectedPlugin = useMemo(
-    () => plugins.find((plugin: PluginRow) => plugin.pluginId === selectedPluginId) || plugins[0],
-    [plugins, selectedPluginId],
+    () => plugins.find((plugin: PluginRow) => plugin.pluginId === selectedPluginId) || (sidebarPluginId ? undefined : plugins[0]),
+    [plugins, selectedPluginId, sidebarPluginId],
   );
   const selectedManifest = getPluginManifest(selectedPlugin);
   const settingFields = (selectedManifest.settingsSchema || []) as PluginSettingField[];
@@ -868,7 +870,9 @@ export default function Plugins() {
   }, [actionResult]);
 
   const selectedAsset = assets.find((asset: any) => asset.path === activeAssetPath) || assets[0];
-  const selectedPage = pluginPages.find((page: any) => page.id === activePageId) || pluginPages[0];
+  const selectedPage = pluginPages.find((page: any) => page.id === activePageId)
+    || (sidebarPluginId ? pluginPages.find((page: any) => page.id === selectedManifest.sidebar?.pageId) : undefined)
+    || pluginPages[0];
   const selectedPageAsset = selectedPage?.assetPath
     ? assets.find((asset: any) => asset.path === selectedPage.assetPath)
     : null;
@@ -876,10 +880,21 @@ export default function Plugins() {
   const activeResourceView = pluginResourceViews.find((view: any) => view.id === activeResourceViewId) || pluginResourceViews[0];
   const actionResultDefinition = pluginActions.find((action: any) => action.id === actionResult?.result?.actionId);
   const canRevealPluginSecrets = (selectedPlugin?.permissions || selectedManifest.permissions || []).includes("secret:reveal");
+  const selectedPluginRequiresTrust = selectedPlugin?.trustRequired === true;
+  const sidebarTarget = selectedManifest.sidebar?.target
+    || (hasUsageView ? "usage" : settingFields.length ? "settings" : pluginPages.length ? "page" : undefined);
+  const sidebarEntryAllowed = !!selectedPlugin
+    && selectedPlugin.sidebarEnabled === true
+    && (selectedPlugin.permissions || []).includes("ui:page")
+    && (selectedPlugin.extensionPoints || []).includes("sidebar.page")
+    && ((sidebarTarget === "usage" && hasUsageView)
+      || (sidebarTarget === "settings" && settingFields.length > 0)
+      || (sidebarTarget === "page" && !!selectedPage));
 
   const invalidatePluginQueries = async () => {
     await Promise.all([
       utils.plugins.list.invalidate(),
+      utils.plugins.sidebarPages.invalidate(),
       utils.plugins.store.invalidate(),
       utils.plugins.storeSources.invalidate(),
       hasUsageView && selectedPlugin?.pluginId
@@ -956,6 +971,14 @@ export default function Plugins() {
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || "操作失败"),
+  });
+
+  const setSidebarEnabledMutation = trpc.plugins.setSidebarEnabled.useMutation({
+    onSuccess: async (plugin) => {
+      toast.success((plugin as any)?.sidebarEnabled ? "已显示菜单入口" : "已隐藏菜单入口");
+      await invalidatePluginQueries();
+    },
+    onError: (error) => toast.error(error.message || "菜单入口设置失败"),
   });
 
   const setTrustedMutation = trpc.plugins.setTrusted.useMutation({
@@ -1048,6 +1071,10 @@ export default function Plugins() {
   });
 
   useEffect(() => {
+    if (sidebarPluginId) {
+      if (selectedPluginId !== sidebarPluginId) setSelectedPluginId(sidebarPluginId);
+      return;
+    }
     if (!plugins.length) {
       setSelectedPluginId("");
       return;
@@ -1055,7 +1082,7 @@ export default function Plugins() {
     if (!selectedPluginId || !plugins.some((plugin: PluginRow) => plugin.pluginId === selectedPluginId)) {
       setSelectedPluginId(plugins[0].pluginId);
     }
-  }, [plugins, selectedPluginId]);
+  }, [plugins, selectedPluginId, sidebarPluginId]);
 
   useEffect(() => {
     if (activeSection !== "manage" || pluginListLoading || plugins.length === 0) return;
@@ -1175,6 +1202,7 @@ export default function Plugins() {
     || refreshStoreSourceMutation.isPending
     || deleteStoreSourceMutation.isPending
     || setEnabledMutation.isPending
+    || setSidebarEnabledMutation.isPending
     || setTrustedMutation.isPending
     || uninstallMutation.isPending
     || updateFromGithubMutation.isPending
@@ -1850,6 +1878,68 @@ export default function Plugins() {
 
   return (
     <DashboardLayout>
+      {sidebarPluginId ? (
+        <div className="space-y-4">
+          <div className="flex min-w-0 items-center gap-3">
+            {selectedPlugin && <PluginLogo logo={selectedManifest.sidebar?.icon || selectedManifest.logo} name={selectedPlugin.name} />}
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-bold tracking-tight sm:text-2xl">
+                {selectedManifest.sidebar?.label || selectedPlugin?.name || "插件页面"}
+              </h1>
+              {selectedPlugin?.description && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{selectedPlugin.description}</p>}
+            </div>
+          </div>
+          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+            <CardContent className="p-4 sm:p-6">
+              {pluginListLoading ? (
+                <DataSectionLoading label="正在加载插件页面" minHeight="min-h-[260px]" />
+              ) : !sidebarEntryAllowed ? (
+                <div className="grid min-h-[260px] place-items-center rounded-md border border-dashed border-border/60 bg-muted/15 px-6 text-center">
+                  <div>
+                    <Puzzle className="mx-auto h-8 w-8 text-muted-foreground" />
+                    <p className="mt-3 font-medium">插件入口不存在或尚未启用</p>
+                  </div>
+                </div>
+              ) : sidebarTarget === "usage" ? (
+                renderUsagePanel()
+              ) : sidebarTarget === "settings" ? (
+                <div className="space-y-4">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {settingFields.map((field) => (
+                      <PluginSettingInput
+                        key={field.key}
+                        field={field}
+                        value={settingDraft[field.key]}
+                        disabled={saveSettingMutation.isPending}
+                        onChange={(value) => setSettingDraft((current) => ({ ...current, [field.key]: value }))}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex justify-end">
+                    <Button className="gap-2" onClick={handleSaveSettings} disabled={saveSettingMutation.isPending}>
+                      {saveSettingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
+                      保存设置
+                    </Button>
+                  </div>
+                </div>
+              ) : assetsLoading ? (
+                <DataSectionLoading label="正在加载插件页面" minHeight="min-h-[260px]" />
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <p className="font-medium">{selectedPage?.title}</p>
+                    {selectedPage?.description && <p className="mt-1 text-xs text-muted-foreground">{selectedPage.description}</p>}
+                  </div>
+                  <div
+                    className="prose prose-sm max-w-none text-sm leading-6 dark:prose-invert"
+                    dangerouslySetInnerHTML={renderPluginPageHtml(selectedPageContent, selectedPage?.contentType)}
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -1900,7 +1990,7 @@ export default function Plugins() {
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
-                            {plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                         </div>
@@ -2279,7 +2369,7 @@ export default function Plugins() {
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
-                            {plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                             {updating ? (
                               <Badge className="gap-1.5 bg-primary text-primary-foreground">
                                 <Loader2 className="h-3 w-3 animate-spin" />更新中
@@ -2325,7 +2415,7 @@ export default function Plugins() {
                         <Badge variant="outline" className={pluginStatusClass(selectedPlugin.status)}>
                           {pluginStatusLabel(selectedPlugin.status)}
                         </Badge>
-                        {selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                        {selectedPluginRequiresTrust && selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
                         {selectedPluginUpdating ? (
                           <Badge className="gap-1.5 bg-primary text-primary-foreground">
                             <Loader2 className="h-3 w-3 animate-spin" />更新中
@@ -2341,33 +2431,57 @@ export default function Plugins() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {selectedPlugin.sidebarSupported && (
+                      <div className={cn(
+                        "flex h-9 items-center gap-2 rounded-md border px-2.5",
+                        selectedPlugin.sidebarEnabled ? "border-primary/35 bg-primary/10" : "border-border/50 bg-muted/20",
+                      )}>
+                        <PanelLeft className={cn("h-4 w-4", selectedPlugin.sidebarEnabled ? "text-primary" : "text-muted-foreground")} />
+                        <Label htmlFor="plugin-sidebar-enabled" className="cursor-pointer text-xs">菜单入口</Label>
+                        <Switch
+                          id="plugin-sidebar-enabled"
+                          checked={!!selectedPlugin.sidebarEnabled}
+                          disabled={isBusy}
+                          onCheckedChange={(enabled) => setSidebarEnabledMutation.mutate({
+                            pluginId: selectedPlugin.pluginId,
+                            enabled,
+                          })}
+                        />
+                      </div>
+                    )}
+                    {selectedPluginRequiresTrust && (
+                      <div className={cn(
+                        "flex h-9 items-center gap-2 rounded-md border px-2.5",
+                        selectedPlugin.trusted ? "border-amber-500/40 bg-amber-500/10" : "border-border/50 bg-muted/20",
+                      )}>
+                        {selectedPlugin.trusted
+                          ? <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
+                          : <ShieldAlert className="h-4 w-4 text-muted-foreground" />}
+                        <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">插件信任</Label>
+                        <Switch
+                          id="plugin-trusted"
+                          checked={!!selectedPlugin.trusted}
+                          disabled={isBusy}
+                          onCheckedChange={(checked) => handlePluginTrustChange(selectedPlugin, checked)}
+                        />
+                      </div>
+                    )}
                     <div className={cn(
                       "flex h-9 items-center gap-2 rounded-md border px-2.5",
-                      selectedPlugin.trusted ? "border-amber-500/40 bg-amber-500/10" : "border-border/50 bg-muted/20",
+                      selectedPlugin.status === "enabled" ? "border-emerald-500/35 bg-emerald-500/10" : "border-border/50 bg-muted/20",
                     )}>
-                      {selectedPlugin.trusted
-                        ? <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
-                        : <ShieldAlert className="h-4 w-4 text-muted-foreground" />}
-                      <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">插件信任</Label>
+                      <Power className={cn("h-4 w-4", selectedPlugin.status === "enabled" ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground")} />
+                      <Label htmlFor="plugin-enabled" className="cursor-pointer text-xs">启用</Label>
                       <Switch
-                        id="plugin-trusted"
-                        checked={!!selectedPlugin.trusted}
+                        id="plugin-enabled"
+                        checked={selectedPlugin.status === "enabled"}
                         disabled={isBusy}
-                        onCheckedChange={(checked) => handlePluginTrustChange(selectedPlugin, checked)}
+                        onCheckedChange={(enabled) => setEnabledMutation.mutate({
+                          pluginId: selectedPlugin.pluginId,
+                          enabled,
+                        })}
                       />
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-2"
-                      disabled={isBusy}
-                      onClick={() => setEnabledMutation.mutate({
-                        pluginId: selectedPlugin.pluginId,
-                        enabled: selectedPlugin.status !== "enabled",
-                      })}
-                    >
-                      {selectedPlugin.status === "enabled" ? "停用" : "启用"}
-                    </Button>
                     {pluginSupportsUpdates(selectedPlugin) && (
                       <>
                         <Button
@@ -2423,15 +2537,17 @@ export default function Plugins() {
                     </TabsList>
 
                     <TabsContent value="overview" className="space-y-4">
-                      <Alert className={selectedPlugin.trusted ? "border-amber-500/30 bg-amber-500/10" : "border-border/50 bg-muted/20"}>
-                        {selectedPlugin.trusted ? <ShieldCheck className="h-4 w-4 text-amber-600" /> : <ShieldAlert className="h-4 w-4" />}
-                        <AlertTitle>{selectedPlugin.trusted ? "高权限 API 已授权" : "受限插件模式"}</AlertTitle>
-                        <AlertDescription>
-                          {selectedPlugin.trusted
-                            ? "插件可按已声明权限调用受控的用户、规则、主机、隧道、转发组和消息推送 API。"
-                            : "当前只允许普通插件权限，所有 panel.request 高权限动作都会被拒绝。"}
-                        </AlertDescription>
-                      </Alert>
+                      {selectedPluginRequiresTrust && (
+                        <Alert className={selectedPlugin.trusted ? "border-amber-500/30 bg-amber-500/10" : "border-border/50 bg-muted/20"}>
+                          {selectedPlugin.trusted ? <ShieldCheck className="h-4 w-4 text-amber-600" /> : <ShieldAlert className="h-4 w-4" />}
+                          <AlertTitle>{selectedPlugin.trusted ? "高权限 API 已授权" : "高权限 API 待授权"}</AlertTitle>
+                          <AlertDescription>
+                            {selectedPlugin.trusted
+                              ? "插件可按已声明权限调用受控的用户、规则、主机、隧道、转发组和消息推送 API。"
+                              : "此插件声明了高权限面板操作，需要管理员确认信任后才能执行。"}
+                          </AlertDescription>
+                        </Alert>
+                      )}
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                           <p className="text-xs text-muted-foreground">插件 ID</p>
@@ -2703,6 +2819,7 @@ export default function Plugins() {
         </div>
         )}
       </div>
+      )}
       <Dialog
         open={!!actionInputDialog}
         onOpenChange={(open) => {

@@ -3,6 +3,7 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
+import { paginateItems } from "../../shared/pagination";
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
@@ -119,6 +120,25 @@ export const plansRouter = router({
     .query(async ({ input }) => {
       await db.expireUserSubscriptions();
       return db.listUserSubscriptions(input?.userId);
+    }),
+  subscriptionsPage: adminProcedure
+    .input(z.object({
+      userId: z.number().optional(),
+      page: z.number().int().positive().default(1),
+      pageSize: z.number().int().min(1).max(100).default(12),
+    }))
+    .query(async ({ input }) => {
+      await db.expireUserSubscriptions();
+      const subscriptions = (await db.listUserSubscriptions(input.userId) as any[])
+        .filter((subscription: any) => subscription?.status !== "cancelled");
+      return {
+        ...paginateItems(subscriptions, input),
+        activeItems: subscriptions.filter((subscription: any) => {
+          if (subscription?.status !== "active") return false;
+          if (!subscription?.expiresAt) return true;
+          return new Date(subscription.expiresAt).getTime() > Date.now();
+        }).length,
+      };
     }),
   mySubscriptions: protectedProcedure.query(async ({ ctx }) => {
     await db.expireUserSubscriptions();

@@ -24,7 +24,7 @@ import {
   isAgentVersionBehind,
   metricUsageProgressClass,
 } from "@/components/hosts/hostDisplay";
-import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -109,7 +109,6 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { toast } from "sonner";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
-const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
 const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
@@ -118,34 +117,6 @@ const HOST_GLOBE_CLUSTER_DISTANCE_DEGREES = 2.4;
 const HOST_GLOBE_LABEL_PULL_DEGREES = 8.2;
 const HOST_GLOBE_LABEL_ROW_DEGREES = 3.8;
 const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 6;
-
-function readJsonCache<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) as T : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJsonCache(key: string, value: unknown) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Cached UI data is optional; ignore storage failures.
-  }
-}
-
-function readCachedHosts() {
-  const hosts = readJsonCache<any[]>(HOSTS_LIST_CACHE_KEY, []);
-  return Array.isArray(hosts) ? hosts : [];
-}
-
-function writeCachedHosts(hosts: any[]) {
-  writeJsonCache(HOSTS_LIST_CACHE_KEY, hosts);
-}
 
 function parseCustomPortsInput(value: string) {
   const text = String(value || "").trim();
@@ -416,9 +387,13 @@ function renderHostGlobeTooltip(point: HostGlobePoint) {
 function HostWorldMap({
   hosts,
   onEdit,
+  totalHosts = hosts.length,
+  isLoadingMore = false,
 }: {
   hosts: any[];
   onEdit: (host: any) => void;
+  totalHosts?: number;
+  isLoadingMore?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
@@ -602,7 +577,8 @@ function HostWorldMap({
         <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
           <div className="font-medium">全球主机地图</div>
           <div className="mt-1 text-white/70">
-            已定位 {points.length} 台 · 待定位 {missingCount} 台
+            已加载 {hosts.length} / {Math.max(totalHosts, hosts.length)} 台 · 已定位 {points.length} 台 · 待定位 {missingCount} 台
+            {isLoadingMore ? " · 正在补充" : ""}
           </div>
         </div>
         {points.length === 0 && (
@@ -1253,16 +1229,17 @@ function hostMatchesTextFilter(host: any, query: string) {
 
 function HostGroupFilterBar({
   groups,
-  hosts,
+  totalHosts,
+  groupCounts,
   selectedGroupId,
   onSelectGroup,
 }: {
   groups: HostGroupView[];
-  hosts: any[];
+  totalHosts: number;
+  groupCounts: Record<number, number>;
   selectedGroupId: number | "all";
   onSelectGroup: (groupId: number | "all") => void;
 }) {
-  const hostsById = useMemo(() => new Map((hosts || []).map((host: any) => [Number(host.id), host])), [hosts]);
   const enabledGroups = useMemo(
     () => [...(groups || [])]
       .filter((group) => group.isEnabled !== false)
@@ -1276,14 +1253,14 @@ function HostGroupFilterBar({
       ? "border-chart-1/35 bg-chart-1/10 text-chart-1 shadow-sm"
       : "border-border/45 bg-card/60 text-muted-foreground hover:bg-muted/45 hover:text-foreground",
   ].join(" ");
-  const countForGroup = (group: HostGroupView) => hostGroupHostIds(group).filter((hostId) => hostsById.has(hostId)).length;
+  const countForGroup = (group: HostGroupView) => Number(groupCounts[Number(group.id)] || 0);
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-card/50 p-2 backdrop-blur-md">
       <button type="button" className={chipClass(selectedGroupId === "all")} onClick={() => onSelectGroup("all")}>
         <Server className="h-3.5 w-3.5" />
         <span>全部</span>
-        <span className={cn("rounded px-1.5 py-0.5 text-[11px] tabular-nums", selectedGroupId === "all" ? "bg-chart-1/15 text-chart-1" : "bg-background/70 text-muted-foreground")}>{hosts.length}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-[11px] tabular-nums", selectedGroupId === "all" ? "bg-chart-1/15 text-chart-1" : "bg-background/70 text-muted-foreground")}>{totalHosts}</span>
       </button>
       {enabledGroups.map((group) => (
         <button
@@ -1307,15 +1284,107 @@ function HostsContent() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
   const pageVisible = usePageVisible();
+  const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
+  const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
+    values: user?.role === "admin" ? HOST_MANAGE_TABS_ADMIN : HOST_MANAGE_TABS_USER,
+    defaultValue: "hosts",
+    storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
+  });
+  const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
+  const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
+  const [manageSearchQueries, setManageSearchQueries] = useState<Record<HostManageTab, string>>({
+    hosts: "",
+    groups: "",
+    tokens: "",
+    services: "",
+  });
+  const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
+  const hostSearchQuery = manageSearchQueries.hosts;
+  const hostPageRequest = usePersistentPageRequest("forwardx.hosts.page");
   const hostListRefreshInterval = visiblePollingInterval("slow", pageVisible);
-  const { data: hosts, isLoading, isError, error, refetch } = trpc.hosts.list.useQuery(undefined, {
+  const hostPageQuery = trpc.hosts.listPage.useQuery({
+    page: hostPageRequest.page,
+    pageSize: 12,
+    search: hostSearchQuery,
+    groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
+  }, {
+    enabled: activeManageTab === "hosts",
     refetchInterval: hostListRefreshInterval,
     refetchOnWindowFocus: true,
     staleTime: 25_000,
   });
-  const [cachedHosts, setCachedHosts] = useState<any[]>(() => readCachedHosts());
+  const hostPageFilterKey = `${selectedHostGroupId}:${hostSearchQuery.trim()}`;
+  const previousHostPageFilterKey = useRef(hostPageFilterKey);
+  useEffect(() => {
+    if (previousHostPageFilterKey.current === hostPageFilterKey) return;
+    previousHostPageFilterKey.current = hostPageFilterKey;
+    hostPageRequest.setPage(1);
+  }, [hostPageFilterKey, hostPageRequest.setPage]);
+
+  const isHostMapView = activeManageTab === "hosts" && (viewMode === "map" || viewMode === "flat-map");
+  const hostMapQuery = trpc.hosts.mapPoints.useInfiniteQuery({
+    limit: 100,
+    search: hostSearchQuery,
+    groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
+  }, {
+    enabled: isHostMapView,
+    initialCursor: 0,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: 25_000,
+    refetchOnWindowFocus: false,
+  });
+  const mapHosts = useMemo<any[]>(
+    () => hostMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
+    [hostMapQuery.data?.pages],
+  );
+  const mapHostTotal = Number(hostMapQuery.data?.pages[0]?.totalItems || 0);
+
+  useEffect(() => {
+    if (!isHostMapView || !hostMapQuery.hasNextPage || hostMapQuery.isFetchingNextPage) return;
+    const loadNextPage = () => void hostMapQuery.fetchNextPage();
+    let idleHandle: number | undefined;
+    let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    if ("requestIdleCallback" in window) {
+      idleHandle = window.requestIdleCallback(loadNextPage, { timeout: 1_500 });
+    } else {
+      timeoutHandle = globalThis.setTimeout(loadNextPage, 120);
+    }
+    return () => {
+      if (idleHandle !== undefined && "cancelIdleCallback" in window) window.cancelIdleCallback(idleHandle);
+      if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
+    };
+  }, [hostMapQuery.fetchNextPage, hostMapQuery.hasNextPage, hostMapQuery.isFetchingNextPage, isHostMapView]);
+
+  const needsFullHostList = activeManageTab === "groups";
+  const fullHostQuery = trpc.hosts.list.useQuery(undefined, {
+    enabled: needsFullHostList,
+    staleTime: 25_000,
+    refetchOnWindowFocus: false,
+  });
+  const usesFullHostDisplay = isHostMapView || needsFullHostList;
+  const hosts = (isHostMapView
+    ? mapHosts
+    : needsFullHostList
+      ? fullHostQuery.data
+      : hostPageQuery.data?.items) as any[] | undefined;
+  const isLoading = isHostMapView
+    ? hostMapQuery.isLoading
+    : needsFullHostList
+      ? fullHostQuery.isLoading
+      : hostPageQuery.isLoading;
+  const isError = isHostMapView
+    ? hostMapQuery.isError
+    : needsFullHostList
+      ? fullHostQuery.isError
+      : hostPageQuery.isError;
+  const error = isHostMapView ? hostMapQuery.error : needsFullHostList ? fullHostQuery.error : hostPageQuery.error;
+  const refetch = () => isHostMapView
+    ? hostMapQuery.refetch()
+    : needsFullHostList
+      ? fullHostQuery.refetch()
+      : hostPageQuery.refetch();
   const baseDisplayHosts = useMemo<any[]>(() => {
-    const source = ((hosts as any[] | undefined) || cachedHosts) as any[];
+    const source = (hosts || []) as any[];
     return [...source].sort((a: any, b: any) => {
       const sortA = normalizeHostSortOrder(a?.sortOrder);
       const sortB = normalizeHostSortOrder(b?.sortOrder);
@@ -1327,7 +1396,7 @@ function HostsContent() {
       }
       return Number(b?.id || 0) - Number(a?.id || 0);
     });
-  }, [hosts, cachedHosts]);
+  }, [hosts]);
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -1349,22 +1418,19 @@ function HostsContent() {
   const [probeLatencyHost, setProbeLatencyHost] = useState<any>(null);
   const [resetTrafficHost, setResetTrafficHost] = useState<any>(null);
   const [resetTrafficHostId, setResetTrafficHostId] = useState<number | null>(null);
-  const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
   const [hostGroupViewMode, setHostGroupViewMode] = useState<HostGroupViewMode>(() => getStoredHostGroupViewMode());
-  const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
-    values: user?.role === "admin" ? HOST_MANAGE_TABS_ADMIN : HOST_MANAGE_TABS_USER,
-    defaultValue: "hosts",
-    storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
-  });
   const hostManageTabItems = user?.role === "admin" ? HOST_MANAGE_TAB_ITEMS_ADMIN : HOST_MANAGE_TAB_ITEMS_USER;
   const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
-  const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery(undefined, {
-    enabled: !!hostLiveRefreshInterval && baseDisplayHosts.length > 0,
+  const currentPageHostIds = useMemo(
+    () => (hostPageQuery.data?.items || []).map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0),
+    [hostPageQuery.data?.items],
+  );
+  const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery({ hostIds: currentPageHostIds }, {
+    enabled: !isHostMapView && !needsFullHostList && !!hostLiveRefreshInterval && currentPageHostIds.length > 0,
     refetchInterval: hostLiveRefreshInterval,
     refetchOnWindowFocus: false,
   });
@@ -1380,16 +1446,8 @@ function HostsContent() {
     const status = hostStatusById.get(Number(host?.id));
     return status ? { ...host, ...status } : host;
   }), [baseDisplayHosts, hostStatusById]);
-  const hasDisplayHosts = displayHosts.length > 0;
+  const hasDisplayHosts = displayHosts.length > 0 || Number(hostPageQuery.data?.totalItems || 0) > 0;
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
-  const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
-  const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
-  const [manageSearchQueries, setManageSearchQueries] = useState<Record<HostManageTab, string>>({
-    hosts: "",
-    groups: "",
-    tokens: "",
-    services: "",
-  });
   const [manageFilterStats, setManageFilterStats] = useState<Record<HostManageTab, HostManageFilterStats>>({
     hosts: { filtered: 0, total: 0 },
     groups: { filtered: 0, total: 0 },
@@ -1415,7 +1473,6 @@ function HostsContent() {
     (stats: HostManageFilterStats) => updateManageFilterStats("services", stats),
     [updateManageFilterStats],
   );
-  const hostSearchQuery = manageSearchQueries.hosts;
   const { data: hostGroups = [], isLoading: isHostGroupsLoading } = trpc.hosts.hostGroups.useQuery(undefined, {
     enabled: user?.role === "admin",
     staleTime: 30_000,
@@ -1433,6 +1490,7 @@ function HostsContent() {
     [enabledHostGroups, selectedHostGroupId],
   );
   const groupFilteredDisplayHosts = useMemo(() => {
+    if (!usesFullHostDisplay) return displayHosts;
     const hostsById = new Map(displayHosts.map((host: any) => [Number(host.id), host]));
     if (selectedHostGroupId !== "all") {
       return hostGroupHostIds(selectedHostGroup)
@@ -1457,65 +1515,33 @@ function HostsContent() {
       orderedHosts.push(host);
     }
     return orderedHosts;
-  }, [displayHosts, enabledHostGroups, selectedHostGroup, selectedHostGroupId]);
+  }, [displayHosts, enabledHostGroups, selectedHostGroup, selectedHostGroupId, usesFullHostDisplay]);
   const normalizedHostSearchQuery = hostSearchQuery.trim().toLowerCase();
   const isHostTextFiltered = normalizedHostSearchQuery.length > 0;
   const filteredDisplayHosts = useMemo(() => {
+    if (!usesFullHostDisplay) return groupFilteredDisplayHosts;
     if (!normalizedHostSearchQuery) return groupFilteredDisplayHosts;
     return groupFilteredDisplayHosts.filter((host: any) => hostMatchesTextFilter(host, normalizedHostSearchQuery));
-  }, [groupFilteredDisplayHosts, normalizedHostSearchQuery]);
+  }, [groupFilteredDisplayHosts, normalizedHostSearchQuery, usesFullHostDisplay]);
   const activeManageSearchQuery = manageSearchQueries[activeManageTab];
   const activeManageFilterConfig = HOST_MANAGE_FILTER_CONFIG[activeManageTab];
   const activeManageFilterStats = activeManageTab === "hosts"
-    ? { filtered: filteredDisplayHosts.length, total: groupFilteredDisplayHosts.length }
+    ? {
+        filtered: Number(hostPageQuery.data?.totalItems || 0),
+        total: Number(hostPageQuery.data?.scopeTotalItems || 0),
+      }
     : manageFilterStats[activeManageTab];
   const hasFilteredDisplayHosts = filteredDisplayHosts.length > 0;
   const isHostGroupFiltered = selectedHostGroupId !== "all";
-  const filteredHostIds = useMemo(
-    () => filteredDisplayHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
-    [filteredDisplayHosts],
-  );
-  const filteredHostIdKey = useMemo(() => filteredHostIds.join(","), [filteredHostIds]);
-  const hasHostDisplayFilter = isHostGroupFiltered || isHostTextFiltered;
-  const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery(undefined, {
+  const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery({
+    search: hostSearchQuery,
+    groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
+  }, {
     enabled: activeManageTab === "hosts",
     refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
   });
-  const { data: groupSummaryTrafficRows = [], isLoading: isGroupSummaryTrafficLoading } = trpc.hosts.trafficSummary.useQuery(
-    { hostIds: filteredHostIds },
-    { enabled: activeManageTab === "hosts" && hasHostDisplayFilter && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
-  );
-  const { data: groupSummaryMetricRows = [], isLoading: isGroupSummaryMetricLoading } = trpc.hosts.latestMetricsSummary.useQuery(
-    { hostIds: filteredHostIds },
-    { enabled: activeManageTab === "hosts" && hasHostDisplayFilter && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
-  );
-  const groupHostSummary = useMemo(() => {
-    if (!hasHostDisplayFilter) return null;
-    let currentTrafficIn = 0;
-    let currentTrafficOut = 0;
-    let totalTrafficIn = 0;
-    let totalTrafficOut = 0;
-    for (const row of groupSummaryMetricRows as any[]) {
-      currentTrafficIn += Math.max(0, Number(row?.networkSpeedIn) || 0);
-      currentTrafficOut += Math.max(0, Number(row?.networkSpeedOut) || 0);
-    }
-    for (const row of groupSummaryTrafficRows as any[]) {
-      totalTrafficIn += Math.max(0, Number(row?.bytesIn) || 0);
-      totalTrafficOut += Math.max(0, Number(row?.bytesOut) || 0);
-    }
-    return {
-      totalHosts: filteredDisplayHosts.length,
-      onlineHosts: filteredDisplayHosts.filter((host: any) => !!host.isOnline).length,
-      currentTrafficIn,
-      currentTrafficOut,
-      totalTrafficIn,
-      totalTrafficOut,
-    };
-  }, [filteredDisplayHosts, groupSummaryMetricRows, groupSummaryTrafficRows, hasHostDisplayFilter]);
-  const effectiveHostSummary = groupHostSummary || hostSummary;
-  const isEffectiveHostSummaryLoading = hasHostDisplayFilter
-    ? (isGroupSummaryTrafficLoading || isGroupSummaryMetricLoading)
-    : isHostSummaryLoading;
+  const effectiveHostSummary = hostSummary;
+  const isEffectiveHostSummaryLoading = isHostSummaryLoading;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -1534,12 +1560,6 @@ function HostsContent() {
       };
     });
   }, [telegramBotSettingsLoaded, telegramBotReady]);
-
-  useEffect(() => {
-    if (!hosts) return;
-    setCachedHosts(hosts);
-    writeCachedHosts(hosts);
-  }, [hosts]);
 
   const handleViewModeChange = (mode: HostViewMode) => {
     setViewMode((current) => {
@@ -1579,6 +1599,9 @@ function HostsContent() {
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
@@ -1590,6 +1613,9 @@ function HostsContent() {
   const updateMutation = trpc.hosts.update.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
@@ -1601,6 +1627,9 @@ function HostsContent() {
   const deleteMutation = trpc.hosts.delete.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       utils.hosts.summary.invalidate();
       toast.success("主机已删除");
     },
@@ -1621,6 +1650,9 @@ function HostsContent() {
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       setUpgradeHost(null);
       if ((data as any)?.skippedOffline) {
         toast.info("主机离线，已跳过升级任务");
@@ -1637,6 +1669,9 @@ function HostsContent() {
   const upgradeAgentsMutation = trpc.hosts.requestAgentUpgradeMany.useMutation({
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       setBulkUpgradeDialogOpen(false);
       const skippedLatest = (data as any)?.skippedLatest || 0;
       const skippedOffline = (data as any)?.skippedOffline || 0;
@@ -1713,6 +1748,25 @@ function HostsContent() {
     setEditingId(host.id);
     setHostDialogTab("basic");
     setShowDialog(true);
+  };
+
+  const openingMapHostIds = useRef(new Set<number>());
+  const openMapHostEdit = async (host: any) => {
+    const hostId = Number(host?.id);
+    if (!Number.isInteger(hostId) || hostId <= 0 || openingMapHostIds.current.has(hostId)) return;
+    openingMapHostIds.current.add(hostId);
+    try {
+      const fullHost = await utils.hosts.getById.fetch({ id: hostId });
+      if (!fullHost) {
+        toast.error("主机不存在或当前账号无权访问");
+        return;
+      }
+      openEdit(fullHost);
+    } catch (err: any) {
+      toast.error(err?.message || "获取主机详情失败");
+    } finally {
+      openingMapHostIds.current.delete(hostId);
+    }
   };
 
   const handleSubmit = () => {
@@ -1822,42 +1876,30 @@ function HostsContent() {
   };
   const isPending = createMutation.isPending || updateMutation.isPending;
   const customPortInputState = useMemo(() => parseCustomPortsInput(form.portAllowlist), [form.portAllowlist]);
-  const onlineCount = useMemo(() => filteredDisplayHosts.filter((h) => h.isOnline).length, [filteredDisplayHosts]);
-  const updateCount = useMemo(
-    () => filteredDisplayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
-    [filteredDisplayHosts, latestAgentVersion]
-  );
+  const onlineCount = Number(hostPageQuery.data?.onlineItems ?? filteredDisplayHosts.filter((host: any) => !!host.isOnline).length);
+  const displayedHostTotal = Number(hostPageQuery.data?.totalItems ?? (isHostMapView ? mapHostTotal : filteredDisplayHosts.length));
+  const updateCount = Number(hostPageQuery.data?.outdatedItems || 0);
   const bulkUpgradeableHosts = useMemo(
-    () => filteredDisplayHosts.filter((h: any) => {
-      if (!h.isOnline) return false;
-      const timedOut = isAgentUpgradeTimedOut(h);
-      const pending = !!h.agentUpgradeRequested && !timedOut;
-      return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
-    }),
-    [filteredDisplayHosts, latestAgentVersion]
+    () => (hostPageQuery.data?.upgradeableIds || []).map((id: number) => ({ id })),
+    [hostPageQuery.data?.upgradeableIds],
   );
-  const offlineUpgradeableHostCount = useMemo(
-    () => filteredDisplayHosts.filter((h: any) => {
-      if (h.isOnline) return false;
-      const timedOut = isAgentUpgradeTimedOut(h);
-      const pending = !!h.agentUpgradeRequested && !timedOut;
-      return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
-    }).length,
-    [filteredDisplayHosts, latestAgentVersion],
-  );
-  const hostPagination = usePersistentPagination<any>(filteredDisplayHosts, {
-    storageKey: "forwardx.hosts.page",
+  const offlineUpgradeableHostCount = Number(hostPageQuery.data?.offlineUpgradeableItems || 0);
+  const hostPagination = useServerPagination<any>(usesFullHostDisplay ? [] : filteredDisplayHosts, Number(hostPageQuery.data?.totalItems || 0), hostPageRequest, {
     pageSize: 12,
-    isReady: hasDisplayHosts,
+    isReady: !hostPageQuery.isLoading && !!hostPageQuery.data,
   });
   const pagedHosts = hostPagination.items;
   const pagedHostIds = useMemo(
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
+  const pagedHostIdKey = useMemo(() => pagedHostIds.join(","), [pagedHostIds]);
   const reorderHostsMutation = trpc.hosts.reorder.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.mapPoints.invalidate();
       toast.success("主机顺序已更新");
     },
     onError: (err) => toast.error(err.message || "更新主机顺序失败"),
@@ -1888,11 +1930,12 @@ function HostsContent() {
     disabled: !hostSortingEnabled,
     onReorder: (nextHosts) => {
       const hostIds = nextHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0);
+      const startIndex = (hostPagination.currentPage - 1) * hostPagination.pageSize;
       if (hostSortMode === "group" && hostSortGroupId) {
-        reorderHostGroupMembersMutation.mutate({ groupId: hostSortGroupId, hostIds });
+        reorderHostGroupMembersMutation.mutate({ groupId: hostSortGroupId, hostIds, startIndex });
         return;
       }
-      if (hostSortMode === "hosts") reorderHostsMutation.mutate({ ids: hostIds });
+      if (hostSortMode === "hosts") reorderHostsMutation.mutate({ ids: hostIds, startIndex });
     },
   });
   const hostCardListMotionKey = useMemo(
@@ -1906,15 +1949,15 @@ function HostsContent() {
     [hostCardModeTransitionKey, hostPagination.currentPage, normalizedHostSearchQuery, selectedHostGroupId, viewMode],
   );
   useEffect(() => {
-    if (!hostLiveRefreshInterval || !filteredHostIds.length) return;
-    const hostIds = filteredHostIds;
+    if (!hostLiveRefreshInterval || !pagedHostIds.length) return;
+    const hostIds = pagedHostIds;
     if (hostIds.length === 0) return;
     watchMetricsMutation.mutate({ hostIds });
     const timer = window.setInterval(() => {
       watchMetricsMutation.mutate({ hostIds });
     }, hostLiveRefreshInterval);
     return () => window.clearInterval(timer);
-  }, [hostLiveRefreshInterval, filteredHostIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hostLiveRefreshInterval, pagedHostIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
@@ -2051,7 +2094,7 @@ function HostsContent() {
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
-              value={`${onlineCount} / ${filteredDisplayHosts.length} 在线`}
+              value={`${onlineCount} / ${displayedHostTotal} 在线`}
               loading={isInitialLoadingWithoutCache}
               cacheKey="hosts.header.online"
               fallbackValue="0 / 0 在线"
@@ -2294,7 +2337,8 @@ function HostsContent() {
         {user?.role === "admin" && (
           <HostGroupFilterBar
             groups={hostGroups as HostGroupView[]}
-            hosts={displayHosts}
+            totalHosts={Number(hostPageQuery.data?.scopeTotalItems || 0)}
+            groupCounts={(hostPageQuery.data?.groupCounts || {}) as Record<number, number>}
             selectedGroupId={selectedHostGroupId}
             onSelectGroup={setSelectedHostGroupId}
           />
@@ -2324,7 +2368,12 @@ function HostsContent() {
         <>
         {viewMode === "map" ? (
           <>
-            <HostWorldMap hosts={filteredDisplayHosts} onEdit={openEdit} />
+            <HostWorldMap
+              hosts={filteredDisplayHosts}
+              onEdit={openMapHostEdit}
+              totalHosts={mapHostTotal}
+              isLoadingMore={hostMapQuery.isFetchingNextPage}
+            />
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
             </AutoAnimateContainer>
@@ -2342,7 +2391,7 @@ function HostsContent() {
                 </div>
               }
             >
-              <HostFlatMap hosts={filteredDisplayHosts} onEdit={openEdit} />
+              <HostFlatMap hosts={filteredDisplayHosts} onEdit={openMapHostEdit} />
             </Suspense>
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}

@@ -32,6 +32,7 @@ import {
   PLUGIN_SECURITY_MODEL,
   PLUGIN_SETTING_FIELD_TYPES,
   PLUGIN_PAGE_CONTENT_TYPES,
+  PLUGIN_SIDEBAR_TARGETS,
   type ForwardxPluginManifest,
   type PluginActionDefinition,
   type PluginAgentRequestDefinition,
@@ -52,6 +53,7 @@ import {
   type PluginResultFieldDefinition,
   type PluginResultSchemaDefinition,
   type PluginSettingField,
+  type PluginSidebarDefinition,
   type PluginStoreItem,
   type PluginUsageFieldDefinition,
   type PluginUsageOperationOption,
@@ -110,6 +112,7 @@ const MAX_WHITELIST_USAGE_SYNC_BYTES = 1024 * 1024;
 const PLUGIN_SYNC_ENCODED_CHUNK_BYTES = 48 * 1024;
 const OFFICIAL_STORE_CACHE_TTL_MS = 10 * 60 * 1000;
 const PLUGIN_WARN_THROTTLE_MS = 5 * 60 * 1000;
+const PLUGIN_SIDEBAR_ENABLED_SETTING_KEY = "__forwardxSidebarEnabled";
 const PACKAGE_ASSET_EXTENSIONS = new Set([
   ...DATA_ASSET_EXTENSIONS,
   ".html",
@@ -479,7 +482,7 @@ function normalizeSettingFields(value: unknown): PluginSettingField[] {
   const seen = new Set<string>();
   return value.slice(0, MAX_PLUGIN_FIELDS).flatMap((item: any) => {
     const key = normalizePluginId(item?.key).slice(0, 80);
-    if (!key || seen.has(key)) return [];
+    if (!key || key.startsWith("__forwardx") || seen.has(key)) return [];
     const type = String(item?.type || "text").trim();
     if (!allowedTypes.has(type)) return [];
     seen.add(key);
@@ -661,6 +664,20 @@ function normalizePluginPages(value: unknown): PluginPageDefinition[] {
   });
 }
 
+function normalizePluginSidebar(value: unknown): PluginSidebarDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const target = PLUGIN_SIDEBAR_TARGETS.includes(raw.target as any)
+    ? raw.target as PluginSidebarDefinition["target"]
+    : undefined;
+  return {
+    label: normalizeOptionalText(raw.label, 64),
+    icon: normalizeOptionalLogo(raw.icon),
+    target,
+    pageId: normalizePluginId(raw.pageId).slice(0, 80) || undefined,
+  };
+}
+
 function normalizePluginResultSchema(value: unknown): PluginResultSchemaDefinition | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as any;
@@ -738,6 +755,35 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
     if (!action.resultSchema) delete (action as any).resultSchema;
     return [action];
   });
+}
+
+function pluginManifestTrustScope(manifest: Partial<ForwardxPluginManifest> | null | undefined) {
+  const permissions = new Set(Array.isArray(manifest?.permissions) ? manifest.permissions : []);
+  const permissionByOperation = new Map(
+    getPluginPanelOperationCapabilities().map((item) => [item.operation, item.permission]),
+  );
+  const operations = (Array.isArray(manifest?.actions) ? manifest.actions : [])
+    .filter((action) => action?.type === "panel.request" && !!action.panel?.operation)
+    .map((action) => String(action.panel?.operation || ""))
+    .filter((operation) => PLUGIN_PANEL_OPERATIONS.includes(operation as any))
+    .map((operation) => {
+      const permission = permissionByOperation.get(operation as any);
+      return `${operation}:${permission && permissions.has(permission) ? permission : "missing-permission"}`;
+    });
+  return Array.from(new Set(operations)).sort();
+}
+
+export function pluginManifestRequiresTrust(manifest: Partial<ForwardxPluginManifest> | null | undefined) {
+  return pluginManifestTrustScope(manifest).length > 0;
+}
+
+export function shouldPreservePluginTrust(
+  previousManifest: Partial<ForwardxPluginManifest> | null | undefined,
+  nextManifest: Partial<ForwardxPluginManifest> | null | undefined,
+) {
+  const nextScope = pluginManifestTrustScope(nextManifest);
+  return nextScope.length > 0
+    && JSON.stringify(pluginManifestTrustScope(previousManifest)) === JSON.stringify(nextScope);
 }
 
 function normalizeResourceKey(value: unknown, maxLength = 120) {
@@ -1245,6 +1291,7 @@ function normalizeManifest(input: any, fallback?: Partial<ForwardxPluginManifest
     extensionPoints: uniqueValidExtensionPoints(merged.extensionPoints),
     settingsSchema: normalizeSettingFields(merged.settingsSchema),
     pages: normalizePluginPages(merged.pages),
+    sidebar: normalizePluginSidebar(merged.sidebar),
     actions: normalizePluginActions(merged.actions),
     usageViews: normalizePluginUsageViews(merged.usageViews),
     resourceSchemas,
@@ -1860,6 +1907,9 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
     repository: storeItem.packageRepository || storeItem.repository,
     permissions: storeItem.permissions,
     extensionPoints: storeItem.extensionPoints,
+    sidebar: storeItem.permissions.includes("ui:page") && storeItem.extensionPoints.includes("sidebar.page")
+      ? { label: storeItem.name, target: "usage" }
+      : undefined,
     pages: [
       {
         id: "overview",
@@ -1944,12 +1994,14 @@ async function upsertPlugin(manifest: ForwardxPluginManifest, source: {
   }
   const now = nowDate();
   const existing = await db.select().from(plugins).where(eq(plugins.pluginId, manifest.id)).limit(1);
+  let existingManifest: ForwardxPluginManifest | null = null;
   if (existing[0]) {
-    const existingManifest = parseJson<any>(existing[0].manifestJson, {});
+    existingManifest = parseJson<ForwardxPluginManifest>(existing[0].manifestJson, {} as ForwardxPluginManifest);
     if (existingManifest?.settingsValues && typeof existingManifest.settingsValues === "object" && !(manifest as any).settingsValues) {
       (manifest as any).settingsValues = existingManifest.settingsValues;
     }
   }
+  const preserveExistingTrust = shouldPreservePluginTrust(existingManifest, manifest);
   const payload = {
     pluginId: manifest.id,
     name: manifest.name,
@@ -1966,6 +2018,7 @@ async function upsertPlugin(manifest: ForwardxPluginManifest, source: {
     permissionsJson: JSON.stringify(manifest.permissions || []),
     extensionPointsJson: JSON.stringify(manifest.extensionPoints || []),
     status: existing[0]?.status || "disabled",
+    trusted: preserveExistingTrust && (existing[0]?.trusted === true || Number(existing[0]?.trusted || 0) === 1),
     installedAt: existing[0]?.installedAt || now,
     updatedAt: now,
     lastError: null,
@@ -2272,14 +2325,58 @@ function normalizePluginRow(row: any) {
     permissions: [],
     extensionPoints: [],
   } as any);
-  return {
+  const trustRequired = pluginManifestRequiresTrust(manifest);
+  const normalized = {
     ...row,
     hasUpdate: pluginVersionHasUpdate(row?.version, row?.latestVersion),
-    trusted: row?.trusted === true || Number(row?.trusted || 0) === 1,
+    trusted: trustRequired && (row?.trusted === true || Number(row?.trusted || 0) === 1),
+    trustRequired,
     manifest,
     permissions: parseJson<PluginPermissionKey[]>(row?.permissionsJson, []),
     extensionPoints: parseJson<PluginExtensionPoint[]>(row?.extensionPointsJson, []),
   };
+  const sidebarEnabled = pluginSettingsValues(manifest)[PLUGIN_SIDEBAR_ENABLED_SETTING_KEY] === true;
+  return {
+    ...normalized,
+    sidebarEnabled,
+    sidebarSupported: !!resolvePluginSidebarCapability(normalized),
+  };
+}
+
+export function resolvePluginSidebarCapability(plugin: any) {
+  if (!plugin) return null;
+  const permissions = Array.isArray(plugin.permissions) ? plugin.permissions : [];
+  const extensionPoints = Array.isArray(plugin.extensionPoints) ? plugin.extensionPoints : [];
+  if (!permissions.includes("ui:page") || !extensionPoints.includes("sidebar.page")) return null;
+
+  const manifest = plugin.manifest && typeof plugin.manifest === "object" ? plugin.manifest as ForwardxPluginManifest : undefined;
+  const sidebar = normalizePluginSidebar(manifest?.sidebar);
+  if (!manifest || !sidebar) return null;
+
+  const hasUsage = Array.isArray(manifest.usageViews) && manifest.usageViews.length > 0;
+  const hasSettings = Array.isArray(manifest.settingsSchema) && manifest.settingsSchema.length > 0;
+  const pages = Array.isArray(manifest.pages) ? manifest.pages : [];
+  const target = sidebar.target || (hasUsage ? "usage" : hasSettings ? "settings" : pages.length ? "page" : undefined);
+  if (!target) return null;
+  if (target === "usage" && !hasUsage) return null;
+  if (target === "settings" && !hasSettings) return null;
+  const page = target === "page"
+    ? pages.find((item) => item.id === sidebar.pageId) || (!sidebar.pageId ? pages[0] : undefined)
+    : undefined;
+  if (target === "page" && !page) return null;
+
+  return {
+    pluginId: String(plugin.pluginId || manifest.id),
+    label: sidebar.label || plugin.name || manifest.name,
+    icon: sidebar.icon || manifest.logo || "",
+    target,
+    pageId: page?.id || undefined,
+  };
+}
+
+export function resolvePluginSidebarEntry(plugin: any) {
+  if (!plugin || plugin.sidebarEnabled !== true) return null;
+  return resolvePluginSidebarCapability(plugin);
 }
 
 export async function getPluginStoreItems() {
@@ -2306,6 +2403,7 @@ export function getPluginDeveloperCapabilities() {
     extensionPoints: PLUGIN_EXTENSION_POINTS,
     settingFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
     pageContentTypes: PLUGIN_PAGE_CONTENT_TYPES,
+    sidebarTargets: PLUGIN_SIDEBAR_TARGETS,
     actionTypes: PLUGIN_ACTION_TYPES,
     actionIntents: PLUGIN_ACTION_INTENTS,
     actionInputFieldTypes: PLUGIN_SETTING_FIELD_TYPES,
@@ -2333,6 +2431,36 @@ export async function listPlugins() {
   if (!db) return [];
   const rows = await db.select().from(plugins);
   return rows.map(normalizePluginRow);
+}
+
+export async function getEnabledPluginSidebarPages() {
+  return (await listPlugins()).flatMap((plugin: any) => {
+    const entry = resolvePluginSidebarEntry(plugin);
+    return entry ? [entry] : [];
+  });
+}
+
+export async function setPluginSidebarEnabled(pluginId: string, enabled: boolean) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const id = assertPluginId(pluginId);
+  const plugin = await getPlugin(id);
+  if (!plugin) throw new Error("插件不存在");
+  if (enabled && !plugin.sidebarSupported) throw new Error("该插件没有声明可用的菜单入口页面");
+  const settings = pluginSettingsValues(plugin.manifest);
+  const manifest = {
+    ...plugin.manifest,
+    settingsValues: {
+      ...settings,
+      [PLUGIN_SIDEBAR_ENABLED_SETTING_KEY]: enabled,
+    },
+  } as ForwardxPluginManifest;
+  await db.update(plugins).set({
+    manifestJson: serializeManifest(manifest),
+    updatedAt: nowDate(),
+    lastError: null,
+  } as any).where(eq(plugins.pluginId, id));
+  return getPlugin(id);
 }
 
 export async function getPlugin(pluginId: string) {
@@ -3064,6 +3192,7 @@ export async function setPluginTrusted(pluginId: string, trusted: boolean, actor
   const id = assertPluginId(pluginId);
   const plugin = await getPlugin(id);
   if (!plugin) throw new Error("插件不存在");
+  if (trusted && !plugin.trustRequired) throw new Error("该插件没有声明需要信任授权的高权限面板操作");
   await db.update(plugins).set({ trusted, updatedAt: nowDate() } as any).where(eq(plugins.pluginId, id));
   appendPanelLog("info", `[PluginAudit] plugin=${id} operation=trust.change actor=${Number(actorUserId || 0) || "-"} trusted=${trusted}`);
   return await getPlugin(id);

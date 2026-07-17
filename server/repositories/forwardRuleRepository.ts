@@ -191,7 +191,7 @@ export async function createForwardRule(rule: InsertForwardRule) {
   return insertAndGetId("forward_rules", payload);
 }
 
-export async function reorderForwardRules(category: ForwardRuleSortCategory, ids: number[], userId?: number) {
+export async function reorderForwardRules(category: ForwardRuleSortCategory, ids: number[], userId?: number, startIndex = 0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const orderedIds = ids.map((id) => Math.floor(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
@@ -224,8 +224,9 @@ export async function reorderForwardRules(category: ForwardRuleSortCategory, ids
   );
   if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在或无权访问的规则");
   if (rows.some((row: any) => forwardRuleCategoryFromRow(row) !== category)) throw new Error("排序规则类型不一致");
+  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
   for (const [index, id] of orderedIds.entries()) {
-    await executeRaw(`UPDATE ${q("forward_rules")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+    await executeRaw(`UPDATE ${q("forward_rules")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [normalizedStartIndex + index, id]);
   }
 }
 

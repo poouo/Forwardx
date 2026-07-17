@@ -1,4 +1,4 @@
-import { router, publicProcedure, adminProcedure } from "./trpc";
+import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
 import { z } from "zod";
 import * as db from "../db";
 import { ENV } from "../env";
@@ -41,6 +41,14 @@ import {
   SIDEBAR_MENU_KEYS,
   normalizeSidebarMenuSettings,
 } from "../../shared/sidebarMenu";
+import {
+  MAX_CUSTOM_SIDEBAR_ICON_DATA_URL_LENGTH,
+  MAX_CUSTOM_SIDEBAR_PAGES,
+  isSafeCustomSidebarIconDataUrl,
+  isValidCustomSidebarUrl,
+  normalizeCustomSidebarPages,
+  visibleCustomSidebarPages,
+} from "../../shared/customSidebarPages";
 import { getAvatarDataUrlByteLength, isValidBrandLogoValue } from "../../shared/avatar";
 import { generateSelfSignedPanelSslCertificate, readPanelSslSettings, validatePanelSslConfig } from "../panelSsl";
 import {
@@ -113,6 +121,14 @@ const sidebarMenuSettingsSchema = z.object(
     SIDEBAR_MENU_KEYS.map((key) => [key, z.boolean().optional()])
   ) as Record<typeof SIDEBAR_MENU_KEYS[number], z.ZodOptional<z.ZodBoolean>>
 );
+const customSidebarPagesSchema = z.array(z.object({
+  id: z.string().trim().regex(/^[a-z0-9][a-z0-9._:-]{0,95}$/i, "菜单项 ID 格式不正确"),
+  name: z.string().trim().min(1, "请填写菜单名称").max(64),
+  url: z.string().trim().max(1000).refine(isValidCustomSidebarUrl, "页面 URL 必须是有效的 HTTP/HTTPS 地址"),
+  visibility: z.enum(["all", "admin"]),
+  iconDataUrl: z.string().trim().max(MAX_CUSTOM_SIDEBAR_ICON_DATA_URL_LENGTH).optional()
+    .refine((value) => !value || isSafeCustomSidebarIconDataUrl(value), "SVG 图标包含不支持的内容"),
+}).strict()).max(MAX_CUSTOM_SIDEBAR_PAGES);
 
 function readSidebarMenuSettings(all: Record<string, string | null | undefined>) {
   const normalized = normalizeSidebarMenuSettings(
@@ -120,6 +136,15 @@ function readSidebarMenuSettings(all: Record<string, string | null | undefined>)
   );
   normalized.plugins = all.pluginsEnabled === "true";
   return normalized;
+}
+
+function readCustomSidebarPages(all: Record<string, string | null | undefined>) {
+  if (!all.customSidebarPages) return [];
+  try {
+    return normalizeCustomSidebarPages(JSON.parse(all.customSidebarPages));
+  } catch {
+    return [];
+  }
 }
 
 function isUpdateAutoCheckEnabled(all: Record<string, string | null | undefined>) {
@@ -1640,6 +1665,11 @@ export const systemRouter = router({
     }));
   }),
 
+  sidebarPages: protectedProcedure.query(async ({ ctx }) => {
+    const all = await db.getAllSettings();
+    return visibleCustomSidebarPages(readCustomSidebarPages(all), ctx.user.role);
+  }),
+
   /** 获取系统设置（包含开源地址、版本、面板公开 URL 等元信息） */
   getSettings: publicProcedure.query(async ({ ctx }) => {
     const all = await db.getAllSettings();
@@ -1675,6 +1705,7 @@ export const systemRouter = router({
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
       sidebarMenu: readSidebarMenuSettings(all),
+      customSidebarPages: readCustomSidebarPages(all),
       tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
       githubAccelerator: {
         enabled: all.githubAcceleratorEnabled === "true",
@@ -1893,6 +1924,7 @@ export const systemRouter = router({
         personalizationBackground: personalizationBackgroundSchema.optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
         sidebarMenu: sidebarMenuSettingsSchema.optional(),
+        customSidebarPages: customSidebarPagesSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
         githubAccelerator: z.object({
           enabled: z.boolean().optional(),
@@ -2072,6 +2104,14 @@ export const systemRouter = router({
         const normalized = normalizeSidebarMenuSettings(input.sidebarMenu);
         await db.setSetting("sidebarMenu", JSON.stringify(normalized));
         console.info("[Settings] sidebar menu switches updated");
+      }
+      if (input.customSidebarPages !== undefined) {
+        const normalized = normalizeCustomSidebarPages(input.customSidebarPages);
+        if (normalized.length !== input.customSidebarPages.length) {
+          throw new Error("自定义菜单配置包含无效项目");
+        }
+        await db.setSetting("customSidebarPages", normalized.length ? JSON.stringify(normalized) : null);
+        console.info(`[Settings] custom sidebar pages updated count=${normalized.length}`);
       }
       if (input.tunnelRuntimeDefault !== undefined) {
         const runtime = input.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";

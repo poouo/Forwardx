@@ -4,7 +4,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
-import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -2156,21 +2156,16 @@ function RulesContent() {
     const timer = window.setTimeout(() => setSecondaryQueriesReady(true), 300);
     return () => window.clearTimeout(timer);
   }, []);
-  const { data: rules, isLoading } = trpc.rules.list.useQuery(undefined, {
-    refetchInterval: pollingInterval("normal"),
-    staleTime: 10000,
-    refetchOnWindowFocus: false,
-  });
-  const { data: hosts, isFetched: hostsFetched } = trpc.hosts.list.useQuery(undefined, {
+  const { data: hosts, isFetched: hostsFetched } = trpc.hosts.options.useQuery(undefined, {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
-  const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
+  const { data: tunnels } = trpc.tunnels.options.useQuery(undefined, {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
-  const { data: users } = trpc.users.list.useQuery(undefined, {
+  const { data: users } = trpc.users.options.useQuery(undefined, {
     enabled: user?.role === "admin" && secondaryQueriesReady,
     staleTime: 60000,
     refetchOnWindowFocus: false,
@@ -2233,7 +2228,7 @@ function RulesContent() {
     return Object.keys(input).length ? input : undefined;
   }, [filterUser, user?.id, user?.role]);
   const effectiveRulesQuery = selectedRulesQuery || undefined;
-  const selectedScopeQueryEnabled = user?.role === "admin" && !!effectiveRulesQuery;
+  const selectedScopeQueryEnabled = false as boolean;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
   const latestPortCheckRef = useRef(0);
@@ -2269,12 +2264,91 @@ function RulesContent() {
   const [importFileInputKey, setImportFileInputKey] = useState(0);
   const [importManualText, setImportManualText] = useState("");
   const [importingRules, setImportingRules] = useState(false);
-  const { data: selectedScopeRules } = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
-    enabled: selectedScopeQueryEnabled,
+  const rulePageRequest = usePersistentPageRequest("forwardx.rules.page");
+  const rulePageEntryHostId = /^\d+$/.test(filterHost) ? Number(filterHost) : null;
+  const rulePageFilterKey = [filterUser, filterHost, ruleCategory, ruleSearchQuery.trim(), rulePageSize].join(":");
+  const previousRulePageFilterKey = useRef(rulePageFilterKey);
+  useEffect(() => {
+    if (previousRulePageFilterKey.current === rulePageFilterKey) return;
+    previousRulePageFilterKey.current = rulePageFilterKey;
+    rulePageRequest.setPage(1);
+  }, [rulePageFilterKey, rulePageRequest.setPage]);
+  const rulePageQuery = trpc.rules.listPage.useQuery({
+    ...(effectiveRulesQuery || {}),
+    page: rulePageRequest.page,
+    pageSize: rulePageSize,
+    entryHostId: rulePageEntryHostId,
+    category: ruleCategory,
+    search: ruleSearchQuery,
+  }, {
     refetchInterval: pollingInterval("normal"),
-    staleTime: 10000,
+    staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
+  const isRuleGlobeView = effectiveViewMode === "globe";
+  const ruleMapQuery = trpc.rules.mapItems.useInfiniteQuery({
+    ...(effectiveRulesQuery || {}),
+    limit: 100,
+    entryHostId: rulePageEntryHostId,
+    category: ruleCategory,
+    search: ruleSearchQuery,
+  }, {
+    enabled: isRuleGlobeView,
+    initialCursor: 0,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const mapRules = useMemo<any[]>(
+    () => ruleMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
+    [ruleMapQuery.data?.pages],
+  );
+  useEffect(() => {
+    if (!isRuleGlobeView || !ruleMapQuery.hasNextPage || ruleMapQuery.isFetchingNextPage) return;
+    const loadNextPage = () => void ruleMapQuery.fetchNextPage();
+    let idleHandle: number | undefined;
+    let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    if ("requestIdleCallback" in window) {
+      idleHandle = window.requestIdleCallback(loadNextPage, { timeout: 1_500 });
+    } else {
+      timeoutHandle = globalThis.setTimeout(loadNextPage, 120);
+    }
+    return () => {
+      if (idleHandle !== undefined && "cancelIdleCallback" in window) window.cancelIdleCallback(idleHandle);
+      if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
+    };
+  }, [isRuleGlobeView, ruleMapQuery.fetchNextPage, ruleMapQuery.hasNextPage, ruleMapQuery.isFetchingNextPage]);
+  const needsFullRuleList = showCopyDialog
+    || showExportDialog
+    || showImportDialog;
+  const fullRulesQuery = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
+    enabled: needsFullRuleList,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: ruleListSummary, isLoading: ruleListSummaryLoading } = trpc.rules.listSummary.useQuery({
+    ...(effectiveRulesQuery || {}),
+    entryHostId: rulePageEntryHostId,
+    category: ruleCategory,
+    search: ruleSearchQuery,
+  }, {
+    enabled: secondaryQueriesReady,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const rules = (isRuleGlobeView
+    ? mapRules
+    : needsFullRuleList
+      ? fullRulesQuery.data
+      : rulePageQuery.data?.items) as any[] | undefined;
+  const isLoading = isRuleGlobeView
+    ? ruleMapQuery.isLoading
+    : needsFullRuleList
+      ? fullRulesQuery.isLoading
+      : rulePageQuery.isLoading;
+  const selectedScopeRules = undefined;
 
   const walletBalanceKnown = wallet?.balanceCents !== undefined && wallet?.balanceCents !== null;
   const manuallyPaused = (user as any)?.forwardAccessPauseReason === "manual";
@@ -2286,6 +2360,9 @@ function RulesContent() {
   const createMutation = trpc.rules.create.useMutation({
     onSuccess: (data) => {
       utils.rules.list.invalidate();
+      utils.rules.listPage.invalidate();
+      utils.rules.mapItems.invalidate();
+      utils.rules.listSummary.invalidate();
       setShowDialog(false);
       resetForm();
       const msg = data.sourcePort ? `规则创建成功，源端口: ${data.sourcePort}` : "规则创建成功";
@@ -2297,6 +2374,9 @@ function RulesContent() {
   const updateMutation = trpc.rules.update.useMutation({
     onSuccess: () => {
       utils.rules.list.invalidate();
+      utils.rules.listPage.invalidate();
+      utils.rules.mapItems.invalidate();
+      utils.rules.listSummary.invalidate();
       setShowDialog(false);
       resetForm();
       toast.success("规则更新成功");
@@ -2307,44 +2387,21 @@ function RulesContent() {
   const deleteMutation = trpc.rules.delete.useMutation({
     onSuccess: () => {
       utils.rules.list.invalidate();
+      utils.rules.listPage.invalidate();
+      utils.rules.mapItems.invalidate();
+      utils.rules.listSummary.invalidate();
       toast.success("规则已删除");
     },
     onError: (err) => toast.error(err.message || "删除失败"),
   });
 
   const reorderRulesMutation = trpc.rules.reorder.useMutation({
-    onMutate: async ({ ids }) => {
-      await utils.rules.list.cancel();
-      if (effectiveRulesQuery) {
-        await utils.rules.list.cancel(effectiveRulesQuery as any);
-      }
-      const previousDefault = utils.rules.list.getData();
-      const previousScoped = effectiveRulesQuery ? utils.rules.list.getData(effectiveRulesQuery as any) : undefined;
-      const order = new Map(ids.map((id, index) => [Number(id), index]));
-      const applyOrder = (items?: any[]) => (
-        items?.map((rule: any) => {
-          const id = Number(rule.id);
-          return order.has(id) ? { ...rule, sortOrder: order.get(id) } : rule;
-        })
-      );
-      const nextDefault = applyOrder(previousDefault as any[] | undefined);
-      const nextScoped = applyOrder(previousScoped as any[] | undefined);
-      if (nextDefault) utils.rules.list.setData(undefined, nextDefault as any);
-      if (effectiveRulesQuery && nextScoped) utils.rules.list.setData(effectiveRulesQuery as any, nextScoped as any);
-      return { previousDefault, previousScoped };
-    },
-    onError: (err, _variables, context) => {
-      if (context?.previousDefault) utils.rules.list.setData(undefined, context.previousDefault as any);
-      if (effectiveRulesQuery && context?.previousScoped) {
-        utils.rules.list.setData(effectiveRulesQuery as any, context.previousScoped as any);
-      }
-      toast.error(err.message || "排序保存失败");
-    },
+    onError: (err) => toast.error(err.message || "排序保存失败"),
     onSettled: () => {
       utils.rules.list.invalidate();
-      if (effectiveRulesQuery) {
-        utils.rules.list.invalidate(effectiveRulesQuery as any);
-      }
+      utils.rules.listPage.invalidate();
+      utils.rules.mapItems.invalidate();
+      utils.rules.listSummary.invalidate();
     },
   });
 
@@ -2418,6 +2475,9 @@ function RulesContent() {
   const toggleMutation = trpc.rules.toggle.useMutation({
     onSuccess: () => {
       utils.rules.list.invalidate();
+      utils.rules.listPage.invalidate();
+      utils.rules.mapItems.invalidate();
+      utils.rules.listSummary.invalidate();
       utils.auth.me.invalidate();
       utils.billing.me.invalidate();
     },
@@ -3270,6 +3330,9 @@ function RulesContent() {
         }
       }
       await utils.rules.list.invalidate();
+      await utils.rules.listPage.invalidate();
+      await utils.rules.mapItems.invalidate();
+      await utils.rules.listSummary.invalidate();
       await utils.rules.trafficSummary.invalidate();
       toast.success("已复制 " + copied + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
       if (copied > 0) setShowCopyDialog(false);
@@ -3315,6 +3378,9 @@ function RulesContent() {
         if (result.skipped) skipped += 1;
       }
       await utils.rules.list.invalidate();
+      await utils.rules.listPage.invalidate();
+      await utils.rules.mapItems.invalidate();
+      await utils.rules.listSummary.invalidate();
       await utils.rules.trafficSummary.invalidate();
       toast.success("已批量编辑 " + updated + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
       if (updated > 0) setShowCopyDialog(false);
@@ -3373,6 +3439,9 @@ function RulesContent() {
       }
       setCopyRuleIds((prev) => prev.filter((id) => !copySelectedRules.some((rule: any) => Number(rule.id) === id)));
       await utils.rules.list.invalidate();
+      await utils.rules.listPage.invalidate();
+      await utils.rules.mapItems.invalidate();
+      await utils.rules.listSummary.invalidate();
       await utils.rules.trafficSummary.invalidate();
       toast.success("已删除 " + deleted + " 条规则");
     } catch (error: any) {
@@ -3780,6 +3849,9 @@ function RulesContent() {
   const batchCopyDisabled = !canAdd || copyActionPending || selectedBatchRuleCount === 0 || selectedBatchTargetCount === 0;
   const batchEditDisabled = copyActionPending || selectedBatchRuleCount === 0 || !hasBatchEditChanges;
   const ruleCategoryCounts = useMemo(() => {
+    if (!needsFullRuleList && rulePageQuery.data?.categoryCounts) {
+      return rulePageQuery.data.categoryCounts;
+    }
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
     const baseFilters = {
       ...ruleFilters,
@@ -3794,7 +3866,7 @@ function RulesContent() {
         counts[category] += 1;
       });
     return counts;
-  }, [baseScopedRules, forwardGroupById, ruleFilters, selectedScopeQueryEnabled, selectedScopedRules]);
+  }, [baseScopedRules, forwardGroupById, needsFullRuleList, ruleFilters, rulePageQuery.data?.categoryCounts, selectedScopeQueryEnabled, selectedScopedRules]);
   const ruleCategoryItems = useMemo<SlidingTabItem<RuleCategory>[]>(() => [
     { value: "all", label: "全部", icon: LayoutGrid, badge: ruleCategoryCounts.all },
     { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, badge: ruleCategoryCounts.local },
@@ -3978,7 +4050,7 @@ function RulesContent() {
     });
     return m;
   }, [totalTrafficSummaryRows]);
-  const dailyTrafficTotals = useMemo(() => {
+  const pageDailyTrafficTotals = useMemo(() => {
     let bytesIn = 0;
     let bytesOut = 0;
     let connections = 0;
@@ -3989,7 +4061,7 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [dailyTrafficSummaryRows]);
-  const totalTrafficTotals = useMemo(() => {
+  const pageTotalTrafficTotals = useMemo(() => {
     let bytesIn = 0;
     let bytesOut = 0;
     let connections = 0;
@@ -4000,6 +4072,8 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [totalTrafficSummaryRows]);
+  const dailyTrafficTotals = ruleListSummary?.dailyTraffic || pageDailyTrafficTotals;
+  const totalTrafficTotals = ruleListSummary?.totalTraffic || pageTotalTrafficTotals;
   const compareRulesBySavedOrder = useCallback((a: any, b: any) => {
     const aCategory = getRuleCategory(a, forwardGroupById);
     const bCategory = getRuleCategory(b, forwardGroupById);
@@ -4030,17 +4104,15 @@ function RulesContent() {
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all" || ruleSearchQuery.trim().length > 0;
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
-  const totalTrafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!totalTrafficSummary && stableTotalTrafficSummaryRows.length === 0)));
-  const dailyTrafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!dailyTrafficSummary && stableDailyTrafficSummaryRows.length === 0)));
-  const activeCount = useMemo(
-    () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,
-    [filteredRules, isRuleSupported]
-  );
-  const filteredRuleTotal = filteredRules.length;
-  const rulePagination = usePersistentPagination(sortedFilteredRules, {
-    storageKey: "forwardx.rules.page",
+  const totalTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
+  const dailyTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
+  const activeCount = needsFullRuleList
+    ? filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length
+    : Number(rulePageQuery.data?.activeItems || 0);
+  const filteredRuleTotal = needsFullRuleList ? filteredRules.length : Number(rulePageQuery.data?.totalItems || 0);
+  const rulePagination = useServerPagination(needsFullRuleList || isRuleGlobeView ? [] : sortedFilteredRules, filteredRuleTotal, rulePageRequest, {
     pageSize: rulePageSize,
-    isReady: !isLoading && !!rules,
+    isReady: !isLoading && !!rulePageQuery.data,
   });
   const pagedRules = rulePagination.items;
   const ruleSortingEnabled = ruleCategory !== "all" && effectiveViewMode !== "globe";
@@ -4067,6 +4139,7 @@ function RulesContent() {
       reorderRulesMutation.mutate({
         category: ruleCategory,
         ids: nextRules.map((rule: any) => Number(rule.id)),
+        startIndex: (rulePagination.currentPage - 1) * rulePagination.pageSize,
       });
     },
   });
@@ -4996,6 +5069,9 @@ function RulesContent() {
         importedCount += 1;
       }
       await utils.rules.list.invalidate();
+      await utils.rules.listPage.invalidate();
+      await utils.rules.mapItems.invalidate();
+      await utils.rules.listSummary.invalidate();
       await utils.rules.trafficSummary.invalidate();
       toast.success(`已导入 ${importedCount} 条规则`);
       setShowImportDialog(false);

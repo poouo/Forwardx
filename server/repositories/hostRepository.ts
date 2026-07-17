@@ -69,7 +69,7 @@ export async function updateHost(id: number, data: Partial<InsertHost>) {
   await db.update(hosts).set({ ...data, updatedAt: nowDate() }).where(eq(hosts.id, id));
 }
 
-export async function reorderHosts(ids: number[], userId?: number) {
+export async function reorderHosts(ids: number[], userId?: number, startIndex = 0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const orderedIds = Array.from(ids)
@@ -89,8 +89,9 @@ export async function reorderHosts(ids: number[], userId?: number) {
     params,
   );
   if (rows.length !== orderedIds.length) throw new Error("排序中包含无权操作或不存在的主机");
+  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
   for (const [index, id] of orderedIds.entries()) {
-    await executeRaw(`UPDATE ${q("hosts")} SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [index, Math.floor(Date.now() / 1000), id]);
+    await executeRaw(`UPDATE ${q("hosts")} SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [normalizedStartIndex + index, Math.floor(Date.now() / 1000), id]);
   }
 }
 

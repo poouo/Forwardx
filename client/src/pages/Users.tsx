@@ -3,7 +3,7 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import DatePickerInput, { formatDateInputValue, parseDateInputValue } from "@/components/DatePickerInput";
-import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { migrateLegacyAvatarValue } from "@/lib/avatar";
@@ -313,10 +313,10 @@ function UsersContent() {
   const [addBillingHostId, setAddBillingHostId] = useState("");
   const [addBillingTunnelId, setAddBillingTunnelId] = useState("");
   const [addBillingForwardGroupId, setAddBillingForwardGroupId] = useState("");
-  const { data: allHosts } = trpc.hosts.listAll.useQuery();
-  const { data: allTunnels } = trpc.tunnels.listAll.useQuery();
-  const { data: allForwardGroups } = trpc.forwardGroups.list.useQuery();
-  const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery();
+  const { data: allHosts } = trpc.hosts.listAll.useQuery(undefined, { enabled: showTrafficSettings });
+  const { data: allTunnels } = trpc.tunnels.options.useQuery(undefined, { enabled: showTrafficSettings });
+  const { data: allForwardGroups } = trpc.forwardGroups.list.useQuery(undefined, { enabled: showTrafficSettings });
+  const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: userForwardGroupPerms } = trpc.users.getForwardGroupPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
@@ -333,31 +333,41 @@ function UsersContent() {
     enabled: currentUser?.role === "admin",
     refetchInterval: pollingInterval("slow"),
   });
-  const { data: allSubscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery(
-    {},
-    { enabled: currentUser?.role === "admin" }
-  );
+  const subscriptionPageRequest = usePersistentPageRequest("forwardx.users.subscriptions.page");
+  const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
+    page: subscriptionPageRequest.page,
+    pageSize: 12,
+  }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions" });
+  const allSubscriptions = subscriptionPageQuery.data?.items || [];
+  const subscriptionsLoading = subscriptionPageQuery.isLoading;
   const clearHostPermsMutation = trpc.users.setHostPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "清理旧主机授权失败"),
   });
   const updateForwardGroupPermsMutation = trpc.users.setForwardGroupPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "更新转发组授权失败"),
   });
   const updateTunnelPermsMutation = trpc.users.setTunnelPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "更新隧道权限失败"),
   });
   const updateTrafficBillingPermsMutation = trpc.users.setTrafficBillingPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "更新流量计费授权失败"),
   });
@@ -390,22 +400,28 @@ function UsersContent() {
     }
   }, [currentUser, setLocation]);
 
-  const { data: users, isLoading } = trpc.users.list.useQuery(undefined, {
-    enabled: currentUser?.role === "admin",
+  const userPageRequest = usePersistentPageRequest("forwardx.users.page");
+  const userPageInput = { page: userPageRequest.page, pageSize: 12 } as const;
+  const userPageQuery = trpc.users.listPage.useQuery(userPageInput, {
+    enabled: currentUser?.role === "admin" && manageType === "accounts",
   });
+  const users = userPageQuery.data?.items;
+  const isLoading = userPageQuery.isLoading;
 
   const patchCachedUser = (userId: number, patch: Record<string, unknown>) => {
-    const current = utils.users.list.getData();
-    if (!Array.isArray(current)) return;
-    utils.users.list.setData(
-      undefined,
-      current.map((user: any) => (Number(user.id) === Number(userId) ? { ...user, ...patch } : user)),
-    );
+    const current = utils.users.listPage.getData(userPageInput);
+    if (!current) return;
+    utils.users.listPage.setData(userPageInput, {
+      ...current,
+      items: current.items.map((user: any) => (Number(user.id) === Number(userId) ? { ...user, ...patch } : user)),
+    });
   };
 
   const createUserMutation = trpc.users.create.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
       toast.success("用户创建成功");
       setShowCreateUser(false);
       setNewUsername("");
@@ -419,6 +435,8 @@ function UsersContent() {
   const resetPasswordMutation = trpc.users.resetPassword.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
       toast.success("账户信息已更新");
       setShowResetPassword(false);
       setResetUsernameInput("");
@@ -431,6 +449,8 @@ function UsersContent() {
   const deleteMutation = trpc.users.delete.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
       toast.success("用户已删除");
       setShowDeleteUser(false);
       setDeleteUserId(null);
@@ -442,6 +462,7 @@ function UsersContent() {
   const removeTwoFactorMutation = trpc.users.removeTwoFactor.useMutation({
     onSuccess: (data) => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       toast.success(data.removed ? "双因素认证已移除" : "该用户未绑定双因素认证");
       setShowRemoveTwoFactor(false);
       setRemoveTwoFactorUserId(null);
@@ -477,6 +498,7 @@ function UsersContent() {
         allowedForwardTypes: variables.allowedForwardTypes,
       });
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       toast.success("流量设置已更新");
       setShowTrafficSettings(false);
     },
@@ -486,6 +508,7 @@ function UsersContent() {
   const resetTrafficMutation = trpc.users.resetTraffic.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       toast.success("流量已重置");
       setShowResetTraffic(false);
       setResetTrafficUserId(null);
@@ -497,8 +520,8 @@ function UsersContent() {
   const updateForwardAccessMutation = trpc.users.setForwardAccess.useMutation({
     onMutate: async (variables) => {
       setForwardAccessPendingUserId(variables.userId);
-      await utils.users.list.cancel();
-      const previousUsers = utils.users.list.getData();
+      await utils.users.listPage.cancel(userPageInput);
+      const previousUsers = utils.users.listPage.getData(userPageInput);
       patchCachedUser(variables.userId, {
         canAddRules: variables.enabled,
         manualCanAddRules: variables.enabled,
@@ -516,20 +539,21 @@ function UsersContent() {
       toast.success("用户转发权限已更新");
     },
     onError: (err, _variables, context) => {
-      if (context?.previousUsers) utils.users.list.setData(undefined, context.previousUsers);
+      if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
       toast.error(err.message || "更新转发权限失败");
     },
     onSettled: (_data, _error, variables) => {
       setForwardAccessPendingUserId((current) => (current === variables?.userId ? null : current));
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
     },
   });
 
   const updateAccountEnabledMutation = trpc.users.setAccountEnabled.useMutation({
     onMutate: async (variables) => {
       setAccountEnabledPendingUserId(variables.userId);
-      await utils.users.list.cancel();
-      const previousUsers = utils.users.list.getData();
+      await utils.users.listPage.cancel(userPageInput);
+      const previousUsers = utils.users.listPage.getData(userPageInput);
       patchCachedUser(variables.userId, { accountEnabled: variables.enabled });
       return { previousUsers };
     },
@@ -539,18 +563,20 @@ function UsersContent() {
       toast.success(variables.enabled ? "账户已启用" : "账户已禁用，已有规则已失效");
     },
     onError: (err, _variables, context) => {
-      if (context?.previousUsers) utils.users.list.setData(undefined, context.previousUsers);
+      if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
       toast.error(err.message || "更新账户状态失败");
     },
     onSettled: (_data, _error, variables) => {
       setAccountEnabledPendingUserId((current) => (current === variables?.userId ? null : current));
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
     },
   });
 
   const adminRechargeMutation = trpc.billing.adminRecharge.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
@@ -564,6 +590,7 @@ function UsersContent() {
   const adminSetBalanceMutation = trpc.billing.adminSetBalance.useMutation({
     onSuccess: (data) => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
@@ -576,8 +603,10 @@ function UsersContent() {
   const adminAddTrafficAddonMutation = trpc.billing.adminAddTrafficAddon.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
       toast.success("本周期附加流量已生效");
       setShowAddonDialog(false);
       setAddonUserId(null);
@@ -591,8 +620,10 @@ function UsersContent() {
   const extendSubscriptionMutation = trpc.plans.extendSubscription.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
       toast.success("订阅到期时间已更新");
       setShowExtendDialog(false);
       setExtendSubscriptionId(null);
@@ -611,8 +642,10 @@ function UsersContent() {
     },
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.users.listPage.invalidate();
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
       toast.success("订阅已取消");
       setShowCancelSubscriptionDialog(false);
       setCancelSubscriptionId(null);
@@ -626,39 +659,37 @@ function UsersContent() {
     },
   });
 
-  const adminCount = useMemo(() => users?.filter((u: any) => u.role === "admin").length ?? 0, [users]);
+  const adminCount = Number(userSummary?.adminUsers ?? userPageQuery.data?.adminItems ?? 0);
   const visibleSubscriptions = useMemo(
     () => (allSubscriptions as any[]).filter((sub: any) => sub?.status !== "cancelled" && !hiddenCancelledSubscriptionIds.includes(Number(sub?.id))),
     [allSubscriptions, hiddenCancelledSubscriptionIds],
   );
-  const activeSubscriptionCount = useMemo(() => visibleSubscriptions.filter(isSubscriptionActive).length, [visibleSubscriptions]);
+  const activeSubscriptionCount = Number(userSummary?.activeSubscriptions ?? subscriptionPageQuery.data?.activeItems ?? 0);
   const userManageTabItems = useMemo<SlidingTabItem<UserManageType>[]>(() => [
     { value: "accounts", label: "账户管理", icon: UsersIcon },
     {
       value: "subscriptions",
       label: "用户订阅管理",
       icon: Package,
-      badge: (subscriptionsLoading || activeSubscriptionCount > 0) ? (
+      badge: (summaryLoading || activeSubscriptionCount > 0) ? (
         <AnimatedStatValue
           value={activeSubscriptionCount}
-          loading={subscriptionsLoading}
+          loading={summaryLoading}
           cacheKey="users.tabs.activeSubscriptionCount"
           fallbackValue={0}
           className="leading-none"
         />
       ) : null,
     },
-  ], [activeSubscriptionCount, subscriptionsLoading]);
-  const userPagination = usePersistentPagination(users || [], {
-    storageKey: "forwardx.users.page",
+  ], [activeSubscriptionCount, summaryLoading]);
+  const userPagination = useServerPagination(users || [], Number(userPageQuery.data?.totalItems || 0), userPageRequest, {
     pageSize: 12,
-    isReady: !isLoading && !!users,
+    isReady: !isLoading && !!userPageQuery.data,
   });
   const pagedUsers = userPagination.items;
-  const subscriptionPagination = usePersistentPagination(visibleSubscriptions, {
-    storageKey: "forwardx.users.subscriptions.page",
+  const subscriptionPagination = useServerPagination(visibleSubscriptions, Number(subscriptionPageQuery.data?.totalItems || 0), subscriptionPageRequest, {
     pageSize: 12,
-    isReady: !subscriptionsLoading,
+    isReady: !subscriptionsLoading && !!subscriptionPageQuery.data,
   });
   const pagedSubscriptions = subscriptionPagination.items;
 
@@ -1142,7 +1173,7 @@ function UsersContent() {
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <UsersIcon className="h-3 w-3 text-primary" />
             <AnimatedStatValue
-              value={`${users?.length ?? 0} 用户`}
+              value={`${userPageQuery.data?.totalItems ?? 0} 用户`}
               loading={isLoading || !users}
               cacheKey="users.header.totalUsers"
               fallbackValue="0 用户"
@@ -1158,7 +1189,7 @@ function UsersContent() {
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <UserStatCard
           title="用户总数"
-          value={userSummary?.totalUsers ?? users?.length ?? 0}
+          value={userSummary?.totalUsers ?? userPageQuery.data?.totalItems ?? 0}
           subtitle={`${adminCount} 个管理员`}
           icon={UsersIcon}
           tone="bg-gradient-to-br from-teal-500 to-teal-600"

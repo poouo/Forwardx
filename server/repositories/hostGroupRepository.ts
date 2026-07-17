@@ -187,7 +187,7 @@ export async function reorderHostGroups(ids: number[], userId?: number) {
   }
 }
 
-export async function reorderHostGroupMembers(groupId: number, hostIds: number[]) {
+export async function reorderHostGroupMembers(groupId: number, hostIds: number[], startIndex = 0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const normalizedGroupId = Math.floor(Number(groupId));
@@ -206,13 +206,14 @@ export async function reorderHostGroupMembers(groupId: number, hostIds: number[]
     [normalizedGroupId, ...list.params],
   );
   if (rows.length !== orderedIds.length) throw new Error("排序中包含不属于该分组的主机");
+  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
   for (const [index, hostId] of orderedIds.entries()) {
     await executeRaw(
       `UPDATE ${q("host_group_members")}
           SET ${q("sortOrder")} = ?
         WHERE ${q("groupId")} = ?
           AND ${q("hostId")} = ?`,
-      [index, normalizedGroupId, hostId],
+      [normalizedStartIndex + index, normalizedGroupId, hostId],
     );
   }
 }

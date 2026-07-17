@@ -13,7 +13,7 @@ import {
 } from "@/components/LatencyTimeRangeSelect";
 import type { LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
-import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -1503,6 +1503,9 @@ function TunnelSelfTestDialog({
   const testMutation = trpc.tunnels.test.useMutation({
     onSuccess: async () => {
       await utils.tunnels.list.invalidate();
+      await utils.tunnels.options.invalidate();
+      await utils.tunnels.listPage.invalidate();
+      await utils.tunnels.mapItems.invalidate();
     },
     onError: (e) => {
       setOptimisticTesting(false);
@@ -2112,9 +2115,7 @@ function tunnelMatchesLinkSearch(
 function TunnelsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
-  const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: pollingInterval("active") });
-  const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: forwardGroups, isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
+  const { data: hosts } = trpc.hosts.options.useQuery();
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -2138,6 +2139,116 @@ function TunnelsContent() {
   const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ mode: TunnelGroupMode; requestKey: number } | null>(null);
   const [deleteTunnel, setDeleteTunnel] = useState<any | null>(null);
+  const tunnelPageRequest = usePersistentPageRequest("forwardx.tunnels.page");
+  const tunnelPageFilterKey = linkSearchQuery.trim();
+  const previousTunnelPageFilterKey = useRef(tunnelPageFilterKey);
+  useEffect(() => {
+    if (previousTunnelPageFilterKey.current === tunnelPageFilterKey) return;
+    previousTunnelPageFilterKey.current = tunnelPageFilterKey;
+    tunnelPageRequest.setPage(1);
+  }, [tunnelPageFilterKey, tunnelPageRequest.setPage]);
+  const tunnelPageInput = {
+    page: tunnelPageRequest.page,
+    pageSize: 12,
+    search: linkSearchQuery,
+  };
+  const tunnelPageQuery = trpc.tunnels.listPage.useQuery(tunnelPageInput, {
+    enabled: activeSection === "tunnels",
+    refetchInterval: pollingInterval("active"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const isTunnelGlobeView = activeSection === "tunnels" && viewMode === "globe";
+  const tunnelMapQuery = trpc.tunnels.mapItems.useInfiniteQuery({
+    limit: 100,
+    search: linkSearchQuery,
+  }, {
+    enabled: isTunnelGlobeView,
+    initialCursor: 0,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const mapTunnels = useMemo<any[]>(
+    () => tunnelMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
+    [tunnelMapQuery.data?.pages],
+  );
+  useEffect(() => {
+    if (!isTunnelGlobeView || !tunnelMapQuery.hasNextPage || tunnelMapQuery.isFetchingNextPage) return;
+    const loadNextPage = () => void tunnelMapQuery.fetchNextPage();
+    let idleHandle: number | undefined;
+    let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    if ("requestIdleCallback" in window) {
+      idleHandle = window.requestIdleCallback(loadNextPage, { timeout: 1_500 });
+    } else {
+      timeoutHandle = globalThis.setTimeout(loadNextPage, 120);
+    }
+    return () => {
+      if (idleHandle !== undefined && "cancelIdleCallback" in window) window.cancelIdleCallback(idleHandle);
+      if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
+    };
+  }, [isTunnelGlobeView, tunnelMapQuery.fetchNextPage, tunnelMapQuery.hasNextPage, tunnelMapQuery.isFetchingNextPage]);
+  const needsFullTunnelList = activeSection !== "tunnels";
+  const fullTunnelQuery = trpc.tunnels.options.useQuery(undefined, {
+    enabled: needsFullTunnelList,
+    refetchInterval: pollingInterval("active"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const tunnels = (isTunnelGlobeView
+    ? mapTunnels
+    : needsFullTunnelList
+      ? fullTunnelQuery.data || tunnelPageQuery.data?.items
+      : tunnelPageQuery.data?.items) as any[] | undefined;
+  const isLoading = isTunnelGlobeView
+    ? tunnelMapQuery.isLoading
+    : needsFullTunnelList
+      ? fullTunnelQuery.isLoading
+      : tunnelPageQuery.isLoading;
+  const activeForwardGroupMode = activeSection === "ports"
+    ? "port"
+    : activeSection === "chains"
+      ? "chain"
+      : activeSection === "groups"
+        ? "failover"
+        : activeSection === "entries"
+          ? "entry"
+          : activeSection === "exits"
+            ? "exit"
+            : null;
+  const forwardGroupSummaryQuery = trpc.forwardGroups.listPage.useQuery({
+    page: 1,
+    pageSize: 1,
+    groupMode: activeForwardGroupMode || "failover",
+    search: linkSearchQuery,
+  }, {
+    enabled: activeForwardGroupMode !== null,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const isChainGlobeView = activeSection === "chains" && chainViewMode === "globe";
+  const needsFullForwardGroupList = showDialog || showCreateTypeDialog || isChainGlobeView;
+  const fullForwardGroupQuery = trpc.forwardGroups.list.useQuery(undefined, {
+    enabled: needsFullForwardGroupList,
+    refetchInterval: pollingInterval("normal"),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const relatedTunnelGroups = useMemo<any[]>(() => {
+    const source = isTunnelGlobeView
+      ? tunnelMapQuery.data?.pages.flatMap((page) => page.relatedGroups as any[]) || []
+      : (tunnelPageQuery.data?.relatedGroups || []) as any[];
+    return Array.from(new Map(source.map((group: any) => [Number(group.id), group])).values());
+  }, [isTunnelGlobeView, tunnelMapQuery.data?.pages, tunnelPageQuery.data?.relatedGroups]);
+  const forwardGroups = (fullForwardGroupQuery.data || relatedTunnelGroups) as any[];
+  const forwardGroupsLoading = needsFullForwardGroupList
+    ? fullForwardGroupQuery.isLoading
+    : activeForwardGroupMode !== null
+      ? forwardGroupSummaryQuery.isLoading
+      : isTunnelGlobeView
+        ? tunnelMapQuery.isLoading
+        : tunnelPageQuery.isLoading;
   const deleteImpactQuery = trpc.tunnels.deleteImpact.useQuery(
     { id: Number(deleteTunnel?.id || 0) },
     { enabled: !!deleteTunnel },
@@ -2401,11 +2512,15 @@ function TunnelsContent() {
     if (!normalizedLinkSearchQuery) return exitGroups;
     return exitGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
   }, [entryGroupById, exitGroups, hosts, normalizedLinkSearchQuery, tunnels]);
-  const tunnelPagination = usePersistentPagination(tunnelItems, {
-    storageKey: "forwardx.tunnels.page",
-    pageSize: 12,
-    isReady: !isLoading && !!tunnels,
-  });
+  const tunnelPagination = useServerPagination(
+    needsFullTunnelList || isTunnelGlobeView ? [] : tunnelItems,
+    Number(tunnelPageQuery.data?.totalItems || 0),
+    tunnelPageRequest,
+    {
+      pageSize: 12,
+      isReady: !isLoading && !!tunnelPageQuery.data,
+    },
+  );
   const pagedTunnels = tunnelPagination.items;
   const editingTunnel = useMemo(
     () => editingId ? (tunnels || []).find((tunnel: any) => Number(tunnel.id) === Number(editingId)) || null : null,
@@ -2568,9 +2683,31 @@ function TunnelsContent() {
     setShowDialog(true);
   };
 
+  const openingMapTunnelIds = useRef(new Set<number>());
+  const openMapTunnelEdit = async (tunnel: any) => {
+    const tunnelId = Number(tunnel?.id);
+    if (!Number.isInteger(tunnelId) || tunnelId <= 0 || openingMapTunnelIds.current.has(tunnelId)) return;
+    openingMapTunnelIds.current.add(tunnelId);
+    try {
+      const fullTunnel = await utils.tunnels.getById.fetch({ id: tunnelId });
+      if (!fullTunnel) {
+        toast.error("隧道不存在或当前账号无权访问");
+        return;
+      }
+      openEdit(fullTunnel);
+    } catch (error: any) {
+      toast.error(error?.message || "获取隧道详情失败");
+    } finally {
+      openingMapTunnelIds.current.delete(tunnelId);
+    }
+  };
+
   const createMutation = trpc.tunnels.create.useMutation({
     onSuccess: () => {
       utils.tunnels.list.invalidate();
+      utils.tunnels.options.invalidate();
+      utils.tunnels.listPage.invalidate();
+      utils.tunnels.mapItems.invalidate();
       setShowDialog(false);
       setShowCreateTypeDialog(false);
       setActiveSection("tunnels");
@@ -2599,14 +2736,32 @@ function TunnelsContent() {
   });
 
   const updateMutation = trpc.tunnels.update.useMutation({
-    onSuccess: (result: any) => {
-      utils.tunnels.list.invalidate();
-      utils.forwardGroups.list.invalidate();
-      utils.rules.list.invalidate();
+    onSuccess: async (result: any) => {
+      const updatedTunnel = result?.tunnel;
+      const patchTunnelCache = (items: any[] | undefined) => items?.map((tunnel: any) => (
+        Number(tunnel.id) === Number(updatedTunnel?.id) ? { ...tunnel, ...updatedTunnel } : tunnel
+      ));
+      if (updatedTunnel) {
+        const cachedTunnels = utils.tunnels.list.getData();
+        const cachedAllTunnels = utils.tunnels.listAll.getData();
+        if (cachedTunnels) utils.tunnels.list.setData(undefined, patchTunnelCache(cachedTunnels) as any);
+        if (cachedAllTunnels) utils.tunnels.listAll.setData(undefined, patchTunnelCache(cachedAllTunnels) as any);
+      }
       setShowDialog(false);
       resetForm();
       const syncedRuleCount = Number(result?.syncedRuleCount || 0);
       toast.success(syncedRuleCount > 0 ? `隧道已更新，已同步 ${syncedRuleCount} 条引用规则` : "隧道已更新");
+      await Promise.all([
+        utils.tunnels.list.invalidate(),
+        utils.tunnels.options.invalidate(),
+        utils.tunnels.listPage.invalidate(),
+        utils.tunnels.mapItems.invalidate(),
+        utils.tunnels.listAll.invalidate(),
+        utils.forwardGroups.list.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.trafficBilling.configs.invalidate(),
+        utils.trafficBilling.storeResources.invalidate(),
+      ]);
     },
     onError: (e) => toast.error(e.message || "更新失败"),
   });
@@ -2614,6 +2769,9 @@ function TunnelsContent() {
   const deleteMutation = trpc.tunnels.delete.useMutation({
     onSuccess: () => {
       utils.tunnels.list.invalidate();
+      utils.tunnels.options.invalidate();
+      utils.tunnels.listPage.invalidate();
+      utils.tunnels.mapItems.invalidate();
       utils.rules.list.invalidate();
       setDeleteTunnel(null);
       toast.success("隧道已删除");
@@ -2622,26 +2780,12 @@ function TunnelsContent() {
   });
 
   const reorderTunnelsMutation = trpc.tunnels.reorder.useMutation({
-    onMutate: async ({ ids }) => {
-      await utils.tunnels.list.cancel();
-      const previous = utils.tunnels.list.getData();
-      if (previous) {
-        const order = new Map(ids.map((id, index) => [Number(id), index]));
-        utils.tunnels.list.setData(
-          undefined,
-          [...previous]
-          .sort((a: any, b: any) => (order.get(Number(a.id)) ?? Number.MAX_SAFE_INTEGER) - (order.get(Number(b.id)) ?? Number.MAX_SAFE_INTEGER))
-          .map((tunnel: any) => order.has(Number(tunnel.id)) ? { ...tunnel, sortOrder: order.get(Number(tunnel.id)) } : tunnel) as any,
-        );
-      }
-      return { previous };
-    },
-    onError: (e, _variables, context) => {
-      if (context?.previous) utils.tunnels.list.setData(undefined, context.previous as any);
-      toast.error(e.message || "排序保存失败");
-    },
+    onError: (e) => toast.error(e.message || "排序保存失败"),
     onSettled: () => {
       utils.tunnels.list.invalidate();
+      utils.tunnels.options.invalidate();
+      utils.tunnels.listPage.invalidate();
+      utils.tunnels.mapItems.invalidate();
     },
   });
   const tunnelSortable = useSortableReorder({
@@ -2649,7 +2793,10 @@ function TunnelsContent() {
     getId: (tunnel: any) => Number(tunnel.id),
     disabled: tunnelItems.length < 2,
     onReorder: (nextTunnels) => {
-      reorderTunnelsMutation.mutate({ ids: nextTunnels.map((tunnel: any) => Number(tunnel.id)) });
+      reorderTunnelsMutation.mutate({
+        ids: nextTunnels.map((tunnel: any) => Number(tunnel.id)),
+        startIndex: (tunnelPagination.currentPage - 1) * tunnelPagination.pageSize,
+      });
     },
   });
 
@@ -3318,38 +3465,54 @@ function TunnelsContent() {
     else if (nextViewMode !== "globe") handleChainViewModeChange(nextViewMode);
   };
   const activeSectionTransitionKey = activeSection === "chains"
-    ? `chains-${chainViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredChainGroups.length > 0 ? "list" : "empty"}`
+    ? `chains-${chainViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : (isChainGlobeView ? filteredChainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)) > 0 ? "list" : "empty"}`
     : activeSection === "ports"
-      ? `ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredPortGroups.length > 0 ? "list" : "empty"}`
+      ? `ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
       : activeSection === "groups"
-        ? `groups-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredFailoverGroups.length > 0 ? "list" : "empty"}`
+        ? `groups-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
       : activeSection === "entries"
-        ? `entries-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredEntryGroups.length > 0 ? "list" : "empty"}`
+        ? `entries-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
         : activeSection === "exits"
-          ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredExitGroups.length > 0 ? "list" : "empty"}`
+          ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
           : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
-    ? { value: `${activeChainCount} / ${chainGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+    ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
     : activeSection === "ports"
-      ? { value: `${activePortCount} / ${portGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+      ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
       : activeSection === "groups"
-        ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+        ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
         : activeSection === "entries"
-          ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 可用", iconClass: "text-emerald-500" }
+          ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 可用", iconClass: "text-emerald-500" }
           : activeSection === "exits"
-            ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
-            : { value: `${activeCount} / ${tunnels?.length ?? 0} 可用`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 可用", iconClass: "text-chart-2" };
+            ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+            : {
+                value: `${isTunnelGlobeView
+                  ? Number(tunnelMapQuery.data?.pages[0]?.availableItems || 0)
+                  : needsFullTunnelList
+                    ? activeCount
+                    : Number(tunnelPageQuery.data?.availableItems || 0)} / ${isTunnelGlobeView
+                  ? Number(tunnelMapQuery.data?.pages[0]?.totalItems || 0)
+                  : tunnelPageQuery.data?.totalItems ?? tunnels?.length ?? 0} 可用`,
+                loading: isLoading || !tunnels,
+                cacheKey: "tunnels.header.active",
+                fallback: "0 / 0 可用",
+                iconClass: "text-chart-2",
+              };
   const linkSearchStats = activeSection === "ports"
-    ? { filtered: filteredPortGroups.length, total: portGroups.length, unit: "条" }
+    ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "条" }
     : activeSection === "chains"
-      ? { filtered: filteredChainGroups.length, total: chainGroups.length, unit: "条" }
+      ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "条" }
       : activeSection === "groups"
-        ? { filtered: filteredFailoverGroups.length, total: failoverGroups.length, unit: "个" }
+        ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
         : activeSection === "entries"
-          ? { filtered: filteredEntryGroups.length, total: entryGroups.length, unit: "个" }
+          ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
           : activeSection === "exits"
-            ? { filtered: filteredExitGroups.length, total: exitGroups.length, unit: "个" }
-            : { filtered: tunnelItems.length, total: rawTunnelItems.length, unit: "条" };
+            ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
+            : {
+                filtered: Number(tunnelPageQuery.data?.totalItems ?? tunnelItems.length),
+                total: Number(tunnelPageQuery.data?.scopeTotalItems ?? rawTunnelItems.length),
+                unit: "条",
+              };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
@@ -3569,7 +3732,7 @@ function TunnelsContent() {
             isTunnelSupported={isTunnelSupported}
             tunnelAvailabilityById={tunnelAvailabilityById}
             groupAvailabilityById={groupAvailabilityById}
-            onEditTunnel={openEdit}
+            onEditTunnel={openMapTunnelEdit}
             onEditChain={handleGlobeChainEdit}
           />
         )
@@ -3927,7 +4090,7 @@ function TunnelsContent() {
         </TabsContent>
 
         <TabsContent value="ports" className="space-y-4">
-          <TunnelSectionTransition transitionKey={`ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading || !forwardGroups ? "loading" : filteredPortGroups.length > 0 ? "list" : "empty"}`}>
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
             <ForwardGroupsContent
               mode="port"
               embedded
@@ -3953,7 +4116,7 @@ function TunnelsContent() {
                   isTunnelSupported={isTunnelSupported}
                   tunnelAvailabilityById={tunnelAvailabilityById}
                   groupAvailabilityById={groupAvailabilityById}
-                  onEditTunnel={openEdit}
+                  onEditTunnel={openMapTunnelEdit}
                   onEditChain={handleGlobeChainEdit}
                 />
               )}

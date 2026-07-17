@@ -10,6 +10,7 @@ import {
   updateForwardGroupFromInput,
 } from "../services/forwardGroupService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { paginateItems } from "../../shared/pagination";
 
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
 const failoverTargetSchema = z.object({
@@ -90,13 +91,73 @@ export const forwardGroupsRouter = router({
     return db.filterForwardGroupFieldsForUse((groups as any[]).filter((group: any) => allowed.has(Number(group.id))));
   }),
 
+  listPage: protectedProcedure
+    .input(z.object({
+      page: z.number().int().positive().default(1),
+      pageSize: z.number().int().min(1).max(100).default(12),
+      groupMode: z.enum(["port", "failover", "chain", "entry", "exit"]),
+      search: z.string().trim().max(200).optional().default(""),
+    }))
+    .query(async ({ input, ctx }) => {
+      let groups: any[];
+      if (ctx.user.role === "admin") {
+        groups = await db.getForwardGroups(undefined, { includeRuntime: true }) as any[];
+      } else {
+        const groupIds = await db.getUserAllowedForwardGroupIds(ctx.user.id);
+        if (groupIds.length === 0) return {
+          ...paginateItems([], input),
+          scopeTotalItems: 0,
+          enabledItems: 0,
+          relatedGroups: [],
+        };
+        const allowed = new Set(groupIds);
+        const visible = (await db.getForwardGroups(undefined, { includeRuntime: true }) as any[])
+          .filter((group: any) => allowed.has(Number(group.id)));
+        groups = db.filterForwardGroupFieldsForUse(visible) as any[];
+      }
+      const modeGroups = groups.filter((group: any) => String(group.groupMode || "failover") === input.groupMode);
+      const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
+      let hostById = new Map<number, any>();
+      let tunnelById = new Map<number, any>();
+      if (tokens.length > 0) {
+        const [hosts, tunnels] = await Promise.all([db.getHosts(), db.getTunnels()]);
+        hostById = new Map((hosts as any[]).map((host: any) => [Number(host.id), host]));
+        tunnelById = new Map((tunnels as any[]).map((tunnel: any) => [Number(tunnel.id), tunnel]));
+      }
+      const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
+      const filtered = tokens.length === 0 ? modeGroups : modeGroups.filter((group: any) => {
+        const related = (group.members || []).flatMap((member: any) => [
+          hostById.get(Number(member.hostId || 0)),
+          tunnelById.get(Number(member.tunnelId || 0)),
+        ]);
+        const searchText = JSON.stringify([
+          group,
+          groupById.get(Number(group.entryGroupId || 0)),
+          ...related,
+        ]).toLowerCase();
+        return tokens.every((token) => searchText.includes(token));
+      });
+      const result = paginateItems(filtered, input);
+      const itemIds = new Set(result.items.map((group: any) => Number(group.id)));
+      const relatedGroupIds = new Set(result.items
+        .map((group: any) => Number(group.entryGroupId || 0))
+        .filter((id: number) => id > 0 && !itemIds.has(id)));
+      return {
+        ...result,
+        scopeTotalItems: modeGroups.length,
+        enabledItems: filtered.filter((group: any) => group.isEnabled !== false).length,
+        relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+      };
+    }),
+
   reorderGroups: adminProcedure
     .input(z.object({
       groupMode: z.enum(["port", "failover", "chain", "entry", "exit"]),
       ids: z.array(z.number().int().positive()).min(1),
+      startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
     }))
     .mutation(async ({ input }) => {
-      await db.reorderForwardGroups(input.groupMode, input.ids);
+      await db.reorderForwardGroups(input.groupMode, input.ids, input.startIndex);
       return { success: true };
     }),
 
@@ -148,8 +209,8 @@ export const forwardGroupsRouter = router({
   update: adminProcedure
     .input(baseSchema.extend({ id: z.number() }))
     .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
-      await updateForwardGroupFromInput(input.id, input);
-      return { success: true };
+      const group = await updateForwardGroupFromInput(input.id, input);
+      return { success: true, group };
     })),
 
   toggle: adminProcedure

@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "id": "china-region-whitelist",
   "name": "ForwardX 中国区域白名单",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。",
   "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则应用到 Agent 主机。\n\n启用后，插件程序和数据会自动同步到所有 Agent。左侧列出全部主机并支持筛选；点击主机后，可在右侧读取、新增、修改、删除和刷新该主机的实际白名单规则。每台 Agent 的配置和状态彼此独立。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 自动展示在线、执行、规则挂载、持久化和失败状态。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 通用 Agent 动态资源管理的非交互入口。",
   "author": "poouo",
   "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
-  "releaseDate": "2026-07-12",
-  "updatedAt": "2026-07-14",
-  "changelog": "重做白名单管理界面：左侧展示并筛选全部主机，右侧按当前主机新增、修改、删除和刷新规则。",
+  "releaseDate": "2026-07-17",
+  "updatedAt": "2026-07-17",
+  "changelog": "增加可选的左侧菜单入口，可直接打开白名单配置界面。",
   "tags": ["whitelist", "china-region", "firewall", "agent"],
   "license": "Unknown",
   "homepage": "https://github.com/poouo/Forwardx",
@@ -32,8 +32,12 @@
       "description": "应用前可以先输出将执行的 nftables/iptables 命令。"
     }
   ],
-  "permissions": ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive"],
-  "extensionPoints": ["data.whitelist"],
+  "permissions": ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive", "ui:page"],
+  "extensionPoints": ["data.whitelist", "sidebar.page"],
+  "sidebar": {
+    "label": "中国区域白名单",
+    "target": "usage"
+  },
   "usageViews": [
     {
       "id": "sync-to-hosts",

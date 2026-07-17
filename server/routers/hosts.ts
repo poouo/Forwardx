@@ -17,6 +17,7 @@ import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
+import { paginateItems } from "../../shared/pagination";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -61,6 +62,10 @@ const hostTrafficMeasureModeSchema = z.enum(["outbound", "both", "max"]).default
 const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6"]);
 const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA"]);
 const hostDdnsDomainSchema = z.string().trim().max(253).nullable().optional();
+const pageRequestSchema = z.object({
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(100).default(12),
+});
 const hostProbeTargetSchema = z.string().trim().min(1).max(253).refine(isValidHostOrIp, "Invalid target IP or host");
 const hostProbeIdsSchema = z.array(z.number().int().positive()).max(500).optional();
 const hostProbeServiceInputSchema = z.object({
@@ -351,6 +356,57 @@ function compactHostForList(host: any) {
   return rest;
 }
 
+function hostMatchesListSearch(host: any, search: string) {
+  const tokens = String(search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const text = [
+    host?.id,
+    host?.name,
+    host?.ip,
+    host?.ipv4,
+    host?.ipv6,
+    host?.entryIp,
+    host?.tunnelEntryIp,
+    host?.osInfo,
+    host?.cpuInfo,
+    host?.agentVersion,
+    host?.hostType,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return tokens.every((token) => text.includes(token));
+}
+
+function orderHostsByGroups(hostRows: any[], groups: any[], selectedGroupId?: number | null) {
+  const hostById = new Map(hostRows.map((host) => [Number(host.id), host]));
+  const enabledGroups = [...groups]
+    .filter((group) => group?.isEnabled !== false)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id || 0) - Number(b.id || 0));
+  if (selectedGroupId) {
+    const selected = enabledGroups.find((group) => Number(group.id) === Number(selectedGroupId));
+    return (selected?.hostIds || selected?.members?.map((member: any) => member.hostId) || [])
+      .map((hostId: unknown) => hostById.get(Number(hostId)))
+      .filter(Boolean);
+  }
+  if (enabledGroups.length === 0) return hostRows;
+
+  const ordered: any[] = [];
+  const used = new Set<number>();
+  for (const group of enabledGroups) {
+    const hostIds = group?.hostIds || group?.members?.map((member: any) => member.hostId) || [];
+    for (const value of hostIds) {
+      const hostId = Number(value || 0);
+      const host = hostById.get(hostId);
+      if (!host || used.has(hostId)) continue;
+      used.add(hostId);
+      ordered.push(host);
+    }
+  }
+  for (const host of hostRows) {
+    const hostId = Number(host.id || 0);
+    if (!used.has(hostId)) ordered.push(host);
+  }
+  return ordered;
+}
+
 function compactHostStatus(host: any) {
   return {
     id: Number(host?.id || 0),
@@ -599,16 +655,140 @@ export const hostsRouter = router({
       const hosts = await getVisibleHostsForUser(ctx.user);
       return hosts.map(compactHostForList);
     }),
-    statusSummary: protectedProcedure.query(async ({ ctx }) => {
+    options: protectedProcedure.query(async ({ ctx }) => {
       const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
-      return hosts.map(compactHostStatus).filter((host: ReturnType<typeof compactHostStatus>) => host.id > 0);
+      return hosts.map((host: any) => ({
+        id: Number(host.id),
+        userId: Number(host.userId || 0),
+        name: String(host.name || ""),
+        ip: host.ip || null,
+        ipv4: host.ipv4 || null,
+        ipv6: host.ipv6 || null,
+        entryIp: host.entryIp || null,
+        tunnelEntryIp: host.tunnelEntryIp || null,
+        hostType: host.hostType || null,
+        isOnline: !!host.isOnline,
+        agentVersion: host.agentVersion || null,
+        ddnsEnabled: !!host.ddnsEnabled,
+        ddnsDomain: host.ddnsDomain || null,
+        portRangeStart: host.portRangeStart ?? null,
+        portRangeEnd: host.portRangeEnd ?? null,
+        portAllowlist: host.portAllowlist || null,
+        blockHttp: !!host.blockHttp,
+        blockSocks: !!host.blockSocks,
+        blockTls: !!host.blockTls,
+      }));
     }),
-    summary: protectedProcedure.query(async ({ ctx }) => hostQueryCache.get(
-      `summary:${ctx.user.id}`,
+    listPage: protectedProcedure
+      .input(pageRequestSchema.extend({
+        search: z.string().trim().max(200).optional().default(""),
+        groupId: z.number().int().positive().nullable().optional(),
+      }))
+      .query(async ({ input, ctx }) => {
+        if (ctx.user.role === "admin") {
+          scheduleStaleHostUpgradeCleanup();
+          scheduleOrphanedAgentHostCleanup();
+        }
+        const [visibleHosts, groups] = await Promise.all([
+          getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
+          ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
+        ]);
+        const orderedHosts = orderHostsByGroups(visibleHosts as any[], groups as any[], input.groupId);
+        const filteredHosts = orderedHosts.filter((host: any) => hostMatchesListSearch(host, input.search));
+        const result = paginateItems(filteredHosts, input);
+        scheduleHostGeoRefresh(result.items);
+        const upgradeableHosts = filteredHosts.filter((host: any) => {
+          if (!host?.isOnline) return false;
+          const requestedAt = host.agentUpgradeRequestedAt ? new Date(host.agentUpgradeRequestedAt).getTime() : 0;
+          const timedOut = !!host.agentUpgradeRequested && requestedAt > 0 && Date.now() - requestedAt > 10 * 60 * 1000;
+          const pending = !!host.agentUpgradeRequested && !timedOut;
+          const behind = !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION);
+          return !pending && (timedOut || behind);
+        });
+        const visibleHostIds = new Set((visibleHosts as any[]).map((host) => Number(host.id)));
+        const groupCounts = Object.fromEntries((groups as any[]).map((group) => [
+          Number(group.id),
+          (group.hostIds || group.members?.map((member: any) => member.hostId) || [])
+            .filter((hostId: unknown) => visibleHostIds.has(Number(hostId))).length,
+        ]));
+        return {
+          ...result,
+          items: result.items.map(compactHostForList),
+          scopeTotalItems: orderedHosts.length,
+          onlineItems: filteredHosts.filter((host: any) => !!host.isOnline).length,
+          outdatedItems: filteredHosts.filter((host: any) => !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION)).length,
+          upgradeableIds: upgradeableHosts.map((host: any) => Number(host.id)),
+          offlineUpgradeableItems: filteredHosts.filter((host: any) => !host.isOnline && !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION)).length,
+          groupCounts,
+        };
+      }),
+    mapPoints: protectedProcedure
+      .input(z.object({
+        cursor: z.number().int().min(0).optional(),
+        limit: z.number().int().min(20).max(250).default(100),
+        search: z.string().trim().max(200).optional().default(""),
+        groupId: z.number().int().positive().nullable().optional(),
+      }))
+      .query(async ({ input, ctx }) => {
+        const filteredHosts = await hostQueryCache.get(
+          `map-points:${ctx.user.id}:${input.groupId || "all"}:${input.search}`,
+          { ttlMs: 10_000, staleMs: 10_000 },
+          async () => {
+            const [visibleHosts, groups] = await Promise.all([
+              getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
+              ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
+            ]);
+            return orderHostsByGroups(visibleHosts as any[], groups as any[], input.groupId)
+              .filter((host: any) => hostMatchesListSearch(host, input.search));
+          },
+        );
+        const cursor = Math.max(0, Number(input.cursor || 0));
+        const rows = filteredHosts.slice(cursor, cursor + input.limit);
+        scheduleHostGeoRefresh(rows);
+        const items = rows.map((host: any) => ({
+          id: Number(host.id),
+          name: String(host.name || ""),
+          ip: host.ip || null,
+          ipv4: host.ipv4 || null,
+          ipv6: host.ipv6 || null,
+          isOnline: !!host.isOnline,
+          osInfo: host.osInfo || null,
+          agentVersion: host.agentVersion || null,
+          geoCountryCode: host.geoCountryCode || null,
+          geoCountryName: host.geoCountryName || null,
+          geoRegion: host.geoRegion || null,
+          geoLatitudeMicro: host.geoLatitudeMicro ?? null,
+          geoLongitudeMicro: host.geoLongitudeMicro ?? null,
+        }));
+        const nextCursor = cursor + rows.length < filteredHosts.length ? cursor + rows.length : undefined;
+        return { items, nextCursor, totalItems: filteredHosts.length };
+      }),
+    statusSummary: protectedProcedure
+      .input(z.object({ hostIds: z.array(z.number().int().positive()).max(100).optional() }).optional())
+      .query(async ({ input, ctx }) => {
+      const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
+      const requestedIds = new Set((input?.hostIds || []).map(Number));
+      return hosts
+        .filter((host: any) => requestedIds.size === 0 || requestedIds.has(Number(host.id)))
+        .map(compactHostStatus)
+        .filter((host: ReturnType<typeof compactHostStatus>) => host.id > 0);
+    }),
+    summary: protectedProcedure
+      .input(z.object({
+        search: z.string().trim().max(200).optional().default(""),
+        groupId: z.number().int().positive().nullable().optional(),
+      }).optional())
+      .query(async ({ input, ctx }) => hostQueryCache.get(
+      `summary:${ctx.user.id}:${input?.groupId || "all"}:${input?.search || ""}`,
       { ttlMs: 2_000, staleMs: 10_000 },
       async () => {
-        const visibleHosts = await getVisibleHostsForUser(ctx.user);
-        const hostIds = visibleHosts.map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0);
+        const [visibleHosts, groups] = await Promise.all([
+          getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
+          ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
+        ]);
+        const filteredHosts = orderHostsByGroups(visibleHosts as any[], groups as any[], input?.groupId)
+          .filter((host: any) => hostMatchesListSearch(host, input?.search || ""));
+        const hostIds = filteredHosts.map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0);
         const [metricSnapshots, trafficRows] = await Promise.all([
           db.getLatestHostMetricSnapshots(hostIds),
           db.getHostTrafficSummary(hostIds),
@@ -621,8 +801,8 @@ export const hostsRouter = router({
           totalTrafficOut += Math.max(0, Number(row?.bytesOut) || 0);
         }
         return {
-          totalHosts: visibleHosts.length,
-          onlineHosts: visibleHosts.filter((host: any) => !!host.isOnline).length,
+          totalHosts: filteredHosts.length,
+          onlineHosts: filteredHosts.filter((host: any) => !!host.isOnline).length,
           currentTrafficIn: instantTraffic.currentTrafficIn,
           currentTrafficOut: instantTraffic.currentTrafficOut,
           currentTrafficTotal: instantTraffic.currentTrafficTotal,
@@ -717,12 +897,16 @@ export const hostsRouter = router({
         return { success: true };
       }),
     reorderHostGroupMembers: adminProcedure
-      .input(z.object({ groupId: z.number().int().positive(), hostIds: reorderIdsSchema }))
+      .input(z.object({
+        groupId: z.number().int().positive(),
+        hostIds: reorderIdsSchema,
+        startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
+      }))
       .mutation(async ({ input }) => {
         const group = await db.getHostGroupById(input.groupId);
         if (!group) throw new Error("主机分组不存在");
         await assertHostGroupHostIdsExist(input.hostIds);
-        await db.reorderHostGroupMembers(input.groupId, input.hostIds);
+        await db.reorderHostGroupMembers(input.groupId, input.hostIds, input.startIndex);
         return { success: true };
       }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
@@ -815,9 +999,12 @@ export const hostsRouter = router({
         return { id, agentToken };
       }),
     reorder: protectedProcedure
-      .input(z.object({ ids: reorderIdsSchema }))
+      .input(z.object({
+        ids: reorderIdsSchema,
+        startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
+      }))
       .mutation(async ({ input, ctx }) => {
-        await db.reorderHosts(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id);
+        await db.reorderHosts(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id, input.startIndex);
         return { success: true };
       }),
     update: protectedProcedure

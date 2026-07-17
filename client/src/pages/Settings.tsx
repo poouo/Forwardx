@@ -43,6 +43,16 @@ import {
   type SidebarMenuSettings,
 } from "@shared/sidebarMenu";
 import {
+  MAX_CUSTOM_SIDEBAR_ICON_BYTES,
+  MAX_CUSTOM_SIDEBAR_PAGES,
+  decodeCustomSidebarIconDataUrl,
+  isSafeCustomSidebarSvg,
+  isValidCustomSidebarUrl,
+  normalizeCustomSidebarPages,
+  type CustomSidebarPage,
+  type CustomSidebarVisibility,
+} from "@shared/customSidebarPages";
+import {
   Trash2,
   Key,
   Copy,
@@ -73,6 +83,8 @@ import {
   Image as ImageIcon,
   Monitor,
   PanelLeft,
+  Pencil,
+  Plus,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
@@ -619,6 +631,33 @@ function createLocalId(prefix: string) {
     return `${prefix}-${crypto.randomUUID()}`;
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+type CustomSidebarPageDraft = {
+  id: string;
+  name: string;
+  url: string;
+  visibility: CustomSidebarVisibility;
+  svg: string;
+};
+
+function createCustomSidebarPageDraft(): CustomSidebarPageDraft {
+  return {
+    id: createLocalId("page"),
+    name: "",
+    url: "",
+    visibility: "admin",
+    svg: "",
+  };
+}
+
+function encodeSvgDataUrl(svg: string) {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  }
+  return `data:image/svg+xml;base64,${globalThis.btoa(binary)}`;
 }
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
@@ -2732,7 +2771,7 @@ function normalizePublicHostMonitorPathInput(value: string) {
     .toLowerCase();
 }
 
-type PersonalizationSaveKey = "title" | "logo" | "theme" | "background" | "homepage";
+type PersonalizationSaveKey = "title" | "logo" | "theme" | "background" | "homepage" | "sidebarPages";
 
 const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
   title: "网站标题已保存",
@@ -2740,6 +2779,7 @@ const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
   theme: "默认配色已保存",
   background: "自定义背景已保存",
   homepage: "公开首页已保存",
+  sidebarPages: "自定义菜单已保存",
 };
 
 const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> = {
@@ -2748,6 +2788,7 @@ const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> =
   theme: "默认配色保存失败",
   background: "自定义背景保存失败",
   homepage: "公开首页保存失败",
+  sidebarPages: "自定义菜单保存失败",
 };
 
 function PersonalizationSettingsSection() {
@@ -2756,7 +2797,9 @@ function PersonalizationSettingsSection() {
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
+  const customSidebarIconInputRef = useRef<HTMLInputElement | null>(null);
   const savingSectionRef = useRef<PersonalizationSaveKey | null>(null);
+  const pendingCustomSidebarPagesRef = useRef<CustomSidebarPage[] | null>(null);
   const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
   const [personalizationTheme, setPersonalizationTheme] = useState<PersonalizationThemePresetId>("ink");
@@ -2771,6 +2814,9 @@ function PersonalizationSettingsSection() {
   const [savingSection, setSavingSection] = useState<PersonalizationSaveKey | null>(null);
   const [compressingLogo, setCompressingLogo] = useState(false);
   const [compressingBackground, setCompressingBackground] = useState(false);
+  const [customSidebarPages, setCustomSidebarPages] = useState<CustomSidebarPage[]>([]);
+  const [customSidebarDialogOpen, setCustomSidebarDialogOpen] = useState(false);
+  const [customSidebarDraft, setCustomSidebarDraft] = useState<CustomSidebarPageDraft>(() => createCustomSidebarPageDraft());
 
   useEffect(() => {
     if (!settings) return;
@@ -2789,6 +2835,7 @@ function PersonalizationSettingsSection() {
     setBackgroundSourceMode(nextBackground.source === "none" ? "builtin" : nextBackground.source);
     setBackgroundUrlInput(nextBackground.url || "");
     setBackgroundUrlType(nextBackground.urlType || "image");
+    setCustomSidebarPages(normalizeCustomSidebarPages((settings as any).customSidebarPages));
   }, [settings]);
 
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
@@ -2798,9 +2845,14 @@ function PersonalizationSettingsSection() {
         setSavedPersonalizationTheme(personalizationTheme);
         applyPersonalizationTheme(personalizationTheme);
       }
+      if (key === "sidebarPages" && pendingCustomSidebarPagesRef.current) {
+        setCustomSidebarPages(pendingCustomSidebarPagesRef.current);
+        setCustomSidebarDialogOpen(false);
+      }
       await Promise.all([
         utils.system.getSettings.invalidate(),
         utils.system.publicInfo.invalidate(),
+        utils.system.sidebarPages.invalidate(),
       ]);
       toast.success(key ? personalizationSaveMessages[key] : "个性化配置已保存");
     },
@@ -2810,6 +2862,7 @@ function PersonalizationSettingsSection() {
     },
     onSettled: () => {
       savingSectionRef.current = null;
+      pendingCustomSidebarPagesRef.current = null;
       setSavingSection(null);
     },
   });
@@ -3023,6 +3076,96 @@ function PersonalizationSettingsSection() {
     });
   };
 
+  const openCustomSidebarDialog = (page?: CustomSidebarPage) => {
+    setCustomSidebarDraft(page ? {
+      id: page.id,
+      name: page.name,
+      url: page.url,
+      visibility: page.visibility,
+      svg: decodeCustomSidebarIconDataUrl(page.iconDataUrl),
+    } : createCustomSidebarPageDraft());
+    setCustomSidebarDialogOpen(true);
+  };
+
+  const handleCustomSidebarIconUpload = async (file?: File) => {
+    if (!file) return;
+    try {
+      if (!file.name.toLowerCase().endsWith(".svg") && file.type !== "image/svg+xml") {
+        throw new Error("请选择 SVG 文件");
+      }
+      if (file.size > MAX_CUSTOM_SIDEBAR_ICON_BYTES) {
+        throw new Error("SVG 图标不能超过 24KB");
+      }
+      const svg = (await file.text()).trim();
+      if (!isSafeCustomSidebarSvg(svg)) {
+        throw new Error("SVG 图标包含脚本、外部资源或不支持的标签");
+      }
+      setCustomSidebarDraft((current) => ({ ...current, svg }));
+    } catch (error: any) {
+      toast.error(error?.message || "SVG 图标读取失败");
+    } finally {
+      if (customSidebarIconInputRef.current) customSidebarIconInputRef.current.value = "";
+    }
+  };
+
+  const handleSaveCustomSidebarPage = () => {
+    const name = customSidebarDraft.name.trim();
+    const url = customSidebarDraft.url.trim();
+    const svg = customSidebarDraft.svg.trim();
+    if (!name) {
+      toast.error("请填写菜单名称");
+      return;
+    }
+    if (!isValidCustomSidebarUrl(url)) {
+      toast.error("页面 URL 必须是有效的 HTTP/HTTPS 地址");
+      return;
+    }
+    if (svg && !isSafeCustomSidebarSvg(svg)) {
+      toast.error("SVG 图标包含脚本、外部资源或不支持的标签");
+      return;
+    }
+    const page: CustomSidebarPage = {
+      id: customSidebarDraft.id,
+      name: name.slice(0, 64),
+      url,
+      visibility: customSidebarDraft.visibility,
+      ...(svg ? { iconDataUrl: encodeSvgDataUrl(svg) } : {}),
+    };
+    const exists = customSidebarPages.some((item) => item.id === page.id);
+    if (!exists && customSidebarPages.length >= MAX_CUSTOM_SIDEBAR_PAGES) {
+      toast.error(`最多添加 ${MAX_CUSTOM_SIDEBAR_PAGES} 个菜单项`);
+      return;
+    }
+    const next = normalizeCustomSidebarPages(
+      exists
+        ? customSidebarPages.map((item) => item.id === page.id ? page : item)
+        : [...customSidebarPages, page],
+    );
+    if (next.length !== (exists ? customSidebarPages.length : customSidebarPages.length + 1)) {
+      toast.error("菜单项内容校验失败");
+      return;
+    }
+    pendingCustomSidebarPagesRef.current = next;
+    savePersonalizationSection("sidebarPages", { customSidebarPages: next });
+  };
+
+  const handleDeleteCustomSidebarPage = async (page: CustomSidebarPage) => {
+    const confirmed = await confirmDialog({
+      title: "删除菜单项",
+      description: `确定删除“${page.name}”吗？`,
+      confirmText: "删除",
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+    const next = customSidebarPages.filter((item) => item.id !== page.id);
+    pendingCustomSidebarPagesRef.current = next;
+    savePersonalizationSection("sidebarPages", { customSidebarPages: next });
+  };
+
+  const customSidebarIconPreview = isSafeCustomSidebarSvg(customSidebarDraft.svg)
+    ? encodeSvgDataUrl(customSidebarDraft.svg.trim())
+    : "";
+
   if (isLoading) {
     return <DataSectionLoading label="正在加载个性化配置" minHeight="min-h-[220px]" />;
   }
@@ -3111,6 +3254,87 @@ function PersonalizationSettingsSection() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <PanelLeft className="h-4 w-4 text-primary" />
+              自定义菜单
+            </CardTitle>
+            <CardDescription>在左侧导航中嵌入常用页面。</CardDescription>
+          </div>
+          <Button
+            type="button"
+            className="w-full gap-2 sm:w-auto"
+            onClick={() => openCustomSidebarDialog()}
+            disabled={isSavingPersonalization("sidebarPages") || customSidebarPages.length >= MAX_CUSTOM_SIDEBAR_PAGES}
+          >
+            <Plus className="h-4 w-4" />
+            新增菜单项
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {customSidebarPages.length ? (
+            <div className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/40 bg-muted/15">
+              {customSidebarPages.map((page) => (
+                <div key={page.id} className="flex min-w-0 items-center gap-3 px-3 py-3 sm:px-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/50 bg-background/70">
+                    {page.iconDataUrl ? (
+                      <img src={page.iconDataUrl} alt="" className="h-6 w-6 object-contain" />
+                    ) : (
+                      <Globe className="h-5 w-5 text-primary" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="max-w-full truncate text-sm font-medium">{page.name}</p>
+                      <Badge variant="outline" className="shrink-0 text-[10px]">
+                        {page.visibility === "admin" ? "仅管理员" : "所有用户"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-muted-foreground" title={page.url}>{page.url}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      title="编辑菜单项"
+                      aria-label={`编辑 ${page.name}`}
+                      disabled={isSavingPersonalization("sidebarPages")}
+                      onClick={() => openCustomSidebarDialog(page)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="text-destructive hover:text-destructive"
+                      title="删除菜单项"
+                      aria-label={`删除 ${page.name}`}
+                      disabled={isSavingPersonalization("sidebarPages")}
+                      onClick={() => void handleDeleteCustomSidebarPage(page)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openCustomSidebarDialog()}
+              className="flex min-h-28 w-full flex-col items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/15 px-4 text-sm text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground"
+            >
+              <Plus className="mb-2 h-5 w-5" />
+              新增第一个菜单项
+            </button>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -3549,6 +3773,112 @@ function PersonalizationSettingsSection() {
         </CardContent>
       </Card>
 
+      <Dialog
+        open={customSidebarDialogOpen}
+        onOpenChange={(open) => {
+          if (isSavingPersonalization("sidebarPages")) return;
+          setCustomSidebarDialogOpen(open);
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100svh-1.5rem)] max-w-xl flex-col overflow-hidden p-0">
+          <DialogHeader className="px-4 pt-4 sm:px-6 sm:pt-6">
+            <DialogTitle>
+              {customSidebarPages.some((page) => page.id === customSidebarDraft.id) ? "编辑菜单项" : "新增菜单项"}
+            </DialogTitle>
+            <DialogDescription>配置左侧导航名称、嵌入地址和可见范围。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 overflow-y-auto px-4 py-2 sm:px-6">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
+              <div className="space-y-2">
+                <Label htmlFor="custom-sidebar-name">菜单名称</Label>
+                <Input
+                  id="custom-sidebar-name"
+                  value={customSidebarDraft.name}
+                  maxLength={64}
+                  onChange={(event) => setCustomSidebarDraft((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="例如：监控中心"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>可见角色</Label>
+                <Select
+                  value={customSidebarDraft.visibility}
+                  onValueChange={(visibility) => setCustomSidebarDraft((current) => ({
+                    ...current,
+                    visibility: visibility as CustomSidebarVisibility,
+                  }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="admin">仅管理员</SelectItem>
+                    <SelectItem value="all">所有用户</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="custom-sidebar-url">页面 URL</Label>
+              <Input
+                id="custom-sidebar-url"
+                type="url"
+                value={customSidebarDraft.url}
+                maxLength={1000}
+                onChange={(event) => setCustomSidebarDraft((current) => ({ ...current, url: event.target.value }))}
+                placeholder="https://example.com/dashboard"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label htmlFor="custom-sidebar-svg">SVG 图标</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={customSidebarIconInputRef}
+                    type="file"
+                    accept=".svg,image/svg+xml"
+                    className="hidden"
+                    onChange={(event) => void handleCustomSidebarIconUpload(event.target.files?.[0])}
+                  />
+                  <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => customSidebarIconInputRef.current?.click()}>
+                    <Upload className="h-3.5 w-3.5" />
+                    上传 SVG
+                  </Button>
+                  {customSidebarDraft.svg && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setCustomSidebarDraft((current) => ({ ...current, svg: "" }))}>
+                      清除
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_4.5rem]">
+                <Textarea
+                  id="custom-sidebar-svg"
+                  value={customSidebarDraft.svg}
+                  onChange={(event) => setCustomSidebarDraft((current) => ({ ...current, svg: event.target.value.slice(0, 32 * 1024) }))}
+                  placeholder={'<svg viewBox="0 0 24 24">...</svg>'}
+                  className="min-h-28 font-mono text-xs leading-5"
+                />
+                <div className="flex min-h-20 items-center justify-center rounded-md border border-border/50 bg-muted/20">
+                  {customSidebarIconPreview ? (
+                    <img src={customSidebarIconPreview} alt="图标预览" className="h-8 w-8 object-contain" />
+                  ) : (
+                    <PanelLeft className="h-6 w-6 text-muted-foreground" />
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">可选，最大 24KB。</p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 border-t border-border/40 px-4 py-3 sm:px-6">
+            <Button type="button" variant="outline" disabled={isSavingPersonalization("sidebarPages")} onClick={() => setCustomSidebarDialogOpen(false)}>
+              取消
+            </Button>
+            <Button type="button" className="gap-2" disabled={isSavingPersonalization("sidebarPages")} onClick={handleSaveCustomSidebarPage}>
+              {isSavingPersonalization("sidebarPages") && <Loader2 className="h-4 w-4 animate-spin" />}
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </div>
   );
@@ -4138,6 +4468,8 @@ function SystemInfoSection() {
       setShowRollbackDialog(false);
       await refetchUpgradeStatus();
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "启动回退失败"),
   });

@@ -8,8 +8,11 @@ import {
   buildPluginTextFileCommands,
   normalizePluginManifest,
   normalizePluginStoreCatalog,
+  pluginManifestRequiresTrust,
   pluginVersionHasUpdate,
+  resolvePluginSidebarEntry,
   resolvePluginUsageHostIds,
+  shouldPreservePluginTrust,
 } from "./repositories/pluginRepository";
 
 test("plugin sync commands compress, chunk, and restore large text assets", () => {
@@ -145,6 +148,10 @@ test("invalid result and resource schema members are discarded", () => {
     name: "Schema guard",
     version: "1",
     permissions: ["agent:read", "not:a-permission"],
+    settingsSchema: [
+      { key: "__forwardxSidebarEnabled", label: "Reserved", type: "boolean" },
+      { key: "displayName", label: "Display name", type: "text" },
+    ],
     actions: [{
       id: "read",
       label: "Read",
@@ -157,8 +164,48 @@ test("invalid result and resource schema members are discarded", () => {
   });
 
   assert.deepEqual(manifest.permissions, ["agent:read"]);
+  assert.deepEqual(manifest.settingsSchema?.map((field) => field.key), ["displayname"]);
   assert.equal(manifest.actions?.[0]?.resultSchema, undefined);
   assert.deepEqual(manifest.resourceSchemas, []);
+});
+
+test("plugin sidebar entries require permission, extension point, and a valid target", () => {
+  const manifest = normalizePluginManifest({
+    id: "sidebar-demo",
+    name: "Sidebar Demo",
+    version: "1.0.0",
+    permissions: ["ui:page"],
+    extensionPoints: ["sidebar.page"],
+    sidebar: { label: "Demo Page", target: "page", pageId: "home" },
+    pages: [{ id: "home", title: "Home", content: "Hello" }],
+  });
+  const plugin = {
+    pluginId: manifest.id,
+    name: manifest.name,
+    status: "enabled",
+    manifest,
+    permissions: manifest.permissions,
+    extensionPoints: manifest.extensionPoints,
+    sidebarEnabled: true,
+  };
+
+  assert.deepEqual(resolvePluginSidebarEntry(plugin), {
+    pluginId: "sidebar-demo",
+    label: "Demo Page",
+    icon: "",
+    target: "page",
+    pageId: "home",
+  });
+  assert.equal(resolvePluginSidebarEntry({ ...plugin, permissions: [] }), null);
+  assert.equal(resolvePluginSidebarEntry({ ...plugin, extensionPoints: [] }), null);
+  assert.equal(resolvePluginSidebarEntry({ ...plugin, status: "disabled" })?.pluginId, "sidebar-demo");
+  assert.equal(resolvePluginSidebarEntry({ ...plugin, sidebarEnabled: false }), null);
+
+  const missingPage = normalizePluginManifest({
+    ...manifest,
+    sidebar: { target: "page", pageId: "missing" },
+  });
+  assert.equal(resolvePluginSidebarEntry({ ...plugin, manifest: missingPage }), null);
 });
 
 test("official whitelist exposes per-host province configuration CRUD", () => {
@@ -169,7 +216,7 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.6.0");
+  assert.equal(manifest.version, "0.6.1");
   assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
@@ -218,6 +265,28 @@ test("trusted panel actions retain only fixed operations and declared permission
     ["users", "users.list"],
     ["send", "telegram.send"],
   ]);
+  assert.equal(pluginManifestRequiresTrust(manifest), true);
+
+  const regularPlugin = normalizePluginManifest({
+    id: "regular-plugin",
+    name: "Regular plugin",
+    version: "1.0.0",
+    permissions: ["agent:read", "ui:page"],
+    actions: [{ id: "status", label: "Status", type: "noop" }],
+  });
+  assert.equal(pluginManifestRequiresTrust(regularPlugin), false);
+  assert.equal(shouldPreservePluginTrust(regularPlugin, manifest), false);
+  assert.equal(shouldPreservePluginTrust(manifest, { ...manifest }), true);
+
+  const expandedManifest = normalizePluginManifest({
+    ...manifest,
+    permissions: [...(manifest.permissions || []), "write:users"],
+    actions: [
+      ...(manifest.actions || []),
+      { id: "disable-user", label: "Disable user", type: "panel.request", panel: { operation: "users.setAccountEnabled" } },
+    ],
+  });
+  assert.equal(shouldPreservePluginTrust(manifest, expandedManifest), false);
 });
 
 test("third-party store catalog annotates source and defaults package repository", () => {

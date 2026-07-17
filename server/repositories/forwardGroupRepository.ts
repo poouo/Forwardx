@@ -124,6 +124,11 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     && boolKeys.every((key) => dbBool(existing?.[key]) === dbBool(payload?.[key]));
 }
 
+async function syncPreservedChildRuleMetadata(existing: any, payload: any) {
+  if (String(existing?.name || "") === String(payload?.name || "")) return;
+  await updateForwardRule(Number(existing.id), { name: payload.name } as any);
+}
+
 type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 type ForwardGroupRecordType = "A" | "AAAA" | "CNAME";
 type ForwardGroupFailoverOptions = {
@@ -181,6 +186,19 @@ function toDate(value: unknown): Date | null {
   if (Number.isFinite(n) && n > 0) return new Date(n > 10_000_000_000 ? n : n * 1000);
   const parsed = new Date(String(value));
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function forwardGroupFailoverDelayMs(group: any) {
+  const seconds = Number(group?.failoverSeconds || 60);
+  return Math.max(10, Number.isFinite(seconds) ? seconds : 60) * 1000;
+}
+
+function agentFailureSince(host: any, group: any, now: Date) {
+  if (!host) return now;
+  const heartbeatAt = toDate(host.lastHeartbeat);
+  if (!heartbeatAt) return now;
+  if (now.getTime() - heartbeatAt.getTime() < forwardGroupFailoverDelayMs(group)) return null;
+  return heartbeatAt.getTime() <= now.getTime() ? heartbeatAt : now;
 }
 
 function entryAddressForHost(host: any) {
@@ -451,18 +469,49 @@ async function refreshControlledTunnelRuntime(
   for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`);
 }
 
-async function refreshTunnelsUsingEntryGroup(entryGroupId: number, reason = "entry-group-updated") {
-  const id = Number(entryGroupId);
+async function refreshTunnelsUsingForwardGroup(
+  groupId: number,
+  groupMode: "entry" | "exit",
+  reason: string,
+  previousHostIds: number[] = [],
+) {
+  const id = Number(groupId);
   if (!Number.isFinite(id) || id <= 0) return;
   const allTunnels = await getTunnels() as any[];
-  const affectedTunnels = allTunnels.filter((tunnel: any) => Number(tunnel?.entryGroupId || 0) === id);
+  const referenceKey = groupMode === "entry" ? "entryGroupId" : "exitGroupId";
+  const affectedTunnels = allTunnels.filter((tunnel: any) => Number(tunnel?.[referenceKey] || 0) === id);
   if (affectedTunnels.length === 0) return;
 
-  const entryHostIds = await groupHostIds(id);
+  const referencedHostIds = Array.from(new Set([
+    ...previousHostIds,
+    ...await groupHostIds(id),
+  ].map(Number).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
 
   for (const tunnel of affectedTunnels) {
-    await refreshControlledTunnelRuntime(tunnel, reason, { resetRules: true, extraHostIds: entryHostIds });
+    await refreshControlledTunnelRuntime(tunnel, reason, { resetRules: true, extraHostIds: referencedHostIds });
   }
+}
+
+export async function refreshForwardGroupReferences(
+  groupId: number,
+  options: {
+    reason?: string;
+    previousHostIds?: number[];
+    syncDependentChains?: boolean;
+  } = {},
+) {
+  const group = await getForwardGroupById(Number(groupId));
+  const mode = groupModeOf(group);
+  if (mode !== "entry" && mode !== "exit") return;
+  if (mode === "entry" && options.syncDependentChains !== false) {
+    await syncChainsUsingEntryGroup(Number(groupId));
+  }
+  await refreshTunnelsUsingForwardGroup(
+    Number(groupId),
+    mode,
+    options.reason || `${mode}-group-updated`,
+    options.previousHostIds || [],
+  );
 }
 
 function describeDdnsTarget(group: any, value: string, provider?: string) {
@@ -1751,7 +1800,10 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   };
 
   if (existing) {
-    if (canPreserveChildRuleRuntime(existing, payload, options)) return Number(existing.id);
+    if (canPreserveChildRuleRuntime(existing, payload, options)) {
+      await syncPreservedChildRuleMetadata(existing, payload);
+      return Number(existing.id);
+    }
     await updateForwardRule(Number(existing.id), payload);
     if (member.memberType === "tunnel") {
       const tunnel = await getTunnelById(Number(tunnelId || 0));
@@ -1883,7 +1935,10 @@ async function ensureChainRuleForTemplate(
   };
 
   if (existing) {
-    if (canPreserveChildRuleRuntime(existing, payload, options)) return Number(existing.id);
+    if (canPreserveChildRuleRuntime(existing, payload, options)) {
+      await syncPreservedChildRuleMetadata(existing, payload);
+      return Number(existing.id);
+    }
     await updateForwardRule(Number(existing.id), payload);
     await refreshRuleEndpoints({ ...existing, ...payload, id: existing.id }, "forward-chain-child-updated");
     return Number(existing.id);
@@ -2174,7 +2229,7 @@ async function nextForwardGroupSortOrder(userId: number, groupMode: ForwardGroup
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
-export async function reorderForwardGroups(groupMode: ForwardGroupMode, ids: number[]) {
+export async function reorderForwardGroups(groupMode: ForwardGroupMode, ids: number[], startIndex = 0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const mode = groupModeOf({ groupMode });
@@ -2187,8 +2242,9 @@ export async function reorderForwardGroups(groupMode: ForwardGroupMode, ids: num
   if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在的转发项目");
   if ((rows as any[]).some((row) => groupModeOf(row) !== mode)) throw new Error("排序项目类型不一致");
   const q = quoteIdentifier;
+  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
   for (const [index, id] of orderedIds.entries()) {
-    await executeRaw(`UPDATE ${q("forward_groups")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+    await executeRaw(`UPDATE ${q("forward_groups")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [normalizedStartIndex + index, id]);
   }
 }
 
@@ -2198,9 +2254,8 @@ export async function updateForwardGroup(id: number, data: Partial<InsertForward
   if (!options.skipSync) {
     await syncForwardGroupRules(id);
     const group = await getForwardGroupById(id);
-    if (groupModeOf(group) === "entry") {
-      await syncChainsUsingEntryGroup(id);
-      await refreshTunnelsUsingEntryGroup(id);
+    if (groupModeOf(group) === "entry" || groupModeOf(group) === "exit") {
+      await refreshForwardGroupReferences(id);
     }
   }
 }
@@ -2222,6 +2277,10 @@ export async function replaceForwardGroupMembers(
   await validateForwardGroupRecordMembers(group, normalizedMembers as any);
   const db = await getDb();
   const existing = await db.select().from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, groupId));
+  const previousHostIds = (existing as any[])
+    .filter((member) => member.memberType === "host")
+    .map((member) => Number(member.hostId || 0))
+    .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
   const keepKeys = new Set(normalizedMembers.map((m) => `${m.memberType}:${m.memberType === "host" ? m.hostId : m.tunnelId}`));
 
   for (const old of existing as any[]) {
@@ -2264,10 +2323,10 @@ export async function replaceForwardGroupMembers(
   if (options.skipSync) return;
   if (isCollectionGroupMode(groupMode)) {
     await runForwardGroupFailover(groupId, { forceSync: true, manual: true });
-    if (groupMode === "entry") {
-      await syncChainsUsingEntryGroup(groupId);
-      await refreshTunnelsUsingEntryGroup(groupId);
-    }
+    await refreshForwardGroupReferences(groupId, {
+      reason: `${groupMode}-group-members-updated`,
+      previousHostIds,
+    });
   } else {
     await syncForwardGroupRules(groupId, groupMode === "chain" ? { validatePorts: false } : {});
     if (groupMode === "chain") await refreshForwardChainRuntime(groupId, "forward-chain-members-updated");
@@ -2431,6 +2490,7 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
   let healthy = false;
   let latencyMs: number | null = null;
   let message = "";
+  let observedFailureSince: Date | null = null;
 
   if (!member.isEnabled) {
     message = "Member disabled";
@@ -2464,9 +2524,11 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
       const latencies: number[] = [];
       for (const rule of activeChildRules as any[]) {
         const ruleHost = hostById.get(Number(rule.hostId || 0));
-        if (!ruleHost?.isOnline) {
+        const hostFailureSince = agentFailureSince(ruleHost, group, now);
+        if (hostFailureSince) {
           healthy = false;
           message = "Member Agent offline";
+          observedFailureSince = hostFailureSince;
           break;
         }
         if (!dbBool(rule.isEnabled) || dbBool(rule.pendingDelete)) {
@@ -2510,7 +2572,10 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
 
   const prevFailure = toDate(member.failureSince);
   const prevHealthy = toDate(member.healthySince);
-  const failureSince = healthy ? null : (prevFailure || now);
+  let failureSince = healthy ? null : (prevFailure || observedFailureSince || now);
+  if (failureSince && observedFailureSince && observedFailureSince.getTime() < failureSince.getTime()) {
+    failureSince = observedFailureSince;
+  }
   const healthySince = healthy ? (prevHealthy || now) : null;
   await db.update(forwardGroupMembers).set({
     healthStatus: healthy ? "healthy" : "unhealthy",
@@ -2521,7 +2586,7 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
     updatedAt: now,
   } as any).where(eq(forwardGroupMembers.id, member.id));
 
-  const failedLongEnough = !!failureSince && Date.now() - failureSince.getTime() >= Number(group.failoverSeconds || 60) * 1000;
+  const failedLongEnough = !!failureSince && Date.now() - failureSince.getTime() >= forwardGroupFailoverDelayMs(group);
   const recoveredLongEnough = !!healthySince && Date.now() - healthySince.getTime() >= Number(group.recoverSeconds || 120) * 1000;
   return { ...member, healthy, latencyMs, message, failureSince, healthySince, failedLongEnough, recoveredLongEnough };
 }

@@ -24,6 +24,7 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeForwardXVersion } from "../../shared/forwardTypes";
 import { AGENT_FORWARDX_WIREGUARD_VERSION, isForwardXWireGuardV2 } from "../forwardXWireGuard";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
+import { paginateItems } from "../../shared/pagination";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
@@ -478,20 +479,135 @@ async function getTunnelDeleteImpact(tunnelId: number) {
   };
 }
 
+function compactTunnelForUse(tunnel: any) {
+  const { certPem, certKeyPem, secret, ...rest } = tunnel || {};
+  return rest;
+}
+
 export const tunnelsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       const tunnels = isAdmin ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
       return attachTunnelEndpointHosts(tunnels as any[]);
     }),
+    options: protectedProcedure.query(async ({ ctx }) => {
+      const tunnels = ctx.user.role === "admin" ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
+      return (await attachTunnelEndpointHosts(tunnels as any[])).map(compactTunnelForUse);
+    }),
+    listPage: protectedProcedure
+      .input(z.object({
+        page: z.number().int().positive().default(1),
+        pageSize: z.number().int().min(1).max(100).default(12),
+        search: z.string().trim().max(200).optional().default(""),
+      }))
+      .query(async ({ input, ctx }) => {
+        const snapshot = await tunnelQueryCache.get(
+          `map-items:${ctx.user.id}:${input.search}`,
+          { ttlMs: 10_000, staleMs: 10_000 },
+          async () => {
+            const rawTunnels = ctx.user.role === "admin"
+              ? await db.getTunnels()
+              : await db.getTunnelsForUser(ctx.user.id);
+            const tunnels = await attachTunnelEndpointHosts(rawTunnels as any[]);
+            const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
+            const groups = await db.getForwardGroups(undefined, { includeRuntime: false }) as any[];
+            const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
+            const filtered = tokens.length === 0 ? tunnels : tunnels.filter((tunnel: any) => {
+              const searchText = JSON.stringify([
+                tunnel,
+                groupById.get(Number(tunnel.entryGroupId || 0)),
+                groupById.get(Number(tunnel.exitGroupId || 0)),
+              ]).toLowerCase();
+              return tokens.every((token) => searchText.includes(token));
+            });
+            return { filtered, groups, scopeTotalItems: tunnels.length };
+          },
+        );
+        const { filtered, groups, scopeTotalItems } = snapshot;
+        const result = paginateItems(filtered, input);
+        const relatedGroupIds = new Set(result.items.flatMap((tunnel: any) => [
+          Number(tunnel.entryGroupId || 0),
+          Number(tunnel.exitGroupId || 0),
+        ]).filter((id: number) => id > 0));
+        return {
+          ...result,
+          scopeTotalItems,
+          enabledItems: filtered.filter((tunnel: any) => tunnel.isEnabled !== false).length,
+          availableItems: filtered.filter((tunnel: any) => {
+            if (tunnel.isEnabled === false) return false;
+            const hopHosts = Array.isArray(tunnel.hopHosts) ? tunnel.hopHosts : [];
+            return hopHosts.length > 0 && hopHosts.every((host: any) => host?.isOnline);
+          }).length,
+          relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+        };
+      }),
+    mapItems: protectedProcedure
+      .input(z.object({
+        cursor: z.number().int().min(0).optional(),
+        limit: z.number().int().min(20).max(250).default(100),
+        search: z.string().trim().max(200).optional().default(""),
+      }))
+      .query(async ({ input, ctx }) => {
+        const { filtered, groups } = await tunnelQueryCache.get(
+          `map-items:${ctx.user.id}:${input.search}`,
+          { ttlMs: 10_000, staleMs: 10_000 },
+          async () => {
+            const rawTunnels = ctx.user.role === "admin"
+              ? await db.getTunnels()
+              : await db.getTunnelsForUser(ctx.user.id);
+            const tunnels = await attachTunnelEndpointHosts(rawTunnels as any[]);
+            const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
+            const groups = await db.getForwardGroups(undefined, { includeRuntime: false }) as any[];
+            const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
+            const filtered = tokens.length === 0 ? tunnels : tunnels.filter((tunnel: any) => {
+              const searchText = JSON.stringify([
+                tunnel,
+                groupById.get(Number(tunnel.entryGroupId || 0)),
+                groupById.get(Number(tunnel.exitGroupId || 0)),
+              ]).toLowerCase();
+              return tokens.every((token) => searchText.includes(token));
+            });
+            return { filtered, groups, scopeTotalItems: tunnels.length };
+          },
+        );
+        const cursor = Math.max(0, Number(input.cursor || 0));
+        const items = filtered.slice(cursor, cursor + input.limit);
+        const nextCursor = cursor + items.length < filtered.length ? cursor + items.length : undefined;
+        const relatedGroupIds = new Set(items.flatMap((tunnel: any) => [
+          Number(tunnel.entryGroupId || 0),
+          Number(tunnel.exitGroupId || 0),
+        ]).filter((id: number) => id > 0));
+        return {
+          items: items.map(compactTunnelForUse),
+          nextCursor,
+          totalItems: filtered.length,
+          availableItems: filtered.filter((tunnel: any) => {
+            if (tunnel.isEnabled === false) return false;
+            const hopHosts = Array.isArray(tunnel.hopHosts) ? tunnel.hopHosts : [];
+            return hopHosts.length > 0 && hopHosts.every((host: any) => host?.isOnline);
+          }).length,
+          relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+        };
+      }),
+    getById: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(async ({ input, ctx }) => {
+        const tunnels = ctx.user.role === "admin" ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
+        const tunnel = (tunnels as any[]).find((item: any) => Number(item.id) === Number(input.id));
+        if (!tunnel) return null;
+        return (await attachTunnelEndpointHosts([tunnel]))[0] || null;
+      }),
     listAll: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
       return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),
     reorder: adminProcedure
-      .input(z.object({ ids: z.array(z.number().int().positive()).min(1) }))
+      .input(z.object({
+        ids: z.array(z.number().int().positive()).min(1),
+        startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
+      }))
       .mutation(async ({ input }) => {
-        await db.reorderTunnels(input.ids);
+        await db.reorderTunnels(input.ids, input.startIndex);
         return { success: true };
       }),
     latencySeries: protectedProcedure
@@ -1124,7 +1240,14 @@ export const tunnelsRouter = router({
           ];
           await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated", { urgent: true });
         }
-        return { success: true, reset: keyChanged, syncedRuleCount: (modeChanged || forwardXVersionChanged) ? activeReferencedRuleCount : 0 };
+        const updatedTunnel = await db.getTunnelById(id);
+        const hydratedTunnel = updatedTunnel ? (await attachTunnelEndpointHosts([updatedTunnel as any]))[0] : null;
+        return {
+          success: true,
+          reset: keyChanged,
+          syncedRuleCount: (modeChanged || forwardXVersionChanged) ? activeReferencedRuleCount : 0,
+          tunnel: hydratedTunnel,
+        };
         } finally {
           releaseHostPortReservations(heldReservations);
         }

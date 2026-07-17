@@ -541,6 +541,8 @@ export default function AgentTokenManager({
     onSuccess: (data) => {
       utils.agentTokens.list.invalidate();
       utils.hosts.list.invalidate();
+      utils.hosts.options.invalidate();
+      utils.hosts.listPage.invalidate();
       utils.hosts.summary.invalidate();
       utils.hosts.statusSummary.invalidate();
       const released = Number(data?.releasedPendingCleanup || 0);

@@ -149,7 +149,7 @@ async function nextTunnelSortOrder(userId: number) {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
-export async function reorderTunnels(ids: number[]) {
+export async function reorderTunnels(ids: number[], startIndex = 0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const orderedIds = ids.map((id) => Math.floor(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
@@ -157,8 +157,9 @@ export async function reorderTunnels(ids: number[]) {
   const rows = await db.select({ id: tunnels.id }).from(tunnels).where(sql`${tunnels.id} IN (${sql.join(orderedIds.map((id) => sql`${id}`), sql`, `)})`);
   if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在的隧道");
   const q = quoteIdentifier;
+  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
   for (const [index, id] of orderedIds.entries()) {
-    await executeRaw(`UPDATE ${q("tunnels")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+    await executeRaw(`UPDATE ${q("tunnels")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [normalizedStartIndex + index, id]);
   }
 }
 

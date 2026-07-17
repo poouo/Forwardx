@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type PersistentPaginationOptions = {
   storageKey: string;
@@ -8,7 +8,7 @@ type PersistentPaginationOptions = {
   isReady?: boolean;
 };
 
-type PersistentPaginationState<T> = {
+export type PersistentPaginationState<T> = {
   currentPage: number;
   totalPages: number;
   totalItems: number;
@@ -19,6 +19,11 @@ type PersistentPaginationState<T> = {
   setPage: (page: number) => void;
   nextPage: () => void;
   previousPage: () => void;
+};
+
+export type PersistentPageRequestState = {
+  page: number;
+  setPage: (page: number) => void;
 };
 
 function readStoredPage(storageKey: string) {
@@ -38,6 +43,58 @@ function writeStoredPage(storageKey: string, page: number) {
   } catch {
     // Pagination still works without localStorage in restricted browsers.
   }
+}
+
+export function usePersistentPageRequest(storageKey: string): PersistentPageRequestState {
+  const [page, setStoredPage] = useState(() => readStoredPage(storageKey));
+
+  useEffect(() => {
+    setStoredPage(readStoredPage(storageKey));
+  }, [storageKey]);
+
+  const setPage = useCallback((nextPage: number) => {
+    const normalized = Math.max(1, Math.floor(Number(nextPage) || 1));
+    setStoredPage(normalized);
+    writeStoredPage(storageKey, normalized);
+  }, [storageKey]);
+
+  return { page, setPage };
+}
+
+export function useServerPagination<T>(
+  items: T[],
+  totalItems: number,
+  request: PersistentPageRequestState,
+  { pageSize = 12, isReady = true }: Omit<PersistentPaginationOptions, "storageKey"> = {},
+): PersistentPaginationState<T> {
+  const normalizedTotal = Math.max(0, Math.floor(Number(totalItems) || 0));
+  const totalPages = isReady ? Math.max(1, Math.ceil(normalizedTotal / pageSize)) : Math.max(1, request.page);
+  const currentPage = isReady ? Math.min(Math.max(request.page, 1), totalPages) : Math.max(request.page, 1);
+
+  useEffect(() => {
+    if (!isReady || request.page === currentPage) return;
+    request.setPage(currentPage);
+  }, [currentPage, isReady, request]);
+
+  const setPage = (nextPage: number) => {
+    const normalized = Math.floor(Number(nextPage) || 1);
+    request.setPage(Math.min(Math.max(normalized, 1), totalPages));
+  };
+  const startItem = normalizedTotal === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const endItem = normalizedTotal === 0 ? 0 : Math.min(normalizedTotal, currentPage * pageSize);
+
+  return {
+    currentPage,
+    totalPages,
+    totalItems: normalizedTotal,
+    pageSize,
+    startItem,
+    endItem,
+    items: isReady ? items : [],
+    setPage,
+    nextPage: () => setPage(currentPage + 1),
+    previousPage: () => setPage(currentPage - 1),
+  };
 }
 
 function getPageWindow(currentPage: number, totalPages: number) {

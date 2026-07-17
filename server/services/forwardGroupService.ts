@@ -105,6 +105,19 @@ function memberPrioritySignature(members: ForwardGroupMemberRequest[]) {
     .join("|");
 }
 
+function memberRuntimeSignature(members: ForwardGroupMemberRequest[]) {
+  return members
+    .map((member, index) => ({
+      key: `${member.memberType}:${member.memberType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0)}`,
+      enabled: member.isEnabled !== false && Number(member.isEnabled as any) !== 0,
+      priority: Number(member.priority ?? index),
+      connectHost: String(member.connectHost || "").trim(),
+    }))
+    .sort((a, b) => a.priority - b.priority)
+    .map((member) => `${member.key}:${member.enabled ? 1 : 0}:${member.connectHost}`)
+    .join("|");
+}
+
 async function assertEntryGroupReference(entryGroupId: number | null, userId?: number, requireEnabled = true) {
   if (!entryGroupId) return null;
   const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
@@ -227,6 +240,14 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
   const enabledChanged = !!existing.isEnabled !== desiredEnabled;
   const memberPriorityChanged = memberPrioritySignature((existing?.members || []) as ForwardGroupMemberRequest[])
     !== memberPrioritySignature(normalized.members as ForwardGroupMemberRequest[]);
+  const membersChanged = memberRuntimeSignature((existing?.members || []) as ForwardGroupMemberRequest[])
+    !== memberRuntimeSignature(normalized.members as ForwardGroupMemberRequest[]);
+  const previousHostIds = ((existing?.members || []) as ForwardGroupMemberRequest[])
+    .filter((member) => member.memberType === "host")
+    .map((member) => Number(member.hostId || 0))
+    .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+  const entryDomainChanged = normalized.data.groupMode === "entry"
+    && String(existing?.domain || "").trim() !== String(normalized.data.domain || "").trim();
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
@@ -234,18 +255,35 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     ...normalized.data,
     isEnabled: enabledChanged ? !!existing.isEnabled : desiredEnabled,
   } as any, { skipSync: true });
-  await db.replaceForwardGroupMembers(id, normalized.members as any, { skipSync: enabledChanged });
+  if (membersChanged) {
+    await db.replaceForwardGroupMembers(id, normalized.members as any, { skipSync: enabledChanged });
+  }
   if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
   if (enabledChanged) {
     await db.setForwardGroupEnabled(id, desiredEnabled);
-    return;
+    if (membersChanged && (normalized.data.groupMode === "entry" || normalized.data.groupMode === "exit")) {
+      await db.refreshForwardGroupReferences(id, {
+        reason: `${normalized.data.groupMode}-group-members-and-state-updated`,
+        previousHostIds,
+      });
+    }
+    return db.getForwardGroupById(id);
   }
-  if (normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") await db.syncForwardGroupRules(id);
-  else await db.runForwardGroupFailover(id, {
-    forcePriority: memberPriorityChanged,
-    forceSync: memberPriorityChanged,
-    manual: true,
-  });
+  if (normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") {
+    if (!membersChanged) await db.syncForwardGroupRules(id, { preserveRuntime: true });
+  } else if (normalized.data.groupMode === "entry" || normalized.data.groupMode === "exit") {
+    if (!membersChanged) await db.runForwardGroupFailover(id, { manual: true });
+    if (!membersChanged && entryDomainChanged) {
+      await db.refreshForwardGroupReferences(id, { reason: "entry-group-domain-updated" });
+    }
+  } else {
+    await db.runForwardGroupFailover(id, {
+      forcePriority: memberPriorityChanged,
+      forceSync: memberPriorityChanged,
+      manual: true,
+    });
+  }
+  return db.getForwardGroupById(id);
 }
 
 export async function getForwardGroupDeleteImpact(groupId: number) {

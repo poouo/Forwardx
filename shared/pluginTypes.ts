@@ -57,6 +57,9 @@ export type PluginSettingFieldType = typeof PLUGIN_SETTING_FIELD_TYPES[number];
 export const PLUGIN_PAGE_CONTENT_TYPES = ["markdown", "html", "text"] as const;
 export type PluginPageContentType = typeof PLUGIN_PAGE_CONTENT_TYPES[number];
 
+export const PLUGIN_SIDEBAR_TARGETS = ["usage", "settings", "page"] as const;
+export type PluginSidebarTarget = typeof PLUGIN_SIDEBAR_TARGETS[number];
+
 export const PLUGIN_ACTION_TYPES = [
   "noop",
   "http.request",
@@ -245,6 +248,13 @@ export type PluginPageDefinition = {
   contentType?: PluginPageContentType;
   content?: string;
   assetPath?: string;
+};
+
+export type PluginSidebarDefinition = {
+  label?: string;
+  icon?: string;
+  target?: PluginSidebarTarget;
+  pageId?: string;
 };
 
 export type PluginHttpAuthDefinition = {
@@ -506,6 +516,7 @@ export type ForwardxPluginManifest = {
   extensionPoints?: PluginExtensionPoint[];
   settingsSchema?: PluginSettingField[];
   pages?: PluginPageDefinition[];
+  sidebar?: PluginSidebarDefinition;
   actions?: PluginActionDefinition[];
   usageViews?: PluginUsageViewDefinition[];
   resourceSchema?: PluginResourceViewDefinition | PluginResourceViewDefinition[];
@@ -582,10 +593,10 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
       "- 支持 nftables 或 iptables/ipset。",
       "- 支持按 Agent 独立管理配置并实时查看应用和失败状态。",
     ].join("\n"),
-    version: "0.6.0",
-    releaseDate: "2026-07-12",
-    updatedAt: "2026-07-14",
-    changelog: "重做白名单管理界面：左侧展示并筛选全部主机，右侧按当前主机新增、修改、删除和刷新规则。",
+    version: "0.6.1",
+    releaseDate: "2026-07-17",
+    updatedAt: "2026-07-17",
+    changelog: "增加可选的左侧菜单入口，可直接打开白名单配置界面。",
     features: [
       { title: "区域白名单", description: "支持全国 CN 或按省份选择入站白名单。" },
       { title: "端口策略", description: "支持为指定端口或端口范围设置独立白名单。" },
@@ -605,8 +616,8 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     packagePath: "plugins/packages/china-region-whitelist.tar.gz",
     bundledPath: "plugins/china-region-whitelist",
     category: "data",
-    permissions: ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive"],
-    extensionPoints: ["data.whitelist"],
+    permissions: ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive", "ui:page"],
+    extensionPoints: ["data.whitelist", "sidebar.page"],
     official: true,
     builtIn: true,
   },

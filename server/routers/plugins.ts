@@ -48,6 +48,10 @@ export const pluginsRouter = router({
     return pluginRepo.listPlugins();
   }),
 
+  sidebarPages: adminProcedure.query(async () => {
+    return pluginRepo.getEnabledPluginSidebarPages();
+  }),
+
   assets: adminProcedure
     .input(z.object({ pluginId: z.string().trim().min(1).max(128) }))
     .query(async ({ input }) => {
@@ -90,6 +94,12 @@ export const pluginsRouter = router({
     .input(z.object({ pluginId: z.string().trim().min(1).max(128), enabled: z.boolean() }))
     .mutation(async ({ input }) => {
       return pluginRepo.setPluginEnabled(input.pluginId, input.enabled);
+    }),
+
+  setSidebarEnabled: adminProcedure
+    .input(z.object({ pluginId: z.string().trim().min(1).max(128), enabled: z.boolean() }))
+    .mutation(async ({ input }) => {
+      return pluginRepo.setPluginSidebarEnabled(input.pluginId, input.enabled);
     }),
 
   setTrusted: adminProcedure
