@@ -92,7 +92,7 @@ function planBenefitItems(plan: any) {
     `套餐流量 ${bytes(plan.trafficLimit)}`,
     `限速 ${speed(plan.rateLimitMbps)}`,
     `规则 ${plan.maxRules || "不限"} · 连接 ${plan.maxConnections || "不限"} · 单 IP ${plan.maxIPs || "不限"}`,
-    "限制口径 端口转发按主机，隧道转发按隧道",
+    "计数范围：端口转发按主机，隧道转发按隧道",
     `可用资源 ${planResourceText(plan)}`,
   ];
   if (Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0) {
@@ -390,7 +390,7 @@ export default function Store() {
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-4">
-                        <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 计费GB</span></div>
+                        <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 计费 GB</span></div>
                         {billingDescription(config) ? (
                           <div className="whitespace-pre-line break-words text-sm leading-7 text-muted-foreground">
                             {billingDescription(config)}
@@ -401,7 +401,7 @@ export default function Store() {
                               <div>基础单价：{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
                               <div>倍率：{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
                               <div>资源编号：#{config.resourceId}</div>
-                              <div>使用方式：创建转发规则时选择该资源，按实际计费流量从余额扣费</div>
+                              <div>创建规则时选择该资源，按实际计费流量从余额扣费。</div>
                             </div>
                             <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
                               该资源无需购买套餐；账户有余额即可使用。

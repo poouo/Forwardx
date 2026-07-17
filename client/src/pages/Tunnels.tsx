@@ -90,11 +90,12 @@ import {
   FORWARD_PROTOCOL_LABELS,
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
-  isNginxForwardProtocolEnabled,
+  TUNNEL_PROTOCOLS,
   normalizeForwardXVersion,
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
   type ForwardType,
+  type TunnelProtocol,
 } from "@shared/forwardTypes";
 import {
   trafficMultiplierFromInput,
@@ -147,7 +148,7 @@ type TunnelForm = {
   exitHostId: number | null;
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
-  mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp" | "nginx_stream" | "nginx_tls";
+  mode: TunnelProtocol;
   forwardxVersion: "v1" | "v2";
   certDomain: string;
   certPem: string;
@@ -648,7 +649,7 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
 function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
   const routeNodes = link.routeHosts.map((host, index) => `${index + 1}. ${host.name}`).join(" -> ");
   const rows = [
-    { label: "类型", value: link.kind === "tunnel" ? "隧道链路" : "端口转发链" },
+    { label: "类型", value: link.kind === "tunnel" ? "隧道链路" : "转发链" },
     { label: "状态", value: link.statusText },
     { label: "延迟", value: link.latencyText },
     { label: "链路", value: link.routeText },
@@ -738,7 +739,6 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   mwss: "MWSS",
   mtcp: "MTCP",
   nginx_stream: "Stream",
-  nginx_tls: "Stream",
 };
 
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
@@ -750,11 +750,10 @@ const tunnelLoadBalanceStrategyLabels: Record<TunnelForm["loadBalanceStrategy"],
   ip_hash: "IP 哈希",
   fallback: "主备",
 };
-const unsupportedProtocolTitle = "当前不支持，请联系管理员";
+const unsupportedProtocolTitle = "该隧道协议已被管理员停用";
 
 function isNginxTunnelModeValue(mode: unknown) {
-  const normalized = String(mode || "").toLowerCase();
-  return normalized === "nginx_stream" || normalized === "nginx_tls";
+  return String(mode || "").toLowerCase() === "nginx_stream";
 }
 
 function isTunnelProxyProtocolSupported(mode: unknown) {
@@ -768,8 +767,7 @@ function isTunnelTransportTuningSupported(mode: unknown) {
 
 function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
   const normalized = String(mode || "").toLowerCase();
-  if (normalized === "nginx_tls") return "nginx_stream";
-  return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"] as const).includes(normalized as any)
+  return (TUNNEL_PROTOCOLS as readonly string[]).includes(normalized)
     ? normalized as TunnelForm["mode"]
     : "forwardx";
 }
@@ -1234,7 +1232,7 @@ function TunnelWorldGlobe({
             </div>
             <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
               <span className="h-2 w-6 rounded-full bg-[#14b8a6]" />
-              端口转发链
+              转发链
             </div>
           </div>
           {globeData.links.length === 0 && (
@@ -1248,7 +1246,7 @@ function TunnelWorldGlobe({
       </div>
       <Card className="border-border/40 bg-card/60 md:hidden">
         <CardContent className="p-6 text-center text-sm text-muted-foreground">
-          3D 地球视图仅在 PC 端显示。
+          3D 地球视图仅支持桌面端。
         </CardContent>
       </Card>
     </>
@@ -1491,12 +1489,11 @@ function TunnelSelfTestDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const utils = trpc.useUtils();
-  const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
+  const { data: tunnel } = trpc.tunnels.getById.useQuery({ id: tunnelId }, {
     enabled: open,
     refetchInterval: pollingInterval("interactive", open),
     refetchOnWindowFocus: false,
   });
-  const tunnel = useMemo(() => tunnels?.find((item: any) => item.id === tunnelId), [tunnels, tunnelId]);
   const [optimisticTesting, setOptimisticTesting] = useState(false);
   const [startedLastTestAt, setStartedLastTestAt] = useState<string | null>(null);
   const [sawServerTesting, setSawServerTesting] = useState(false);
@@ -2229,7 +2226,7 @@ function TunnelsContent() {
   });
   const isChainGlobeView = activeSection === "chains" && chainViewMode === "globe";
   const needsFullForwardGroupList = showDialog || showCreateTypeDialog || isChainGlobeView;
-  const fullForwardGroupQuery = trpc.forwardGroups.list.useQuery(undefined, {
+  const fullForwardGroupQuery = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: needsFullForwardGroupList,
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
@@ -2277,12 +2274,8 @@ function TunnelsContent() {
   );
   const defaultChainForwardType = availableChainForwardTypes[0] || "iptables";
   const nginxTunnelEnabled = useMemo(
-    () => isNginxForwardProtocolEnabled({
-      nginx: false,
-      nginx_stream: forwardProtocolSettings.nginx_stream,
-      nginx_tls: forwardProtocolSettings.nginx_tls,
-    }),
-    [forwardProtocolSettings.nginx_stream, forwardProtocolSettings.nginx_tls]
+    () => forwardProtocolSettings.nginx_stream !== false,
+    [forwardProtocolSettings.nginx_stream]
   );
   const tunnelProtocolLabel = (protocolKey: ForwardProtocolKey | null | undefined) => {
     const genericLabel = "\u8be5\u534f\u8bae";
@@ -2293,14 +2286,13 @@ function TunnelsContent() {
 
   const getTunnelProtocolKey = (tunnel: any | null | undefined): ForwardProtocolKey | null => {
     const mode = String(tunnel?.mode || "").toLowerCase();
-    if (mode === "nginx_tls") return "nginx_stream";
-    return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const).includes(mode as any)
+    return (TUNNEL_PROTOCOLS as readonly string[]).includes(mode)
       ? mode as ForwardProtocolKey
       : null;
   };
   const isTunnelSupported = (tunnel: any | null | undefined) => {
     const key = getTunnelProtocolKey(tunnel);
-    return !key || forwardProtocolSettings[key] !== false;
+    return key !== null && forwardProtocolSettings[key] !== false;
   };
   const enabledGostTunnelModes = useMemo(
     () => gostTunnelModes.filter((mode) => forwardProtocolSettings[mode] !== false),
@@ -2329,9 +2321,9 @@ function TunnelsContent() {
     tunnels,
     groups: forwardGroups,
     isTunnelSupported: (tunnel: any) => {
-      const mode = String(tunnel?.mode || "").toLowerCase();
-      const key = mode === "nginx_tls" ? "nginx_stream" : mode;
-      return !key || forwardProtocolSettings[key as keyof typeof forwardProtocolSettings] !== false;
+      const key = String(tunnel?.mode || "").toLowerCase();
+      return (TUNNEL_PROTOCOLS as readonly string[]).includes(key)
+        && forwardProtocolSettings[key as keyof typeof forwardProtocolSettings] !== false;
     },
   }), [forwardGroups, forwardProtocolSettings, hosts, tunnels]);
   const tunnelAvailabilityById = linkAvailabilityIndex.tunnelAvailabilityById;
@@ -2725,12 +2717,12 @@ function TunnelsContent() {
 
   const createChainMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.rules.list.invalidate();
       setShowCreateTypeDialog(false);
       setActiveSection("chains");
       resetChainCreateForm();
-      toast.success("端口转发链已创建");
+      toast.success("转发链已创建");
     },
     onError: (e) => toast.error(e.message || "创建失败"),
   });
@@ -2757,7 +2749,7 @@ function TunnelsContent() {
         utils.tunnels.listPage.invalidate(),
         utils.tunnels.mapItems.invalidate(),
         utils.tunnels.listAll.invalidate(),
-        utils.forwardGroups.list.invalidate(),
+        utils.forwardGroups.options.invalidate(),
         utils.rules.list.invalidate(),
         utils.trafficBilling.configs.invalidate(),
         utils.trafficBilling.storeResources.invalidate(),
@@ -2983,11 +2975,11 @@ function TunnelsContent() {
     const name = chainCreateForm.name.trim();
     const minChainHops = chainCreateForm.entryGroupId ? 1 : 2;
     if (!name || chainCreateForm.hopHostIds.length < minChainHops) {
-      toast.error(chainCreateForm.entryGroupId ? "请填写链名称并至少选择一台主机" : "请填写链名称并至少选择两台主机");
+      toast.error(chainCreateForm.entryGroupId ? "请填写转发链名称并至少选择一台主机" : "请填写转发链名称并至少选择两台主机");
       return;
     }
     if (chainCreateForm.hopHostIds.length > 5) {
-      toast.error("端口转发链最多支持 5 台主机");
+      toast.error("转发链最多支持 5 台主机");
       return;
     }
     const normalizedConnectHosts = normalizeChainConnectHostsForHosts(
@@ -3098,7 +3090,7 @@ function TunnelsContent() {
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        证书与私钥需要同时填写。填写后 Nginx 隧道的 TCP 入口到出口段会使用 TLS，UDP 仍按 Stream 四层转发；未填写时保持普通 Nginx Stream。
+        证书和私钥必须同时填写。填写后 TCP 使用 TLS，UDP 仍使用 Stream 转发。
       </p>
     </div>
   );
@@ -3231,7 +3223,7 @@ function TunnelsContent() {
               <span className="min-w-0">
                 <span className="block text-sm font-medium">V2 WireGuard</span>
                 <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
-                  内置 UDP 承载，无需系统 WireGuard
+                  内置 UDP 通道（无需安装系统 WireGuard）
                 </span>
               </span>
             </button>
@@ -3382,7 +3374,7 @@ function TunnelsContent() {
             "ForwardX UDP 外观混淆",
             form.udpOverTcp,
             (udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp })),
-            "需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；未安装时开启会下发失败提示。UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。",
+            "需要安装 mimic/mimic-dkms。UDP 丢包时可将业务 MTU 调整为 1200-1300。",
           )}
         </div>
         {form.udpOverTcp && form.forwardxVersion === "v1" && (
@@ -3476,15 +3468,15 @@ function TunnelsContent() {
           ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
           : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
-    ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+    ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${isChainGlobeView ? "可用" : "已启用"}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: isChainGlobeView ? "0 / 0 可用" : "0 / 0 已启用", iconClass: "text-primary" }
     : activeSection === "ports"
-      ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+      ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
       : activeSection === "groups"
-        ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+        ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
         : activeSection === "entries"
-          ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 可用", iconClass: "text-emerald-500" }
+          ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-emerald-500" }
           : activeSection === "exits"
-            ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 可用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
+            ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
             : {
                 value: `${isTunnelGlobeView
                   ? Number(tunnelMapQuery.data?.pages[0]?.availableItems || 0)
@@ -3537,11 +3529,11 @@ function TunnelsContent() {
           ? canCreateGroup
           : false;
   const createDisabledTitle = !canCreateActive
-    ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "至少需要 1 台主机并启用可用转发协议，或至少需要 2 台主机创建隧道链路/转发链")
+    ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "当前页签缺少可用主机或转发协议")
     : !canCreateTunnel && activeSection === "tunnels"
-      ? "隧道链路暂不可创建，可选择普通端口转发或端口转发链"
+      ? "暂无可用隧道协议"
       : !canCreateChain && activeSection === "chains"
-        ? (availableChainForwardTypes.length === 0 ? "暂无可用转发工具" : "端口转发链暂不可创建，可选择普通端口转发或隧道链路")
+        ? (availableChainForwardTypes.length === 0 ? "暂无可用转发工具" : "当前主机或转发工具不支持转发链")
         : undefined;
 
   const openCreateTypeDialog = () => {
@@ -3629,7 +3621,7 @@ function TunnelsContent() {
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">链路管理</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            管理隧道链路、端口转发链和转发组
+            管理隧道、端口转发、转发链及入口/出口组
           </p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
@@ -3684,14 +3676,14 @@ function TunnelsContent() {
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground">筛选:</span>
+          <span className="text-sm text-muted-foreground">筛选：</span>
         </div>
         <div className="relative w-full sm:w-[260px] lg:w-[320px]">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={linkSearchQuery}
             onChange={(event) => setLinkSearchQuery(event.target.value)}
-            placeholder="搜索链路 / 主机 / IP / 工具 / 端口"
+            placeholder="搜索链路、主机、IP、工具或端口"
             className="h-8 w-full pl-8 pr-8 text-xs"
           />
           {linkSearchQuery ? (
@@ -3717,7 +3709,7 @@ function TunnelsContent() {
           <div className="min-w-0">
             <h2 className="text-lg font-semibold tracking-tight sm:text-xl">隧道链路</h2>
             <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-              管理通过 GOST / ForwardX 串联主机的隧道链路。
+              管理 GOST、ForwardX 和 Nginx 隧道。
             </p>
           </div>
           <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
@@ -4368,7 +4360,7 @@ function TunnelsContent() {
                       {form.exitGroupId ? (
                         <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
                       ) : (
-                        <p className="text-xs text-muted-foreground">选择出口组后会自动把组内第一台作为主出口，其余作为额外出口。</p>
+                        <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
                       )}
                     </div>
                     <div className="space-y-2">
@@ -4463,7 +4455,7 @@ function TunnelsContent() {
                 ) : (
                   <>
                     <div className="space-y-2">
-                      <Label>链名称</Label>
+                      <Label>转发链名称</Label>
                       <Input
                         value={chainCreateForm.name}
                         onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
@@ -4685,7 +4677,7 @@ function TunnelsContent() {
               {form.exitGroupId ? (
                 <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
               ) : (
-                <p className="text-xs text-muted-foreground">选择出口组后会自动把组内第一台作为主出口，其余作为额外出口。</p>
+                <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
               )}
             </div>
             <div className="space-y-2">

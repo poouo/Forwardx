@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   balanceTransactions,
   forwardGroups,
@@ -211,16 +211,39 @@ export async function listTrafficBillingConfigs() {
   const db = await getDb();
   if (!db) return [];
   const configs = await db.select().from(trafficBillingConfigs).orderBy(desc(trafficBillingConfigs.updatedAt));
+  const hostIds = Array.from(new Set((configs as any[])
+    .filter((config: any) => config.resourceType === "host")
+    .map((config: any) => Number(config.resourceId))
+    .filter((id: number) => id > 0)));
+  const tunnelIds = Array.from(new Set((configs as any[])
+    .filter((config: any) => config.resourceType === "tunnel")
+    .map((config: any) => Number(config.resourceId))
+    .filter((id: number) => id > 0)));
+  const forwardGroupIds = Array.from(new Set((configs as any[])
+    .filter((config: any) => config.resourceType === "forward_group")
+    .map((config: any) => Number(config.resourceId))
+    .filter((id: number) => id > 0)));
   const [hostRows, tunnelRows, forwardGroupRows] = await Promise.all([
-    db.select({ id: hosts.id, name: hosts.name }).from(hosts),
-    db.select({ id: tunnels.id, name: tunnels.name, trafficMultiplier: tunnels.trafficMultiplier, mode: tunnels.mode }).from(tunnels),
-    db.select({
-      id: forwardGroups.id,
-      name: forwardGroups.name,
-      groupType: forwardGroups.groupType,
-      groupMode: forwardGroups.groupMode,
-      trafficMultiplier: forwardGroups.trafficMultiplier,
-    }).from(forwardGroups),
+    hostIds.length > 0
+      ? db.select({ id: hosts.id, name: hosts.name }).from(hosts).where(inArray(hosts.id, hostIds))
+      : Promise.resolve([]),
+    tunnelIds.length > 0
+      ? db.select({
+        id: tunnels.id,
+        name: tunnels.name,
+        trafficMultiplier: tunnels.trafficMultiplier,
+        mode: tunnels.mode,
+      }).from(tunnels).where(inArray(tunnels.id, tunnelIds))
+      : Promise.resolve([]),
+    forwardGroupIds.length > 0
+      ? db.select({
+        id: forwardGroups.id,
+        name: forwardGroups.name,
+        groupType: forwardGroups.groupType,
+        groupMode: forwardGroups.groupMode,
+        trafficMultiplier: forwardGroups.trafficMultiplier,
+      }).from(forwardGroups).where(inArray(forwardGroups.id, forwardGroupIds))
+      : Promise.resolve([]),
   ]);
   const hostNames = new Map(hostRows.map((host: any) => [Number(host.id), host.name]));
   const tunnelById = new Map<number, any>(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel]));

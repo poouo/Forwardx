@@ -2532,9 +2532,6 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
     hostRows.map((host: any) => Number(host.id)),
   );
   const selectedHostIds = new Set(effectiveHostIds);
-  const usageUpdatedAt = usage.updatedAt ? new Date(usage.updatedAt).getTime() : 0;
-  const pluginUpdatedAt = plugin.updatedAt ? new Date(plugin.updatedAt).getTime() : 0;
-  const pluginSyncRequiredAt = Math.max(usageUpdatedAt, pluginUpdatedAt);
   const desiredSyncFiles = pluginHostSyncFiles(usageView, usage, assetRows).files;
   const desiredSyncSignature = usage.enabled && desiredSyncFiles.length > 0
     ? pluginHostSyncSignature(plugin.pluginId, usageView, usage, hostAssetSyncDir(plugin.pluginId, usageView), desiredSyncFiles)
@@ -2544,15 +2541,12 @@ export async function getPluginUsage(pluginId: string, usageViewId?: string | nu
     usageView,
     usage: { ...usage, hostIds: effectiveHostIds },
     hosts: hostRows.map((host: any) => {
-      const lastHeartbeatAt = host.lastHeartbeat ? new Date(host.lastHeartbeat).getTime() : 0;
       const selected = selectedHostIds.has(Number(host.id));
       const agentPluginInventory = getAgentPluginInventory(host.id);
       const agentPluginVersion = agentPluginInventory?.versions.get(plugin.pluginId) || null;
-      const pluginSyncPending = agentPluginInventory
-        ? agentPluginVersion !== plugin.version
-          || (agentPluginInventory.supportsSyncSignatures
-            && agentPluginInventory.syncSignatures.get(plugin.pluginId) !== desiredSyncSignature)
-        : pluginSyncRequiredAt > 0 && (!Number.isFinite(lastHeartbeatAt) || lastHeartbeatAt < pluginSyncRequiredAt);
+      const pluginSyncPending = !agentPluginInventory
+        || agentPluginVersion !== plugin.version
+        || agentPluginInventory.syncSignatures.get(plugin.pluginId) !== desiredSyncSignature;
       return {
         ...host,
         isOnline: !!host.isOnline && isFreshHostHeartbeat(host.lastHeartbeat),
@@ -2876,7 +2870,7 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
     }));
     if (files.length === 0) continue;
     const operationSignature = pluginHostSyncSignature(plugin.pluginId, usageView, usage, targetDir, files);
-    if (reportedPluginInventory?.supportsSyncSignatures
+    if (reportedPluginInventory
       && reportedPluginInventory.versions.get(plugin.pluginId) === plugin.version
       && reportedPluginInventory.syncSignatures.get(plugin.pluginId) === operationSignature) {
       continue;
@@ -2885,7 +2879,6 @@ export async function buildPluginHostAssetSyncActions(hostId: number) {
       id: plugin.pluginId,
       version: plugin.version,
       pluginId: plugin.pluginId,
-      pluginVersion: plugin.version,
       usageViewId: usageView.id,
       mode: usage.mode,
       operation: usage.operation || defaultUsageOperation(usageView),
@@ -3857,10 +3850,9 @@ async function executePluginAgentAction(
   }
   const unsyncedHosts = targetHosts.flatMap((host: any) => {
     const inventory = getAgentPluginInventory(host.id);
-    if (!inventory) return [];
+    if (!inventory) return [{ ...host, actualVersion: "未回报" }];
     const actualVersion = inventory.versions.get(plugin.pluginId) || "未同步";
-    const signatureMatches = !inventory.supportsSyncSignatures
-      || inventory.syncSignatures.get(plugin.pluginId) === expectedSyncSignature;
+    const signatureMatches = inventory.syncSignatures.get(plugin.pluginId) === expectedSyncSignature;
     return actualVersion === plugin.version && signatureMatches ? [] : [{ ...host, actualVersion }];
   });
   if (unsyncedHosts.length > 0) {

@@ -85,7 +85,6 @@ type pluginAgentTaskResult struct {
 
 type pluginAgentManifest struct {
 	Version       string `json:"version"`
-	PluginVersion string `json:"pluginVersion"`
 	SyncSignature string `json:"syncSignature"`
 }
 
@@ -261,9 +260,6 @@ func parsePluginAgentManifestVersion(content []byte) (string, error) {
 	if err := json.Unmarshal(content, &manifest); err != nil {
 		return "", err
 	}
-	if version := strings.TrimSpace(manifest.PluginVersion); version != "" {
-		return version, nil
-	}
 	return strings.TrimSpace(manifest.Version), nil
 }
 
@@ -296,10 +292,7 @@ func installedPluginInventoryAt(root string) (map[string]string, map[string]stri
 		if err := json.Unmarshal(content, &manifest); err != nil {
 			continue
 		}
-		version := strings.TrimSpace(manifest.PluginVersion)
-		if version == "" {
-			version = strings.TrimSpace(manifest.Version)
-		}
+		version := strings.TrimSpace(manifest.Version)
 		if version != "" {
 			versions[pluginID] = version
 			if signature := strings.TrimSpace(manifest.SyncSignature); signature != "" {
@@ -313,7 +306,7 @@ func installedPluginInventoryAt(root string) (map[string]string, map[string]stri
 func validatePluginAgentTaskVersion(task pluginAgentTask) error {
 	expected := strings.TrimSpace(task.PluginVersion)
 	if expected == "" {
-		return nil
+		return errors.New("插件任务缺少版本")
 	}
 	manifestPath := filepath.Join(pluginAgentTaskRoot, task.PluginID, "manifest.json")
 	deadline := time.Now().Add(pluginAgentManifestSyncWait)

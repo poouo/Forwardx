@@ -692,7 +692,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '    if [ -f "$SVC" ]; then',
     '      SVCNAME=$(basename "$SVC")',
     '      remove_service_by_name "$SVCNAME"',
-    '      echo "[淇℃伅] 宸插垹闄ゆ湇鍔? $SVCNAME"',
+    '      echo "[信息] 已删除服务: $SVCNAME"',
     '    fi',
     '  done',
     '',

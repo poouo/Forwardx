@@ -126,7 +126,7 @@ const BILLING_CONFIG_VIEW_MODE_STORAGE_KEY = "forwardx.trafficBilling.configs.vi
 const BILLING_RESOURCE_CATEGORY_ITEMS: Array<{ value: Exclude<BillingResourceCategory, "legacy_host">; label: string; description: string }> = [
   { value: "port", label: "端口转发", description: "链路管理中的端口转发资源" },
   { value: "tunnel", label: "隧道转发", description: "已创建的隧道资源" },
-  { value: "chain", label: "转发链", description: "端口转发链资源" },
+  { value: "chain", label: "转发链", description: "固定多跳链路资源" },
   { value: "group", label: "转发组", description: "转发组资源" },
 ];
 const LEGACY_HOST_RESOURCE_CATEGORY_ITEM = { value: "legacy_host" as const, label: "历史主机", description: "旧版本主机计费资源" };
@@ -350,15 +350,27 @@ export default function TrafficBillingConfigManager({
   createRequestKey?: number;
 }) {
   const utils = trpc.useUtils();
-  const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
-  const { data: tunnels = [] } = trpc.tunnels.listAll.useQuery();
-  const { data: forwardGroups = [] } = trpc.forwardGroups.list.useQuery();
-  const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
-  const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
   const [configViewMode, setConfigViewMode] = useState<BillingConfigViewMode>(() => getStoredBillingConfigViewMode());
   const lastCreateRequestKey = useRef(createRequestKey);
+  const { data: hosts = [] } = trpc.hosts.options.useQuery(undefined, {
+    enabled: dialogOpen,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: tunnels = [] } = trpc.tunnels.options.useQuery(undefined, {
+    enabled: dialogOpen,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: forwardGroups = [] } = trpc.forwardGroups.options.useQuery(undefined, {
+    enabled: dialogOpen,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
+  const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
 
   const portForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "port");
   const chainForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "chain");
@@ -536,7 +548,7 @@ export default function TrafficBillingConfigManager({
         <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle>计费配置</CardTitle>
-            <CardDescription>按 GB 扣费，可设置是否需要额外授权。</CardDescription>
+            <CardDescription>按 GB 计费，可单独要求授权。</CardDescription>
           </div>
           <div className="flex items-center overflow-hidden rounded-md border border-border/40">
             <Button
@@ -626,7 +638,7 @@ export default function TrafficBillingConfigManager({
         <DialogContent className="max-w-2xl sm:max-h-[90svh]">
           <DialogHeader>
             <DialogTitle>{configForm.id ? "编辑计费资源" : "新增计费资源"}</DialogTitle>
-            <DialogDescription>选择链路资源并设置流量单价，倍率使用资源自身配置。</DialogDescription>
+            <DialogDescription>选择资源并设置每 GB 单价；倍率继承资源配置。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-3 sm:col-span-2 sm:grid-cols-[11rem_minmax(0,1fr)]">

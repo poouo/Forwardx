@@ -2,6 +2,8 @@ export type TunnelRuntimeFamily = "forwardx" | "gost" | "nginx";
 export type TunnelRuntimeForwardType = "forwardx-tunnel" | "gost-tunnel" | "nginx-tunnel-exit";
 export type TunnelRuleRuntimeForwardType = "forwardx" | "gost" | "nginx-tunnel";
 
+const GOST_TUNNEL_MODES = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
 export type GostTunnelProbeListener = {
   tunnelId: number;
   mode: string;
@@ -27,31 +29,33 @@ type GostTunnelProbeExitInput = {
   isEnabled?: unknown;
 };
 
-export function tunnelRuntimeFamily(tunnel: any): TunnelRuntimeFamily {
+export function tunnelRuntimeFamily(tunnel: any): TunnelRuntimeFamily | null {
   const mode = String(tunnel?.mode || "").trim().toLowerCase();
   if (mode === "forwardx") return "forwardx";
-  if (mode === "nginx_stream" || mode === "nginx_tls") return "nginx";
-  return "gost";
+  if (mode === "nginx_stream") return "nginx";
+  if (GOST_TUNNEL_MODES.has(mode)) return "gost";
+  return null;
 }
 
-export function tunnelExitRuntimeForwardType(tunnel: any): TunnelRuntimeForwardType {
+export function tunnelExitRuntimeForwardType(tunnel: any): TunnelRuntimeForwardType | null {
   const family = tunnelRuntimeFamily(tunnel);
   if (family === "forwardx") return "forwardx-tunnel";
   if (family === "nginx") return "nginx-tunnel-exit";
-  return "gost-tunnel";
+  return family === "gost" ? "gost-tunnel" : null;
 }
 
 export function tunnelHopRuntimeForwardType(tunnel: any): Exclude<TunnelRuntimeForwardType, "nginx-tunnel-exit"> | null {
   const family = tunnelRuntimeFamily(tunnel);
   if (family === "nginx") return null;
-  return family === "forwardx" ? "forwardx-tunnel" : "gost-tunnel";
+  if (family === "forwardx") return "forwardx-tunnel";
+  return family === "gost" ? "gost-tunnel" : null;
 }
 
-export function tunnelRuleRuntimeForwardType(tunnel: any): TunnelRuleRuntimeForwardType {
+export function tunnelRuleRuntimeForwardType(tunnel: any): TunnelRuleRuntimeForwardType | null {
   const family = tunnelRuntimeFamily(tunnel);
   if (family === "forwardx") return "forwardx";
   if (family === "nginx") return "nginx-tunnel";
-  return "gost";
+  return family === "gost" ? "gost" : null;
 }
 
 export function planGostTunnelProbeListeners(

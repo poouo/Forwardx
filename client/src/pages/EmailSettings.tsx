@@ -127,8 +127,8 @@ export function EmailSettingsContent() {
 
       <Alert>
         <ShieldCheck className="h-4 w-4" />
-        <AlertTitle>按需开启</AlertTitle>
-        <AlertDescription>SMTP 总开关关闭时，注册邮箱验证码和提醒邮件都会停止发送；已保存的 SMTP 密码不会回显。</AlertDescription>
+        <AlertTitle>邮件发送说明</AlertTitle>
+        <AlertDescription>关闭邮箱服务后不发送验证码或提醒邮件；已保存的密码不会回显。</AlertDescription>
       </Alert>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -137,13 +137,13 @@ export function EmailSettingsContent() {
             <Mail className="h-4 w-4 text-primary" />
             SMTP 对接
           </CardTitle>
-          <CardDescription>配置 SMTP 发信。</CardDescription>
+          <CardDescription>配置 SMTP 服务器和账号。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
             <div>
               <p className="text-sm font-medium">启用邮箱服务</p>
-              <p className="text-xs text-muted-foreground">控制邮件发送总开关。</p>
+              <p className="text-xs text-muted-foreground">关闭后不发送任何邮件。</p>
             </div>
             <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
           </div>
@@ -178,7 +178,7 @@ export function EmailSettingsContent() {
             <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
               <div>
                 <p className="text-sm font-medium">SSL / SMTPS</p>
-                <p className="text-xs text-muted-foreground">常见 465 端口开启。</p>
+                <p className="text-xs text-muted-foreground">通常用于 465 端口。</p>
               </div>
               <Switch checked={form.secure} onCheckedChange={(secure) => setForm({ ...form, secure })} />
             </div>
@@ -192,13 +192,13 @@ export function EmailSettingsContent() {
             <BellRing className="h-4 w-4 text-primary" />
             功能开关
           </CardTitle>
-          <CardDescription>按需开启邮件能力。</CardDescription>
+          <CardDescription>选择需要启用的邮件场景。</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
           <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
             <div>
               <p className="text-sm font-medium">强制邮箱验证码注册</p>
-              <p className="text-xs text-muted-foreground">注册时验证邮箱。</p>
+              <p className="text-xs text-muted-foreground">注册时必须验证邮箱。</p>
             </div>
             <Switch checked={form.verifyRegistration} onCheckedChange={(verifyRegistration) => setForm({ ...form, verifyRegistration })} />
           </div>
@@ -206,7 +206,7 @@ export function EmailSettingsContent() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium">邮箱后缀白名单</p>
-                <p className="text-xs text-muted-foreground">限制可注册邮箱后缀。</p>
+                <p className="text-xs text-muted-foreground">仅允许指定邮箱后缀注册。</p>
               </div>
               <Switch checked={form.whitelistEnabled} onCheckedChange={(whitelistEnabled) => setForm({ ...form, whitelistEnabled })} />
             </div>

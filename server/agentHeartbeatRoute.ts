@@ -122,7 +122,6 @@ const AGENT_MIMIC_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
-const AGENT_LEGACY_PLUGIN_SYNC_SETTLE_MS = 10 * 1000;
 const MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const SHARED_GOST_FORWARD_TYPES = new Set([
@@ -132,6 +131,7 @@ const SHARED_GOST_FORWARD_TYPES = new Set([
   "gost-tunnel-hop",
 ]);
 const SHARED_NGINX_FORWARD_TYPES = new Set(["nginx", "nginx-tunnel", "nginx-tunnel-exit"]);
+const GOST_TUNNEL_MODES = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
 const AGENT_STATE_SECTION_NAMES = [
@@ -480,14 +480,6 @@ function runtimeSyncReconcileDue(hostId: number, actionType: string, now: number
   return !cached || now - cached.sentAt >= intervalMs;
 }
 
-function hasRecentPluginSyncDispatch(hostId: number, now: number) {
-  const prefix = `${Number(hostId)}:`;
-  for (const [key, state] of agentPluginSyncActionCache) {
-    if (key.startsWith(prefix) && now - state.sentAt < AGENT_LEGACY_PLUGIN_SYNC_SETTLE_MS) return true;
-  }
-  return false;
-}
-
 function runtimePortProtocolKey(portValue: unknown, protocol: unknown) {
   const port = Number(portValue || 0);
   if (port <= 0) return "";
@@ -565,12 +557,11 @@ function isForwardXTunnelMode(tunnel: any) {
 }
 
 function isNginxTunnelMode(tunnel: any) {
-  const mode = String(tunnel?.mode || "").toLowerCase();
-  return mode === "nginx_stream" || mode === "nginx_tls";
+  return String(tunnel?.mode || "").toLowerCase() === "nginx_stream";
 }
 
 function isGostTunnelMode(tunnel: any) {
-  return !!tunnel && !isForwardXTunnelMode(tunnel) && !isNginxTunnelMode(tunnel);
+  return !!tunnel && GOST_TUNNEL_MODES.has(String(tunnel?.mode || "").toLowerCase());
 }
 
 function endpointHostPort(host: unknown, port: unknown) {
@@ -3421,6 +3412,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const isCurrentHostExtraExit = !!currentHostExtraExitNode;
       const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const runtimeFamily = tunnelRuntimeFamily(tunnel);
+      if (!runtimeFamily) continue;
       const fxpTunnel = runtimeFamily === "forwardx";
       const wireGuardV2 = fxpTunnel && isForwardXWireGuardV2(tunnel);
       const isCurrentHostSharedRuntimeExtraExit = !fxpTunnel && isCurrentHostExtraExit;
@@ -3453,6 +3445,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       const tunnelSourcePort = fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? Number(tunnel.listenPort) : Number((currentHostExtraExitNode as any)?.listenPort || 0));
       const tunnelForwardType = tunnelExitRuntimeForwardType(tunnel);
+      if (!tunnelForwardType) continue;
       if (tunnel.isEnabled && tunnelProtocolEnabled && tunnelSourcePort > 0) {
         expectedTunnelPorts.add(tunnelSourcePort);
       }
@@ -3657,7 +3650,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const runningForwardType = useRuleGuard
             ? "guard"
             : rule.forwardType === "gost" && ruleTunnel
-            ? tunnelRuleRuntimeForwardType(ruleTunnel)
+            ? tunnelRuleRuntimeForwardType(ruleTunnel) || rule.forwardType
             : rule.forwardType;
           addRunningRule({
             ruleId: rule.id,
@@ -3700,7 +3693,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const expectedRuleForwardType = useRuleGuard
         ? "guard"
         : rule.forwardType === "gost" && ruleTunnel
-        ? tunnelRuleRuntimeForwardType(ruleTunnel)
+        ? tunnelRuleRuntimeForwardType(ruleTunnel) || rule.forwardType
         : rule.forwardType;
       if (rule.isEnabled && expectedRulePort > 0) {
         expectedRulePorts.add(runtimePortProtocolKey(expectedRulePort, rule.protocol));
@@ -4771,15 +4764,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // response, so caching the plugin action here would otherwise lose it until
     // the five-minute plugin retry window expires.
     const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
-    const pluginSyncTasks = await buildPluginHostAssetSyncActions(Number(host.id));
+    const pluginSyncTasks = supportsPluginTasks
+      ? await buildPluginHostAssetSyncActions(Number(host.id))
+      : [];
     const reportedPluginInventory = getAgentPluginInventory(host.id);
     let pluginSyncActionQueued = false;
     for (const pluginSyncTask of pluginSyncTasks) {
       const reportedPluginVersion = reportedPluginInventory?.versions.get(pluginSyncTask.pluginId) || "";
-      const syncConfirmed = reportedPluginInventory?.supportsSyncSignatures === true
-        && !pluginSyncTask.expectAbsent
-        && reportedPluginVersion === pluginSyncTask.pluginVersion
-        && reportedPluginInventory.syncSignatures.get(pluginSyncTask.pluginId) === pluginSyncTask.syncSignature;
+      const syncConfirmed = !!reportedPluginInventory && (pluginSyncTask.expectAbsent
+        ? !reportedPluginInventory.versions.has(pluginSyncTask.pluginId)
+          && !reportedPluginInventory.syncSignatures.has(pluginSyncTask.pluginId)
+        : reportedPluginVersion === pluginSyncTask.pluginVersion
+          && reportedPluginInventory.syncSignatures.get(pluginSyncTask.pluginId) === pluginSyncTask.syncSignature);
       if (syncConfirmed) continue;
       const pluginSyncAction = {
         statusType: "runtime",
@@ -5125,12 +5121,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
-    const legacyPluginSyncSettling = !reportedPluginInventory
-      && hasRecentPluginSyncDispatch(Number(host.id), responseIssuedAt);
-    const pluginTasks = supportsPluginTasks && !pluginSyncActionQueued && !legacyPluginSyncSettling
+    const pluginsAwaitingSync = new Set(pluginSyncTasks.map((task) => task.pluginId));
+    const pluginTasks = supportsPluginTasks && reportedPluginInventory && !pluginSyncActionQueued
       ? takePluginAgentTasks(host.id, 4, (task) => (
-          !reportedPluginInventory
-          || reportedPluginInventory.versions.get(task.pluginId) === task.pluginVersion
+          !pluginsAwaitingSync.has(task.pluginId)
+          && reportedPluginInventory.versions.get(task.pluginId) === task.pluginVersion
         ))
       : [];
     const hasPendingPluginTasks = supportsPluginTasks && hasQueuedPluginAgentTasks(host.id);

@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   agentTokens,
   forwardGroupMembers,
   forwardRuleTunnelExits,
   forwardRules,
   hostGroupMembers,
+  hostGroups,
   hostMetrics,
   hostProbeServiceStats,
   hosts,
@@ -24,6 +25,7 @@ import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
 import { markOrphanedForwardGroupTemplatesPendingDelete } from "./forwardRuleRepository";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
 // ==================== Host Queries ====================
 
@@ -47,6 +49,274 @@ export async function getHosts(userId?: number) {
     return rows.map(withComputedOnline);
   }
   const rows = await db.select().from(hosts).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
+  return rows.map(withComputedOnline);
+}
+
+export type HostListQuery = PageRequest & {
+  ownerUserId?: number;
+  allowedHostIds?: number[];
+  search?: string;
+  groupId?: number | null;
+  orderByGroups?: boolean;
+};
+
+function normalizeIds(values: unknown[] | undefined) {
+  return Array.from(new Set((values || [])
+    .map((value) => Math.floor(Number(value)))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function escapeLikeToken(value: string) {
+  return value.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+}
+
+function hostListCondition(input: Omit<HostListQuery, keyof PageRequest>) {
+  const conditions: any[] = [];
+  if (Number(input.ownerUserId || 0) > 0) {
+    const allowedIds = normalizeIds(input.allowedHostIds);
+    conditions.push(allowedIds.length > 0
+      ? or(eq(hosts.userId, Number(input.ownerUserId)), inArray(hosts.id, allowedIds))
+      : eq(hosts.userId, Number(input.ownerUserId)));
+  }
+  if (Number(input.groupId || 0) > 0) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${hostGroupMembers}
+      INNER JOIN ${hostGroups} ON ${hostGroups.id} = ${hostGroupMembers.groupId}
+      WHERE ${hostGroupMembers.hostId} = ${hosts.id}
+        AND ${hostGroupMembers.groupId} = ${Number(input.groupId)}
+        AND ${hostGroups.isEnabled} = ${sqlBool(true)}
+    )`);
+  }
+  const tokens = String(input.search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    const pattern = `%${escapeLikeToken(token)}%`;
+    const textConditions = [
+      hosts.name,
+      hosts.ip,
+      hosts.ipv4,
+      hosts.ipv6,
+      hosts.entryIp,
+      hosts.tunnelEntryIp,
+      hosts.osInfo,
+      hosts.cpuInfo,
+      hosts.agentVersion,
+      hosts.hostType,
+    ].map((column) => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`);
+    const numericId = /^\d+$/.test(token) ? Number(token) : 0;
+    conditions.push(or(
+      ...textConditions,
+      ...(numericId > 0 ? [eq(hosts.id, numericId)] : []),
+    ));
+  }
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+function hostListOrder(input: Omit<HostListQuery, keyof PageRequest>) {
+  if (Number(input.groupId || 0) > 0) {
+    return [
+      sql`(
+        SELECT ${hostGroupMembers.sortOrder}
+        FROM ${hostGroupMembers}
+        WHERE ${hostGroupMembers.groupId} = ${Number(input.groupId)}
+          AND ${hostGroupMembers.hostId} = ${hosts.id}
+        ORDER BY ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
+        LIMIT 1
+      ) ASC`,
+      asc(hosts.sortOrder),
+      desc(hosts.createdAt),
+      desc(hosts.id),
+    ];
+  }
+  if (input.orderByGroups) {
+    const firstGroupSort = sql`(
+      SELECT ${hostGroups.sortOrder}
+      FROM ${hostGroupMembers}
+      INNER JOIN ${hostGroups} ON ${hostGroups.id} = ${hostGroupMembers.groupId}
+      WHERE ${hostGroupMembers.hostId} = ${hosts.id}
+        AND ${hostGroups.isEnabled} = ${sqlBool(true)}
+      ORDER BY ${hostGroups.sortOrder} ASC, ${hostGroups.id} ASC, ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
+      LIMIT 1
+    )`;
+    const firstMemberSort = sql`(
+      SELECT ${hostGroupMembers.sortOrder}
+      FROM ${hostGroupMembers}
+      INNER JOIN ${hostGroups} ON ${hostGroups.id} = ${hostGroupMembers.groupId}
+      WHERE ${hostGroupMembers.hostId} = ${hosts.id}
+        AND ${hostGroups.isEnabled} = ${sqlBool(true)}
+      ORDER BY ${hostGroups.sortOrder} ASC, ${hostGroups.id} ASC, ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
+      LIMIT 1
+    )`;
+    return [
+      sql`CASE WHEN ${firstGroupSort} IS NULL THEN 1 ELSE 0 END ASC`,
+      sql`${firstGroupSort} ASC`,
+      sql`${firstMemberSort} ASC`,
+      asc(hosts.sortOrder),
+      desc(hosts.createdAt),
+      desc(hosts.id),
+    ];
+  }
+  return [asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id)];
+}
+
+export async function getHostsPage(input: HostListQuery) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, onlineItems: 0, versionCounts: [] };
+  const condition = hostListCondition(input);
+  const cutoffSeconds = Math.floor((Date.now() - HOST_ONLINE_TTL_MS) / 1000);
+  const onlineExpression = sql<number>`CASE
+    WHEN ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+    THEN 1 ELSE 0 END`;
+  const aggregateQuery = db
+    .select({
+      totalItems: sql<number>`COUNT(*)`,
+      onlineItems: sql<number>`COALESCE(SUM(${onlineExpression}), 0)`,
+    })
+    .from(hosts);
+  const [totals] = condition ? await aggregateQuery.where(condition) : await aggregateQuery;
+  const totalItems = Number(totals?.totalItems || 0);
+  const onlineItems = Number(totals?.onlineItems || 0);
+  const scopeCondition = hostListCondition({
+    ownerUserId: input.ownerUserId,
+    allowedHostIds: input.allowedHostIds,
+  });
+  let scopeTotalItems = totalItems;
+  if (String(input.search || "").trim() || Number(input.groupId || 0) > 0) {
+    const scopeQuery = db.select({ count: sql<number>`COUNT(*)` }).from(hosts);
+    const [scopeTotals] = scopeCondition ? await scopeQuery.where(scopeCondition) : await scopeQuery;
+    scopeTotalItems = Number(scopeTotals?.count || 0);
+  }
+  const window = pageWindowForTotal(input, totalItems);
+  const listQuery = db.select().from(hosts);
+  const pageRows = condition
+    ? await listQuery.where(condition).orderBy(...hostListOrder(input)).limit(window.pageSize).offset(window.offset)
+    : await listQuery.orderBy(...hostListOrder(input)).limit(window.pageSize).offset(window.offset);
+  const versionQuery = db
+    .select({
+      agentVersion: hosts.agentVersion,
+      online: onlineExpression,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(hosts);
+  const versionCounts = condition
+    ? await versionQuery.where(condition).groupBy(hosts.agentVersion, onlineExpression)
+    : await versionQuery.groupBy(hosts.agentVersion, onlineExpression);
+  return {
+    ...pageResult(pageRows.map(withComputedOnline), totalItems, window),
+    scopeTotalItems,
+    onlineItems,
+    versionCounts: versionCounts.map((row: any) => ({
+      agentVersion: row.agentVersion || null,
+      online: Number(row.online || 0) === 1 || row.online === true,
+      count: Number(row.count || 0),
+    })),
+  };
+}
+
+export async function getHostSummaryScope(input: Omit<HostListQuery, keyof PageRequest>) {
+  const db = await getDb();
+  if (!db) return { hostIds: [] as number[], totalHosts: 0, onlineHosts: 0 };
+  const condition = hostListCondition(input);
+  const cutoffSeconds = Math.floor((Date.now() - HOST_ONLINE_TTL_MS) / 1000);
+  const onlineExpression = sql<number>`CASE
+    WHEN ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+    THEN 1 ELSE 0 END`;
+  const aggregate = db
+    .select({
+      totalHosts: sql<number>`COUNT(*)`,
+      onlineHosts: sql<number>`COALESCE(SUM(${onlineExpression}), 0)`,
+    })
+    .from(hosts);
+  const idsQuery = db.select({ id: hosts.id }).from(hosts);
+  const [totals, idRows] = await Promise.all([
+    condition ? aggregate.where(condition) : aggregate,
+    condition ? idsQuery.where(condition) : idsQuery,
+  ]);
+  return {
+    hostIds: idRows.map((row: any) => Number(row.id)).filter((id: number) => id > 0),
+    totalHosts: Number(totals[0]?.totalHosts || 0),
+    onlineHosts: Number(totals[0]?.onlineHosts || 0),
+  };
+}
+
+export async function getHostStatusRows(input: Omit<HostListQuery, keyof PageRequest> & { hostIds: number[] }) {
+  const db = await getDb();
+  if (!db) return [];
+  const requestedIds = normalizeIds(input.hostIds);
+  if (requestedIds.length === 0) return [];
+  const scopeCondition = hostListCondition(input);
+  const idCondition = inArray(hosts.id, requestedIds);
+  const condition = scopeCondition ? and(scopeCondition, idCondition) : idCondition;
+  const rows = await db
+    .select({
+      id: hosts.id,
+      isOnline: hosts.isOnline,
+      lastHeartbeat: hosts.lastHeartbeat,
+      agentVersion: hosts.agentVersion,
+      agentUpgradeRequested: hosts.agentUpgradeRequested,
+      agentUpgradeTargetVersion: hosts.agentUpgradeTargetVersion,
+      agentUpgradeRequestedAt: hosts.agentUpgradeRequestedAt,
+      updatedAt: hosts.updatedAt,
+    })
+    .from(hosts)
+    .where(condition);
+  return rows.map(withComputedOnline);
+}
+
+export async function getHostUpgradeCandidates(input: Omit<HostListQuery, keyof PageRequest>) {
+  const db = await getDb();
+  if (!db) return [];
+  const condition = hostListCondition(input);
+  const query = db
+    .select({
+      id: hosts.id,
+      isOnline: hosts.isOnline,
+      lastHeartbeat: hosts.lastHeartbeat,
+      agentVersion: hosts.agentVersion,
+      agentUpgradeRequested: hosts.agentUpgradeRequested,
+      agentUpgradeTargetVersion: hosts.agentUpgradeTargetVersion,
+      agentUpgradeRequestedAt: hosts.agentUpgradeRequestedAt,
+    })
+    .from(hosts);
+  const rows = condition ? await query.where(condition) : await query;
+  return rows.map(withComputedOnline);
+}
+
+export async function getHostOptions(ownerUserId?: number, allowedHostIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const condition = hostListCondition({ ownerUserId, allowedHostIds });
+  const query = db
+    .select({
+      id: hosts.id,
+      userId: hosts.userId,
+      name: hosts.name,
+      ip: hosts.ip,
+      ipv4: hosts.ipv4,
+      ipv6: hosts.ipv6,
+      entryIp: hosts.entryIp,
+      tunnelEntryIp: hosts.tunnelEntryIp,
+      hostType: hosts.hostType,
+      isOnline: hosts.isOnline,
+      lastHeartbeat: hosts.lastHeartbeat,
+      agentVersion: hosts.agentVersion,
+      ddnsEnabled: hosts.ddnsEnabled,
+      ddnsDomain: hosts.ddnsDomain,
+      portRangeStart: hosts.portRangeStart,
+      portRangeEnd: hosts.portRangeEnd,
+      portAllowlist: hosts.portAllowlist,
+      blockHttp: hosts.blockHttp,
+      blockSocks: hosts.blockSocks,
+      blockTls: hosts.blockTls,
+    })
+    .from(hosts);
+  const rows = condition
+    ? await query.where(condition).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id))
+    : await query.orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
   return rows.map(withComputedOnline);
 }
 

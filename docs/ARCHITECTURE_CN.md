@@ -1,141 +1,147 @@
 # ForwardX 架构说明
 
-本文面向开发和排障，说明当前代码结构、运行链路和主要边界。
+本文面向开发与排障，说明当前代码结构、数据流和运行边界。
 
-## 总览
+## 系统组成
 
-ForwardX 由四个部分组成：
+ForwardX 由四部分组成：
 
-- Web 面板：React + Vite，负责管理界面、用户操作和数据展示。
-- 面板服务端：Express + tRPC + MySQL，负责鉴权、规则管理、Agent 指令、支付、公告和统计聚合。
-- Agent：Go 程序，运行在受控 Linux 主机上，负责转发、隧道、iptables 计数、主机指标和升级。
-- 发布脚本：负责面板/Agent 安装升级，以及 GitHub Release 中的 Agent 预编译包。
+- Web 面板：React + Vite，负责管理界面和数据展示。
+- 面板服务端：Express + tRPC，负责鉴权、资源管理、Agent 指令、支付和统计。
+- Agent：Go 程序，运行在受控 Linux 主机上，负责转发运行时、主机指标、探测、流量计数和升级。
+- 发布与安装脚本：构建并安装面板、Agent、Android 客户端和可选运行组件。
 
 简化数据流：
 
 ```text
-Browser -> /api/trpc -> Panel Server -> MySQL
-Panel Server -> /api/agent/events -> Agent refresh/upgrade
-Agent -> /api/agent/heartbeat -> actions
-Agent -> /api/agent/traffic -> traffic stats
-Agent -> /api/agent/tcping -> latency stats
-Agent -> iptables / realm / socat / gost / ForwardX tunnel runtime
+Browser -> tRPC / HTTP -> Panel Server -> SQLite / MySQL / PostgreSQL
+Panel Server -> SSE event -> Agent wakes immediately
+Agent -> heartbeat -> desired state / actions
+Agent -> status / traffic / latency / self-test reports
+Agent -> iptables / nftables / realm / socat / gost / ForwardX / nginx runtimes
 ```
 
-## 首次启动和数据库
+## 数据库
 
-ForwardX 只使用用户提供的 MySQL 数据库：
+ForwardX 支持 SQLite、MySQL 和 PostgreSQL：
 
-- `server/dbRuntime.ts` 负责读取 MySQL 配置、测试连接、创建连接池和 Drizzle 实例。
-- `server/dbSchema.ts` 负责在已连接的 MySQL 上创建缺失的数据表。
-- `server/db.ts` 负责数据库初始化和仓储 facade。
-- `server/routers/setup.ts` 提供首次配置 MySQL 和创建首个管理员的公开接口。
+- `server/dbRuntime.ts` 读取数据库配置，创建对应连接或连接池，并初始化 Drizzle。
+- `server/dbCompat.ts` 统一标识符、布尔值、时间、分页和统计表达式的方言差异。
+- `server/dbSchema.ts` 创建缺失表、列和索引。
+- `server/db.ts` 负责启动初始化、一次性 backfill 和仓储 facade。
+- `server/databaseSwitch.ts` 与 `server/migration.ts` 处理数据库切换和面板迁移。
+- `server/routers/setup.ts` 提供首次配置、连接测试和管理员初始化接口。
 
-启动时如果没有 MySQL 配置，面板会继续运行并显示初始化页面。连接旧数据库时，如果已有管理员账户，不会要求重新注册管理员。
+没有有效数据库配置时，服务端仍可启动并显示初始化页。连接已有数据库且存在管理员时，初始化流程不会再次创建管理员。
 
-## 目录职责
+数据库约定：
+
+- 时间字段以 Unix epoch 秒保存，应用层映射为 `Date`。
+- 金额以分为单位，流量以字节为单位。
+- 原始 SQL 必须通过 `dbCompat` 处理数据库方言差异。
+- 启动 backfill 使用设置标记保证幂等，不应在每次启动重复扫描全部历史数据。
+- SQLite 文件、MySQL 实例和 PostgreSQL 实例分别由部署方备份。
+
+## 请求与加载
+
+列表页面采用服务端分页，避免一次读取和序列化完整数据集：
+
+- 常规列表使用 `COUNT + LIMIT/OFFSET`，筛选条件在数据库执行。
+- 地图等需要逐步扩展的数据使用游标分批加载。
+- 下拉选择器使用轻量 options 接口，不返回证书、密钥或完整配置。
+- 实时状态、流量和性能数据只补充当前页。
+- 编辑、自测、批量导出等操作在用户触发时读取完整对象或完整筛选结果。
+
+分页 DTO 和页码边界逻辑位于 `shared/pagination.ts`。Repository 负责筛选、计数和分页，Router 负责鉴权与输入校验，前端不再对完整集合做分页切片。
+
+## 服务端目录
 
 | 路径 | 职责 |
 | --- | --- |
-| `client/src` | 前端页面、布局、UI 组件、tRPC client |
-| `server/index.ts` | HTTP 启动入口、Express 中间件、静态资源、路由挂载 |
-| `server/scheduler.ts` | 后台定时任务：流量重置、到期检查、自测超时、TCPing 清理、邮件提醒 |
-| `server/routers.ts` | tRPC 根路由组合层 |
-| `server/routers/*` | 鉴权、初始化、仪表盘、用户、主机、规则、隧道、套餐、Token、公告 |
-| `server/ai/*` | AI 配置、模型客户端、限流、审计和 Skill 注册 |
-| `server/services/userCommandService.ts` | 网页与 AI 共用的用户余额、权限、续期和流量命令 |
-| `server/keyedTaskDispatcher.ts` | 同一会话顺序执行、不同会话受控并发的任务调度器 |
-| `server/agentRoutes.ts` | Agent 专用 HTTP API |
-| `server/agentEvents.ts` | Agent SSE 连接、刷新推送、升级推送、前台指标观察状态 |
-| `server/agentInstallScripts.ts` | Agent 安装/升级脚本生成器 |
-| `server/db.ts` | 数据访问 facade，对外保持原 `db` API |
-| `server/dbRuntime.ts` | MySQL/Drizzle 连接生命周期、配置读写、统一时间函数 |
-| `server/dbSchema.ts` | MySQL 建表 SQL |
-| `server/email.ts` | SMTP 配置读取和邮件发送 |
-| `server/payment.ts` | 支付配置、下单、回调和支付方式查询 |
-| `server/_core` | tRPC、上下文、cookie、系统版本、面板日志等基础设施 |
+| `client/src` | 页面、布局、UI 组件和 tRPC client |
+| `server/index.ts` | Express 启动、静态资源和路由挂载 |
+| `server/routers.ts` | tRPC 根路由组合 |
+| `server/routers/*` | 鉴权、输入校验和业务入口 |
+| `server/repositories/*` | 数据查询、聚合和持久化 |
+| `server/services/*` | 跨仓储业务流程 |
+| `server/agentRoutes.ts` | Agent HTTP API 组合入口 |
+| `server/agentHeartbeatRoute.ts` | Agent 心跳、期望状态和动作生成 |
+| `server/agentReportRoutes.ts` | Agent 状态、流量和探测上报 |
+| `server/agentEvents.ts` | Agent SSE 唤醒和升级事件 |
+| `server/agentActionCommands.ts` | 端口转发运行命令生成 |
+| `server/keyedTaskDispatcher.ts` | 同键有序、不同键受控并发 |
+| `server/scheduler.ts` | 到期、流量、探测、通知和清理任务 |
+| `server/payment.ts` | 支付配置、下单、回调和权益发放 |
+| `server/plugin*.ts` | 插件 API、任务、清单和权限 |
+| `server/ai/*` | AI Provider、审计和 Telegram Skill |
 | `drizzle/schema.ts` | Drizzle 类型化 schema |
-| `agent/main.go` | Go Agent 主程序 |
-| `scripts` | 面板/Agent 安装升级脚本、Agent release 构建脚本 |
-| `docs` | 运维、架构和支付说明 |
+| `shared/*` | 前后端共用类型和纯函数 |
 
-## tRPC API
+## Agent 通信
 
-`server/routers.ts` 只组合各业务 router，前端调用路径保持稳定：
+Agent 使用 Token 鉴权。敏感 POST 请求使用 `server/agentCrypto.ts` 定义的加密信封，SSE 用于立即唤醒，心跳负责取得期望状态和动作。
 
-- `setup.ts`：首次 MySQL 配置、连接测试、首个管理员创建。
-- `auth.ts`：登录、注册、邮箱验证码、个人资料。
-- `dashboard.ts`：首页统计、全局流量和延迟曲线。
-- `users.ts`：用户、流量、权限、开关。
-- `hosts.ts`：主机管理、指标观察、Agent 升级。
-- `rules.ts`：转发规则、端口检查、自测、规则流量和延迟。
-- `tunnels.ts`：隧道管理、隧道链路测试。
-- `plans.ts`：套餐、商店、用户订阅。
-- `billing.ts`：余额、账单、兑换码、折扣码。
-- `announcements.ts`：登录公告和普通公告。
-- `agentTokens.ts`：Agent Token 和安装脚本。
+主要接口由 `server/agentRoutes.ts` 及其子路由注册：
 
-## AI 助手
+- 注册与心跳。
+- SSE 事件连接。
+- 规则和隧道运行状态。
+- 流量与累计计数。
+- 规则、隧道和服务延迟。
+- 链路自测。
+- 插件任务与同步。
+- Agent 安装包、升级和迁移指令。
 
-AI 助手目前通过 Telegram 使用。模型只负责识别意图和提取参数，面板数据查询、权限检查和写操作均在本地执行。
+SSE 不是唯一正确性来源。连接中断时，周期心跳仍会收敛期望状态；面板重启、Agent 重启或动作失败后，期望状态对账会补发缺失配置。
 
-```text
-Telegram -> 会话调度器 -> ForwardX Core Skill -> 本地查询/命令服务 -> Repository / Agent
-                              |
-                              +-> 模型只返回结构化意图
-```
+## 并发模型
 
-- `server/ai/settings.ts` 统一解析 DeepSeek、SiliconFlow 和自定义 OpenAI 兼容配置，并使用短期缓存减少重复数据库读取。
-- `server/ai/client.ts` 提供结构化请求、12 秒总超时、瞬时错误重试、兼容端点降级和熔断保护。
-- `server/ai/managePresets.ts` 定义 AI 管理参数的常用档位、自定义输入提示和受限回调解析，Telegram 仅负责渲染并推进会话。
-- `server/ai/skills/forwardxCore.ts` 定义项目术语、可用查询、管理动作和 Zod 输出结构。
-- `server/ai/audit.ts` 将查询、预览、确认执行、拒绝和失败写入面板日志，但不记录用户的完整对话内容或 API Key。
-- `server/keyedTaskDispatcher.ts` 保证同一聊天中的消息按顺序执行，同时允许不同聊天并行处理。
+规则和探测数量较大时，不能由一个全局串行队列处理：
 
-AI 写操作必须经过参数校验、资源权限检查、操作预览和二次确认。金额、续期、兑换码数量和折扣等有限参数会优先提供常用档位，同时保留自定义文本输入；目标地址、端口和用户等离散参数仍使用精确输入或资源列表。确认时会重新读取用户及资源权限，不能依赖模型输出绕过权限。规则创建、启停、删除以及用户管理操作与网页端共用相同命令实现，避免两套逻辑产生差异。
+- 同一主机、端口或资源的冲突动作保持顺序，避免旧动作覆盖新配置。
+- 不同资源通过有限并发 worker 执行，避免单个慢任务阻塞全局。
+- 心跳使用合并和互斥控制，避免同一 Agent 重复构建期望状态。
+- 状态、流量和延迟上报按资源键有序，不同资源并行落库。
+- Agent 共享运行时先完成同步，再并行处理可独立的端口动作。
+- 每个动作携带版本、时间或资源身份，迟到结果不能覆盖较新的期望状态。
 
-## Agent API
+增加并发时必须保留同资源顺序和全局上限；直接无上限启动 goroutine 或 Promise 会把排队问题转成 CPU、文件描述符或数据库连接耗尽。
 
-`server/agentRoutes.ts` 处理 Agent HTTP 通道：
+## Agent 运行时
 
-- `GET /api/agent/events`：SSE 长连接，用于刷新和升级。
-- `POST /api/agent/register`：Agent 注册。
-- `POST /api/agent/heartbeat`：Agent 心跳并拉取动作。
-- `POST /api/agent/rule-status`：规则/隧道状态回报。
-- `POST /api/agent/traffic`：流量统计上报。
-- `POST /api/agent/tcping`：延迟统计上报。
-- `GET /api/agent/install.sh`：返回安装脚本入口。
-
-Agent POST 接口要求加密信封，逻辑在 `server/agentCrypto.ts`。SSE 状态在 `server/agentEvents.ts`，脚本生成在 `server/agentInstallScripts.ts`。
-
-## 数据库约定
-
-- MySQL 是唯一数据源，备份/恢复由用户在 MySQL 侧维护。
-- 时间字段以 Unix epoch 秒保存，应用层映射为 `Date`。
-- 金额以分为单位保存，流量以字节为单位保存。
-- 统计类查询中进入 `sql.raw` 的 bucket 参数必须先 clamp。
-- 首次初始化只创建缺失表，不会重置已有管理员和业务数据。
-
-## Agent 行为
-
-Agent 主循环：
+Agent 主流程：
 
 1. 读取 `/etc/forwardx/agent/config.json`。
-2. 注册或心跳到面板。
-3. 保持 SSE 事件连接，收到刷新/升级事件后加速心跳。
-4. 执行动作：iptables、realm、socat、gost 或 ForwardX 隧道。
-5. 定期上报主机指标、流量和 TCPing 结果。
+2. 注册并建立 SSE 连接。
+3. 通过心跳取得完整或增量期望状态。
+4. 对共享 GOST、隧道、Nginx、WireGuard 和 mimic 运行时进行对账。
+5. 执行端口规则动作。
+6. 上报监听状态、流量、延迟、自测和主机指标。
 
-Agent 本地状态主要在：
+主要文件：
 
-- `/var/lib/forwardx-agent/port_<port>.rule`
-- `/var/lib/forwardx-agent/target_<port>.info`
-- `/var/lib/forwardx-agent/traffic_<port>.prev`
+| 路径 | 内容 |
+| --- | --- |
+| `agent/main.go` | Agent 主程序、动作调度和运行态对账 |
+| `agent/actions.go` | 动作执行与并发阶段 |
+| `agent/metrics.go` | 流量、延迟和主机指标 |
+| `agent/wireguard_runtime.go` | ForwardX V2 userspace WireGuard |
+| `agent/plugin_tasks.go` | 插件任务执行和结果 |
+| `agent/panel_migration.go` | 面板迁移切换保护 |
 
-流量统计依赖 iptables mangle 计数链。`realm/socat/gost` 这类本机监听进程统计相对直接；纯 `iptables` DNAT 的回包统计需要更谨慎，因为回包端口可能已经不是入口端口。
+持久状态主要位于 `/var/lib/forwardx-agent`，日志默认位于 `/var/log/forwardx-agent`。托管服务和配置使用 `/etc/forwardx`、`forwardx-*.service` 及独立运行时二进制。
 
-## 继续拆分建议
+## 兼容与迁移
 
-- `server/routers/rules.ts` 仍然偏大，可以继续拆成端口校验、自测、流量统计、规则 CRUD。
-- `server/agentRoutes.ts` 仍包含较多 Agent 动作生成逻辑，可以继续拆成 heartbeat action builder、traffic reporter、tcping reporter。
-- 支付和套餐功能已经较多，后续可把支付回调、余额流水、兑换码、折扣码拆成更细的领域模块。
+面板和 Agent 的日常运行路径只读取当前格式，已经取消的旧格式由独立迁移工具一次性转换，不再长期保留旧解析分支。旧服务清理、数据库 schema backfill 和转发组当前数据字段仍属于升级可靠性或现行模型，不能仅凭名称带有 `legacy` 就删除。
+
+跨兼容边界时按[升级和备份](./guide/upgrade-backup.md#跨兼容边界升级)先预检再手动迁移；迁移默认只读，只有明确传入 `--apply` 才写入。
+
+## 维护边界
+
+- Router 不应重新实现 Repository 已有筛选和分页。
+- 前端列表不应通过“先取全部再切页”规避分页接口。
+- Agent 运行态判断必须区分配置已启用、进程已监听和健康探测可用。
+- 支付回调必须先校验签名、商户、金额、币种和通道，再执行幂等发放。
+- 插件高权限 API 必须同时通过清单声明、管理员信任和服务端权限检查。
+- 新 backfill 需要幂等标记、失败日志和可重复执行策略。

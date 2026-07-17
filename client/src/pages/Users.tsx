@@ -313,9 +313,9 @@ function UsersContent() {
   const [addBillingHostId, setAddBillingHostId] = useState("");
   const [addBillingTunnelId, setAddBillingTunnelId] = useState("");
   const [addBillingForwardGroupId, setAddBillingForwardGroupId] = useState("");
-  const { data: allHosts } = trpc.hosts.listAll.useQuery(undefined, { enabled: showTrafficSettings });
+  const { data: allHosts } = trpc.hosts.options.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: allTunnels } = trpc.tunnels.options.useQuery(undefined, { enabled: showTrafficSettings });
-  const { data: allForwardGroups } = trpc.forwardGroups.list.useQuery(undefined, { enabled: showTrafficSettings });
+  const { data: allForwardGroups } = trpc.forwardGroups.options.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: userForwardGroupPerms } = trpc.users.getForwardGroupPermissions.useQuery(
     { userId: trafficUserId! },
@@ -1200,7 +1200,7 @@ function UsersContent() {
         <UserStatCard
           title="转发规则"
           value={userSummary?.totalRules ?? 0}
-          subtitle={`${userSummary?.activeRules ?? 0} 条活跃`}
+          subtitle={`${userSummary?.activeRules ?? 0} 条已启用`}
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={summaryLoading}

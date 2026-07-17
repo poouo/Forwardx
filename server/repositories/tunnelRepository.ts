@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   tunnels,
+  hosts,
   InsertTunnel,
   forwardRules,
   userTunnelPermissions,
@@ -20,6 +21,7 @@ import { getHostById } from "./hostRepository";
 import { sqlBool } from "./repositoryUtils";
 import { mapWithConcurrency } from "../asyncPool";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
 // ==================== Tunnel Queries ====================
 
@@ -28,6 +30,155 @@ export async function getTunnels(userId?: number) {
   if (!db) return [];
   if (userId) return db.select().from(tunnels).where(eq(tunnels.userId, userId)).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
   return db.select().from(tunnels).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
+}
+
+export type TunnelListQuery = PageRequest & {
+  ownerUserId?: number;
+  allowedTunnelIds?: number[];
+  search?: string;
+};
+
+function normalizeTunnelIds(values: unknown[] | undefined) {
+  return Array.from(new Set((values || [])
+    .map((value) => Math.floor(Number(value)))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function escapeTunnelSearchToken(value: string) {
+  return value.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+}
+
+function tunnelListCondition(input: Omit<TunnelListQuery, keyof PageRequest>) {
+  const conditions: any[] = [];
+  if (Number(input.ownerUserId || 0) > 0) {
+    const allowedIds = normalizeTunnelIds(input.allowedTunnelIds);
+    conditions.push(allowedIds.length > 0
+      ? or(eq(tunnels.userId, Number(input.ownerUserId)), inArray(tunnels.id, allowedIds))
+      : eq(tunnels.userId, Number(input.ownerUserId)));
+  }
+  const tokens = String(input.search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    const pattern = `%${escapeTunnelSearchToken(token)}%`;
+    const numeric = /^\d+$/.test(token) ? Number(token) : 0;
+    conditions.push(or(
+      ...[
+        tunnels.name,
+        tunnels.mode,
+        tunnels.forwardxVersion,
+        tunnels.networkType,
+        tunnels.connectHost,
+        tunnels.certDomain,
+      ].map((column) => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`),
+      ...(numeric > 0 ? [
+        eq(tunnels.id, numeric),
+        eq(tunnels.listenPort, numeric),
+        eq(tunnels.mimicPort, numeric),
+      ] : []),
+      sql`EXISTS (
+        SELECT 1 FROM ${hosts}
+        WHERE ${hosts.id} IN (${tunnels.entryHostId}, ${tunnels.exitHostId})
+          AND (
+            LOWER(COALESCE(${hosts.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ip}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ipv4}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ipv6}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+      sql`EXISTS (
+        SELECT 1
+        FROM ${tunnelHops}
+        INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelHops.hostId}
+        WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
+          AND (
+            LOWER(COALESCE(${hosts.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ip}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${tunnelHops.connectHost}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+      sql`EXISTS (
+        SELECT 1
+        FROM ${tunnelExitNodes}
+        INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelExitNodes.hostId}
+        WHERE ${tunnelExitNodes.tunnelId} = ${tunnels.id}
+          AND (
+            LOWER(COALESCE(${hosts.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ip}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${tunnelExitNodes.connectHost}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+      sql`EXISTS (
+        SELECT 1 FROM ${forwardGroups}
+        WHERE ${forwardGroups.id} IN (${tunnels.entryGroupId}, ${tunnels.exitGroupId})
+          AND (
+            LOWER(COALESCE(${forwardGroups.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${forwardGroups.remark}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+    ));
+  }
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+export async function getTunnelsPage(input: TunnelListQuery) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, enabledItems: 0, availableItems: 0 };
+  const condition = tunnelListCondition(input);
+  const cutoffSeconds = Math.floor((Date.now() - 150_000) / 1000);
+  const availableExpression = sql<number>`CASE WHEN
+    ${tunnels.isEnabled} = ${sqlBool(true)}
+    AND EXISTS (
+      SELECT 1 FROM ${tunnelHops}
+      WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ${tunnelHops}
+      INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelHops.hostId}
+      WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
+        AND (${hosts.isOnline} <> ${sqlBool(true)} OR ${hosts.lastHeartbeat} IS NULL OR ${hosts.lastHeartbeat} < ${cutoffSeconds})
+    )
+    THEN 1 ELSE 0 END`;
+  const aggregate = db
+    .select({
+      totalItems: sql<number>`COUNT(*)`,
+      enabledItems: sql<number>`COALESCE(SUM(CASE WHEN ${tunnels.isEnabled} = ${sqlBool(true)} THEN 1 ELSE 0 END), 0)`,
+      availableItems: sql<number>`COALESCE(SUM(${availableExpression}), 0)`,
+    })
+    .from(tunnels);
+  const [totals] = condition ? await aggregate.where(condition) : await aggregate;
+  const totalItems = Number(totals?.totalItems || 0);
+  const enabledItems = Number(totals?.enabledItems || 0);
+  const availableItems = Number(totals?.availableItems || 0);
+  const scopeCondition = tunnelListCondition({
+    ownerUserId: input.ownerUserId,
+    allowedTunnelIds: input.allowedTunnelIds,
+  });
+  let scopeTotalItems = totalItems;
+  if (String(input.search || "").trim()) {
+    const scopeQuery = db.select({ count: sql<number>`COUNT(*)` }).from(tunnels);
+    const [scopeTotals] = scopeCondition ? await scopeQuery.where(scopeCondition) : await scopeQuery;
+    scopeTotalItems = Number(scopeTotals?.count || 0);
+  }
+  const window = pageWindowForTotal(input, totalItems);
+  const list = db.select().from(tunnels);
+  const items = condition
+    ? await list.where(condition).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id)).limit(window.pageSize).offset(window.offset)
+    : await list.orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id)).limit(window.pageSize).offset(window.offset);
+  return {
+    ...pageResult(items, totalItems, window),
+    scopeTotalItems,
+    enabledItems,
+    availableItems,
+  };
+}
+
+export async function getTunnelOptionRows(ownerUserId?: number, allowedTunnelIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const condition = tunnelListCondition({ ownerUserId, allowedTunnelIds });
+  const list = db.select().from(tunnels);
+  return condition
+    ? list.where(condition).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id))
+    : list.orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
 }
 
 export async function getTunnelsByHost(hostId: number) {
@@ -278,7 +429,7 @@ export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, 
   const tunnel = await getTunnelById(tunnelId) as any;
   if (!tunnel) return;
   const mode = String(tunnel.mode || "").toLowerCase();
-  const proxySupported = mode && mode !== "nginx_stream" && mode !== "nginx_tls";
+  const proxySupported = mode === "forwardx" || ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"].includes(mode);
   const forwardx = mode === "forwardx";
   const rules = await db
     .select({ id: forwardRules.id, protocol: forwardRules.protocol })

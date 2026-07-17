@@ -1493,7 +1493,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   <Badge variant="outline" className="font-normal">{usageHosts.length} 台主机</Badge>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {hostAssetSyncUsageView?.description || "插件资源自动同步到所有 Agent，各主机配置独立管理。"}
+                  {hostAssetSyncUsageView?.description || "按主机管理插件资源。"}
                 </p>
               </div>
             </div>
@@ -1512,7 +1512,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
-              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "请先启用插件，Agent 才会接收资源和操作。"}</AlertDescription>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "启用插件后才能同步到 Agent。"}</AlertDescription>
             </Alert>
           )}
 
@@ -1535,7 +1535,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             </div>
           ) : (
             <div className="rounded-md border border-dashed border-border/60 px-4 py-12 text-center text-sm text-muted-foreground">
-              {saveUsageMutation.isPending ? "正在更新插件状态..." : "启用后可按主机管理白名单规则"}
+              {saveUsageMutation.isPending ? "正在更新插件状态..." : "启用后可按主机管理插件资源"}
             </div>
           )}
         </div>
@@ -1565,7 +1565,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
-              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。"}</AlertDescription>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "配置可先保存，启用插件后再同步到 Agent。"}</AlertDescription>
             </Alert>
           )}
         </div>
@@ -1964,7 +1964,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   <Puzzle className="h-4 w-4 text-primary" />
                   插件列表
                 </CardTitle>
-                <CardDescription>选择插件后在右侧使用它提供的功能。</CardDescription>
+                <CardDescription>选择插件后查看和使用其功能。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {pluginListLoading ? (
@@ -2033,7 +2033,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   <PackagePlus className="h-4 w-4 text-primary" />
                   插件商店
                 </CardTitle>
-                <CardDescription className="mt-1">查看插件详情，或直接一键安装。</CardDescription>
+                <CardDescription className="mt-1">查看详情或安装插件。</CardDescription>
               </div>
               <Button
                 type="button"
@@ -2132,7 +2132,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 <Upload className="h-5 w-5" />
                 插件来源
               </DialogTitle>
-              <DialogDescription>管理第三方 GitHub 插件商店，或上传本地插件压缩包。</DialogDescription>
+              <DialogDescription>添加第三方商店或上传插件包。</DialogDescription>
             </DialogHeader>
             <Tabs defaultValue="store" className="space-y-4">
               <TabsList className="grid w-full grid-cols-2">
@@ -2802,7 +2802,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                         <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                           <AlertTriangle className="h-4 w-4" />
                           <AlertTitle>插件未启用</AlertTitle>
-                          <AlertDescription>启用后可以执行插件动作。</AlertDescription>
+                          <AlertDescription>启用插件后可执行动作。</AlertDescription>
                         </Alert>
                       )}
                     </TabsContent>
@@ -2812,7 +2812,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             ) : (
               <CardHeader>
                 <CardTitle>选择插件</CardTitle>
-                <CardDescription>安装或选择一个插件后可查看详情。</CardDescription>
+                <CardDescription>选择插件以查看详情。</CardDescription>
               </CardHeader>
             )}
           </Card>

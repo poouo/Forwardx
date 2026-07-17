@@ -81,7 +81,8 @@ jobs:
             pnpm-lock.yaml \
             pnpm-workspace.yaml \
             scripts/install-panel-local.sh \
-            scripts/install-panel-docker.sh
+            scripts/install-panel-docker.sh \
+            scripts/migrate-agent-legacy.sh
           cp ".release/${BUNDLE}" "dist/panel/${BUNDLE}"
           ls -lh "dist/panel/${BUNDLE}"
 

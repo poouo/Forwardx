@@ -249,7 +249,7 @@ export default function HostProbeServiceManager({
 }: HostProbeServiceManagerProps) {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
-  const { data: hosts = [] } = trpc.hosts.list.useQuery(undefined, { staleTime: 30000 });
+  const { data: hosts = [] } = trpc.hosts.options.useQuery(undefined, { staleTime: 30000 });
   const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const serviceItems = useMemo(() => (services as any[] | undefined) || [], [services]);
   const hostsById = useMemo(() => new Map((hosts as any[]).map((host) => [Number(host.id), host])), [hosts]);

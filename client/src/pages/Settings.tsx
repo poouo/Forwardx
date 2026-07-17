@@ -293,7 +293,7 @@ function panelVersionCommand(command: string, targetVersion: string) {
 }
 
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
-const tunnelForwardProtocolKeys = TUNNEL_PROTOCOLS.filter((key) => key !== "nginx_tls");
+const tunnelForwardProtocolKeys = [...TUNNEL_PROTOCOLS];
 const LOG_PAGE_SIZE = 200;
 type PanelLogLevel = "all" | "info" | "warn" | "error" | "log";
 type PanelLogSummary = Record<PanelLogLevel, number>;
@@ -469,8 +469,8 @@ function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
     <section class="hero">
       <div>
         <span class="eyebrow"><span class="dot"></span>ForwardX 面板</span>
-        <h1>高速稳定的端口转发服务</h1>
-        <p>统一管理转发、隧道、套餐、流量和用户权限。</p>
+        <h1>多主机转发管理</h1>
+        <p>管理转发、隧道、用户和流量。</p>
         <div class="actions">
           <a class="btn primary" href="/login">进入面板</a>
           <a class="btn secondary" href="/login?mode=register">创建账号</a>
@@ -478,7 +478,7 @@ function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
       </div>
       <div class="panel">
         <div class="grid">
-          <div class="item"><b>多节点</b><span>统一管理多台 Linux 主机和隧道。</span></div>
+          <div class="item"><b>多节点</b><span>管理多台 Linux 主机和隧道。</span></div>
           <div class="item"><b>流量统计</b><span>按用户和规则记录转发用量。</span></div>
           <div class="item"><b>套餐订阅</b><span>支持余额、套餐和支付配置。</span></div>
           <div class="item"><b>Telegram</b><span>用户可通过机器人自助查询和管理。</span></div>
@@ -1662,7 +1662,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             <Database className="h-4 w-4" />
             <AlertTitle>数据库版本要求</AlertTitle>
             <AlertDescription>
-              MySQL 需要 8.0.13 或以上版本；PostgreSQL 建议 12 或以上版本；SQLite 使用本地数据文件，无需额外准备数据库服务。
+              SQLite 无需额外服务；MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
             </AlertDescription>
           </Alert>
 
@@ -4668,7 +4668,7 @@ function SystemInfoSection() {
           <CardContent className="space-y-3">
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input
-                placeholder="例如: https://forwardx.example.com 或 http://1.2.3.4:3000"
+                placeholder="例如：https://forwardx.example.com 或 http://1.2.3.4:3000"
                 value={panelUrlInput}
                 onChange={(e) => setPanelUrlInput(e.target.value)}
                 className="flex-1"
@@ -4684,7 +4684,7 @@ function SystemInfoSection() {
               留空使用当前访问地址。需以 http:// 或 https:// 开头。
             </p>
             <p className="text-xs leading-relaxed text-amber-600 dark:text-amber-300">
-              如果通过 HTTPS 反代、Cloudflare 或域名访问面板，请填写外部可访问的 https:// 域名。留空时面板只能根据请求头推断地址，Docker/反代环境可能生成 http://容器地址:端口，导致 Agent 通讯地址被覆盖后离线。
+              反向代理或 Docker 部署请填写外部可访问的面板地址，否则 Agent 可能无法回连。
             </p>
           </CardContent>
         </Card>
@@ -4721,7 +4721,7 @@ function SystemInfoSection() {
             </div>
             <p className="text-xs text-muted-foreground">
               {isDockerWebPort
-                ? `当前宿主机映射端口：${webPortDisplay}，容器内监听端口：${webContainerPort}。如需调整，请修改部署目录 .env 的 PORT 或 docker-compose.yml 端口映射后重启容器。`
+                ? `宿主机端口：${webPortDisplay} → 容器端口：${webContainerPort}。`
                 : `当前监听端口：${webPortDisplay}。修改后服务会重启，请使用新端口访问后台。`}
             </p>
             {!settings?.webPortManagement?.enabled && (
@@ -4730,7 +4730,7 @@ function SystemInfoSection() {
                 <AlertTitle>{isDockerWebPort ? "Docker 部署端口由映射管理" : "当前环境不支持后台修改端口"}</AlertTitle>
                 <AlertDescription>
                   {isDockerWebPort
-                    ? "面板不会修改 Docker 端口映射，避免容器内监听端口和宿主机访问端口混用。升级脚本会尽量保留当前映射端口。"
+                    ? "请在部署配置中修改宿主机端口映射。"
                     : "请在服务环境变量或启动脚本中修改监听端口。"}
                 </AlertDescription>
               </Alert>
@@ -4745,7 +4745,7 @@ function SystemInfoSection() {
               面板 SSL 访问
             </CardTitle>
             <CardDescription>
-              开启后当前 Web 端口将使用 HTTPS 访问。
+              在当前端口启用 HTTPS。
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -4764,7 +4764,7 @@ function SystemInfoSection() {
                 <div className="min-w-0">
                   <p className="font-medium">当前证书来源：{panelSslSourceLabel}</p>
                   <p className="text-xs text-muted-foreground">
-                    文件路径和 PEM 内容可以同时保存，但保存并重启后只会使用当前选中的来源。
+                    仅使用当前选中的证书来源。
                   </p>
                 </div>
               </div>
@@ -4783,7 +4783,7 @@ function SystemInfoSection() {
                       </Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      读取服务器上的证书和私钥文件。{panelSslPathActive ? "当前保存后会使用这一组证书。" : "未选中时不会作为 HTTPS 证书生效。"}
+                      读取服务器上的证书和私钥文件。
                     </p>
                   </div>
                   <Button
@@ -4839,7 +4839,7 @@ function SystemInfoSection() {
                       </Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      直接保存证书和私钥 PEM 内容。{panelSslPemActive ? "当前保存后会使用这一组证书。" : "未选中时不会作为 HTTPS 证书生效。"}
+                      直接保存证书和私钥 PEM 内容。
                     </p>
                   </div>
                   <Button
@@ -5058,7 +5058,7 @@ function SystemInfoSection() {
               placeholder="600"
               inputMode="numeric"
             />
-            <p className="text-xs text-muted-foreground">统一用于 DDNS 解析记录。Cloudflare、华为云、阿里云、腾讯云 DNSPod 在面板中按 60-86400 秒保存；Webhook 会在请求中透传 ttl。</p>
+            <p className="text-xs text-muted-foreground">TTL 范围：60-86400 秒。Webhook 会原样传递该值。</p>
           </div>
 
           {ddnsProvider === "cloudflare" && (
@@ -5071,7 +5071,7 @@ function SystemInfoSection() {
                   placeholder={settings?.ddns?.cloudflareTokenMasked || "需要 Zone:Read + DNS:Edit 权限"}
                   type="password"
                 />
-                <p className="text-xs text-muted-foreground">Cloudflare 会根据 DDNS 域名自动识别 Zone，不需要手动填写 Zone ID；留空则保留已保存 Token。</p>
+                <p className="text-xs text-muted-foreground">自动识别 Zone；Token 留空时保留原值。</p>
               </div>
             </div>
           )}
@@ -5698,7 +5698,7 @@ function SystemInfoSection() {
                     {upgradeErrorLogs || "暂无异常日志"}
                   </pre>
                   <div className="rounded-lg border border-destructive/25 bg-background/80 p-3 text-xs">
-                    <p className="font-medium text-destructive">自动版本任务失败时，可以在服务器执行对应的一键脚本手动处理：</p>
+                    <p className="font-medium text-destructive">自动任务失败时，可在服务器执行以下命令：</p>
                     <div className="mt-2 space-y-2">
                       {manualPanelUpgradeCommands.map((item) => (
                         <div key={item.label} className="space-y-1">

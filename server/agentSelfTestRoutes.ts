@@ -313,8 +313,8 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           routeLabel,
           method: normalizeLinkProbeMethod((meta as any).method),
         }, {
-          successPrefix: "端口转发链逐跳测试成功",
-          failurePrefix: "端口转发链逐跳测试失败",
+          successPrefix: "转发链逐跳测试成功",
+          failurePrefix: "转发链逐跳测试失败",
         });
         if (aggregate) {
           const aggregateMessage = structuredLinkTestMessage({
@@ -346,7 +346,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         return;
       }
       const messageParts = [
-        `端口转发链检测 ${success ? "成功" : "失败"}`,
+        `转发链检测 ${success ? "成功" : "失败"}`,
         `入口 ${entryTarget}${success && cleanLatency !== null ? ` ${cleanLatency}ms` : ""}`,
         `最终目标 ${finalTarget}`,
       ];

@@ -381,7 +381,7 @@ export default function Setup() {
                     <Database className="h-4 w-4" />
                     <AlertTitle>数据库版本要求</AlertTitle>
                     <AlertDescription>
-                      MySQL 需要 8.0.13 或以上版本；PostgreSQL 建议 12 或以上版本；SQLite 使用本地数据文件，无需额外准备数据库服务。
+                      SQLite 无需额外服务；MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
                     </AlertDescription>
                   </Alert>
 
@@ -562,7 +562,7 @@ export default function Setup() {
                         <Database className="h-4 w-4" />
                         <AlertTitle>迁移前请确认数据库版本</AlertTitle>
                         <AlertDescription>
-                          新面板连接 MySQL 时需要 8.0.13 或以上版本；连接 PostgreSQL 时建议 12 或以上版本。
+                          MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
                         </AlertDescription>
                       </Alert>
                       <div className="grid gap-4 sm:grid-cols-2">

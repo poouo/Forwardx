@@ -1,9 +1,10 @@
-﻿import crypto from "crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import crypto from "crypto";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   balanceTransactions, InsertBalanceTransaction,
   discountCodePlans,
   discountCodes, InsertDiscountCode,
+  forwardGroups,
   forwardRules,
   paymentOrders, InsertPaymentOrder,
   redemptionCodes, InsertRedemptionCode,
@@ -30,10 +31,11 @@ import {
   updateUserTrafficSettings,
   type ForwardAccessPauseReason,
 } from "./userRepository";
-import { addMonthsClamped, nextMonthlyTrafficReset } from "./repositoryUtils";
+import { addMonthsClamped, nextMonthlyTrafficReset, sqlBool } from "./repositoryUtils";
 import { pushAgentRefresh } from "../agentEvents";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { getSetting, setSetting } from "./settingsRepository";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
 // ==================== Payment Orders ====================
 
@@ -299,14 +301,90 @@ async function attachSubscriptionSnapshots<T extends { planId: number; planSnaps
   }));
 }
 
+
 async function attachPlanResources<T extends { id: number }>(plans: T[]) {
-  return Promise.all(plans.map(async (plan) => ({
-    ...plan,
-    hostIds: await getPlanHostIds(plan.id),
-    tunnelIds: await getPlanTunnelIds(plan.id),
-    forwardGroupIds: await getPlanForwardGroupIds(plan.id),
-    trafficAddons: await getPlanTrafficAddons(plan.id),
-  })));
+  const db = await getDb();
+  if (!db || plans.length === 0) {
+    return plans.map((plan) => ({
+      ...plan,
+      hostIds: [] as number[],
+      tunnelIds: [] as number[],
+      forwardGroupIds: [] as number[],
+      forwardGroupRefs: [] as Array<{ id: number; groupMode: string | null; groupType: string | null }>,
+      trafficAddons: [] as any[],
+    }));
+  }
+  const planIds = Array.from(new Set(plans.map((plan) => Number(plan.id)).filter((id) => id > 0)));
+  const [hostRows, tunnelRows, groupRows, addonRows] = await Promise.all([
+    db.select({
+      planId: subscriptionPlanHosts.planId,
+      hostId: subscriptionPlanHosts.hostId,
+    }).from(subscriptionPlanHosts).where(inArray(subscriptionPlanHosts.planId, planIds)),
+    db.select({
+      planId: subscriptionPlanTunnels.planId,
+      tunnelId: subscriptionPlanTunnels.tunnelId,
+    }).from(subscriptionPlanTunnels).where(inArray(subscriptionPlanTunnels.planId, planIds)),
+    db.select({
+      planId: subscriptionPlanForwardGroups.planId,
+      forwardGroupId: subscriptionPlanForwardGroups.forwardGroupId,
+      groupMode: forwardGroups.groupMode,
+      groupType: forwardGroups.groupType,
+    })
+      .from(subscriptionPlanForwardGroups)
+      .leftJoin(forwardGroups, eq(forwardGroups.id, subscriptionPlanForwardGroups.forwardGroupId))
+      .where(inArray(subscriptionPlanForwardGroups.planId, planIds)),
+    db.select()
+      .from(subscriptionPlanTrafficAddons)
+      .where(inArray(subscriptionPlanTrafficAddons.planId, planIds))
+      .orderBy(
+        asc(subscriptionPlanTrafficAddons.planId),
+        asc(subscriptionPlanTrafficAddons.sortOrder),
+        asc(subscriptionPlanTrafficAddons.priceCents),
+      ),
+  ]);
+  const hostIdsByPlan = new Map<number, number[]>();
+  const tunnelIdsByPlan = new Map<number, number[]>();
+  const groupRefsByPlan = new Map<number, Array<{ id: number; groupMode: string | null; groupType: string | null }>>();
+  const addonsByPlan = new Map<number, any[]>();
+  for (const row of hostRows as any[]) {
+    const planId = Number(row.planId);
+    const values = hostIdsByPlan.get(planId) || [];
+    values.push(Number(row.hostId));
+    hostIdsByPlan.set(planId, values);
+  }
+  for (const row of tunnelRows as any[]) {
+    const planId = Number(row.planId);
+    const values = tunnelIdsByPlan.get(planId) || [];
+    values.push(Number(row.tunnelId));
+    tunnelIdsByPlan.set(planId, values);
+  }
+  for (const row of groupRows as any[]) {
+    const planId = Number(row.planId);
+    const values = groupRefsByPlan.get(planId) || [];
+    values.push({
+      id: Number(row.forwardGroupId),
+      groupMode: row.groupMode ? String(row.groupMode) : null,
+      groupType: row.groupType ? String(row.groupType) : null,
+    });
+    groupRefsByPlan.set(planId, values);
+  }
+  for (const row of addonRows as any[]) {
+    const planId = Number(row.planId);
+    const values = addonsByPlan.get(planId) || [];
+    values.push(row);
+    addonsByPlan.set(planId, values);
+  }
+  return plans.map((plan) => {
+    const refs = groupRefsByPlan.get(Number(plan.id)) || [];
+    return {
+      ...plan,
+      hostIds: hostIdsByPlan.get(Number(plan.id)) || [],
+      tunnelIds: tunnelIdsByPlan.get(Number(plan.id)) || [],
+      forwardGroupIds: refs.map((ref) => ref.id),
+      forwardGroupRefs: refs,
+      trafficAddons: addonsByPlan.get(Number(plan.id)) || [],
+    };
+  });
 }
 
 export async function listSubscriptionPlans(includeHidden = true) {
@@ -316,6 +394,107 @@ export async function listSubscriptionPlans(includeHidden = true) {
     ? await db.select().from(subscriptionPlans).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt))
     : await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true))).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt));
   return attachPlanResources(rows);
+}
+
+export async function listSubscriptionPlanOptions(includeHidden = true) {
+  const db = await getDb();
+  if (!db) return [];
+  const query = db
+    .select({
+      id: subscriptionPlans.id,
+      name: subscriptionPlans.name,
+      durationDays: subscriptionPlans.durationDays,
+      portCount: subscriptionPlans.portCount,
+      priceCents: subscriptionPlans.priceCents,
+      currency: subscriptionPlans.currency,
+      isActive: subscriptionPlans.isActive,
+      isStoreVisible: subscriptionPlans.isStoreVisible,
+    })
+    .from(subscriptionPlans);
+  return includeHidden
+    ? query.orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt))
+    : query
+      .where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true)))
+      .orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt));
+}
+
+
+export async function getSubscriptionPlanSummary() {
+  const db = await getDb();
+  if (!db) {
+    return {
+      totalItems: 0,
+      activeItems: 0,
+      resources: {
+        legacyHosts: 0,
+        tunnels: 0,
+        ports: 0,
+        chains: 0,
+        groups: 0,
+        otherForwardResources: 0,
+      },
+    };
+  }
+  const [planRows, hostRows, tunnelRows, groupRows] = await Promise.all([
+    db.select({
+      totalItems: sql<number>`COUNT(*)`,
+      activeItems: sql<number>`COALESCE(SUM(CASE WHEN ${subscriptionPlans.isActive} = ${sqlBool(true)} THEN 1 ELSE 0 END), 0)`,
+    }).from(subscriptionPlans),
+    db.select({ count: sql<number>`COUNT(*)` }).from(subscriptionPlanHosts),
+    db.select({ count: sql<number>`COUNT(*)` }).from(subscriptionPlanTunnels),
+    db.select({
+      groupMode: forwardGroups.groupMode,
+      count: sql<number>`COUNT(*)`,
+    })
+      .from(subscriptionPlanForwardGroups)
+      .leftJoin(forwardGroups, eq(forwardGroups.id, subscriptionPlanForwardGroups.forwardGroupId))
+      .groupBy(forwardGroups.groupMode),
+  ]);
+  const resources = {
+    legacyHosts: Number(hostRows[0]?.count || 0),
+    tunnels: Number(tunnelRows[0]?.count || 0),
+    ports: 0,
+    chains: 0,
+    groups: 0,
+    otherForwardResources: 0,
+  };
+  for (const row of groupRows as any[]) {
+    const count = Number(row.count || 0);
+    const mode = String(row.groupMode || "");
+    if (mode === "port") resources.ports += count;
+    else if (mode === "chain") resources.chains += count;
+    else if (mode === "failover") resources.groups += count;
+    else resources.otherForwardResources += count;
+  }
+  return {
+    totalItems: Number(planRows[0]?.totalItems || 0),
+    activeItems: Number(planRows[0]?.activeItems || 0),
+    resources,
+  };
+}
+
+export async function listSubscriptionPlansPage(input: PageRequest) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), activeItems: 0 };
+  const [totals] = await db
+    .select({
+      totalItems: sql<number>`COUNT(*)`,
+      activeItems: sql<number>`COALESCE(SUM(CASE WHEN ${subscriptionPlans.isActive} = ${sqlBool(true)} THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(subscriptionPlans);
+  const totalItems = Number(totals?.totalItems || 0);
+  const activeItems = Number(totals?.activeItems || 0);
+  const window = pageWindowForTotal(input, totalItems);
+  const rows = await db
+    .select()
+    .from(subscriptionPlans)
+    .orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id))
+    .limit(window.pageSize)
+    .offset(window.offset);
+  return {
+    ...pageResult(await attachPlanResources(rows), totalItems, window),
+    activeItems,
+  };
 }
 
 export async function getSubscriptionPlanById(id: number) {
@@ -450,9 +629,7 @@ export async function setSubscriptionPlanTrafficAddons(planId: number, addons: a
   })));
 }
 
-export async function listUserSubscriptions(userId?: number) {
-  const db = await getDb();
-  if (!db) return [];
+function userSubscriptionsListQuery(db: any) {
   const base = db
     .select({
       id: userSubscriptions.id,
@@ -485,10 +662,68 @@ export async function listUserSubscriptions(userId?: number) {
     .from(userSubscriptions)
     .leftJoin(users, eq(userSubscriptions.userId, users.id))
     .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id));
+  return base;
+}
+
+export async function listUserSubscriptions(userId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const base = userSubscriptionsListQuery(db);
   const rows = userId !== undefined
     ? await base.where(eq(userSubscriptions.userId, userId)).orderBy(desc(userSubscriptions.createdAt))
     : await base.orderBy(desc(userSubscriptions.createdAt));
   return attachUserSubscriptionDetails(rows);
+}
+
+export async function getUserSubscriptionById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await userSubscriptionsListQuery(db)
+    .where(eq(userSubscriptions.id, id))
+    .limit(1);
+  if (!rows[0]) return undefined;
+  return (await attachUserSubscriptionDetails(rows))[0];
+}
+
+export async function listUserSubscriptionsPage(input: PageRequest & {
+  userId?: number;
+  excludeCancelled?: boolean;
+}) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), activeItems: 0 };
+  const conditions = [] as any[];
+  if (input.userId !== undefined) conditions.push(eq(userSubscriptions.userId, input.userId));
+  if (input.excludeCancelled !== false) conditions.push(sql`${userSubscriptions.status} <> 'cancelled'`);
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const aggregateQuery = db
+    .select({
+      totalItems: sql<number>`COUNT(*)`,
+      activeItems: sql<number>`COALESCE(SUM(CASE
+        WHEN ${userSubscriptions.status} = 'active'
+          AND (${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})
+        THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(userSubscriptions);
+  const [totals] = where ? await aggregateQuery.where(where) : await aggregateQuery;
+  const totalItems = Number(totals?.totalItems || 0);
+  const activeItems = Number(totals?.activeItems || 0);
+  const window = pageWindowForTotal(input, totalItems);
+  const listQuery = userSubscriptionsListQuery(db);
+  const rows = where
+    ? await listQuery
+      .where(where)
+      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
+      .limit(window.pageSize)
+      .offset(window.offset)
+    : await listQuery
+      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
+      .limit(window.pageSize)
+      .offset(window.offset);
+  return {
+    ...pageResult(await attachUserSubscriptionDetails(rows), totalItems, window),
+    activeItems,
+  };
 }
 
 async function attachUserSubscriptionDetails<T extends { id: number; planId: number }>(subscriptions: T[]) {
@@ -1637,6 +1872,46 @@ async function addUserBalancePostgresql(userId: number, amountCents: number, met
   }
 }
 
+
+export async function getBillingAdminSummary() {
+  const db = await getDb();
+  if (!db) {
+    return {
+      userCount: 0,
+      totalBalanceCents: 0,
+      activeRedemptionCodes: 0,
+      activeDiscountCodes: 0,
+    };
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const [userRows, redemptionRows, discountRows] = await Promise.all([
+    db.select({
+      userCount: sql<number>`COUNT(*)`,
+      totalBalanceCents: sql<number>`COALESCE(SUM(${users.balanceCents}), 0)`,
+    }).from(users),
+    db.select({
+      count: sql<number>`COALESCE(SUM(CASE
+        WHEN ${redemptionCodes.isActive} = ${sqlBool(true)}
+          AND ${redemptionCodes.usedAt} IS NULL
+        THEN 1 ELSE 0 END), 0)`,
+    }).from(redemptionCodes),
+    db.select({
+      count: sql<number>`COALESCE(SUM(CASE
+        WHEN ${discountCodes.isActive} = ${sqlBool(true)}
+          AND (${discountCodes.startsAt} IS NULL OR ${discountCodes.startsAt} <= ${nowSec})
+          AND (${discountCodes.expiresAt} IS NULL OR ${discountCodes.expiresAt} > ${nowSec})
+          AND (${discountCodes.maxUses} = 0 OR ${discountCodes.usedCount} < ${discountCodes.maxUses})
+        THEN 1 ELSE 0 END), 0)`,
+    }).from(discountCodes),
+  ]);
+  return {
+    userCount: Number(userRows[0]?.userCount || 0),
+    totalBalanceCents: Number(userRows[0]?.totalBalanceCents || 0),
+    activeRedemptionCodes: Number(redemptionRows[0]?.count || 0),
+    activeDiscountCodes: Number(discountRows[0]?.count || 0),
+  };
+}
+
 export async function listBalanceTransactions(userId?: number, limit = 100) {
   const db = await getDb();
   if (!db) return [];
@@ -1712,6 +1987,21 @@ function subscriptionSourceLabel(source: string) {
   return source || "套餐变更";
 }
 
+
+async function listUserSubscriptionsForLedger(userId: number | undefined, limit: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const query = userSubscriptionsListQuery(db);
+  return userId !== undefined
+    ? query
+      .where(eq(userSubscriptions.userId, userId))
+      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
+      .limit(limit)
+    : query
+      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
+      .limit(limit);
+}
+
 export async function listBillingLedger(options?: {
   viewerUserId?: number;
   isAdmin?: boolean;
@@ -1725,7 +2015,7 @@ export async function listBillingLedger(options?: {
   const [transactions, orders, subscriptions] = await Promise.all([
     listBalanceTransactions(targetUserId, limit),
     listPaymentOrders(limit, targetUserId),
-    listUserSubscriptions(targetUserId),
+    listUserSubscriptionsForLedger(targetUserId, limit),
   ]);
 
   const items = [
@@ -1856,9 +2146,8 @@ export async function purchasePlanWithBalance(userId: number, planId: number, di
 
 // ==================== Redemption Codes ====================
 
-export async function listRedemptionCodes() {
-  const db = await getDb();
-  if (!db) return [];
+
+function redemptionCodesListQuery(db: any) {
   return db
     .select({
       id: redemptionCodes.id,
@@ -1880,8 +2169,41 @@ export async function listRedemptionCodes() {
     })
     .from(redemptionCodes)
     .leftJoin(subscriptionPlans, eq(redemptionCodes.planId, subscriptionPlans.id))
-    .leftJoin(users, eq(redemptionCodes.usedByUserId, users.id))
-    .orderBy(desc(redemptionCodes.createdAt));
+    .leftJoin(users, eq(redemptionCodes.usedByUserId, users.id));
+}
+
+export async function listRedemptionCodes() {
+  const db = await getDb();
+  if (!db) return [];
+  return redemptionCodesListQuery(db).orderBy(desc(redemptionCodes.createdAt), desc(redemptionCodes.id));
+}
+
+export async function listRedemptionCodesPage(input: PageRequest & {
+  usage?: "all" | "unused" | "used";
+}) {
+  const db = await getDb();
+  if (!db) return pageResult([], 0, input, 50);
+  const condition = input.usage === "unused"
+    ? and(isNull(redemptionCodes.usedAt), isNull(redemptionCodes.usedByUserId))
+    : input.usage === "used"
+      ? or(isNotNull(redemptionCodes.usedAt), isNotNull(redemptionCodes.usedByUserId))
+      : undefined;
+  const aggregate = db.select({ count: sql<number>`COUNT(*)` }).from(redemptionCodes);
+  const [totals] = condition ? await aggregate.where(condition) : await aggregate;
+  const totalItems = Number(totals?.count || 0);
+  const window = pageWindowForTotal(input, totalItems, 50);
+  const query = redemptionCodesListQuery(db);
+  const items = condition
+    ? await query
+      .where(condition)
+      .orderBy(desc(redemptionCodes.createdAt), desc(redemptionCodes.id))
+      .limit(window.pageSize)
+      .offset(window.offset)
+    : await query
+      .orderBy(desc(redemptionCodes.createdAt), desc(redemptionCodes.id))
+      .limit(window.pageSize)
+      .offset(window.offset);
+  return pageResult(items, totalItems, window, 50);
 }
 
 export async function createRedemptionCodes(data: Omit<InsertRedemptionCode, "code"> & { code?: string }, count = 1) {
@@ -1968,11 +2290,27 @@ export async function redeemCode(userId: number, code: string, attemptScope?: st
 
 // ==================== Discount Codes ====================
 
+
 export async function listDiscountCodes() {
   const db = await getDb();
   if (!db) return [];
-  const rows = await db.select().from(discountCodes).orderBy(desc(discountCodes.createdAt));
+  const rows = await db.select().from(discountCodes).orderBy(desc(discountCodes.createdAt), desc(discountCodes.id));
   return attachDiscountPlans(rows);
+}
+
+export async function listDiscountCodesPage(input: PageRequest) {
+  const db = await getDb();
+  if (!db) return pageResult([], 0, input, 50);
+  const [totals] = await db.select({ count: sql<number>`COUNT(*)` }).from(discountCodes);
+  const totalItems = Number(totals?.count || 0);
+  const window = pageWindowForTotal(input, totalItems, 50);
+  const rows = await db
+    .select()
+    .from(discountCodes)
+    .orderBy(desc(discountCodes.createdAt), desc(discountCodes.id))
+    .limit(window.pageSize)
+    .offset(window.offset);
+  return pageResult(await attachDiscountPlans(rows), totalItems, window, 50);
 }
 
 async function getDiscountPlanIds(discountCodeId: number): Promise<number[]> {
@@ -1983,10 +2321,27 @@ async function getDiscountPlanIds(discountCodeId: number): Promise<number[]> {
 }
 
 async function attachDiscountPlans<T extends { id: number }>(codes: T[]) {
-  return Promise.all(codes.map(async (code) => ({
+  const db = await getDb();
+  if (!db || codes.length === 0) return codes.map((code) => ({ ...code, planIds: [] as number[] }));
+  const ids = codes.map((code) => Number(code.id)).filter((id) => id > 0);
+  const rows = await db
+    .select({
+      discountCodeId: discountCodePlans.discountCodeId,
+      planId: discountCodePlans.planId,
+    })
+    .from(discountCodePlans)
+    .where(inArray(discountCodePlans.discountCodeId, ids));
+  const planIdsByCode = new Map<number, number[]>();
+  for (const row of rows as any[]) {
+    const codeId = Number(row.discountCodeId);
+    const values = planIdsByCode.get(codeId) || [];
+    values.push(Number(row.planId));
+    planIdsByCode.set(codeId, values);
+  }
+  return codes.map((code) => ({
     ...code,
-    planIds: await getDiscountPlanIds(code.id),
-  })));
+    planIds: planIdsByCode.get(Number(code.id)) || [],
+  }));
 }
 
 export async function setDiscountCodePlans(discountCodeId: number, planIds: number[]) {

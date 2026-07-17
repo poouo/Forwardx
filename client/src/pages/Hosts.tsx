@@ -1356,7 +1356,7 @@ function HostsContent() {
   }, [hostMapQuery.fetchNextPage, hostMapQuery.hasNextPage, hostMapQuery.isFetchingNextPage, isHostMapView]);
 
   const needsFullHostList = activeManageTab === "groups";
-  const fullHostQuery = trpc.hosts.list.useQuery(undefined, {
+  const fullHostQuery = trpc.hosts.options.useQuery(undefined, {
     enabled: needsFullHostList,
     staleTime: 25_000,
     refetchOnWindowFocus: false,
@@ -1402,7 +1402,7 @@ function HostsContent() {
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
   );
-  const nginxFeatureEnabled = forwardProtocolSettings.nginx !== false || forwardProtocolSettings.nginx_stream !== false || forwardProtocolSettings.nginx_tls !== false;
+  const nginxFeatureEnabled = forwardProtocolSettings.nginx !== false || forwardProtocolSettings.nginx_stream !== false;
   const latestAgentVersion = useMemo(
     () => systemSettings?.agentVersion || "",
     [systemSettings?.agentVersion]
@@ -1672,6 +1672,7 @@ function HostsContent() {
       utils.hosts.options.invalidate();
       utils.hosts.listPage.invalidate();
       utils.hosts.mapPoints.invalidate();
+      utils.hosts.upgradeCandidates.invalidate();
       setBulkUpgradeDialogOpen(false);
       const skippedLatest = (data as any)?.skippedLatest || 0;
       const skippedOffline = (data as any)?.skippedOffline || 0;
@@ -1879,11 +1880,22 @@ function HostsContent() {
   const onlineCount = Number(hostPageQuery.data?.onlineItems ?? filteredDisplayHosts.filter((host: any) => !!host.isOnline).length);
   const displayedHostTotal = Number(hostPageQuery.data?.totalItems ?? (isHostMapView ? mapHostTotal : filteredDisplayHosts.length));
   const updateCount = Number(hostPageQuery.data?.outdatedItems || 0);
+  const onlineOutdatedCount = Number(hostPageQuery.data?.onlineOutdatedItems || 0);
+  const bulkUpgradeCandidateQuery = trpc.hosts.upgradeCandidates.useQuery({
+    search: hostSearchQuery,
+    groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
+  }, {
+    enabled: bulkUpgradeDialogOpen,
+    staleTime: 5_000,
+    refetchOnWindowFocus: false,
+  });
   const bulkUpgradeableHosts = useMemo(
-    () => (hostPageQuery.data?.upgradeableIds || []).map((id: number) => ({ id })),
-    [hostPageQuery.data?.upgradeableIds],
+    () => (bulkUpgradeCandidateQuery.data?.ids || []).map((id: number) => ({ id })),
+    [bulkUpgradeCandidateQuery.data?.ids],
   );
-  const offlineUpgradeableHostCount = Number(hostPageQuery.data?.offlineUpgradeableItems || 0);
+  const offlineUpgradeableHostCount = Number(
+    bulkUpgradeCandidateQuery.data?.offlineItems ?? hostPageQuery.data?.offlineUpgradeableItems ?? 0,
+  );
   const hostPagination = useServerPagination<any>(usesFullHostDisplay ? [] : filteredDisplayHosts, Number(hostPageQuery.data?.totalItems || 0), hostPageRequest, {
     pageSize: 12,
     isReady: !hostPageQuery.isLoading && !!hostPageQuery.data,
@@ -2038,7 +2050,7 @@ function HostsContent() {
     upgradeAgentMutation.mutate({ hostId: upgradeHost.id, targetVersion: latestAgentVersion || null });
   };
   const requestAllAgentUpgrades = () => {
-    if (bulkUpgradeableHosts.length === 0) {
+    if (onlineOutdatedCount === 0) {
       toast.info("暂无需要升级的 Agent");
       return;
     }
@@ -2124,7 +2136,7 @@ function HostsContent() {
                   variant="outline"
                   size="sm"
                   className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
-                  disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
+                  disabled={onlineOutdatedCount === 0 || upgradeAgentsMutation.isPending}
                   onClick={requestAllAgentUpgrades}
                 >
                   {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -2306,7 +2318,7 @@ function HostsContent() {
                 const offlineCount = Math.max(0, total - online);
                 return offlineCount > 0 ? `离线 ${offlineCount} 台` : "全部在线";
               })()
-              : "状态正常"}
+              : "暂无统计"}
             icon={Server}
             leadingIcon={CircleCheck}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
@@ -2885,7 +2897,7 @@ function HostsContent() {
             </Button>
             <Button
               className="gap-2"
-              disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
+              disabled={bulkUpgradeCandidateQuery.isLoading || bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
               onClick={confirmAllAgentUpgrades}
             >
               {upgradeAgentsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
@@ -3046,7 +3058,7 @@ function HostsContent() {
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
                     <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-{nginxFeatureEnabled ? "协议屏蔽支持自定义加密隧道，以及 realm / gost / socat / nginx 等用户态转发；iptables / nftables 内核转发暂不支持。" : "协议屏蔽支持自定义加密隧道，以及 realm / gost / socat 等用户态转发；iptables / nftables 内核转发暂不支持。"}
+{nginxFeatureEnabled ? "支持 ForwardX、Realm、GOST、Socat 和 Nginx；不支持 iptables/nftables。" : "支持 ForwardX、Realm、GOST 和 Socat；不支持 iptables/nftables。"}
                     </p>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">

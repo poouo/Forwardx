@@ -83,6 +83,7 @@ import {
   FORWARD_TYPES,
   FORWARD_TYPE_LABELS,
   FORWARD_PROTOCOL_LABELS,
+  TUNNEL_PROTOCOLS,
   formatForwardRuleProtocol,
   normalizeForwardProtocolSettings,
   type ForwardType,
@@ -317,7 +318,7 @@ const defaultForm: RuleFormData = {
 };
 
 const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
-const nginxTunnelModes = new Set(["nginx_stream", "nginx_tls"]);
+const nginxTunnelModes = new Set(["nginx_stream"]);
 const unsupportedProtocolTitle = "当前转发方式已停用，请编辑并切换到可用资源";
 const desktopRuleTypeLabels = {
   local: "端口转发",
@@ -1159,7 +1160,7 @@ function isSelectableForwardRuleGroup(group: any | null | undefined) {
 function getForwardGroupKindLabel(group: any | null | undefined) {
   const mode = normalizeForwardGroupModeForRule(group);
   if (mode === "port") return "端口转发";
-  if (mode === "chain") return "端口转发链";
+  if (mode === "chain") return "转发链";
   if (mode === "entry") return "入口组";
   if (mode === "exit") return "出口组";
   return group?.groupType === "tunnel" ? "隧道组" : "主机组";
@@ -2170,7 +2171,7 @@ function RulesContent() {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
-  const { data: forwardGroups } = trpc.forwardGroups.list.useQuery(undefined, {
+  const { data: forwardGroups } = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: secondaryQueriesReady,
     refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
@@ -2591,7 +2592,7 @@ function RulesContent() {
         setShowDialog(true);
         return;
       }
-      toast.error("请先在链路管理中创建可用端口转发，或确认按量计费资源和余额可用");
+      toast.error("暂无可用端口转发，请检查链路配置、授权或计费余额");
       return;
     }
     if (hasSavedLocalForward || hasBillingHostLocalForward || firstTunnel || firstChain || firstGroup) {
@@ -2619,7 +2620,7 @@ function RulesContent() {
         forwardGroupId: routeMode === "local" && localUsesSavedForward && firstPortGroup ? Number(firstPortGroup.id) : routeMode === "chain" && firstChain ? Number(firstChain.id) : routeMode === "group" && firstGroup ? Number(firstGroup.id) : null,
       });
     } else {
-      toast.error("请先创建可用端口转发、隧道、转发链、转发组，或确认按量计费资源和余额可用。");
+      toast.error("暂无可用转发资源，请检查链路配置、授权或计费余额。");
       return;
     }
     setShowDialog(true);
@@ -2713,7 +2714,7 @@ function RulesContent() {
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
   );
-  const nginxTunnelEnabled = forwardProtocolSettings.nginx_stream !== false || forwardProtocolSettings.nginx_tls !== false;
+  const nginxTunnelEnabled = forwardProtocolSettings.nginx_stream !== false;
   const protocolUnsupportedLabel = useCallback((protocolKey: ForwardProtocolKey | null | undefined) => {
     const genericLabel = "\u8be5\u534f\u8bae";
     if (!protocolKey) return genericLabel;
@@ -2728,13 +2729,12 @@ function RulesContent() {
   }, [forwardProtocolSettings.nginx]);
 
   const isProtocolEnabled = useCallback((key: ForwardProtocolKey | null | undefined) => {
-    if (!key) return true;
+    if (!key) return false;
     return forwardProtocolSettings[key] !== false;
   }, [forwardProtocolSettings]);
   const getTunnelProtocolKey = useCallback((tunnel: any | null | undefined): ForwardProtocolKey | null => {
     const mode = String(tunnel?.mode || "").toLowerCase();
-    if (mode === "nginx_tls") return "nginx_stream";
-    return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const).includes(mode as any)
+    return (TUNNEL_PROTOCOLS as readonly string[]).includes(mode)
       ? mode as ForwardProtocolKey
       : null;
   }, []);
@@ -2987,7 +2987,7 @@ function RulesContent() {
     const nextSearch = params.toString();
     setLocation(`/rules${nextSearch ? `?${nextSearch}` : ""}`, { replace: true });
     if (!canAdd) {
-      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
+      toast.error("当前账号没有添加转发规则的权限");
       return;
     }
     openCreate("local");
@@ -3019,7 +3019,7 @@ function RulesContent() {
       || canAutoSwitchMainBackupToGost
     );
   const mainBackupDisabledText = selectedForwardGroupIsChain
-    ? "端口转发链不支持出站策略。"
+    ? "转发链不支持出站策略。"
     : mainBackupUsesTunnelRoute && !mainBackupIsTunnelRoute
     ? "当前隧道或转发工具不支持出站策略。"
     : mainBackupForwardType !== "gost" && !canAutoSwitchMainBackupToGost
@@ -3307,7 +3307,7 @@ function RulesContent() {
 
   const handleCopyRules = async () => {
     if (!canAdd) {
-      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
+      toast.error("当前账号没有添加转发规则的权限");
       return;
     }
     if (copySelectedRules.length === 0) {
@@ -3489,7 +3489,7 @@ function RulesContent() {
       return;
     }
     if (form.routeMode === "tunnel" && !canUseGost) {
-      toast.error("您没有使用隧道转发的权限，请联系管理员");
+      toast.error("当前账号没有隧道转发权限");
       return;
     }
     if (form.routeMode === "tunnel" && !form.tunnelId) {
@@ -5308,7 +5308,7 @@ function RulesContent() {
       if (isForwardChainGroup(group)) {
         const entry = String(entryValue || getForwardChainEntryAddresses(group)[0]?.value || "").trim();
         if (!entry) {
-          toast.error("该端口转发链未配置可用入口地址");
+          toast.error("该转发链未配置可用入口地址");
           return;
         }
         const text = formatAddressWithPort(entry, rule.sourcePort);
@@ -5613,7 +5613,7 @@ function RulesContent() {
         }`}
       >
         {rule.forwardGroupId ? (
-          <><Layers3 className="h-3 w-3 mr-1" />{isChainRoute ? "端口转发链" : "转发组"}</>
+          <><Layers3 className="h-3 w-3 mr-1" />{isChainRoute ? "转发链" : "转发组"}</>
         ) : tunnel ? (
           <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel, nginxTunnelEnabled).badgeLabel}</>
         ) : rule.forwardType === "iptables" ? (
@@ -6214,17 +6214,17 @@ function RulesContent() {
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">转发规则</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
-            {user?.role === "admin" ? "管理端口、隧道和转发组规则" : "管理端口和隧道转发规则"}
+            管理转发规则和运行状态
           </p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
-              value={`${activeCount} / ${filteredRuleTotal} 活跃`}
+              value={`${activeCount} / ${filteredRuleTotal} 已启用`}
               loading={rulesHeaderLoading}
               cacheKey={`rules.header.active.${trafficTotalsCacheScope}`}
-              fallbackValue="0 / 0 活跃"
+              fallbackValue="0 / 0 已启用"
             />
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 md:flex">
@@ -6296,7 +6296,7 @@ function RulesContent() {
               onClick={() => openCreate()}
               className="col-span-2 gap-2 sm:col-span-1"
               disabled={!canCreateRule}
-              title={!canCreateRule ? "暂无可用端口转发、按量计费资源、隧道、转发链或转发组" : undefined}
+              title={!canCreateRule ? "暂无可用转发资源" : undefined}
             >
               <Plus className="h-4 w-4" />
               添加规则
@@ -6313,7 +6313,7 @@ function RulesContent() {
       {!canAdd && !rulePermissionLoading && (
         <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm text-amber-700 dark:text-amber-400">
           <AlertCircle className="h-4 w-4 flex-shrink-0" />
-          <span>您暂无添加转发规则的权限，请联系管理员开通</span>
+          <span>当前账号没有添加转发规则的权限</span>
         </div>
       )}
 
@@ -6322,14 +6322,14 @@ function RulesContent() {
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">筛选:</span>
+              <span className="text-sm text-muted-foreground">筛选：</span>
             </div>
             <div className="relative w-full sm:w-[260px] lg:w-[320px]">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={ruleSearchQuery}
                 onChange={(event) => setRuleSearchQuery(event.target.value)}
-                placeholder="搜索端口 / IP / 域名 / 备注"
+                placeholder="搜索端口、IP、域名或备注"
                 className="h-8 w-full pl-8 pr-8 text-xs"
               />
               {ruleSearchQuery ? (
@@ -6685,8 +6685,8 @@ function RulesContent() {
                 <p className="text-lg font-medium">暂无转发规则</p>
                 <p className="text-sm mt-1 text-muted-foreground/60">
                   {canCreateRule
-                    ? "创建转发规则开始端口转发"
-                    : "请先获得可用主机、隧道、转发链或转发组授权，然后创建转发规则"}
+                    ? "创建第一条转发规则"
+                    : "当前账号没有可用的转发资源"}
                 </p>
                 {canAdd && canCreateRule && (
                   <Button onClick={() => openCreate()} variant="outline" className="mt-4 gap-2">
@@ -7168,7 +7168,7 @@ function RulesContent() {
               <Download className="h-5 w-5" />
               {"导出规则"}
             </DialogTitle>
-            <DialogDescription>{"选择范围后导出对应的转发规则"}</DialogDescription>
+            <DialogDescription>{"选择范围后导出规则"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid gap-4 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)]">
@@ -7235,7 +7235,7 @@ function RulesContent() {
               <Upload className="h-5 w-5" />
               {"导入规则"}
             </DialogTitle>
-            <DialogDescription>{"选择范围与规则文件后导入"}</DialogDescription>
+            <DialogDescription>{"选择范围和规则文件后导入"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid gap-4 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)]">
@@ -7309,7 +7309,7 @@ function RulesContent() {
               <ClipboardCopy className="h-5 w-5" />
               批量管理转发规则
             </DialogTitle>
-            <DialogDescription>筛选已有规则后，可选择复制规则或批量编辑，再执行导入、导出或删除等操作。</DialogDescription>
+            <DialogDescription>筛选并选择规则后，可批量复制、编辑、导出或删除。</DialogDescription>
           </DialogHeader>
           <div className="max-h-[72vh] space-y-4 overflow-y-auto pr-1">
             <div className={segmentedControlClassName}>

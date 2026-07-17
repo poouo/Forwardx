@@ -1,5 +1,5 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import { InsertUser, users, forwardRules } from "../../drizzle/schema";
+import { InsertUser, users, forwardRules, userSubscriptions } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
@@ -12,6 +12,7 @@ import {
   normalizeAvatarValue,
   randomAvataaarsValue,
 } from "../../shared/avatar";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
 export type ForwardAccessPauseReason = "manual" | "traffic_billing_balance" | "traffic_limit" | "expired" | null;
 
@@ -441,14 +442,6 @@ export async function updateUserAvatarRandomWithQuota(userId: number, options: {
   return { avatar, quota, rateLimit };
 }
 
-export async function normalizeLegacyUserAvatar(userId: number) {
-  const db = await getDb();
-  if (!db) return;
-  const current = await getUserById(userId);
-  if (!current?.avatar || !String(current.avatar).startsWith("preset:")) return;
-  await db.update(users).set({ avatar: migrateLegacyAvatarValue(current.avatar, `user-${userId}`), updatedAt: nowDate() }).where(eq(users.id, userId));
-}
-
 export async function migrateLegacyUserAvatars() {
   const db = await getDb();
   if (!db) return 0;
@@ -462,9 +455,7 @@ export async function migrateLegacyUserAvatars() {
   return migrated;
 }
 
-export async function getAllUsers() {
-  const db = await getDb();
-  if (!db) return [];
+function usersForListQuery(db: any) {
   return db
     .select({
       id: users.id,
@@ -518,8 +509,77 @@ export async function getAllUsers() {
       createdAt: users.createdAt,
       lastSignedIn: users.lastSignedIn,
     })
+    .from(users);
+}
+
+export async function getAllUsers() {
+  const db = await getDb();
+  if (!db) return [];
+  return usersForListQuery(db)
+    .orderBy(desc(users.createdAt));
+}
+
+export async function getUserOptions() {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      email: users.email,
+      avatar: users.avatar,
+      role: users.role,
+      accountEnabled: users.accountEnabled,
+    })
     .from(users)
     .orderBy(desc(users.createdAt));
+}
+
+
+export async function getUserManagementCounts() {
+  const db = await getDb();
+  if (!db) return { totalUsers: 0, adminUsers: 0, activeSubscriptions: 0 };
+  const nowSec = Math.floor(Date.now() / 1000);
+  const [userRows, subscriptionRows] = await Promise.all([
+    db.select({
+      totalUsers: sql<number>`COUNT(*)`,
+      adminUsers: sql<number>`COALESCE(SUM(CASE WHEN ${users.role} = 'admin' THEN 1 ELSE 0 END), 0)`,
+    }).from(users),
+    db.select({
+      activeSubscriptions: sql<number>`COALESCE(SUM(CASE
+        WHEN ${userSubscriptions.status} = 'active'
+          AND (${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})
+        THEN 1 ELSE 0 END), 0)`,
+    }).from(userSubscriptions),
+  ]);
+  return {
+    totalUsers: Number(userRows[0]?.totalUsers || 0),
+    adminUsers: Number(userRows[0]?.adminUsers || 0),
+    activeSubscriptions: Number(subscriptionRows[0]?.activeSubscriptions || 0),
+  };
+}
+
+export async function getUsersPage(input: PageRequest) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), adminItems: 0 };
+  const [totalRows, adminRows] = await Promise.all([
+    db.select({ count: sql<number>`COUNT(*)` }).from(users),
+    db.select({
+      count: sql<number>`COALESCE(SUM(CASE WHEN ${users.role} = 'admin' THEN 1 ELSE 0 END), 0)`,
+    }).from(users),
+  ]);
+  const totalItems = Number(totalRows[0]?.count || 0);
+  const adminItems = Number(adminRows[0]?.count || 0);
+  const window = pageWindowForTotal(input, totalItems);
+  const items = await usersForListQuery(db)
+    .orderBy(desc(users.createdAt))
+    .limit(window.pageSize)
+    .offset(window.offset);
+  return {
+    ...pageResult(items, totalItems, window),
+    adminItems,
+  };
 }
 
 export async function updateUserRole(userId: number, role: "user" | "admin") {

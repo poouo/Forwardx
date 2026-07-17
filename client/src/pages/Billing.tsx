@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import DatePickerInput, { parseDateInputValue } from "@/components/DatePickerInput";
@@ -227,23 +228,99 @@ function MobileInfoRow({
 export default function Billing() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
-  const { data: users = [], isLoading: usersLoading } = trpc.users.list.useQuery();
-  const { data: plans = [] } = trpc.plans.list.useQuery();
-  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
-  const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery({ limit: 100 });
-  const [ledgerUserId, setLedgerUserId] = useState("all");
-  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
-    limit: 200,
-    userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
-  });
-  const { data: redemptionCodes = [], isLoading: redemptionCodesLoading } = trpc.billing.listRedemptionCodes.useQuery();
-  const { data: discountCodes = [], isLoading: discountCodesLoading } = trpc.billing.listDiscountCodes.useQuery();
-  const { data: featureStatus, isLoading: featureStatusLoading } = trpc.billing.featureStatus.useQuery();
   const [activeTab, setActiveTab] = useUrlTab<BillingTab>({
     values: BILLING_TABS,
     defaultValue: "balance",
     storageKey: BILLING_TAB_STORAGE_KEY,
   });
+  const [ledgerUserId, setLedgerUserId] = useState("all");
+  const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
+  const subscriptionPageRequest = usePersistentPageRequest("forwardx.billing.subscriptions.page");
+  const redemptionPageRequest = usePersistentPageRequest("forwardx.billing.redemption.page");
+  const discountPageRequest = usePersistentPageRequest("forwardx.billing.discount.page");
+
+  const { data: billingSummary, isLoading: billingSummaryLoading } = trpc.billing.summary.useQuery(undefined, {
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: users = [], isLoading: usersLoading } = trpc.users.options.useQuery(undefined, {
+    enabled: activeTab === "ledger",
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: plans = [] } = trpc.plans.options.useQuery(undefined, {
+    enabled: activeTab === "redeem" || activeTab === "discount",
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
+    page: subscriptionPageRequest.page,
+    pageSize: 20,
+  }, {
+    enabled: activeTab === "subscriptions",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const subscriptions = (subscriptionPageQuery.data?.items || []) as any[];
+  const subscriptionsLoading = subscriptionPageQuery.isLoading;
+  const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery(
+    { limit: 100 },
+    { enabled: activeTab === "balance", staleTime: 10_000, refetchOnWindowFocus: false },
+  );
+  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
+    limit: 200,
+    userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
+  }, {
+    enabled: activeTab === "ledger",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const redemptionPageQuery = trpc.billing.listRedemptionCodesPage.useQuery({
+    page: redemptionPageRequest.page,
+    pageSize: 50,
+    usage: redemptionUsageFilter,
+  }, {
+    enabled: activeTab === "redeem",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const redemptionCodes = (redemptionPageQuery.data?.items || []) as any[];
+  const redemptionCodesLoading = redemptionPageQuery.isLoading;
+  const discountPageQuery = trpc.billing.listDiscountCodesPage.useQuery({
+    page: discountPageRequest.page,
+    pageSize: 50,
+  }, {
+    enabled: activeTab === "discount",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const discountCodes = (discountPageQuery.data?.items || []) as any[];
+  const discountCodesLoading = discountPageQuery.isLoading;
+  const { data: featureStatus, isLoading: featureStatusLoading } = trpc.billing.featureStatus.useQuery();
+
+  const subscriptionPagination = useServerPagination(
+    subscriptions,
+    Number(subscriptionPageQuery.data?.totalItems || 0),
+    subscriptionPageRequest,
+    { pageSize: 20, isReady: !subscriptionsLoading && !!subscriptionPageQuery.data },
+  );
+  const redemptionPagination = useServerPagination(
+    redemptionCodes,
+    Number(redemptionPageQuery.data?.totalItems || 0),
+    redemptionPageRequest,
+    { pageSize: 50, isReady: !redemptionCodesLoading && !!redemptionPageQuery.data },
+  );
+  const discountPagination = useServerPagination(
+    discountCodes,
+    Number(discountPageQuery.data?.totalItems || 0),
+    discountPageRequest,
+    { pageSize: 50, isReady: !discountCodesLoading && !!discountPageQuery.data },
+  );
+
+  useEffect(() => {
+    redemptionPageRequest.setPage(1);
+    setSelectedRedemptionIds([]);
+  }, [redemptionUsageFilter, redemptionPageRequest.setPage]);
 
   const [redeemType, setRedeemType] = useState<"plan" | "balance">("plan");
   const [redeemCode, setRedeemCode] = useState("");
@@ -253,7 +330,6 @@ export default function Billing() {
   const [redeemCount, setRedeemCount] = useState("1");
   const [redeemStartsAt, setRedeemStartsAt] = useState("");
   const [redeemExpiresAt, setRedeemExpiresAt] = useState("");
-  const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
   const [selectedRedemptionIds, setSelectedRedemptionIds] = useState<number[]>([]);
 
   const [discountCode, setDiscountCode] = useState("");
@@ -279,6 +355,8 @@ export default function Billing() {
       setRedeemCode("");
       setSelectedRedemptionIds([]);
       utils.billing.listRedemptionCodes.invalidate();
+      utils.billing.listRedemptionCodesPage.invalidate();
+      utils.billing.summary.invalidate();
     },
     onError: (error) => toast.error(error.message || "生成失败"),
   });
@@ -288,6 +366,8 @@ export default function Billing() {
       toast.success("兑换码已删除");
       setSelectedRedemptionIds((ids) => ids.filter((id) => id !== variables.id));
       utils.billing.listRedemptionCodes.invalidate();
+      utils.billing.listRedemptionCodesPage.invalidate();
+      utils.billing.summary.invalidate();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
   });
@@ -297,6 +377,8 @@ export default function Billing() {
       toast.success(`已删除 ${data.deleted} 个兑换码`);
       setSelectedRedemptionIds([]);
       utils.billing.listRedemptionCodes.invalidate();
+      utils.billing.listRedemptionCodesPage.invalidate();
+      utils.billing.summary.invalidate();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
   });
@@ -309,6 +391,8 @@ export default function Billing() {
       setDiscountMaxUses("0");
       setDiscountPlanIds([]);
       utils.billing.listDiscountCodes.invalidate();
+      utils.billing.listDiscountCodesPage.invalidate();
+      utils.billing.summary.invalidate();
     },
     onError: (error) => toast.error(error.message || "创建失败"),
   });
@@ -317,6 +401,8 @@ export default function Billing() {
     onSuccess: () => {
       toast.success("折扣码已删除");
       utils.billing.listDiscountCodes.invalidate();
+      utils.billing.listDiscountCodesPage.invalidate();
+      utils.billing.summary.invalidate();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
   });
@@ -455,9 +541,9 @@ export default function Billing() {
     });
   };
 
-  const totalBalance = users.reduce((sum: number, user: any) => sum + Number(user.balanceCents || 0), 0);
-  const activeRedemptionCodes = redemptionCodes.filter((code: any) => code.isActive && !code.usedAt).length;
-  const activeDiscountCodes = discountCodes.filter((code: any) => discountStatus(code) === "生效中").length;
+  const totalBalance = Number(billingSummary?.totalBalanceCents || 0);
+  const activeRedemptionCodes = Number(billingSummary?.activeRedemptionCodes || 0);
+  const activeDiscountCodes = Number(billingSummary?.activeDiscountCodes || 0);
 
   return (
     <DashboardLayout>
@@ -471,10 +557,10 @@ export default function Billing() {
           <BillingStatCard
             title="用户余额总额"
             value={money(totalBalance)}
-            subtitle={`${users.length} 个用户`}
+            subtitle={`${Number(billingSummary?.userCount || 0)} 个用户`}
             icon={WalletCards}
             tone="bg-gradient-to-br from-teal-500 to-teal-600"
-            loading={usersLoading}
+            loading={billingSummaryLoading}
             cacheKey="billing.totalBalance"
             fallbackValue={money(0)}
           />
@@ -484,7 +570,7 @@ export default function Billing() {
             subtitle="未使用且已启用"
             icon={Gift}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
-            loading={redemptionCodesLoading}
+            loading={billingSummaryLoading}
             cacheKey="billing.activeRedemptionCodes"
             fallbackValue={0}
           />
@@ -494,7 +580,7 @@ export default function Billing() {
             subtitle="当前可抵扣"
             icon={TicketPercent}
             tone="bg-gradient-to-br from-orange-500 to-orange-600"
-            loading={discountCodesLoading}
+            loading={billingSummaryLoading}
             cacheKey="billing.activeDiscountCodes"
             fallbackValue={0}
           />
@@ -647,7 +733,7 @@ export default function Billing() {
                 ) : (
                   <>
                 <div className="grid gap-3 md:hidden">
-                  {subscriptions.slice(0, 20).map((sub: any) => (
+                  {subscriptions.map((sub: any) => (
                     <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -678,7 +764,7 @@ export default function Billing() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {subscriptions.slice(0, 20).map((sub: any) => (
+                      {subscriptions.map((sub: any) => (
                         <TableRow key={sub.id}>
                           <TableCell>{sub.name || sub.username || `用户 #${sub.userId}`}</TableCell>
                           <TableCell>{sub.planName || `套餐 #${sub.planId}`}</TableCell>
@@ -699,6 +785,7 @@ export default function Billing() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={subscriptionPagination} itemName="条订阅" />
           </TabsContent>
 
           <TabsContent value="balance" className="mt-4">
@@ -888,6 +975,7 @@ export default function Billing() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={redemptionPagination} itemName="个兑换码" />
           </TabsContent>
 
           <TabsContent value="discount" className="mt-4 space-y-4">
@@ -991,6 +1079,7 @@ export default function Billing() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={discountPagination} itemName="个折扣码" />
           </TabsContent>
         </Tabs>
       </div>

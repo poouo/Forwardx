@@ -54,9 +54,9 @@ func TestParsePluginAgentManifestVersion(t *testing.T) {
 		content string
 		want    string
 	}{
-		{name: "generated manifest", content: `{"pluginVersion":"2.2.0"}`, want: "2.2.0"},
-		{name: "standard manifest", content: `{"version":"1.4.3"}`, want: "1.4.3"},
-		{name: "generated field wins", content: `{"version":"old","pluginVersion":"new"}`, want: "new"},
+		{name: "current manifest", content: `{"version":"2.2.0"}`, want: "2.2.0"},
+		{name: "legacy field is ignored", content: `{"pluginVersion":"1.4.3"}`, want: ""},
+		{name: "current field wins", content: `{"version":"new","pluginVersion":"old"}`, want: "new"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -72,17 +72,23 @@ func TestParsePluginAgentManifestVersion(t *testing.T) {
 }
 
 func TestParsePluginAgentManifestVersionRejectsInvalidJSON(t *testing.T) {
-	if _, err := parsePluginAgentManifestVersion([]byte(`{"pluginVersion":`)); err == nil {
+	if _, err := parsePluginAgentManifestVersion([]byte(`{"version":`)); err == nil {
 		t.Fatal("parsePluginAgentManifestVersion() should reject invalid JSON")
+	}
+}
+
+func TestValidatePluginAgentTaskVersionRequiresVersion(t *testing.T) {
+	if err := validatePluginAgentTaskVersion(pluginAgentTask{}); err == nil {
+		t.Fatal("validatePluginAgentTaskVersion() should reject a missing task version")
 	}
 }
 
 func TestInstalledPluginVersionsAt(t *testing.T) {
 	root := t.TempDir()
 	manifests := map[string]string{
-		"generated-plugin": `{"pluginVersion":"2.2.0","syncSignature":"sync-abc"}`,
-		"standard-plugin":  `{"version":"1.4.3"}`,
-		"invalid-plugin":   `{"pluginVersion":`,
+		"current-plugin": `{"version":"2.2.0","syncSignature":"sync-abc"}`,
+		"legacy-plugin":  `{"pluginVersion":"1.4.3"}`,
+		"invalid-plugin": `{"version":`,
 	}
 	for pluginID, content := range manifests {
 		dir := filepath.Join(root, pluginID)
@@ -95,18 +101,18 @@ func TestInstalledPluginVersionsAt(t *testing.T) {
 	}
 
 	versions := installedPluginVersionsAt(root)
-	if got := versions["generated-plugin"]; got != "2.2.0" {
-		t.Fatalf("generated plugin version = %q, want 2.2.0", got)
+	if got := versions["current-plugin"]; got != "2.2.0" {
+		t.Fatalf("current plugin version = %q, want 2.2.0", got)
 	}
-	if got := versions["standard-plugin"]; got != "1.4.3" {
-		t.Fatalf("standard plugin version = %q, want 1.4.3", got)
+	if _, exists := versions["legacy-plugin"]; exists {
+		t.Fatal("legacy pluginVersion-only manifest should not be reported")
 	}
 	if _, exists := versions["invalid-plugin"]; exists {
 		t.Fatal("invalid plugin manifest should not be reported")
 	}
 	_, signatures := installedPluginInventoryAt(root)
-	if got := signatures["generated-plugin"]; got != "sync-abc" {
-		t.Fatalf("generated plugin sync signature = %q, want sync-abc", got)
+	if got := signatures["current-plugin"]; got != "sync-abc" {
+		t.Fatalf("current plugin sync signature = %q, want sync-abc", got)
 	}
 }
 

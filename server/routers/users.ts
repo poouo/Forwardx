@@ -10,7 +10,6 @@ import {
   setUserAccountEnabledCommand,
   setUserForwardAccessCommand,
 } from "../services/userCommandService";
-import { paginateItems } from "../../shared/pagination";
 
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
@@ -35,16 +34,7 @@ export const usersRouter = router({
       return db.getAllUsers();
     }),
     options: adminProcedure.query(async () => {
-      const users = await db.getAllUsers();
-      return users.map((user: any) => ({
-        id: Number(user.id),
-        username: String(user.username || ""),
-        name: user.name || null,
-        email: user.email || null,
-        avatar: user.avatar || null,
-        role: user.role,
-        accountEnabled: user.accountEnabled !== false,
-      }));
+      return db.getUserOptions();
     }),
     listPage: adminProcedure
       .input(z.object({
@@ -52,26 +42,15 @@ export const usersRouter = router({
         pageSize: z.number().int().min(1).max(100).default(12),
       }))
       .query(async ({ input }) => {
-        const users = await db.getAllUsers();
-        return {
-          ...paginateItems(users, input),
-          adminItems: users.filter((user: any) => user.role === "admin").length,
-        };
+        return db.getUsersPage(input);
       }),
     summary: adminProcedure.query(async () => {
-      const [users, stats, subscriptions] = await Promise.all([
-        db.getAllUsers(),
+      const [counts, stats] = await Promise.all([
+        db.getUserManagementCounts(),
         db.getDashboardStats(),
-        db.listUserSubscriptions(),
       ]);
-      const now = Date.now();
       return {
-        totalUsers: users.length,
-        adminUsers: users.filter((user: any) => user.role === "admin").length,
-        activeSubscriptions: (subscriptions as any[]).filter((subscription: any) => (
-          subscription?.status === "active"
-          && (!subscription?.expiresAt || new Date(subscription.expiresAt).getTime() > now)
-        )).length,
+        ...counts,
         totalRules: stats.totalRules,
         activeRules: stats.activeRules,
         totalTrafficIn: stats.totalTrafficIn,

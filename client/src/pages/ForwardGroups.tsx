@@ -92,6 +92,7 @@ import {
   FORWARD_RULE_PROTOCOL_LABELS,
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
+  TUNNEL_PROTOCOLS,
   normalizeForwardProtocolSettings,
   normalizeForwardRuleProtocol,
   type ForwardRuleProtocol,
@@ -775,7 +776,7 @@ function ForwardGroupSelfTestDialog({
     if (lastFailureToastKey.current !== key) {
       lastFailureToastKey.current = key;
       manualTestRef.current = false;
-      toast.error("\u8f6c\u53d1\u94fe\u94fe\u8def\u81ea\u6d4b\u5931\u8d25", { description: message, duration: 12000 });
+      toast.error("\u8f6c\u53d1\u94fe\u81ea\u6d4b\u5931\u8d25", { description: message, duration: 12000 });
     }
   }, [groupId, hasFreshResult, isFailed, isTesting, latest?.updatedAt, open, parsedMessage.message, status]);
 
@@ -879,7 +880,7 @@ export function ForwardGroupsContent({
     refetchOnWindowFocus: false,
   });
   const needsFullGroupList = showDialog || !!latencyGroup || !!testGroup || !!editRequest;
-  const fullGroupQuery = trpc.forwardGroups.list.useQuery(undefined, {
+  const fullGroupQuery = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: needsFullGroupList,
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
@@ -951,9 +952,9 @@ export function ForwardGroupsContent({
     tunnels,
     groups,
     isTunnelSupported: (tunnel: any) => {
-      const rawMode = String(tunnel?.mode || "").toLowerCase();
-      const mode = rawMode === "nginx_tls" ? "nginx_stream" : rawMode;
-      return !mode || forwardProtocolSettings[mode as keyof typeof forwardProtocolSettings] !== false;
+      const mode = String(tunnel?.mode || "").toLowerCase();
+      return (TUNNEL_PROTOCOLS as readonly string[]).includes(mode)
+        && forwardProtocolSettings[mode as keyof typeof forwardProtocolSettings] !== false;
     },
   }).groupAvailabilityById, [forwardProtocolSettings, groups, hosts, tunnels]);
   const getGroupConfigState = (group: any) => groupConfigStateById.get(Number(group?.id || 0)) || {
@@ -1128,7 +1129,7 @@ export function ForwardGroupsContent({
 
   const createMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
@@ -1140,9 +1141,9 @@ export function ForwardGroupsContent({
   const updateMutation = trpc.forwardGroups.update.useMutation({
     onSuccess: async (result) => {
       const updatedGroup = result?.group;
-      const cachedGroups = utils.forwardGroups.list.getData();
+      const cachedGroups = utils.forwardGroups.options.getData();
       if (updatedGroup && cachedGroups) {
-        utils.forwardGroups.list.setData(
+        utils.forwardGroups.options.setData(
           undefined,
           cachedGroups.map((group: any) => Number(group.id) === Number(updatedGroup.id)
             ? { ...group, ...updatedGroup }
@@ -1152,7 +1153,7 @@ export function ForwardGroupsContent({
       closeDialog();
       toast.success(`${currentModeMeta.title}已更新`);
       await Promise.all([
-        utils.forwardGroups.list.invalidate(),
+        utils.forwardGroups.options.invalidate(),
         utils.forwardGroups.listPage.invalidate(),
         utils.tunnels.list.invalidate(),
         utils.tunnels.options.invalidate(),
@@ -1170,10 +1171,10 @@ export function ForwardGroupsContent({
     onMutate: async ({ id, isEnabled }) => {
       const groupId = Number(id);
       setPendingToggleGroupIds((current) => new Set(current).add(groupId));
-      await utils.forwardGroups.list.cancel();
-      const previous = utils.forwardGroups.list.getData();
+      await utils.forwardGroups.options.cancel();
+      const previous = utils.forwardGroups.options.getData();
       if (previous) {
-        utils.forwardGroups.list.setData(
+        utils.forwardGroups.options.setData(
           undefined,
           previous.map((group: any) => Number(group.id) === groupId ? { ...group, isEnabled } : group) as any,
         );
@@ -1184,7 +1185,7 @@ export function ForwardGroupsContent({
       toast.success(variables.isEnabled ? "已启用" : "已停用，关联规则正在受控关闭");
     },
     onError: (error, _variables, context) => {
-      if (context?.previous) utils.forwardGroups.list.setData(undefined, context.previous as any);
+      if (context?.previous) utils.forwardGroups.options.setData(undefined, context.previous as any);
       toast.error(error.message || "操作失败");
     },
     onSettled: (_data, _error, variables) => {
@@ -1194,7 +1195,7 @@ export function ForwardGroupsContent({
         next.delete(groupId);
         return next;
       });
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.tunnels.list.invalidate();
       utils.tunnels.options.invalidate();
@@ -1205,7 +1206,7 @@ export function ForwardGroupsContent({
 
   const deleteMutation = trpc.forwardGroups.delete.useMutation({
     onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       setDeleteGroup(null);
@@ -1216,7 +1217,7 @@ export function ForwardGroupsContent({
 
   const syncMutation = trpc.forwardGroups.sync.useMutation({
     onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       toast.success("已同步链路成员规则");
@@ -1226,7 +1227,7 @@ export function ForwardGroupsContent({
 
   const runFailoverMutation = trpc.forwardGroups.runFailover.useMutation({
     onSuccess: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       toast.success("已执行一次故障转移检查");
     },
@@ -1236,7 +1237,7 @@ export function ForwardGroupsContent({
   const reorderGroupsMutation = trpc.forwardGroups.reorderGroups.useMutation({
     onError: (e) => toast.error(e.message || "排序保存失败"),
     onSettled: () => {
-      utils.forwardGroups.list.invalidate();
+      utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
     },
   });
@@ -1270,7 +1271,7 @@ export function ForwardGroupsContent({
       return;
     }
     if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= 5) {
-      toast.error(form.groupMode === "chain" ? "端口转发链最多支持 5 台主机" : "入口组/出口组最多支持 5 台主机");
+      toast.error(form.groupMode === "chain" ? "转发链最多支持 5 台主机" : "入口组/出口组最多支持 5 台主机");
       return;
     }
     const effectiveType = effectiveGroupType;
@@ -1423,13 +1424,13 @@ export function ForwardGroupsContent({
     const isExitGroup = form.groupMode === "exit";
     const supportsChinaHealth = isFailoverMode || isEntryGroup;
     const supportsSwitchNotify = isFailoverMode || isEntryGroup;
-    if (!form.name.trim()) return toast.error(isPortMode ? "请填写端口转发名称" : isChainGroup ? "请填写链名称" : "请填写组名称");
+    if (!form.name.trim()) return toast.error(isPortMode ? "请填写端口转发名称" : isChainGroup ? "请填写转发链名称" : "请填写组名称");
     if (isPortMode) {
       if (form.members.length !== 1) return toast.error("端口转发需要选择 1 台所属主机");
     } else if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
       if (form.members.length < minChainMembers || form.members.length > 5) {
-        return toast.error(form.entryGroupId ? "端口转发链需要配置 1-5 台主机" : "端口转发链需要配置 2-5 台主机");
+        return toast.error(form.entryGroupId ? "转发链需要配置 1-5 台主机" : "转发链需要配置 2-5 台主机");
       }
     } else if (isEntryGroup || isExitGroup) {
       if (form.members.length < 1 || form.members.length > 5) return toast.error(isEntryGroup ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
@@ -1718,7 +1719,7 @@ export function ForwardGroupsContent({
   }> = {
     port: {
       title: "端口转发",
-      description: "管理保存好的单主机端口转发链路。",
+      description: "管理可复用的单主机端口转发。",
       addButtonText: "添加端口转发",
       loadingLabel: "正在加载端口转发",
       emptyTitle: "暂无端口转发",
@@ -1727,38 +1728,38 @@ export function ForwardGroupsContent({
     },
     failover: {
       title: "转发组",
-      description: "管理 DDNS 故障转移规则。",
+      description: "管理多入口故障转移与负载分配。",
       addButtonText: "添加转发组",
       loadingLabel: "正在加载转发组",
       emptyTitle: "暂无转发组",
-      emptyDescription: "创建后可在转发规则中作为高可用入口使用",
+      emptyDescription: "创建后可在转发规则中使用",
       paginationItemName: "个转发组",
     },
     chain: {
-      title: "端口转发链",
-      description: "管理按主机顺序串联的端口转发链路。",
-      addButtonText: "添加转发组",
-      loadingLabel: "正在加载端口转发链",
-      emptyTitle: "暂无端口转发链",
-      emptyDescription: "创建后可在端口转发规则中作为链路使用",
+      title: "转发链",
+      description: "按顺序连接入口、中转和出口主机。",
+      addButtonText: "添加转发链",
+      loadingLabel: "正在加载转发链",
+      emptyTitle: "暂无转发链",
+      emptyDescription: "创建后可在转发规则中使用",
       paginationItemName: "条转发链",
     },
     entry: {
       title: "入口组",
-      description: "组合最多 5 台入口主机，并把它们同步到同一个 DDNS 域名。",
+      description: "管理共享入口域名的多台主机。",
       addButtonText: "添加入口组",
       loadingLabel: "正在加载入口组",
       emptyTitle: "暂无入口组",
-      emptyDescription: "创建后会把多台入口主机同步到同一个 DDNS 域名",
+      emptyDescription: "创建后可供隧道和转发链复用",
       paginationItemName: "个入口组",
     },
     exit: {
       title: "出口组",
-      description: "组合最多 5 台出口主机，供隧道作为固定出口选择。",
+      description: "管理隧道可复用的出口主机。",
       addButtonText: "添加出口组",
       loadingLabel: "正在加载出口组",
       emptyTitle: "暂无出口组",
-      emptyDescription: "创建后可在隧道出口下拉中选择使用",
+      emptyDescription: "创建后可作为隧道出口使用",
       paginationItemName: "个出口组",
     },
   };
@@ -2137,7 +2138,7 @@ export function ForwardGroupsContent({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             <div className={"grid gap-3 " + (isPortMode ? "sm:grid-cols-2" : isChainMode ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
               <div className="space-y-2">
-                <Label>{isPortMode ? "端口转发名称" : isChainMode ? "链名称" : "组名称"}</Label>
+                <Label>{isPortMode ? "端口转发名称" : isChainMode ? "转发链名称" : "组名称"}</Label>
                 <Input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -2269,7 +2270,7 @@ export function ForwardGroupsContent({
                       onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
                       placeholder="留空默认 www.189.cn:80，IPv6 用 [地址]:端口"
                     />
-                    <p className="text-xs text-muted-foreground">统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时整体仍视为可用。</p>
+                    <p className="text-xs text-muted-foreground">使用 TCPing 检查成员。IPv6 格式：[地址]:端口。</p>
                   </div>
                   <div className="space-y-2">
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
@@ -2278,7 +2279,7 @@ export function ForwardGroupsContent({
                     </label>
                     <label
                       className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
-                      title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                      title={telegramReady ? "仅在自动切换时发送 Telegram 告警。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
                     >
                       <span className="min-w-0">
                         <span className="block text-sm">切换告警</span>
@@ -2609,7 +2610,7 @@ export function ForwardGroupsContent({
                       onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
                       placeholder="留空默认 www.189.cn:80，IPv6 请写 [地址]:端口"
                     />
-                    <p className="text-xs text-muted-foreground">统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时仍视为可用。</p>
+                    <p className="text-xs text-muted-foreground">使用 TCPing 检查成员。IPv6 格式：[地址]:端口。</p>
                   </div>
                   <div className="space-y-2">
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
@@ -2618,7 +2619,7 @@ export function ForwardGroupsContent({
                     </label>
                     <label
                       className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
-                      title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不会提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                      title={telegramReady ? "仅在自动切换时发送 Telegram 告警。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
                     >
                       <span className="min-w-0">
                         <span className="block text-sm">切换告警</span>
@@ -2671,7 +2672,7 @@ export function ForwardGroupsContent({
       <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "删除端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
+            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "删除端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
             <DialogDescription>
               确认删除 "{deleteGroup?.name}"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。
             </DialogDescription>
@@ -2684,7 +2685,7 @@ export function ForwardGroupsContent({
             ) : deleteImpactQuery.data?.forwardRuleCount ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
                 <p className="font-medium text-destructive">
-                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
+                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   包含 {deleteImpactQuery.data.templateRuleCount || 0} 条用户规则和 {deleteImpactQuery.data.childRuleCount || 0} 条成员运行规则。

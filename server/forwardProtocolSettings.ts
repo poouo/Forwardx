@@ -26,7 +26,6 @@ export async function getForwardProtocolSettings(): Promise<ForwardProtocolSetti
 
 export function getTunnelProtocolKey(tunnel: any): ForwardProtocolKey | null {
   const mode = String(tunnel?.mode || "").toLowerCase();
-  if (mode === "nginx_tls") return "nginx_stream";
   return (TUNNEL_PROTOCOLS as readonly string[]).includes(mode) ? mode as ForwardProtocolKey : null;
 }
 
@@ -44,10 +43,12 @@ export function isForwardProtocolKeyEnabled(settings: ForwardProtocolSettings, k
 }
 
 export function isTunnelProtocolEnabled(settings: ForwardProtocolSettings, tunnel: any) {
-  return isForwardProtocolKeyEnabled(settings, getTunnelProtocolKey(tunnel));
+  const key = getTunnelProtocolKey(tunnel);
+  return key !== null && isForwardProtocolKeyEnabled(settings, key);
 }
 
 export function isRuleProtocolEnabled(settings: ForwardProtocolSettings, rule: any, tunnel?: any | null) {
+  if (rule?.forwardType === "gost" && rule?.tunnelId && tunnel && !getTunnelProtocolKey(tunnel)) return false;
   return isForwardProtocolKeyEnabled(settings, getRuleProtocolKey(rule, tunnel));
 }
 
@@ -59,7 +60,7 @@ export function disabledProtocolError(key: ForwardProtocolKey | null) {
 export async function requireTunnelProtocolEnabled(tunnel: any) {
   const settings = await getForwardProtocolSettings();
   const key = getTunnelProtocolKey(tunnel);
-  if (!isForwardProtocolKeyEnabled(settings, key)) {
+  if (!key || !isForwardProtocolKeyEnabled(settings, key)) {
     throw new Error(disabledProtocolError(key));
   }
 }

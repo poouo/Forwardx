@@ -20,6 +20,8 @@ function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: strin
 }
 
 export const billingRouter = router({
+  summary: adminProcedure.query(async () => db.getBillingAdminSummary()),
+
   featureStatus: protectedProcedure.query(async () => ({
     redemptionEnabled: (await db.getSetting("redemptionEnabled")) !== "false",
     discountEnabled: (await db.getSetting("discountEnabled")) !== "false",
@@ -178,6 +180,13 @@ export const billingRouter = router({
 
   listRedemptionCodes: adminProcedure.query(async () => db.listRedemptionCodes()),
 
+  listRedemptionCodesPage: adminProcedure
+    .input(z.object({
+      page: z.number().int().positive().default(1),
+      pageSize: z.number().int().min(1).max(100).default(50),
+      usage: z.enum(["all", "unused", "used"]).default("all"),
+    }))
+    .query(async ({ input }) => db.listRedemptionCodesPage(input)),
   createRedemptionCodes: adminProcedure
     .input(z.object({
       type: z.enum(["plan", "balance"]),
@@ -224,6 +233,12 @@ export const billingRouter = router({
 
   listDiscountCodes: adminProcedure.query(async () => db.listDiscountCodes()),
 
+  listDiscountCodesPage: adminProcedure
+    .input(z.object({
+      page: z.number().int().positive().default(1),
+      pageSize: z.number().int().min(1).max(100).default(50),
+    }))
+    .query(async ({ input }) => db.listDiscountCodesPage(input)),
   createDiscountCode: adminProcedure
     .input(z.object({
       code: z.string().trim().max(64).optional(),

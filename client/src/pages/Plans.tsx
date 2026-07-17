@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { Badge } from "@/components/ui/badge";
@@ -321,9 +322,13 @@ function planResourcePartsForDisplay(plan: any, forwardGroupMap: Map<number, any
     groups: 0,
     otherForwardResources: 0,
   };
+  const refs = Array.isArray(plan?.forwardGroupRefs) && plan.forwardGroupRefs.length > 0
+    ? plan.forwardGroupRefs
+    : (Array.isArray(plan?.forwardGroupIds) ? plan.forwardGroupIds : []).map((id: number) => ({ id }));
 
-  for (const rawId of Array.isArray(plan?.forwardGroupIds) ? plan.forwardGroupIds : []) {
-    const group = forwardGroupMap.get(Number(rawId));
+  for (const ref of refs) {
+    const id = Number(typeof ref === "object" ? ref.id : ref);
+    const group = forwardGroupMap.get(id) || ref;
     if (isPortForwardGroup(group)) {
       counts.ports += 1;
     } else if (isChainForwardGroup(group)) {
@@ -616,15 +621,6 @@ function payload(form: PlanForm) {
 
 export default function Plans() {
   const utils = trpc.useUtils();
-  const { data: plans = [], isLoading } = trpc.plans.list.useQuery();
-  const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
-  const { data: hosts = [], isLoading: hostsLoading } = trpc.hosts.listAll.useQuery();
-  const { data: tunnels = [], isLoading: tunnelsLoading } = trpc.tunnels.list.useQuery();
-  const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery();
-  const { data: users = [] } = trpc.users.list.useQuery();
-  const { data: trafficBillingData, isLoading: trafficBillingLoading } = trpc.trafficBilling.configs.useQuery();
-  const { data: trafficBillingSummary, isLoading: trafficBillingSummaryLoading } = trpc.trafficBilling.status.useQuery();
-
   const [form, setForm] = useState<PlanForm>(emptyForm);
   const [editing, setEditing] = useState(false);
   const [planDialogTab, setPlanDialogTab] = useState<PlanDialogTab>("settings");
@@ -641,12 +637,66 @@ export default function Plans() {
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
   const [statusUpdatingPlanId, setStatusUpdatingPlanId] = useState<number | null>(null);
 
+  const planPageRequest = usePersistentPageRequest("forwardx.plans.page");
+  const planPageInput = { page: planPageRequest.page, pageSize: 12 } as const;
+  const planPageQuery = trpc.plans.listPage.useQuery(planPageInput, {
+    enabled: activeTab === "plans",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const planSummaryQuery = trpc.plans.summary.useQuery(undefined, {
+    enabled: activeTab === "plans",
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+  const plans = (planPageQuery.data?.items || []) as any[];
+  const isLoading = planPageQuery.isLoading;
+  const planSummary = planSummaryQuery.data;
+  const planPagination = useServerPagination(
+    plans,
+    Number(planPageQuery.data?.totalItems || 0),
+    planPageRequest,
+    { pageSize: 12, isReady: !isLoading && !!planPageQuery.data },
+  );
+
+  const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
+  const needsPlanResourceOptions = editing && planDialogTab === "resources";
+  const { data: hosts = [], isLoading: hostsLoading } = trpc.hosts.options.useQuery(undefined, {
+    enabled: needsPlanResourceOptions,
+    staleTime: 30_000,
+  });
+  const { data: tunnels = [], isLoading: tunnelsLoading } = trpc.tunnels.options.useQuery(undefined, {
+    enabled: needsPlanResourceOptions,
+    staleTime: 30_000,
+  });
+  const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.options.useQuery(undefined, {
+    enabled: needsPlanResourceOptions,
+    staleTime: 30_000,
+  });
+  const { data: users = [] } = trpc.users.options.useQuery(undefined, {
+    enabled: assignOpen,
+    staleTime: 30_000,
+  });
+  const { data: planOptions = [] } = trpc.plans.options.useQuery(undefined, {
+    enabled: assignOpen,
+    staleTime: 30_000,
+  });
+  const { data: trafficBillingData, isLoading: trafficBillingLoading } = trpc.trafficBilling.configs.useQuery(undefined, {
+    enabled: activeTab === "billing",
+  });
+  const { data: trafficBillingSummary, isLoading: trafficBillingSummaryLoading } = trpc.trafficBilling.status.useQuery(undefined, {
+    enabled: activeTab === "billing",
+  });
+
   const createPlan = trpc.plans.create.useMutation({
     onSuccess: () => {
       toast.success("套餐已创建");
       setEditing(false);
       setForm(emptyForm);
       utils.plans.list.invalidate();
+      utils.plans.listPage.invalidate();
+      utils.plans.summary.invalidate();
+      utils.plans.options.invalidate();
     },
     onError: (error) => toast.error(error.message || "创建失败"),
   });
@@ -657,6 +707,9 @@ export default function Plans() {
       setEditing(false);
       setForm(emptyForm);
       utils.plans.list.invalidate();
+      utils.plans.listPage.invalidate();
+      utils.plans.summary.invalidate();
+      utils.plans.options.invalidate();
       utils.plans.storeList.invalidate();
     },
     onError: (error) => toast.error(error.message || "保存失败"),
@@ -688,6 +741,9 @@ export default function Plans() {
     onSettled: () => {
       setStatusUpdatingPlanId(null);
       utils.plans.list.invalidate();
+      utils.plans.listPage.invalidate();
+      utils.plans.summary.invalidate();
+      utils.plans.options.invalidate();
       utils.plans.storeList.invalidate();
     },
   });
@@ -696,6 +752,9 @@ export default function Plans() {
     onSuccess: () => {
       toast.success("套餐已删除");
       utils.plans.list.invalidate();
+      utils.plans.listPage.invalidate();
+      utils.plans.summary.invalidate();
+      utils.plans.options.invalidate();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
   });
@@ -759,33 +818,37 @@ export default function Plans() {
     onError: (error) => toast.error(error.message || "分配失败"),
   });
 
-  const activePlans = useMemo(() => plans.filter((p: any) => p.isActive).length, [plans]);
+  const activePlans = Number(planSummary?.activeItems ?? planPageQuery.data?.activeItems ?? 0);
   const storeEnabled = !!storeStatus?.enabled;
   const trafficBillingEnabled = !!trafficBillingData?.enabled;
   const trafficBillingConfigs = trafficBillingData?.configs || [];
   const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
   const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
-  const forwardGroupMap = useMemo<Map<number, any>>(
-    () => new Map<number, any>(forwardGroups.map((group: any) => [Number(group.id), group])),
-    [forwardGroups],
-  );
-  const planResourceSummary: any = useMemo(() => {
-    return plans.reduce(
-      (summary: { ports: number; tunnels: number; chains: number; groups: number; legacyHosts: number; otherForwardResources: number }, plan: any) => {
-        for (const item of planResourcePartsForDisplay(plan, forwardGroupMap)) {
-          if (item.label === "端口转发") summary.ports += item.count;
-          if (item.label === "隧道") summary.tunnels += item.count;
-          if (item.label === "转发链") summary.chains += item.count;
-          if (item.label === "转发组") summary.groups += item.count;
-          if (item.label === "历史主机") summary.legacyHosts += item.count;
-          if (item.label === "转发资源") summary.otherForwardResources += item.count;
-        }
-        return summary;
-      },
-      { ports: 0, tunnels: 0, chains: 0, groups: 0, legacyHosts: 0, otherForwardResources: 0 },
-    );
-  }, [forwardGroupMap, plans]);
-  const planResourceTotal = planResourceSummary.ports + planResourceSummary.tunnels + planResourceSummary.chains + planResourceSummary.groups + planResourceSummary.legacyHosts + planResourceSummary.otherForwardResources;
+  const forwardGroupMap = useMemo<Map<number, any>>(() => {
+    const map = new Map<number, any>();
+    for (const plan of plans) {
+      for (const ref of Array.isArray(plan?.forwardGroupRefs) ? plan.forwardGroupRefs : []) {
+        const id = Number(ref?.id || 0);
+        if (id > 0) map.set(id, ref);
+      }
+    }
+    for (const group of forwardGroups) map.set(Number(group.id), group);
+    return map;
+  }, [forwardGroups, plans]);
+  const planResourceSummary = planSummary?.resources || {
+    ports: 0,
+    tunnels: 0,
+    chains: 0,
+    groups: 0,
+    legacyHosts: 0,
+    otherForwardResources: 0,
+  };
+  const planResourceTotal = planResourceSummary.ports
+    + planResourceSummary.tunnels
+    + planResourceSummary.chains
+    + planResourceSummary.groups
+    + planResourceSummary.legacyHosts
+    + planResourceSummary.otherForwardResources;
   const selectedTunnelIds = useMemo(() => new Set(form.tunnelIds.map(Number)), [form.tunnelIds]);
   const selectedForwardGroupIds = useMemo(() => new Set(form.forwardGroupIds.map(Number)), [form.forwardGroupIds]);
   const portForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isPortForwardGroup(group)), [forwardGroups]);
@@ -794,8 +857,8 @@ export default function Plans() {
   const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, "主机"), [form.hostIds, hosts]);
   const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, "隧道"), [form.tunnelIds, tunnels]);
   const selectedAssignPlan = useMemo(
-    () => plans.find((plan: any) => Number(plan.id) === Number(assignPlanId)) || null,
-    [assignPlanId, plans],
+    () => planOptions.find((plan: any) => Number(plan.id) === Number(assignPlanId)) || null,
+    [assignPlanId, planOptions],
   );
   const selectedAssignPlanDurationDays = Number((selectedAssignPlan as any)?.durationDays || 0);
   const assignPlanIsMonthly = selectedAssignPlanDurationDays === 30;
@@ -1010,15 +1073,15 @@ export default function Plans() {
             <CardHeader className="pb-2">
               <CardDescription>套餐数量</CardDescription>
               <CardTitle>
-                <AnimatedStatValue value={plans.length} loading={isLoading} cacheKey="plans.count" fallbackValue={0} />
+                <AnimatedStatValue value={Number(planSummary?.totalItems || 0)} loading={isLoading} cacheKey="plans.count" fallbackValue={0} />
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
               <AnimatedStatValue
-                value={`其中 ${activePlans} 个处于启用状态`}
+                value={`${activePlans} 个已启用`}
                 loading={isLoading}
                 cacheKey="plans.activeCount"
-                fallbackValue="其中 0 个处于启用状态"
+                fallbackValue="0 个已启用"
               />
             </CardContent>
           </Card>
@@ -1199,6 +1262,7 @@ export default function Plans() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={planPagination} itemName="个套餐" />
           </TabsContent>
 
           <TabsContent value="billing" className="mt-0">
@@ -1597,7 +1661,7 @@ export default function Plans() {
               }}>
                 <SelectTrigger><SelectValue placeholder="选择套餐" /></SelectTrigger>
                 <SelectContent>
-                  {plans.map((plan: any) => <SelectItem key={plan.id} value={String(plan.id)}>{plan.name}</SelectItem>)}
+                  {planOptions.map((plan: any) => <SelectItem key={plan.id} value={String(plan.id)}>{plan.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

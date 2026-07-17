@@ -553,7 +553,7 @@ function DashboardContent() {
         <StatCard
           title="转发规则"
           value={stats?.totalRules ?? 0}
-          subtitle={`${stats?.activeRules ?? 0} 条活跃`}
+          subtitle={`${stats?.activeRules ?? 0} 条已启用`}
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={isLoading}
@@ -930,7 +930,7 @@ function DashboardContent() {
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <Zap className="h-4 w-4" />
-              规则活跃率
+              规则启用率
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -939,7 +939,7 @@ function DashboardContent() {
               <div className="space-y-1 text-sm">
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />
-                  活跃 {stats?.activeRules ?? 0}
+                  已启用 {stats?.activeRules ?? 0}
                 </div>
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />

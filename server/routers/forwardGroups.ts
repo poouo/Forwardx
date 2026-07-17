@@ -10,7 +10,6 @@ import {
   updateForwardGroupFromInput,
 } from "../services/forwardGroupService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
-import { paginateItems } from "../../shared/pagination";
 
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
 const failoverTargetSchema = z.object({
@@ -91,6 +90,16 @@ export const forwardGroupsRouter = router({
     return db.filterForwardGroupFieldsForUse((groups as any[]).filter((group: any) => allowed.has(Number(group.id))));
   }),
 
+  options: protectedProcedure.query(async ({ ctx }) => {
+    const allowedGroupIds = ctx.user.role === "admin"
+      ? undefined
+      : await db.getUserAllowedForwardGroupIds(ctx.user.id);
+    const groups = await db.getForwardGroupOptions(allowedGroupIds);
+    return ctx.user.role === "admin"
+      ? groups
+      : db.filterForwardGroupFieldsForUse(groups as any[]);
+  }),
+
   listPage: protectedProcedure
     .input(z.object({
       page: z.number().int().positive().default(1),
@@ -99,54 +108,36 @@ export const forwardGroupsRouter = router({
       search: z.string().trim().max(200).optional().default(""),
     }))
     .query(async ({ input, ctx }) => {
-      let groups: any[];
-      if (ctx.user.role === "admin") {
-        groups = await db.getForwardGroups(undefined, { includeRuntime: true }) as any[];
-      } else {
-        const groupIds = await db.getUserAllowedForwardGroupIds(ctx.user.id);
-        if (groupIds.length === 0) return {
-          ...paginateItems([], input),
-          scopeTotalItems: 0,
-          enabledItems: 0,
-          relatedGroups: [],
-        };
-        const allowed = new Set(groupIds);
-        const visible = (await db.getForwardGroups(undefined, { includeRuntime: true }) as any[])
-          .filter((group: any) => allowed.has(Number(group.id)));
-        groups = db.filterForwardGroupFieldsForUse(visible) as any[];
-      }
-      const modeGroups = groups.filter((group: any) => String(group.groupMode || "failover") === input.groupMode);
-      const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
-      let hostById = new Map<number, any>();
-      let tunnelById = new Map<number, any>();
-      if (tokens.length > 0) {
-        const [hosts, tunnels] = await Promise.all([db.getHosts(), db.getTunnels()]);
-        hostById = new Map((hosts as any[]).map((host: any) => [Number(host.id), host]));
-        tunnelById = new Map((tunnels as any[]).map((tunnel: any) => [Number(tunnel.id), tunnel]));
-      }
-      const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
-      const filtered = tokens.length === 0 ? modeGroups : modeGroups.filter((group: any) => {
-        const related = (group.members || []).flatMap((member: any) => [
-          hostById.get(Number(member.hostId || 0)),
-          tunnelById.get(Number(member.tunnelId || 0)),
-        ]);
-        const searchText = JSON.stringify([
-          group,
-          groupById.get(Number(group.entryGroupId || 0)),
-          ...related,
-        ]).toLowerCase();
-        return tokens.every((token) => searchText.includes(token));
+      const allowedGroupIds = ctx.user.role === "admin"
+        ? undefined
+        : await db.getUserAllowedForwardGroupIds(ctx.user.id);
+      const result = await db.getForwardGroupsPage({
+        ...input,
+        allowedGroupIds,
       });
-      const result = paginateItems(filtered, input);
-      const itemIds = new Set(result.items.map((group: any) => Number(group.id)));
-      const relatedGroupIds = new Set(result.items
+      const items = ctx.user.role === "admin"
+        ? result.items
+        : db.filterForwardGroupFieldsForUse(result.items as any[]);
+      const itemIds = new Set((items as any[]).map((group: any) => Number(group.id)));
+      const allowedGroupSet = allowedGroupIds ? new Set(allowedGroupIds.map(Number)) : null;
+      const relatedGroupIds = Array.from(new Set((items as any[])
         .map((group: any) => Number(group.entryGroupId || 0))
-        .filter((id: number) => id > 0 && !itemIds.has(id)));
+        .filter((id: number) => id > 0
+          && !itemIds.has(id)
+          && (!allowedGroupSet || allowedGroupSet.has(id)))));
+      const relatedRows = relatedGroupIds.length > 0
+        ? await db.getForwardGroups(undefined, {
+          includeRuntime: false,
+          ids: relatedGroupIds,
+        })
+        : [];
+      const relatedGroups = ctx.user.role === "admin"
+        ? relatedRows
+        : db.filterForwardGroupFieldsForUse(relatedRows as any[]);
       return {
         ...result,
-        scopeTotalItems: modeGroups.length,
-        enabledItems: filtered.filter((group: any) => group.isEnabled !== false).length,
-        relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+        items,
+        relatedGroups,
       };
     }),
 
@@ -168,7 +159,7 @@ export const forwardGroupsRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user);
-      if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路延迟图表");
+      if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路延迟图表");
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
       return forwardGroupQueryCache.get(
         `latencySeries:${ctx.user.id}:${input.groupId}:${input.hours}`,
@@ -189,7 +180,7 @@ export const forwardGroupsRouter = router({
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user);
-      if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路自测");
+      if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路自测");
       return runForwardGroupChainSelfTest(input.groupId);
     }),
 

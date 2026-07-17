@@ -12,8 +12,8 @@ const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员"
 
 const features = [
   { title: "多主机 Agent 管理", text: "统一接入多台 Linux 服务器，面板不保存 SSH 密钥。", icon: Server },
-  { title: "端口与隧道转发", text: "支持 TCP、UDP、GOST 隧道和 ForwardX 加密隧道。", icon: Network },
-  { title: "权限与套餐", text: "按用户控制主机、隧道、端口、流量和到期时间。", icon: ShieldCheck },
+  { title: "端口与隧道转发", text: "管理 TCP、UDP、隧道和转发链。", icon: Network },
+  { title: "权限与套餐", text: "按用户分配转发资源、流量和有效期。", icon: ShieldCheck },
   { title: "流量统计与提醒", text: "展示转发流量趋势，并可通过邮件提醒临期和流量不足。", icon: Gauge },
 ];
 
@@ -116,7 +116,7 @@ export default function PublicHome() {
               </div>
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <Lock className="mx-auto h-4 w-4 text-primary" />
-                <p className="mt-2 text-xs text-muted-foreground">加密通讯</p>
+                <p className="mt-2 text-xs text-muted-foreground">加密通信</p>
               </div>
             </div>
           </div>
@@ -135,7 +135,7 @@ export default function PublicHome() {
           </a>
           <span className="text-muted-foreground/45">|</span>
           <a href="https://t.me/ForwardX_panel" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
-            TG群组
+            Telegram 群组
           </a>
         </div>
       </footer>

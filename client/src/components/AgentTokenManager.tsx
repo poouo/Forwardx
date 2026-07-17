@@ -373,7 +373,7 @@ function InstallAddressSelector({
         <div className="min-w-0">
           <p className="text-sm font-medium">安装连接地址</p>
           <p className="text-xs text-muted-foreground">
-            需要 IP+端口直连时，请用 IP+端口打开面板后选择“当前访问地址”。
+            需要直连 IP 和端口时，请选择“当前访问地址”。
           </p>
         </div>
       </div>
@@ -491,7 +491,7 @@ export default function AgentTokenManager({
       options.push({
         id: "public",
         label: "公开域名",
-        description: "使用系统设置中的面板公开地址。",
+        description: "系统设置中的公开地址。",
         url: configuredPanelUrl,
       });
     }
@@ -499,7 +499,7 @@ export default function AgentTokenManager({
       options.push({
         id: "current",
         label: configuredPanelUrl ? "当前访问地址" : "默认地址",
-        description: configuredPanelUrl ? "按当前浏览器访问的 IP/端口直连。" : "未配置公开域名时使用当前访问地址。",
+        description: configuredPanelUrl ? "当前浏览器使用的地址。" : "当前面板地址。",
         url: currentPanelUrl,
       });
     }
@@ -507,7 +507,7 @@ export default function AgentTokenManager({
       options.push({
         id: "current",
         label: "默认地址",
-        description: "使用当前可用面板地址。",
+        description: "当前面板地址。",
         url: panelUrl,
       });
     }
@@ -684,7 +684,7 @@ export default function AgentTokenManager({
       <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">
-          通过 Agent Token 生成安装命令，主机上线后会自动绑定到面板。
+          生成 Agent 安装命令；上线后自动绑定到面板。
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           {!hideViewModeToggle && <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
@@ -910,7 +910,7 @@ export default function AgentTokenManager({
               安装命令已生成
             </DialogTitle>
             <DialogDescription>
-              复制命令到目标主机执行，Agent 上线后会自动出现在主机列表。
+              在目标主机执行命令；Agent 上线后会出现在主机列表。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

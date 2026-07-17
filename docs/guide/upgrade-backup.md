@@ -1,5 +1,58 @@
 # 升级和备份
 
+## 跨兼容边界升级
+
+ForwardX 后续版本只读取当前数据格式，不在面板和 Agent 的日常运行路径中长期保留旧格式分支。跨越兼容边界升级时，先使用一次性迁移工具转换旧数据；迁移不会随面板启动或安装脚本自动执行。
+
+当前迁移工具会处理：
+
+- 隧道中的旧 Nginx 模式名称，转换为当前 Nginx Stream。
+- 转发协议设置中的旧 Nginx 键；如果新旧键同时存在，保留新键的值。
+- 用户表中无法按当前格式读取的旧会话缓存；auth_sessions 中的当前有效登录记录不受影响。
+- Agent 插件清单中的旧 pluginVersion 字段，原子转换为 version。
+
+默认命令仅预检并显示待迁移数量。只有显式增加 **--apply** 才会写入；重复执行是安全的。执行写入前必须停止面板并备份数据库。
+
+### Docker 面板
+
+先升级到包含迁移工具的目标镜像，然后执行：
+
+~~~bash
+cd /opt/forwardx-docker
+docker compose stop forwardx
+docker compose run --rm --no-deps forwardx node dist/migrate-legacy.js
+docker compose run --rm --no-deps forwardx node dist/migrate-legacy.js --apply
+docker compose up -d forwardx
+~~~
+
+使用旧版 docker-compose 命令的环境，将上面的 **docker compose** 替换为 **docker-compose**。脚本会读取容器原有的数据库配置和数据卷，支持 SQLite、MySQL、PostgreSQL。
+
+### systemd 面板
+
+~~~bash
+sudo systemctl stop forwardx-panel
+cd /opt/forwardx-panel
+set -a
+. ./.env
+set +a
+node dist/migrate-legacy.js
+node dist/migrate-legacy.js --apply
+sudo systemctl start forwardx-panel
+~~~
+
+数据库设置损坏、表结构缺失或迁移未完成时，写入命令会失败且事务回滚，不会写入完成标记。处理提示的问题后可直接重试。
+
+### Agent 插件清单
+
+在安装过插件的 Agent 主机先预检，再确认执行：
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/migrate-agent-legacy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/migrate-agent-legacy.sh | bash -s -- --apply
+~~~
+
+该脚本不会升级或重启 Agent。迁移后仍需把 Agent 升级到 2.2.151 或更高版本，并在插件管理中重新同步 Agent；损坏或完全缺少版本的清单必须通过重新同步恢复。
+
 ## Docker 升级
 
 ```bash

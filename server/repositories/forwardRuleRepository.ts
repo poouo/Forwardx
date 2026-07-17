@@ -1,10 +1,11 @@
-﻿﻿import { and, desc, eq, inArray, sql } from "drizzle-orm";
+﻿import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { queryRaw } from "../dbRuntime";
-import { boolValue, inList, quoteIdentifier } from "../dbCompat";
+import { boolLiteral, boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
 import { sqlBool } from "./repositoryUtils";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
 // ==================== Forward Rule Queries ====================
 
@@ -76,6 +77,441 @@ export async function getForwardRules(userId?: number, hostId?: number) {
   if (userId) conds.push(eq(forwardRules.userId, userId));
   if (hostId) conds.push(eq(forwardRules.hostId, hostId));
   return db.select().from(forwardRules).where(and(...conds)).orderBy(sql`${forwardRules.sortOrder} ASC`, desc(forwardRules.createdAt), desc(forwardRules.id));
+}
+
+
+export type ForwardRuleListCategory = "all" | "local" | "tunnel" | "chain" | "group";
+
+export type ForwardRuleListQuery = PageRequest & {
+  ownerUserId?: number;
+  allowedForwardGroupIds?: number[];
+  entryHostId?: number | null;
+  category: ForwardRuleListCategory;
+  search?: string;
+};
+
+type ForwardRuleFilterControls = {
+  includeEntryHost?: boolean;
+  includeSearch?: boolean;
+  includeCategory?: boolean;
+};
+
+type ForwardRuleSqlFilter = {
+  fromSql: string;
+  whereSql: string;
+  params: any[];
+  categorySql: string;
+};
+
+function normalizeForwardRuleIds(values: unknown[] | undefined) {
+  return Array.from(new Set((values || [])
+    .map((value) => Math.floor(Number(value)))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function escapeForwardRuleSearchToken(value: string) {
+  return value.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+}
+
+function ruleColumn(alias: string, column: string) {
+  return alias + "." + quoteIdentifier(column);
+}
+
+function forwardRuleListCategorySql() {
+  const groupMode = ruleColumn("g", "groupMode");
+  return [
+    "CASE",
+    "  WHEN " + groupMode + " = 'port' THEN 'local'",
+    "  WHEN " + groupMode + " = 'chain' THEN 'chain'",
+    "  WHEN " + ruleColumn("g", "id") + " IS NOT NULL THEN 'group'",
+    "  WHEN " + ruleColumn("r", "forwardType") + " = 'gost'",
+    "    AND COALESCE(" + ruleColumn("r", "tunnelId") + ", 0) <> 0 THEN 'tunnel'",
+    "  ELSE 'local'",
+    "END",
+  ].join("\n");
+}
+
+function forwardRuleEntryHostSql() {
+  return [
+    "COALESCE(",
+    "  CASE WHEN " + ruleColumn("g", "id") + " IS NOT NULL THEN (",
+    "    SELECT COALESCE(" + ruleColumn("gm_entry", "hostId") + ", " + ruleColumn("mt_entry", "entryHostId") + ")",
+    "      FROM " + quoteIdentifier("forward_group_members") + " gm_entry",
+    "      LEFT JOIN " + quoteIdentifier("tunnels") + " mt_entry",
+    "        ON " + ruleColumn("mt_entry", "id") + " = " + ruleColumn("gm_entry", "tunnelId"),
+    "     WHERE " + ruleColumn("gm_entry", "groupId") + " = " + ruleColumn("g", "id"),
+    "       AND " + ruleColumn("gm_entry", "isEnabled") + " = " + boolLiteral(true),
+    "       AND (COALESCE(" + ruleColumn("gm_entry", "hostId") + ", 0) <> 0",
+    "         OR COALESCE(" + ruleColumn("gm_entry", "tunnelId") + ", 0) <> 0)",
+    "     ORDER BY " + ruleColumn("gm_entry", "priority") + " ASC, " + ruleColumn("gm_entry", "id") + " ASC",
+    "     LIMIT 1",
+    "  ) END,",
+    "  " + ruleColumn("t", "entryHostId") + ",",
+    "  " + ruleColumn("r", "hostId"),
+    ")",
+  ].join("\n");
+}
+
+function forwardRuleListFromSql() {
+  return [
+    "FROM " + quoteIdentifier("forward_rules") + " r",
+    "LEFT JOIN " + quoteIdentifier("forward_groups") + " g",
+    "  ON " + ruleColumn("g", "id") + " = " + ruleColumn("r", "forwardGroupId"),
+    "LEFT JOIN " + quoteIdentifier("tunnels") + " t",
+    "  ON " + ruleColumn("t", "id") + " = " + ruleColumn("r", "tunnelId"),
+    "LEFT JOIN " + quoteIdentifier("users") + " u",
+    "  ON " + ruleColumn("u", "id") + " = " + ruleColumn("r", "userId"),
+  ].join("\n");
+}
+
+function pushForwardRuleLike(clauses: string[], params: any[], expression: string, pattern: string) {
+  clauses.push("LOWER(COALESCE(" + expression + ", '')) LIKE ? ESCAPE '!'");
+  params.push(pattern);
+}
+
+function buildForwardRuleSqlFilter(
+  input: ForwardRuleListQuery,
+  controls: ForwardRuleFilterControls = {},
+): ForwardRuleSqlFilter {
+  const includeEntryHost = controls.includeEntryHost !== false;
+  const includeSearch = controls.includeSearch !== false;
+  const includeCategory = controls.includeCategory !== false;
+  const conditions = [
+    ruleColumn("r", "pendingDelete") + " = " + boolLiteral(false),
+    ruleColumn("r", "forwardGroupRuleId") + " IS NULL",
+    "NOT EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_group_members") + " linked_member"
+      + " WHERE " + ruleColumn("linked_member", "ruleId") + " = " + ruleColumn("r", "id") + ")",
+  ];
+  const params: any[] = [];
+
+  const ownerUserId = Math.floor(Number(input.ownerUserId || 0));
+  if (ownerUserId > 0) {
+    conditions.push(ruleColumn("r", "userId") + " = ?");
+    params.push(ownerUserId);
+  }
+
+  if (input.allowedForwardGroupIds !== undefined) {
+    const allowedIds = normalizeForwardRuleIds(input.allowedForwardGroupIds);
+    const allowed = inList(allowedIds);
+    const directRule = [
+      "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0",
+      ruleColumn("r", "isForwardGroupTemplate") + " = " + boolLiteral(false),
+      "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
+    ].join(" AND ");
+    const groupTemplate = allowedIds.length > 0
+      ? [
+        ruleColumn("r", "isForwardGroupTemplate") + " = " + boolLiteral(true),
+        ruleColumn("r", "forwardGroupId") + " IN " + allowed.sql,
+        "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
+      ].join(" AND ")
+      : "1 = 0";
+    conditions.push("((" + directRule + ") OR (" + groupTemplate + "))");
+    params.push(...allowed.params);
+  }
+
+  if (includeEntryHost && Number(input.entryHostId || 0) > 0) {
+    conditions.push(forwardRuleEntryHostSql() + " = ?");
+    params.push(Number(input.entryHostId));
+  }
+
+  const categorySql = forwardRuleListCategorySql();
+  const tokens = includeSearch
+    ? String(input.search || "").trim().toLowerCase().split(/\s+/).filter(Boolean)
+    : [];
+  for (const token of tokens) {
+    const pattern = "%" + escapeForwardRuleSearchToken(token) + "%";
+    const tokenClauses: string[] = [];
+    const tokenParams: any[] = [];
+
+    for (const expression of [
+      ruleColumn("r", "name"),
+      ruleColumn("r", "forwardType"),
+      ruleColumn("r", "protocol"),
+      ruleColumn("r", "gostMode"),
+      ruleColumn("r", "gostRelayHost"),
+      ruleColumn("r", "targetIp"),
+      ruleColumn("r", "protocolBlockReason"),
+      ruleColumn("r", "failoverStrategy"),
+      ruleColumn("r", "failoverTargets"),
+      ruleColumn("g", "name"),
+      ruleColumn("g", "remark"),
+      ruleColumn("g", "groupType"),
+      ruleColumn("g", "groupMode"),
+      ruleColumn("g", "forwardType"),
+      ruleColumn("g", "domain"),
+      ruleColumn("g", "recordType"),
+      ruleColumn("g", "targetIp"),
+      ruleColumn("g", "lastDdnsValue"),
+      ruleColumn("g", "lastStatus"),
+      ruleColumn("g", "lastMessage"),
+      ruleColumn("t", "name"),
+      ruleColumn("t", "mode"),
+      ruleColumn("t", "forwardxVersion"),
+      ruleColumn("t", "networkType"),
+      ruleColumn("t", "connectHost"),
+      ruleColumn("t", "certDomain"),
+      ruleColumn("u", "username"),
+      ruleColumn("u", "name"),
+      ruleColumn("u", "email"),
+      ruleColumn("u", "displayRemark"),
+    ]) {
+      pushForwardRuleLike(tokenClauses, tokenParams, expression, pattern);
+    }
+
+    const entryGroupClauses: string[] = [];
+    for (const expression of [
+      ruleColumn("entry_group", "name"),
+      ruleColumn("entry_group", "remark"),
+      ruleColumn("entry_group", "domain"),
+    ]) {
+      pushForwardRuleLike(entryGroupClauses, tokenParams, expression, pattern);
+    }
+    tokenClauses.push(
+      "EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_groups") + " entry_group"
+      + " WHERE " + ruleColumn("entry_group", "id") + " = " + ruleColumn("g", "entryGroupId")
+      + " AND (" + entryGroupClauses.join(" OR ") + "))",
+    );
+
+    const directHostClauses: string[] = [];
+    for (const expression of [
+      ruleColumn("direct_host", "name"),
+      ruleColumn("direct_host", "ip"),
+      ruleColumn("direct_host", "ipv4"),
+      ruleColumn("direct_host", "ipv6"),
+      ruleColumn("direct_host", "entryIp"),
+      ruleColumn("direct_host", "tunnelEntryIp"),
+    ]) {
+      pushForwardRuleLike(directHostClauses, tokenParams, expression, pattern);
+    }
+    tokenClauses.push(
+      "EXISTS (SELECT 1 FROM " + quoteIdentifier("hosts") + " direct_host"
+      + " WHERE " + ruleColumn("direct_host", "id") + " IN ("
+      + ruleColumn("r", "hostId") + ", " + ruleColumn("t", "entryHostId") + ", " + ruleColumn("t", "exitHostId") + ")"
+      + " AND (" + directHostClauses.join(" OR ") + "))",
+    );
+
+    const memberClauses: string[] = [];
+    for (const expression of [
+      ruleColumn("group_member", "connectHost"),
+      ruleColumn("member_host", "name"),
+      ruleColumn("member_host", "ip"),
+      ruleColumn("member_host", "ipv4"),
+      ruleColumn("member_host", "ipv6"),
+      ruleColumn("member_tunnel", "name"),
+      ruleColumn("member_tunnel", "mode"),
+      ruleColumn("member_tunnel", "connectHost"),
+      ruleColumn("member_entry_host", "name"),
+      ruleColumn("member_entry_host", "ip"),
+      ruleColumn("member_exit_host", "name"),
+      ruleColumn("member_exit_host", "ip"),
+    ]) {
+      pushForwardRuleLike(memberClauses, tokenParams, expression, pattern);
+    }
+    tokenClauses.push(
+      "EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_group_members") + " group_member"
+      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_host"
+      + " ON " + ruleColumn("member_host", "id") + " = " + ruleColumn("group_member", "hostId")
+      + " LEFT JOIN " + quoteIdentifier("tunnels") + " member_tunnel"
+      + " ON " + ruleColumn("member_tunnel", "id") + " = " + ruleColumn("group_member", "tunnelId")
+      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_entry_host"
+      + " ON " + ruleColumn("member_entry_host", "id") + " = " + ruleColumn("member_tunnel", "entryHostId")
+      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_exit_host"
+      + " ON " + ruleColumn("member_exit_host", "id") + " = " + ruleColumn("member_tunnel", "exitHostId")
+      + " WHERE " + ruleColumn("group_member", "groupId") + " = " + ruleColumn("g", "id")
+      + " AND (" + memberClauses.join(" OR ") + "))",
+    );
+
+    const numeric = /^\d+$/.test(token) ? Number(token) : 0;
+    if (Number.isSafeInteger(numeric) && numeric > 0) {
+      for (const expression of [
+        ruleColumn("r", "id"),
+        ruleColumn("r", "hostId"),
+        ruleColumn("r", "userId"),
+        ruleColumn("r", "sourcePort"),
+        ruleColumn("r", "targetPort"),
+        ruleColumn("r", "gostRelayPort"),
+        ruleColumn("r", "tunnelId"),
+        ruleColumn("r", "forwardGroupId"),
+        ruleColumn("g", "id"),
+        ruleColumn("g", "sourcePort"),
+        ruleColumn("g", "targetPort"),
+        ruleColumn("t", "id"),
+        ruleColumn("t", "listenPort"),
+        ruleColumn("t", "mimicPort"),
+      ]) {
+        tokenClauses.push(expression + " = ?");
+        tokenParams.push(numeric);
+      }
+    }
+
+    const categoryLabels: Array<[Exclude<ForwardRuleListCategory, "all">, string]> = [
+      ["local", "端口转发 本地转发 local port"],
+      ["tunnel", "隧道转发 tunnel"],
+      ["chain", "转发链 端口转发链 chain"],
+      ["group", "转发组 group"],
+    ];
+    for (const [category, labels] of categoryLabels) {
+      if (!labels.toLowerCase().includes(token)) continue;
+      tokenClauses.push(categorySql + " = ?");
+      tokenParams.push(category);
+    }
+
+    conditions.push("(" + tokenClauses.join(" OR ") + ")");
+    params.push(...tokenParams);
+  }
+
+  if (includeCategory && input.category !== "all") {
+    conditions.push(categorySql + " = ?");
+    params.push(input.category);
+  }
+
+  return {
+    fromSql: forwardRuleListFromSql(),
+    whereSql: conditions.join("\n  AND "),
+    params,
+    categorySql,
+  };
+}
+
+async function hydrateForwardRuleListIds(ids: number[]) {
+  const db = await getDb();
+  if (!db || ids.length === 0) return [];
+  const rows = await db.select().from(forwardRules).where(inArray(forwardRules.id, ids));
+  const byId = new Map((rows as any[]).map((row: any) => [Number(row.id), row]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function emptyForwardRuleCategoryCounts() {
+  return { all: 0, local: 0, tunnel: 0, chain: 0, group: 0 };
+}
+
+export async function getForwardRulesPage(input: ForwardRuleListQuery) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      ...pageResult([], 0, input),
+      scopeTotalItems: 0,
+      activeItems: 0,
+      categoryCounts: emptyForwardRuleCategoryCounts(),
+    };
+  }
+  const scopeFilter = buildForwardRuleSqlFilter(input, {
+    includeEntryHost: false,
+    includeSearch: false,
+    includeCategory: false,
+  });
+  const categoryFilter = buildForwardRuleSqlFilter(input, { includeCategory: false });
+  const filtered = buildForwardRuleSqlFilter(input);
+  const [scopeRows, totalRows, categoryRows] = await Promise.all([
+    queryRaw<{ totalItems: number }>(
+      "SELECT COUNT(*) AS " + quoteIdentifier("totalItems") + "\n"
+        + scopeFilter.fromSql + "\nWHERE " + scopeFilter.whereSql,
+      scopeFilter.params,
+    ),
+    queryRaw<{ totalItems: number; activeItems: number }>(
+      "SELECT COUNT(*) AS " + quoteIdentifier("totalItems")
+        + ", COALESCE(SUM(CASE WHEN " + ruleColumn("r", "isEnabled") + " = " + boolLiteral(true)
+        + " THEN 1 ELSE 0 END), 0) AS " + quoteIdentifier("activeItems") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql,
+      filtered.params,
+    ),
+    queryRaw<{ category: string; count: number }>(
+      "SELECT " + categoryFilter.categorySql + " AS " + quoteIdentifier("category")
+        + ", COUNT(*) AS " + quoteIdentifier("count") + "\n"
+        + categoryFilter.fromSql + "\nWHERE " + categoryFilter.whereSql
+        + "\nGROUP BY " + categoryFilter.categorySql,
+      categoryFilter.params,
+    ),
+  ]);
+  const totalItems = Number(totalRows[0]?.totalItems || 0);
+  const activeItems = Number(totalRows[0]?.activeItems || 0);
+  const window = pageWindowForTotal(input, totalItems);
+  const categoryOrder = input.category === "all" ? filtered.categorySql + " ASC, " : "";
+  const idRows = totalItems > 0
+    ? await queryRaw<{ id: number }>(
+      "SELECT " + ruleColumn("r", "id") + " AS " + quoteIdentifier("id") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql
+        + "\nORDER BY " + categoryOrder + ruleColumn("r", "sortOrder") + " ASC, "
+        + ruleColumn("r", "createdAt") + " DESC, " + ruleColumn("r", "id") + " DESC"
+        + "\nLIMIT ? OFFSET ?",
+      [...filtered.params, window.pageSize, window.offset],
+    )
+    : [];
+  const ids = idRows.map((row) => Number(row.id)).filter((id) => id > 0);
+  const items = await hydrateForwardRuleListIds(ids);
+  const categoryCounts = emptyForwardRuleCategoryCounts();
+  for (const row of categoryRows) {
+    const category = String(row.category || "") as Exclude<ForwardRuleListCategory, "all">;
+    if (!(category in categoryCounts)) continue;
+    categoryCounts[category] = Number(row.count || 0);
+  }
+  categoryCounts.all = categoryCounts.local + categoryCounts.tunnel + categoryCounts.chain + categoryCounts.group;
+  return {
+    ...pageResult(items, totalItems, window),
+    scopeTotalItems: Number(scopeRows[0]?.totalItems || 0),
+    activeItems,
+    categoryCounts,
+  };
+}
+
+export async function getForwardRuleMapBatch(
+  input: ForwardRuleListQuery,
+  cursor: number,
+  limit: number,
+) {
+  const filtered = buildForwardRuleSqlFilter(input);
+  const normalizedCursor = Math.max(0, Math.floor(Number(cursor) || 0));
+  const normalizedLimit = Math.min(250, Math.max(1, Math.floor(Number(limit) || 100)));
+  const [totalRows, idRows] = await Promise.all([
+    queryRaw<{ totalItems: number }>(
+      "SELECT COUNT(*) AS " + quoteIdentifier("totalItems") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql,
+      filtered.params,
+    ),
+    queryRaw<{ id: number }>(
+      "SELECT " + ruleColumn("r", "id") + " AS " + quoteIdentifier("id") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql
+        + "\nORDER BY " + (input.category === "all" ? filtered.categorySql + " ASC, " : "")
+        + ruleColumn("r", "sortOrder") + " ASC, " + ruleColumn("r", "createdAt") + " DESC, "
+        + ruleColumn("r", "id") + " DESC\nLIMIT ? OFFSET ?",
+      [...filtered.params, normalizedLimit, normalizedCursor],
+    ),
+  ]);
+  const totalItems = Number(totalRows[0]?.totalItems || 0);
+  const ids = normalizedCursor < totalItems
+    ? idRows.map((row) => Number(row.id)).filter((id) => id > 0)
+    : [];
+  const items = await hydrateForwardRuleListIds(ids);
+  return {
+    items,
+    totalItems,
+    nextCursor: normalizedCursor + items.length < totalItems
+      ? normalizedCursor + items.length
+      : undefined,
+  };
+}
+
+export async function getForwardRuleSummarySelection(input: ForwardRuleListQuery) {
+  const filtered = buildForwardRuleSqlFilter(input);
+  const [summaryRows, idRows] = await Promise.all([
+    queryRaw<{ totalItems: number; activeItems: number }>(
+      "SELECT COUNT(*) AS " + quoteIdentifier("totalItems")
+        + ", COALESCE(SUM(CASE WHEN " + ruleColumn("r", "isEnabled") + " = " + boolLiteral(true)
+        + " THEN 1 ELSE 0 END), 0) AS " + quoteIdentifier("activeItems") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql,
+      filtered.params,
+    ),
+    queryRaw<{ id: number }>(
+      "SELECT " + ruleColumn("r", "id") + " AS " + quoteIdentifier("id") + "\n"
+        + filtered.fromSql + "\nWHERE " + filtered.whereSql,
+      filtered.params,
+    ),
+  ]);
+  return {
+    totalItems: Number(summaryRows[0]?.totalItems || 0),
+    activeItems: Number(summaryRows[0]?.activeItems || 0),
+    ruleIds: idRows.map((row) => Number(row.id)).filter((id) => id > 0),
+  };
 }
 
 export async function getForwardRulesForUserSync(userId: number) {

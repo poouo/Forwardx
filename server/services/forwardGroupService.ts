@@ -66,8 +66,8 @@ export function normalizeForwardGroupMembers(
     throw new Error("端口转发需要配置 1 台所属主机");
   }
   if (groupMode === "chain" && (members.length < minChainMembers || members.length > 5)) {
-    if (options.externalEntry) throw new Error("端口转发链需要配置 1-5 台主机");
-    throw new Error("端口转发链需要配置 2-5 台主机");
+    if (options.externalEntry) throw new Error("转发链需要配置 1-5 台主机");
+    throw new Error("转发链需要配置 2-5 台主机");
   }
   if (isCollectionGroup && (members.length < 1 || members.length > 5)) {
     throw new Error(groupMode === "entry" ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
@@ -75,7 +75,7 @@ export function normalizeForwardGroupMembers(
   const seen = new Set<string>();
   return members.map((member, index) => {
     if (member.memberType !== effectiveGroupType) {
-      throw new Error(groupMode === "chain" ? "端口转发链仅支持主机成员" : isCollectionGroup ? "入口组/出口组仅支持主机成员" : "成员类型必须与转发组类型一致");
+      throw new Error(groupMode === "chain" ? "转发链仅支持主机成员" : isCollectionGroup ? "入口组/出口组仅支持主机成员" : "成员类型必须与转发组类型一致");
     }
     const id = effectiveGroupType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0);
     if (!id) throw new Error(effectiveGroupType === "host" ? "请选择成员主机" : "请选择成员隧道");
@@ -320,7 +320,7 @@ export async function deleteForwardGroupWithImpact(id: number, confirmRules?: bo
 export async function runForwardGroupChainSelfTest(groupId: number) {
   const group = await db.getForwardGroupById(groupId) as any;
   if (!group) throw new Error("转发链不存在");
-  if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路自测");
+  if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路自测");
 
   const probes = await db.getForwardGroupChainProbes(groupId, { includeFinalTarget: false, method: "ping" });
   if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");

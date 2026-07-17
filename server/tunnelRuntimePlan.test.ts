@@ -54,19 +54,18 @@ test("does not plan probes for disabled protocols or non-GOST tunnels", () => {
     { id: 1, mode: "tls", isEnabled: false, exitHostId: 7, listenPort: 23001 },
     { id: 2, mode: "tls", isEnabled: true, protocolEnabled: false, exitHostId: 7, listenPort: 23002 },
     { id: 3, mode: "forwardx", isEnabled: true, protocolEnabled: true, exitHostId: 7, listenPort: 23003 },
-    { id: 4, mode: "nginx_tls", isEnabled: true, protocolEnabled: true, exitHostId: 7, listenPort: 23004 },
+    { id: 4, mode: "nginx_stream", isEnabled: true, protocolEnabled: true, exitHostId: 7, listenPort: 23004 },
+    { id: 5, mode: "unsupported", isEnabled: true, protocolEnabled: true, exitHostId: 7, listenPort: 23005 },
   ], new Map(), new Set());
   assert.deepEqual(listeners, []);
 });
 
 test("keeps nginx tunnels out of the GOST runtime family", () => {
-  for (const mode of ["nginx_stream", "nginx_tls"]) {
-    const tunnel = { mode };
-    assert.equal(tunnelRuntimeFamily(tunnel), "nginx");
-    assert.equal(tunnelExitRuntimeForwardType(tunnel), "nginx-tunnel-exit");
-    assert.equal(tunnelHopRuntimeForwardType(tunnel), null);
-    assert.equal(tunnelRuleRuntimeForwardType(tunnel), "nginx-tunnel");
-  }
+  const tunnel = { mode: "nginx_stream" };
+  assert.equal(tunnelRuntimeFamily(tunnel), "nginx");
+  assert.equal(tunnelExitRuntimeForwardType(tunnel), "nginx-tunnel-exit");
+  assert.equal(tunnelHopRuntimeForwardType(tunnel), null);
+  assert.equal(tunnelRuleRuntimeForwardType(tunnel), "nginx-tunnel");
 });
 
 test("keeps ForwardX and GOST tunnel action types unchanged", () => {
@@ -78,6 +77,14 @@ test("keeps ForwardX and GOST tunnel action types unchanged", () => {
     assert.equal(tunnelHopRuntimeForwardType({ mode }), "gost-tunnel");
     assert.equal(tunnelRuleRuntimeForwardType({ mode }), "gost");
   }
+});
+
+test("rejects unknown tunnel modes instead of treating them as GOST", () => {
+  const tunnel = { mode: "unsupported" };
+  assert.equal(tunnelRuntimeFamily(tunnel), null);
+  assert.equal(tunnelExitRuntimeForwardType(tunnel), null);
+  assert.equal(tunnelHopRuntimeForwardType(tunnel), null);
+  assert.equal(tunnelRuleRuntimeForwardType(tunnel), null);
 });
 
 test("reconciles a stale nginx runtime even when desired marker files are gone", () => {

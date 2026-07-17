@@ -17,11 +17,6 @@ export function normalizeSessionKind(value: unknown, fallback: SessionKind = "br
   return text === "mobile" || text === "telegram" || text === "browser" ? text : fallback;
 }
 
-export function inferLegacySessionKind(req: { headers?: Record<string, any> }) {
-  const mobileHeader = String(req?.headers?.["x-forwardx-mobile"] || "").trim().toLowerCase();
-  return mobileHeader && mobileHeader !== "0" && mobileHeader !== "false" ? "mobile" : "browser";
-}
-
 export function resolveRequestedSessionKind(req: { headers?: Record<string, any> }, mobile?: boolean): SessionKind {
   if (mobile) return "mobile";
   const header = String(req?.headers?.["x-forwardx-mobile"] || "").trim().toLowerCase();
@@ -44,22 +39,18 @@ export function encodeSessionLease(sid: string, activeAt = Date.now()) {
 export function parseSessionLease(value?: string | null): SessionLease | null {
   const text = String(value || "").trim();
   if (!text) return null;
-  if (text.startsWith("{")) {
-    try {
-      const data = JSON.parse(text) as Record<string, unknown>;
-      const sid = String(data.sid || "").trim();
-      const activeAt = Number(data.activeAt || 0);
-      if (sid) {
-        return {
-          sid,
-          activeAt: Number.isFinite(activeAt) && activeAt > 0 ? activeAt : 0,
-        };
-      }
-    } catch {
-      // Fall through to legacy plain sid handling.
-    }
+  try {
+    const data = JSON.parse(text) as Record<string, unknown>;
+    const sid = String(data.sid || "").trim();
+    const activeAt = Number(data.activeAt);
+    if (!sid || !Number.isFinite(activeAt) || activeAt <= 0) return null;
+    return {
+      sid,
+      activeAt,
+    };
+  } catch {
+    return null;
   }
-  return { sid: text, activeAt: 0 };
 }
 
 export function isSessionLeaseActive(lease: SessionLease | null, now = Date.now()) {

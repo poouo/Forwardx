@@ -308,7 +308,7 @@ export default function LookingGlass() {
   const [liveOutput, setLiveOutput] = useState("");
   const completedTaskIdsRef = useRef<Set<string>>(new Set());
 
-  const { data: hosts } = trpc.hosts.list.useQuery(undefined, {
+  const { data: hosts } = trpc.hosts.options.useQuery(undefined, {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });

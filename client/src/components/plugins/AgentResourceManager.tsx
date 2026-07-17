@@ -1086,7 +1086,7 @@ export function AgentResourceManager({
         <DialogContent className="flex max-h-[88vh] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="border-b border-border/40 px-5 py-4 pr-12 text-left">
             <DialogTitle>{formMode === "create" ? (view.operations?.create?.label || "新增") : (view.operations?.update?.label || "编辑")}</DialogTitle>
-            <DialogDescription>{view.description || `管理 ${view.title}`}</DialogDescription>
+            <DialogDescription>{view.description || "填写资源信息。"}</DialogDescription>
           </DialogHeader>
           <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-5 py-4 sm:grid-cols-2">
             {(view.fields || []).map(renderField)}

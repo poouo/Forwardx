@@ -1,4 +1,4 @@
-﻿import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -140,9 +140,9 @@ const DISPLAY_NAME_MAX_LENGTH = 24;
 const TELEGRAM_WEBAPP_INIT_WAIT_MS = 6000;
 const TELEGRAM_WEBAPP_INIT_POLL_MS = 250;
 const authHighlights = [
-  { title: "多节点管理", text: "统一管理分散在不同服务器的转发节点", icon: Server },
-  { title: "安全可靠", text: "TLS 加密传输，权限精细控制", icon: ShieldCheck },
-  { title: "高性能转发", text: "负载均衡与故障转移，保障服务可用", icon: Zap },
+  { title: "多主机管理", text: "集中查看主机、规则和链路状态", icon: Server },
+  { title: "权限控制", text: "按用户分配转发资源和使用额度", icon: ShieldCheck },
+  { title: "故障转移", text: "按健康状态切换入口和出口", icon: Zap },
 ];
 
 function getWelcomeName(user: any) {
@@ -774,7 +774,7 @@ export default function Login() {
         <button
           onClick={toggleTheme}
           className="flex h-9 w-9 items-center justify-center rounded-lg bg-background/80 text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Toggle theme"
+          aria-label="切换主题"
           title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
         >
           {resolvedTheme === "dark" ? (
@@ -794,7 +794,7 @@ export default function Login() {
                 <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
               </div>
               <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">
-                高性能端口转发管理面板，轻松管理您的网络流量
+                管理多主机转发、隧道和流量。
               </p>
               <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
                 {["转发", "隧道", "流量"].map((label) => (
@@ -844,7 +844,7 @@ export default function Login() {
                 {mode === "login" ? "欢迎回来" : "创建账号"}
               </CardTitle>
               <CardDescription className="mt-1 text-sm text-muted-foreground">
-                {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "请登录您的账户" : "使用邮箱注册 ForwardX 账户"}
+                {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "登录账号以继续" : "使用邮箱注册 ForwardX 账户"}
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
@@ -860,7 +860,7 @@ export default function Login() {
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <span>{telegramWebAppLoginMutation.isPending ? "正在校验 Telegram WebApp 安全登录..." : "正在验证一次性登录码..."}</span>
+              <span>{telegramWebAppLoginMutation.isPending ? "正在验证 Telegram 登录..." : "正在验证一次性登录码..."}</span>
             </div>
           ) : mode === "login" ? (
             <form onSubmit={handleLogin} className="space-y-4">

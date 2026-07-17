@@ -54,7 +54,7 @@ export function formatForwardRuleProtocol(protocol: string | null | undefined) {
   return FORWARD_RULE_PROTOCOL_LABELS[normalizeForwardRuleProtocol(protocol)];
 }
 
-export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const;
+export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"] as const;
 
 export type TunnelProtocol = (typeof TUNNEL_PROTOCOLS)[number];
 
@@ -79,7 +79,6 @@ export const FORWARD_PROTOCOL_LABELS: Record<ForwardProtocolKey, string> = {
   mwss: "GOST MWSS",
   mtcp: "GOST MTCP",
   nginx_stream: "Nginx",
-  nginx_tls: "Nginx",
 };
 
 export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
@@ -97,7 +96,6 @@ export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
   mwss: true,
   mtcp: true,
   nginx_stream: false,
-  nginx_tls: false,
 };
 
 export function normalizeForwardProtocolSettings(input?: Partial<Record<string, unknown>> | null): ForwardProtocolSettings {
@@ -117,5 +115,5 @@ export function isForwardProtocolEnabled(settings: Partial<Record<string, unknow
 
 export function isNginxForwardProtocolEnabled(settings: Partial<Record<string, unknown>> | null | undefined) {
   const normalized = normalizeForwardProtocolSettings(settings);
-  return normalized.nginx !== false || normalized.nginx_stream !== false || normalized.nginx_tls !== false;
+  return normalized.nginx !== false || normalized.nginx_stream !== false;
 }

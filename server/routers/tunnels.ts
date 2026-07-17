@@ -24,10 +24,9 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeForwardXVersion } from "../../shared/forwardTypes";
 import { AGENT_FORWARDX_WIREGUARD_VERSION, isForwardXWireGuardV2 } from "../forwardXWireGuard";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
-import { paginateItems } from "../../shared/pagination";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
-const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
+const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
 const forwardXVersionSchema = z.enum(["v1", "v2"]);
 const proxyProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
 const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
@@ -37,8 +36,7 @@ const MAX_NGINX_CERT_BYTES = 64 * 1024;
 const tunnelQueryCache = createQueryCache(300);
 
 function normalizeTunnelMode(mode: unknown) {
-  const value = String(mode || "").trim().toLowerCase();
-  return value === "nginx_tls" ? "nginx_stream" : value;
+  return String(mode || "").trim().toLowerCase();
 }
 
 async function requireForwardXWireGuardAgentVersions(hostIds: number[]) {
@@ -372,7 +370,7 @@ async function buildExtraExitNodes(ctx: any, options: {
   return nodes;
 }
 
-async function attachTunnelEndpointHosts(tunnels: any[]) {
+async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLatencySeries?: boolean } = {}) {
   const hostMap = new Map<number, any>();
   const hopHostIdsByTunnel = new Map<number, number[]>();
   const hopConnectHostsByTunnel = new Map<number, Array<string | null>>();
@@ -413,7 +411,9 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     }
   }));
   const latestLatencyByTunnel = await db.getLatestTunnelLatencies(tunnels.map((tunnel) => Number(tunnel.id)));
-  const latestLatencySeriesByTunnel = await db.getLatestTunnelLatencySeries(tunnels.map((tunnel) => Number(tunnel.id)));
+  const latestLatencySeriesByTunnel: Map<number, any[]> = options.includeLatencySeries === false
+    ? new Map()
+    : await db.getLatestTunnelLatencySeries(tunnels.map((tunnel) => Number(tunnel.id)));
   await Promise.all(Array.from(hostIds).map(async (hostId) => {
     const host = await db.getHostById(hostId);
     if (host) hostMap.set(hostId, host);
@@ -479,6 +479,23 @@ async function getTunnelDeleteImpact(tunnelId: number) {
   };
 }
 
+async function visibleTunnelQueryScope(user: { id: number; role: string }) {
+  if (user.role === "admin") return {} as { ownerUserId?: number; allowedTunnelIds?: number[] };
+  const [allowedTunnelIds, billingResourceIds] = await Promise.all([
+    db.getUserEffectiveAllowedTunnelIds(user.id),
+    db.getUserUsableTrafficBillingResourceIds(user.id),
+  ]);
+  return {
+    ownerUserId: user.id,
+    allowedTunnelIds: Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds])),
+  };
+}
+
+async function canAccessTunnelRecord(tunnel: any, user: { id: number; role: string }) {
+  if (user.role === "admin" || Number(tunnel?.userId) === Number(user.id)) return true;
+  const scope = await visibleTunnelQueryScope(user);
+  return (scope.allowedTunnelIds || []).includes(Number(tunnel?.id));
+}
 function compactTunnelForUse(tunnel: any) {
   const { certPem, certKeyPem, secret, ...rest } = tunnel || {};
   return rest;
@@ -491,8 +508,9 @@ export const tunnelsRouter = router({
       return attachTunnelEndpointHosts(tunnels as any[]);
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
-      const tunnels = ctx.user.role === "admin" ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
-      return (await attachTunnelEndpointHosts(tunnels as any[])).map(compactTunnelForUse);
+      const scope = await visibleTunnelQueryScope(ctx.user);
+      const tunnels = await db.getTunnelOptionRows(scope.ownerUserId, scope.allowedTunnelIds);
+      return (await attachTunnelEndpointHosts(tunnels as any[], { includeLatencySeries: false })).map(compactTunnelForUse);
     }),
     listPage: protectedProcedure
       .input(z.object({
@@ -501,44 +519,20 @@ export const tunnelsRouter = router({
         search: z.string().trim().max(200).optional().default(""),
       }))
       .query(async ({ input, ctx }) => {
-        const snapshot = await tunnelQueryCache.get(
-          `map-items:${ctx.user.id}:${input.search}`,
-          { ttlMs: 10_000, staleMs: 10_000 },
-          async () => {
-            const rawTunnels = ctx.user.role === "admin"
-              ? await db.getTunnels()
-              : await db.getTunnelsForUser(ctx.user.id);
-            const tunnels = await attachTunnelEndpointHosts(rawTunnels as any[]);
-            const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
-            const groups = await db.getForwardGroups(undefined, { includeRuntime: false }) as any[];
-            const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
-            const filtered = tokens.length === 0 ? tunnels : tunnels.filter((tunnel: any) => {
-              const searchText = JSON.stringify([
-                tunnel,
-                groupById.get(Number(tunnel.entryGroupId || 0)),
-                groupById.get(Number(tunnel.exitGroupId || 0)),
-              ]).toLowerCase();
-              return tokens.every((token) => searchText.includes(token));
-            });
-            return { filtered, groups, scopeTotalItems: tunnels.length };
-          },
-        );
-        const { filtered, groups, scopeTotalItems } = snapshot;
-        const result = paginateItems(filtered, input);
-        const relatedGroupIds = new Set(result.items.flatMap((tunnel: any) => [
+        const scope = await visibleTunnelQueryScope(ctx.user);
+        const pageData = await db.getTunnelsPage({ ...input, ...scope });
+        const items = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),
-        ]).filter((id: number) => id > 0));
+        ]).filter((id: number) => id > 0)));
+        const relatedGroups = relatedGroupIds.length > 0
+          ? await db.getForwardGroups(undefined, { includeRuntime: false, ids: relatedGroupIds })
+          : [];
         return {
-          ...result,
-          scopeTotalItems,
-          enabledItems: filtered.filter((tunnel: any) => tunnel.isEnabled !== false).length,
-          availableItems: filtered.filter((tunnel: any) => {
-            if (tunnel.isEnabled === false) return false;
-            const hopHosts = Array.isArray(tunnel.hopHosts) ? tunnel.hopHosts : [];
-            return hopHosts.length > 0 && hopHosts.every((host: any) => host?.isOnline);
-          }).length,
-          relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+          ...pageData,
+          items,
+          relatedGroups,
         };
       }),
     mapItems: protectedProcedure
@@ -548,56 +542,37 @@ export const tunnelsRouter = router({
         search: z.string().trim().max(200).optional().default(""),
       }))
       .query(async ({ input, ctx }) => {
-        const { filtered, groups } = await tunnelQueryCache.get(
-          `map-items:${ctx.user.id}:${input.search}`,
-          { ttlMs: 10_000, staleMs: 10_000 },
-          async () => {
-            const rawTunnels = ctx.user.role === "admin"
-              ? await db.getTunnels()
-              : await db.getTunnelsForUser(ctx.user.id);
-            const tunnels = await attachTunnelEndpointHosts(rawTunnels as any[]);
-            const tokens = input.search.toLowerCase().split(/\s+/).filter(Boolean);
-            const groups = await db.getForwardGroups(undefined, { includeRuntime: false }) as any[];
-            const groupById = new Map(groups.map((group: any) => [Number(group.id), group]));
-            const filtered = tokens.length === 0 ? tunnels : tunnels.filter((tunnel: any) => {
-              const searchText = JSON.stringify([
-                tunnel,
-                groupById.get(Number(tunnel.entryGroupId || 0)),
-                groupById.get(Number(tunnel.exitGroupId || 0)),
-              ]).toLowerCase();
-              return tokens.every((token) => searchText.includes(token));
-            });
-            return { filtered, groups, scopeTotalItems: tunnels.length };
-          },
-        );
         const cursor = Math.max(0, Number(input.cursor || 0));
-        const items = filtered.slice(cursor, cursor + input.limit);
-        const nextCursor = cursor + items.length < filtered.length ? cursor + items.length : undefined;
-        const relatedGroupIds = new Set(items.flatMap((tunnel: any) => [
+        const scope = await visibleTunnelQueryScope(ctx.user);
+        const pageData = await db.getTunnelsPage({
+          ...scope,
+          search: input.search,
+          page: Math.floor(cursor / input.limit) + 1,
+          pageSize: input.limit,
+        });
+        const items = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),
-        ]).filter((id: number) => id > 0));
+        ]).filter((id: number) => id > 0)));
+        const relatedGroups = relatedGroupIds.length > 0
+          ? await db.getForwardGroups(undefined, { includeRuntime: false, ids: relatedGroupIds })
+          : [];
         return {
           items: items.map(compactTunnelForUse),
-          nextCursor,
-          totalItems: filtered.length,
-          availableItems: filtered.filter((tunnel: any) => {
-            if (tunnel.isEnabled === false) return false;
-            const hopHosts = Array.isArray(tunnel.hopHosts) ? tunnel.hopHosts : [];
-            return hopHosts.length > 0 && hopHosts.every((host: any) => host?.isOnline);
-          }).length,
-          relatedGroups: groups.filter((group: any) => relatedGroupIds.has(Number(group.id))),
+          nextCursor: cursor + items.length < pageData.totalItems ? cursor + items.length : undefined,
+          totalItems: pageData.totalItems,
+          availableItems: pageData.availableItems,
+          relatedGroups,
         };
       }),
     getById: protectedProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .query(async ({ input, ctx }) => {
-        const tunnels = ctx.user.role === "admin" ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
-        const tunnel = (tunnels as any[]).find((item: any) => Number(item.id) === Number(input.id));
-        if (!tunnel) return null;
+        const tunnel = await db.getTunnelById(input.id);
+        if (!tunnel || !(await canAccessTunnelRecord(tunnel, ctx.user))) return null;
         return (await attachTunnelEndpointHosts([tunnel]))[0] || null;
-      }),
-    listAll: protectedProcedure.query(async ({ ctx }) => {
+      }),    listAll: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
       return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),

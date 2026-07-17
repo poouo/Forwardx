@@ -184,7 +184,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
     if (meta.kind === "forward-chain") {
       const hopLabel = String((meta as any).hopLabel || "hop");
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
-      const message = `端口转发链逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const message = `转发链逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
       const aggregate = recordHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
@@ -193,8 +193,8 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
         routeLabel,
         method: normalizeLinkProbeMethod((meta as any).method),
       }, {
-        successPrefix: "端口转发链逐跳测试成功",
-        failurePrefix: "端口转发链逐跳测试失败",
+        successPrefix: "转发链逐跳测试成功",
+        failurePrefix: "转发链逐跳测试失败",
       });
       if (aggregate) {
         const aggregateMessage = structuredLinkTestMessage({

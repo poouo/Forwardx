@@ -1,10 +1,11 @@
 import { isIP } from "node:net";
-import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import {
   forwardGroupEvents,
   forwardGroupMembers,
   forwardGroups,
   forwardRules,
+  hosts,
   tunnels,
   userForwardGroupPermissions,
   type InsertForwardGroup,
@@ -15,6 +16,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { getDdnsSettings, updateDdnsRecord, updateDdnsRecordValues } from "../ddns";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, countAll, inList, quoteIdentifier } from "../dbCompat";
+import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import {
   createForwardRule,
   getForwardGroupChildRules,
@@ -48,6 +50,7 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reserveAvailableHostPort, type HostPortReservation } from "../portReservations";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
+import { sqlBool } from "./repositoryUtils";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -552,12 +555,20 @@ function groupSwitchNotifyEnabled(group: any) {
   return !!group?.telegramSwitchNotifyEnabled;
 }
 
-export async function getForwardGroups(userId?: number, options: { includeRuntime?: boolean } = {}) {
+export async function getForwardGroups(userId?: number, options: { includeRuntime?: boolean; ids?: number[] } = {}) {
   const db = await getDb();
   if (!db) return [];
-  const groupRows = userId
-    ? await db.select().from(forwardGroups).where(eq(forwardGroups.userId, userId)).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id))
-    : await db.select().from(forwardGroups).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
+  const conditions: any[] = [];
+  if (userId) conditions.push(eq(forwardGroups.userId, userId));
+  if (options.ids !== undefined) {
+    const ids = Array.from(new Set(options.ids.map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+    if (ids.length === 0) return [];
+    conditions.push(inArray(forwardGroups.id, ids));
+  }
+  const query = db.select().from(forwardGroups);
+  const groupRows = conditions.length > 0
+    ? await query.where(and(...conditions)).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id))
+    : await query.orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
   if (groupRows.length === 0) return [];
   const ids = groupRows.map((g: any) => Number(g.id));
   const relatedGroupIds = Array.from(new Set([
@@ -682,6 +693,167 @@ export async function getForwardGroups(userId?: number, options: { includeRuntim
       members: groupMembers,
     };
   });
+}
+
+export type ForwardGroupListQuery = PageRequest & {
+  allowedGroupIds?: number[];
+  groupMode: "port" | "failover" | "chain" | "entry" | "exit";
+  search?: string;
+};
+
+function normalizeForwardGroupIds(values: unknown[] | undefined) {
+  return Array.from(new Set((values || [])
+    .map((value) => Math.floor(Number(value)))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function escapeForwardGroupSearchToken(value: string) {
+  return value.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+}
+
+function forwardGroupListCondition(input: {
+  allowedGroupIds?: number[];
+  groupMode?: ForwardGroupListQuery["groupMode"];
+  search?: string;
+}) {
+  const conditions: any[] = [];
+  if (input.allowedGroupIds !== undefined) {
+    const allowedIds = normalizeForwardGroupIds(input.allowedGroupIds);
+    conditions.push(allowedIds.length > 0 ? inArray(forwardGroups.id, allowedIds) : eq(forwardGroups.id, -1));
+  }
+  if (input.groupMode) conditions.push(eq(forwardGroups.groupMode, input.groupMode));
+  const tokens = String(input.search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const q = quoteIdentifier;
+  for (const token of tokens) {
+    const pattern = `%${escapeForwardGroupSearchToken(token)}%`;
+    const numeric = /^\d+$/.test(token) ? Number(token) : 0;
+    const entryAlias = "entry_group_search";
+    conditions.push(or(
+      ...[
+        forwardGroups.name,
+        forwardGroups.remark,
+        forwardGroups.groupType,
+        forwardGroups.groupMode,
+        forwardGroups.forwardType,
+        forwardGroups.domain,
+        forwardGroups.recordType,
+        forwardGroups.targetIp,
+        forwardGroups.lastDdnsValue,
+        forwardGroups.lastStatus,
+        forwardGroups.lastMessage,
+      ].map((column) => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`),
+      ...(numeric > 0 ? [
+        eq(forwardGroups.id, numeric),
+        eq(forwardGroups.sourcePort, numeric),
+        eq(forwardGroups.targetPort, numeric),
+      ] : []),
+      sql`EXISTS (
+        SELECT 1
+        FROM ${forwardGroupMembers}
+        INNER JOIN ${hosts} ON ${hosts.id} = ${forwardGroupMembers.hostId}
+        WHERE ${forwardGroupMembers.groupId} = ${forwardGroups.id}
+          AND (
+            LOWER(COALESCE(${hosts.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ip}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ipv4}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${hosts.ipv6}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${forwardGroupMembers.connectHost}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+      sql`EXISTS (
+        SELECT 1
+        FROM ${forwardGroupMembers}
+        INNER JOIN ${tunnels} ON ${tunnels.id} = ${forwardGroupMembers.tunnelId}
+        WHERE ${forwardGroupMembers.groupId} = ${forwardGroups.id}
+          AND (
+            LOWER(COALESCE(${tunnels.name}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${tunnels.mode}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${tunnels.connectHost}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${forwardGroupMembers.connectHost}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+      sql`EXISTS (
+        SELECT 1
+        FROM ${sql.raw(q("forward_groups"))} ${sql.raw(entryAlias)}
+        WHERE ${sql.raw(`${entryAlias}.${q("id")}`)} = ${forwardGroups.entryGroupId}
+          AND (
+            LOWER(COALESCE(${sql.raw(`${entryAlias}.${q("name")}`)}, '')) LIKE ${pattern} ESCAPE '!'
+            OR LOWER(COALESCE(${sql.raw(`${entryAlias}.${q("remark")}`)}, '')) LIKE ${pattern} ESCAPE '!'
+          )
+      )`,
+    ));
+  }
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+export async function getForwardGroupsPage(input: ForwardGroupListQuery) {
+  const db = await getDb();
+  if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, enabledItems: 0 };
+  const condition = forwardGroupListCondition(input);
+  const aggregate = db
+    .select({
+      totalItems: sql<number>`COUNT(*)`,
+      enabledItems: sql<number>`COALESCE(SUM(CASE WHEN ${forwardGroups.isEnabled} = ${sqlBool(true)} THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(forwardGroups);
+  const [totals] = condition ? await aggregate.where(condition) : await aggregate;
+  const totalItems = Number(totals?.totalItems || 0);
+  const enabledItems = Number(totals?.enabledItems || 0);
+  const scopeCondition = forwardGroupListCondition({
+    allowedGroupIds: input.allowedGroupIds,
+    groupMode: input.groupMode,
+  });
+  let scopeTotalItems = totalItems;
+  if (String(input.search || "").trim()) {
+    const scopeQuery = db.select({ count: sql<number>`COUNT(*)` }).from(forwardGroups);
+    const [scopeTotals] = scopeCondition ? await scopeQuery.where(scopeCondition) : await scopeQuery;
+    scopeTotalItems = Number(scopeTotals?.count || 0);
+  }
+  const window = pageWindowForTotal(input, totalItems);
+  const idQuery = db.select({ id: forwardGroups.id }).from(forwardGroups);
+  const idRows = condition
+    ? await idQuery.where(condition).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id)).limit(window.pageSize).offset(window.offset)
+    : await idQuery.orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id)).limit(window.pageSize).offset(window.offset);
+  const ids = idRows.map((row: any) => Number(row.id));
+  const hydrated = ids.length > 0
+    ? await getForwardGroups(undefined, { includeRuntime: true, ids })
+    : [];
+  const byId = new Map((hydrated as any[]).map((group: any) => [Number(group.id), group]));
+  const items = ids.map((id: number) => byId.get(id)).filter(Boolean);
+  return {
+    ...pageResult(items, totalItems, window),
+    scopeTotalItems,
+    enabledItems,
+  };
+}
+
+export async function getForwardGroupOptions(allowedGroupIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const condition = forwardGroupListCondition({ allowedGroupIds });
+  const query = db.select().from(forwardGroups);
+  const rows = condition
+    ? await query.where(condition).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id))
+    : await query.orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
+  if (rows.length === 0) return [];
+  const ids = rows.map((group: any) => Number(group.id));
+  const members = await db
+    .select()
+    .from(forwardGroupMembers)
+    .where(inArray(forwardGroupMembers.groupId, ids))
+    .orderBy(asc(forwardGroupMembers.priority), asc(forwardGroupMembers.id));
+  const membersByGroupId = new Map<number, any[]>();
+  for (const member of members as any[]) {
+    const groupId = Number(member.groupId);
+    const list = membersByGroupId.get(groupId) || [];
+    list.push(member);
+    membersByGroupId.set(groupId, list);
+  }
+  return rows.map((group: any) => ({
+    ...group,
+    groupMode: groupModeOf(group),
+    members: membersByGroupId.get(Number(group.id)) || [],
+  }));
 }
 
 export async function getForwardGroupById(id: number) {
@@ -1750,7 +1922,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const tunnelMode = String(tunnel?.mode || "").toLowerCase();
   const tunnelFailoverSupported = member.memberType === "tunnel" && isMainBackupGostTunnelMode(tunnelMode);
   const childFailoverEnabled = member.memberType === "tunnel" ? templateFailoverEnabled && tunnelFailoverSupported : directFailoverEnabled;
-  const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel && tunnelMode !== "nginx_stream" && tunnelMode !== "nginx_tls";
+  const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel
+    && (tunnelMode === "forwardx" || ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"].includes(tunnelMode));
   const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
   const blockedByAnotherController = !!existing?.disabledByUser
     || !!existing?.disabledByTunnel

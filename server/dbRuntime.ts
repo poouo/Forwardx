@@ -89,10 +89,6 @@ export function isDatabaseSetupPendingConfig() {
   }
 }
 
-export function getMysqlConfigPath() {
-  return legacyMysqlConfigPath();
-}
-
 export function defaultSqlitePath() {
   return ENV.sqlitePath || "/data/forwardx.db";
 }

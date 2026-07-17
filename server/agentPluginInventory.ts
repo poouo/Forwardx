@@ -1,7 +1,6 @@
 export type AgentPluginInventory = {
   versions: ReadonlyMap<string, string>;
   syncSignatures: ReadonlyMap<string, string>;
-  supportsSyncSignatures: boolean;
   reportedAt: number;
 };
 
@@ -9,7 +8,6 @@ const AGENT_PLUGIN_INVENTORY_TTL_MS = 2 * 60 * 1000;
 const inventories = new Map<number, {
   versions: Map<string, string>;
   syncSignatures: Map<string, string>;
-  supportsSyncSignatures: boolean;
   reportedAt: number;
 }>();
 const pluginIdPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
@@ -33,18 +31,22 @@ function normalizePluginValues(value: unknown, valueLimit: number) {
 export function updateAgentPluginInventory(
   hostIdValue: unknown,
   value: unknown,
-  syncSignaturesValue?: unknown,
+  syncSignaturesValue: unknown,
   reportedAt = Date.now(),
 ) {
   const hostId = normalizedHostId(hostIdValue);
-  if (!hostId || !value || typeof value !== "object" || Array.isArray(value)) return false;
-  const supportsSyncSignatures = !!syncSignaturesValue
+  if (!hostId) return false;
+  const hasVersions = !!value && typeof value === "object" && !Array.isArray(value);
+  const hasSyncSignatures = !!syncSignaturesValue
     && typeof syncSignaturesValue === "object"
     && !Array.isArray(syncSignaturesValue);
+  if (!hasVersions || !hasSyncSignatures) {
+    inventories.delete(hostId);
+    return false;
+  }
   inventories.set(hostId, {
     versions: normalizePluginValues(value, 64),
     syncSignatures: normalizePluginValues(syncSignaturesValue, 128),
-    supportsSyncSignatures,
     reportedAt,
   });
   return true;
@@ -61,7 +63,6 @@ export function getAgentPluginInventory(hostIdValue: unknown, now = Date.now()):
   return {
     versions: new Map(inventory.versions),
     syncSignatures: new Map(inventory.syncSignatures),
-    supportsSyncSignatures: inventory.supportsSyncSignatures,
     reportedAt: inventory.reportedAt,
   };
 }

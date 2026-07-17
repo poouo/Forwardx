@@ -17,7 +17,6 @@ import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
-import { paginateItems } from "../../shared/pagination";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -331,6 +330,18 @@ async function getHostsWithUpgradeStateCleanup(userId?: number) {
   return clearCompletedHostAgentUpgradeRequests(await db.getHosts(userId));
 }
 
+async function visibleHostQueryScope(user: { id: number; role: string }) {
+  if (user.role === "admin") return {} as { ownerUserId?: number; allowedHostIds?: number[] };
+  const [allowedHostIds, billingResourceIds] = await Promise.all([
+    db.getUserEffectiveAllowedHostIds(user.id),
+    db.getUserUsableTrafficBillingResourceIds(user.id),
+  ]);
+  return {
+    ownerUserId: user.id,
+    allowedHostIds: Array.from(new Set([...allowedHostIds, ...billingResourceIds.hostIds])),
+  };
+}
+
 async function getVisibleHostsForUser(user: { id: number; role: string }, options: { scheduleGeoRefresh?: boolean } = {}) {
   const shouldScheduleGeoRefresh = options.scheduleGeoRefresh !== false;
   const isAdmin = user.role === "admin";
@@ -617,8 +628,7 @@ export const hostsRouter = router({
       }))
       .query(async ({ input }) => {
         const { configuredPath } = await assertPublicHostMonitorRequest(input.path);
-        const hosts = (await db.getHosts() as any[]);
-        const rawHost = hosts.find((host) => Number(host?.id) === Number(input.hostId));
+        const rawHost = await db.getHostById(input.hostId) as any;
         if (!rawHost) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
         const host = compactPublicMonitorHost(rawHost);
         const [metricRows, trafficRows, allServices] = await Promise.all([
@@ -656,28 +666,8 @@ export const hostsRouter = router({
       return hosts.map(compactHostForList);
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
-      const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
-      return hosts.map((host: any) => ({
-        id: Number(host.id),
-        userId: Number(host.userId || 0),
-        name: String(host.name || ""),
-        ip: host.ip || null,
-        ipv4: host.ipv4 || null,
-        ipv6: host.ipv6 || null,
-        entryIp: host.entryIp || null,
-        tunnelEntryIp: host.tunnelEntryIp || null,
-        hostType: host.hostType || null,
-        isOnline: !!host.isOnline,
-        agentVersion: host.agentVersion || null,
-        ddnsEnabled: !!host.ddnsEnabled,
-        ddnsDomain: host.ddnsDomain || null,
-        portRangeStart: host.portRangeStart ?? null,
-        portRangeEnd: host.portRangeEnd ?? null,
-        portAllowlist: host.portAllowlist || null,
-        blockHttp: !!host.blockHttp,
-        blockSocks: !!host.blockSocks,
-        blockTls: !!host.blockTls,
-      }));
+      const scope = await visibleHostQueryScope(ctx.user);
+      return db.getHostOptions(scope.ownerUserId, scope.allowedHostIds);
     }),
     listPage: protectedProcedure
       .input(pageRequestSchema.extend({
@@ -689,37 +679,63 @@ export const hostsRouter = router({
           scheduleStaleHostUpgradeCleanup();
           scheduleOrphanedAgentHostCleanup();
         }
-        const [visibleHosts, groups] = await Promise.all([
-          getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
+        const scope = await visibleHostQueryScope(ctx.user);
+        const [pageData, groups] = await Promise.all([
+          db.getHostsPage({
+            ...input,
+            ...scope,
+            orderByGroups: ctx.user.role === "admin",
+          }),
           ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
         ]);
-        const orderedHosts = orderHostsByGroups(visibleHosts as any[], groups as any[], input.groupId);
-        const filteredHosts = orderedHosts.filter((host: any) => hostMatchesListSearch(host, input.search));
-        const result = paginateItems(filteredHosts, input);
-        scheduleHostGeoRefresh(result.items);
-        const upgradeableHosts = filteredHosts.filter((host: any) => {
-          if (!host?.isOnline) return false;
-          const requestedAt = host.agentUpgradeRequestedAt ? new Date(host.agentUpgradeRequestedAt).getTime() : 0;
-          const timedOut = !!host.agentUpgradeRequested && requestedAt > 0 && Date.now() - requestedAt > 10 * 60 * 1000;
-          const pending = !!host.agentUpgradeRequested && !timedOut;
-          const behind = !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION);
-          return !pending && (timedOut || behind);
-        });
-        const visibleHostIds = new Set((visibleHosts as any[]).map((host) => Number(host.id)));
+        const items = await clearCompletedHostAgentUpgradeRequests(pageData.items as any[]);
+        scheduleHostGeoRefresh(items);
+        let outdatedItems = 0;
+        let onlineOutdatedItems = 0;
+        let offlineUpgradeableItems = 0;
+        for (const row of pageData.versionCounts as any[]) {
+          if (!row?.agentVersion || isAgentVersionAtLeast(row.agentVersion, AGENT_VERSION)) continue;
+          const count = Math.max(0, Number(row.count || 0));
+          outdatedItems += count;
+          if (row.online) onlineOutdatedItems += count;
+          else offlineUpgradeableItems += count;
+        }
         const groupCounts = Object.fromEntries((groups as any[]).map((group) => [
           Number(group.id),
           (group.hostIds || group.members?.map((member: any) => member.hostId) || [])
-            .filter((hostId: unknown) => visibleHostIds.has(Number(hostId))).length,
+            .filter((hostId: unknown) => Number(hostId) > 0).length,
         ]));
         return {
-          ...result,
-          items: result.items.map(compactHostForList),
-          scopeTotalItems: orderedHosts.length,
-          onlineItems: filteredHosts.filter((host: any) => !!host.isOnline).length,
-          outdatedItems: filteredHosts.filter((host: any) => !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION)).length,
-          upgradeableIds: upgradeableHosts.map((host: any) => Number(host.id)),
-          offlineUpgradeableItems: filteredHosts.filter((host: any) => !host.isOnline && !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION)).length,
+          ...pageData,
+          items: items.map(compactHostForList),
+          versionCounts: undefined,
+          outdatedItems,
+          onlineOutdatedItems,
+          offlineUpgradeableItems,
           groupCounts,
+        };
+      }),
+    upgradeCandidates: adminProcedure
+      .input(z.object({
+        search: z.string().trim().max(200).optional().default(""),
+        groupId: z.number().int().positive().nullable().optional(),
+      }))
+      .query(async ({ input }) => {
+        scheduleStaleHostUpgradeCleanup();
+        const hosts = await db.getHostUpgradeCandidates(input) as any[];
+        const outdated = hosts.filter((host: any) => (
+          !!host.agentVersion && !isAgentVersionAtLeast(host.agentVersion, AGENT_VERSION)
+        ));
+        const candidates = outdated.filter((host: any) => {
+          if (!host.isOnline) return false;
+          const requestedAt = host.agentUpgradeRequestedAt ? new Date(host.agentUpgradeRequestedAt).getTime() : 0;
+          const timedOut = !!host.agentUpgradeRequested && requestedAt > 0 && Date.now() - requestedAt > 10 * 60 * 1000;
+          return !host.agentUpgradeRequested || timedOut;
+        });
+        return {
+          ids: candidates.map((host: any) => Number(host.id)),
+          totalItems: candidates.length,
+          offlineItems: outdated.filter((host: any) => !host.isOnline).length,
         };
       }),
     mapPoints: protectedProcedure
@@ -730,20 +746,17 @@ export const hostsRouter = router({
         groupId: z.number().int().positive().nullable().optional(),
       }))
       .query(async ({ input, ctx }) => {
-        const filteredHosts = await hostQueryCache.get(
-          `map-points:${ctx.user.id}:${input.groupId || "all"}:${input.search}`,
-          { ttlMs: 10_000, staleMs: 10_000 },
-          async () => {
-            const [visibleHosts, groups] = await Promise.all([
-              getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
-              ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
-            ]);
-            return orderHostsByGroups(visibleHosts as any[], groups as any[], input.groupId)
-              .filter((host: any) => hostMatchesListSearch(host, input.search));
-          },
-        );
         const cursor = Math.max(0, Number(input.cursor || 0));
-        const rows = filteredHosts.slice(cursor, cursor + input.limit);
+        const scope = await visibleHostQueryScope(ctx.user);
+        const pageData = await db.getHostsPage({
+          ...scope,
+          search: input.search,
+          groupId: input.groupId,
+          orderByGroups: ctx.user.role === "admin",
+          page: Math.floor(cursor / input.limit) + 1,
+          pageSize: input.limit,
+        });
+        const rows = cursor < pageData.totalItems ? pageData.items as any[] : [];
         scheduleHostGeoRefresh(rows);
         const items = rows.map((host: any) => ({
           id: Number(host.id),
@@ -760,16 +773,17 @@ export const hostsRouter = router({
           geoLatitudeMicro: host.geoLatitudeMicro ?? null,
           geoLongitudeMicro: host.geoLongitudeMicro ?? null,
         }));
-        const nextCursor = cursor + rows.length < filteredHosts.length ? cursor + rows.length : undefined;
-        return { items, nextCursor, totalItems: filteredHosts.length };
+        const nextCursor = cursor + rows.length < pageData.totalItems ? cursor + rows.length : undefined;
+        return { items, nextCursor, totalItems: pageData.totalItems };
       }),
     statusSummary: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number().int().positive()).max(100).optional() }).optional())
       .query(async ({ input, ctx }) => {
-      const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
-      const requestedIds = new Set((input?.hostIds || []).map(Number));
+      const requestedIds = Array.from(new Set((input?.hostIds || []).map(Number).filter((id) => id > 0)));
+      if (requestedIds.length === 0) return [];
+      const scope = await visibleHostQueryScope(ctx.user);
+      const hosts = await db.getHostStatusRows({ ...scope, hostIds: requestedIds });
       return hosts
-        .filter((host: any) => requestedIds.size === 0 || requestedIds.has(Number(host.id)))
         .map(compactHostStatus)
         .filter((host: ReturnType<typeof compactHostStatus>) => host.id > 0);
     }),
@@ -782,13 +796,13 @@ export const hostsRouter = router({
       `summary:${ctx.user.id}:${input?.groupId || "all"}:${input?.search || ""}`,
       { ttlMs: 2_000, staleMs: 10_000 },
       async () => {
-        const [visibleHosts, groups] = await Promise.all([
-          getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false }),
-          ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
-        ]);
-        const filteredHosts = orderHostsByGroups(visibleHosts as any[], groups as any[], input?.groupId)
-          .filter((host: any) => hostMatchesListSearch(host, input?.search || ""));
-        const hostIds = filteredHosts.map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0);
+        const scope = await visibleHostQueryScope(ctx.user);
+        const summaryScope = await db.getHostSummaryScope({
+          ...scope,
+          search: input?.search || "",
+          groupId: input?.groupId,
+        });
+        const hostIds = summaryScope.hostIds;
         const [metricSnapshots, trafficRows] = await Promise.all([
           db.getLatestHostMetricSnapshots(hostIds),
           db.getHostTrafficSummary(hostIds),
@@ -801,8 +815,8 @@ export const hostsRouter = router({
           totalTrafficOut += Math.max(0, Number(row?.bytesOut) || 0);
         }
         return {
-          totalHosts: filteredHosts.length,
-          onlineHosts: filteredHosts.filter((host: any) => !!host.isOnline).length,
+          totalHosts: summaryScope.totalHosts,
+          onlineHosts: summaryScope.onlineHosts,
           currentTrafficIn: instantTraffic.currentTrafficIn,
           currentTrafficOut: instantTraffic.currentTrafficOut,
           currentTrafficTotal: instantTraffic.currentTrafficTotal,

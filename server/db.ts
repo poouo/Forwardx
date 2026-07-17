@@ -1,9 +1,8 @@
 /**
  * Database entrypoint.
  *
- * ForwardX now uses the user's MySQL database as the source of truth. The panel
- * never creates or resets a default administrator during normal startup. If a
- * connected database already contains users/admins, that data is reused.
+ * ForwardX uses the configured SQLite, MySQL, or PostgreSQL database as the
+ * source of truth and reuses existing users during normal startup.
  */
 
 import { eq } from "drizzle-orm";
@@ -189,6 +188,22 @@ async function backfillTunnelExitGroups() {
   if (count > 0) console.log(`[Database] Backfilled tunnel exit group references count=${count}`);
 }
 
+async function repairPortForwardRuleHostReferencesOnce() {
+  const marker = "port-forward-rule-host-reference-repair-v1";
+  if (await getSetting(marker)) return [];
+  const repairs = await repairPortForwardRuleHostReferences();
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  return repairs;
+}
+
+async function migrateLegacyUserAvatarsOnce() {
+  const marker = "legacy-user-avatar-preset-migration-v1";
+  if (await getSetting(marker)) return 0;
+  const migrated = await migrateLegacyUserAvatars();
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  return migrated;
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -199,7 +214,7 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
-    await repairPortForwardRuleHostReferences().then((repairs) => {
+    await repairPortForwardRuleHostReferencesOnce().then((repairs) => {
       if (repairs.length > 0) console.log(`[Database] Repaired stale port-forward rule hosts count=${repairs.length}`);
     }).catch((error) => {
       console.warn("[Database] Port-forward rule host repair skipped:", error instanceof Error ? error.message : String(error));
@@ -257,7 +272,7 @@ export async function initDatabase() {
     await maintainCurrentMysqlDatabase().catch((error) => {
       console.warn("[MySQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
     });
-    const migratedAvatars = await migrateLegacyUserAvatars();
+    const migratedAvatars = await migrateLegacyUserAvatarsOnce();
     if (migratedAvatars > 0) {
       console.log(`[Database] Migrated legacy preset avatars count=${migratedAvatars}`);
     }

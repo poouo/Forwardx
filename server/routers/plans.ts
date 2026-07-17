@@ -3,7 +3,6 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
-import { paginateItems } from "../../shared/pagination";
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
@@ -51,6 +50,20 @@ export const plansRouter = router({
   list: adminProcedure.query(async () => {
     return db.listSubscriptionPlans(true);
   }),
+  options: adminProcedure.query(async () => {
+    return db.listSubscriptionPlanOptions(true);
+  }),
+  summary: adminProcedure.query(async () => {
+    return db.getSubscriptionPlanSummary();
+  }),
+  listPage: adminProcedure
+    .input(z.object({
+      page: z.number().int().positive().default(1),
+      pageSize: z.number().int().min(1).max(100).default(12),
+    }))
+    .query(async ({ input }) => {
+      return db.listSubscriptionPlansPage(input);
+    }),
   storeList: protectedProcedure.query(async () => {
     if ((await db.getSetting("storeEnabled")) !== "true") return [];
     return db.listSubscriptionPlans(false);
@@ -129,16 +142,10 @@ export const plansRouter = router({
     }))
     .query(async ({ input }) => {
       await db.expireUserSubscriptions();
-      const subscriptions = (await db.listUserSubscriptions(input.userId) as any[])
-        .filter((subscription: any) => subscription?.status !== "cancelled");
-      return {
-        ...paginateItems(subscriptions, input),
-        activeItems: subscriptions.filter((subscription: any) => {
-          if (subscription?.status !== "active") return false;
-          if (!subscription?.expiresAt) return true;
-          return new Date(subscription.expiresAt).getTime() > Date.now();
-        }).length,
-      };
+      return db.listUserSubscriptionsPage({
+        ...input,
+        excludeCancelled: true,
+      });
     }),
   mySubscriptions: protectedProcedure.query(async ({ ctx }) => {
     await db.expireUserSubscriptions();
@@ -164,8 +171,7 @@ export const plansRouter = router({
   cancelSubscription: adminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input }) => {
-      const subscriptions = await db.listUserSubscriptions();
-      const subscription = (subscriptions as any[]).find((item) => Number(item.id) === Number(input.id));
+      const subscription = await db.getUserSubscriptionById(input.id);
       await db.cancelUserSubscription(input.id);
       if (subscription?.userId) {
         await db.syncUserSubscriptionEntitlements(Number(subscription.userId));
