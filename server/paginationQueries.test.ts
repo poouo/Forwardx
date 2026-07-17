@@ -57,18 +57,18 @@ test("database-backed list queries page, search, scope, and hydrate only request
 
       await insert(
         "hosts",
-        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder"],
-        [1, "Tokyo Entry", "192.0.2.10", "192.0.2.10", 1, 1, now, 0],
+        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder", "agentVersion"],
+        [1, "Tokyo Entry", "192.0.2.10", "192.0.2.10", 1, 1, now, 0, "2.2.157"],
       );
       await insert(
         "hosts",
-        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder"],
-        [2, "Singapore Exit", "192.0.2.20", "192.0.2.20", 1, 1, now, 1],
+        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder", "agentVersion"],
+        [2, "Singapore Exit", "192.0.2.20", "192.0.2.20", 1, 1, now, 1, "2.2.158"],
       );
       await insert(
         "hosts",
-        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder"],
-        [3, "Unused Node", "192.0.2.30", "192.0.2.30", 2, 0, now - 3600, 2],
+        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder", "agentVersion"],
+        [3, "Unused Node", "192.0.2.30", "192.0.2.30", 2, 0, now - 3600, 2, "2.2.157"],
       );
 
       await insert(
@@ -130,6 +130,16 @@ test("database-backed list queries page, search, scope, and hydrate only request
       const hostSecondPage = await hosts.getHostsPage({ page: 2, pageSize: 2 });
       assert.equal(hostSecondPage.totalItems, 3);
       assert.deepEqual(hostSecondPage.items.map((item) => Number(item.id)), [3]);
+      assert.deepEqual(
+        hostSecondPage.versionCounts
+          .map((item) => [item.agentVersion, item.online, Number(item.count)])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || Number(a[1]) - Number(b[1])),
+        [
+          ["2.2.157", false, 1],
+          ["2.2.157", true, 1],
+          ["2.2.158", true, 1],
+        ],
+      );
       const hostSummary = await hosts.getHostSummaryScope({ ownerUserId: 2, allowedHostIds: [1] });
       assert.equal(hostSummary.totalHosts, 2);
       assert.equal(hostSummary.onlineHosts, 1);

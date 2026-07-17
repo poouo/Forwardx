@@ -196,22 +196,27 @@ export async function getHostsPage(input: HostListQuery) {
   const versionQuery = db
     .select({
       agentVersion: hosts.agentVersion,
-      online: onlineExpression,
       count: sql<number>`COUNT(*)`,
+      onlineCount: sql<number>`COALESCE(SUM(${onlineExpression}), 0)`,
     })
     .from(hosts);
-  const versionCounts = condition
-    ? await versionQuery.where(condition).groupBy(hosts.agentVersion, onlineExpression)
-    : await versionQuery.groupBy(hosts.agentVersion, onlineExpression);
+  const versionRows = condition
+    ? await versionQuery.where(condition).groupBy(hosts.agentVersion)
+    : await versionQuery.groupBy(hosts.agentVersion);
+  const versionCounts = versionRows.flatMap((row: any) => {
+    const count = Math.max(0, Number(row.count || 0));
+    const onlineCount = Math.min(count, Math.max(0, Number(row.onlineCount || 0)));
+    const offlineCount = count - onlineCount;
+    return [
+      ...(onlineCount > 0 ? [{ agentVersion: row.agentVersion || null, online: true, count: onlineCount }] : []),
+      ...(offlineCount > 0 ? [{ agentVersion: row.agentVersion || null, online: false, count: offlineCount }] : []),
+    ];
+  });
   return {
     ...pageResult(pageRows.map(withComputedOnline), totalItems, window),
     scopeTotalItems,
     onlineItems,
-    versionCounts: versionCounts.map((row: any) => ({
-      agentVersion: row.agentVersion || null,
-      online: Number(row.online || 0) === 1 || row.online === true,
-      count: Number(row.count || 0),
-    })),
+    versionCounts,
   };
 }
 
