@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.158"
+var Version = "2.2.159"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -737,6 +737,25 @@ func managedServiceGroupsActiveCached(readiness *localRuntimeReadiness, groups [
 	return true
 }
 
+func managedRuleListenProcessNeedles(forwardType string) []string {
+	switch strings.TrimSpace(forwardType) {
+	case "realm":
+		return []string{"realm"}
+	case "socat":
+		return []string{"socat"}
+	default:
+		return nil
+	}
+}
+
+func managedRuleServiceListenReady(forwardType string, port int, protocol string, readiness *localRuntimeReadiness) bool {
+	groups := localRuleManagedServiceGroups(forwardType, port, protocol)
+	if !managedServiceGroupsActiveCached(readiness, groups) {
+		return false
+	}
+	return runtimeListenPortReady(readiness.listenSnapshot, port, protocol, managedRuleListenProcessNeedles(forwardType))
+}
+
 func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness) bool {
 	port := atoi(state.Port)
 	if port <= 0 || readiness == nil {
@@ -745,7 +764,7 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	forwardType := strings.TrimSpace(state.ForwardType)
 	switch forwardType {
 	case "realm", "socat":
-		return managedServiceGroupsActiveCached(readiness, localRuleManagedServiceGroups(forwardType, port, state.Protocol))
+		return managedRuleServiceListenReady(forwardType, port, state.Protocol, readiness)
 	case "iptables":
 		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "nftables":
@@ -3147,7 +3166,7 @@ func shouldVerifyManagedRuntimeListen(a action) bool {
 		return false
 	}
 	switch strings.TrimSpace(a.ForwardType) {
-	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+	case "realm", "socat", "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return true
 	default:
 		return false
@@ -3183,6 +3202,9 @@ func waitForManagedRuntimeActionListenReady(a action, timeout time.Duration) boo
 
 func managedRuntimeActionListenReady(a action) bool {
 	switch strings.TrimSpace(a.ForwardType) {
+	case "realm", "socat":
+		readiness := readLocalRuntimeReadinessCached()
+		return managedRuleServiceListenReady(a.ForwardType, a.SourcePort, a.Protocol, &readiness)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
@@ -3206,6 +3228,15 @@ func managedRuntimeActionReadinessDiagnostic(a action) string {
 	scope := ""
 
 	switch strings.TrimSpace(a.ForwardType) {
+	case "realm", "socat":
+		scope = strings.TrimSpace(a.ForwardType)
+		serviceNames := managedRuleProtocolServiceNames(a.ForwardType, port, protocol)
+		serviceName = strings.Join(serviceNames, ",")
+		configured = len(serviceNames) > 0
+		protocolConfigured = configured
+		serviceActive = managedServiceGroupsActiveCached(&readiness, localRuleManagedServiceGroups(a.ForwardType, port, protocol))
+		socketReady = runtimeListenPortReady(readiness.listenSnapshot, port, protocol, managedRuleListenProcessNeedles(a.ForwardType))
+		ready = serviceActive && socketReady
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		scope = "nginx"
 		configPath = nginxConfigPath

@@ -87,6 +87,17 @@ function dbBool(value: unknown) {
   return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
 }
 
+function managedChildControlState(templateRule: any, existing: any) {
+  return {
+    disabledByUser: !!templateRule?.disabledByUser,
+    disabledByTunnel: !!templateRule?.disabledByTunnel,
+    // Protocol blocks are host-specific. A routine group sync must not clear a
+    // real block reported by an Agent just because the visible template is on.
+    protocolBlockReason: nullableString(templateRule?.protocolBlockReason)
+      ?? nullableString(existing?.protocolBlockReason),
+  };
+}
+
 const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 
 function isMainBackupGostTunnelMode(mode: unknown) {
@@ -108,7 +119,7 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     "failoverSeconds",
     "recoverSeconds",
   ];
-  const stringKeys = ["forwardType", "protocol", "gostMode", "targetIp", "failoverStrategy", "failoverTargets"];
+  const stringKeys = ["forwardType", "protocol", "gostMode", "targetIp", "failoverStrategy", "failoverTargets", "protocolBlockReason"];
   const boolKeys = [
     "proxyProtocolReceive",
     "proxyProtocolSend",
@@ -121,6 +132,8 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     "autoFailback",
     "isEnabled",
     "disabledByGroup",
+    "disabledByTunnel",
+    "disabledByUser",
   ];
   return numberKeys.every((key) => nullableNumber(existing?.[key]) === nullableNumber(payload?.[key]))
     && stringKeys.every((key) => nullableString(existing?.[key]) === nullableString(payload?.[key]))
@@ -1925,9 +1938,11 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel
     && (tunnelMode === "forwardx" || ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"].includes(tunnelMode));
   const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
-  const blockedByAnotherController = !!existing?.disabledByUser
-    || !!existing?.disabledByTunnel
-    || !!String(existing?.protocolBlockReason || "").trim();
+  const {
+    disabledByUser: childDisabledByUser,
+    disabledByTunnel: childDisabledByTunnel,
+    protocolBlockReason: childProtocolBlockReason,
+  } = managedChildControlState(templateRule, existing);
 
   const payload: any = {
     hostId,
@@ -1965,8 +1980,11 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     failoverSeconds: Number((failoverRuntimeSource as any).failoverSeconds || 60),
     recoverSeconds: Number((failoverRuntimeSource as any).recoverSeconds || 120),
     autoFailback: (failoverRuntimeSource as any).autoFailback !== false,
-    isEnabled: !blockedByAnotherController,
+    isEnabled: !childDisabledByUser && !childDisabledByTunnel && !childProtocolBlockReason,
     disabledByGroup: false,
+    disabledByTunnel: childDisabledByTunnel,
+    disabledByUser: childDisabledByUser,
+    protocolBlockReason: childProtocolBlockReason,
     isRunning: false,
     pendingDelete: false,
     userId: Number(templateRule.userId),
@@ -2060,9 +2078,11 @@ async function ensureChainRuleForTemplate(
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
   const chainProxyProtocolSupported = protocolTcpSupported && (chainForwardType === "gost" || chainForwardType === "realm");
   const chainRealmOptimizationSupported = protocolTcpSupported && chainForwardType === "realm";
-  const blockedByAnotherController = !!existing?.disabledByUser
-    || !!existing?.disabledByTunnel
-    || !!String(existing?.protocolBlockReason || "").trim();
+  const {
+    disabledByUser: childDisabledByUser,
+    disabledByTunnel: childDisabledByTunnel,
+    protocolBlockReason: childProtocolBlockReason,
+  } = managedChildControlState(templateRule, existing);
 
   const payload: any = {
     hostId,
@@ -2100,9 +2120,12 @@ async function ensureChainRuleForTemplate(
     failoverSeconds: 60,
     recoverSeconds: 120,
     autoFailback: true,
-    isEnabled: !blockedByAnotherController,
+    isEnabled: !childDisabledByUser && !childDisabledByTunnel && !childProtocolBlockReason,
     disabledByGroup: false,
     isRunning: false,
+    disabledByTunnel: childDisabledByTunnel,
+    disabledByUser: childDisabledByUser,
+    protocolBlockReason: childProtocolBlockReason,
     pendingDelete: false,
     userId: Number(templateRule.userId),
   };

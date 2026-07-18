@@ -415,6 +415,9 @@ func desiredActionLocalRuntimeReady(a action) bool {
 	}
 	forwardType := strings.TrimSpace(a.ForwardType)
 	switch forwardType {
+	case "realm", "socat":
+		readiness := readLocalRuntimeReadinessCached()
+		return managedRuleServiceListenReady(forwardType, a.SourcePort, a.Protocol, &readiness)
 	case "iptables", "nftables":
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
@@ -442,6 +445,9 @@ func desiredKnownRunningActionReady(a action) bool {
 		return true
 	}
 	switch strings.TrimSpace(a.ForwardType) {
+	case "realm", "socat":
+		readiness := readLocalRuntimeReadinessCached()
+		return managedRuleServiceListenReady(a.ForwardType, a.SourcePort, a.Protocol, &readiness)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "iptables", "nftables":

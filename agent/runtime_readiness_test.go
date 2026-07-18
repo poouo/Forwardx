@@ -243,3 +243,79 @@ func TestLocalGostRuleReadinessDistinguishesTunnelTransportFromEntryProtocols(t 
 		t.Fatal("ordinary GOST TCP+UDP entry was accepted without a UDP listener")
 	}
 }
+func TestManagedRuleReadinessRequiresRealProtocolSockets(t *testing.T) {
+	const port = 10889
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{
+			port: {`tcp LISTEN 0 4096 *:10889 *:* users:(("realm",pid=42,fd=3))`},
+		},
+		udpPorts: map[int][]string{
+			port: {`udp UNCONN 0 0 *:10889 *:* users:(("realm",pid=42,fd=4))`},
+		},
+		usable: true,
+	}
+	readiness := localRuntimeReadiness{
+		serviceActiveCache: map[string]bool{"forwardx-realm-both-10889": true},
+		listenSnapshot:     snapshot,
+	}
+	state := localRuleState{
+		Port:        "10889",
+		RuleID:      32,
+		Protocol:    "both",
+		ForwardType: "realm",
+	}
+	if !localRuleStateReady(state, &readiness) {
+		t.Fatal("active realm service with TCP and UDP sockets should be ready")
+	}
+
+	delete(snapshot.udpPorts, port)
+	if localRuleStateReady(state, &readiness) {
+		t.Fatal("active realm service without its UDP socket must not be ready")
+	}
+
+	snapshot.udpPorts[port] = []string{`udp UNCONN 0 0 *:10889 *:* users:(("realm",pid=42,fd=4))`}
+	snapshot.tcpPorts[port] = []string{`tcp LISTEN 0 4096 *:10889 *:* users:(("xray",pid=99,fd=3))`}
+	if localRuleStateReady(state, &readiness) {
+		t.Fatal("a socket owned by another process must not satisfy realm readiness")
+	}
+}
+
+func TestSocatBothReadinessRequiresBothManagedServicesAndSockets(t *testing.T) {
+	const port = 10871
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{
+			port: {`tcp LISTEN 0 4096 *:10871 *:* users:(("socat",pid=50,fd=3))`},
+		},
+		udpPorts: map[int][]string{
+			port: {`udp UNCONN 0 0 *:10871 *:* users:(("socat",pid=51,fd=4))`},
+		},
+		usable: true,
+	}
+	readiness := localRuntimeReadiness{
+		serviceActiveCache: map[string]bool{
+			"forwardx-socat-tcp-10871": true,
+			"forwardx-socat-udp-10871": true,
+		},
+		listenSnapshot: snapshot,
+	}
+	state := localRuleState{Port: "10871", RuleID: 36, Protocol: "both", ForwardType: "socat"}
+	if !localRuleStateReady(state, &readiness) {
+		t.Fatal("socat TCP+UDP rule should be ready when both services and sockets exist")
+	}
+
+	readiness.serviceActiveCache["forwardx-socat-udp-10871"] = false
+	if localRuleStateReady(state, &readiness) {
+		t.Fatal("socat TCP+UDP rule must not be ready when one managed service is inactive")
+	}
+}
+
+func TestManagedRuleApplyVerificationIncludesRealmAndSocat(t *testing.T) {
+	for _, forwardType := range []string{"realm", "socat"} {
+		if !shouldVerifyManagedRuntimeListen(action{Op: "apply", ForwardType: forwardType, SourcePort: 10889, Protocol: "both"}) {
+			t.Fatalf("%s apply skipped listener verification", forwardType)
+		}
+	}
+	if shouldVerifyManagedRuntimeListen(action{Op: "apply", ForwardType: "iptables", SourcePort: 10889, Protocol: "both"}) {
+		t.Fatal("kernel forwarding should keep using kernel-state verification")
+	}
+}
