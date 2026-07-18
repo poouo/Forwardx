@@ -41,7 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -223,9 +223,6 @@ function UsersContent() {
   const [newUserName, setNewUserName] = useState("");
   // 出于安全考虑，后台创建的用户一律为普通用户
   const [newCanAddRules, setNewCanAddRules] = useState(true);
-  const [forwardAccessPendingUserId, setForwardAccessPendingUserId] = useState<number | null>(null);
-  const [accountEnabledPendingUserId, setAccountEnabledPendingUserId] = useState<number | null>(null);
-
   // Reset password dialog
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [resetUserId, setResetUserId] = useState<number | null>(null);
@@ -519,7 +516,6 @@ function UsersContent() {
 
   const updateForwardAccessMutation = trpc.users.setForwardAccess.useMutation({
     onMutate: async (variables) => {
-      setForwardAccessPendingUserId(variables.userId);
       await utils.users.listPage.cancel(userPageInput);
       const previousUsers = utils.users.listPage.getData(userPageInput);
       patchCachedUser(variables.userId, {
@@ -536,22 +532,24 @@ function UsersContent() {
         manualAllowForwardXTunnel: variables.enabled,
       });
       utils.rules.list.invalidate();
-      toast.success("用户转发权限已更新");
+      toast.success(variables.enabled ? "用户转发已开启" : "用户转发已关闭");
     },
     onError: (err, _variables, context) => {
       if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
       toast.error(err.message || "更新转发权限失败");
     },
-    onSettled: (_data, _error, variables) => {
-      setForwardAccessPendingUserId((current) => (current === variables?.userId ? null : current));
-      utils.users.list.invalidate();
-      utils.users.listPage.invalidate();
+    onSettled: async () => {
+      await Promise.all([
+        utils.users.list.invalidate(),
+        utils.users.listPage.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+      ]);
     },
   });
 
   const updateAccountEnabledMutation = trpc.users.setAccountEnabled.useMutation({
     onMutate: async (variables) => {
-      setAccountEnabledPendingUserId(variables.userId);
       await utils.users.listPage.cancel(userPageInput);
       const previousUsers = utils.users.listPage.getData(userPageInput);
       patchCachedUser(variables.userId, { accountEnabled: variables.enabled });
@@ -566,10 +564,13 @@ function UsersContent() {
       if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
       toast.error(err.message || "更新账户状态失败");
     },
-    onSettled: (_data, _error, variables) => {
-      setAccountEnabledPendingUserId((current) => (current === variables?.userId ? null : current));
-      utils.users.list.invalidate();
-      utils.users.listPage.invalidate();
+    onSettled: async () => {
+      await Promise.all([
+        utils.users.list.invalidate(),
+        utils.users.listPage.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+      ]);
     },
   });
 
@@ -1092,10 +1093,10 @@ function UsersContent() {
         }
       >
         {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">账户</span>}
-        <Switch
+        <OptimisticSwitch
           checked={enabled}
-          disabled={isSelf || accountEnabledPendingUserId === Number(u.id)}
-          onCheckedChange={(checked) => updateAccountEnabledMutation.mutate({ userId: u.id, enabled: checked })}
+          disabled={isSelf}
+          onCheckedChangeAsync={(checked) => updateAccountEnabledMutation.mutateAsync({ userId: u.id, enabled: checked })}
           className="shrink-0"
           title={title}
           aria-label={title}
@@ -1114,37 +1115,37 @@ function UsersContent() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuItem onSelect={() => openRechargeDialog(u)}>
-          <WalletCards className="mr-2 h-4 w-4 text-muted-foreground" />
+          <WalletCards />
           <span>余额充值</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openSetBalanceDialog(u)}>
-          <Pencil className="mr-2 h-4 w-4 text-muted-foreground" />
+          <Pencil />
           <span>修改余额</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openAccountDialog(u)}>
-          <User className="mr-2 h-4 w-4 text-muted-foreground" />
+          <User />
           <span>账户信息</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.emailVerified || !u.email} onSelect={() => openSendEmail(u)}>
-          <Mail className="mr-2 h-4 w-4 text-muted-foreground" />
+          <Mail />
           <span>发送邮件</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => openResetTrafficDialog(u)}>
-          <RotateCcw className="mr-2 h-4 w-4 text-muted-foreground" />
+          <RotateCcw />
           <span>重置流量</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.twoFactorEnabled} onSelect={() => openRemoveTwoFactorDialog(u)}>
-          <ShieldOff className="mr-2 h-4 w-4 text-muted-foreground" />
+          <ShieldOff />
           <span>移除 2FA</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={u.id === currentUser?.id}
           onSelect={() => confirmDeleteUser(u)}
-          className="text-destructive focus:text-destructive"
+          variant="destructive"
         >
-          <Trash2 className="mr-2 h-4 w-4" />
+          <Trash2 />
           <span>删除用户</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -1329,10 +1330,10 @@ function UsersContent() {
                   <div className="grid gap-2">
                     <div className="flex h-9 items-center justify-between rounded-md border border-border/50 px-2">
                       <span className="text-xs text-muted-foreground">转发</span>
-                      <Switch
+                      <OptimisticSwitch
                         checked={u.role === "admin" || !!u.canAddRules}
-                        disabled={u.role === "admin" || forwardAccessPendingUserId === Number(u.id)}
-                        onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
+                        disabled={u.role === "admin"}
+                        onCheckedChangeAsync={(checked) => updateForwardAccessMutation.mutateAsync({ userId: u.id, enabled: checked })}
                       />
                     </div>
                   </div>
@@ -1379,7 +1380,7 @@ function UsersContent() {
                     <TableHead className="hidden w-[140px] whitespace-nowrap xl:table-cell">Telegram</TableHead>
                     <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
-                    <TableHead className="hidden w-[160px] whitespace-nowrap lg:table-cell">转发总开关</TableHead>
+                    <TableHead className="hidden w-[160px] whitespace-nowrap text-center lg:table-cell">转发总开关</TableHead>
                     <TableHead className="hidden w-[240px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
                     <TableHead className="w-[150px] whitespace-nowrap text-center">账户状态</TableHead>
                     <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
@@ -1403,26 +1404,25 @@ function UsersContent() {
                             <UserAvatar user={u} className="h-8 w-8 shrink-0" />
                             <div className="min-w-0 py-0.5">
                               <p className="truncate text-sm font-medium leading-5">{u.username || "未命名"}</p>
-                              <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                                <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit px-1.5 text-[10px] leading-4">
+                              <div className="mt-1.5 flex min-w-0 items-center gap-1 whitespace-nowrap">
+                                <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit shrink-0 px-1.5 text-[10px] leading-4">
                                   {u.role === "admin" ? "管理员" : "普通用户"}
                                 </Badge>
+                                {u.accountEnabled === false && (
+                                  <Badge variant="destructive" className="h-5 w-fit shrink-0 px-1.5 text-[10px]">账户禁用</Badge>
+                                )}
                                 {u.id === currentUser?.id && (
-                                  <span className="text-[10px] font-medium leading-4 text-primary">当前登录</span>
+                                  <span className="shrink-0 text-[10px] font-medium leading-4 text-primary">当前登录</span>
                                 )}
                               </div>
                               {u.displayRemark && (
                                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{u.displayRemark}</p>
                               )}
-                              {u.accountEnabled === false && (
-                                <Badge variant="destructive" className="mt-1 h-5 w-fit px-1.5 text-[10px]">账户禁用</Badge>
-                              )}
                               {u.role !== "admin" && (
                                 <div className="mt-2 flex w-fit items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-2 py-1 lg:hidden">
-                                  <Switch
+                                  <OptimisticSwitch
                                     checked={!!u.canAddRules}
-                                    disabled={forwardAccessPendingUserId === Number(u.id)}
-                                    onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
+                                    onCheckedChangeAsync={(checked) => updateForwardAccessMutation.mutateAsync({ userId: u.id, enabled: checked })}
                                     className="shrink-0"
                                   />
                                   <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
@@ -1492,13 +1492,13 @@ function UsersContent() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="hidden min-w-[160px] lg:table-cell">
-                          <div className="flex min-w-[140px] flex-col gap-1">
-                            <div className="flex items-center gap-2 whitespace-nowrap">
-                              <Switch
+                        <TableCell className="hidden min-w-[160px] text-center lg:table-cell">
+                          <div className="mx-auto flex w-fit min-w-[140px] flex-col items-center gap-1">
+                            <div className="flex items-center justify-center gap-2 whitespace-nowrap">
+                              <OptimisticSwitch
                                 checked={u.role === "admin" || !!u.canAddRules}
-                                disabled={u.role === "admin" || forwardAccessPendingUserId === Number(u.id)}
-                                onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
+                                disabled={u.role === "admin"}
+                                onCheckedChangeAsync={(checked) => updateForwardAccessMutation.mutateAsync({ userId: u.id, enabled: checked })}
                                 className="shrink-0"
                               />
                               {u.canAddRules || u.role === "admin" ? (
@@ -1512,7 +1512,7 @@ function UsersContent() {
                               )}
                             </div>
                             {u.trafficAutoReset && (
-                              <span className="whitespace-nowrap pl-[52px] text-[10px] text-muted-foreground">
+                              <span className="whitespace-nowrap text-center text-[10px] text-muted-foreground">
                                 每月{u.trafficResetDay || 1}日重置
                               </span>
                             )}

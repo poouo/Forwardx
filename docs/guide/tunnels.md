@@ -17,7 +17,7 @@
 | 类型 | 说明 |
 | --- | --- |
 | GOST | 使用 TLS、WSS、TCP、MTLS、MWSS 或 MTCP 等 GOST 模式 |
-| ForwardX V1 | 使用原有 FXP 加密传输 |
+| ForwardX V1 | 使用 AES-256-GCM 认证加密的 FXP 传输 |
 | ForwardX V2 | 外层使用 Agent 内置 userspace WireGuard，内层继续使用 FXP |
 | Nginx Stream | 使用独立 Nginx 四层运行时，支持 TCP/UDP；TCP 可选 TLS 证书 |
 
@@ -25,7 +25,7 @@
 
 | 版本 | 传输 | 兼容性 |
 | --- | --- | --- |
-| V1 | FXP 原有 TCP/UDP 加密通道 | 已有隧道继续使用 V1，不会自动切换 |
+| V1 | FXP AES-256-GCM TCP/UDP 加密通道 | 已有隧道继续使用 V1，不会自动切换 |
 | V2 | userspace WireGuard 外层 UDP + FXP 内层 | 需要链路内 Agent 均满足界面要求的最低版本 |
 
 V2 不依赖系统 `wg` 命令，不创建系统 WireGuard 网卡，也不修改系统路由。每个隧道在每台 Agent 上复用一套 WireGuard 运行时，规则通过本机回环代理接入。

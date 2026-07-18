@@ -32,7 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -180,6 +180,15 @@ function memberKey(memberType: GroupType, id: number) {
 function normalizeGroupMode(mode: unknown): GroupMode {
   const value = String(mode || "failover");
   return value === "port" || value === "chain" || value === "entry" || value === "exit" ? value : "failover";
+}
+
+function groupModeDisplayLabel(mode: unknown) {
+  const normalized = normalizeGroupMode(mode);
+  if (normalized === "port") return "端口转发";
+  if (normalized === "chain") return "转发链";
+  if (normalized === "entry") return "入口组";
+  if (normalized === "exit") return "出口组";
+  return "转发组";
 }
 
 function isCollectionMode(mode: GroupMode) {
@@ -853,7 +862,6 @@ export function ForwardGroupsContent({
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
-  const [pendingToggleGroupIds, setPendingToggleGroupIds] = useState<Set<number>>(() => new Set());
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
@@ -1168,39 +1176,19 @@ export function ForwardGroupsContent({
   });
 
   const toggleMutation = trpc.forwardGroups.toggle.useMutation({
-    onMutate: async ({ id, isEnabled }) => {
-      const groupId = Number(id);
-      setPendingToggleGroupIds((current) => new Set(current).add(groupId));
-      await utils.forwardGroups.options.cancel();
-      const previous = utils.forwardGroups.options.getData();
-      if (previous) {
-        utils.forwardGroups.options.setData(
-          undefined,
-          previous.map((group: any) => Number(group.id) === groupId ? { ...group, isEnabled } : group) as any,
-        );
-      }
-      return { previous };
-    },
-    onSuccess: (_data, variables) => {
-      toast.success(variables.isEnabled ? "已启用" : "已停用，关联规则正在受控关闭");
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previous) utils.forwardGroups.options.setData(undefined, context.previous as any);
-      toast.error(error.message || "操作失败");
-    },
-    onSettled: (_data, _error, variables) => {
-      const groupId = Number(variables?.id || 0);
-      setPendingToggleGroupIds((current) => {
-        const next = new Set(current);
-        next.delete(groupId);
-        return next;
-      });
-      utils.forwardGroups.options.invalidate();
-      utils.forwardGroups.listPage.invalidate();
-      utils.tunnels.list.invalidate();
-      utils.tunnels.options.invalidate();
-      utils.tunnels.listPage.invalidate();
-      utils.rules.list.invalidate();
+    onSuccess: async () => {
+      await Promise.all([
+        utils.forwardGroups.options.invalidate(),
+        utils.forwardGroups.listPage.invalidate(),
+        utils.tunnels.list.invalidate(),
+        utils.tunnels.options.invalidate(),
+        utils.tunnels.listPage.invalidate(),
+        utils.tunnels.listAll.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+      ]);
     },
   });
 
@@ -1524,11 +1512,14 @@ export function ForwardGroupsContent({
   const renderGroupEnabledSwitch = (group: any) => {
     const groupId = Number(group?.id || 0);
     const enabled = !!group?.isEnabled;
+    const resourceLabel = groupModeDisplayLabel(group?.groupMode);
     return (
-      <Switch
+      <OptimisticSwitch
         checked={enabled}
-        disabled={!groupId || pendingToggleGroupIds.has(groupId)}
-        onCheckedChange={(checked) => toggleMutation.mutate({ id: groupId, isEnabled: checked })}
+        disabled={!groupId}
+        onCheckedChangeAsync={(checked) => toggleMutation.mutateAsync({ id: groupId, isEnabled: checked })}
+        onToggleSuccess={(checked) => toast.success(`${resourceLabel}已${checked ? "开启" : "关闭"}`)}
+        onToggleError={(error) => toast.error(error instanceof Error ? error.message : `切换${resourceLabel}状态失败`)}
         className="scale-75"
         title={enabled ? "关闭后该资源及关联规则将停止下发和转发" : "开启后将恢复此前由该资源受控关闭的规则"}
         aria-label={`${enabled ? "停用" : "启用"}${group?.name || "链路资源"}`}

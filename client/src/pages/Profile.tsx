@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { migrateLegacyAvatarValue } from "@/lib/avatar";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { mobileAuth } from "@/lib/mobileAuth";
@@ -100,9 +100,11 @@ function ProfileContent() {
   });
 
   const updateTelegramAnnouncementSubscriptionMutation = trpc.auth.updateProfile.useMutation({
-    onSuccess: (_data, variables) => {
-      utils.auth.me.invalidate();
-      utils.telegram.status.invalidate();
+    onSuccess: async (_data, variables) => {
+      await Promise.all([
+        utils.auth.me.invalidate(),
+        utils.telegram.status.invalidate(),
+      ]);
       toast.success(variables.telegramAnnouncementSubscribed ? "已开启公告 TG 推送" : "已关闭公告 TG 推送");
     },
     onError: (error) => toast.error(error.message || "公告 TG 推送设置失败"),
@@ -349,9 +351,9 @@ function ProfileContent() {
     createTelegramBindMutation.mutate();
   };
 
-  const handleTelegramAnnouncementSubscribedChange = (enabled: boolean) => {
-    updateTelegramAnnouncementSubscriptionMutation.mutate({ telegramAnnouncementSubscribed: enabled });
-  };
+  const handleTelegramAnnouncementSubscribedChange = (enabled: boolean) => (
+    updateTelegramAnnouncementSubscriptionMutation.mutateAsync({ telegramAnnouncementSubscribed: enabled })
+  );
 
   const handleMobileUpdateCheck = async () => {
     if (!mobileAuth.isNative || checkingMobileUpdate) return;
@@ -510,11 +512,10 @@ function ProfileContent() {
                   默认关闭。开启后，新公告仅在管理员选择 TG 推送时发送到已绑定的 Telegram。
                 </p>
               </div>
-              <Switch
-                instant
+              <OptimisticSwitch
                 checked={!!telegramStatus?.announcementSubscribed}
-                disabled={!telegramStatus?.bound || updateTelegramAnnouncementSubscriptionMutation.isPending}
-                onCheckedChange={handleTelegramAnnouncementSubscribedChange}
+                disabled={!telegramStatus?.bound}
+                onCheckedChangeAsync={handleTelegramAnnouncementSubscribedChange}
               />
             </div>
             {!telegramStatus?.bound && telegramStatus?.configured !== false && (

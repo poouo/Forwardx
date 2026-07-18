@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList } from "@/components/ui/sliding-tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -4083,6 +4083,8 @@ function SystemInfoSection() {
     onSettled: () => setSavingSetting(null),
   });
 
+  const updateAutoCheckMutation = trpc.system.updateSettings.useMutation();
+
   const updateWebPortMutation = trpc.system.updateWebPort.useMutation({
     onSuccess: (result) => {
       utils.system.getSettings.invalidate();
@@ -4331,20 +4333,6 @@ function SystemInfoSection() {
 
   const handleSaveSessionPolicy = () => {
     saveSystemSettings("sessionPolicy", { allowMultiDeviceLogin });
-  };
-
-  const handleUpdateAutoCheckChange = (checked: boolean) => {
-    setUpdateAutoCheckEnabled(checked);
-    saveSystemSettings(
-      "updateAutoCheck",
-      { updateAutoCheckEnabled: checked },
-      {
-        onSuccess: () => {
-          utils.system.getSettings.invalidate();
-          utils.system.publicInfo.invalidate();
-        },
-      },
-    );
   };
 
   const resetForwardProtocolDraft = () => {
@@ -5488,11 +5476,17 @@ function SystemInfoSection() {
                   <p className="text-sm font-medium">自动检查更新</p>
                   <p className="text-xs text-muted-foreground">开启后定期检查面板和 Agent 更新。</p>
                 </div>
-                <Switch
+                <OptimisticSwitch
                   className="shrink-0"
                   checked={updateAutoCheckEnabled}
-                  disabled={isSavingSetting("updateAutoCheck")}
-                  onCheckedChange={handleUpdateAutoCheckChange}
+                  onCheckedChangeAsync={(checked) => updateAutoCheckMutation.mutateAsync({ updateAutoCheckEnabled: checked })}
+                  onToggleSuccess={(checked) => {
+                    setUpdateAutoCheckEnabled(checked);
+                    utils.system.getSettings.invalidate();
+                    utils.system.publicInfo.invalidate();
+                    toast.success(`自动检查更新已${checked ? "开启" : "关闭"}`);
+                  }}
+                  onToggleError={(error) => toast.error(error instanceof Error ? error.message : "自动检查更新失败")}
                 />
               </div>
             </div>

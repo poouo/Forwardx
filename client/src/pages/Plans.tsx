@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
@@ -769,14 +769,14 @@ export default function Plans() {
     onSuccess: (_result, { enabled }) => {
       utils.plans.storeStatus.setData(undefined, { enabled });
       utils.plans.storeList.invalidate();
-      toast.success("商店状态已更新");
+      toast.success(enabled ? "套餐商店已开启" : "套餐商店已关闭");
     },
     onError: (error, _variables, context) => {
       if (context?.previous) utils.plans.storeStatus.setData(undefined, context.previous);
       toast.error(error.message || "更新失败");
     },
-    onSettled: () => {
-      utils.plans.storeStatus.invalidate();
+    onSettled: async () => {
+      await utils.plans.storeStatus.invalidate();
     },
   });
 
@@ -791,14 +791,14 @@ export default function Plans() {
       const current = utils.trafficBilling.configs.getData();
       utils.trafficBilling.configs.setData(undefined, { ...(current || { configs: [] }), enabled });
       utils.trafficBilling.storeResources.invalidate();
-      toast.success("流量计费开关已更新");
+      toast.success(enabled ? "按量计费已开启" : "按量计费已关闭");
     },
     onError: (error, _variables, context) => {
       if (context?.previous) utils.trafficBilling.configs.setData(undefined, context.previous);
       toast.error(error.message || "更新失败");
     },
-    onSettled: () => {
-      utils.trafficBilling.configs.invalidate();
+    onSettled: async () => {
+      await utils.trafficBilling.configs.invalidate();
     },
   });
 
@@ -1043,11 +1043,9 @@ export default function Plans() {
                 {trafficBillingLoading ? (
                   <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
                 ) : (
-                  <Switch
-                    instant
+                  <OptimisticSwitch
                     checked={trafficBillingEnabled}
-                    disabled={setTrafficBillingEnabled.isPending}
-                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
+                    onCheckedChangeAsync={(enabled) => setTrafficBillingEnabled.mutateAsync({ enabled })}
                   />
                 )}
               </CardTitle>
@@ -1059,11 +1057,10 @@ export default function Plans() {
               <CardDescription>商店状态</CardDescription>
               <CardTitle className="flex items-center justify-between">
                 <span>{storeEnabled ? "已开启" : "已关闭"}</span>
-                <Switch
-                  instant
+                <OptimisticSwitch
                   checked={storeEnabled}
-                  disabled={storeStatusLoading || setStoreEnabled.isPending}
-                  onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })}
+                  disabled={storeStatusLoading}
+                  onCheckedChangeAsync={(enabled) => setStoreEnabled.mutateAsync({ enabled })}
                 />
               </CardTitle>
             </CardHeader>

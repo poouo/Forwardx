@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -923,6 +923,13 @@ function normalizeForwardGroupModeForRule(group: any | null | undefined) {
 
 function isForwardChainGroup(group: any | null | undefined) {
   return normalizeForwardGroupModeForRule(group) === "chain";
+}
+
+function getForwardGroupRouteLabel(group: any | null | undefined) {
+  const mode = normalizeForwardGroupModeForRule(group);
+  if (mode === "port") return "端口转发";
+  if (mode === "chain") return "转发链";
+  return "转发组";
 }
 
 function isGostTunnelForMainBackup(tunnel: any | null | undefined) {
@@ -2472,25 +2479,16 @@ function RulesContent() {
       failoverTargetsText: "",
     }));
   };
-  const [pendingToggleRuleIds, setPendingToggleRuleIds] = useState<Set<number>>(() => new Set());
   const toggleMutation = trpc.rules.toggle.useMutation({
-    onSuccess: () => {
-      utils.rules.list.invalidate();
-      utils.rules.listPage.invalidate();
-      utils.rules.mapItems.invalidate();
-      utils.rules.listSummary.invalidate();
-      utils.auth.me.invalidate();
-      utils.billing.me.invalidate();
-    },
-    onError: (err) => toast.error(err.message || "操作失败"),
-    onSettled: (_data, _error, variables) => {
-      const id = Number(variables?.id || 0);
-      if (!id) return;
-      setPendingToggleRuleIds((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
-      });
+    onSuccess: async () => {
+      await Promise.all([
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.auth.me.invalidate(),
+        utils.billing.me.invalidate(),
+      ]);
     },
   });
 
@@ -2506,9 +2504,9 @@ function RulesContent() {
     return (resourceIds.hostIds || []).map(Number).includes(Number(rule.hostId));
   };
 
-  const handleToggleRule = (rule: any, checked: boolean) => {
+  const toggleRuleEnabled = async (rule: any, checked: boolean) => {
     const id = Number(rule?.id || 0);
-    if (!id || pendingToggleRuleIds.has(id)) return;
+    if (!id) throw new Error("规则不存在");
     if (
       checked &&
       user?.role !== "admin" &&
@@ -2517,11 +2515,9 @@ function RulesContent() {
       walletBalanceKnown &&
       Number(wallet?.balanceCents || 0) <= 0
     ) {
-      toast.error("流量计费余额不足，请充值后再启用规则");
-      return;
+      throw new Error("流量计费余额不足，请充值后再启用规则");
     }
-    setPendingToggleRuleIds((current) => new Set(current).add(id));
-    toggleMutation.mutate({ id, isEnabled: checked });
+    await toggleMutation.mutateAsync({ id, isEnabled: checked });
   };
 
   const renderRuleEnabledSwitch = (rule: any) => {
@@ -2529,10 +2525,11 @@ function RulesContent() {
     const enabled = !!rule.isEnabled;
     const title = enabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发";
     const content = supported ? (
-      <Switch
+      <OptimisticSwitch
         checked={enabled}
-        disabled={pendingToggleRuleIds.has(Number(rule.id))}
-        onCheckedChange={(checked) => handleToggleRule(rule, checked)}
+        onCheckedChangeAsync={(checked) => toggleRuleEnabled(rule, checked)}
+        onToggleSuccess={(checked) => toast.success(checked ? "规则已开启" : "规则已关闭")}
+        onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换规则状态失败")}
         className="scale-75"
         title={title}
         aria-label={`${enabled ? "停用" : "启用"}转发规则 ${rule.name || ""}`}
@@ -4237,7 +4234,7 @@ function RulesContent() {
       <span className="sr-only">{getTunnelStatusText(tunnel)}</span>
     </span>
   );
-  const getForwardGroupSelectName = (group: any) => String(group?.name || `转发组 #${group?.id || "-"}`);
+  const getForwardGroupSelectName = (group: any) => String(group?.name || `${getForwardGroupRouteLabel(group)} #${group?.id || "-"}`);
   const isTrafficBillingForwardGroup = (group: any) => {
     if (!trafficBilling?.enabled || !group) return false;
     if (trafficBillingForwardGroupIds.has(Number(group.id))) return true;
@@ -5125,7 +5122,8 @@ function RulesContent() {
 
   /** 获取主机入口展示地址：优先展示自定义域名 / DDNS，最后回退自动检测 IP */
   const getForwardGroupName = (groupId: number) => {
-    return forwardGroupById.get(Number(groupId))?.name || `转发组 #${groupId}`;
+    const group = forwardGroupById.get(Number(groupId));
+    return group?.name || `${getForwardGroupRouteLabel(group)} #${groupId}`;
   };
   const getRuleResourceName = (rule: any) => {
     const forwardGroupId = Number(rule?.forwardGroupId || 0);
@@ -5250,7 +5248,7 @@ function RulesContent() {
     const rows: EntryAddress[] = [];
     const domain = String(group?.domain || "").trim();
     if (domain) {
-      pushUniqueEntryAddress(rows, "转发组", domain);
+      pushUniqueEntryAddress(rows, getForwardGroupRouteLabel(group), domain);
       return rows;
     }
     const activeMemberId = Number(group?.activeMemberId || 0);
@@ -5322,7 +5320,7 @@ function RulesContent() {
       }
       const entry = String(entryValue || getForwardGroupEntryAddresses(group)[0]?.value || "").trim();
       if (!entry) {
-        toast.error("该转发组未配置可用入口地址");
+        toast.error(`该${getForwardGroupRouteLabel(group)}未配置可用入口地址`);
         return;
       }
       const text = formatAddressWithPort(entry, rule.sourcePort);
@@ -5408,13 +5406,14 @@ function RulesContent() {
 
   const getRuleTransferDisplay = (rule: any) => {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    const groupRouteLabel = getForwardGroupRouteLabel(group);
     const groupEntry = isForwardChainGroup(group)
       ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
       : (group?.domain || getForwardGroupName(rule.forwardGroupId));
     const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group) : [];
     const groupEntryItems = rule.forwardGroupId && !isForwardChainGroup(group) ? getForwardGroupEntryAddresses(group) : [];
     const entryItems = rule.forwardGroupId
-      ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : (groupEntryItems.length > 0 ? groupEntryItems : [{ label: "转发组", value: groupEntry }]))
+      ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : (groupEntryItems.length > 0 ? groupEntryItems : [{ label: groupRouteLabel, value: groupEntry }]))
       : (getRuleEntries(rule).length > 0
         ? getRuleEntries(rule)
         : [{ label: "入口", value: getRuleEntryHostName(rule) }]);
@@ -5425,7 +5424,7 @@ function RulesContent() {
     const entryAddress = entryAddresses.map((entry) => entry.text).join(" / ");
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
     const entryTitle = rule.forwardGroupId
-      ? `复制${isForwardChainGroup(group) ? "转发链" : "转发组"}入口: ${entryAddress}`
+      ? `复制${groupRouteLabel}入口: ${entryAddress}`
       : `复制入口地址: ${entryAddress}`;
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     return {
@@ -5594,7 +5593,9 @@ function RulesContent() {
   const renderRouteBadge = (rule: any, compactRow = false) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
-    const isChainRoute = !!rule.forwardGroupId && isForwardChainGroup(group);
+    const groupMode = normalizeForwardGroupModeForRule(group);
+    const groupRouteLabel = getForwardGroupRouteLabel(group);
+    const GroupRouteIcon = groupMode === "port" ? ArrowRightLeft : Layers3;
     const kernelWarning = getRuleKernelForwardWarning(rule);
     const warningBadge = renderKernelForwardWarningBadge(kernelWarning);
     const badge = (
@@ -5613,7 +5614,7 @@ function RulesContent() {
         }`}
       >
         {rule.forwardGroupId ? (
-          <><Layers3 className="h-3 w-3 mr-1" />{isChainRoute ? "转发链" : "转发组"}</>
+          <><GroupRouteIcon className="h-3 w-3 mr-1" />{groupRouteLabel}</>
         ) : tunnel ? (
           <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel, nginxTunnelEnabled).badgeLabel}</>
         ) : rule.forwardType === "iptables" ? (

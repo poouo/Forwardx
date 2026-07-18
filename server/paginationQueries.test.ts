@@ -57,8 +57,14 @@ test("database-backed list queries page, search, scope, and hydrate only request
 
       await insert(
         "hosts",
-        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder", "agentVersion"],
-        [1, "Tokyo Entry", "192.0.2.10", "192.0.2.10", 1, 1, now, 0, "2.2.157"],
+        [
+          "id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "sortOrder", "agentVersion",
+          "geoCountryCode", "geoCountryName", "geoRegion", "geoEmoji", "geoLatitudeMicro", "geoLongitudeMicro", "geoUpdatedAt",
+        ],
+        [
+          1, "Tokyo Entry", "192.0.2.10", "192.0.2.10", 1, 1, now, 0, "2.2.157",
+          "JP", "Japan", "Tokyo", "JP", 35676000, 139650000, now,
+        ],
       );
       await insert(
         "hosts",
@@ -150,6 +156,24 @@ test("database-backed list queries page, search, scope, and hydrate only request
         hostIds: [1, 2, 3],
       });
       assert.deepEqual(hostStatuses.map((item) => Number(item.id)).sort((a, b) => a - b), [1, 3]);
+      const hostOptions = await hosts.getHostOptions(2, [1]);
+      const tokyoOption = hostOptions.find((item) => Number(item.id) === 1);
+      assert.deepEqual(
+        {
+          countryCode: tokyoOption?.geoCountryCode,
+          countryName: tokyoOption?.geoCountryName,
+          region: tokyoOption?.geoRegion,
+          latitude: tokyoOption?.geoLatitudeMicro,
+          longitude: tokyoOption?.geoLongitudeMicro,
+        },
+        {
+          countryCode: "JP",
+          countryName: "Japan",
+          region: "Tokyo",
+          latitude: 35676000,
+          longitude: 139650000,
+        },
+      );
 
       const tunnelPage = await tunnels.getTunnelsPage({ page: 1, pageSize: 10, search: "Tokyo Entry" });
       assert.equal(tunnelPage.totalItems, 1);

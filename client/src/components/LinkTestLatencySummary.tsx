@@ -1,6 +1,6 @@
 import { LatencyRating } from "@/components/LatencyRating";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
+import { countryCodeToEmoji, type LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
@@ -614,7 +614,14 @@ export function LinkTestProbeView({
   const renderFlag = (meta?: LinkTestNodeMeta) => {
     const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
     const flagUrl = /^[A-Z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode.toLowerCase()}.png` : "";
-    if (!flagUrl) return <span className="inline-block h-3.5 w-5" aria-hidden="true" />;
+    const metaEmoji = String(meta?.emoji || "").trim();
+    const fallbackFlag = countryCodeToEmoji(countryCode)
+      || (/^\p{Regional_Indicator}{2}$/u.test(metaEmoji) ? metaEmoji : "");
+    if (!flagUrl) {
+      return fallbackFlag
+        ? <span className="text-sm leading-none" aria-hidden="true">{fallbackFlag}</span>
+        : <span className="inline-block h-3.5 w-5" aria-hidden="true" />;
+    }
     return (
       <>
         <img
@@ -629,7 +636,7 @@ export function LinkTestProbeView({
             if (fallback) fallback.style.display = "inline";
           }}
         />
-        <span className="hidden font-mono leading-none">{countryCode}</span>
+        <span className="hidden text-sm leading-none" aria-hidden="true">{fallbackFlag}</span>
       </>
     );
   };

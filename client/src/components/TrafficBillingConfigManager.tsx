@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -388,16 +388,16 @@ export default function TrafficBillingConfigManager({
   const totalCharged = Number(summary?.totalAmountCents || 0);
   const totalGb = Number(summary?.totalBilledGb || 0);
 
-  const invalidateBilling = () => {
-    utils.trafficBilling.configs.invalidate();
-    utils.trafficBilling.status.invalidate();
-    utils.trafficBilling.storeResources.invalidate();
-  };
+  const invalidateBilling = () => Promise.all([
+    utils.trafficBilling.configs.invalidate(),
+    utils.trafficBilling.status.invalidate(),
+    utils.trafficBilling.storeResources.invalidate(),
+  ]);
 
   const setEnabledMutation = trpc.trafficBilling.setEnabled.useMutation({
-    onSuccess: () => {
-      invalidateBilling();
-      toast.success("流量计费开关已更新");
+    onSuccess: async (_data, variables) => {
+      await invalidateBilling();
+      toast.success(variables.enabled ? "按量计费已开启" : "按量计费已关闭");
     },
     onError: (error) => toast.error(error.message || "更新失败"),
   });
@@ -480,7 +480,7 @@ export default function TrafficBillingConfigManager({
               {configsLoading ? (
                 <Skeleton className="h-6 w-11 rounded-full" />
               ) : (
-                <Switch checked={!!data?.enabled} disabled={setEnabledMutation.isPending} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+                <OptimisticSwitch checked={!!data?.enabled} onCheckedChangeAsync={(checked) => setEnabledMutation.mutateAsync({ enabled: checked })} />
               )}
             </div>
             {!hideCreateButton && (
@@ -503,7 +503,7 @@ export default function TrafficBillingConfigManager({
             {configsLoading ? (
               <Skeleton className="h-6 w-11 rounded-full" />
             ) : (
-              <Switch checked={!!data?.enabled} disabled={setEnabledMutation.isPending} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+              <OptimisticSwitch checked={!!data?.enabled} onCheckedChangeAsync={(checked) => setEnabledMutation.mutateAsync({ enabled: checked })} />
             )}
           </div>
         </div>

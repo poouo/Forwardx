@@ -1136,7 +1136,7 @@ async function usageText(user: any) {
 }
 
 async function rulesText(user: any) {
-  const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
+  const rules = await attachForwardGroupModes(await db.getForwardRules(user.role === "admin" ? undefined : user.id));
   const visible = user.role === "admin" ? rules.slice(0, 10) : rules.slice(0, 15);
   if (visible.length === 0) return "<b>转发规则</b>\n\n暂无转发规则。";
   const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)), { includeLatency: true });
@@ -1153,7 +1153,7 @@ async function rulesText(user: any) {
 }
 
 async function rulesView(user: any, page = 0) {
-  const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
+  const rules = await attachForwardGroupModes(await db.getForwardRules(user.role === "admin" ? undefined : user.id));
   const { page: safePage, totalPages } = clampPage(page, rules.length, RULE_PAGE_SIZE);
   const visible = rules.slice(safePage * RULE_PAGE_SIZE, safePage * RULE_PAGE_SIZE + RULE_PAGE_SIZE);
   const trafficByRuleId = visible.length > 0
@@ -1189,7 +1189,8 @@ async function rulesView(user: any, page = 0) {
 }
 
 async function ruleDetailText(ruleId: number, user: any) {
-  const rule = await db.getForwardRuleById(ruleId);
+  const storedRule = await db.getForwardRuleById(ruleId);
+  const rule = storedRule ? (await attachForwardGroupModes([storedRule]))[0] : null;
   if (!rule || (user.role !== "admin" && rule.userId !== user.id)) return "规则不存在或无权查看。";
   const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)], { includeLatency: true })).get(Number(rule.id));
   const statusInfo = effectiveRuleStatusInfo(rule, traffic);
@@ -3694,9 +3695,24 @@ function isVisibleForwardGroupRuleForTelegramUser(rule: any, allowedForwardGroup
     && allowedForwardGroupIds.has(Number(rule.forwardGroupId));
 }
 
+async function attachForwardGroupModes(rules: any[]) {
+  const groupIds = Array.from(new Set(
+    rules
+      .map((rule: any) => Number(rule?.forwardGroupId || 0))
+      .filter((id: number) => Number.isFinite(id) && id > 0),
+  ));
+  if (groupIds.length === 0) return rules;
+  const modeRows = await db.getForwardGroupModesByIds(groupIds);
+  const modeById = new Map((modeRows as any[]).map((row: any) => [Number(row.id), String(row.groupMode || "failover")]));
+  return rules.map((rule: any) => {
+    const groupId = Number(rule?.forwardGroupId || 0);
+    return groupId > 0 ? { ...rule, forwardGroupMode: modeById.get(groupId) || null } : rule;
+  });
+}
+
 async function visibleRulesForTelegramUser(user: any) {
   const isAdmin = user.role === "admin";
-  const rules = await db.getForwardRules(isAdmin ? undefined : user.id);
+  const rules = await attachForwardGroupModes(await db.getForwardRules(isAdmin ? undefined : user.id));
   if (isAdmin) return rules as any[];
   const allowedForwardGroupIds = new Set(await db.getUserAllowedForwardGroupIds(user.id));
   return (rules as any[]).filter((rule: any) => {
@@ -3833,6 +3849,13 @@ function isForwardGroupSurfaceRule(rule: any) {
   return !!rule?.forwardGroupId && !rule?.forwardGroupRuleId && !rule?.forwardGroupMemberId;
 }
 
+function forwardGroupSurfaceLabel(rule: any) {
+  const groupMode = String(rule?.forwardGroupMode || "");
+  if (groupMode === "port") return "端口转发";
+  if (groupMode === "chain") return "转发链";
+  return "转发组";
+}
+
 function hasRuleTraffic(summary?: AiRuleTrafficSummary) {
   return Math.max(0, Number(summary?.bytesIn || 0)) + Math.max(0, Number(summary?.bytesOut || 0)) > 0;
 }
@@ -3866,13 +3889,14 @@ function effectiveRuleStatusInfo(rule: any, summary?: AiRuleTrafficSummary): { k
       : { kind: "running", label: "运行中" };
   }
   if (isForwardGroupSurfaceRule(rule) && (hasLatency || hasRuleTraffic(summary))) {
+    const resourceLabel = forwardGroupSurfaceLabel(rule);
     return hasLatency
-      ? { kind: "running", label: `转发组入口可用（${Math.round(latencyMs!)}ms）` }
-      : { kind: "running", label: "转发组入口可用" };
+      ? { kind: "running", label: `${resourceLabel}入口可用（${Math.round(latencyMs!)}ms）` }
+      : { kind: "running", label: `${resourceLabel}入口可用` };
   }
   return {
     kind: "pending",
-    label: isForwardGroupSurfaceRule(rule) ? "等待转发组应用" : "等待 Agent 应用",
+    label: isForwardGroupSurfaceRule(rule) ? `等待${forwardGroupSurfaceLabel(rule)}应用` : "等待 Agent 应用",
     detail: "面板已保存规则，正在等待 Agent 拉取配置并回报运行状态。",
   };
 }

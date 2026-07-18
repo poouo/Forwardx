@@ -233,7 +233,6 @@ export default function Announcements() {
                   </p>
                 </div>
                 <Switch
-                  instant
                   checked={form.telegramPush}
                   onCheckedChange={(telegramPush) => setForm({ ...form, telegramPush })}
                 />

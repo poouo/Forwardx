@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
@@ -142,19 +142,18 @@ function buildServiceUpdatePayload(service: any, isEnabled = service?.isEnabled 
 
 function ServiceEnabledSwitch({
   service,
-  disabled,
   onToggle,
 }: {
   service: any;
-  disabled?: boolean;
-  onToggle: (service: any, checked: boolean) => void;
+  onToggle: (service: any, checked: boolean) => Promise<unknown>;
 }) {
   const enabled = service.isEnabled !== false;
   return (
-    <Switch
+    <OptimisticSwitch
       checked={enabled}
-      disabled={disabled}
-      onCheckedChange={(checked) => onToggle(service, checked)}
+      onCheckedChangeAsync={(checked) => onToggle(service, checked)}
+      onToggleSuccess={(checked) => toast.success(checked ? "探测服务已开启" : "探测服务已关闭")}
+      onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换探测服务状态失败")}
       className="scale-75"
       title={`${enabled ? "停用" : "启用"}探测服务 ${service.name || ""}`}
       aria-label={`${enabled ? "停用" : "启用"}服务 ${service.name || ""}`}
@@ -168,7 +167,6 @@ function ServiceCard({
   onEdit,
   onDelete,
   onToggle,
-  togglePending,
   dragHandle,
   sortableClassName,
 }: {
@@ -176,8 +174,7 @@ function ServiceCard({
   hostsById: Map<number, any>;
   onEdit: (service: any) => void;
   onDelete: (service: any) => void;
-  onToggle: (service: any, checked: boolean) => void;
-  togglePending?: boolean;
+  onToggle: (service: any, checked: boolean) => Promise<unknown>;
   dragHandle?: any;
   sortableClassName?: string;
 }) {
@@ -200,7 +197,7 @@ function ServiceCard({
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {dragHandle}
-            <ServiceEnabledSwitch service={service} disabled={togglePending} onToggle={onToggle} />
+            <ServiceEnabledSwitch service={service} onToggle={onToggle} />
           </div>
         </div>
 
@@ -268,7 +265,6 @@ export default function HostProbeServiceManager({
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
   const [internalViewMode, setInternalViewMode] = useState<HostProbeServiceViewMode>(() => getStoredServiceViewMode());
-  const [pendingToggleServiceIds, setPendingToggleServiceIds] = useState<Set<number>>(() => new Set());
   const viewMode = controlledViewMode ?? internalViewMode;
   const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
   const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
@@ -296,19 +292,8 @@ export default function HostProbeServiceManager({
     onError: (err) => toast.error(err.message || "更新服务失败"),
   });
   const toggleMutation = trpc.hosts.updateProbeService.useMutation({
-    onSuccess: (_data, variables) => {
-      utils.hosts.probeServices.invalidate();
-      toast.success(variables.isEnabled ? "服务已启用" : "服务已停用");
-    },
-    onError: (err) => toast.error(err.message || "切换服务状态失败"),
-    onSettled: (_data, _error, variables) => {
-      const id = Number(variables?.id || 0);
-      if (!id) return;
-      setPendingToggleServiceIds((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
-      });
+    onSuccess: async () => {
+      await utils.hosts.probeServices.invalidate();
     },
   });
   const deleteMutation = trpc.hosts.deleteProbeService.useMutation({
@@ -334,11 +319,10 @@ export default function HostProbeServiceManager({
     onViewModeChange?.(nextViewMode);
   };
 
-  const toggleServiceEnabled = (service: any, checked: boolean) => {
+  const toggleServiceEnabled = async (service: any, checked: boolean) => {
     const id = Number(service?.id || 0);
-    if (!id || pendingToggleServiceIds.has(id)) return;
-    setPendingToggleServiceIds((current) => new Set(current).add(id));
-    toggleMutation.mutate(buildServiceUpdatePayload(service, checked));
+    if (!id) throw new Error("探测服务不存在");
+    await toggleMutation.mutateAsync(buildServiceUpdatePayload(service, checked));
   };
 
   useEffect(() => {
@@ -469,7 +453,6 @@ export default function HostProbeServiceManager({
                           onEdit={openEdit}
                           onDelete={confirmDelete}
                           onToggle={toggleServiceEnabled}
-                          togglePending={pendingToggleServiceIds.has(Number(service.id))}
                           dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
                           sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
                         />
@@ -493,7 +476,6 @@ export default function HostProbeServiceManager({
                           onEdit={openEdit}
                           onDelete={confirmDelete}
                           onToggle={toggleServiceEnabled}
-                          togglePending={pendingToggleServiceIds.has(Number(service.id))}
                           dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
                           sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
                         />
@@ -545,7 +527,7 @@ export default function HostProbeServiceManager({
                       <TableCell className="max-w-[360px] truncate text-sm" title={scopeText(service, hostsById)}>{scopeText(service, hostsById)}</TableCell>
                       <TableCell className="text-sm tabular-nums">{service.intervalSeconds || 30}S</TableCell>
                       <TableCell>
-                        <ServiceEnabledSwitch service={service} disabled={pendingToggleServiceIds.has(Number(service.id))} onToggle={toggleServiceEnabled} />
+                        <ServiceEnabledSwitch service={service} onToggle={toggleServiceEnabled} />
                       </TableCell>
                       <TableCell className="text-right">
                         <ServiceActionButtons service={service} onEdit={openEdit} onDelete={confirmDelete} />

@@ -6,6 +6,7 @@ import { isTelegramBotReady } from "./telegramReady";
 type ForwardRuleErrorPayload = {
   rule: any;
   host?: any | null;
+  forwardGroup?: any | null;
   message?: string | null;
 };
 
@@ -33,18 +34,23 @@ function formatTarget(rule: any) {
   return `${ip}:${port}`;
 }
 
-function ruleModeLabel(rule: any) {
+function ruleModeLabel(rule: any, forwardGroup?: any | null) {
   const type = String(rule?.forwardType || "") as ForwardType;
   const typeLabel = FORWARD_TYPE_LABELS[type] || type || "-";
-  if (Number(rule?.forwardGroupRuleId || 0) > 0) return `转发组 / ${typeLabel}`;
-  if (Number(rule?.forwardGroupId || 0) > 0 && rule?.isForwardGroupTemplate) return `转发组模板 / ${typeLabel}`;
+  const forwardGroupId = Number(rule?.forwardGroupId || 0);
+  if (forwardGroupId > 0) {
+    const groupMode = String(forwardGroup?.groupMode || "");
+    const resourceLabel = groupMode === "port" ? "端口转发" : groupMode === "chain" ? "转发链" : groupMode === "failover" ? "转发组" : "转发资源";
+    return `${resourceLabel} / ${typeLabel}`;
+  }
   if (Number(rule?.tunnelId || 0) > 0) return `隧道转发 / ${typeLabel}`;
   return `端口转发 / ${typeLabel}`;
 }
 
 function ruleErrorMessage(payload: ForwardRuleErrorPayload) {
-  const { rule, host, message } = payload;
+  const { rule, host, forwardGroup, message } = payload;
   const reason = String(message || "").trim() || "Agent 上报规则运行异常";
+  const modeLabel = ruleModeLabel(rule, forwardGroup);
   return [
     `<b>🔴 ForwardX 转发规则异常提醒</b>`,
     "",
@@ -52,7 +58,7 @@ function ruleErrorMessage(payload: ForwardRuleErrorPayload) {
     `<b>入口主机</b>：${escapeHtml(hostName(host))} (#${escapeHtml(host?.id || rule?.hostId || "-")})`,
     `<b>入口端口</b>：<code>${escapeHtml(rule?.sourcePort || "-")}</code>`,
     `<b>目标</b>：<code>${escapeHtml(formatTarget(rule))}</code>`,
-    `<b>方式</b>：${escapeHtml(ruleModeLabel(rule))}`,
+    `<b>方式</b>：${escapeHtml(modeLabel)}`,
     `<b>协议</b>：${escapeHtml(formatForwardRuleProtocol(rule?.protocol))}`,
     `<b>原因</b>：${escapeHtml(reason)}`,
     `<b>时间</b>：${escapeHtml(formatTime())}`,

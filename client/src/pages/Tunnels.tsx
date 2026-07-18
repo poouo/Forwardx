@@ -36,7 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -2758,6 +2758,41 @@ function TunnelsContent() {
     onError: (e) => toast.error(e.message || "更新失败"),
   });
 
+  const toggleTunnelMutation = trpc.tunnels.update.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.tunnels.list.invalidate(),
+        utils.tunnels.options.invalidate(),
+        utils.tunnels.listPage.invalidate(),
+        utils.tunnels.mapItems.invalidate(),
+        utils.tunnels.listAll.invalidate(),
+        utils.forwardGroups.options.invalidate(),
+        utils.forwardGroups.listPage.invalidate(),
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.trafficBilling.configs.invalidate(),
+        utils.trafficBilling.storeResources.invalidate(),
+      ]);
+    },
+  });
+
+  const renderTunnelEnabledSwitch = (tunnel: any) => {
+    const enabled = !!tunnel?.isEnabled;
+    return (
+      <OptimisticSwitch
+        checked={enabled}
+        onCheckedChangeAsync={(checked) => toggleTunnelMutation.mutateAsync({ id: tunnel.id, isEnabled: checked })}
+        onToggleSuccess={(checked) => toast.success(checked ? "隧道已开启" : "隧道已关闭")}
+        onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换隧道状态失败")}
+        className="scale-75"
+        title={enabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
+        aria-label={`${enabled ? "停用" : "启用"}隧道 ${tunnel?.name || ""}`}
+      />
+    );
+  };
+
   const deleteMutation = trpc.tunnels.delete.useMutation({
     onSuccess: () => {
       utils.tunnels.list.invalidate();
@@ -3203,9 +3238,9 @@ function TunnelsContent() {
             >
               <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1", "mt-0.5")} />
               <span className="min-w-0">
-                <span className="block text-sm font-medium">V1 原版</span>
+                <span className="block text-sm font-medium">V1 AES-GCM</span>
                 <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
-                  FXP 原生传输，兼容现有链路
+                  FXP 认证加密传输，兼容现有链路
                 </span>
               </span>
             </button>
@@ -3773,12 +3808,7 @@ function TunnelsContent() {
                           className="bg-card/70"
                         />
                         {supported ? (
-                          <Switch
-                            checked={tunnel.isEnabled}
-                            onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
-                            className="scale-75"
-                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
-                          />
+                          renderTunnelEnabledSwitch(tunnel)
                         ) : (
                           renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
                         )}
@@ -3873,12 +3903,7 @@ function TunnelsContent() {
                           className="bg-card/70"
                         />
                         {supported ? (
-                          <Switch
-                            checked={tunnel.isEnabled}
-                            onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
-                            className="scale-75"
-                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
-                          />
+                          renderTunnelEnabledSwitch(tunnel)
                         ) : (
                           renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
                         )}
@@ -4002,12 +4027,7 @@ function TunnelsContent() {
                       </TableCell>
                       <TableCell className="py-3">
                         {supported ? (
-                          <Switch
-                            checked={tunnel.isEnabled}
-                            onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
-                            className="scale-75"
-                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
-                          />
+                          renderTunnelEnabledSwitch(tunnel)
                         ) : (
                           renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
                         )}

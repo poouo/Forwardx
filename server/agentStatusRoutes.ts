@@ -321,7 +321,13 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     && !(rule as any).pendingDelete
     && !!(rule as any).telegramErrorNotifyEnabled
   ) {
-    void notifyForwardRuleError({ rule, host, message }).catch((error) => {
+    void (async () => {
+      const forwardGroupId = Number((rule as any).forwardGroupId || 0);
+      const forwardGroup = forwardGroupId > 0
+        ? await db.getForwardGroupById(forwardGroupId).catch(() => null)
+        : null;
+      await notifyForwardRuleError({ rule, host, forwardGroup, message });
+    })().catch((error) => {
       console.warn(`[Telegram] Forward rule error notify failed rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
     });
   }

@@ -10,7 +10,7 @@ import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
@@ -133,7 +133,7 @@ function BillingToggleCard({
 }: {
   title: string;
   enabled: boolean;
-  onCheckedChange: (checked: boolean) => void;
+  onCheckedChange: (checked: boolean) => Promise<unknown>;
   icon: ElementType;
   tone: string;
   loading?: boolean;
@@ -156,7 +156,7 @@ function BillingToggleCard({
             <p className="break-words text-xs text-muted-foreground/80">入口状态</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Switch checked={enabled} onCheckedChange={onCheckedChange} disabled={loading} />
+            <OptimisticSwitch checked={enabled} onCheckedChangeAsync={onCheckedChange} disabled={loading} />
             <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
               <Icon className="h-5 w-5 text-white" />
             </div>
@@ -341,9 +341,11 @@ export default function Billing() {
   const [discountExpiresAt, setDiscountExpiresAt] = useState("");
 
   const setFeatureStatus = trpc.billing.setFeatureStatus.useMutation({
-    onSuccess: () => {
-      toast.success("功能开关已更新");
-      utils.billing.featureStatus.invalidate();
+    onSuccess: async (_data, variables) => {
+      const redemptionToggle = typeof variables.redemptionEnabled === "boolean";
+      const enabled = redemptionToggle ? variables.redemptionEnabled : !!variables.discountEnabled;
+      toast.success(`${redemptionToggle ? "兑换入口" : "折扣入口"}已${enabled ? "开启" : "关闭"}`);
+      await utils.billing.featureStatus.invalidate();
     },
     onError: (error) => toast.error(error.message || "更新失败"),
   });
@@ -587,7 +589,7 @@ export default function Billing() {
           <BillingToggleCard
             title="用户兑换入口"
             enabled={featureStatus?.redemptionEnabled ?? true}
-            onCheckedChange={(redemptionEnabled) => setFeatureStatus.mutate({ redemptionEnabled })}
+            onCheckedChange={(redemptionEnabled) => setFeatureStatus.mutateAsync({ redemptionEnabled })}
             icon={Gift}
             tone="bg-gradient-to-br from-amber-500 to-amber-600"
             loading={featureStatusLoading}
@@ -595,7 +597,7 @@ export default function Billing() {
           <BillingToggleCard
             title="购买折扣入口"
             enabled={featureStatus?.discountEnabled ?? true}
-            onCheckedChange={(discountEnabled) => setFeatureStatus.mutate({ discountEnabled })}
+            onCheckedChange={(discountEnabled) => setFeatureStatus.mutateAsync({ discountEnabled })}
             icon={TicketPercent}
             tone="bg-gradient-to-br from-rose-500 to-rose-600"
             loading={featureStatusLoading}

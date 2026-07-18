@@ -667,7 +667,9 @@ export const hostsRouter = router({
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const scope = await visibleHostQueryScope(ctx.user);
-      return db.getHostOptions(scope.ownerUserId, scope.allowedHostIds);
+      const hosts = await db.getHostOptions(scope.ownerUserId, scope.allowedHostIds);
+      scheduleHostGeoRefresh(hosts);
+      return hosts;
     }),
     listPage: protectedProcedure
       .input(pageRequestSchema.extend({

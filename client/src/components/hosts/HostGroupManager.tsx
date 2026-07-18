@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -98,19 +98,18 @@ function sortHostsByDisplayOrder(hosts: any[]) {
 
 function HostGroupEnabledSwitch({
   group,
-  disabled,
   onToggle,
 }: {
   group: HostGroupView;
-  disabled?: boolean;
-  onToggle: (group: HostGroupView, checked: boolean) => void;
+  onToggle: (group: HostGroupView, checked: boolean) => Promise<unknown>;
 }) {
   const enabled = group.isEnabled !== false;
   return (
-    <Switch
+    <OptimisticSwitch
       checked={enabled}
-      disabled={disabled}
-      onCheckedChange={(checked) => onToggle(group, checked)}
+      onCheckedChangeAsync={(checked) => onToggle(group, checked)}
+      onToggleSuccess={(checked) => toast.success(checked ? "主机分组已开启" : "主机分组已关闭")}
+      onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换主机分组状态失败")}
       className="scale-75"
       title={`${enabled ? "停用" : "启用"}主机分组 ${group.name || ""}`}
       aria-label={`${enabled ? "停用" : "启用"}分组 ${group.name || ""}`}
@@ -180,7 +179,6 @@ export default function HostGroupManager({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<HostGroupForm>(defaultForm);
-  const [pendingToggleGroupIds, setPendingToggleGroupIds] = useState<Set<number>>(() => new Set());
   const selectedHostIdSet = useMemo(() => new Set(form.hostIds.map(Number)), [form.hostIds]);
   const availableHosts = useMemo(
     () => (hosts || []).filter((host: any) => !selectedHostIdSet.has(Number(host.id))),
@@ -226,19 +224,8 @@ export default function HostGroupManager({
     onError: (err) => toast.error(err.message || "更新分组失败"),
   });
   const toggleMutation = trpc.hosts.updateHostGroup.useMutation({
-    onSuccess: (_data, variables) => {
-      utils.hosts.hostGroups.invalidate();
-      toast.success(variables.isEnabled ? "分组已启用" : "分组已停用");
-    },
-    onError: (err) => toast.error(err.message || "切换分组状态失败"),
-    onSettled: (_data, _error, variables) => {
-      const id = Number(variables?.id || 0);
-      if (!id) return;
-      setPendingToggleGroupIds((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
-      });
+    onSuccess: async () => {
+      await utils.hosts.hostGroups.invalidate();
     },
   });
   const deleteMutation = trpc.hosts.deleteHostGroup.useMutation({
@@ -292,11 +279,10 @@ export default function HostGroupManager({
     setForm((current) => ({ ...current, hostIds: current.hostIds.filter((id) => Number(id) !== Number(hostId)) }));
   };
 
-  const toggleGroupEnabled = (group: HostGroupView, checked: boolean) => {
+  const toggleGroupEnabled = async (group: HostGroupView, checked: boolean) => {
     const id = Number(group?.id || 0);
-    if (!id || pendingToggleGroupIds.has(id)) return;
-    setPendingToggleGroupIds((current) => new Set(current).add(id));
-    toggleMutation.mutate(buildGroupUpdatePayload(group, checked));
+    if (!id) throw new Error("主机分组不存在");
+    await toggleMutation.mutateAsync(buildGroupUpdatePayload(group, checked));
   };
 
   const submit = () => {
@@ -368,7 +354,7 @@ export default function HostGroupManager({
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {options.dragHandle}
-              <HostGroupEnabledSwitch group={group} disabled={pendingToggleGroupIds.has(Number(group.id))} onToggle={toggleGroupEnabled} />
+              <HostGroupEnabledSwitch group={group} onToggle={toggleGroupEnabled} />
             </div>
           </div>
 
@@ -459,7 +445,7 @@ export default function HostGroupManager({
                               <span className="min-w-0 truncate font-medium" title={group.name}>{group.name}</span>
                             </div>
                           </TableCell>
-                          <TableCell><HostGroupEnabledSwitch group={group} disabled={pendingToggleGroupIds.has(Number(group.id))} onToggle={toggleGroupEnabled} /></TableCell>
+                          <TableCell><HostGroupEnabledSwitch group={group} onToggle={toggleGroupEnabled} /></TableCell>
                           <TableCell className="text-sm tabular-nums">{groupHostCount(group, hostsById)}</TableCell>
                           <TableCell>
                             <HostGroupHostPreview hostIds={hostIds} hostsById={hostsById} />

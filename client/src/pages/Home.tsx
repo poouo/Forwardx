@@ -678,9 +678,6 @@ function DashboardContent() {
                 <p className="mt-1 text-[11px] text-muted-foreground">不受套餐订阅限制</p>
               </div>
             </div>
-            <p className="text-[11px] text-muted-foreground/70">
-              首页流量、规则、趋势和计费消耗均按当前管理员账号独立统计，不展示套餐、到期时间等订阅信息。
-            </p>
           </CardContent>
         </Card>
       ) : (

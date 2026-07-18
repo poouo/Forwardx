@@ -887,6 +887,21 @@ export async function getForwardGroupById(id: number) {
   return { ...group, groupMode: groupModeOf(group), members: hydratedMembers };
 }
 
+export async function getForwardGroupModesByIds(groupIds: number[]) {
+  const ids = Array.from(new Set(groupIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return [] as Array<{ id: number; groupMode: ForwardGroupMode }>;
+  const db = await getDb();
+  if (!db) return [] as Array<{ id: number; groupMode: ForwardGroupMode }>;
+  const rows = await db
+    .select({ id: forwardGroups.id, groupMode: forwardGroups.groupMode })
+    .from(forwardGroups)
+    .where(inArray(forwardGroups.id, ids));
+  return (rows as any[]).map((group) => ({
+    id: Number(group.id),
+    groupMode: groupModeOf(group),
+  }));
+}
+
 export async function getForwardGroupEvents(groupId: number, limit = 50) {
   const db = await getDb();
   if (!db) return [];

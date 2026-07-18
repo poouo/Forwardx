@@ -1515,7 +1515,7 @@ function DashboardLayoutContent({
                 onClick={() => navigateFromAccountMenu("/profile")}
                 className="cursor-pointer"
               >
-                <UserRound className="mr-2 h-4 w-4" />
+                <UserRound />
                 <span>个人资料</span>
               </DropdownMenuItem>
               {!mobileAuth.isNative && isAdmin && (
@@ -1523,7 +1523,7 @@ function DashboardLayoutContent({
                   onClick={openPanelUpdateFromAccountMenu}
                   className="cursor-pointer"
                 >
-                  <Download className="mr-2 h-4 w-4" />
+                  <Download />
                   <span>软件更新</span>
                 </DropdownMenuItem>
               )}
@@ -1534,9 +1534,9 @@ function DashboardLayoutContent({
                   className="cursor-pointer"
                 >
                   {checkingMobileUpdate ? (
-                    <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" />
+                    <RefreshCw className="forwardx-icon-spin" />
                   ) : (
-                    <Download className="mr-2 h-4 w-4" />
+                    <Download />
                   )}
                   <span>{checkingMobileUpdate ? "检查中..." : "软件更新"}</span>
                 </DropdownMenuItem>
@@ -1546,16 +1546,16 @@ function DashboardLayoutContent({
                   onClick={() => navigateFromAccountMenu("/settings")}
                   className="cursor-pointer"
                 >
-                  <Settings className="mr-2 h-4 w-4" />
+                  <Settings />
                   <span>系统设置</span>
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={handleLogout}
-                className="cursor-pointer text-destructive focus:text-destructive"
+                variant="destructive"
               >
-                <LogOut className="mr-2 h-4 w-4" />
+                <LogOut />
                 <span>退出登录</span>
               </DropdownMenuItem>
             </DropdownMenuContent>

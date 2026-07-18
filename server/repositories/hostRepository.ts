@@ -317,6 +317,13 @@ export async function getHostOptions(ownerUserId?: number, allowedHostIds?: numb
       blockHttp: hosts.blockHttp,
       blockSocks: hosts.blockSocks,
       blockTls: hosts.blockTls,
+      geoCountryCode: hosts.geoCountryCode,
+      geoCountryName: hosts.geoCountryName,
+      geoRegion: hosts.geoRegion,
+      geoEmoji: hosts.geoEmoji,
+      geoLatitudeMicro: hosts.geoLatitudeMicro,
+      geoLongitudeMicro: hosts.geoLongitudeMicro,
+      geoUpdatedAt: hosts.geoUpdatedAt,
     })
     .from(hosts);
   const rows = condition

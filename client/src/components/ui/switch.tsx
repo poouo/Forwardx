@@ -13,4 +13,91 @@ const Switch = React.forwardRef<React.ComponentRef<typeof SwitchPrimitives.Root>
 ))
 Switch.displayName = SwitchPrimitives.Root.displayName
 
-export { Switch }
+type OptimisticSwitchProps = Omit<SwitchProps, "checked" | "defaultChecked" | "onCheckedChange"> & {
+  checked: boolean;
+  onCheckedChangeAsync: (checked: boolean) => Promise<unknown>;
+  onToggleSuccess?: (checked: boolean) => void;
+  onToggleError?: (error: unknown, checked: boolean) => void;
+};
+
+const OptimisticSwitch = React.forwardRef<React.ComponentRef<typeof SwitchPrimitives.Root>, OptimisticSwitchProps>(
+  ({ checked, disabled, onCheckedChangeAsync, onToggleSuccess, onToggleError, ...props }, ref) => {
+    const [visualChecked, setVisualChecked] = React.useState(checked);
+    const [isPending, setIsPending] = React.useState(false);
+    const confirmedRef = React.useRef(checked);
+    const desiredRef = React.useRef(checked);
+    const runningRef = React.useRef(false);
+    const mountedRef = React.useRef(true);
+    const externalCheckedRef = React.useRef(checked);
+    const callbacksRef = React.useRef({ onCheckedChangeAsync, onToggleSuccess, onToggleError });
+    externalCheckedRef.current = checked;
+    callbacksRef.current = { onCheckedChangeAsync, onToggleSuccess, onToggleError };
+
+    React.useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
+
+    React.useEffect(() => {
+      if (runningRef.current) return;
+      confirmedRef.current = checked;
+      desiredRef.current = checked;
+      setVisualChecked(checked);
+    }, [checked]);
+
+    const runQueue = React.useCallback(async () => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      if (mountedRef.current) setIsPending(true);
+      try {
+        while (desiredRef.current !== confirmedRef.current) {
+          const nextChecked = desiredRef.current;
+          try {
+            await callbacksRef.current.onCheckedChangeAsync(nextChecked);
+          } catch (error) {
+            if (desiredRef.current === nextChecked) {
+              desiredRef.current = confirmedRef.current;
+              if (mountedRef.current) setVisualChecked(confirmedRef.current);
+            }
+            callbacksRef.current.onToggleError?.(error, nextChecked);
+            continue;
+          }
+
+          confirmedRef.current = nextChecked;
+          if (desiredRef.current === nextChecked) {
+            callbacksRef.current.onToggleSuccess?.(nextChecked);
+          }
+        }
+      } finally {
+        runningRef.current = false;
+        if (mountedRef.current) {
+          setIsPending(false);
+          if (externalCheckedRef.current === confirmedRef.current) {
+            setVisualChecked(externalCheckedRef.current);
+          }
+        }
+      }
+    }, []);
+
+    return (
+      <Switch
+        {...props}
+        ref={ref}
+        checked={visualChecked}
+        disabled={disabled}
+        aria-busy={isPending || undefined}
+        data-pending={isPending ? "true" : "false"}
+        onCheckedChange={(nextChecked) => {
+          desiredRef.current = nextChecked;
+          setVisualChecked(nextChecked);
+          void runQueue();
+        }}
+      />
+    );
+  },
+)
+OptimisticSwitch.displayName = "OptimisticSwitch"
+
+export { OptimisticSwitch, Switch }

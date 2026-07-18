@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
-import { Switch } from "@/components/ui/switch";
+import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { renderMixedHtml, textToHtml } from "@/lib/htmlContent";
@@ -1209,6 +1209,10 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     || saveSettingMutation.isPending
     || saveUsageMutation.isPending
     || runActionMutation.isPending;
+  const pluginLifecycleBusy = installFromStore.isPending
+    || installFromUpload.isPending
+    || uninstallMutation.isPending
+    || updateFromGithubMutation.isPending;
 
   const handleCheckAllUpdates = () => {
     if (checkAllUpdatesMutation.isPending) return;
@@ -1340,22 +1344,25 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     });
   };
 
-  const handleAllHostsUsageToggle = (enabled: boolean) => {
-    if (!selectedPlugin || !hostAssetSyncUsageView || !usageUsesAllHosts) return;
+  const handleAllHostsUsageToggle = async (enabled: boolean) => {
+    if (!selectedPlugin || !hostAssetSyncUsageView || !usageUsesAllHosts) throw new Error("插件使用配置不可用");
     const previousEnabled = usageDraft.enabled;
     setUsageDraft((current) => ({ ...current, enabled }));
-    saveUsageMutation.mutate({
-      pluginId: selectedPlugin.pluginId,
-      usageViewId: hostAssetSyncUsageView.id,
-      enabled,
-      hostIds: [],
-      assetPaths: usageUsesAllAssets ? [] : usageDraft.assetPaths,
-      operation: usageDraft.operation || usageOperationOptions[0]?.value || undefined,
-      fieldValues: usageDraft.fieldValues,
-      note: usageDraft.note,
-    }, {
-      onError: () => setUsageDraft((current) => ({ ...current, enabled: previousEnabled })),
-    });
+    try {
+      await saveUsageMutation.mutateAsync({
+        pluginId: selectedPlugin.pluginId,
+        usageViewId: hostAssetSyncUsageView.id,
+        enabled,
+        hostIds: [],
+        assetPaths: usageUsesAllAssets ? [] : usageDraft.assetPaths,
+        operation: usageDraft.operation || usageOperationOptions[0]?.value || undefined,
+        fieldValues: usageDraft.fieldValues,
+        note: usageDraft.note,
+      });
+    } catch (error) {
+      setUsageDraft((current) => ({ ...current, enabled: previousEnabled }));
+      throw error;
+    }
   };
 
   const handleUninstall = async (plugin: PluginRow) => {
@@ -1376,9 +1383,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         confirmText: "确认信任",
         tone: "destructive",
       });
-      if (!confirmed) return;
+      if (!confirmed) throw new Error("插件信任操作已取消");
     }
-    setTrustedMutation.mutate({ pluginId: plugin.pluginId, trusted });
+    await setTrustedMutation.mutateAsync({ pluginId: plugin.pluginId, trusted });
   };
 
   const handleDeleteStoreSource = async (source: any) => {
@@ -1498,10 +1505,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               </div>
             </div>
             <div className="flex shrink-0 items-center justify-end">
-              <Switch
+              <OptimisticSwitch
                 checked={usageDraft.enabled}
-                disabled={saveUsageMutation.isPending}
-                onCheckedChange={handleAllHostsUsageToggle}
+                onCheckedChangeAsync={handleAllHostsUsageToggle}
                 title={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
                 aria-label={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
               />
@@ -2438,11 +2444,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                       )}>
                         <PanelLeft className={cn("h-4 w-4", selectedPlugin.sidebarEnabled ? "text-primary" : "text-muted-foreground")} />
                         <Label htmlFor="plugin-sidebar-enabled" className="cursor-pointer text-xs">菜单入口</Label>
-                        <Switch
+                        <OptimisticSwitch
                           id="plugin-sidebar-enabled"
                           checked={!!selectedPlugin.sidebarEnabled}
-                          disabled={isBusy}
-                          onCheckedChange={(enabled) => setSidebarEnabledMutation.mutate({
+                          disabled={pluginLifecycleBusy}
+                          onCheckedChangeAsync={(enabled) => setSidebarEnabledMutation.mutateAsync({
                             pluginId: selectedPlugin.pluginId,
                             enabled,
                           })}
@@ -2458,11 +2464,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           ? <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
                           : <ShieldAlert className="h-4 w-4 text-muted-foreground" />}
                         <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">插件信任</Label>
-                        <Switch
+                        <OptimisticSwitch
                           id="plugin-trusted"
                           checked={!!selectedPlugin.trusted}
-                          disabled={isBusy}
-                          onCheckedChange={(checked) => handlePluginTrustChange(selectedPlugin, checked)}
+                          disabled={pluginLifecycleBusy}
+                          onCheckedChangeAsync={(checked) => handlePluginTrustChange(selectedPlugin, checked)}
                         />
                       </div>
                     )}
@@ -2472,11 +2478,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     )}>
                       <Power className={cn("h-4 w-4", selectedPlugin.status === "enabled" ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground")} />
                       <Label htmlFor="plugin-enabled" className="cursor-pointer text-xs">启用</Label>
-                      <Switch
+                      <OptimisticSwitch
                         id="plugin-enabled"
                         checked={selectedPlugin.status === "enabled"}
-                        disabled={isBusy}
-                        onCheckedChange={(enabled) => setEnabledMutation.mutate({
+                        disabled={pluginLifecycleBusy}
+                        onCheckedChangeAsync={(enabled) => setEnabledMutation.mutateAsync({
                           pluginId: selectedPlugin.pluginId,
                           enabled,
                         })}
