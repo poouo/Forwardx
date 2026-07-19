@@ -49,6 +49,22 @@ test("lets business listeners replace probes and keeps idle extra exits probeabl
   }]);
 });
 
+test("does not listen on extra exits when the exit group strategy is disabled", () => {
+  const listeners = planGostTunnelProbeListeners(7, [{
+    id: 13,
+    mode: "tls",
+    isEnabled: true,
+    protocolEnabled: true,
+    exitHostId: 8,
+    listenPort: 22011,
+    loadBalanceEnabled: true,
+    loadBalanceStrategy: "none",
+  }], new Map([[13, [
+    { id: 33, hostId: 7, listenPort: 22012, isEnabled: true },
+  ]]]), new Set());
+  assert.deepEqual(listeners, []);
+});
+
 test("does not plan probes for disabled protocols or non-GOST tunnels", () => {
   const listeners = planGostTunnelProbeListeners(7, [
     { id: 1, mode: "tls", isEnabled: false, exitHostId: 7, listenPort: 23001 },

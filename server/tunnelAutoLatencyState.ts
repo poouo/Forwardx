@@ -6,25 +6,37 @@ type AutoHopResult = {
   recordedAt: number;
 };
 
-const byTunnel = new Map<number, Map<number, AutoHopResult>>();
+const byTunnel = new Map<string, Map<number, AutoHopResult>>();
 
 const AUTO_HOP_TTL_MS = 5 * 60 * 1000;
 
-function cleanupTunnelHopResults(tunnelId: number, hopCount: number, generation: string, now: number) {
-  const hops = byTunnel.get(tunnelId);
+function tunnelPathStateKey(tunnelId: number, pathKey?: string | null) {
+  return `${tunnelId}:${String(pathKey || "default").trim().toLowerCase() || "default"}`;
+}
+
+function cleanupTunnelHopResults(stateKey: string, hopCount: number, generation: string, now: number) {
+  const hops = byTunnel.get(stateKey);
   if (!hops) return;
   for (const [idx, result] of hops.entries()) {
     if (idx >= hopCount || result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) {
       hops.delete(idx);
     }
   }
-  if (hops.size === 0) byTunnel.delete(tunnelId);
+  if (hops.size === 0) byTunnel.delete(stateKey);
 }
 
-function aggregateTunnelHopResults(tunnelId: number, hopCount: number, generation: string, now: number) {
-  cleanupTunnelHopResults(tunnelId, hopCount, generation, now);
-  const hops = byTunnel.get(tunnelId);
+function aggregateTunnelHopResults(stateKey: string, hopCount: number, generation: string, now: number, allowEarlyFailure = false) {
+  cleanupTunnelHopResults(stateKey, hopCount, generation, now);
+  const hops = byTunnel.get(stateKey);
   if (!hops) return null;
+
+  if (allowEarlyFailure && Array.from(hops.values()).some((result) => (
+    result.generation === generation
+    && now - result.recordedAt <= AUTO_HOP_TTL_MS
+    && (result.isTimeout || !result.latencyMs || result.latencyMs <= 0)
+  ))) {
+    return { success: false, latencyMs: null };
+  }
 
   const results: AutoHopResult[] = [];
   for (let i = 0; i < hopCount; i++) {
@@ -49,6 +61,8 @@ export function recordTunnelAutoHopLatency(input: {
   latencyMs: number | null;
   isTimeout: boolean;
   generation?: string | null;
+  pathKey?: string | null;
+  allowEarlyFailure?: boolean;
 }): null | {
   success: boolean;
   latencyMs: number | null;
@@ -60,12 +74,13 @@ export function recordTunnelAutoHopLatency(input: {
   if (!Number.isFinite(hopIndex) || hopIndex < 0) return null;
   if (!Number.isFinite(hopCount) || hopCount <= 0 || hopIndex >= hopCount) return null;
   const generation = String(input.generation || `legacy:${hopCount}`).slice(0, 1024);
+  const stateKey = tunnelPathStateKey(tunnelId, input.pathKey);
 
   const now = Date.now();
-  let hops = byTunnel.get(tunnelId);
+  let hops = byTunnel.get(stateKey);
   if (!hops) {
     hops = new Map<number, AutoHopResult>();
-    byTunnel.set(tunnelId, hops);
+    byTunnel.set(stateKey, hops);
   }
   for (const [idx, result] of hops.entries()) {
     if (result.hopCount !== hopCount || result.generation !== generation || now - result.recordedAt > AUTO_HOP_TTL_MS) {
@@ -79,14 +94,21 @@ export function recordTunnelAutoHopLatency(input: {
     isTimeout: !!input.isTimeout,
     recordedAt: now,
   });
-  return aggregateTunnelHopResults(tunnelId, hopCount, generation, now);
+  return aggregateTunnelHopResults(stateKey, hopCount, generation, now, !!input.allowEarlyFailure);
 }
 
-export function getTunnelAutoHopAggregate(tunnelId: number, hopCount: number, generation?: string) {
+export function getTunnelAutoHopAggregate(
+  tunnelId: number,
+  hopCount: number,
+  generation?: string,
+  pathKey?: string | null,
+  allowEarlyFailure = false,
+) {
   const id = Number(tunnelId);
   const count = Number(hopCount);
   if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(count) || count <= 0) return null;
-  const hops = byTunnel.get(id);
+  const stateKey = tunnelPathStateKey(id, pathKey);
+  const hops = byTunnel.get(stateKey);
   const activeGeneration = String(generation || hops?.get(0)?.generation || `legacy:${count}`);
-  return aggregateTunnelHopResults(id, count, activeGeneration, Date.now());
+  return aggregateTunnelHopResults(stateKey, count, activeGeneration, Date.now(), allowEarlyFailure);
 }

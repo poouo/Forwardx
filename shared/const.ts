@@ -6,3 +6,4 @@ export const UNAUTHED_ERR_MSG = 'Please login (10001)';
 export const NOT_ADMIN_ERR_MSG = 'You do not have required permission (10002)';
 export const ACCOUNT_DISABLED_ERR_MSG = '账户已被禁用，请联系管理员';
 export const SESSION_REPLACED_ERR_MSG = '账号已在其他地方登录，请重新登录';
+export const SESSION_BUSY_ERR_MSG = '账号正在其他设备使用';

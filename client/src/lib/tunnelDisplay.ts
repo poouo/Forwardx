@@ -1,3 +1,5 @@
+import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+
 export function tunnelEndpointName(tunnel: any | null | undefined, role: "entry" | "exit", hosts: any[] | undefined) {
   const hostId = Number(role === "entry" ? tunnel?.entryHostId : tunnel?.exitHostId);
   const fromList = hosts?.find((host: any) => Number(host.id) === hostId);
@@ -18,6 +20,7 @@ export function tunnelHopHostName(tunnel: any | null | undefined, hostId: number
 }
 
 export function getTunnelLoadBalanceExitNames(tunnel: any | null | undefined, hosts: any[] | undefined) {
+  if (normalizeExitGroupStrategy(tunnel?.loadBalanceStrategy) === "none") return [];
   if (!Array.isArray(tunnel?.loadBalanceExits)) return [];
   const names = tunnel.loadBalanceExits
     .map((exit: any) => Number(exit?.hostId || 0))
@@ -60,12 +63,18 @@ export function getTunnelRouteText(
   if (normalizedExitGroupName) {
     hopNames[hopNames.length - 1] = normalizedExitGroupName;
     const exitNames = getTunnelExitNames(tunnel, hosts);
-    return `${hopNames.join(" -> ")}${exitNames.length > 0 ? `\uFF1B\u51FA\u53E3\uFF1A${exitNames.join(" / ")}` : ""}`;
+    const routeText = String(tunnel?.relayMode || "").toLowerCase() === "failover" && hopNames.length >= 4
+      ? `${hopNames[0]} -> 中转：${hopNames.slice(1, -1).join(" / ")} -> ${hopNames[hopNames.length - 1]}`
+      : hopNames.join(" -> ");
+    return `${routeText}${exitNames.length > 0 ? `\uFF1B\u51FA\u53E3\uFF1A${exitNames.join(" / ")}` : ""}`;
   }
+  const routeText = String(tunnel?.relayMode || "").toLowerCase() === "failover" && hopNames.length >= 4
+    ? `${hopNames[0]} -> 中转：${hopNames.slice(1, -1).join(" / ")} -> ${hopNames[hopNames.length - 1]}`
+    : hopNames.join(" -> ");
   const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts)
     .filter((name) => !hopNames.includes(name));
   if (extraExitNames.length > 0) {
-    return `${hopNames.join(" -> ")}；出口：${getTunnelExitNames(tunnel, hosts).join(" / ")}`;
+    return `${routeText}；出口：${getTunnelExitNames(tunnel, hosts).join(" / ")}`;
   }
-  return hopNames.join(" -> ");
+  return routeText;
 }

@@ -241,6 +241,14 @@ func validatePluginAgentTask(task pluginAgentTask) error {
 	return nil
 }
 
+func validatePluginAgentTaskEnvironment(task pluginAgentTask) error {
+	interpreter := strings.TrimSpace(task.Interpreter)
+	if _, err := exec.LookPath(interpreter); err != nil {
+		return fmt.Errorf("Agent 环境缺少插件解释器 %s，请先安装后重试", interpreter)
+	}
+	return nil
+}
+
 func pluginAgentTaskTimeout(task pluginAgentTask) time.Duration {
 	value := task.TimeoutMs
 	if value <= 0 {
@@ -492,6 +500,9 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 		StartedAt: receivedAt.Format(time.RFC3339Nano),
 	}
 	if err := validatePluginAgentTask(task); err != nil {
+		return invalidPluginAgentTaskResult(task, err)
+	}
+	if err := validatePluginAgentTaskEnvironment(task); err != nil {
 		return invalidPluginAgentTaskResult(task, err)
 	}
 	if err := validatePluginAgentTaskVersion(task); err != nil {

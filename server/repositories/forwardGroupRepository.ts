@@ -38,6 +38,7 @@ import {
   reconcileForwardRuleTunnelExits,
   resetForwardRulesByTunnel,
   restoreForwardRulesByTunnel,
+  syncTunnelExitGroupEndpoints,
   updateTunnel,
 } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
@@ -51,6 +52,7 @@ import { reserveAvailableHostPort, type HostPortReservation } from "../portReser
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { sqlBool } from "./repositoryUtils";
+import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -503,7 +505,18 @@ async function refreshTunnelsUsingForwardGroup(
     ...await groupHostIds(id),
   ].map(Number).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
 
+  const group = groupMode === "exit" ? await getForwardGroupById(id) as any : null;
+  const exitStrategy = groupMode === "exit" ? normalizeExitGroupStrategy(group?.exitStrategy) : null;
+  const exitMembers = group ? sortedMembers(group) : [];
+  const hasEnabledExitMember = exitMembers.some((member: any) => member?.memberType === "host" && member?.isEnabled !== false && Number(member?.isEnabled) !== 0);
+
   for (const tunnel of affectedTunnels) {
+    if (exitStrategy && group && hasEnabledExitMember) {
+      const synced = await syncTunnelExitGroupEndpoints(tunnel, exitMembers, exitStrategy);
+      Object.assign(tunnel, synced.tunnel);
+    } else if (exitStrategy && group?.isEnabled) {
+      throw new Error("Enabled exit group must contain at least one enabled host");
+    }
     await refreshControlledTunnelRuntime(tunnel, reason, { resetRules: true, extraHostIds: referencedHostIds });
   }
 }
@@ -855,8 +868,9 @@ export async function getForwardGroupOptions(allowedGroupIds?: number[]) {
     .from(forwardGroupMembers)
     .where(inArray(forwardGroupMembers.groupId, ids))
     .orderBy(asc(forwardGroupMembers.priority), asc(forwardGroupMembers.id));
+  const hydratedMembers = await hydrateForwardGroupMemberEntryAddresses(members as any[]);
   const membersByGroupId = new Map<number, any[]>();
-  for (const member of members as any[]) {
+  for (const member of hydratedMembers) {
     const groupId = Number(member.groupId);
     const list = membersByGroupId.get(groupId) || [];
     list.push(member);
@@ -1198,6 +1212,49 @@ async function memberEntryAddress(member: any) {
     return entryAddressForHost(entry);
   }
   return "";
+}
+
+async function hydrateForwardGroupMemberEntryAddresses(members: any[]) {
+  if (members.length === 0) return [];
+  const db = await getDb();
+  if (!db) return members;
+
+  const tunnelIds = Array.from(new Set(members
+    .filter((member) => member?.memberType === "tunnel")
+    .map((member) => Number(member?.tunnelId || 0))
+    .filter((id) => id > 0)));
+  const tunnelRows = tunnelIds.length > 0
+    ? await db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId })
+      .from(tunnels)
+      .where(inArray(tunnels.id, tunnelIds))
+    : [];
+  const tunnelEntryHostById = new Map((tunnelRows as any[])
+    .map((tunnel) => [Number(tunnel.id), Number(tunnel.entryHostId || 0)]));
+  const hostIds = Array.from(new Set(members
+    .map((member) => member?.memberType === "host"
+      ? Number(member?.hostId || 0)
+      : tunnelEntryHostById.get(Number(member?.tunnelId || 0)) || 0)
+    .filter((id) => id > 0)));
+  const hostRows = hostIds.length > 0
+    ? await db.select({
+      id: hosts.id,
+      entryIp: hosts.entryIp,
+      ipv4: hosts.ipv4,
+      ipv6: hosts.ipv6,
+      ip: hosts.ip,
+    }).from(hosts).where(inArray(hosts.id, hostIds))
+    : [];
+  const hostById = new Map((hostRows as any[]).map((host) => [Number(host.id), host]));
+
+  return members.map((member) => {
+    const hostId = member?.memberType === "host"
+      ? Number(member?.hostId || 0)
+      : tunnelEntryHostById.get(Number(member?.tunnelId || 0)) || 0;
+    return {
+      ...member,
+      entryAddress: entryAddressForHost(hostById.get(hostId)),
+    };
+  });
 }
 
 async function memberDdnsValue(member: any, recordType: ForwardGroupRecordType) {
@@ -1598,6 +1655,7 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     remark: group.remark || null,
     groupType: group.groupType,
     groupMode: groupModeOf(group),
+    exitStrategy: normalizeExitGroupStrategy(group.exitStrategy),
     entryGroupId: group.entryGroupId ?? null,
     forwardType: group.forwardType,
     domain: group.domain,
@@ -1822,6 +1880,9 @@ export async function setForwardGroupEnabled(groupId: number, isEnabled: boolean
   if (!group) throw new Error("转发资源不存在");
   const mode = groupModeOf(group);
   const wasEnabled = !!group.isEnabled;
+  if (isEnabled && mode === "exit" && !sortedMembers(group, true).some((member: any) => member?.memberType === "host")) {
+    throw new Error("Enabled exit group must contain at least one enabled host");
+  }
   if (isEnabled && mode === "chain" && Number(group.entryGroupId || 0) > 0) {
     const entryGroup = await getForwardGroupById(Number(group.entryGroupId)) as any;
     if (!entryGroup?.isEnabled || groupModeOf(entryGroup) !== "entry") {

@@ -1,3 +1,5 @@
+import { exitGroupUsesMultipleExits } from "../shared/exitStrategy";
+
 export type TunnelRuntimeFamily = "forwardx" | "gost" | "nginx";
 export type TunnelRuntimeForwardType = "forwardx-tunnel" | "gost-tunnel" | "nginx-tunnel-exit";
 export type TunnelRuleRuntimeForwardType = "forwardx" | "gost" | "nginx-tunnel";
@@ -19,6 +21,7 @@ type GostTunnelProbeInput = {
   exitHostId?: unknown;
   listenPort?: unknown;
   loadBalanceEnabled?: unknown;
+  loadBalanceStrategy?: unknown;
 };
 
 type GostTunnelProbeExitInput = {
@@ -94,6 +97,7 @@ export function planGostTunnelProbeListeners(
       addListener(tunnel, tunnel.listenPort, `fwx-tunnel-probe-${tunnelId}`);
     }
     if (tunnel.loadBalanceEnabled !== true && Number(tunnel.loadBalanceEnabled) !== 1) continue;
+    if (!exitGroupUsesMultipleExits(tunnel.loadBalanceStrategy)) continue;
     for (const exitNode of exitNodesByTunnelId.get(tunnelId) || []) {
       if (!exitNode || exitNode.isEnabled === false || Number(exitNode.isEnabled) === 0 || Number(exitNode.hostId) !== hostId) continue;
       const listenPort = Number(exitNode.listenPort);

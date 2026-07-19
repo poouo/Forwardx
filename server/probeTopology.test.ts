@@ -19,6 +19,28 @@ test("tunnel probe topology ignores runtime timestamps and status", () => {
   assert.notEqual(first, tunnelProbeTopologyKey({ ...base, listenPort: 3001 }));
 });
 
+test("tunnel probe topology follows the active exit strategy", () => {
+  const base = {
+    id: 2,
+    isEnabled: true,
+    mode: "forwardx",
+    entryHostId: 10,
+    exitHostId: 20,
+    listenPort: 3000,
+    loadBalanceEnabled: true,
+  };
+  const exitNodes = [{ id: 1, hostId: 21, listenPort: 3001, isEnabled: true }];
+  const disabled = tunnelProbeTopologyKey({ ...base, loadBalanceStrategy: "none" }, [], exitNodes);
+  assert.equal(
+    disabled,
+    tunnelProbeTopologyKey({ ...base, loadBalanceStrategy: "none" }, [], [{ ...exitNodes[0], listenPort: 3999 }]),
+  );
+  assert.notEqual(
+    disabled,
+    tunnelProbeTopologyKey({ ...base, loadBalanceStrategy: "round_robin" }, [], exitNodes),
+  );
+});
+
 test("forward-chain topology is stable across probe ordering and changes with a target", () => {
   const probes = [
     { fromHostId: 1, hopIndex: 0, hopCount: 2, targetIp: "a.example", targetPort: 1000, method: "tcp" },

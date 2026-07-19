@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.159"
+var Version = "2.2.160"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1560,6 +1560,7 @@ type fxpSpec struct {
 	UDPExitPort              int               `json:"udpExitPort,omitempty"`
 	ExitPeerID               string            `json:"exitPeerId,omitempty"`
 	Exits                    []fxpExitEndpoint `json:"exits,omitempty"`
+	ExitStrategy             string            `json:"exitStrategy,omitempty"`
 	TargetIP                 string            `json:"targetIp"`
 	TargetPort               int               `json:"targetPort"`
 	UDPTargets               []fxpUDPTarget    `json:"udpTargets,omitempty"`
@@ -5652,6 +5653,12 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
+	switch strings.ToLower(strings.TrimSpace(spec.ExitStrategy)) {
+	case "fallback", "random", "ip_hash":
+		spec.ExitStrategy = strings.ToLower(strings.TrimSpace(spec.ExitStrategy))
+	default:
+		spec.ExitStrategy = "round_robin"
+	}
 	spec.ExitPeerID = strings.TrimSpace(spec.ExitPeerID)
 	spec.TargetIP = strings.TrimSpace(spec.TargetIP)
 	spec.RelayExitHost = strings.TrimSpace(spec.RelayExitHost)
@@ -5705,6 +5712,7 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.Itoa(spec.ExitPort),
 		strconv.Itoa(spec.UDPExitPort),
 		spec.ExitPeerID,
+		spec.ExitStrategy,
 		spec.TargetIP,
 		strconv.Itoa(spec.TargetPort),
 		spec.Key,
@@ -5999,13 +6007,14 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Token = cfg.Token
 	}
 	logf(
-		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d udpTargets=%d",
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s exitStrategy=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d udpTargets=%d",
 		spec.Role,
 		spec.TunnelID,
 		spec.RuleID,
 		spec.ListenPort,
 		spec.UDPListenPort,
 		spec.Protocol,
+		spec.ExitStrategy,
 		spec.ProxyProtocolReceive,
 		spec.ProxyProtocolSend,
 		spec.ProxyProtocolExitReceive,

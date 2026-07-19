@@ -83,6 +83,65 @@ test("a multi-exit tunnel remains usable when one exit is online", () => {
   assert.equal(tunnelAvailabilityById.get(10)?.available, true);
 });
 
+test("an exit group using no strategy follows only its first enabled member", () => {
+  const { groupAvailabilityById, tunnelAvailabilityById } = buildLinkAvailabilityIndex({
+    now,
+    hosts: [
+      { id: 1, isOnline: true },
+      { id: 2, isOnline: false },
+      { id: 3, isOnline: true },
+    ],
+    groups: [{
+      id: 20,
+      groupMode: "exit",
+      exitStrategy: "none",
+      isEnabled: true,
+      members: [
+        { id: 201, memberType: "host", hostId: 2, priority: 0, isEnabled: true },
+        { id: 202, memberType: "host", hostId: 3, priority: 1, isEnabled: true },
+      ],
+    }],
+    tunnels: [{
+      id: 21,
+      isEnabled: true,
+      entryHostId: 1,
+      exitHostId: 2,
+      exitGroupId: 20,
+      hopHostIds: [1, 2],
+      loadBalanceEnabled: true,
+      loadBalanceStrategy: "none",
+      loadBalanceExits: [{ hostId: 3, isEnabled: true }],
+    }],
+  });
+
+  assert.equal(groupAvailabilityById.get(20)?.available, false);
+  assert.equal(tunnelAvailabilityById.get(21)?.available, false);
+});
+
+test("a relay failover tunnel only requires one relay host when probes are stale", () => {
+  const { tunnelAvailabilityById } = buildLinkAvailabilityIndex({
+    now,
+    hosts: [
+      { id: 1, isOnline: true },
+      { id: 2, isOnline: false },
+      { id: 3, isOnline: true },
+      { id: 4, isOnline: true },
+    ],
+    groups: [],
+    tunnels: [{
+      id: 11,
+      isEnabled: true,
+      entryHostId: 1,
+      exitHostId: 4,
+      hopHostIds: [1, 2, 3, 4],
+      relayMode: "failover",
+    }],
+  });
+
+  assert.equal(tunnelAvailabilityById.get(11)?.status, "degraded");
+  assert.equal(tunnelAvailabilityById.get(11)?.available, true);
+});
+
 test("a port forward without an independent probe follows its host", () => {
   const groups = [{
     id: 20,

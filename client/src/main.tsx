@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { ACCOUNT_DISABLED_ERR_MSG, SESSION_REPLACED_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import { ACCOUNT_DISABLED_ERR_MSG, SESSION_BUSY_ERR_MSG, SESSION_REPLACED_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, httpLink, splitLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
@@ -9,6 +9,7 @@ import { mobileAuth } from "./lib/mobileAuth";
 import "./index.css";
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
+const SESSION_BUSY_RETURN_PATH_KEY = "forwardx.sessionBusyReturnPath";
 
 const cachedSiteTitle = (() => {
   if (typeof window === "undefined") return "";
@@ -46,6 +47,15 @@ const queryClient = new QueryClient({
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
+
+  if (error.message === SESSION_BUSY_ERR_MSG) {
+    if (window.location.pathname !== "/session-wait") {
+      const returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.sessionStorage.setItem(SESSION_BUSY_RETURN_PATH_KEY, returnPath);
+      window.location.href = "/session-wait";
+    }
+    return;
+  }
 
   const isUnauthorized =
     error.message === UNAUTHED_ERR_MSG ||

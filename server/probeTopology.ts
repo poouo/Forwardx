@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { exitGroupUsesMultipleExits, normalizeExitGroupStrategy } from "../shared/exitStrategy";
+import { normalizeTunnelRelayMode } from "../shared/tunnelRelay";
 
 function text(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
@@ -9,6 +11,7 @@ function digest(prefix: string, parts: unknown[]) {
 }
 
 export function tunnelProbeTopologyKey(tunnel: any, hops: any[] = [], exitNodes: any[] = []) {
+  const exitStrategy = normalizeExitGroupStrategy(tunnel?.loadBalanceStrategy);
   const hopParts = [...(hops || [])]
     .sort((a, b) => Number(a?.seq || 0) - Number(b?.seq || 0))
     .map((hop) => [
@@ -19,7 +22,7 @@ export function tunnelProbeTopologyKey(tunnel: any, hops: any[] = [], exitNodes:
       text(hop?.connectHost),
       hop?.isEnabled !== false,
     ]);
-  const exitParts = [...(exitNodes || [])]
+  const exitParts = (exitGroupUsesMultipleExits(exitStrategy) ? [...(exitNodes || [])] : [])
     .filter((node) => node?.isEnabled !== false)
     .sort((a, b) => Number(a?.seq || 0) - Number(b?.seq || 0))
     .map((node) => [
@@ -32,6 +35,7 @@ export function tunnelProbeTopologyKey(tunnel: any, hops: any[] = [], exitNodes:
   return digest(`tunnel:${Number(tunnel?.id || 0)}`, [
     tunnel?.isEnabled !== false,
     text(tunnel?.mode),
+    normalizeTunnelRelayMode(tunnel?.relayMode),
     text(tunnel?.forwardxVersion),
     Number(tunnel?.entryHostId || 0),
     Number(tunnel?.exitHostId || 0),
@@ -40,6 +44,7 @@ export function tunnelProbeTopologyKey(tunnel: any, hops: any[] = [], exitNodes:
     Number(tunnel?.listenPort || 0),
     Number(tunnel?.mimicPort || 0),
     !!tunnel?.loadBalanceEnabled,
+    exitStrategy,
     hopParts,
     exitParts,
   ]);

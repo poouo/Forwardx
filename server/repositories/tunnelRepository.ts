@@ -22,6 +22,11 @@ import { sqlBool } from "./repositoryUtils";
 import { mapWithConcurrency } from "../asyncPool";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
+import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
+import {
+  planExitGroupTunnelEndpoints,
+  type ExitGroupTunnelMember,
+} from "../tunnelExitStrategy";
 
 // ==================== Tunnel Queries ====================
 
@@ -1064,6 +1069,217 @@ export async function replaceTunnelExitNodes(tunnelId: number, nodes: Array<Omit
   }
 }
 
+export async function syncTunnelExitGroupEndpoints(
+  tunnelInput: any,
+  members: ExitGroupTunnelMember[],
+  strategyInput: unknown,
+) {
+  const tunnelId = Number(tunnelInput?.id || 0);
+  if (tunnelId <= 0) return { tunnel: tunnelInput, changed: false, previousHostIds: [], nextHostIds: [] };
+  return withKeyedTaskLock(`tunnel:${tunnelId}`, async () => {
+    const currentTunnel = await getTunnelById(tunnelId) as any;
+    if (!currentTunnel) return { tunnel: tunnelInput, changed: false, previousHostIds: [], nextHostIds: [] };
+
+    const [existingNodes, existingHops] = await Promise.all([
+      getTunnelExitNodes(tunnelId),
+      getTunnelHops(tunnelId),
+    ]);
+    const database = await getDb();
+    if (!database) return { tunnel: currentTunnel, changed: false, previousHostIds: [], nextHostIds: [] };
+    const mappedRules = String(currentTunnel.mode || "").toLowerCase() === "forwardx"
+      ? []
+      : await database.select().from(forwardRules).where(and(
+        eq(forwardRules.tunnelId, tunnelId),
+        eq(forwardRules.pendingDelete, false),
+      ));
+    const existingRuleExitMappings = await getForwardRuleTunnelExitsByRuleIds(
+      (mappedRules as any[]).map((rule) => Number(rule.id || 0)),
+    );
+    const ruleExitPortsByHostId = new Map<number, Map<number, number>>();
+    for (const rule of mappedRules as any[]) {
+      const portsByHostId = new Map<number, number>();
+      const primaryPort = Number(rule.tunnelExitPort || 0);
+      if (Number(currentTunnel.exitHostId || 0) > 0 && primaryPort > 0) {
+        portsByHostId.set(Number(currentTunnel.exitHostId), primaryPort);
+      }
+      ruleExitPortsByHostId.set(Number(rule.id), portsByHostId);
+    }
+    for (const mapping of existingRuleExitMappings as any[]) {
+      const ruleId = Number(mapping.ruleId || 0);
+      const hostId = Number(mapping.exitHostId || 0);
+      const port = Number(mapping.tunnelExitPort || 0);
+      if (ruleId <= 0 || hostId <= 0 || port <= 0) continue;
+      const portsByHostId = ruleExitPortsByHostId.get(ruleId) || new Map<number, number>();
+      if (!portsByHostId.has(hostId)) portsByHostId.set(hostId, port);
+      ruleExitPortsByHostId.set(ruleId, portsByHostId);
+    }
+    const existingEndpoints = [
+      {
+        hostId: Number(currentTunnel.exitHostId || 0),
+        listenPort: Number(currentTunnel.listenPort || 0),
+        mimicPort: Number(currentTunnel.mimicPort || 0),
+        connectHost: String(currentTunnel.connectHost || "").trim() || null,
+      },
+      ...(existingNodes as any[]),
+    ];
+    const planned = planExitGroupTunnelEndpoints(members, existingEndpoints);
+    if (planned.length === 0) throw new Error("Enabled exit group must contain at least one enabled host");
+
+    const heldReservations: HostPortReservation[] = [];
+    try {
+      for (const endpoint of planned) {
+        if (endpoint.listenPort > 0) continue;
+        const host = await getHostById(endpoint.hostId) as any;
+        if (!host) throw new Error(`Exit Agent ${endpoint.hostId} does not exist`);
+        const reservation = await reserveAvailableHostPort({
+          hostId: endpoint.hostId,
+          protocol: "both",
+          findPort: (reservedPorts) => findAvailableTunnelExitPort(
+            endpoint.hostId,
+            host.portRangeStart,
+            host.portRangeEnd,
+            reservedPorts,
+          ),
+          isUsed: (port) => isPortUsedOnHost(endpoint.hostId, port, undefined, "both", tunnelId),
+        });
+        if (!reservation) throw new Error(`Exit Agent ${host.name || endpoint.hostId} has no available tunnel port`);
+        heldReservations.push(reservation);
+        endpoint.listenPort = reservation.port;
+      }
+
+      const primary = planned[0];
+      const nextNodes = planned.slice(1).map((endpoint, index) => ({
+        seq: index + 1,
+        hostId: endpoint.hostId,
+        listenPort: endpoint.listenPort,
+        mimicPort: endpoint.mimicPort,
+        connectHost: endpoint.connectHost,
+        isEnabled: true,
+      }));
+      const strategy = normalizeExitGroupStrategy(strategyInput);
+      const primaryHost = await getHostById(primary.hostId) as any;
+      const privateAddress = String(primaryHost?.tunnelEntryIp || "").trim();
+      const networkType = primary.connectHost && privateAddress && primary.connectHost === privateAddress ? "private" : "public";
+      const previousHostIds = existingEndpoints
+        .map((endpoint) => Number(endpoint.hostId || 0))
+        .filter((hostId) => hostId > 0);
+      const nextHostIds = planned.map((endpoint) => endpoint.hostId);
+      const previousSignature = JSON.stringify(existingEndpoints.map((endpoint) => ({
+        hostId: Number(endpoint.hostId || 0),
+        listenPort: Number(endpoint.listenPort || 0),
+        mimicPort: Number(endpoint.mimicPort || 0),
+        connectHost: String(endpoint.connectHost || "").trim() || null,
+      })));
+      const nextSignature = JSON.stringify(planned);
+      const endpointsChanged = previousSignature !== nextSignature;
+      const loadBalanceChanged = !!currentTunnel.loadBalanceEnabled !== (nextNodes.length > 0);
+      const changed = endpointsChanged
+        || String(currentTunnel.loadBalanceStrategy || "") !== strategy
+        || loadBalanceChanged;
+
+      await updateTunnel(tunnelId, {
+        exitHostId: primary.hostId,
+        listenPort: primary.listenPort,
+        mimicPort: primary.mimicPort,
+        connectHost: primary.connectHost,
+        networkType,
+        loadBalanceEnabled: nextNodes.length > 0,
+        loadBalanceStrategy: strategy,
+        ...(changed ? { isRunning: false } : {}),
+      } as any);
+
+      if (endpointsChanged && (existingHops as any[]).length >= 2) {
+        const nextHops = (existingHops as any[]).map((hop) => ({
+          hostId: Number(hop.hostId),
+          listenPort: Number(hop.listenPort),
+          mimicPort: Number(hop.mimicPort || 0),
+          connectHost: String(hop.connectHost || "").trim() || null,
+        }));
+        nextHops[nextHops.length - 1] = {
+          hostId: primary.hostId,
+          listenPort: primary.listenPort,
+          mimicPort: primary.mimicPort,
+          connectHost: primary.connectHost,
+        };
+        await createTunnelHops(tunnelId, nextHops);
+      }
+
+      if (endpointsChanged) await replaceTunnelExitNodes(tunnelId, nextNodes);
+      let refreshedTunnel = { ...currentTunnel,
+        exitHostId: primary.hostId,
+        listenPort: primary.listenPort,
+        mimicPort: primary.mimicPort,
+        connectHost: primary.connectHost,
+        networkType,
+        loadBalanceEnabled: nextNodes.length > 0,
+        loadBalanceStrategy: strategy,
+        ...(changed ? { isRunning: false } : {}),
+      };
+      if (String(refreshedTunnel.mode || "").toLowerCase() === "forwardx"
+        && (!!refreshedTunnel.udpOverTcp || String(refreshedTunnel.forwardxVersion || "").toLowerCase() === "v2")) {
+        const refreshedHops = await getTunnelHops(tunnelId);
+        const refreshedNodes = await getTunnelExitNodes(tunnelId);
+        const ensured = await ensureForwardXMimicPorts(refreshedTunnel, refreshedHops, refreshedNodes);
+        refreshedTunnel = ensured.tunnel;
+      }
+      if (endpointsChanged && mappedRules.length > 0) {
+        await mapWithConcurrency(mappedRules as any[], 8, async (rule) => {
+          const ruleId = Number(rule.id || 0);
+          const preferredPorts = ruleExitPortsByHostId.get(ruleId) || new Map<number, number>();
+          let primaryRulePort = Number(preferredPorts.get(primary.hostId) || 0);
+          let primaryReservation: HostPortReservation | null = null;
+          try {
+            if (primaryRulePort > 0) {
+              primaryReservation = await reserveSpecificHostPort({
+                hostId: primary.hostId,
+                port: primaryRulePort,
+                protocol: "both",
+                isUsed: (port) => isPortUsedOnHost(primary.hostId, port, [ruleId], "both", tunnelId),
+              });
+              if (!primaryReservation) {
+                throw new Error(`Tunnel rule ${ruleId} exit port ${primaryRulePort} is already used on Agent ${primary.hostId}`);
+              }
+            } else {
+              primaryReservation = await reserveAvailableHostPort({
+                hostId: primary.hostId,
+                protocol: "both",
+                findPort: (reservedPorts) => findAvailableTunnelExitPort(
+                  primary.hostId,
+                  primaryHost?.portRangeStart,
+                  primaryHost?.portRangeEnd,
+                  reservedPorts,
+                  [ruleId],
+                ),
+                isUsed: (port) => isPortUsedOnHost(primary.hostId, port, [ruleId], "both", tunnelId),
+              });
+              if (!primaryReservation) throw new Error(`Exit Agent ${primaryHost?.name || primary.hostId} has no available rule port`);
+              primaryRulePort = primaryReservation.port;
+              preferredPorts.set(primary.hostId, primaryRulePort);
+            }
+            await database.update(forwardRules).set({
+              tunnelExitPort: primaryRulePort,
+              isRunning: false,
+              updatedAt: nowDate(),
+            } as any).where(eq(forwardRules.id, ruleId));
+            await reconcileForwardRuleTunnelExits(
+              { ...rule, tunnelExitPort: primaryRulePort, isRunning: false },
+              refreshedTunnel,
+              preferredPorts,
+            );
+          } finally {
+            primaryReservation?.release();
+          }
+        });
+      } else if (endpointsChanged || loadBalanceChanged) {
+        await reconcileTunnelRuleExitMappings(tunnelId);
+      }
+      return { tunnel: refreshedTunnel, changed, previousHostIds, nextHostIds };
+    } finally {
+      releaseHostPortReservations(heldReservations);
+    }
+  });
+}
+
 export async function clearTunnelExitNodes(tunnelId: number) {
   const db = await getDb();
   if (!db) return;
@@ -1191,7 +1407,11 @@ async function upsertForwardRuleTunnelExit(row: Omit<InsertForwardRuleTunnelExit
   );
 }
 
-export async function reconcileForwardRuleTunnelExits(rule: any, tunnel: any) {
+export async function reconcileForwardRuleTunnelExits(
+  rule: any,
+  tunnel: any,
+  preferredPortsByHostId: ReadonlyMap<number, number> = new Map(),
+) {
   const ruleId = Number(rule?.id || 0);
   const tunnelId = Number(tunnel?.id || rule?.tunnelId || 0);
   if (!ruleId || !tunnelId) return [];
@@ -1225,7 +1445,7 @@ export async function reconcileForwardRuleTunnelExits(rule: any, tunnel: any) {
     const existingRow = nodeMatch
       || hostMatch
       || (Number(sequenceMatch?.exitHostId) === Number(endpoint.hostId) ? sequenceMatch : undefined);
-    let tunnelExitPort = Number(existingRow?.tunnelExitPort || 0);
+    let tunnelExitPort = Number(existingRow?.tunnelExitPort || preferredPortsByHostId.get(Number(endpoint.hostId)) || 0);
     if (tunnelExitPort > 0) {
       const reservation = await reserveSpecificHostPort({
         hostId: Number(endpoint.hostId),

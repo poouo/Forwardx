@@ -1,4 +1,4 @@
-import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, NOT_ADMIN_ERR_MSG, SESSION_REPLACED_ERR_MSG, UNAUTHED_ERR_MSG } from '../../shared/const';
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, NOT_ADMIN_ERR_MSG, SESSION_BUSY_ERR_MSG, SESSION_REPLACED_ERR_MSG, UNAUTHED_ERR_MSG } from '../../shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -15,6 +15,9 @@ const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;
 
   if (!ctx.user) {
+    if (ctx.authFailureReason === "session_busy") {
+      throw new TRPCError({ code: "CONFLICT", message: SESSION_BUSY_ERR_MSG });
+    }
     throw new TRPCError({
       code: "UNAUTHORIZED",
       message: ctx.authFailureReason === "session_replaced" ? SESSION_REPLACED_ERR_MSG : UNAUTHED_ERR_MSG,
@@ -40,6 +43,9 @@ export const adminProcedure = t.procedure.use(
     const { ctx, next } = opts;
 
     if (!ctx.user) {
+      if (ctx.authFailureReason === "session_busy") {
+        throw new TRPCError({ code: "CONFLICT", message: SESSION_BUSY_ERR_MSG });
+      }
       throw new TRPCError({
         code: "UNAUTHORIZED",
         message: ctx.authFailureReason === "session_replaced" ? SESSION_REPLACED_ERR_MSG : UNAUTHED_ERR_MSG,

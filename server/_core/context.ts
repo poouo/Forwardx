@@ -7,11 +7,17 @@ import { ENV } from "../env";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import {
+  encodeSessionLease,
+  getSessionKindField,
+  isSessionLeaseOwnedByAnother,
   normalizeSessionKind,
+  parseSessionLease,
+  shouldRefreshSessionLease,
   type SessionKind,
 } from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
 import { getActiveAuthSession, touchAuthSession } from "../repositories/sessionRepository";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -26,10 +32,17 @@ export interface TrpcContext {
   res: Response;
   user: User | null;
   authSession: AuthSession | null;
-  authFailureReason: "session_replaced" | null;
+  authFailureReason: "session_replaced" | "session_busy" | null;
 }
 
 type TokenSource = "cookie" | "bearer";
+
+const MULTI_DEVICE_LOGIN_SETTING_CACHE_MS = 30 * 1000;
+let allowMultiDeviceLoginCache: { value: boolean; loadedAt: number } = { value: false, loadedAt: 0 };
+
+export function updateMultiDeviceLoginSettingCache(value: boolean) {
+  allowMultiDeviceLoginCache = { value, loadedAt: Date.now() };
+}
 
 function getRequestToken(req: Request): { token: string; source: TokenSource | null } {
   const authHeader = req.headers.authorization;
@@ -60,9 +73,37 @@ function normalizeSessionPayload(req: Request, payload: unknown) {
   };
 }
 
+async function allowMultiDeviceLogin() {
+  const now = Date.now();
+  if (now - allowMultiDeviceLoginCache.loadedAt < MULTI_DEVICE_LOGIN_SETTING_CACHE_MS) {
+    return allowMultiDeviceLoginCache.value;
+  }
+  const value = (await db.getSetting("allowMultiDeviceLogin").catch(() => null)) === "true";
+  allowMultiDeviceLoginCache = { value, loadedAt: now };
+  return value;
+}
+
+async function claimSessionLease(user: User, sessionKind: SessionKind, sid: string) {
+  const field = getSessionKindField(sessionKind);
+  const initialLease = parseSessionLease(String((user as any)[field] || ""));
+  if (isSessionLeaseOwnedByAnother(initialLease, sid)) return false;
+  if (!shouldRefreshSessionLease(initialLease, sid)) return true;
+
+  return withKeyedTaskLock(`auth-session-lease:${user.id}:${sessionKind}`, async () => {
+    const latestUser = await db.getUserById(user.id);
+    if (!latestUser) return false;
+    const lease = parseSessionLease(String((latestUser as any)[field] || ""));
+    if (isSessionLeaseOwnedByAnother(lease, sid)) return false;
+    if (shouldRefreshSessionLease(lease, sid)) {
+      await db.setUserSessionToken(user.id, sessionKind, encodeSessionLease(sid), { touchUserUpdatedAt: false });
+    }
+    return true;
+  });
+}
+
 type ResolveSessionResult =
   | { user: User; authSession: AuthSession; failureReason?: never }
-  | { user: null; authSession: null; failureReason: "session_replaced" | null };
+  | { user: null; authSession: null; failureReason: "session_replaced" | "session_busy" | null };
 
 async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<ResolveSessionResult> {
   try {
@@ -86,6 +127,13 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
         user: null,
         authSession: null,
         failureReason: "session_replaced",
+      };
+    }
+    if (!(await allowMultiDeviceLogin()) && !(await claimSessionLease(found, sessionKind, normalized.sid))) {
+      return {
+        user: null,
+        authSession: null,
+        failureReason: "session_busy",
       };
     }
     await touchAuthSession(found.id, normalized.sid, sessionKind).catch((error) => {

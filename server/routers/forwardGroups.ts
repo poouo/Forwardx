@@ -10,8 +10,10 @@ import {
   updateForwardGroupFromInput,
 } from "../services/forwardGroupService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { EXIT_GROUP_STRATEGIES } from "../../shared/exitStrategy";
 
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
+const exitGroupStrategySchema = z.enum(EXIT_GROUP_STRATEGIES);
 const failoverTargetSchema = z.object({
   targetIp: z.string().min(1).max(253),
   targetPort: z.number().int().min(1).max(65535),
@@ -32,6 +34,7 @@ const baseSchema = z.object({
   name: z.string().min(1).max(128),
   remark: z.string().max(255).nullable().optional(),
   groupMode: z.enum(["port", "failover", "chain", "entry", "exit"]).default("failover"),
+  exitStrategy: exitGroupStrategySchema.optional().default("round_robin"),
   entryGroupId: z.number().nullable().optional(),
   groupType: z.enum(["host", "tunnel"]),
   protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),

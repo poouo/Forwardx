@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net"
@@ -35,6 +36,7 @@ type helloFrame struct {
 	TargetPort               int    `json:"targetPort"`
 	TunnelID                 int    `json:"tunnelId"`
 	RuleID                   int    `json:"ruleId"`
+	SelectionKey             string `json:"selectionKey,omitempty"`
 	ProxySourceIP            string `json:"proxySourceIp,omitempty"`
 	ProxySourcePort          int    `json:"proxySourcePort,omitempty"`
 	ProxyDestIP              string `json:"proxyDestIp,omitempty"`
@@ -107,7 +109,9 @@ const (
 	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.102"
+	fxpRuntimeVersion    = "2.2.104"
+	fxpFallbackRetry     = 5 * time.Second
+	fxpFallbackDial      = 3 * time.Second
 )
 
 var (
@@ -132,10 +136,12 @@ type connGate struct {
 }
 
 type exitEndpointSelector struct {
-	endpoints []exitEndpoint
-	healthy   []bool
-	next      int
-	mu        sync.Mutex
+	endpoints  []exitEndpoint
+	healthy    []bool
+	retryAfter []time.Time
+	strategy   string
+	next       int
+	mu         sync.Mutex
 }
 
 func newConnGate(maxConnections, maxIPs int) *connGate {
@@ -146,7 +152,7 @@ func newConnGate(maxConnections, maxIPs int) *connGate {
 	}
 }
 
-func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint) *exitEndpointSelector {
+func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint, strategy string) *exitEndpointSelector {
 	endpoints := make([]exitEndpoint, 0, len(exits)+1)
 	seen := map[string]bool{}
 	add := func(endpoint exitEndpoint) {
@@ -172,10 +178,16 @@ func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint) *exitE
 		add(endpoint)
 	}
 	healthy := make([]bool, len(endpoints))
+	retryAfter := make([]time.Time, len(endpoints))
 	for i := range healthy {
 		healthy[i] = true
 	}
-	return &exitEndpointSelector{endpoints: endpoints, healthy: healthy}
+	return &exitEndpointSelector{
+		endpoints:  endpoints,
+		healthy:    healthy,
+		retryAfter: retryAfter,
+		strategy:   normalizeExitStrategy(strategy),
+	}
 }
 
 func (s *exitEndpointSelector) count() int {
@@ -187,7 +199,7 @@ func (s *exitEndpointSelector) count() int {
 	return len(s.endpoints)
 }
 
-func (s *exitEndpointSelector) pick(excluded map[int]bool) (exitEndpoint, int, bool) {
+func (s *exitEndpointSelector) pick(excluded map[int]bool, selectionKeys ...string) (exitEndpoint, int, bool) {
 	if s == nil {
 		return exitEndpoint{}, -1, false
 	}
@@ -196,12 +208,32 @@ func (s *exitEndpointSelector) pick(excluded map[int]bool) (exitEndpoint, int, b
 	if len(s.endpoints) == 0 {
 		return exitEndpoint{}, -1, false
 	}
+	now := time.Now()
+	eligible := func(index int) bool {
+		return s.healthy[index] || s.retryAfter[index].IsZero() || !now.Before(s.retryAfter[index])
+	}
+	if s.strategy == "fallback" {
+		for i := range s.endpoints {
+			if excluded != nil && excluded[i] {
+				continue
+			}
+			if eligible(i) {
+				return s.endpoints[i], i, true
+			}
+		}
+		for i := range s.endpoints {
+			if excluded == nil || !excluded[i] {
+				return s.endpoints[i], i, true
+			}
+		}
+		return exitEndpoint{}, -1, false
+	}
 	candidates := make([]int, 0, len(s.endpoints))
 	for i := range s.endpoints {
 		if excluded != nil && excluded[i] {
 			continue
 		}
-		if s.healthy[i] {
+		if eligible(i) {
 			candidates = append(candidates, i)
 		}
 	}
@@ -215,6 +247,24 @@ func (s *exitEndpointSelector) pick(excluded map[int]bool) (exitEndpoint, int, b
 	}
 	if len(candidates) == 0 {
 		return exitEndpoint{}, -1, false
+	}
+	if s.strategy == "random" {
+		if value, err := randomUint64(); err == nil {
+			index := candidates[int(value%uint64(len(candidates)))]
+			return s.endpoints[index], index, true
+		}
+	}
+	if s.strategy == "ip_hash" {
+		selectionKey := ""
+		if len(selectionKeys) > 0 {
+			selectionKey = strings.TrimSpace(selectionKeys[0])
+		}
+		if selectionKey != "" {
+			hash := fnv.New64a()
+			_, _ = hash.Write([]byte(selectionKey))
+			index := candidates[int(hash.Sum64()%uint64(len(candidates)))]
+			return s.endpoints[index], index, true
+		}
 	}
 	index := candidates[s.next%len(candidates)]
 	s.next = (s.next + 1) % 1000000
@@ -233,6 +283,7 @@ func (s *exitEndpointSelector) markFailure(index int, err error) {
 	endpoint := s.endpoints[index]
 	wasHealthy := s.healthy[index]
 	s.healthy[index] = false
+	s.retryAfter[index] = time.Now().Add(fxpFallbackRetry)
 	s.mu.Unlock()
 	if wasHealthy {
 		log.Printf("exit endpoint unhealthy index=%d endpoint=%s:%d reason=%v", index, endpoint.Host, endpoint.Port, err)
@@ -251,20 +302,21 @@ func (s *exitEndpointSelector) markHealthy(index int) {
 	endpoint := s.endpoints[index]
 	wasHealthy := s.healthy[index]
 	s.healthy[index] = true
+	s.retryAfter[index] = time.Time{}
 	s.mu.Unlock()
 	if !wasHealthy {
 		log.Printf("exit endpoint recovered index=%d endpoint=%s:%d", index, endpoint.Host, endpoint.Port)
 	}
 }
 
-func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config) (net.Conn, *secureConn, exitEndpoint, error) {
+func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
 	if selector == nil || selector.count() == 0 {
 		return nil, nil, exitEndpoint{}, errors.New("no exit endpoints")
 	}
 	attempted := map[int]bool{}
 	var lastErr error
 	for len(attempted) < selector.count() {
-		endpoint, index, ok := selector.pick(attempted)
+		endpoint, index, ok := selector.pick(attempted, selectionKey)
 		if !ok {
 			break
 		}
@@ -285,6 +337,14 @@ func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config) (net.Conn
 		lastErr = errors.New("no exit endpoint available")
 	}
 	return nil, nil, exitEndpoint{}, lastErr
+}
+
+func endpointSelectionSource(address string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(address)
 }
 
 func formatEndpointList(selector *exitEndpointSelector) string {
@@ -450,10 +510,18 @@ func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
 	return conn, nil
 }
 
+func secureDialTimeout(cfg config) time.Duration {
+	if normalizeExitStrategy(cfg.ExitStrategy) == "fallback" || len(cfg.Exits) > 0 {
+		return fxpFallbackDial
+	}
+	return 10 * time.Second
+}
+
 func dialSecureTCP(host string, port int, cfg config) (net.Conn, *secureConn, error) {
 	var lastErr error
+	dialTimeout := secureDialTimeout(cfg)
 	for _, wire := range fxpWireContexts {
-		conn, err := dialTCP(host, port, 10*time.Second)
+		conn, err := dialTCP(host, port, dialTimeout)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -493,11 +561,11 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
-	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, UDPPort: cfg.UDPExitPort, Key: cfg.Key})
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, UDPPort: cfg.UDPExitPort, Key: cfg.Key}, cfg.ExitStrategy)
 	inLimiter := newLimiter(cfg.LimitIn)
 	outLimiter := newLimiter(cfg.LimitOut)
 	if selector.count() > 1 {
-		log.Printf("entry load balance exits=%s strategy=round", formatEndpointList(selector))
+		log.Printf("entry exit selector exits=%s strategy=%s", formatEndpointList(selector), normalizeExitStrategy(cfg.ExitStrategy))
 	}
 	if protocolHas(cfg, "tcp") {
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
@@ -621,7 +689,8 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 	if !cfg.ProxyProtocolSend {
 		proxyInfo = proxyProtocolInfo{}
 	}
-	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
+	selectionKey := endpointSelectionSource(client.RemoteAddr().String())
+	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg, selectionKey)
 	if err != nil {
 		return fmt.Errorf("dial exit: %w", err)
 	}
@@ -632,6 +701,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		TargetPort:               cfg.TargetPort,
 		TunnelID:                 cfg.TunnelID,
 		RuleID:                   cfg.RuleID,
+		SelectionKey:             selectionKey,
 		ProxySourceIP:            proxyInfo.SourceIP,
 		ProxySourcePort:          proxyInfo.SourcePort,
 		ProxyDestIP:              proxyInfo.DestIP,
@@ -1062,16 +1132,18 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 }
 
 func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, remove func(*udpEntrySession)) (*udpEntrySession, error) {
-	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
+	selectionKey := clientAddr.IP.String()
+	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg, selectionKey)
 	if err != nil {
 		return nil, err
 	}
 	hello, _ := json.Marshal(helloFrame{
-		Network:    "udp",
-		TargetIP:   cfg.TargetIP,
-		TargetPort: cfg.TargetPort,
-		TunnelID:   cfg.TunnelID,
-		RuleID:     cfg.RuleID,
+		Network:      "udp",
+		TargetIP:     cfg.TargetIP,
+		TargetPort:   cfg.TargetPort,
+		TunnelID:     cfg.TunnelID,
+		RuleID:       cfg.RuleID,
+		SelectionKey: selectionKey,
 	})
 	if err := sec.writeFrame(hello); err != nil {
 		_ = exit.Close()
@@ -1415,11 +1487,11 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayKey == "" {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
-	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, UDPPort: cfg.UDPRelayExitPort, Key: cfg.RelayKey})
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, UDPPort: cfg.UDPRelayExitPort, Key: cfg.RelayKey}, cfg.ExitStrategy)
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	if selector.count() > 1 {
-		log.Printf("relay load balance exits=%s strategy=round", formatEndpointList(selector))
+		log.Printf("relay exit selector exits=%s strategy=%s", formatEndpointList(selector), normalizeExitStrategy(cfg.ExitStrategy))
 	}
 	if protocolHas(cfg, "tcp") {
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
@@ -1531,7 +1603,14 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 	// Connect to downstream (like entry)
 	downCfg := cfg
 	downCfg.Key = cfg.RelayKey
-	downConn, downSec, endpoint, err := dialSelectedSecureTCP(selector, downCfg)
+	selectionKey := strings.TrimSpace(hello.SelectionKey)
+	if selectionKey == "" {
+		selectionKey = strings.TrimSpace(hello.ProxySourceIP)
+	}
+	if selectionKey == "" {
+		selectionKey = endpointSelectionSource(upConn.RemoteAddr().String())
+	}
+	downConn, downSec, endpoint, err := dialSelectedSecureTCP(selector, downCfg, selectionKey)
 	if err != nil {
 		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
 		return err

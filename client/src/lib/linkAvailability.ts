@@ -1,3 +1,5 @@
+import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+
 export type LinkAvailabilityStatus = "disabled" | "available" | "degraded" | "pending" | "unavailable";
 
 export type LinkAvailabilitySource = "probe" | "hosts" | "config";
@@ -232,6 +234,12 @@ export function buildLinkAvailabilityIndex(input: {
     let configurationValid = routeHostIds.length >= 2;
     let configurationMessage = "隧道至少需要入口和出口主机";
 
+    if (String(tunnel?.relayMode || "").toLowerCase() === "failover" && routeHostIds.length >= 4) {
+      const relayHostIds = routeHostIds.slice(1, -1);
+      relayHostIds.forEach((id) => requiredHostIds.delete(id));
+      alternativeNodeSets.push({ label: "中转", nodes: relayHostIds.map(hostNode) });
+    }
+
     if (entryGroupId > 0 && !entryGroup) {
       configurationValid = false;
       configurationMessage = "关联入口组不存在";
@@ -249,14 +257,15 @@ export function buildLinkAvailabilityIndex(input: {
       configurationValid = false;
       configurationMessage = "关联出口组不存在";
     } else if (exitGroup) {
-      const members = endpointHostMembers(exitGroup, hostById, tunnelById);
+      const groupMembers = endpointHostMembers(exitGroup, hostById, tunnelById);
+      const members = normalizeExitGroupStrategy(exitGroup.exitStrategy) === "none" ? groupMembers.slice(0, 1) : groupMembers;
       if (!exitGroup.isEnabled || normalizeGroupMode(exitGroup) !== "exit") {
         configurationValid = false;
         configurationMessage = "关联出口组配置不可用";
       }
       if (routeHostIds.length > 0) requiredHostIds.delete(routeHostIds[routeHostIds.length - 1]);
       alternativeNodeSets.push({ label: "出口组", nodes: members.map((member: any) => hostNode(Number(member.hostId))) });
-    } else if (tunnel?.loadBalanceEnabled) {
+    } else if (tunnel?.loadBalanceEnabled && normalizeExitGroupStrategy(tunnel?.loadBalanceStrategy) !== "none") {
       const rawExitIds: number[] = [
         Number(routeHostIds[routeHostIds.length - 1] || tunnel?.exitHostId || 0),
         ...(Array.isArray(tunnel?.loadBalanceExits)
@@ -348,6 +357,9 @@ export function buildLinkAvailabilityIndex(input: {
           configurationValid = false;
           configurationMessage = `${String(group?.recordType || "A").toUpperCase()} 记录缺少可用成员地址`;
         }
+      }
+      if (mode === "exit" && normalizeExitGroupStrategy(group?.exitStrategy) === "none") {
+        candidates = candidates.slice(0, 1);
       }
       if (String(group?.lastStatus || "").toLowerCase() === "error") {
         configurationValid = false;

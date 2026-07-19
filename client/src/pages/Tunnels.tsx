@@ -101,6 +101,15 @@ import {
   trafficMultiplierFromInput,
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
+import {
+  normalizeTunnelRelayMode,
+  tunnelRelayFailoverSupported,
+  type TunnelRelayMode,
+} from "@shared/tunnelRelay";
+import {
+  EXIT_GROUP_STRATEGY_LABELS,
+  normalizeExitGroupStrategy,
+} from "@shared/exitStrategy";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   CartesianGrid,
@@ -149,6 +158,7 @@ type TunnelForm = {
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
   mode: TunnelProtocol;
+  relayMode: TunnelRelayMode;
   forwardxVersion: "v1" | "v2";
   certDomain: string;
   certPem: string;
@@ -167,7 +177,7 @@ type TunnelForm = {
   tcpFastOpen: boolean;
   udpOverTcp: boolean;
   loadBalanceEnabled: boolean;
-  loadBalanceStrategy: "round_robin" | "random" | "least_conn" | "ip_hash" | "fallback";
+  loadBalanceStrategy: "none" | "round_robin" | "random" | "least_conn" | "ip_hash" | "fallback";
   loadBalanceExits: Array<{ hostId: number | null; connectHost: string }>;
   exitGroupId: number | null;
   blockHttp: boolean;
@@ -303,6 +313,7 @@ const defaultForm: TunnelForm = {
   hopHostIds: [],
   hopConnectHosts: [],
   mode: "forwardx",
+  relayMode: "chain",
   forwardxVersion: "v1",
   certDomain: "",
   certPem: "",
@@ -743,13 +754,6 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 const nginxTunnelModes: TunnelForm["mode"][] = ["nginx_stream"];
-const tunnelLoadBalanceStrategyLabels: Record<TunnelForm["loadBalanceStrategy"], string> = {
-  round_robin: "轮询",
-  random: "随机",
-  least_conn: "最少连接",
-  ip_hash: "IP 哈希",
-  fallback: "主备",
-};
 const unsupportedProtocolTitle = "该隧道协议已被管理员停用";
 
 function isNginxTunnelModeValue(mode: unknown) {
@@ -2456,6 +2460,8 @@ function TunnelsContent() {
     const members = exitMembersForGroup(exitGroupId);
     if (members.length === 0) return { ...prev, exitGroupId, loadBalanceEnabled: false, loadBalanceExits: [] };
     const primaryExitHostId = Number(members[0]?.hostId || 0);
+    const exitGroup = exitGroupById.get(Number(exitGroupId));
+    const exitStrategy = normalizeExitGroupStrategy(exitGroup?.exitStrategy);
     const stripped = stripExternalTunnelHosts(prev.hopHostIds, prev.hopConnectHosts, prev.entryGroupId, exitGroupId);
     return {
       ...prev,
@@ -2464,6 +2470,7 @@ function TunnelsContent() {
       hopHostIds: stripped.hopHostIds,
       hopConnectHosts: stripped.hopConnectHosts,
       loadBalanceEnabled: members.length > 1,
+      loadBalanceStrategy: exitStrategy,
       loadBalanceExits: members.slice(1).map((member: any) => ({
         hostId: Number(member.hostId || 0) || null,
         connectHost: String(member.connectHost || "").trim(),
@@ -2641,6 +2648,7 @@ function TunnelsContent() {
       hopHostIds: displayRoute.hopHostIds,
       hopConnectHosts: displayRoute.hopConnectHosts,
       mode,
+      relayMode: tunnelRelayFailoverSupported(mode) ? normalizeTunnelRelayMode(tunnel.relayMode) : "chain",
       forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
       certDomain: String(tunnel.certDomain || ""),
       certPem: String(tunnel.certPem || ""),
@@ -2659,7 +2667,7 @@ function TunnelsContent() {
       tcpFastOpen: transportTuningSupported && !!tunnel.tcpFastOpen,
       udpOverTcp: transportTuningSupported && !!tunnel.udpOverTcp,
       loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
-      loadBalanceStrategy: (["round_robin", "random", "least_conn", "ip_hash", "fallback"].includes(String(tunnel.loadBalanceStrategy || ""))
+      loadBalanceStrategy: (["none", "round_robin", "random", "least_conn", "ip_hash", "fallback"].includes(String(tunnel.loadBalanceStrategy || ""))
         ? tunnel.loadBalanceStrategy
         : "round_robin") as TunnelForm["loadBalanceStrategy"],
       loadBalanceExits: exitGroupId ? loadBalanceExits : [],
@@ -2965,6 +2973,9 @@ function TunnelsContent() {
     const payload: any = {
       name: submitForm.name,
       mode: normalizeTunnelModeForForm(submitForm.mode),
+      relayMode: orderedHopHostIds.length >= 4 && tunnelRelayFailoverSupported(submitForm.mode)
+        ? submitForm.relayMode
+        : "chain",
       forwardxVersion: submitForm.mode === "forwardx" ? submitForm.forwardxVersion : "v1",
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
@@ -3089,6 +3100,7 @@ function TunnelsContent() {
     setForm((prev) => ({
       ...prev,
       mode: nextMode,
+      relayMode: tunnelRelayFailoverSupported(nextMode) ? prev.relayMode : "chain",
       proxyProtocolReceive: proxySupported ? prev.proxyProtocolReceive : false,
       proxyProtocolSend: proxySupported ? prev.proxyProtocolSend : false,
       proxyProtocolExitReceive: proxySupported ? prev.proxyProtocolExitReceive : false,
@@ -4310,14 +4322,17 @@ function TunnelsContent() {
                       </p>
                     </div>
                     <div className="space-y-2">
-                      <Label>主机链路</Label>
                       <MultiHopEditor
                         hosts={hosts || []}
+                        headerLabel="主机链路"
                         initialHopIds={form.hopHostIds}
                         initialHopConnectHosts={form.hopConnectHosts}
                         maxHops={MAX_TUNNEL_HOPS}
                         externalEntry={!!form.entryGroupId}
                         externalExit={!!form.exitGroupId}
+                        relayMode={form.relayMode}
+                        relayModeSupported={tunnelRelayFailoverSupported(form.mode)}
+                        onRelayModeChange={(relayMode) => setForm((prev) => ({ ...prev, relayMode }))}
                         fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
                         excludedHostIds={externalTunnelHostIds(form.entryGroupId, form.exitGroupId)}
                         onChange={(ids) => {
@@ -4378,7 +4393,9 @@ function TunnelsContent() {
                         </SelectContent>
                       </Select>
                       {form.exitGroupId ? (
-                        <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
+                        <p className="text-xs text-muted-foreground">
+                          出口组固定为隧道出口；策略：{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
+                        </p>
                       ) : (
                         <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
                       )}
@@ -4443,20 +4460,6 @@ function TunnelsContent() {
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {renderTunnelRuntimeOptions()}
                     {renderForwardXVersionOptions()}
-                    {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
-                      <div className="space-y-2">
-                        <Label>出口组负载模式</Label>
-                        <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {Object.entries(tunnelLoadBalanceStrategyLabels).map(([value, label]) => (
-                              <SelectItem key={value} value={value}>{label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground">仅使用出口组多出口时生效，单出口隧道固定直连主出口。</p>
-                      </div>
-                    )}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
@@ -4627,14 +4630,17 @@ function TunnelsContent() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label>主机链路</Label>
               <MultiHopEditor
                 hosts={hosts || []}
+                headerLabel="主机链路"
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
                 maxHops={MAX_TUNNEL_HOPS}
                 externalEntry={!!form.entryGroupId}
                 externalExit={!!form.exitGroupId}
+                relayMode={form.relayMode}
+                relayModeSupported={tunnelRelayFailoverSupported(form.mode)}
+                onRelayModeChange={(relayMode) => setForm((prev) => ({ ...prev, relayMode }))}
                 fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
                 excludedHostIds={externalTunnelHostIds(form.entryGroupId, form.exitGroupId)}
                 onChange={(ids) => {
@@ -4695,7 +4701,9 @@ function TunnelsContent() {
                 </SelectContent>
               </Select>
               {form.exitGroupId ? (
-                <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
+                <p className="text-xs text-muted-foreground">
+                  出口组固定为隧道出口；策略：{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
+                </p>
               ) : (
                 <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
               )}
@@ -4760,20 +4768,6 @@ function TunnelsContent() {
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {renderTunnelRuntimeOptions()}
             {renderForwardXVersionOptions()}
-            {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
-              <div className="space-y-2">
-                <Label>出口组负载模式</Label>
-                <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(tunnelLoadBalanceStrategyLabels).map(([value, label]) => (
-                      <SelectItem key={value} value={value}>{label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">仅使用出口组多出口时生效，单出口隧道固定直连主出口。</p>
-              </div>
-            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>

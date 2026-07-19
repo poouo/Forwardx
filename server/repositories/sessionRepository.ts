@@ -1,8 +1,7 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { authSessions } from "../../drizzle/schema";
+import { authSessions, users } from "../../drizzle/schema";
 import { getDb, nowDate } from "../dbRuntime";
-import { getSetting } from "./settingsRepository";
-import { SESSION_TOUCH_INTERVAL_MS, type SessionKind } from "../session";
+import { getSessionKindField, SESSION_TOUCH_INTERVAL_MS, type SessionKind } from "../session";
 
 type CreateAuthSessionInput = {
   userId: number;
@@ -24,10 +23,6 @@ function activeSessionWhere(userId: number, sid: string, kind: SessionKind, now 
 export async function createAuthSession(input: CreateAuthSessionInput) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const allowMultiDeviceLogin = (await getSetting("allowMultiDeviceLogin").catch(() => null)) === "true";
-  if (!allowMultiDeviceLogin) {
-    await revokeUserAuthSessions(input.userId, { kind: input.kind, reason: "replaced" });
-  }
   const now = nowDate();
   await db.insert(authSessions).values({
     userId: input.userId,
@@ -79,4 +74,13 @@ export async function revokeUserAuthSessions(userId: number, options: { kind?: S
   await db.update(authSessions)
     .set({ revokedAt: nowDate(), revokeReason: options.reason || "revoked" } as any)
     .where(and(...conditions));
+
+  const leasePatch = options.kind
+    ? { [getSessionKindField(options.kind)]: null }
+    : {
+        browserSessionToken: null,
+        mobileSessionToken: null,
+        telegramSessionToken: null,
+      };
+  await db.update(users).set(leasePatch as any).where(eq(users.id, userId));
 }

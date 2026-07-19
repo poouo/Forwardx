@@ -21,6 +21,7 @@ import HomepagePreviewPage from "@/pages/HomepagePreview";
 import HostMonitorPage from "@/pages/HostMonitor";
 import HostsPage from "@/pages/Hosts";
 import LoginPage from "@/pages/Login";
+import SessionWaitPage from "@/pages/SessionWait";
 import LookingGlassPage from "@/pages/LookingGlass";
 import PaymentsPage from "@/pages/Payments";
 import PlansPage from "@/pages/Plans";
@@ -89,6 +90,7 @@ function Router() {
     <Switch>
       <Route path="/setup" component={Setup} />
       <Route path="/login">{routeComponent(LoginPage)}</Route>
+      <Route path="/session-wait">{routeComponent(SessionWaitPage)}</Route>
       <Route path="/homepage-preview">{routeComponent(HomepagePreviewPage)}</Route>
       <Route path="/">{routeComponent(HomePage)}</Route>
       <Route path="/profile">{routeComponent(ProfilePage)}</Route>

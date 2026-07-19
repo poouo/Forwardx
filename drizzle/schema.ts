@@ -352,6 +352,7 @@ export const forwardGroups = table("forward_groups", {
   remark: text("remark"),
   groupType: varchar("groupType", { length: 32 }).notNull().default("host"),
   groupMode: varchar("groupMode", { length: 32 }).notNull().default("failover"),
+  exitStrategy: varchar("exitStrategy", { length: 32 }).notNull().default("round_robin"),
   entryGroupId: int("entryGroupId"),
   forwardType: varchar("forwardType", { length: 32 }).notNull().default("iptables"),
   domain: text("domain"),
@@ -439,6 +440,7 @@ export const tunnels = table("tunnels", {
   entryHostId: int("entryHostId").notNull(),
   exitHostId: int("exitHostId").notNull(),
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // forwardx | tls | wss | tcp | mtls | mwss | mtcp | nginx_stream
+  relayMode: varchar("relayMode", { length: 16 }).notNull().default("chain"), // chain | failover
   forwardxVersion: varchar("forwardxVersion", { length: 8 }).notNull().default("v1"),
   certDomain: text("certDomain"),
   certPem: text("certPem"),

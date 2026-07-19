@@ -16,7 +16,7 @@ import {
   type AgentTunnelTcpingResult,
 } from "../shared/agentDtos";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
-import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
+import { getTunnelAutoHopAggregate, recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
@@ -25,6 +25,7 @@ import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/tr
 import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
 import { withKeyedTaskLock } from "./keyedTaskLock";
+import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -195,7 +196,7 @@ async function tunnelEntryHostIds(tunnel: any) {
   return ids;
 }
 
-async function validateTunnelProbeSource(
+export async function validateTunnelProbeSource(
   hostId: number,
   tunnel: any,
   report: AgentTunnelTcpingResult,
@@ -210,6 +211,21 @@ async function validateTunnelProbeSource(
   const hopIndex = Number(report.hopIndex);
   const hopCount = Number(report.hopCount);
   if (Number.isInteger(hopIndex) && Number.isInteger(hopCount) && hopCount > 0) {
+    if (isTunnelRelayFailover(tunnel, hops)) {
+      const relayMatch = String(report.seriesKey || "").match(/^relay-(\d+)$/);
+      const relayIndex = Number(relayMatch?.[1] || 0);
+      const relays = tunnelRelayCandidates(hops) as any[];
+      if (!relayMatch || relayIndex <= 0 || relayIndex > relays.length || hopCount !== 2 || hopIndex < 0 || hopIndex > 1) return false;
+      const relay = relays[relayIndex - 1] as any;
+      if (hopIndex === 0) {
+        const entryHostIds = context?.entryHostIds || await tunnelEntryHostIds(tunnel);
+        return entryHostIds.has(Number(hostId))
+          && (!report.targetPort || Number(relay?.listenPort || 0) === Number(report.targetPort));
+      }
+      const finalExit = hops[hops.length - 1] as any;
+      return Number(relay?.hostId || 0) === Number(hostId)
+        && (!report.targetPort || Number(finalExit?.listenPort || 0) === Number(report.targetPort));
+    }
     if (!Array.isArray(hops) || hops.length - 1 !== hopCount || hopIndex < 0 || hopIndex >= hopCount) return false;
     if (Number(hops[hopIndex]?.hostId || 0) !== Number(hostId)) return false;
     const expectedPort = Number(hops[hopIndex + 1]?.listenPort || 0);
@@ -582,12 +598,27 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       if (!tunnel) return;
       const entryHostIds = await tunnelEntryHostIds(tunnel);
       const topologyKey = tunnelProbeTopologyKey(tunnel, hops, exitNodes);
+      const relayFailover = isTunnelRelayFailover(tunnel, hops);
+      const relayCandidateCount = relayFailover ? tunnelRelayCandidates(hops).length : 0;
       const branchByKey = new Map<string, { key: string; label: string; latencyMs: number | null; isTimeout: boolean }>();
       for (const report of reports) {
         if (!await validateTunnelProbeSource(Number(host.id), tunnel, report, { hops, exitNodes, entryHostIds, topologyKey })) continue;
         const latencyValue = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
         const isTimeout = !!report.isTimeout || latencyValue === null;
         const seriesKey = cleanTunnelSeriesKey(report.seriesKey);
+        if (relayFailover && seriesKey && /^relay-\d+$/.test(seriesKey)) {
+          recordTunnelAutoHopLatency({
+            tunnelId,
+            hopIndex: Number(report.hopIndex),
+            hopCount: 2,
+            latencyMs: latencyValue,
+            isTimeout,
+            generation: topologyKey,
+            pathKey: seriesKey,
+            allowEarlyFailure: true,
+          });
+          continue;
+        }
         if (seriesKey) {
           const label = cleanTunnelSeriesLabel(report.seriesLabel, seriesKey === "primary" ? "主出口" : seriesKey);
           branchByKey.set(seriesKey, { key: seriesKey, label, latencyMs: latencyValue, isTimeout });
@@ -628,6 +659,27 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         if (!isTimeout && !tunnel.isRunning) {
           await db.updateTunnelRunningStatus(tunnelId, true);
           tunnel.isRunning = true;
+        }
+      }
+
+      if (relayFailover) {
+        const aggregates = Array.from({ length: relayCandidateCount }, (_, index) => {
+          const key = `relay-${index + 1}`;
+          return {
+            key,
+            label: `中转 ${index + 1}`,
+            aggregate: getTunnelAutoHopAggregate(tunnelId, 2, topologyKey, key, true),
+          };
+        });
+        if (aggregates.some((item) => item.aggregate !== null)) {
+          for (const item of aggregates) {
+            branchByKey.set(item.key, {
+              key: item.key,
+              label: item.label,
+              latencyMs: item.aggregate?.success ? item.aggregate.latencyMs : null,
+              isTimeout: !item.aggregate?.success,
+            });
+          }
         }
       }
 

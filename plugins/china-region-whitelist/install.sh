@@ -1065,11 +1065,6 @@ restore_rules() {
     [[ -n "${code}" ]] && saved_codes+=("${code}")
   done < <(cn_load_config_codes)
 
-  if [[ "${#saved_codes[@]}" -eq 0 ]]; then
-    echo "配置文件中没有全局白名单代码。" >&2
-    exit 1
-  fi
-
   saved_asns=()
   while IFS= read -r asn; do
     [[ -n "${asn}" ]] && saved_asns+=("${asn}")
@@ -1080,6 +1075,10 @@ restore_rules() {
     CN_ASN_OFFLINE="${CN_ASN_OFFLINE:-1}"
   fi
   saved_port_policies="$(cn_load_config_port_policies)"
+  if [[ "${#saved_codes[@]}" -eq 0 && "${#saved_asns[@]}" -eq 0 && -z "$(cn_trim "${saved_port_policies}")" ]]; then
+    echo "配置文件中没有全局白名单或端口白名单。" >&2
+    exit 1
+  fi
   if [[ -n "${saved_port_policies}" ]]; then
     CN_ASN_OFFLINE="${CN_ASN_OFFLINE:-1}"
   fi

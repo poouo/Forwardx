@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import HostStatusLabel from "@/components/HostStatusLabel";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import {
   Select,
   SelectContent,
@@ -12,6 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ArrowDown, GripVertical, Trash2 } from "lucide-react";
+import { segmentedControlClassName, segmentedOptionClassName } from "@/components/ui/segmented";
+import type { TunnelRelayMode } from "@shared/tunnelRelay";
 
 interface Host {
   id: number;
@@ -36,6 +39,7 @@ type HopRole = "entry" | "mid" | "exit";
 
 interface MultiHopEditorProps {
   hosts: Host[];
+  headerLabel?: string;
   initialHopIds?: number[];
   initialHopConnectHosts?: Array<string | null>;
   maxHops?: number;
@@ -45,12 +49,13 @@ interface MultiHopEditorProps {
   excludedHostIds?: number[];
   externalEntry?: boolean;
   externalExit?: boolean;
+  relayMode?: TunnelRelayMode;
+  relayModeSupported?: boolean;
+  onRelayModeChange?: (mode: TunnelRelayMode) => void;
 }
 
 const missingTunnelEntryIpTip = "请先配置内网IP";
 const missingIpv6Tip = "该主机暂无IPv6";
-const DRAG_GHOST_OFFSET = { x: 14, y: 14 };
-
 const ROLE_COLORS: Record<HopRole, string> = {
   entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
   mid: "border-amber-500/40 bg-amber-500/10 text-amber-600",
@@ -87,6 +92,7 @@ function reorder<T>(arr: T[], fromIdx: number, toIdx: number): T[] {
 
 export default function MultiHopEditor({
   hosts,
+  headerLabel,
   initialHopIds,
   initialHopConnectHosts,
   maxHops = 5,
@@ -96,19 +102,18 @@ export default function MultiHopEditor({
   excludedHostIds = [],
   externalEntry = false,
   externalExit = false,
+  relayMode = "chain",
+  relayModeSupported = false,
+  onRelayModeChange,
 }: MultiHopEditorProps) {
   const hostById = useMemo(() => new Map(hosts.map((host) => [host.id, host])), [hosts]);
   const [hops, setHops] = useState<HopEntry[]>([]);
-  const [dragSourceIdx, setDragSourceIdx] = useState<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
-  const [ghost, setGhost] = useState<{ x: number; y: number; name: string; role: HopRole; index: number } | null>(null);
 
   const prevIdsRef = useRef<string>("");
   const prevConnectRef = useRef<string>("");
   const onChangeRef = useRef<typeof onChange>(onChange);
   const onConnectHostsChangeRef = useRef<typeof onConnectHostsChange>(onConnectHostsChange);
   const syncingFromPropsRef = useRef(false);
-  const emptyDragImageRef = useRef<HTMLImageElement | null>(null);
 
   const getRole = (idx: number, total: number): HopRole => {
     if (externalEntry && externalExit) return "mid";
@@ -158,12 +163,6 @@ export default function MultiHopEditor({
         };
       })
       .filter(Boolean) as HopEntry[];
-  };
-
-  const clearDragState = () => {
-    setDragSourceIdx(null);
-    setDragOverIdx(null);
-    setGhost(null);
   };
 
   useEffect(() => {
@@ -217,23 +216,29 @@ export default function MultiHopEditor({
     }
   }, [hops]);
 
-  useEffect(() => {
-    const handleWindowDragEnd = () => clearDragState();
-    window.addEventListener("dragend", handleWindowDragEnd);
-    window.addEventListener("drop", handleWindowDragEnd);
-    window.addEventListener("mouseup", handleWindowDragEnd);
-    return () => {
-      window.removeEventListener("dragend", handleWindowDragEnd);
-      window.removeEventListener("drop", handleWindowDragEnd);
-      window.removeEventListener("mouseup", handleWindowDragEnd);
-    };
-  }, []);
-
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
   const fixedExitIds = useMemo(() => new Set(fixedExitHostIds.map((id) => Number(id || 0)).filter((id) => id > 0)), [fixedExitHostIds]);
   const excludedIds = useMemo(() => new Set(excludedHostIds.map((id) => Number(id || 0)).filter((id) => id > 0)), [excludedHostIds]);
+  const movableHopCount = hops.filter((hop) => !fixedExitIds.has(hop.hostId)).length;
+  const hopSortable = useSortableReorder({
+    items: hops,
+    getId: (hop) => hop.hostId,
+    disabled: movableHopCount < 2,
+    onReorder: (nextHops) => {
+      const fixedPositionsChanged = hops.some((hop, index) => (
+        fixedExitIds.has(hop.hostId) && nextHops[index]?.hostId !== hop.hostId
+      ));
+      if (!fixedPositionsChanged) setHops(nextHops);
+    },
+  });
   const reachedMaxHops = hops.length >= maxHops;
   const availableHosts = reachedMaxHops ? [] : hosts.filter((host) => !selectedIds.has(host.id) && !excludedIds.has(host.id));
+  const relayCount = Math.max(0, hops.length - (externalEntry ? 0 : 1) - (externalExit ? 0 : 1));
+  const showRelayMode = relayModeSupported && relayCount >= 2;
+
+  useEffect(() => {
+    if (!showRelayMode && relayMode === "failover") onRelayModeChange?.("chain");
+  }, [onRelayModeChange, relayMode, showRelayMode]);
 
   useEffect(() => {
     if (excludedIds.size === 0) return;
@@ -256,7 +261,6 @@ export default function MultiHopEditor({
     const hop = hops[idx];
     if (hop && fixedExitIds.has(hop.hostId)) return;
     setHops((prev) => prev.filter((_, i) => i !== idx));
-    clearDragState();
   };
 
   const moveHop = (fromIdx: number, toIdx: number) => {
@@ -284,64 +288,19 @@ export default function MultiHopEditor({
     }));
   };
 
-  const onDragStart = (idx: number) => (e: React.DragEvent) => {
-    if (fixedExitIds.has(hops[idx]?.hostId || 0)) {
-      e.preventDefault();
-      return;
-    }
-    if (!emptyDragImageRef.current) {
-      const img = new Image();
-      img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=";
-      emptyDragImageRef.current = img;
-    }
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(idx));
-    e.dataTransfer.setDragImage(emptyDragImageRef.current, 0, 0);
-    setDragSourceIdx(idx);
-    setDragOverIdx(idx);
-    setGhost({
-      x: e.clientX + DRAG_GHOST_OFFSET.x,
-      y: e.clientY + DRAG_GHOST_OFFSET.y,
-      name: hops[idx]?.hostName || "",
-      role: getRole(idx, hops.length),
-      index: idx + 1,
-    });
-  };
-
-  const onDragOverContainer = (e: React.DragEvent) => {
-    if (dragSourceIdx === null) return;
-    e.preventDefault();
-    setGhost((prev) => (prev ? { ...prev, x: e.clientX + DRAG_GHOST_OFFSET.x, y: e.clientY + DRAG_GHOST_OFFSET.y } : prev));
-  };
-
-  const onDragEnterRow = (idx: number) => (e: React.DragEvent) => {
-    if (dragSourceIdx === null) return;
-    e.preventDefault();
-    setDragOverIdx(idx);
-    setGhost((prev) => (prev ? { ...prev, role: getRole(idx, hops.length), index: idx + 1 } : prev));
-  };
-
-  const onDropRow = (idx: number) => (e: React.DragEvent) => {
-    e.preventDefault();
-    if (dragSourceIdx === null) {
-      clearDragState();
-      return;
-    }
-    const source = hops[dragSourceIdx];
-    const target = hops[idx];
-    if (dragSourceIdx !== idx && !fixedExitIds.has(source?.hostId || 0) && !fixedExitIds.has(target?.hostId || 0)) {
-      setHops((prev) => reorder(prev, dragSourceIdx, idx));
-    }
-    clearDragState();
-  };
-
-  const onDragEnd = () => clearDragState();
-
   return (
-    <div className="space-y-2" onDragOver={onDragOverContainer} onDrop={(e) => e.preventDefault()}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+    <div className="space-y-2">
+      {headerLabel && (
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-sm font-medium">{headerLabel}</span>
+          {hops.length > 0 && (
+            <span className="text-xs text-muted-foreground">{hops.length} / {maxHops} 台主机</span>
+          )}
+        </div>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <Select value="" onValueChange={addHop} disabled={reachedMaxHops}>
-          <SelectTrigger className="h-8 text-sm">
+          <SelectTrigger className="h-8 min-w-0 flex-1 text-sm sm:max-w-sm">
             <SelectValue placeholder={reachedMaxHops ? `最多 ${maxHops} 级` : "添加主机到链路..."} />
           </SelectTrigger>
           <SelectContent>
@@ -357,8 +316,31 @@ export default function MultiHopEditor({
             ))}
           </SelectContent>
         </Select>
-        {hops.length > 0 && (
+        {!headerLabel && hops.length > 0 && (
           <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{hops.length} / {maxHops} 台主机</span>
+        )}
+        {showRelayMode && (
+          <div className="flex min-w-0 items-center gap-2 sm:ml-auto">
+            <span className="shrink-0 text-xs text-muted-foreground">中转模式</span>
+            <div className={`${segmentedControlClassName} grid min-w-0 flex-1 grid-cols-2 gap-1 sm:w-52 sm:flex-none`}>
+              <button
+                type="button"
+                aria-pressed={relayMode === "chain"}
+                className={segmentedOptionClassName(relayMode === "chain", false, "h-7 px-2 text-xs")}
+                onClick={() => onRelayModeChange?.("chain")}
+              >
+                链路中转
+              </button>
+              <button
+                type="button"
+                aria-pressed={relayMode === "failover"}
+                className={segmentedOptionClassName(relayMode === "failover", false, "h-7 px-2 text-xs")}
+                onClick={() => onRelayModeChange?.("failover")}
+              >
+                故障转移
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -375,19 +357,18 @@ export default function MultiHopEditor({
             <span>两者互斥，未配置时不可开启</span>
           </div>
           <div className="hidden grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_84px] items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid">
-            <span className="col-span-2">顺序</span>
+            <span className="col-span-2">{relayMode === "failover" ? "优先级" : "顺序"}</span>
             <span>主机</span>
             <span className="text-center">内网</span>
             <span className="text-center">IPv6</span>
             <span className="text-center">角色</span>
             <span className="text-right">操作</span>
           </div>
+          <SortableReorderContext sortable={hopSortable} strategy="vertical" restrictToList>
           {hops.map((hop, idx) => {
             const role = getRole(idx, hops.length);
             const isFirst = role === "entry";
             const isLast = role === "exit";
-            const isDragging = dragSourceIdx === idx;
-            const isDropTarget = dragSourceIdx !== null && dragOverIdx === idx;
             const host = hostById.get(hop.hostId);
             const tunnelEntryIp = String(host?.tunnelEntryIp || "").trim();
             const hasTunnelEntryIp = !!tunnelEntryIp;
@@ -415,22 +396,26 @@ export default function MultiHopEditor({
               />
             );
             return (
+              <SortableItem key={hop.hostId} id={hop.hostId} disabled={isFixedExit || hopSortable.disabled}>
+              {({ itemProps, handleProps, isDragging, isDropTarget }) => (
               <div
-                key={hop.hostId}
-                className={`flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 ${
-                  isDragging ? "opacity-55" : "opacity-100"
-                } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
-                draggable={!isFixedExit}
-                onDragStart={onDragStart(idx)}
-                onDragEnter={onDragEnterRow(idx)}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setGhost((prev) => (prev ? { ...prev, x: e.clientX + DRAG_GHOST_OFFSET.x, y: e.clientY + DRAG_GHOST_OFFSET.y } : prev));
-                }}
-                onDrop={onDropRow(idx)}
-                onDragEnd={onDragEnd}
+                {...itemProps}
+                className={`flex flex-wrap items-center gap-1.5 rounded-md border bg-background px-2 py-1.5 transition-[border-color,background-color,box-shadow,opacity] duration-150 ${
+                  isDragging
+                    ? "border-primary/45 bg-card opacity-95 shadow-lg ring-1 ring-primary/20"
+                    : "border-border/50"
+                } ${isDropTarget ? "border-primary/40 bg-primary/[0.03] ring-1 ring-primary/25" : ""}`}
               >
-                <GripVertical className={`h-4 w-4 shrink-0 text-muted-foreground ${isFixedExit ? "cursor-not-allowed opacity-40" : "cursor-grab active:cursor-grabbing"}`} />
+                {isFixedExit || hopSortable.disabled ? (
+                  <span
+                    className="inline-flex h-6 w-6 shrink-0 cursor-not-allowed items-center justify-center text-muted-foreground/40"
+                    title={isFixedExit ? "固定出口不可排序" : "至少需要两台可排序主机"}
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </span>
+                ) : (
+                  <SortableDragHandle dragHandleProps={handleProps} visible className="h-6 w-6" />
+                )}
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                   {idx + 1}
                 </span>
@@ -514,25 +499,11 @@ export default function MultiHopEditor({
                 </div>
                 </div>
               </div>
+              )}
+              </SortableItem>
             );
           })}
-        </div>
-      )}
-
-      {ghost && (
-        <div
-          className="pointer-events-none fixed z-[120] rounded-md border border-primary/40 bg-card px-3 py-2 text-sm shadow-2xl"
-          style={{ left: `${ghost.x}px`, top: `${ghost.y}px` }}
-        >
-          <div className="flex items-center gap-2">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-              {ghost.index}
-            </span>
-            <span className="max-w-[220px] truncate font-medium">{ghost.name}</span>
-            <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[ghost.role]}`}>
-              {ROLE_LABELS[ghost.role]}
-            </Badge>
-          </div>
+          </SortableReorderContext>
         </div>
       )}
     </div>

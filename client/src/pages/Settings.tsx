@@ -5295,7 +5295,7 @@ function SystemInfoSection() {
               <div className="min-w-0">
                 <p className="text-sm font-medium">允许多设备在线</p>
                 <p className="text-xs text-muted-foreground">
-                  开启后同一账户不再限制仅一个地方登录。
+                  关闭时保留各设备登录状态，但同一时间只允许一个设备使用；切换设备无需重新登录。
                 </p>
               </div>
               <Switch className="shrink-0" checked={allowMultiDeviceLogin} onCheckedChange={setAllowMultiDeviceLogin} />

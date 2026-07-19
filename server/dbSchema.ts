@@ -199,7 +199,7 @@ const tables: TableDef[] = [
     name: "forward_groups",
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("remark", "text"), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
-      c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }), c("entryGroupId", "int"),
+      c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }), c("exitStrategy", "varchar", { length: 32, notNull: true, default: "round_robin" }), c("entryGroupId", "int"),
       c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
       c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true, default: 1 }),
       c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true }),
@@ -247,6 +247,7 @@ const tables: TableDef[] = [
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("entryGroupId", "int"), c("exitGroupId", "int"), c("entryHostId", "int", { notNull: true }),
       c("exitHostId", "int", { notNull: true }), c("mode", "varchar", { length: 32, notNull: true, default: "tls" }),
+      c("relayMode", "varchar", { length: 16, notNull: true, default: "chain" }),
       c("forwardxVersion", "varchar", { length: 8, notNull: true, default: "v1" }), c("certDomain", "text"),
       c("certPem", "text"), c("certKeyPem", "text"),
       c("secret", "text"), c("listenPort", "int", { notNull: true }), c("mimicPort", "int", { notNull: true, default: 0 }),

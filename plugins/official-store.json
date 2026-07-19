@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-17",
+  "updatedAt": "2026-07-19",
   "items": [
     {
       "id": "china-region-whitelist",
       "name": "ForwardX 中国区域白名单",
       "description": "按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。",
       "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则应用到 Agent 主机。\n\n启用后，插件程序和数据会自动同步到所有 Agent。左侧展示全部主机并支持筛选；点击主机后，可在右侧新增、查看、修改、删除和刷新实际白名单规则。每台 Agent 的配置与状态独立，切换主机不会混用数据。\n\n支持全国或按省份选择全局入站白名单、额外 ASN、端口优先白名单、nftables 或 iptables/ipset，并实时展示在线、执行、规则挂载和失败状态。",
-      "version": "0.6.1",
-      "releaseDate": "2026-07-17",
-      "updatedAt": "2026-07-17",
-      "changelog": "增加可选的左侧菜单入口，可直接打开白名单配置界面。",
+      "version": "0.6.2",
+      "releaseDate": "2026-07-19",
+      "updatedAt": "2026-07-19",
+      "changelog": "修复单端口和端口范围白名单被错误应用为全局规则的问题，并移除 Agent 运行时的 Python 依赖。",
       "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
       "features": [
         {

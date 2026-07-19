@@ -10,7 +10,7 @@ import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
 import { consumeTelegramWebAppLoginChallenge } from "../telegramWebAppLogin";
-import { SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, type SessionKind } from "../session";
+import { SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, stripSessionSensitiveFields, type SessionKind } from "../session";
 import { createAuthSession } from "../repositories/sessionRepository";
 
 const BIND_CODE_TTL_MS = 5 * 60 * 1000;
@@ -187,8 +187,7 @@ async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKin
   });
   const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: SESSION_TOKEN_TTL_SECONDS });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
-  const { password, ...safeUser } = user;
-  return { ...safeUser, mobileToken: mobile ? token : null };
+  return { ...stripSessionSensitiveFields(user), mobileToken: mobile ? token : null };
 }
 
 export const telegramRouter = router({

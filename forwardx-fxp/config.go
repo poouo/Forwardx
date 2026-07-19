@@ -22,6 +22,7 @@ func readConfig(path string) (config, error) {
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
+	cfg.ExitStrategy = normalizeExitStrategy(cfg.ExitStrategy)
 	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
 	cfg.ListenHost = strings.TrimSpace(cfg.ListenHost)
 	cfg.ProxyProtocolVersion = normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion)
@@ -57,6 +58,15 @@ func readConfig(path string) (config, error) {
 	sort.Slice(udpTargets, func(i, j int) bool { return udpTargets[i].RuleID < udpTargets[j].RuleID })
 	cfg.UDPTargets = udpTargets
 	return cfg, nil
+}
+
+func normalizeExitStrategy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fallback", "random", "ip_hash":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "round_robin"
+	}
 }
 
 func validateConfig(cfg config) error {

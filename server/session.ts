@@ -57,6 +57,10 @@ export function isSessionLeaseActive(lease: SessionLease | null, now = Date.now(
   return !!lease?.sid && lease.activeAt > 0 && now - lease.activeAt <= SESSION_ACTIVE_LEASE_TTL_MS;
 }
 
+export function isSessionLeaseOwnedByAnother(lease: SessionLease | null, sid: string, now = Date.now()) {
+  return isSessionLeaseActive(lease, now) && lease?.sid !== sid;
+}
+
 export function shouldRefreshSessionLease(lease: SessionLease | null, sid: string, now = Date.now()) {
   return !lease || lease.sid !== sid || lease.activeAt <= 0 || now - lease.activeAt >= SESSION_ACTIVE_LEASE_REFRESH_MS;
 }

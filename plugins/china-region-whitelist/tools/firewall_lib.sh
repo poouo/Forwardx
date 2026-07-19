@@ -516,6 +516,18 @@ cn_for_each_port_policy() {
   done
 }
 
+cn_preflight_port_policy() {
+  local index="$1"
+  local _port_spec="$2"
+  local selectors="$3"
+  local cidrs
+  cidrs="$(cn_collect_selector_cidrs "${selectors}")" || return 1
+  if [[ -z "$(cn_trim "${cidrs}")" ]]; then
+    echo "端口策略 ${index} 没有可用 IPv4 CIDR 段。" >&2
+    return 1
+  fi
+}
+
 cn_remove_jump_command() {
   local entry_chain="$1"
   printf "iptables -S %s | awk '\$0 ~ / -j %s( |\$)/ { sub(/^-A /, \"-D \"); print \"iptables \" \$0 }' | sh\n" \
@@ -697,34 +709,44 @@ cn_render_apply_commands_iptables() {
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
   cn_validate_port_policies "${port_policies}" || return 1
+  cn_for_each_port_policy "${port_policies}" cn_preflight_port_policy || return 1
 
-  local cidrs cidr
+  local cidrs cidr has_global="false"
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
-  if [[ -z "${cidrs}" ]]; then
-    echo "所选省份/ASN 没有可用 IPv4 CIDR 段。" >&2
-    return 1
-  fi
-
-  printf 'ipset create %s hash:net family inet -exist\n' "${CN_SET_NAME}"
-  printf 'ipset flush %s\n' "${CN_SET_NAME}"
-  while IFS= read -r cidr; do
-    [[ -n "${cidr}" ]] || continue
-    printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${cidr}"
-  done <<<"${cidrs}"
   if [[ -n "${client_ip}" ]]; then
     if ! cn_validate_client_ip "${client_ip}"; then
       echo "非法客户端 IP：${client_ip}" >&2
       return 1
     fi
-    printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${client_ip}"
+    if ! cn_is_ipv4_address "${client_ip}"; then
+      echo "iptables 后端当前只支持 IPv4 客户端临时白名单：${client_ip}" >&2
+      return 1
+    fi
+    cidrs="${cidrs}${cidrs:+$'\n'}${client_ip}"
   fi
-
-  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_set
+  if [[ -n "$(cn_trim "${cidrs}")" ]]; then
+    has_global="true"
+  elif [[ -z "$(cn_trim "${port_policies}")" ]]; then
+    echo "请至少配置一项全局白名单或端口白名单。" >&2
+    return 1
+  fi
 
   printf 'iptables -N %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
   cn_remove_jump_command INPUT
   cn_remove_jump_command FORWARD
   printf 'iptables -F %s\n' "${CN_CHAIN_NAME}"
+  printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_port_[0-9]+$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
+
+  if [[ "${has_global}" == "true" ]]; then
+    printf 'ipset create %s hash:net family inet -exist\n' "${CN_SET_NAME}"
+    printf 'ipset flush %s\n' "${CN_SET_NAME}"
+    while IFS= read -r cidr; do
+      [[ -n "${cidr}" ]] || continue
+      printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${cidr}"
+    done <<<"${cidrs}"
+  fi
+  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_set
+
   cn_add_jump_command INPUT
   if [[ "${forward_mode}" != "none" ]]; then
     if [[ "${forward_mode}" == "selected" ]]; then
@@ -737,11 +759,13 @@ cn_render_apply_commands_iptables() {
       cn_add_jump_command FORWARD -m conntrack --ctstate DNAT
     fi
   fi
-  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
   printf 'iptables -A %s -i lo -j ACCEPT\n' "${CN_CHAIN_NAME}"
   printf 'iptables -A %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n' "${CN_CHAIN_NAME}"
-  printf 'iptables -A %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
-  printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
+  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
+  if [[ "${has_global}" == "true" ]]; then
+    printf 'iptables -A %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
+    printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
+  fi
 }
 
 cn_iptables_port_spec() {
@@ -775,10 +799,14 @@ cn_render_iptables_port_policy_rules() {
   local set_name="${CN_SET_NAME}_port_${index}"
   local iptables_port
   iptables_port="$(cn_iptables_port_spec "${port_spec}")"
-  printf 'iptables -A %s -p tcp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
-  printf 'iptables -A %s -p udp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
-  printf 'iptables -A %s -p tcp --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
-  printf 'iptables -A %s -p udp --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p tcp -m conntrack --ctstate DNAT --ctorigdstport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p udp -m conntrack --ctstate DNAT --ctorigdstport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p tcp -m conntrack --ctstate DNAT --ctorigdstport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p udp -m conntrack --ctstate DNAT --ctorigdstport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p tcp -m conntrack ! --ctstate DNAT --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p udp -m conntrack ! --ctstate DNAT --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p tcp -m conntrack ! --ctstate DNAT --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p udp -m conntrack ! --ctstate DNAT --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
 }
 
 cn_render_apply_commands_nft() {
@@ -791,13 +819,10 @@ cn_render_apply_commands_nft() {
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
   cn_validate_port_policies "${port_policies}" || return 1
+  cn_for_each_port_policy "${port_policies}" cn_preflight_port_policy || return 1
 
-  local cidrs iface
+  local cidrs iface has_global="false"
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
-  if [[ -z "${cidrs}" ]]; then
-    echo "所选省份/ASN 没有可用 IPv4 CIDR 段。" >&2
-    return 1
-  fi
 
   if [[ -n "${client_ip}" ]]; then
     if ! cn_validate_client_ip "${client_ip}"; then
@@ -815,11 +840,19 @@ cn_render_apply_commands_nft() {
     fi
   fi
   cidrs="$(cn_normalize_ipv4_cidrs_for_nft <<<"${cidrs}")"
+  if [[ -n "$(cn_trim "${cidrs}")" ]]; then
+    has_global="true"
+  elif [[ -z "$(cn_trim "${port_policies}")" ]]; then
+    echo "请至少配置一项全局白名单或端口白名单。" >&2
+    return 1
+  fi
 
   printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
   printf "nft -f - <<'NFT'\n"
   printf 'table inet %s {\n' "${CN_NFT_TABLE}"
-  cn_render_nft_ip_set_definition "${CN_NFT_SET_NAME}" "${cidrs}" "  "
+  if [[ "${has_global}" == "true" ]]; then
+    cn_render_nft_ip_set_definition "${CN_NFT_SET_NAME}" "${cidrs}" "  "
+  fi
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_sets
 
   printf '  chain input {\n'
@@ -827,8 +860,10 @@ cn_render_apply_commands_nft() {
   printf '    iifname "lo" accept\n'
   printf '    ct state established,related accept\n'
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_input_rules
-  printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
-  printf '    meta nfproto ipv4 reject\n'
+  if [[ "${has_global}" == "true" ]]; then
+    printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
+    printf '    meta nfproto ipv4 reject\n'
+  fi
   printf '  }\n'
 
   if [[ "${forward_mode}" != "none" ]]; then
@@ -836,16 +871,18 @@ cn_render_apply_commands_nft() {
     printf '    type filter hook forward priority %s; policy accept;\n' "${CN_NFT_HOOK_PRIORITY}"
     printf '    ct state established,related accept\n'
     cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
-    if [[ "${forward_mode}" == "selected" ]]; then
-      for iface in ${forward_ifaces}; do
-        printf '    iifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
-        printf '    iifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
-        printf '    oifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
-        printf '    oifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
-      done
-    else
-      printf '    ct status dnat ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
-      printf '    ct status dnat meta nfproto ipv4 reject\n'
+    if [[ "${has_global}" == "true" ]]; then
+      if [[ "${forward_mode}" == "selected" ]]; then
+        for iface in ${forward_ifaces}; do
+          printf '    iifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+          printf '    iifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
+          printf '    oifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+          printf '    oifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
+        done
+      else
+        printf '    ct status dnat ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
+        printf '    ct status dnat meta nfproto ipv4 reject\n'
+      fi
     fi
     printf '  }\n'
   fi
@@ -898,7 +935,7 @@ cn_render_clear_commands() {
       cn_remove_jump_command FORWARD
       printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
       printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-      printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
+      printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_port_[0-9]+$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
       ;;
   esac
 }
@@ -924,8 +961,8 @@ cn_save_config() {
   local port_policies="$4"
   shift 4 || true
   local -a codes=("$@")
-  if [[ "${#codes[@]}" -eq 0 ]]; then
-    echo "没有可保存的全局白名单代码。" >&2
+  if [[ "${#codes[@]}" -eq 0 && -z "$(cn_trim "${asns}")" && -z "$(cn_trim "${port_policies}")" ]]; then
+    echo "请至少配置一项全局白名单或端口白名单。" >&2
     return 1
   fi
   case "${forward_mode}" in
@@ -965,11 +1002,6 @@ cn_source_config() {
 
 cn_load_config_codes() {
   cn_source_config
-  if [[ -z "${CN_CODES:-}" ]]; then
-    echo "配置文件缺少 CN_CODES：${CN_CONFIG_FILE}" >&2
-    return 1
-  fi
-
   local code
   for code in ${CN_CODES}; do
     if cn_is_all_china_selector "${code}"; then

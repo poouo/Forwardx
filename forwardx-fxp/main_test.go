@@ -12,6 +12,179 @@ import (
 	"time"
 )
 
+func TestFallbackDialTimeoutIsShorterThanNormalDial(t *testing.T) {
+	fallback := config{ExitStrategy: "fallback"}
+	normal := config{ExitStrategy: "round_robin"}
+
+	if timeout := secureDialTimeout(fallback); timeout != 3*time.Second {
+		t.Fatalf("unexpected fallback dial timeout %s", timeout)
+	}
+	if timeout := secureDialTimeout(normal); timeout != 10*time.Second {
+		t.Fatalf("unexpected normal dial timeout %s", timeout)
+	}
+}
+
+func TestFallbackSelectorUsesPriorityAndRetriesPrimaryAfterCooldown(t *testing.T) {
+	selector := newExitEndpointSelector([]exitEndpoint{
+		{Host: "127.0.0.2", Port: 10002},
+	}, exitEndpoint{Host: "127.0.0.1", Port: 10001}, "fallback")
+
+	first, firstIndex, ok := selector.pick(nil)
+	if !ok || firstIndex != 0 || first.Port != 10001 {
+		t.Fatalf("expected primary first, index=%d endpoint=%+v ok=%v", firstIndex, first, ok)
+	}
+	selector.markFailure(firstIndex, errors.New("test failure"))
+	backup, backupIndex, ok := selector.pick(nil)
+	if !ok || backupIndex != 1 || backup.Port != 10002 {
+		t.Fatalf("expected backup during cooldown, index=%d endpoint=%+v ok=%v", backupIndex, backup, ok)
+	}
+
+	selector.mu.Lock()
+	selector.retryAfter[0] = time.Now().Add(-time.Millisecond)
+	selector.mu.Unlock()
+	retried, retriedIndex, ok := selector.pick(nil)
+	if !ok || retriedIndex != 0 || retried.Port != 10001 {
+		t.Fatalf("expected primary retry after cooldown, index=%d endpoint=%+v ok=%v", retriedIndex, retried, ok)
+	}
+}
+
+func TestExitSelectorStrategies(t *testing.T) {
+	endpoints := []exitEndpoint{
+		{Host: "127.0.0.2", Port: 10002},
+		{Host: "127.0.0.3", Port: 10003},
+	}
+	ipHash := newExitEndpointSelector(endpoints, exitEndpoint{Host: "127.0.0.1", Port: 10001}, "ip_hash")
+	first, firstIndex, ok := ipHash.pick(nil, "203.0.113.9")
+	if !ok {
+		t.Fatal("expected ip hash endpoint")
+	}
+	for i := 0; i < 10; i++ {
+		next, nextIndex, nextOK := ipHash.pick(nil, "203.0.113.9")
+		if !nextOK || nextIndex != firstIndex || next != first {
+			t.Fatalf("ip hash selection changed: first=%+v/%d next=%+v/%d", first, firstIndex, next, nextIndex)
+		}
+	}
+
+	roundRobin := newExitEndpointSelector(endpoints, exitEndpoint{Host: "127.0.0.1", Port: 10001}, "round_robin")
+	seen := map[int]bool{}
+	for i := 0; i < 3; i++ {
+		_, index, selected := roundRobin.pick(nil)
+		if !selected {
+			t.Fatal("expected round robin endpoint")
+		}
+		seen[index] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("round robin did not visit every endpoint: %v", seen)
+	}
+
+	if got := normalizeExitStrategy("random"); got != "random" {
+		t.Fatalf("random strategy normalized to %q", got)
+	}
+	if got := normalizeExitStrategy("none"); got != "round_robin" {
+		t.Fatalf("none strategy should use the single-endpoint default, got %q", got)
+	}
+}
+
+func TestForwardXFallbackUsesBackupForTCPAndUDP(t *testing.T) {
+	targetPort := freeTCPUDPPort(t)
+	targetTCP, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(targetPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetTCP.Close()
+	targetUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: targetPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetUDP.Close()
+	go func() {
+		for {
+			conn, acceptErr := targetTCP.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, addr, readErr := targetUDP.ReadFromUDP(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = targetUDP.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	key := "fallback-both-key"
+	unavailablePort := freeTCPUDPPort(t)
+	backupPort := freeTCPUDPPort(t)
+	entryPort := freeTCPUDPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   71,
+			ListenPort: backupPort,
+			Protocol:   "both",
+			Key:        key,
+			UDPTargets: []udpTarget{{RuleID: 72, TargetIP: "127.0.0.1", TargetPort: targetPort}},
+		})
+	}()
+	waitForTCP(t, backupPort)
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:         "entry",
+			TunnelID:     71,
+			RuleID:       72,
+			ListenPort:   entryPort,
+			Protocol:     "both",
+			ExitHost:     "127.0.0.1",
+			ExitPort:     unavailablePort,
+			ExitStrategy: "fallback",
+			Exits:        []exitEndpoint{{Host: "127.0.0.1", Port: backupPort, Key: key}},
+			TargetIP:     "127.0.0.1",
+			TargetPort:   targetPort,
+			Key:          key,
+		})
+	}()
+	waitForTCP(t, entryPort)
+	waitForUDP(t, entryPort)
+
+	tcpClient, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpClient.Close()
+	if _, err := tcpClient.Write([]byte("fallback-tcp")); err != nil {
+		t.Fatal(err)
+	}
+	tcpReply := make([]byte, len("fallback-tcp"))
+	if _, err := io.ReadFull(tcpClient, tcpReply); err != nil {
+		t.Fatal(err)
+	}
+	if string(tcpReply) != "fallback-tcp" {
+		t.Fatalf("unexpected tcp reply %q", tcpReply)
+	}
+
+	udpClient, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpClient.Close()
+	if reply := udpRoundTrip(t, udpClient, []byte("fallback-udp")); string(reply) != "fallback-udp" {
+		t.Fatalf("unexpected udp reply %q", reply)
+	}
+}
+
 func TestForwardXTCPRoundTrip(t *testing.T) {
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

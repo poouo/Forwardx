@@ -237,7 +237,7 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 }
 
 func newUDPDirectEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, remove func(*udpDirectEntrySession)) (*udpDirectEntrySession, error) {
-	endpoint, index, remoteAddr, err := pickUDPDirectEndpoint(selector, cfg)
+	endpoint, index, remoteAddr, err := pickUDPDirectEndpoint(selector, cfg, clientAddr.IP.String())
 	if err != nil {
 		return nil, err
 	}
@@ -691,7 +691,7 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 }
 
 func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, ruleID int, sessionID uint64, remove func(*udpDirectRelaySession)) (*udpDirectRelaySession, error) {
-	endpoint, index, downstreamAddr, err := pickUDPDirectEndpoint(selector, cfg)
+	endpoint, index, downstreamAddr, err := pickUDPDirectEndpoint(selector, cfg, strconv.FormatUint(sessionID, 10))
 	if err != nil {
 		return nil, err
 	}
@@ -848,14 +848,14 @@ func (s *udpDirectRelaySession) close() {
 	})
 }
 
-func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndpoint, int, *net.UDPAddr, error) {
+func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config, selectionKey string) (exitEndpoint, int, *net.UDPAddr, error) {
 	if selector == nil || selector.count() == 0 {
 		return exitEndpoint{}, -1, nil, errors.New("no exit endpoints")
 	}
 	attempted := map[int]bool{}
 	var lastErr error
 	for len(attempted) < selector.count() {
-		endpoint, index, ok := selector.pick(attempted)
+		endpoint, index, ok := selector.pick(attempted, selectionKey)
 		if !ok {
 			break
 		}

@@ -188,6 +188,11 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assert.equal(groupPage.totalItems, 1);
       assert.equal(groupPage.items[0].id, 10);
       assert.equal(groupPage.items[0].members.length, 1);
+      const groupOptions = await groups.getForwardGroupOptions([10]);
+      assert.equal(groupOptions.length, 1);
+      assert.equal(groupOptions[0].members[0].entryAddress, "192.0.2.10");
+      const userSafeGroupOptions = groups.filterForwardGroupFieldsForUse(groupOptions);
+      assert.equal(userSafeGroupOptions[0].members[0].entryAddress, "192.0.2.10");
 
       const visibleRuleInput = {
         ownerUserId: 2,

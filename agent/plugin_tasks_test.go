@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,6 +81,14 @@ func TestParsePluginAgentManifestVersionRejectsInvalidJSON(t *testing.T) {
 func TestValidatePluginAgentTaskVersionRequiresVersion(t *testing.T) {
 	if err := validatePluginAgentTaskVersion(pluginAgentTask{}); err == nil {
 		t.Fatal("validatePluginAgentTaskVersion() should reject a missing task version")
+	}
+}
+
+func TestValidatePluginAgentTaskEnvironmentReportsMissingInterpreter(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	err := validatePluginAgentTaskEnvironment(pluginAgentTask{Interpreter: "python3"})
+	if err == nil || !strings.Contains(err.Error(), "缺少插件解释器 python3") {
+		t.Fatalf("missing interpreter error = %v", err)
 	}
 }
 

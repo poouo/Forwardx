@@ -98,6 +98,11 @@ import {
   type ForwardRuleProtocol,
   type ForwardType,
 } from "@shared/forwardTypes";
+import {
+  EXIT_GROUP_STRATEGY_LABELS,
+  normalizeExitGroupStrategy,
+  type ExitGroupStrategy,
+} from "@shared/exitStrategy";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "port" | "failover" | "chain" | "entry" | "exit";
@@ -114,6 +119,7 @@ type MemberForm = {
 type GroupForm = {
   name: string;
   groupMode: GroupMode;
+  exitStrategy: ExitGroupStrategy;
   entryGroupId: number | null;
   groupType: GroupType;
   protocol: ForwardRuleProtocol;
@@ -145,6 +151,7 @@ type GroupForm = {
 const makeDefaultForm = (): GroupForm => ({
   name: "",
   groupMode: "failover",
+  exitStrategy: "round_robin",
   entryGroupId: null,
   groupType: "host",
   protocol: "both",
@@ -1093,6 +1100,7 @@ export function ForwardGroupsContent({
     setForm({
       name: group.name || "",
       groupMode,
+      exitStrategy: normalizeExitGroupStrategy(group.exitStrategy),
       entryGroupId: group.entryGroupId ? Number(group.entryGroupId) : null,
       groupType: "host",
       protocol: normalizeForwardRuleProtocol(group.protocol, "both"),
@@ -1473,6 +1481,7 @@ export function ForwardGroupsContent({
       remark: null,
       entryGroupId: isChainGroup ? form.entryGroupId || null : null,
       groupType: "host" as const,
+      exitStrategy: isExitGroup ? normalizeExitGroupStrategy(form.exitStrategy) : "round_robin",
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
@@ -1557,6 +1566,16 @@ export function ForwardGroupsContent({
 
   const groupRuntimeBadges = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "exit") {
+      const strategy = normalizeExitGroupStrategy(group.exitStrategy);
+      return (
+        <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+          <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">
+            {EXIT_GROUP_STRATEGY_LABELS[strategy]}
+          </Badge>
+        </div>
+      );
+    }
     if (mode !== "port" && mode !== "chain") return null;
     return (
       <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
@@ -2198,6 +2217,32 @@ export function ForwardGroupsContent({
                 </label>
               )}
             </div>
+
+            {form.groupMode === "exit" && (
+              <div className="grid gap-2 rounded-md border border-border/60 bg-muted/15 p-3 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
+                <Label>出口策略</Label>
+                <div className="space-y-1.5">
+                  <Select
+                    value={form.exitStrategy}
+                    onValueChange={(value) => setForm({ ...form, exitStrategy: normalizeExitGroupStrategy(value) })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(EXIT_GROUP_STRATEGY_LABELS).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {form.exitStrategy === "none"
+                      ? "仅使用顺序第一台已启用主机。"
+                      : form.exitStrategy === "fallback"
+                        ? "按顺序优先使用主出口，故障时切换到下一台。"
+                        : "按当前策略为新连接选择已启用的出口主机。"}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {(form.groupMode === "failover" || form.groupMode === "entry") && (
               <>

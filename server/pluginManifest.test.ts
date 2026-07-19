@@ -216,7 +216,7 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.6.1");
+  assert.equal(manifest.version, "0.6.2");
   assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
@@ -224,8 +224,19 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   assert.equal(schema.operations?.update?.actionId, "save-whitelist-config");
   assert.equal(schema.operations?.delete?.actionId, "delete-whitelist-config");
   const regions = schema.fields?.find((field) => field.key === "regions");
+  const scopeMode = schema.fields?.find((field) => field.key === "scopeMode");
+  const portSpec = schema.fields?.find((field) => field.key === "portSpec");
   assert.equal(regions?.options?.find((option) => option.value === "CN")?.exclusive, true);
   assert.equal(regions?.options?.some((option) => option.value === "440000"), true);
+  assert.equal(scopeMode?.options?.some((option) => option.value === "port"), true);
+  assert.deepEqual(portSpec?.visibleWhen, [{ field: "scopeMode", operator: "eq", value: "port" }]);
+
+  const agentRunner = fs.readFileSync(
+    path.resolve(process.cwd(), "plugins/china-region-whitelist/forwardx-agent-run.sh"),
+    "utf8",
+  );
+  assert.doesNotMatch(agentRunner, /\bpython3\b/);
+  assert.match(agentRunner, /command -v jq/);
 });
 
 test("plugin all-host scope resolves current hosts without persisting selections", () => {

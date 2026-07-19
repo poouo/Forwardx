@@ -5408,20 +5408,26 @@ function RulesContent() {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const groupRouteLabel = getForwardGroupRouteLabel(group);
     const groupEntry = isForwardChainGroup(group)
-      ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
-      : (group?.domain || getForwardGroupName(rule.forwardGroupId));
+      ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || "")
+      : (group?.domain || group?.members?.[0]?.entryAddress || "");
     const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group) : [];
     const groupEntryItems = rule.forwardGroupId && !isForwardChainGroup(group) ? getForwardGroupEntryAddresses(group) : [];
     const entryItems = rule.forwardGroupId
       ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : (groupEntryItems.length > 0 ? groupEntryItems : [{ label: groupRouteLabel, value: groupEntry }]))
       : (getRuleEntries(rule).length > 0
         ? getRuleEntries(rule)
-        : [{ label: "入口", value: getRuleEntryHostName(rule) }]);
-    const entryAddresses = entryItems.map((entry) => ({
-      ...entry,
-      text: formatAddressWithPort(entry.value, rule.sourcePort),
-    }));
-    const entryAddress = entryAddresses.map((entry) => entry.text).join(" / ");
+        : [{ label: "入口", value: "" }]);
+    const resolvedEntryAddresses = entryItems
+      .filter((entry) => String(entry.value || "").trim())
+      .map((entry) => ({
+        ...entry,
+        text: formatAddressWithPort(entry.value, rule.sourcePort),
+        copyable: true,
+      }));
+    const entryAddresses = resolvedEntryAddresses.length > 0
+      ? resolvedEntryAddresses
+      : [{ label: "入口", value: "", text: "入口地址暂不可用", copyable: false }];
+    const entryAddress = resolvedEntryAddresses.map((entry) => entry.text).join(" / ");
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
     const entryTitle = rule.forwardGroupId
       ? `复制${groupRouteLabel}入口: ${entryAddress}`
@@ -5470,12 +5476,13 @@ function RulesContent() {
               <button
                 key={`${entry.label}:${entry.value}`}
                 type="button"
-                onClick={() => copyEntryAddress(rule, entry.value)}
-                className="group flex max-w-full min-w-0 items-start justify-between gap-1.5 rounded bg-muted/35 px-1.5 py-1 text-left transition-colors hover:bg-muted/70"
-                title={`${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}`}
+                onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
+                disabled={!entry.copyable}
+                className="group flex max-w-full min-w-0 items-start justify-between gap-1.5 rounded bg-muted/35 px-1.5 py-1 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
+                title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
               >
                 <code className={valueClass}>{entry.text}</code>
-                <Copy className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+                {entry.copyable && <Copy className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
               </button>
             ))}
           </div>
@@ -5506,13 +5513,14 @@ function RulesContent() {
           <button
             key={`${entry.label}:${entry.value}`}
             type="button"
-            onClick={() => copyEntryAddress(rule, entry.value)}
-            className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors hover:bg-muted/70"
-            title={`${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}`}
+            onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
+            disabled={!entry.copyable}
+            className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
+            title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
           >
             {entryAddresses.length > 1 && <span className="shrink-0 text-[10px] text-muted-foreground">{entry.label}</span>}
             <code className="min-w-0 truncate">{entry.text}</code>
-            <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+            {entry.copyable && <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
           </button>
         ))}
       </div>

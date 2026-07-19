@@ -28,6 +28,7 @@ type config struct {
 	ExitPort                 int            `json:"exitPort"`
 	UDPExitPort              int            `json:"udpExitPort,omitempty"`
 	Exits                    []exitEndpoint `json:"exits,omitempty"`
+	ExitStrategy             string         `json:"exitStrategy,omitempty"`
 	TargetIP                 string         `json:"targetIp"`
 	TargetPort               int            `json:"targetPort"`
 	UDPTargets               []udpTarget    `json:"udpTargets,omitempty"`

@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
-import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, SESSION_REPLACED_ERR_MSG } from "../../shared/const";
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, SESSION_BUSY_ERR_MSG, SESSION_REPLACED_ERR_MSG } from "../../shared/const";
 import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
 import * as db from "../db";
-import { resolveRequestedSessionKind, SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, type SessionKind } from "../session";
+import { getSessionKindField, isSessionLeaseActive, parseSessionLease, resolveRequestedSessionKind, SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, stripSessionSensitiveFields, type SessionKind } from "../session";
 import { createAuthSession, revokeAuthSession } from "../repositories/sessionRepository";
 import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
@@ -147,8 +147,7 @@ async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, 
   });
   const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: SESSION_TOKEN_TTL_SECONDS });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
-  const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
-  return { ...safeUser, mobileToken: mobile ? token : null };
+  return { ...stripSessionSensitiveFields(user), mobileToken: mobile ? token : null };
 }
 
 async function createLoginSession(ctx: any, user: any, mobile?: boolean) {
@@ -157,8 +156,7 @@ async function createLoginSession(ctx: any, user: any, mobile?: boolean) {
 }
 
 function sanitizeUser(user: any) {
-  const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
-  return safeUser;
+  return stripSessionSensitiveFields(user);
 }
 
 function parseEmailWhitelist(value?: string | null) {
@@ -209,6 +207,9 @@ function verifyEmailCode(email: string, code?: string) {
 export const authRouter = router({
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) {
+      if (ctx.authFailureReason === "session_busy") {
+        throw new TRPCError({ code: "CONFLICT", message: SESSION_BUSY_ERR_MSG });
+      }
       if (ctx.authFailureReason === "session_replaced") {
         throw new TRPCError({ code: "UNAUTHORIZED", message: SESSION_REPLACED_ERR_MSG });
       }
@@ -427,7 +428,11 @@ export const authRouter = router({
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     if (ctx.user && ctx.authSession?.sid) {
       await revokeAuthSession(ctx.user.id, ctx.authSession.sid, ctx.authSession.kind, "logout");
-      await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
+      const field = getSessionKindField(ctx.authSession.kind);
+      const lease = parseSessionLease(String((ctx.user as any)[field] || ""));
+      if (!lease || lease.sid === ctx.authSession.sid || !isSessionLeaseActive(lease)) {
+        await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
+      }
     }
     if (ctx.user) {
       console.info(`[Auth] Logout userId=${ctx.user.id} username=${maskIdentifier(ctx.user.username)} ip=${getRequestIp(ctx)}`);

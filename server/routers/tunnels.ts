@@ -24,12 +24,19 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeForwardXVersion } from "../../shared/forwardTypes";
 import { AGENT_FORWARDX_WIREGUARD_VERSION, isForwardXWireGuardV2 } from "../forwardXWireGuard";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
+import {
+  AGENT_FORWARDX_RELAY_FAILOVER_VERSION,
+  normalizeTunnelRelayMode,
+  tunnelRelayFailoverSupported,
+} from "../../shared/tunnelRelay";
+import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
 const forwardXVersionSchema = z.enum(["v1", "v2"]);
 const proxyProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
-const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
+const tunnelLoadBalanceStrategySchema = z.enum(["none", "round_robin", "random", "least_conn", "ip_hash", "fallback"]);
+const tunnelRelayModeSchema = z.enum(["chain", "failover"]);
 const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
 const MAX_NGINX_CERT_BYTES = 64 * 1024;
@@ -48,6 +55,17 @@ async function requireForwardXWireGuardAgentVersions(hostIds: number[]) {
   if (unsupported.length === 0) return;
   const labels = unsupported.map(({ id, host }) => host?.name || host?.ip || `主机 ${id}`).slice(0, 5);
   throw new Error(`ForwardX V2 需要链路内所有 Agent 升级到 v${AGENT_FORWARDX_WIREGUARD_VERSION} 或更高版本：${labels.join("、")}`);
+}
+
+async function requireForwardXRelayFailoverAgentVersions(hostIds: number[]) {
+  const ids = Array.from(new Set(hostIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const hosts = await Promise.all(ids.map(async (id) => ({ id, host: await db.getHostById(id) as any })));
+  const unsupported = hosts.filter(({ host }) => (
+    !host || !isAgentVersionAtLeast(String(host.agentVersion || ""), AGENT_FORWARDX_RELAY_FAILOVER_VERSION)
+  ));
+  if (unsupported.length === 0) return;
+  const labels = unsupported.map(({ id, host }) => host?.name || host?.ip || `主机 ${id}`).slice(0, 5);
+  throw new Error(`ForwardX 中转故障转移需要入口 Agent 升级到 v${AGENT_FORWARDX_RELAY_FAILOVER_VERSION} 或更高版本：${labels.join("、")}`);
 }
 
 function isTunnelProxyProtocolSupported(mode: unknown) {
@@ -198,6 +216,13 @@ const tunnelLoadBalanceExitSchema = z.object({
 function normalizeTunnelLoadBalanceStrategy(value: unknown) {
   const parsed = tunnelLoadBalanceStrategySchema.safeParse(value);
   return parsed.success ? parsed.data : "round_robin";
+}
+
+function inheritedExitGroupStrategy(group: any, requested: unknown) {
+  if (group && String(group.groupMode || "") === "exit") {
+    return normalizeExitGroupStrategy(group.exitStrategy);
+  }
+  return normalizeTunnelLoadBalanceStrategy(requested);
 }
 
 async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined, requireEnabled = false) {
@@ -611,6 +636,7 @@ export const tunnelsRouter = router({
         entryHostId: z.number(),
         exitHostId: z.number(),
         mode: tunnelModeSchema.default("forwardx"),
+        relayMode: tunnelRelayModeSchema.optional().default("chain"),
         forwardxVersion: forwardXVersionSchema.optional().default("v1"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
         mimicPort: z.number().int().min(0).max(65535).optional().default(0),
@@ -648,6 +674,7 @@ export const tunnelsRouter = router({
         const nginxCert = normalizeNginxCertInput(input as any, normalizedMode === "nginx_stream");
         const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 3) ? input.hopHostIds : null;
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts) ? (input as any).hopConnectHosts as Array<string | null> : [];
+        const relayMode = normalizeTunnelRelayMode(input.relayMode);
         if (hopHostIds) {
           // Multi-hop tunnel: validate hosts
           if (hopHostIds.length > MAX_TUNNEL_HOPS) throw new Error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
@@ -663,9 +690,13 @@ export const tunnelsRouter = router({
           const exit = await requireHostAccess(ctx, input.exitHostId);
           if (!entry || !exit) throw new Error("主机不存在");
         }
+        if (relayMode === "failover") {
+          if (!hopHostIds || hopHostIds.length < 4) throw new Error("故障转移至少需要配置两个中转主机");
+          if (!tunnelRelayFailoverSupported(normalizedMode)) throw new Error("当前隧道工具不支持中转故障转移");
+        }
         await requireTunnelProtocolEnabled({ ...input, mode: normalizedMode });
         await requireEntryGroupAccess(ctx, input.entryGroupId, true);
-        await requireExitGroupAccess(ctx, input.exitGroupId, true);
+        const exitGroup = await requireExitGroupAccess(ctx, input.exitGroupId, true);
 
         // Determine entry/exit host IDs
         const entryHostId = hopHostIds ? hopHostIds[0] : input.entryHostId;
@@ -706,7 +737,9 @@ export const tunnelsRouter = router({
           ? normalizeTunnelConnect(input.connectHost)
           : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
         const loadBalanceEnabled = !!input.loadBalanceEnabled;
-        const loadBalanceStrategy = loadBalanceEnabled ? normalizeTunnelLoadBalanceStrategy(input.loadBalanceStrategy) : "round_robin";
+        const loadBalanceStrategy = loadBalanceEnabled
+          ? inheritedExitGroupStrategy(exitGroup, input.loadBalanceStrategy)
+          : "round_robin";
         const extraExitNodes = await buildExtraExitNodes(ctx, {
           primaryHostId: exitHostId,
           blockedHostIds: hopHostIds || [entryHostId, exitHostId],
@@ -727,6 +760,13 @@ export const tunnelsRouter = router({
             exitHostId,
             ...extraExitNodes.map((node) => node.hostId),
           ]);
+        }
+        if (relayMode === "failover" && normalizedMode === "forwardx") {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            entryGroupId: input.entryGroupId ?? null,
+            entryHostId,
+          });
+          await requireForwardXRelayFailoverAgentVersions(entryHostIds);
         }
         const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
         const mimicPort = (runtimeOptions.udpOverTcp || forwardxVersion === "v2")
@@ -753,6 +793,7 @@ export const tunnelsRouter = router({
           entryHostId,
           exitHostId,
           mode: normalizedMode,
+          relayMode,
           forwardxVersion,
           certDomain,
           certPem: nginxCert.certPem,
@@ -827,6 +868,7 @@ export const tunnelsRouter = router({
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
         mode: tunnelModeSchema.optional(),
+        relayMode: tunnelRelayModeSchema.optional(),
         forwardxVersion: forwardXVersionSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
         mimicPort: z.number().int().min(0).max(65535).optional(),
@@ -907,6 +949,14 @@ export const tunnelsRouter = router({
         const normalizedRequestedHopConnectHosts = hopIdsForConnect
           ? await normalizeHopConnectHostsForHosts(hopIdsForConnect, hopConnectHosts)
           : normalizeHopConnectHostsForCompare(hopConnectHosts);
+        const requestedRelayMode = switchToRegular
+          ? "chain"
+          : normalizeTunnelRelayMode((input as any).relayMode ?? (tunnel as any).relayMode);
+        if (requestedRelayMode === "failover") {
+          if (!hopIdsForConnect || hopIdsForConnect.length < 4) throw new Error("故障转移至少需要配置两个中转主机");
+          if (!tunnelRelayFailoverSupported(nextModeForRuntime)) throw new Error("当前隧道工具不支持中转故障转移");
+        }
+        const nextRelayMode = requestedRelayMode === "failover" ? "failover" : "chain";
         const entryHostId = hopHostIds ? hopHostIds[0] : (input.entryHostId ?? tunnel.entryHostId);
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : (input.exitHostId ?? tunnel.exitHostId);
         if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
@@ -928,6 +978,7 @@ export const tunnelsRouter = router({
         if ((data as any).forwardxVersion !== undefined || (data as any).mode !== undefined) {
           (data as any).forwardxVersion = nextForwardXVersion;
         }
+        (data as any).relayMode = nextRelayMode;
         if ((data as any).trafficMultiplier !== undefined) {
           (data as any).trafficMultiplier = normalizeTrafficMultiplier((data as any).trafficMultiplier);
         }
@@ -1071,9 +1122,12 @@ export const tunnelsRouter = router({
         const nextTunnelEnabled = (data as any).isEnabled !== undefined ? !!(data as any).isEnabled : !!(tunnel as any).isEnabled;
         const nextEntryGroupId = (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId;
         const nextExitGroupId = (data as any).exitGroupId !== undefined ? (data as any).exitGroupId : (tunnel as any).exitGroupId;
+        const nextExitGroup = await requireExitGroupAccess(ctx, nextExitGroupId, nextTunnelEnabled);
         if (nextTunnelEnabled) {
           await requireEntryGroupAccess(ctx, nextEntryGroupId, true);
-          await requireExitGroupAccess(ctx, nextExitGroupId, true);
+        }
+        if ((data as any).loadBalanceEnabled && nextExitGroup) {
+          (data as any).loadBalanceStrategy = inheritedExitGroupStrategy(nextExitGroup, (data as any).loadBalanceStrategy);
         }
         if ((data as any).isEnabled !== undefined) (data as any).disabledByGroup = false;
         if (nextWireGuardEnabled && nextTunnelEnabled) {
@@ -1090,6 +1144,16 @@ export const tunnelsRouter = router({
             exitHostId,
             ...extraExitNodes.map((node) => node.hostId),
           ]);
+        }
+        if (nextRelayMode === "failover" && nextModeForRuntime === "forwardx" && nextTunnelEnabled) {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            ...tunnel,
+            ...data,
+            entryHostId,
+            exitHostId,
+            entryGroupId: (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId,
+          });
+          await requireForwardXRelayFailoverAgentVersions(entryHostIds);
         }
         const hopChanged = (requestedHopHostIds !== undefined || (hopConnectHostsProvided && existingHopHostIds.length >= 3))
           ? (
@@ -1110,7 +1174,7 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
-        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

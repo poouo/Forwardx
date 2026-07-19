@@ -1,4 +1,5 @@
 import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
+import { updateMultiDeviceLoginSettingCache } from "./context";
 import { z } from "zod";
 import * as db from "../db";
 import { ENV } from "../env";
@@ -2046,6 +2047,7 @@ export const systemRouter = router({
       }
       if (input.allowMultiDeviceLogin !== undefined) {
         await db.setSetting("allowMultiDeviceLogin", input.allowMultiDeviceLogin ? "true" : "false");
+        updateMultiDeviceLoginSettingCache(input.allowMultiDeviceLogin);
         console.info(`[Settings] multi-device login ${input.allowMultiDeviceLogin ? "enabled" : "disabled"}`);
       }
       if (input.updateAutoCheckEnabled !== undefined) {

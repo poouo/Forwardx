@@ -6,6 +6,7 @@ import { createHopTestBatch, registerHopTest } from "../hopTestState";
 import { ENV } from "../env";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import { normalizeForwardRuleProtocol, type ForwardRuleProtocol } from "../../shared/forwardTypes";
+import { normalizeExitGroupStrategy, type ExitGroupStrategy } from "../../shared/exitStrategy";
 
 export type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
@@ -23,6 +24,7 @@ export type ForwardGroupInput = {
   name: string;
   remark?: string | null;
   groupMode?: ForwardGroupMode;
+  exitStrategy?: ExitGroupStrategy;
   entryGroupId?: number | null;
   groupType: ForwardGroupType;
   protocol?: ForwardRuleProtocol;
@@ -161,6 +163,9 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const members = normalizeForwardGroupMembers(groupMode, groupType, input.members, {
     externalEntry: groupMode === "chain" && !!entryGroupId,
   });
+  if (groupMode === "exit" && input.isEnabled !== false && !members.some((member) => member.isEnabled !== false)) {
+    throw new Error("Enabled exit group must contain at least one enabled host");
+  }
   const chinaHealthCheckEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.chinaHealthCheckEnabled;
   const rawChinaHealthTarget = chinaHealthCheckEnabled ? String(input.chinaHealthCheckTarget || "").trim() : "";
   const chinaHealthCheckTarget = chinaHealthCheckEnabled && rawChinaHealthTarget
@@ -180,6 +185,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     name: input.name,
     remark: isCollectionGroup ? null : input.remark?.trim() || null,
     groupMode,
+    exitStrategy: groupMode === "exit" ? normalizeExitGroupStrategy(input.exitStrategy) : "round_robin",
     entryGroupId,
     groupType,
     protocol,
@@ -248,6 +254,8 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
   const entryDomainChanged = normalized.data.groupMode === "entry"
     && String(existing?.domain || "").trim() !== String(normalized.data.domain || "").trim();
+  const exitStrategyChanged = normalized.data.groupMode === "exit"
+    && normalizeExitGroupStrategy(existing?.exitStrategy) !== normalizeExitGroupStrategy(normalized.data.exitStrategy);
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
@@ -266,6 +274,8 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
         reason: `${normalized.data.groupMode}-group-members-and-state-updated`,
         previousHostIds,
       });
+    } else if (exitStrategyChanged) {
+      await db.refreshForwardGroupReferences(id, { reason: "exit-group-strategy-updated" });
     }
     return db.getForwardGroupById(id);
   }
@@ -275,6 +285,8 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     if (!membersChanged) await db.runForwardGroupFailover(id, { manual: true });
     if (!membersChanged && entryDomainChanged) {
       await db.refreshForwardGroupReferences(id, { reason: "entry-group-domain-updated" });
+    } else if (!membersChanged && exitStrategyChanged) {
+      await db.refreshForwardGroupReferences(id, { reason: "exit-group-strategy-updated" });
     }
   } else {
     await db.runForwardGroupFailover(id, {
