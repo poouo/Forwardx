@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -157,7 +158,6 @@ func TestForwardXFallbackUsesBackupForTCPAndUDP(t *testing.T) {
 		})
 	}()
 	waitForTCP(t, entryPort)
-	waitForUDP(t, entryPort)
 
 	tcpClient, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
 	if err != nil {
@@ -293,8 +293,6 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 			UDPTargets: []udpTarget{{RuleID: 22, TargetIP: "127.0.0.1", TargetPort: targetPort}},
 		})
 	}()
-	waitForUDP(t, exitPort)
-
 	go func() {
 		_ = runEntry(entryDone, config{
 			Role:       "entry",
@@ -309,8 +307,6 @@ func TestForwardXUDPDirectRoundTrip(t *testing.T) {
 			Key:        key,
 		})
 	}()
-	waitForUDP(t, entryPort)
-
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
 	if err != nil {
 		t.Fatal(err)
@@ -480,8 +476,6 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 			UDPTargets: []udpTarget{{RuleID: 24, TargetIP: "127.0.0.1", TargetPort: targetPort}},
 		})
 	}()
-	waitForUDP(t, exitPort)
-
 	go func() {
 		_ = runRelay(relayDone, config{
 			Role:          "relay",
@@ -494,8 +488,6 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 			RelayKey:      downstreamKey,
 		})
 	}()
-	waitForUDP(t, relayPort)
-
 	go func() {
 		_ = runEntry(entryDone, config{
 			Role:       "entry",
@@ -510,8 +502,6 @@ func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
 			Key:        upstreamKey,
 		})
 	}()
-	waitForUDP(t, entryPort)
-
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
 	if err != nil {
 		t.Fatal(err)
@@ -1230,27 +1220,16 @@ func freeTCPUDPPort(t *testing.T) int {
 	return 0
 }
 
-func waitForUDP(t *testing.T, port int) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
-		if err == nil {
-			_, _ = conn.Write([]byte{0})
-			_ = conn.Close()
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("udp port %d did not open", port)
-}
-
 func udpRoundTrip(t *testing.T, client *net.UDPConn, payload []byte) []byte {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	buf := make([]byte, 65535)
 	for time.Now().Before(deadline) {
 		if _, err := client.Write(payload); err != nil {
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
 			t.Fatal(err)
 		}
 		attemptDeadline := time.Now().Add(200 * time.Millisecond)
@@ -1262,9 +1241,11 @@ func udpRoundTrip(t *testing.T, client *net.UDPConn, payload []byte) []byte {
 		if err == nil {
 			return append([]byte(nil), buf[:n]...)
 		}
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		netErr, isNetErr := err.(net.Error)
+		if (!isNetErr || !netErr.Timeout()) && !errors.Is(err, syscall.ECONNREFUSED) {
 			t.Fatal(err)
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("udp round trip timed out after 3s")
 	return nil
