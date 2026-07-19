@@ -26,6 +26,7 @@ const pluginAgentManifestPollInterval = 100 * time.Millisecond
 const pluginAgentTaskWorkerConcurrency = 4
 const pluginAgentResultWorkerConcurrency = 4
 
+var pluginAgentResultRoot = "/var/lib/forwardx-agent/plugin-results"
 var pluginAgentTaskWorkersOnce sync.Once
 var pluginAgentTaskQueue = make(chan pluginAgentTaskJob, pluginAgentTaskQueueCapacity)
 var pluginAgentResultQueue = make(chan pluginAgentTaskResultJob, pluginAgentResultQueueCapacity)
@@ -33,6 +34,8 @@ var pluginAgentTaskSeenMu sync.Mutex
 var pluginAgentTaskSeen = map[string]time.Time{}
 var pluginAgentTaskLocksMu sync.Mutex
 var pluginAgentTaskLocks = map[string]*sync.RWMutex{}
+var pluginAgentResultPendingMu sync.Mutex
+var pluginAgentResultPending = map[string]bool{}
 var pluginAgentTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type pluginAgentTask struct {
@@ -120,7 +123,7 @@ func (output *pluginAgentTaskOutput) String() string {
 	return text
 }
 
-func startPluginAgentTaskWorkers() {
+func startPluginAgentTaskWorkers(cfg Config) {
 	pluginAgentTaskWorkersOnce.Do(func() {
 		for i := 0; i < pluginAgentTaskWorkerConcurrency; i++ {
 			go pluginAgentTaskWorker()
@@ -128,6 +131,14 @@ func startPluginAgentTaskWorkers() {
 		for i := 0; i < pluginAgentResultWorkerConcurrency; i++ {
 			go pluginAgentTaskResultWorker()
 		}
+		queuePersistedPluginAgentTaskResults(cfg)
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				queuePersistedPluginAgentTaskResults(cfg)
+			}
+		}()
 	})
 }
 
@@ -156,15 +167,90 @@ func pluginAgentTaskWorker() {
 
 func pluginAgentTaskResultWorker() {
 	for job := range pluginAgentResultQueue {
-		reportPluginAgentTaskResult(job.cfg, job.result)
+		reported := reportPluginAgentTaskResult(job.cfg, job.result)
+		pluginAgentResultPendingMu.Lock()
+		delete(pluginAgentResultPending, job.result.TaskID)
+		pluginAgentResultPendingMu.Unlock()
+		if reported {
+			_ = os.Remove(pluginAgentTaskResultPath(job.result.TaskID))
+		}
 	}
 }
 
 func enqueuePluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
+	if err := persistPluginAgentTaskResult(result); err != nil {
+		logf("plugin action result persist failed task=%s plugin=%s action=%s: %v", result.TaskID, result.PluginID, result.ActionID, err)
+	}
+	queuePluginAgentTaskResult(cfg, result)
+}
+
+func queuePluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
+	pluginAgentResultPendingMu.Lock()
+	if pluginAgentResultPending[result.TaskID] {
+		pluginAgentResultPendingMu.Unlock()
+		return
+	}
+	pluginAgentResultPending[result.TaskID] = true
+	pluginAgentResultPendingMu.Unlock()
 	select {
 	case pluginAgentResultQueue <- pluginAgentTaskResultJob{cfg: cfg, result: result}:
 	case <-time.After(2 * time.Second):
+		pluginAgentResultPendingMu.Lock()
+		delete(pluginAgentResultPending, result.TaskID)
+		pluginAgentResultPendingMu.Unlock()
 		logf("plugin action result queue full task=%s plugin=%s action=%s", result.TaskID, result.PluginID, result.ActionID)
+	}
+}
+
+func pluginAgentTaskResultPath(taskID string) string {
+	return filepath.Join(pluginAgentResultRoot, taskID+".json")
+}
+
+func persistPluginAgentTaskResult(result pluginAgentTaskResult) error {
+	if !pluginAgentTaskIDPattern.MatchString(strings.TrimSpace(result.TaskID)) {
+		return errors.New("插件任务标识不合法")
+	}
+	if err := os.MkdirAll(pluginAgentResultRoot, 0700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	target := pluginAgentTaskResultPath(result.TaskID)
+	temp := target + ".tmp"
+	if err := os.WriteFile(temp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, target); err != nil {
+		_ = os.Remove(temp)
+		return err
+	}
+	return nil
+}
+
+func queuePersistedPluginAgentTaskResults(cfg Config) {
+	entries, err := os.ReadDir(pluginAgentResultRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logf("plugin action result spool read failed: %v", err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(pluginAgentResultRoot, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var result pluginAgentTaskResult
+		if json.Unmarshal(data, &result) != nil || result.TaskID == "" {
+			continue
+		}
+		reservePluginAgentTask(result.TaskID)
+		queuePluginAgentTaskResult(cfg, result)
 	}
 }
 
@@ -542,16 +628,16 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 	return finalizePluginAgentTaskResult(task, result, err, ctx.Err() == context.DeadlineExceeded)
 }
 
-func reportPluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
+func reportPluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) bool {
 	delay := time.Second
 	for attempt := 1; attempt <= pluginAgentResultReportAttempts; attempt++ {
 		err := post(cfg, "/api/agent/plugin-action-result", map[string]any{"result": result}, &map[string]any{})
 		if err == nil {
-			return
+			return true
 		}
 		if !isTransientAgentCommError(err) || attempt == pluginAgentResultReportAttempts {
 			logf("plugin action result report failed task=%s plugin=%s action=%s attempt=%d/%d: %v", result.TaskID, result.PluginID, result.ActionID, attempt, pluginAgentResultReportAttempts, err)
-			return
+			return false
 		}
 		logAgentCommError("plugin-action-result", err)
 		time.Sleep(delay)
@@ -559,4 +645,5 @@ func reportPluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
 			delay *= 2
 		}
 	}
+	return false
 }

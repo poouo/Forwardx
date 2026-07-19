@@ -8,8 +8,15 @@ set -euo pipefail
 ACTION="${1:-}"
 TOKEN="${2:-}"
 
-GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-https://git.poouo.com}"
-GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-false}"
+# Leave these empty unless the caller explicitly overrides them. The panel-side
+# installer embeds the saved defaults and applies them when these values are empty.
+GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-}"
+GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-}"
+case "$GITHUB_ACCELERATOR_ENABLED" in
+  1|true|TRUE|yes|YES|on|ON)
+    GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-https://git.poouo.com}"
+    ;;
+esac
 FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-false}"
 FORWARDX_CURL_CONNECT_TIMEOUT="${FORWARDX_CURL_CONNECT_TIMEOUT:-15}"
 FORWARDX_CURL_LOW_SPEED_LIMIT="${FORWARDX_CURL_LOW_SPEED_LIMIT:-1024}"
@@ -17,6 +24,7 @@ FORWARDX_CURL_LOW_SPEED_TIME="${FORWARDX_CURL_LOW_SPEED_TIME:-60}"
 
 FORWARDX_INSTALL_MIMIC="${FORWARDX_INSTALL_MIMIC:-ask}"
 FORWARDX_MIMIC_INSTALLER_URL="${FORWARDX_MIMIC_INSTALLER_URL:-https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-mimic.sh}"
+FORWARDX_MIMIC_VERSION="${FORWARDX_MIMIC_VERSION:-0.7.1}"
 SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
@@ -143,6 +151,7 @@ run_panel_installer() {
     FORWARDX_AGENT_PANEL_FIRST="$FORWARDX_AGENT_PANEL_FIRST" \
     FORWARDX_INSTALL_MIMIC="$FORWARDX_INSTALL_MIMIC" \
     FORWARDX_MIMIC_INSTALLER_URL="$FORWARDX_MIMIC_INSTALLER_URL" \
+    FORWARDX_MIMIC_VERSION="$FORWARDX_MIMIC_VERSION" \
     bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0

@@ -225,6 +225,26 @@ export const hosts = table("hosts", {
   cpuInfo: text("cpuInfo"),
   memoryTotal: bigint("memoryTotal", { mode: "number" }),
   agentVersion: text("agentVersion"),
+  mimicAvailable: boolean("mimicAvailable"),
+  mimicVersion: text("mimicVersion"),
+  mimicStatus: varchar("mimicStatus", { length: 64 }),
+  mimicMessage: text("mimicMessage"),
+  mimicCheckedAt: epoch("mimicCheckedAt"),
+  mimicRuntimeStatus: varchar("mimicRuntimeStatus", { length: 32 }),
+  mimicRuntimeMessage: text("mimicRuntimeMessage"),
+  mimicRuntimeCheckedAt: epoch("mimicRuntimeCheckedAt"),
+  agentBootId: varchar("agentBootId", { length: 128 }),
+  agentBootedAt: epoch("agentBootedAt"),
+  agentProcessId: int("agentProcessId"),
+  agentProcessStartedAt: epoch("agentProcessStartedAt"),
+  agentLastReceivedRevision: bigint("agentLastReceivedRevision", { mode: "number" }).notNull().default(0),
+  agentLastAppliedRevision: bigint("agentLastAppliedRevision", { mode: "number" }).notNull().default(0),
+  agentLastReceivedHash: varchar("agentLastReceivedHash", { length: 64 }),
+  agentLastAppliedHash: varchar("agentLastAppliedHash", { length: 64 }),
+  agentRecoveryStartedAt: epoch("agentRecoveryStartedAt"),
+  agentRecoveryCompletedAt: epoch("agentRecoveryCompletedAt"),
+  agentRecoveryExpected: int("agentRecoveryExpected").notNull().default(0),
+  agentRecoveryReady: int("agentRecoveryReady").notNull().default(0),
   agentUpgradeRequested: boolean("agentUpgradeRequested").notNull().default(false),
   agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
   agentUpgradeReleaseVersion: text("agentUpgradeReleaseVersion"),
@@ -750,6 +770,7 @@ export const paymentOrders = table("payment_orders", {
   planId: int("planId"),
   subscriptionId: int("subscriptionId"),
   discountCodeId: int("discountCodeId"),
+  discountConsumed: boolean("discountConsumed").notNull().default(false),
   discountAmountCents: bigint("discountAmountCents", { mode: "number" }).notNull().default(0),
   clientIp: text("clientIp"),
   rawNotify: text("rawNotify"),
@@ -1098,6 +1119,26 @@ export const pluginAgentStates = table("plugin_agent_states", {
 });
 export type PluginAgentState = typeof pluginAgentStates.$inferSelect;
 export type InsertPluginAgentState = typeof pluginAgentStates.$inferInsert;
+
+export const configAuditEvents = table("config_audit_events", {
+  id: serial("id"),
+  resourceType: varchar("resourceType", { length: 32 }).notNull(),
+  resourceId: int("resourceId").notNull(),
+  hostId: int("hostId"),
+  action: varchar("action", { length: 32 }).notNull(),
+  source: varchar("source", { length: 64 }).notNull().default("system"),
+  actorUserId: int("actorUserId"),
+  actorName: text("actorName"),
+  requestId: varchar("requestId", { length: 64 }),
+  requestPath: text("requestPath"),
+  beforeJson: text("beforeJson"),
+  afterJson: text("afterJson"),
+  diffJson: text("diffJson"),
+  configHash: varchar("configHash", { length: 64 }).notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type ConfigAuditEvent = typeof configAuditEvents.$inferSelect;
+export type InsertConfigAuditEvent = typeof configAuditEvents.$inferInsert;
 
 // ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = table("user_host_permissions", {

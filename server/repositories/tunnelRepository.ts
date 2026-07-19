@@ -13,7 +13,7 @@ import {
   forwardGroupMembers,
   forwardGroups,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { releaseHostPortReservations, reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "../portReservations";
@@ -23,6 +23,7 @@ import { mapWithConcurrency } from "../asyncPool";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
+import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import {
   planExitGroupTunnelEndpoints,
   type ExitGroupTunnelMember,
@@ -129,17 +130,102 @@ export async function getTunnelsPage(input: TunnelListQuery) {
   if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, enabledItems: 0, availableItems: 0 };
   const condition = tunnelListCondition(input);
   const cutoffSeconds = Math.floor((Date.now() - 150_000) / 1000);
+  const probeCutoffSeconds = Math.floor((Date.now() - 3 * 60_000) / 1000);
+  const probeFutureSeconds = Math.floor((Date.now() + 60_000) / 1000);
+  const freshProbe = sql`
+    ${tunnels.lastTestAt} IS NOT NULL
+    AND ${tunnels.lastTestAt} >= ${probeCutoffSeconds}
+    AND ${tunnels.lastTestAt} <= ${probeFutureSeconds}
+  `;
+  const freshProbeAvailable = sql`
+    ${freshProbe}
+    AND LOWER(COALESCE(${tunnels.lastTestStatus}, '')) = 'success'
+    AND ${tunnels.lastLatencyMs} IS NOT NULL
+  `;
+  const freshProbeUnavailable = sql`
+    ${freshProbe}
+    AND LOWER(COALESCE(${tunnels.lastTestStatus}, '')) = 'failed'
+  `;
+  const primaryEntryAvailable = sql`EXISTS (
+    SELECT 1 FROM ${hosts}
+    WHERE ${hosts.id} = ${tunnels.entryHostId}
+      AND ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+  )`;
+  const entryGroupAvailable = sql`EXISTS (
+    SELECT 1 FROM ${forwardGroupMembers}
+    INNER JOIN ${hosts} ON ${hosts.id} = ${forwardGroupMembers.hostId}
+    WHERE ${forwardGroupMembers.groupId} = ${tunnels.entryGroupId}
+      AND ${forwardGroupMembers.memberType} = 'host'
+      AND ${forwardGroupMembers.isEnabled} = ${sqlBool(true)}
+      AND ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+  )`;
+  const primaryExitAvailable = sql`EXISTS (
+    SELECT 1 FROM ${hosts}
+    WHERE ${hosts.id} = ${tunnels.exitHostId}
+      AND ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+  )`;
+  const extraExitAvailable = sql`EXISTS (
+    SELECT 1 FROM ${tunnelExitNodes}
+    INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelExitNodes.hostId}
+    WHERE ${tunnelExitNodes.tunnelId} = ${tunnels.id}
+      AND ${tunnelExitNodes.isEnabled} = ${sqlBool(true)}
+      AND ${hosts.isOnline} = ${sqlBool(true)}
+      AND ${hosts.lastHeartbeat} IS NOT NULL
+      AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+  )`;
+  const relayHostsAvailable = sql`(
+    NOT EXISTS (SELECT 1 FROM ${tunnelHops} WHERE ${tunnelHops.tunnelId} = ${tunnels.id})
+    OR (
+      LOWER(COALESCE(${tunnels.relayMode}, 'chain')) = 'failover'
+      AND EXISTS (
+        SELECT 1 FROM ${tunnelHops}
+        INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelHops.hostId}
+        WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
+          AND ${tunnelHops.seq} > 0
+          AND ${tunnelHops.seq} < (SELECT COUNT(*) - 1 FROM ${tunnelHops} WHERE ${tunnelHops.tunnelId} = ${tunnels.id})
+          AND ${hosts.isOnline} = ${sqlBool(true)}
+          AND ${hosts.lastHeartbeat} IS NOT NULL
+          AND ${hosts.lastHeartbeat} >= ${cutoffSeconds}
+      )
+    )
+    OR (
+      LOWER(COALESCE(${tunnels.relayMode}, 'chain')) <> 'failover'
+      AND NOT EXISTS (
+        SELECT 1 FROM ${tunnelHops}
+        INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelHops.hostId}
+        WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
+          AND ${tunnelHops.seq} > 0
+          AND ${tunnelHops.seq} < (SELECT COUNT(*) - 1 FROM ${tunnelHops} WHERE ${tunnelHops.tunnelId} = ${tunnels.id})
+          AND (${hosts.isOnline} <> ${sqlBool(true)} OR ${hosts.lastHeartbeat} IS NULL OR ${hosts.lastHeartbeat} < ${cutoffSeconds})
+      )
+    )
+  )`;
+  const routeHostsAvailable = sql`(
+    (${primaryEntryAvailable} OR (${tunnels.entryGroupId} IS NOT NULL AND ${entryGroupAvailable}))
+    AND (
+      ${primaryExitAvailable}
+      OR (
+        ${tunnels.loadBalanceEnabled} = ${sqlBool(true)}
+        AND LOWER(COALESCE(${tunnels.loadBalanceStrategy}, 'none')) <> 'none'
+        AND ${extraExitAvailable}
+      )
+    )
+    AND ${relayHostsAvailable}
+  )`;
   const availableExpression = sql<number>`CASE WHEN
     ${tunnels.isEnabled} = ${sqlBool(true)}
-    AND EXISTS (
-      SELECT 1 FROM ${tunnelHops}
-      WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM ${tunnelHops}
-      INNER JOIN ${hosts} ON ${hosts.id} = ${tunnelHops.hostId}
-      WHERE ${tunnelHops.tunnelId} = ${tunnels.id}
-        AND (${hosts.isOnline} <> ${sqlBool(true)} OR ${hosts.lastHeartbeat} IS NULL OR ${hosts.lastHeartbeat} < ${cutoffSeconds})
+    AND (
+      ${freshProbeAvailable}
+      OR (
+        NOT (${freshProbeUnavailable})
+        AND ${routeHostsAvailable}
+      )
     )
     THEN 1 ELSE 0 END`;
   const aggregate = db
@@ -284,13 +370,22 @@ export async function createTunnel(data: InsertTunnel) {
   if (payload.sortOrder === undefined) {
     payload.sortOrder = await nextTunnelSortOrder(Number(payload.userId || 0));
   }
-  return insertAndGetId("tunnels", payload);
+  const id = await insertAndGetId("tunnels", payload);
+  const created = await getTunnelById(id).catch(() => undefined);
+  await recordConfigAuditEvent({ resourceType: "tunnel", resourceId: id, hostId: Number((created as any)?.entryHostId || 0), action: "create", after: created });
+  return id;
 }
 
 export async function updateTunnel(id: number, data: Partial<InsertTunnel>) {
   const db = await getDb();
   if (!db) return;
+  const audit = shouldAuditConfigPatch(data as any);
+  const before = audit ? await getTunnelById(id).catch(() => undefined) : undefined;
   await db.update(tunnels).set({ ...data, updatedAt: nowDate() }).where(eq(tunnels.id, id));
+  if (audit && before) {
+    const after = await getTunnelById(id).catch(() => undefined);
+    await recordConfigAuditEvent({ resourceType: "tunnel", resourceId: id, hostId: Number((after as any)?.entryHostId || (before as any).entryHostId || 0), action: "update", before, after });
+  }
 }
 
 async function nextTunnelSortOrder(userId: number) {
@@ -412,14 +507,18 @@ export async function clearTunnelTestSnapshot(id: number) {
 }
 
 export async function deleteTunnel(id: number) {
+  return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ tunnelId: null, isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, id));
+  const before = await getTunnelById(id).catch(() => undefined);
+  await db.update(forwardRules).set({ tunnelId: null, isEnabled: false, isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.tunnelId, id));
   await db.delete(tunnelExitNodes).where(eq(tunnelExitNodes.tunnelId, id));
   await db.delete(tunnelHops).where(eq(tunnelHops.tunnelId, id));
   await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.tunnelId, id));
   await db.delete(tunnels).where(eq(tunnels.id, id));
+  if (before) await recordConfigAuditEvent({ resourceType: "tunnel", resourceId: id, hostId: Number((before as any).entryHostId || 0), action: "delete", before });
+  });
 }
 
 export async function resetForwardRulesByTunnel(tunnelId: number) {
@@ -873,17 +972,11 @@ export async function updateTunnelTestResult(id: number, data: {
   await db.update(tunnels).set(updates).where(eq(tunnels.id, id));
 }
 
-type RuleProtocol = "tcp" | "udp" | "both";
-
-function normalizeRuleProtocol(protocol: unknown): RuleProtocol {
-  const text = String(protocol || "both").toLowerCase();
-  return text === "tcp" || text === "udp" ? text : "both";
-}
-
-function protocolConflictCondition(protocol: unknown) {
-  const requestedProtocol = normalizeRuleProtocol(protocol);
-  if (requestedProtocol === "both") return null;
-  return sql`(${forwardRules.protocol} IS NULL OR ${forwardRules.protocol} = '' OR ${forwardRules.protocol} = 'both' OR ${forwardRules.protocol} = ${requestedProtocol})`;
+function protocolConflictCondition(_protocol: unknown) {
+  // Agent runtime state and cleanup are keyed by listen port. Treat a port as
+  // one rule identity even when the operating system could bind TCP and UDP
+  // separately, otherwise the two rules overwrite each other's local state.
+  return null;
 }
 
 /** 检查某主机上的某端口是否已被占用 */
@@ -1053,6 +1146,7 @@ export async function getTunnelExitNodesByTunnelIds(tunnelIds: number[]) {
 }
 
 export async function replaceTunnelExitNodes(tunnelId: number, nodes: Array<Omit<InsertTunnelExitNode, "id" | "tunnelId" | "createdAt" | "updatedAt">>) {
+  return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db) return;
   await db.delete(tunnelExitNodes).where(eq(tunnelExitNodes.tunnelId, tunnelId));
@@ -1067,6 +1161,7 @@ export async function replaceTunnelExitNodes(tunnelId: number, nodes: Array<Omit
       isEnabled: node.isEnabled !== false,
     } as any);
   }
+  });
 }
 
 export async function syncTunnelExitGroupEndpoints(
@@ -1504,6 +1599,7 @@ export async function reconcileTunnelRuleExitMappings(tunnelId: number) {
 }
 
 export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number; mimicPort?: number; connectHost?: string | null }[]) {
+  return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db || hops.length === 0) return;
   // Delete existing hops first
@@ -1519,6 +1615,7 @@ export async function createTunnelHops(tunnelId: number, hops: { hostId: number;
       connectHost: hops[i].connectHost ?? null,
     });
   }
+  });
 }
 
 export async function deleteTunnelHops(tunnelId: number) {

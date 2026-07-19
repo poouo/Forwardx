@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,28 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPluginAgentTaskResultIsPersistedAtomically(t *testing.T) {
+	previousRoot := pluginAgentResultRoot
+	pluginAgentResultRoot = t.TempDir()
+	defer func() { pluginAgentResultRoot = previousRoot }()
+
+	result := pluginAgentTaskResult{TaskID: "task-17", PluginID: "demo", ActionID: "refresh", Success: true}
+	if err := persistPluginAgentTaskResult(result); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(pluginAgentTaskResultPath(result.TaskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored pluginAgentTaskResult
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.TaskID != result.TaskID || restored.PluginID != result.PluginID || !restored.Success {
+		t.Fatalf("unexpected restored result: %#v", restored)
+	}
+}
 
 func TestFinalizePluginAgentTaskResultPreservesJSONErrorOnNonzeroExit(t *testing.T) {
 	result := finalizePluginAgentTaskResult(

@@ -83,3 +83,42 @@ func TestTCPingDueIntervalScalesWithWorkAndServiceRequirements(t *testing.T) {
 		t.Fatalf("five-second collection rounds = %d", got)
 	}
 }
+
+func TestRuleLatencyProbeUsesPingOnlyForUDP(t *testing.T) {
+	tests := []struct {
+		protocol string
+		method   string
+	}{
+		{protocol: "udp", method: "ping"},
+		{protocol: "tcp", method: "tcping"},
+		{protocol: "both", method: "tcping"},
+	}
+	for _, tc := range tests {
+		task, ok := buildRuleLatencyProbeTask(localRuleState{
+			Port: "443", RuleID: 7, TargetIP: "hy2.example.com", TargetPort: 443, Protocol: tc.protocol,
+		})
+		if !ok {
+			t.Fatalf("protocol %s did not create a probe task", tc.protocol)
+		}
+		if task.Method != tc.method {
+			t.Fatalf("protocol %s method = %s, want %s", tc.protocol, task.Method, tc.method)
+		}
+	}
+}
+
+func TestRuleLatencyProbePrefersLatestDesiredProtocol(t *testing.T) {
+	rememberDesiredRunningRules([]runningRule{{
+		RuleID: 9, SourcePort: 8443, TargetIP: "new-hy2.example.com", TargetPort: 8443, Protocol: "udp",
+	}})
+	t.Cleanup(func() { rememberDesiredRunningRules(nil) })
+
+	task, ok := buildRuleLatencyProbeTask(localRuleState{
+		Port: "8443", RuleID: 9, TargetIP: "old.example.com", TargetPort: 443, Protocol: "tcp",
+	})
+	if !ok {
+		t.Fatal("desired UDP rule did not create a probe task")
+	}
+	if task.Method != "ping" || task.TargetIP != "new-hy2.example.com" || task.TargetPort != 8443 {
+		t.Fatalf("probe did not use desired rule metadata: %+v", task)
+	}
+}

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forwardx-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: |
+            agent/go.mod
+            forwardx-fxp/go.mod
+            forwardx-fxp/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify panel
+        run: |
+          pnpm check:versions
+          pnpm exec tsc --noEmit
+          pnpm test:server
+          pnpm build
+          pnpm docs:build
+
+      - name: Verify Agent and FXP
+        run: |
+          (cd agent && go test ./... && go vet ./...)
+          (cd forwardx-fxp && go test ./... && go vet ./...)

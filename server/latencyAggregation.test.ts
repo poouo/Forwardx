@@ -3,6 +3,15 @@ import test from "node:test";
 import { summarizeTunnelBranches, validateTunnelProbeSource } from "./agentReportRoutes";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
 import { getTunnelAutoHopAggregate, recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
+import { shouldUseLatencyCandidate } from "./repositories/metricsRepository";
+
+test("older manual timeout cannot override a newer automatic latency success", () => {
+  const automaticSuccess = { recordedAt: new Date("2026-07-19T10:05:00Z") };
+  const oldManualTimeout = { recordedAt: new Date("2026-07-19T10:00:00Z") };
+  const newManualResult = { recordedAt: new Date("2026-07-19T10:06:00Z") };
+  assert.equal(shouldUseLatencyCandidate(automaticSuccess, oldManualTimeout), false);
+  assert.equal(shouldUseLatencyCandidate(automaticSuccess, newManualResult), true);
+});
 
 test("multi-exit tunnel stays available when at least one exit succeeds", () => {
   const summary = summarizeTunnelBranches([

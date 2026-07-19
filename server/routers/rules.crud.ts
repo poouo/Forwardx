@@ -16,6 +16,7 @@ import {
   type HostPortReservation,
 } from "../portReservations";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { mapWithConcurrency } from "../asyncPool";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -506,6 +507,9 @@ export async function deleteForwardRuleForActor(
       collectBilling(await settleTrafficBillingForDeletedRule(rule));
       await db.markForwardRulePendingDelete(ruleId);
       await db.runForwardGroupFailover(Number((rule as any).forwardGroupId || 0));
+      // Templates never run on an Agent, so they cannot receive a runtime stop ACK.
+      // Their managed children remain pending until each Agent confirms removal.
+      await db.finalizeForwardRuleDelete(ruleId);
       return { success: true, rule, childRules, chargedCents, balanceAfterCents };
     }
 
@@ -941,14 +945,14 @@ export const crudRulesRouter = router({
           blockSocks: false,
           blockTls: false,
           ...normalizeProxyProtocolInput(
-            {},
+            input,
             input.protocol,
             forwardType,
             isForwardChain,
             { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", clearUnsupported: true },
           ),
           ...normalizeTransportTuningInput(
-            {},
+            input,
             input.protocol,
             forwardType,
             isForwardChain,
@@ -1286,14 +1290,14 @@ export const crudRulesRouter = router({
           ...(input.targetIp !== undefined ? { targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId: !isForwardChain && (group as any).groupType === "tunnel" ? 1 : null }) } : {}),
           forwardType: nextForwardType,
           ...(groupChanged ? normalizeProxyProtocolInput({}, nextProtocol, nextForwardType, isForwardChain, { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" }) : normalizeProxyProtocolInput(
-            {},
+            { ...rule, ...input },
             nextProtocol,
             nextForwardType,
             isForwardChain,
             { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" },
           )),
           ...(groupChanged ? normalizeTransportTuningInput({}, nextProtocol, nextForwardType, isForwardChain, { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", forwardxTunnel: false }) : normalizeTransportTuningInput(
-            {},
+            { ...rule, ...input },
             nextProtocol,
             nextForwardType,
             isForwardChain,
@@ -1780,6 +1784,31 @@ export const crudRulesRouter = router({
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => deleteForwardRuleForActor(ctx.user, input.id)),
+  deleteBatch: protectedProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      const ids = Array.from(new Set(input.ids.map(Number)));
+      const results = await mapWithConcurrency(ids, 8, async (id) => {
+        try {
+          await deleteForwardRuleForActor(ctx.user, id, { reasonPrefix: "batch-forward-rule" });
+          return { id, success: true as const };
+        } catch (error) {
+          return {
+            id,
+            success: false as const,
+            error: error instanceof Error ? error.message : String(error || "删除失败"),
+          };
+        }
+      });
+      const deletedIds = results.filter((item) => item.success).map((item) => item.id);
+      const failures = results.filter((item): item is Extract<typeof item, { success: false }> => !item.success);
+      return {
+        success: failures.length === 0,
+        requested: ids.length,
+        deletedIds,
+        failures,
+      };
+    }),
   toggle: protectedProcedure
     .input(z.object({ id: z.number(), isEnabled: z.boolean() }))
     .mutation(async ({ input, ctx }) => toggleForwardRuleForActor(ctx.user, input.id, input.isEnabled))

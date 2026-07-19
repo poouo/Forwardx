@@ -23,6 +23,13 @@ export function ruleLatencyProbeMethodForRule(rule: any): RuleLatencyProbeMethod
   return ruleLatencyProbeMethodForProtocol(rule?.protocol);
 }
 
+export function isRuleLatencyReportMethodCompatible(protocol: unknown, method: unknown) {
+  const expected = ruleLatencyProbeMethodForProtocol(protocol);
+  const actual = String(method || "").trim().toLowerCase();
+  if (expected === "ping") return actual === "ping";
+  return !actual || actual === expected;
+}
+
 export function normalizeLinkProbeMethod(method: unknown): LinkProbeMethod {
   return String(method || "").trim().toLowerCase() === "ping" ? "ping" : "tcp";
 }

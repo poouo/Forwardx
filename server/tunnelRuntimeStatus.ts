@@ -46,14 +46,57 @@ export function getTunnelRuntimeReadyCount(tunnelId: number, hostIds: number[]) 
   return hostIds.filter((hostId) => hosts.get(Number(hostId)) === true).length;
 }
 
+export type TunnelRuntimeTopology = {
+  entryHostIds?: number[];
+  hopHostIds?: number[];
+  primaryExitHostId?: number;
+  extraExitHostIds?: number[];
+  relayMode?: string;
+  loadBalanceEnabled?: boolean;
+  loadBalanceStrategy?: string;
+};
+
+export function getTunnelRuntimeTopologyStatus(tunnelId: number, topology: TunnelRuntimeTopology) {
+  const unique = (values: Array<number | undefined>) => Array.from(new Set(values
+    .map(Number)
+    .filter((id) => Number.isFinite(id) && id > 0)));
+  const hops = unique(topology.hopHostIds || []);
+  const entryCandidates = unique(topology.entryHostIds?.length ? topology.entryHostIds : [hops[0]]);
+  const useExtraExits = topology.loadBalanceEnabled === true && String(topology.loadBalanceStrategy || "").toLowerCase() !== "none";
+  const exitCandidates = unique([
+    Number(topology.primaryExitHostId || hops[hops.length - 1] || 0),
+    ...(useExtraExits ? topology.extraExitHostIds || [] : []),
+  ]);
+  const ready = (hostId: number) => isTunnelRuntimeHostReady(tunnelId, hostId);
+  const relayCandidates = hops.length >= 3 ? hops.slice(1, -1) : [];
+  const entryReady = hops.length < 3 || entryCandidates.some(ready);
+  const exitReady = exitCandidates.some(ready);
+  const relayReady = relayCandidates.length === 0
+    || (String(topology.relayMode || "chain").toLowerCase() === "failover"
+      ? relayCandidates.some(ready)
+      : relayCandidates.every(ready));
+  const observedHostIds = unique([...entryCandidates, ...relayCandidates, ...exitCandidates]);
+  return {
+    running: entryReady && relayReady && exitReady,
+    readyCount: observedHostIds.filter(ready).length,
+    hostCount: observedHostIds.length,
+    missingHostIds: observedHostIds.filter((hostId) => !ready(hostId)),
+  };
+}
+
 export function clearTunnelRuntimeStatusForHost(hostId: number) {
   const hid = Number(hostId);
-  if (!Number.isFinite(hid) || hid <= 0) return;
+  if (!Number.isFinite(hid) || hid <= 0) return [];
+  const affectedTunnelIds: number[] = [];
   for (const [tunnelId, hosts] of tunnelRuntimeStatus.entries()) {
     const deleted = hosts.delete(hid);
-    if (deleted) bumpTunnelRuntimeGeneration(tunnelId);
+    if (deleted) {
+      affectedTunnelIds.push(tunnelId);
+      bumpTunnelRuntimeGeneration(tunnelId);
+    }
     if (hosts.size === 0) tunnelRuntimeStatus.delete(tunnelId);
   }
+  return affectedTunnelIds;
 }
 
 export function clearTunnelRuntimeStatus(tunnelId: number) {

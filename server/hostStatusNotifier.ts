@@ -1,6 +1,7 @@
 import * as db from "./db";
 import { ENV } from "./env";
 import { sendTelegramMessage } from "./telegramBot";
+import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 
 type HostStatus = "online" | "offline";
 
@@ -119,6 +120,7 @@ export async function primeHostStatusNotifier() {
     const staleIds = (staleOnlineHosts as any[]).map((host) => Number(host.id)).filter((id) => Number.isFinite(id) && id > 0);
     if (staleIds.length > 0) {
       await db.markHostsOffline(staleIds);
+      for (const hostId of staleIds) clearTunnelRuntimeStatusForHost(hostId);
       console.info(`[HostStatus] Primed ${staleIds.length} stale online host(s) silently`);
     }
   } catch (error) {
@@ -137,6 +139,7 @@ export async function sweepOfflineHostsAndNotify() {
   if (staleHosts.length === 0) return 0;
   await db.markHostsOffline((staleHosts as any[]).map((host) => Number(host.id)));
   for (const host of staleHosts as any[]) {
+    clearTunnelRuntimeStatusForHost(Number(host.id));
     await notifyHostStatusChange(host, "offline");
   }
   return staleHosts.length;

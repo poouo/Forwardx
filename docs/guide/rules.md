@@ -97,6 +97,10 @@ mimic 只用于 ForwardX 隧道，且规则协议需要包含 UDP：
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-mimic.sh | sudo bash
 ```
 
+ForwardX 安装器默认安装或升级到 `mimic v0.7.1`。该版本仍要求 Linux 6.1+ 和可用的 BPF/XDP/TC 环境；发行版没有对应二进制包时，上游安装器会尝试源码构建。
+
+Agent 会只读检测 mimic 命令和内核模块，并把结果上报给面板。开启 UDP 混淆、重新启用隧道或更换链路主机时，面板会逐台校验；缺少环境时本次操作失败并提示手动安装，Agent 不会自行安装。
+
 mimic 依赖 Linux 内核和 XDP/TC 能力，只改变 UDP 包外观。它不会修复线路本身的丢包、抖动或 NAT 限制。
 
 ## 排障

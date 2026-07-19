@@ -21,13 +21,13 @@ import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { ensureBundledDeveloperAnnouncements } from "./repositories/announcementRepository";
 import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/trafficBillingRepository";
-import { purgeSettledPendingForwardRuleDeletes } from "./repositories/forwardRuleRepository";
+import { purgeSettledPendingForwardRuleDeletes, repairConflictingProtocolPortRules } from "./repositories/forwardRuleRepository";
 import { markLocalSetupComplete } from "./setupState";
 import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 
-export { getDb } from "./dbRuntime";
+export { getDb, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
 export * from "./repositories/hostRepository";
 export * from "./repositories/forwardRuleRepository";
@@ -218,6 +218,11 @@ export async function initDatabase() {
       if (repairs.length > 0) console.log(`[Database] Repaired stale port-forward rule hosts count=${repairs.length}`);
     }).catch((error) => {
       console.warn("[Database] Port-forward rule host repair skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await repairConflictingProtocolPortRules().then((repairs) => {
+      if (repairs.length > 0) console.warn(`[Database] Disabled conflicting same-port rules count=${repairs.length}`);
+    }).catch((error) => {
+      console.warn("[Database] Same-port rule conflict repair skipped:", error instanceof Error ? error.message : String(error));
     });
     await purgeSettledPendingForwardRuleDeletes().then((count) => {
       if (count > 0) console.log(`[Database] Purged settled pending forward rules count=${count}`);

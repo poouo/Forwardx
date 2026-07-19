@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,41 @@ var desiredGostRuntimeReadyCache = map[string]desiredRuntimeReadyCacheEntry{}
 var actionSerialMu sync.Mutex
 var actionSerialLocks = map[string]*actionSerialLock{}
 var desiredActionRecordMu sync.Mutex
+var desiredRevisionMu sync.Mutex
+var desiredLastReceivedRevision int64
+var desiredLastAppliedRevision int64
+var desiredLastReceivedHash string
+var desiredLastAppliedHash string
+
+func rememberDesiredStateReceived(state *desiredState) {
+	if state == nil {
+		return
+	}
+	desiredRevisionMu.Lock()
+	if state.ConfigRevision >= desiredLastReceivedRevision {
+		desiredLastReceivedRevision = state.ConfigRevision
+		desiredLastReceivedHash = strings.TrimSpace(state.ConfigHash)
+	}
+	desiredRevisionMu.Unlock()
+}
+
+func rememberDesiredActionApplied(a action) {
+	if a.ConfigRevision <= 0 {
+		return
+	}
+	desiredRevisionMu.Lock()
+	if a.ConfigRevision >= desiredLastAppliedRevision {
+		desiredLastAppliedRevision = a.ConfigRevision
+		desiredLastAppliedHash = strings.TrimSpace(a.ConfigHash)
+	}
+	desiredRevisionMu.Unlock()
+}
+
+func desiredRevisionSnapshot() (int64, int64, string, string) {
+	desiredRevisionMu.Lock()
+	defer desiredRevisionMu.Unlock()
+	return desiredLastReceivedRevision, desiredLastAppliedRevision, desiredLastReceivedHash, desiredLastAppliedHash
+}
 
 // sharedGostRuntimeSyncGate 仅用于 gost/gost-tunnel/guard 动作与
 // gost-runtime-sync 之间的互斥。nginx 动作不再持有此锁，因此
@@ -204,6 +240,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	if state == nil {
 		return nil
 	}
+	rememberDesiredStateReceived(state)
 	kernelSnapshot := newKernelForwardSnapshot()
 	// Pre-populate the per-port readiness cache once for all gost/nginx actions in this
 	// batch. Without this, canAdoptDesiredAction → desiredGostRuntimeReady calls
@@ -244,6 +281,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		}
 		if canAdoptDesiredAction(a) {
 			records[key] = desiredActionRecord{Signature: signature, Success: true, UpdatedAt: time.Now().Unix()}
+			rememberDesiredActionApplied(a)
 			if shouldReportDesiredAdoptionStatus(a) {
 				writeState(a)
 				adoptedStatusReports = append(adoptedStatusReports, a)
@@ -994,6 +1032,9 @@ func actionWorkerLoop(workerID int) {
 			}
 			started := time.Now()
 			ok := handleActionWithRuntimeGate(job.cfg, job.action, releaseRuntimeGate)
+			if ok {
+				rememberDesiredActionApplied(job.action)
+			}
 			elapsed := time.Since(started)
 			if elapsed >= actionSlowHandleThreshold && shouldLogAgentReport("action-handle-slow:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
 				logf("action handle slow worker=%d duration=%s ok=%v pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
@@ -1042,12 +1083,68 @@ func prepareDesiredActionJobs(jobs []actionJob) []actionJob {
 	if len(sharedRuntimeJobs) == 0 {
 		return jobs
 	}
+	handoffJobs := make([]actionJob, 0)
+	handoffPrerequisites := make([]<-chan struct{}, 0)
+	for _, job := range remainingJobs {
+		if !actionNeedsPreRuntimeHandoff(job.action) {
+			continue
+		}
+		done := make(chan struct{})
+		handoffAction := job.action
+		handoffAction.HandoffOnly = true
+		handoffJobs = append(handoffJobs, actionJob{
+			cfg:    job.cfg,
+			action: handoffAction,
+			done:   done,
+		})
+		handoffPrerequisites = append(handoffPrerequisites, done)
+	}
+	if len(handoffPrerequisites) > 0 {
+		for index := range sharedRuntimeJobs {
+			sharedRuntimeJobs[index].prerequisites = append(sharedRuntimeJobs[index].prerequisites, handoffPrerequisites...)
+		}
+	}
 	for index := range remainingJobs {
 		if actionNeedsSharedRuntimePhase(remainingJobs[index].action) {
 			remainingJobs[index].prerequisites = append(remainingJobs[index].prerequisites, prerequisites...)
 		}
 	}
-	return append(sharedRuntimeJobs, remainingJobs...)
+	ordered := make([]actionJob, 0, len(handoffJobs)+len(sharedRuntimeJobs)+len(remainingJobs))
+	ordered = append(ordered, handoffJobs...)
+	ordered = append(ordered, sharedRuntimeJobs...)
+	return append(ordered, remainingJobs...)
+}
+
+func actionNeedsPreRuntimeHandoff(a action) bool {
+	if strings.TrimSpace(a.Op) != "apply" || !actionNeedsSharedRuntimePhase(a) || !validActionPort(a.SourcePort) {
+		return false
+	}
+	port := strconv.Itoa(a.SourcePort)
+	if strings.TrimSpace(a.StatusType) == "tunnel" || (a.TunnelID > 0 && a.RuleID <= 0) {
+		localTunnelID := readTunnelIDByPort(port)
+		localForwardType := strings.TrimSpace(readTunnelForwardTypeByPort(port))
+		return tunnelActionNeedsPreRuntimeHandoff(a, localTunnelID, localForwardType)
+	}
+	if a.RuleID <= 0 {
+		return false
+	}
+	localRuleID := readRuleIDByPort(port)
+	localForwardType := strings.TrimSpace(readForwardTypeByPort(port))
+	localTunnelID := readRuleTunnelIDByPort(port)
+	_, _, localProtocol, hasLocalProtocol := readTargetInfo(port)
+	return ruleActionNeedsPreRuntimeHandoff(a, localRuleID, localForwardType, localTunnelID, localProtocol, hasLocalProtocol)
+}
+
+func tunnelActionNeedsPreRuntimeHandoff(a action, localTunnelID int, localForwardType string) bool {
+	return localTunnelID > 0 && (localTunnelID != a.TunnelID ||
+		(strings.TrimSpace(localForwardType) != "" && strings.TrimSpace(localForwardType) != strings.TrimSpace(a.ForwardType)))
+}
+
+func ruleActionNeedsPreRuntimeHandoff(a action, localRuleID int, localForwardType string, localTunnelID int, localProtocol string, hasLocalProtocol bool) bool {
+	return localRuleID > 0 && (localRuleID != a.RuleID ||
+		(strings.TrimSpace(localForwardType) != "" && strings.TrimSpace(localForwardType) != strings.TrimSpace(a.ForwardType)) ||
+		(localTunnelID != a.TunnelID && (localTunnelID > 0 || a.TunnelID > 0)) ||
+		(hasLocalProtocol && normalizeRuntimeProtocol(localProtocol) != normalizeRuntimeProtocol(a.Protocol)))
 }
 
 func actionNeedsSharedRuntimePhase(a action) bool {
@@ -1371,7 +1468,11 @@ func actionQueueKey(a action) string {
 	if len(keys) == 0 {
 		return ""
 	}
-	return strings.Join(keys, "|")
+	key := strings.Join(keys, "|")
+	if a.HandoffOnly {
+		return "handoff:" + key
+	}
+	return key
 }
 
 func releaseQueuedAction(a action) {

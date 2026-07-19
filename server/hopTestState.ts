@@ -65,7 +65,7 @@ function cleanRouteNodeLabel(value: unknown) {
 
 function parseRouteEndpoints(detail: HopTestResult, index: number) {
   const route = String(detail.routeLabel || "").replace(/\s+/g, " ").trim();
-  const arrowParts = route.split(/\s*(?:->|→|-)\s*/).filter(Boolean);
+  const arrowParts = route.split(/\s*(?:->|→)\s*/).filter(Boolean);
   if (arrowParts.length >= 2) {
     return {
       from: cleanRouteNodeLabel(arrowParts[0]),

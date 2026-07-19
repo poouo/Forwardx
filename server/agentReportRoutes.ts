@@ -26,6 +26,8 @@ import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
+import { isRuleLatencyReportMethodCompatible } from "../shared/latencyProbe";
+import { completeSupportBundleHost } from "./supportBundle";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -263,6 +265,29 @@ function compactHostTraffic(value: unknown): AgentHostTrafficStat | null {
 }
 
 export function registerAgentReportRoutes(agentRouter: Router) {
+agentRouter.post("/api/agent/support-bundle-result", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostFromRequest(req);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const taskId = String(req.body?.taskId || "").trim();
+    if (!taskId) {
+      res.status(400).json({ error: "taskId is required" });
+      return;
+    }
+    const accepted = completeSupportBundleHost(taskId, Number(host.id), {
+      diagnostics: req.body?.diagnostics,
+      error: req.body?.error,
+    });
+    res.json({ success: accepted });
+  } catch (error) {
+    console.error("[SupportBundle] Agent report failed:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Response) => {
   try {
     const host = await getAgentHostFromRequest(req);
@@ -432,6 +457,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
+    await db.withDatabaseTransaction(async () => {
     if (hostTraffic) {
       await db.recordHostTrafficSample(host.id, {
         bytesIn: Number(hostTraffic.bytesIn) || 0,
@@ -542,6 +568,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           await refreshUserRuleAgents(user.id, "user-expired");
         }
       }
+    });
     });
 
     res.json({ success: true });
@@ -826,8 +853,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         || !!tunnelContext?.allowedHostIds.has(Number(host.id));
       if (!allowed) return null;
       if (!tunnelId && report.targetPort && Number(report.targetPort) !== Number(rule.targetPort || 0)) return null;
-      const expectedMethod = String(rule.protocol || "").toLowerCase() === "udp" ? "ping" : "tcping";
-      if (report.method && String(report.method).toLowerCase() !== expectedMethod) return null;
+      if (!isRuleLatencyReportMethodCompatible(rule.protocol, report.method)) return null;
       const baseLatency = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
       let latencyMs = baseLatency;
       if (!report.isTimeout && baseLatency && tunnelId > 0) {

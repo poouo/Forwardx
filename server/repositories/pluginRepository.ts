@@ -770,7 +770,10 @@ function pluginManifestTrustScope(manifest: Partial<ForwardxPluginManifest> | nu
       const permission = permissionByOperation.get(operation as any);
       return `${operation}:${permission && permissions.has(permission) ? permission : "missing-permission"}`;
     });
-  return Array.from(new Set(operations)).sort();
+  const agentActions = (Array.isArray(manifest?.actions) ? manifest.actions : [])
+    .filter((action) => action?.type === "agent.request" && !!action.agent)
+    .map((action) => `agent:${String(action.intent || "execute")}:${String(action.agent?.entry || "")}`);
+  return Array.from(new Set([...operations, ...agentActions])).sort();
 }
 
 export function pluginManifestRequiresTrust(manifest: Partial<ForwardxPluginManifest> | null | undefined) {
@@ -3759,6 +3762,9 @@ async function executePluginAgentAction(
   input: unknown,
   options: { hostIds?: number[]; resourceViewId?: string } = {},
 ) {
+  if (plugin?.trusted !== true) {
+    throw new Error("插件尚未设为信任，不能在 Agent 上执行系统脚本");
+  }
   const resourceViewId = normalizePluginId(options.resourceViewId).slice(0, 80);
   const resourceView: PluginResourceViewDefinition | undefined = resourceViewId
     ? (plugin.manifest.resourceViews || []).find((view: PluginResourceViewDefinition) => view.id === resourceViewId)

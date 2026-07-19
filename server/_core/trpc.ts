@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { getSessionCookieOptions } from "./cookies";
+import { runWithConfigAuditContext } from "../configAudit";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -28,12 +29,13 @@ const requireUser = t.middleware(async opts => {
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
 
-  return next({
-    ctx: {
-      ...ctx,
-      user: ctx.user,
-    },
-  });
+  return runWithConfigAuditContext({
+    actorUserId: Number(ctx.user.id),
+    actorName: String(ctx.user.username || ctx.user.name || ""),
+    source: "panel:trpc",
+    requestId: String(ctx.req.headers["x-request-id"] || "") || undefined,
+    requestPath: opts.path,
+  }, () => next({ ctx: { ...ctx, user: ctx.user } }));
 });
 
 export const protectedProcedure = t.procedure.use(requireUser);
@@ -59,11 +61,12 @@ export const adminProcedure = t.procedure.use(
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 
-    return next({
-      ctx: {
-        ...ctx,
-        user: ctx.user,
-      },
-    });
+    return runWithConfigAuditContext({
+      actorUserId: Number(ctx.user.id),
+      actorName: String(ctx.user.username || ctx.user.name || ""),
+      source: "panel:trpc",
+      requestId: String(ctx.req.headers["x-request-id"] || "") || undefined,
+      requestPath: opts.path,
+    }, () => next({ ctx: { ...ctx, user: ctx.user } }));
   }),
 );

@@ -55,6 +55,18 @@ jobs:
       - name: Check version split
         run: pnpm check:versions
 
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run panel tests
+        run: pnpm test:server
+
+      - name: Run Agent tests and vet
+        shell: bash
+        run: |
+          (cd agent && go test ./... && go vet ./...)
+          (cd forwardx-fxp && go test ./... && go vet ./...)
+
       - name: Prepare release notes
         shell: bash
         run: node scripts/extract-release-notes.mjs "${{ steps.release.outputs.version_no_v }}" > RELEASE_NOTES.md

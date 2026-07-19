@@ -26,6 +26,7 @@ import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
 import { markOrphanedForwardGroupTemplatesPendingDelete } from "./forwardRuleRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
+import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 
 // ==================== Host Queries ====================
 
@@ -342,13 +343,22 @@ export async function getHostById(id: number) {
 export async function createHost(host: InsertHost) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return insertAndGetId("hosts", host as any);
+  const id = await insertAndGetId("hosts", host as any);
+  const created = await getHostById(id).catch(() => undefined);
+  await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "create", after: created });
+  return id;
 }
 
 export async function updateHost(id: number, data: Partial<InsertHost>) {
   const db = await getDb();
   if (!db) return;
+  const audit = shouldAuditConfigPatch(data as any);
+  const before = audit ? await getHostById(id).catch(() => undefined) : undefined;
   await db.update(hosts).set({ ...data, updatedAt: nowDate() }).where(eq(hosts.id, id));
+  if (audit && before) {
+    const after = await getHostById(id).catch(() => undefined);
+    await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "update", before, after });
+  }
 }
 
 export async function reorderHosts(ids: number[], userId?: number, startIndex = 0) {
@@ -380,6 +390,7 @@ export async function reorderHosts(ids: number[], userId?: number, startIndex = 
 export async function deleteHost(id: number) {
   const db = await getDb();
   if (!db) return;
+  const before = await getHostById(id).catch(() => undefined);
   await repairPortForwardRuleHostReferences();
   await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.exitHostId, id));
@@ -397,6 +408,7 @@ export async function deleteHost(id: number) {
     eq(trafficBillingConfigs.resourceId, id),
   ));
   await db.delete(hosts).where(eq(hosts.id, id));
+  if (before) await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "delete", before });
 }
 
 async function hostHasLiveReferences(hostId: number) {

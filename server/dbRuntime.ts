@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
 import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
@@ -48,6 +49,17 @@ let _pool: Pool | null = null;
 let _pgPool: pg.Pool | null = null;
 let _sqlite: Database.Database | null = null;
 let _db: Db | null = null;
+
+type DatabaseTransactionContext = {
+  db: Db;
+  mysqlConnection?: any;
+  postgresClient?: any;
+  sqlite?: Database.Database;
+};
+
+const transactionContext = new AsyncLocalStorage<DatabaseTransactionContext>();
+let sqliteTransactionGate: Promise<void> | null = null;
+let releaseSqliteTransactionGate: (() => void) | null = null;
 
 export class DatabaseNotConfiguredError extends Error {
   constructor(message = "Database is not configured") {
@@ -511,8 +523,68 @@ export async function reconnectDatabase() {
 }
 
 export async function getDb() {
+  const active = transactionContext.getStore();
+  if (active) return active.db;
+  if (_kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   if (_db) return _db;
   return connectDatabase();
+}
+
+export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
+  if (transactionContext.getStore()) return work();
+  if (!_db || !_kind) await connectDatabase();
+  if (_kind === "mysql") {
+    if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
+    const connection = await _pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const db = drizzleMysql(connection as any) as Db;
+      const result = await transactionContext.run({ db, mysqlConnection: connection }, work);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback().catch(() => undefined);
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+  if (_kind === "postgresql") {
+    if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+    const client = await _pgPool.connect();
+    try {
+      await client.query("BEGIN");
+      const db = drizzlePostgres(client as any) as Db;
+      const result = await transactionContext.run({ db, postgresClient: client }, work);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  if (_kind === "sqlite") {
+    if (!_sqlite || !_db) throw new DatabaseNotConfiguredError("SQLite database is not connected");
+    while (sqliteTransactionGate) await sqliteTransactionGate;
+    sqliteTransactionGate = new Promise<void>((resolve) => { releaseSqliteTransactionGate = resolve; });
+    try {
+      _sqlite.exec("BEGIN IMMEDIATE");
+      const result = await transactionContext.run({ db: _db, sqlite: _sqlite }, work);
+      _sqlite.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { _sqlite.exec("ROLLBACK"); } catch { /* transaction may already be closed */ }
+      throw error;
+    } finally {
+      const release = releaseSqliteTransactionGate;
+      sqliteTransactionGate = null;
+      releaseSqliteTransactionGate = null;
+      release?.();
+    }
+  }
+  throw new DatabaseNotConfiguredError();
 }
 
 export function getDatabaseKind() {
@@ -568,38 +640,48 @@ function postgresSql(sqlText: string, params: any[] = []) {
 }
 
 export async function executeRaw(sqlText: string, params: any[] = []) {
+  const active = transactionContext.getStore();
+  if (!active && _kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
-    if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
-    const [result] = await _pool.execute(sqlText, normalizedParams);
+    const executor = active?.mysqlConnection || _pool;
+    if (!executor) throw new DatabaseNotConfiguredError("MySQL database is not connected");
+    const [result] = await executor.execute(sqlText, normalizedParams);
     return result as any;
   }
   if (_kind === "sqlite") {
-    if (!_sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return _sqlite.prepare(sqlText).run(...normalizedParams);
+    const sqlite = active?.sqlite || _sqlite;
+    if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
+    return sqlite.prepare(sqlText).run(...normalizedParams);
   }
   if (_kind === "postgresql") {
-    if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
-    const result = await _pgPool.query(postgresSql(sqlText, normalizedParams));
+    const executor = active?.postgresClient || _pgPool;
+    if (!executor) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+    const result = await executor.query(postgresSql(sqlText, normalizedParams));
     return result as any;
   }
   throw new DatabaseNotConfiguredError();
 }
 
 export async function queryRaw<T = Record<string, any>>(sqlText: string, params: any[] = []): Promise<T[]> {
+  const active = transactionContext.getStore();
+  if (!active && _kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
-    if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
-    const [rows] = await _pool.query(sqlText, normalizedParams);
+    const executor = active?.mysqlConnection || _pool;
+    if (!executor) throw new DatabaseNotConfiguredError("MySQL database is not connected");
+    const [rows] = await executor.query(sqlText, normalizedParams);
     return rows as T[];
   }
   if (_kind === "sqlite") {
-    if (!_sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return _sqlite.prepare(sqlText).all(...normalizedParams) as T[];
+    const sqlite = active?.sqlite || _sqlite;
+    if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
+    return sqlite.prepare(sqlText).all(...normalizedParams) as T[];
   }
   if (_kind === "postgresql") {
-    if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
-    const result = await _pgPool.query(postgresSql(sqlText, normalizedParams));
+    const executor = active?.postgresClient || _pgPool;
+    if (!executor) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+    const result = await executor.query(postgresSql(sqlText, normalizedParams));
     return result.rows as T[];
   }
   throw new DatabaseNotConfiguredError();

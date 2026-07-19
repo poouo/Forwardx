@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { useAuth } from "@/_core/hooks/useAuth";
-import type { ComponentType } from "react";
+import { lazy, Suspense, type ComponentType } from "react";
 import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
 import NotFound from "@/pages/NotFound";
@@ -11,30 +11,31 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import PersonalizationLayer from "./components/PersonalizationLayer";
 import Setup from "./pages/Setup";
-import AnnouncementsPage from "@/pages/Announcements";
-import BillingPage from "@/pages/Billing";
-import CustomSidebarPage from "@/pages/CustomSidebarPage";
-import EmailSettingsPage from "@/pages/EmailSettings";
-import ForwardGroupsPage from "@/pages/ForwardGroups";
-import HomePage from "@/pages/Home";
-import HomepagePreviewPage from "@/pages/HomepagePreview";
-import HostMonitorPage from "@/pages/HostMonitor";
-import HostsPage from "@/pages/Hosts";
 import LoginPage from "@/pages/Login";
 import SessionWaitPage from "@/pages/SessionWait";
-import LookingGlassPage from "@/pages/LookingGlass";
-import PaymentsPage from "@/pages/Payments";
-import PlansPage from "@/pages/Plans";
-import PluginsPage from "@/pages/Plugins";
-import ProfilePage from "@/pages/Profile";
-import RulesPage from "@/pages/Rules";
-import SettingsPage from "@/pages/Settings";
-import StorePage from "@/pages/Store";
-import SubscriptionsPage from "@/pages/Subscriptions";
-import TrafficBillingPage from "@/pages/TrafficBilling";
-import TunnelsPage from "@/pages/Tunnels";
-import UsersPage from "@/pages/Users";
-import WalletPage from "@/pages/Wallet";
+
+const AnnouncementsPage = lazy(() => import("@/pages/Announcements"));
+const BillingPage = lazy(() => import("@/pages/Billing"));
+const CustomSidebarPage = lazy(() => import("@/pages/CustomSidebarPage"));
+const EmailSettingsPage = lazy(() => import("@/pages/EmailSettings"));
+const ForwardGroupsPage = lazy(() => import("@/pages/ForwardGroups"));
+const HomePage = lazy(() => import("@/pages/Home"));
+const HomepagePreviewPage = lazy(() => import("@/pages/HomepagePreview"));
+const HostMonitorPage = lazy(() => import("@/pages/HostMonitor"));
+const HostsPage = lazy(() => import("@/pages/Hosts"));
+const LookingGlassPage = lazy(() => import("@/pages/LookingGlass"));
+const PaymentsPage = lazy(() => import("@/pages/Payments"));
+const PlansPage = lazy(() => import("@/pages/Plans"));
+const PluginsPage = lazy(() => import("@/pages/Plugins"));
+const ProfilePage = lazy(() => import("@/pages/Profile"));
+const RulesPage = lazy(() => import("@/pages/Rules"));
+const SettingsPage = lazy(() => import("@/pages/Settings"));
+const StorePage = lazy(() => import("@/pages/Store"));
+const SubscriptionsPage = lazy(() => import("@/pages/Subscriptions"));
+const TrafficBillingPage = lazy(() => import("@/pages/TrafficBilling"));
+const TunnelsPage = lazy(() => import("@/pages/Tunnels"));
+const UsersPage = lazy(() => import("@/pages/Users"));
+const WalletPage = lazy(() => import("@/pages/Wallet"));
 
 type RoutableComponent = ComponentType<any>;
 
@@ -87,40 +88,48 @@ function PluginsRoute({ sidebarPluginId }: { sidebarPluginId?: string }) {
 
 function Router() {
   return (
-    <Switch>
-      <Route path="/setup" component={Setup} />
-      <Route path="/login">{routeComponent(LoginPage)}</Route>
-      <Route path="/session-wait">{routeComponent(SessionWaitPage)}</Route>
-      <Route path="/homepage-preview">{routeComponent(HomepagePreviewPage)}</Route>
-      <Route path="/">{routeComponent(HomePage)}</Route>
-      <Route path="/profile">{routeComponent(ProfilePage)}</Route>
-      <Route path="/hosts">{() => <AdminRoute component={HostsPage} />}</Route>
-      <Route path="/rules">{routeComponent(RulesPage)}</Route>
-      <Route path="/looking-glass" component={LookingGlassRoute} />
-      <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroupsPage} />}</Route>
-      <Route path="/tunnels">{() => <AdminRoute component={TunnelsPage} />}</Route>
-      <Route path="/users">{() => <AdminRoute component={UsersPage} />}</Route>
-      <Route path="/email-settings">{() => <AdminRoute component={EmailSettingsPage} />}</Route>
-      <Route path="/payments">{() => <AdminRoute component={PaymentsPage} />}</Route>
-      <Route path="/billing">{() => <AdminRoute component={BillingPage} />}</Route>
-      <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBillingPage} />}</Route>
-      <Route path="/plans">{() => <AdminRoute component={PlansPage} />}</Route>
-      <Route path="/plugins/sidebar/:pluginId">
-        {(params) => <PluginsRoute sidebarPluginId={params.pluginId} />}
-      </Route>
-      <Route path="/plugins">{() => <PluginsRoute />}</Route>
-      <Route path="/store">{routeComponent(StorePage)}</Route>
-      <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
-      <Route path="/wallet">{routeComponent(WalletPage)}</Route>
-      <Route path="/announcements">{routeComponent(AnnouncementsPage)}</Route>
-      <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
-      <Route path="/custom-pages/:pageId">
-        {(params) => <CustomSidebarPage pageId={params.pageId} />}
-      </Route>
-      <Route path="/404" component={NotFound} />
-      <Route path="/:monitorPath">{routeComponent(HostMonitorPage)}</Route>
-      <Route component={NotFound} />
-    </Switch>
+    <Suspense
+      fallback={(
+        <div className="flex min-h-[180px] w-full items-center justify-center p-6 text-sm text-muted-foreground">
+          正在加载页面
+        </div>
+      )}
+    >
+      <Switch>
+        <Route path="/setup" component={Setup} />
+        <Route path="/login">{routeComponent(LoginPage)}</Route>
+        <Route path="/session-wait">{routeComponent(SessionWaitPage)}</Route>
+        <Route path="/homepage-preview">{routeComponent(HomepagePreviewPage)}</Route>
+        <Route path="/">{routeComponent(HomePage)}</Route>
+        <Route path="/profile">{routeComponent(ProfilePage)}</Route>
+        <Route path="/hosts">{() => <AdminRoute component={HostsPage} />}</Route>
+        <Route path="/rules">{routeComponent(RulesPage)}</Route>
+        <Route path="/looking-glass" component={LookingGlassRoute} />
+        <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroupsPage} />}</Route>
+        <Route path="/tunnels">{() => <AdminRoute component={TunnelsPage} />}</Route>
+        <Route path="/users">{() => <AdminRoute component={UsersPage} />}</Route>
+        <Route path="/email-settings">{() => <AdminRoute component={EmailSettingsPage} />}</Route>
+        <Route path="/payments">{() => <AdminRoute component={PaymentsPage} />}</Route>
+        <Route path="/billing">{() => <AdminRoute component={BillingPage} />}</Route>
+        <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBillingPage} />}</Route>
+        <Route path="/plans">{() => <AdminRoute component={PlansPage} />}</Route>
+        <Route path="/plugins/sidebar/:pluginId">
+          {(params) => <PluginsRoute sidebarPluginId={params.pluginId} />}
+        </Route>
+        <Route path="/plugins">{() => <PluginsRoute />}</Route>
+        <Route path="/store">{routeComponent(StorePage)}</Route>
+        <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
+        <Route path="/wallet">{routeComponent(WalletPage)}</Route>
+        <Route path="/announcements">{routeComponent(AnnouncementsPage)}</Route>
+        <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
+        <Route path="/custom-pages/:pageId">
+          {(params) => <CustomSidebarPage pageId={params.pageId} />}
+        </Route>
+        <Route path="/404" component={NotFound} />
+        <Route path="/:monitorPath">{routeComponent(HostMonitorPage)}</Route>
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
   );
 }
 

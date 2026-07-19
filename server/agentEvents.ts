@@ -12,6 +12,7 @@ type AgentEventClient = {
 
 type AgentRefreshOptions = {
   urgent?: boolean;
+  forceMimicCheck?: boolean;
 };
 
 const agentEventClients = new Map<number, AgentEventClient>();
@@ -61,7 +62,12 @@ export function pushAgentRefresh(hostId: number, reason: string, options: AgentR
     return true;
   }
   hostRefreshPushedAt.set(id, now);
-  return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now(), urgent });
+  return sendAgentEvent(hostId, "agent-refresh", {
+    reason,
+    ts: Date.now(),
+    urgent,
+    forceMimicCheck: options.forceMimicCheck === true,
+  });
 }
 
 export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string, releaseVersion?: string | null) {
@@ -77,6 +83,10 @@ export function pushAgentPanelMigration(
   data: { id: string; state: "preparing" | "committed" | "aborted"; fallbackPanelUrl?: string },
 ) {
   return sendAgentEvent(hostId, "agent-panel-migration", data);
+}
+
+export function pushAgentSupportBundle(hostId: number, taskId: string) {
+  return sendAgentEvent(hostId, "agent-support-bundle", { taskId, requestedAt: new Date().toISOString() });
 }
 
 export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {

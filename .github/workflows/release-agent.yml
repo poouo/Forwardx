@@ -49,6 +49,12 @@ jobs:
       - name: Check version split
         run: npm run check:versions
 
+      - name: Run Agent tests and vet
+        shell: bash
+        run: |
+          (cd agent && go test ./... && go vet ./...)
+          (cd forwardx-fxp && go test ./... && go vet ./...)
+
       - name: Build Linux Agent binaries
         run: bash scripts/build-agent-release.sh
 

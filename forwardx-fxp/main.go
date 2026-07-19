@@ -109,9 +109,10 @@ const (
 	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.104"
+	fxpRuntimeVersion    = "2.2.105"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
+	fxpShutdownDrain     = 5 * time.Second
 )
 
 var (
@@ -485,6 +486,31 @@ func shutdownContext() signalContext {
 	return signalContext{done: done}
 }
 
+func waitForFXPSessionDrain(role string, cfg config, sessions *sync.WaitGroup) {
+	if sessions == nil {
+		return
+	}
+	if waitForWaitGroup(sessions, fxpShutdownDrain) {
+		log.Printf("%s tcp sessions drained tunnel=%d rule=%d", role, cfg.TunnelID, cfg.RuleID)
+		return
+	}
+	log.Printf("%s tcp session drain timeout tunnel=%d rule=%d timeout=%s", role, cfg.TunnelID, cfg.RuleID, fxpShutdownDrain)
+}
+
+func waitForWaitGroup(group *sync.WaitGroup, timeout time.Duration) bool {
+	drained := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 func normalizeProtocol(protocol string) string {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "udp":
@@ -559,6 +585,7 @@ func closeWriteConn(conn net.Conn) {
 
 func runEntry(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
+	var sessionWG sync.WaitGroup
 	errCh := make(chan error, 2)
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, UDPPort: cfg.UDPExitPort, Key: cfg.Key}, cfg.ExitStrategy)
@@ -582,7 +609,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptEntryTCP(ln, cfg, gate, selector, inLimiter, outLimiter)
+			errCh <- acceptEntryTCP(ln, cfg, gate, selector, inLimiter, outLimiter, &sessionWG)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -610,6 +637,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	wg.Wait()
+	waitForFXPSessionDrain("entry", cfg, &sessionWG)
 	select {
 	case err := <-errCh:
 		if errors.Is(err, net.ErrClosed) {
@@ -621,7 +649,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
+func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, sessionWG *sync.WaitGroup) error {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
@@ -635,7 +663,9 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitE
 			_ = client.Close()
 			continue
 		}
+		sessionWG.Add(1)
 		go func() {
+			defer sessionWG.Done()
 			defer release()
 			if err := handleEntryTCP(client, cfg, selector, inLimiter, outLimiter); err != nil && !isClosedErr(err) {
 				log.Printf("entry tcp session error: %v", err)
@@ -1271,6 +1301,7 @@ func (s *udpEntrySession) close() {
 
 func runExit(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
+	var sessionWG sync.WaitGroup
 	errCh := make(chan error, 2)
 	if protocolHas(cfg, "tcp") {
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
@@ -1287,7 +1318,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptExitTCP(ln, cfg)
+			errCh <- acceptExitTCP(ln, cfg, &sessionWG)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -1315,6 +1346,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	wg.Wait()
+	waitForFXPSessionDrain("exit", cfg, &sessionWG)
 	select {
 	case err := <-errCh:
 		if errors.Is(err, net.ErrClosed) {
@@ -1326,7 +1358,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptExitTCP(ln net.Listener, cfg config) error {
+func acceptExitTCP(ln net.Listener, cfg config, sessionWG *sync.WaitGroup) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -1336,7 +1368,9 @@ func acceptExitTCP(ln net.Listener, cfg config) error {
 			return err
 		}
 		enableTCPKeepAlive(conn)
+		sessionWG.Add(1)
 		go func() {
+			defer sessionWG.Done()
 			if err := handleExitSession(conn, cfg); err != nil && !isClosedErr(err) {
 				log.Printf("exit session error: %v", err)
 			}
@@ -1489,6 +1523,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	}
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, UDPPort: cfg.UDPRelayExitPort, Key: cfg.RelayKey}, cfg.ExitStrategy)
 	var wg sync.WaitGroup
+	var sessionWG sync.WaitGroup
 	errCh := make(chan error, 2)
 	if selector.count() > 1 {
 		log.Printf("relay exit selector exits=%s strategy=%s", formatEndpointList(selector), normalizeExitStrategy(cfg.ExitStrategy))
@@ -1508,7 +1543,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptRelayTCP(ln, cfg, selector)
+			errCh <- acceptRelayTCP(ln, cfg, selector, &sessionWG)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -1540,6 +1575,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		}()
 	}
 	wg.Wait()
+	waitForFXPSessionDrain("relay", cfg, &sessionWG)
 	select {
 	case err := <-errCh:
 		if errors.Is(err, net.ErrClosed) {
@@ -1551,7 +1587,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector) error {
+func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector, sessionWG *sync.WaitGroup) error {
 	for {
 		upConn, err := ln.Accept()
 		if err != nil {
@@ -1561,7 +1597,9 @@ func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector)
 			return err
 		}
 		enableTCPKeepAlive(upConn)
+		sessionWG.Add(1)
 		go func() {
+			defer sessionWG.Done()
 			if err := handleRelaySession(upConn, cfg, selector); err != nil && !isClosedErr(err) {
 				log.Printf("relay session error: %v", err)
 			}

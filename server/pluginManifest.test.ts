@@ -286,6 +286,20 @@ test("trusted panel actions retain only fixed operations and declared permission
     actions: [{ id: "status", label: "Status", type: "noop" }],
   });
   assert.equal(pluginManifestRequiresTrust(regularPlugin), false);
+  const agentPlugin = normalizePluginManifest({
+    id: "agent-plugin",
+    name: "Agent plugin",
+    version: "1.0.0",
+    permissions: ["agent:read"],
+    actions: [{
+      id: "inspect",
+      label: "Inspect",
+      type: "agent.request",
+      intent: "read",
+      agent: { executor: "script", entry: "inspect.sh" },
+    }],
+  });
+  assert.equal(pluginManifestRequiresTrust(agentPlugin), true);
   assert.equal(shouldPreservePluginTrust(regularPlugin, manifest), false);
   assert.equal(shouldPreservePluginTrust(manifest, { ...manifest }), true);
 

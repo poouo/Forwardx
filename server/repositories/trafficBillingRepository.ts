@@ -14,9 +14,8 @@ import {
   users,
   type InsertTrafficBillingConfig,
 } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, withDatabaseTransaction } from "../dbRuntime";
 import { getSetting, setSetting } from "./settingsRepository";
-import { getUserById } from "./userRepository";
 import { formatTrafficMultiplier, normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 
 const GB_BYTES = 1024 ** 3;
@@ -443,14 +442,17 @@ async function insertTrafficBillingCharge(input: {
   multiplier: number;
   description: string;
 }) {
+  return withDatabaseTransaction(async () => {
   const amountCents = Math.max(0, Math.floor(Number(input.amountCents) || 0));
   if (amountCents <= 0) return null;
   const db = await getDb();
   if (!db) return null;
-  const user = await getUserById(input.userId);
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const [user] = await queryRaw<any>(`SELECT ${q("balanceCents")} AS ${q("balanceCents")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`, [input.userId]);
   if (!user) return null;
   const balanceAfterCents = Number((user as any).balanceCents || 0) - amountCents;
-  await db.update(users).set({ balanceCents: balanceAfterCents, updatedAt: nowDate() } as any).where(eq(users.id, input.userId));
+  await executeRaw(`UPDATE ${q("users")} SET ${q("balanceCents")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [balanceAfterCents, nowDate(), input.userId]);
   await db.insert(balanceTransactions).values({
     userId: input.userId,
     type: "traffic_billing",
@@ -474,6 +476,7 @@ async function insertTrafficBillingCharge(input: {
     createdAt: nowDate(),
   } as any);
   return { amountCents, billedGb: input.billedGb, balanceAfterCents };
+  });
 }
 
 export async function billTrafficUsage(input: {
@@ -483,6 +486,7 @@ export async function billTrafficUsage(input: {
   resourceType: TrafficBillingResourceType;
   resourceId: number;
 }) {
+  return withDatabaseTransaction(async () => {
   if (input.bytes <= 0) return null;
   if (!(await isTrafficBillingEnabled())) return null;
   const config = await findTrafficBillingConfig(input.resourceType, input.resourceId);
@@ -576,6 +580,7 @@ export async function billTrafficUsage(input: {
     amountCents,
     description: `流量计费：${trafficBillingResourceLabel(input.resourceType)} #${input.resourceId} 新增 ${newlyBilledGb}GB x ${(multiplier / 100).toFixed(2)}`,
   });
+  });
 }
 
 export async function settleTrafficBillingRuleOnDelete(input: {
@@ -584,6 +589,7 @@ export async function settleTrafficBillingRuleOnDelete(input: {
   resourceType: TrafficBillingResourceType;
   resourceId: number;
 }) {
+  return withDatabaseTransaction(async () => {
   if (!(await isTrafficBillingEnabled())) return null;
   const db = await getDb();
   if (!db) return null;
@@ -652,6 +658,7 @@ export async function settleTrafficBillingRuleOnDelete(input: {
   }
   if (totalAmountCents <= 0 || balanceAfterCents === null) return null;
   return { amountCents: totalAmountCents, billedGb: 0, balanceAfterCents };
+  });
 }
 
 export async function listTrafficBillingRecords(options?: { userId?: number; limit?: number }) {

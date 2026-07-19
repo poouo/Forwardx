@@ -3,7 +3,7 @@ import express from "express";
 import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
 import { appendPanelLog } from "./_core/panelLogger";
-import { resolvePanelUrl } from "./agentPanelUrl";
+import { getConfiguredPanelUrl, resolvePanelUrl } from "./agentPanelUrl";
 import * as db from "./db";
 import {
   createGmPayOrder,
@@ -735,9 +735,24 @@ async function expireStalePendingOrders() {
   const now = Date.now();
   for (const order of orders) {
     if (order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() < now) {
-      await db.updatePaymentOrder(order.outTradeNo, { status: "expired" } as any);
+      await closePaymentOrderAndReleaseDiscount(order.outTradeNo, "expired");
     }
   }
+}
+
+async function closePaymentOrderAndReleaseDiscount(outTradeNo: string, status: "expired" | "failed" | "cancelled", rawNotify?: string) {
+  await db.withDatabaseTransaction(async () => {
+    const order = await db.getPaymentOrderByOutTradeNoForUpdate(outTradeNo);
+    if (!order || !["pending", "failed", "expired", "cancelled"].includes(String(order.status))) return;
+    if ((order as any).discountCodeId && (order as any).discountConsumed) {
+      await db.releaseDiscountCode(Number((order as any).discountCodeId));
+    }
+    await db.updatePaymentOrder(outTradeNo, {
+      status,
+      discountConsumed: false,
+      ...(rawNotify !== undefined ? { rawNotify } : {}),
+    } as any);
+  });
 }
 
 type PaidNotification = {
@@ -784,36 +799,45 @@ async function finalizePaidOrder(outTradeNo: string) {
   }
 
   try {
-  if (order.planId && !order.subscriptionId) {
-    const existingSubscription = await db.getUserSubscriptionByPaymentOrderNo(outTradeNo);
-    if (existingSubscription) {
-      await db.updatePaymentOrder(outTradeNo, { subscriptionId: existingSubscription.id, status: "completed" } as any);
-      return;
-    }
-    const result = await db.applySubscriptionToUser(order.userId, order.planId, "payment", outTradeNo);
-    await db.recoverUserForwardAccessIfEligible(order.userId);
-    if ((order as any).discountCodeId) await db.consumeDiscountCode(Number((order as any).discountCodeId));
-    await db.updatePaymentOrder(outTradeNo, { subscriptionId: result.subscriptionId, status: "completed" } as any);
-    appendPanelLog("info", `[Plan] subscription granted user=${order.userId} plan=${order.planId} order=${outTradeNo} ports=${result.portRangeStart}-${result.portRangeEnd}`);
-    return;
-  }
-  if ((order as any).orderType === "balance") {
-    const existingTransaction = await db.getBalanceTransactionByPaymentOrderNo(outTradeNo);
-    if (existingTransaction) {
+    await db.withDatabaseTransaction(async () => {
+      if (order.planId && !order.subscriptionId) {
+        const existingSubscription = await db.getUserSubscriptionByPaymentOrderNo(outTradeNo);
+        if (existingSubscription) {
+          if ((order as any).discountCodeId && !(order as any).discountConsumed) {
+            await db.consumeDiscountCode(Number((order as any).discountCodeId));
+            await db.updatePaymentOrder(outTradeNo, { discountConsumed: true } as any);
+          }
+          await db.updatePaymentOrder(outTradeNo, { subscriptionId: existingSubscription.id, status: "completed" } as any);
+          return;
+        }
+        if ((order as any).discountCodeId && !(order as any).discountConsumed) {
+          await db.consumeDiscountCode(Number((order as any).discountCodeId));
+          await db.updatePaymentOrder(outTradeNo, { discountConsumed: true } as any);
+        }
+        const result = await db.applySubscriptionToUser(order.userId, order.planId, "payment", outTradeNo);
+        await db.recoverUserForwardAccessIfEligible(order.userId);
+        await db.updatePaymentOrder(outTradeNo, { subscriptionId: result.subscriptionId, status: "completed" } as any);
+        appendPanelLog("info", `[Plan] subscription granted user=${order.userId} plan=${order.planId} order=${outTradeNo} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+        return;
+      }
+      if ((order as any).orderType === "balance") {
+        const existingTransaction = await db.getBalanceTransactionByPaymentOrderNo(outTradeNo);
+        if (existingTransaction) {
+          await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
+          return;
+        }
+        await db.addUserBalance(order.userId, Number(order.amountCents || 0), {
+          type: "payment",
+          description: `在线充值：${outTradeNo}`,
+          paymentOrderNo: outTradeNo,
+        } as any);
+        await db.recoverUserForwardAccessIfEligible(order.userId);
+        await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
+        appendPanelLog("info", `[Balance] payment recharge user=${order.userId} amount=${order.amountCents} order=${outTradeNo}`);
+        return;
+      }
       await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
-      return;
-    }
-    await db.addUserBalance(order.userId, Number(order.amountCents || 0), {
-      type: "payment",
-      description: `在线充值：${outTradeNo}`,
-      paymentOrderNo: outTradeNo,
-    } as any);
-    await db.recoverUserForwardAccessIfEligible(order.userId);
-    await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
-    appendPanelLog("info", `[Balance] payment recharge user=${order.userId} amount=${order.amountCents} order=${outTradeNo}`);
-    return;
-  }
-  await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
+    });
   } catch (error) {
     await db.updatePaymentOrder(outTradeNo, { status: "paid" } as any);
     throw error;
@@ -847,11 +871,8 @@ async function processPaidNotification(outTradeNo: string, notification: PaidNot
   try {
     assertPaidNotificationMatchesOrder(order, notification);
   } catch (error: any) {
-    await db.updatePaymentOrder(outTradeNo, {
-      status: "failed",
-      tradeNo: notification.tradeNo || order.tradeNo,
-      rawNotify: notification.rawNotify,
-    } as any);
+    await closePaymentOrderAndReleaseDiscount(outTradeNo, "failed", notification.rawNotify);
+    await db.updatePaymentOrder(outTradeNo, { tradeNo: notification.tradeNo || order.tradeNo } as any);
     appendPanelLog("error", `[Payment] ${notification.provider} notify rejected: ${error?.message || error}`);
     return { ignored: true, reason: "mismatch" as const };
   }
@@ -1034,7 +1055,7 @@ export const paymentRouter = router({
 
       const amountCents = Math.round(amount * 100);
       const outTradeNo = createOutTradeNo();
-      const panelUrl = await resolvePanelUrl(ctx.req);
+      const panelUrl = await getConfiguredPanelUrl();
       if (!panelUrl) throw new Error("请先配置面板公开访问地址");
       const subject = input.planId ? subjectSuffix : `${config.productName} - ${ctx.user.username}`;
       const expiresAt = new Date(Date.now() + config.orderTimeoutMinutes * 60 * 1000);
@@ -1051,22 +1072,28 @@ export const paymentRouter = router({
       const returnUrl = buildPaymentProviderReturnUrl({ panelUrl, provider, returnPath, outTradeNo });
       const cancelUrl = buildPaymentProviderReturnUrl({ panelUrl, provider, returnPath, outTradeNo, cancelled: true });
 
-      const pendingOrder = await db.createPaymentOrder({
-        outTradeNo,
-        userId: ctx.user.id,
-        provider,
-        paymentType: input.paymentType,
-        status: "pending",
-        subject,
-        amountCents,
-        currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
-        orderType: input.planId ? "plan" : input.orderType || "balance",
-        planId: input.planId ?? null,
-        discountCodeId,
-        discountAmountCents,
-        clientIp: getClientIp(ctx.req),
-        expiresAt,
-      } as any);
+      const pendingOrder = await db.withDatabaseTransaction(async () => {
+        if (discountCodeId) await db.consumeDiscountCode(discountCodeId);
+        const created = await db.createPaymentOrder({
+          outTradeNo,
+          userId: ctx.user.id,
+          provider,
+          paymentType: input.paymentType,
+          status: "pending",
+          subject,
+          amountCents,
+          currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
+          orderType: input.planId ? "plan" : input.orderType || "balance",
+          planId: input.planId ?? null,
+          discountCodeId,
+          discountConsumed: !!discountCodeId,
+          discountAmountCents,
+          clientIp: getClientIp(ctx.req),
+          expiresAt,
+        } as any);
+        if (!created) throw new Error("创建本地支付订单失败");
+        return created;
+      });
       if (!pendingOrder) throw new Error("创建本地支付订单失败");
 
       try {
@@ -1103,7 +1130,13 @@ export const paymentRouter = router({
         appendPanelLog("info", `[Payment] order created user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo} return=${returnPath}`);
         return order || pendingOrder;
       } catch (error: any) {
-        await db.updatePaymentOrder(outTradeNo, { status: "failed" } as any).catch(() => undefined);
+        await db.withDatabaseTransaction(async () => {
+          const failedOrder = await db.getPaymentOrderByOutTradeNo(outTradeNo);
+          if ((failedOrder as any)?.discountCodeId && (failedOrder as any)?.discountConsumed) {
+            await db.releaseDiscountCode(Number((failedOrder as any).discountCodeId));
+          }
+          await db.updatePaymentOrder(outTradeNo, { status: "failed", discountConsumed: false } as any);
+        }).catch(() => undefined);
         appendPanelLog("error", `[Payment] order create failed user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo}: ${error?.message || error}`);
         throw error;
       }
@@ -1357,9 +1390,9 @@ paymentCallbackRouter.post("/api/payment/webhook/stripe", express.raw({ type: "*
       });
       appendPanelLog("info", `[Payment] Stripe paid outTradeNo=${outTradeNo}`);
     } else if (event.type === "checkout.session.expired" && outTradeNo) {
-      await db.updatePaymentOrder(outTradeNo, { status: "expired", rawNotify: raw } as any);
+      await closePaymentOrderAndReleaseDiscount(outTradeNo, "expired", raw);
     } else if (event.type === "payment_intent.payment_failed" && outTradeNo) {
-      await db.updatePaymentOrder(outTradeNo, { status: "failed", rawNotify: raw } as any);
+      await closePaymentOrderAndReleaseDiscount(outTradeNo, "failed", raw);
     }
     res.json({ received: true });
   } catch (error: any) {

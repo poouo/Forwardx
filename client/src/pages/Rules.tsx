@@ -44,6 +44,7 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
+import { batchOperationErrorMessage, chunkBatchItems, isBatchPortConflictError, runBatchOperations } from "@/lib/batchOperations";
 import { cn } from "@/lib/utils";
 import {
   Plus,
@@ -362,7 +363,7 @@ const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: str
   { value: "chain", label: "转发链" },
   { value: "group", label: "转发组" },
 ];
-const importRuleTransferScopeOptions = ruleTransferScopeOptions.filter((option) => option.value !== "local");
+const importRuleTransferScopeOptions = ruleTransferScopeOptions;
 
 type RuleTransferFileRule = {
   name: string;
@@ -1992,12 +1993,6 @@ function normalizePositiveRuleNumber(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function normalizeRuleTransferScopeType(value: unknown): RuleTransferScopeType | null {
-  return ["local", "tunnel", "chain", "group"].includes(value as string)
-    ? (value as RuleTransferScopeType)
-    : null;
-}
-
 function sanitizeRuleTransferFilePart(value: string) {
   return value
     .trim()
@@ -2084,7 +2079,7 @@ function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
   const sourcePort = Number(source.sourcePort || 0);
   const targetPort = Number(source.targetPort || 0);
   const targetIp = String(source.targetIp || "").trim();
-  if (!Number.isFinite(sourcePort) || sourcePort < 0 || sourcePort > 65535) return null;
+  if (!Number.isInteger(sourcePort) || sourcePort < 0 || sourcePort > 65535) return null;
   if (!targetIp || !isValidTargetHost(targetIp)) return null;
   if (!isValidPort(targetPort, false)) return null;
   return {
@@ -2103,7 +2098,7 @@ function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
     tcpFastOpen: Boolean(source.tcpFastOpen),
     zeroCopy: Boolean(source.zeroCopy),
     udpOverTcp: Boolean(source.udpOverTcp),
-    udpOverTcpPort: Number(source.udpOverTcpPort || 0),
+    udpOverTcpPort: isValidPort(Number(source.udpOverTcpPort || 0), true) ? Number(source.udpOverTcpPort || 0) : 0,
     failoverEnabled: Boolean(source.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(source.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(source.failoverTargets),
@@ -2202,6 +2197,7 @@ function RulesContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingOriginalProtocol, setEditingOriginalProtocol] = useState<RuleProtocol | null>(null);
   const [legacyLocalRuleEditId, setLegacyLocalRuleEditId] = useState<number | null>(null);
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
   const [resetTrafficTarget, setResetTrafficTarget] = useState<{ scope: "all" } | { scope: "rule"; rule: any } | null>(null);
@@ -2335,6 +2331,10 @@ function RulesContent() {
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
+  useEffect(() => {
+    if (!showCopyDialog) return;
+    void fullRulesQuery.refetch();
+  }, [showCopyDialog]);
   const { data: ruleListSummary, isLoading: ruleListSummaryLoading } = trpc.rules.listSummary.useQuery({
     ...(effectiveRulesQuery || {}),
     entryHostId: rulePageEntryHostId,
@@ -2415,7 +2415,7 @@ function RulesContent() {
 
   const batchCreateMutation = trpc.rules.create.useMutation();
   const batchUpdateMutation = trpc.rules.update.useMutation();
-  const batchDeleteMutation = trpc.rules.delete.useMutation();
+  const batchDeleteMutation = trpc.rules.deleteBatch.useMutation();
 
   const importCreateMutation = trpc.rules.create.useMutation();
 
@@ -2545,6 +2545,7 @@ function RulesContent() {
   const resetForm = () => {
     setForm({ ...defaultForm, failoverTargetsText: "" });
     setEditingId(null);
+    setEditingOriginalProtocol(null);
     setLegacyLocalRuleEditId(null);
     setPortStatus("idle");
   };
@@ -2623,10 +2624,6 @@ function RulesContent() {
     setShowDialog(true);
   };
   const openCopyDialog = () => {
-    if (!transferSourceRules.length && !canAdd) {
-      toast.info("暂无可批量管理的转发规则");
-      return;
-    }
     setCopyManageMode(transferSourceRules.length ? "copy" : "import");
     setBatchEditForm(buildEmptyBatchEditForm());
     setCopyRuleCategory(ruleCategory);
@@ -2636,6 +2633,16 @@ function RulesContent() {
     setCopyTargetSearch("");
     setCopyRuleIds([]);
     setCopyConflictStrategy("skip");
+    const preferredImportType: RuleTransferScopeType = canUseSavedLocalForward
+      ? "local"
+      : canUseGost
+        ? "tunnel"
+        : canUseForwardChain
+          ? "chain"
+          : "group";
+    setImportScopeType(preferredImportType);
+    setImportResourceId("");
+    setImportResourceSearch("");
     setShowCopyDialog(true);
   };
 
@@ -2680,6 +2687,7 @@ function RulesContent() {
       autoFailback: rule.autoFailback !== false,
     });
     setEditingId(rule.id);
+    setEditingOriginalProtocol(normalizeRuleProtocol(rule.protocol));
     setLegacyLocalRuleEditId(isLegacyLocalRule ? Number(rule.id) : null);
     setPortStatus("idle");
     setShowDialog(true);
@@ -2873,8 +2881,14 @@ function RulesContent() {
     if (type === "chain") return transferChainGroups;
     return transferRuleGroups;
   }, [tunnels, transferPortGroups, transferChainGroups, transferRuleGroups]);
+  const getImportResources = useCallback((type: RuleTransferScopeType): any[] => {
+    if (type === "local") return availablePortForwardGroups;
+    if (type === "tunnel") return supportedTunnels;
+    if (type === "chain") return availableForwardChainGroups;
+    return availableFailoverForwardGroups;
+  }, [availableFailoverForwardGroups, availableForwardChainGroups, availablePortForwardGroups, supportedTunnels]);
   const exportResources = useMemo(() => getTransferResources(exportScopeType), [exportScopeType, getTransferResources]);
-  const importResources = useMemo(() => getTransferResources(importScopeType), [importScopeType, getTransferResources]);
+  const importResources = useMemo(() => getImportResources(importScopeType), [getImportResources, importScopeType]);
   useEffect(() => {
     const firstId = exportResources[0]?.id;
     if (!firstId) {
@@ -3076,6 +3090,12 @@ function RulesContent() {
     }
   }, [form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy, isForwardGroupRouteMode]);
 
+  // A response started for the previous route must not mark the new route occupied.
+  useEffect(() => {
+    latestPortCheckRef.current += 1;
+    setPortStatus("idle");
+  }, [editingId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, isForwardGroupRouteMode]);
+
   // 源端口变化时自动检测
   useEffect(() => {
     if (isForwardGroupRouteMode) {
@@ -3088,7 +3108,7 @@ function RulesContent() {
     } else {
       setPortStatus("idle");
     }
-  }, [form.sourcePort, form.hostId, form.protocol, form.routeMode, checkPort, isForwardGroupRouteMode]);
+  }, [form.sourcePort, form.hostId, form.protocol, form.routeMode, form.tunnelId, checkPort, isForwardGroupRouteMode]);
 
   useEffect(() => {
     if (form.routeMode !== "local") return;
@@ -3168,6 +3188,16 @@ function RulesContent() {
       setBatchEditForm(buildEmptyBatchEditForm());
     }
     if (mode === "import") {
+      const preferredImportType: RuleTransferScopeType = canUseSavedLocalForward
+        ? "local"
+        : canUseGost
+          ? "tunnel"
+          : canUseForwardChain
+            ? "chain"
+            : "group";
+      setImportScopeType(preferredImportType);
+      setImportResourceId("");
+      setImportResourceSearch("");
       resetImportDialog();
     }
   };
@@ -3274,7 +3304,7 @@ function RulesContent() {
       await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, sourcePort) as any);
       return { copied: true, skipped: false };
     } catch (error: any) {
-      if (copyConflictStrategy === "error") throw error;
+      if (copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
       if (copyConflictStrategy === "auto") {
         const nextPort = await getBatchCopyRandomPort(rule, targetType, resource);
         if (!nextPort) throw error;
@@ -3291,7 +3321,7 @@ function RulesContent() {
       await batchUpdateMutation.mutateAsync(buildBatchEditRulePayload(rule, sourcePort) as any);
       return { updated: true, skipped: false };
     } catch (error: any) {
-      if (!hasBatchEditRouteSelection || copyConflictStrategy === "error") throw error;
+      if (!hasBatchEditRouteSelection || copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
       if (copyConflictStrategy === "auto") {
         const nextPort = await getBatchEditRandomPort(rule);
         if (!nextPort) throw error;
@@ -3319,22 +3349,34 @@ function RulesContent() {
     let copied = 0;
     let skipped = 0;
     try {
-      for (const resource of selectedCopyTargetResources) {
-        for (const rule of copySelectedRules) {
-          const result = await createBatchCopyRule(rule, copyTargetScopeType, resource);
-          if (result.copied) copied += 1;
-          if (result.skipped) skipped += 1;
-        }
+      const jobs: Array<{ resource: any; rule: any }> = selectedCopyTargetResources.flatMap((resource: any) => (
+        copySelectedRules.map((rule: any) => ({ resource, rule }))
+      ));
+      const results = await runBatchOperations(jobs, 6, ({ resource, rule }) => (
+        createBatchCopyRule(rule, copyTargetScopeType, resource)
+      ));
+      for (const result of results) {
+        if (result.status === "rejected") continue;
+        if (result.value.copied) copied += 1;
+        if (result.value.skipped) skipped += 1;
       }
-      await utils.rules.list.invalidate();
-      await utils.rules.listPage.invalidate();
-      await utils.rules.mapItems.invalidate();
-      await utils.rules.listSummary.invalidate();
-      await utils.rules.trafficSummary.invalidate();
-      toast.success("已复制 " + copied + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
-      if (copied > 0) setShowCopyDialog(false);
+      await Promise.all([
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.rules.trafficSummary.invalidate(),
+      ]);
+      if (showCopyDialog) await fullRulesQuery.refetch();
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        toast.error(`批量复制完成：成功 ${copied} 条，跳过 ${skipped} 条，失败 ${failures.length} 条。${batchOperationErrorMessage(failures[0].reason)}`);
+      } else {
+        toast.success("已复制 " + copied + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
+        if (copied > 0) setShowCopyDialog(false);
+      }
     } catch (error: any) {
-      toast.error("复制失败：已复制 " + copied + " 条" + (skipped ? "，跳过 " + skipped + " 条" : "") + "，" + (error?.message || "请检查目标配置"));
+      toast.error("批量复制处理失败：" + (error?.message || "请检查目标配置"));
     } finally {
       setCopyWorking(false);
     }
@@ -3369,20 +3411,29 @@ function RulesContent() {
     let updated = 0;
     let skipped = 0;
     try {
-      for (const rule of copySelectedRules) {
-        const result = await updateBatchRuleTarget(rule);
-        if (result.updated) updated += 1;
-        if (result.skipped) skipped += 1;
+      const results = await runBatchOperations(copySelectedRules, 6, (rule) => updateBatchRuleTarget(rule));
+      for (const result of results) {
+        if (result.status === "rejected") continue;
+        if (result.value.updated) updated += 1;
+        if (result.value.skipped) skipped += 1;
       }
-      await utils.rules.list.invalidate();
-      await utils.rules.listPage.invalidate();
-      await utils.rules.mapItems.invalidate();
-      await utils.rules.listSummary.invalidate();
-      await utils.rules.trafficSummary.invalidate();
-      toast.success("已批量编辑 " + updated + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
-      if (updated > 0) setShowCopyDialog(false);
+      await Promise.all([
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.rules.trafficSummary.invalidate(),
+      ]);
+      if (showCopyDialog) await fullRulesQuery.refetch();
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        toast.error(`批量编辑完成：成功 ${updated} 条，跳过 ${skipped} 条，失败 ${failures.length} 条。${batchOperationErrorMessage(failures[0].reason)}`);
+      } else {
+        toast.success("已批量编辑 " + updated + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
+        if (updated > 0) setShowCopyDialog(false);
+      }
     } catch (error: any) {
-      toast.error("批量编辑失败：已处理 " + updated + " 条" + (skipped ? "，跳过 " + skipped + " 条" : "") + "，" + (error?.message || "请检查目标配置"));
+      toast.error("批量编辑处理失败：" + (error?.message || "请检查目标配置"));
     } finally {
       setCopyWorking(false);
     }
@@ -3428,21 +3479,42 @@ function RulesContent() {
       tone: "destructive",
     }))) return;
     setCopyWorking(true);
-    let deleted = 0;
     try {
-      for (const rule of copySelectedRules) {
-        await batchDeleteMutation.mutateAsync({ id: Number(rule.id) });
-        deleted += 1;
+      const requestedIds = Array.from(new Set(copySelectedRules.map((rule: any) => Number(rule.id))));
+      const chunkResults = await runBatchOperations(chunkBatchItems(requestedIds, 500), 2, (ids) => (
+        batchDeleteMutation.mutateAsync({ ids })
+      ));
+      const deletedIdList: number[] = [];
+      const failures: Array<{ id: number; error: string }> = [];
+      for (const chunkResult of chunkResults) {
+        if (chunkResult.status === "fulfilled") {
+          deletedIdList.push(...(chunkResult.value.deletedIds || []).map(Number));
+          failures.push(...(chunkResult.value.failures || []).map((failure) => ({
+            id: Number(failure.id),
+            error: String(failure.error || "删除失败"),
+          })));
+          continue;
+        }
+        const error = batchOperationErrorMessage(chunkResult.reason);
+        failures.push(...chunkResult.item.map((id) => ({ id: Number(id), error })));
       }
-      setCopyRuleIds((prev) => prev.filter((id) => !copySelectedRules.some((rule: any) => Number(rule.id) === id)));
-      await utils.rules.list.invalidate();
-      await utils.rules.listPage.invalidate();
-      await utils.rules.mapItems.invalidate();
-      await utils.rules.listSummary.invalidate();
-      await utils.rules.trafficSummary.invalidate();
-      toast.success("已删除 " + deleted + " 条规则");
+      const deletedIds = new Set(deletedIdList);
+      setCopyRuleIds((prev) => prev.filter((id) => !deletedIds.has(Number(id))));
+      await Promise.all([
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.rules.trafficSummary.invalidate(),
+      ]);
+      if (showCopyDialog) await fullRulesQuery.refetch();
+      if (failures.length > 0) {
+        toast.error(`批量删除完成：成功 ${deletedIdList.length} 条，失败 ${failures.length} 条。${failures[0]?.error || "请稍后重试"}`);
+      } else {
+        toast.success("已删除 " + deletedIdList.length + " 条规则");
+      }
     } catch (error: any) {
-      toast.error("删除失败：已删除 " + deleted + " 条，" + (error?.message || "请稍后重试"));
+      toast.error("批量删除失败：" + (error?.message || "请稍后重试"));
     } finally {
       setCopyWorking(false);
     }
@@ -3463,7 +3535,7 @@ function RulesContent() {
     });
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const submitForwardType = effectiveRouteForwardType;
     if (!form.name || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && !form.hostId)) {
       toast.error("请填写所有必填字段（目标端口必须填写）");
@@ -3567,6 +3639,14 @@ function RulesContent() {
     }
     if (kernelForwardWarning) {
       toast.warning(kernelForwardWarning, { duration: 7000 });
+    }
+    if (editingId && editingOriginalProtocol === "both" && form.protocol !== "both") {
+      const confirmed = await confirmDialog({
+        title: "确认缩小协议范围",
+        description: `当前规则同时转发 TCP 和 UDP。保存后将只保留 ${form.protocol.toUpperCase()}，另一协议的监听会被停止。`,
+        confirmText: "继续保存",
+      });
+      if (!confirmed) return;
     }
     if (editingId) {
       updateMutation.mutate({
@@ -4939,17 +5019,8 @@ function RulesContent() {
     if (importFile.kind !== RULE_TRANSFER_FILE_KIND) {
       return { ok: false, message: "文件不是 ForwardX 转发规则导出文件", rules: [] };
     }
-    const fileScopeType = normalizeRuleTransferScopeType(importFile.scope?.type);
-    if (!fileScopeType) return { ok: false, message: "文件缺少导出类型", rules: [] };
-    if (fileScopeType === "local") {
-      return { ok: false, message: "主机直连规则不再支持导入，请通过转发组、转发链或隧道新增规则", rules: [] };
-    }
-    if (fileScopeType !== importScopeType) {
-      return {
-        ok: false,
-        message: `文件类型是${ruleTransferScopeLabels[fileScopeType]}，请切换为${ruleTransferScopeLabels[fileScopeType]}后导入`,
-        rules: [],
-      };
+    if (importFile.version !== RULE_TRANSFER_FILE_VERSION) {
+      return { ok: false, message: `不支持该规则文件版本（当前支持 v${RULE_TRANSFER_FILE_VERSION}）`, rules: [] };
     }
     if (!Array.isArray(importFile.rules) || importFile.rules.length === 0) {
       return { ok: false, message: "文件中没有可导入的规则", rules: [] };
@@ -4964,7 +5035,7 @@ function RulesContent() {
     }
     const fixedRules = normalizedRules as RuleTransferFileRule[];
     const zeroPortIndex = fixedRules.findIndex((rule) => rule.sourcePort <= 0);
-    if ((importScopeType === "chain" || importScopeType === "group") && zeroPortIndex >= 0) {
+    if (importScopeType !== "tunnel" && zeroPortIndex >= 0) {
       return { ok: false, message: `第 ${zeroPortIndex + 1} 条规则缺少监听端口`, rules: [] };
     }
     return { ok: true, message: `已识别 ${fixedRules.length} 条${ruleTransferScopeLabels[importScopeType]}规则`, rules: fixedRules };
@@ -4989,18 +5060,28 @@ function RulesContent() {
       toast.error("当前没有添加规则权限");
       return;
     }
-    const preferredType =
-      ruleCategory !== "all" && ruleCategory !== "local"
-        ? ruleCategory
+    const categoryAvailable = ruleCategory === "local"
+      ? canUseSavedLocalForward
+      : ruleCategory === "tunnel"
+        ? canUseGost
+        : ruleCategory === "chain"
+          ? canUseForwardChain
+          : ruleCategory === "group"
+            ? canUseFailoverGroup
+            : false;
+    const preferredType = ruleCategory !== "all" && categoryAvailable
+      ? ruleCategory
+      : canUseSavedLocalForward
+        ? "local"
         : canUseGost
-        ? "tunnel"
-        : canUseForwardChain
-        ? "chain"
-        : canUseFailoverGroup
-        ? "group"
-        : null;
+          ? "tunnel"
+          : canUseForwardChain
+            ? "chain"
+            : canUseFailoverGroup
+              ? "group"
+              : null;
     if (!preferredType) {
-      toast.error("请先创建可用隧道、转发链或转发组后再导入规则。");
+      toast.error("请先创建可用端口转发、隧道、转发链或转发组后再导入规则。");
       return;
     }
     setImportScopeType(preferredType as RuleTransferScopeType);
@@ -5027,11 +5108,12 @@ function RulesContent() {
   const buildImportRulePayload = (rule: RuleTransferFileRule) => {
     const resourceId = Number(importResourceId);
     const selectedTunnel = importScopeType === "tunnel" ? tunnelById.get(resourceId) : null;
-    const selectedGroup = importScopeType === "chain" || importScopeType === "group" ? forwardGroupById.get(resourceId) : null;
-    const groupUsesTunnel = importScopeType === "group" && selectedGroup && !isForwardChainGroup(selectedGroup) && selectedGroup.groupType === "tunnel";
-    const payloadForwardType: ForwardType = importScopeType === "tunnel" || groupUsesTunnel ? "gost" : rule.forwardType;
+    const selectedGroup = importScopeType === "tunnel" ? null : forwardGroupById.get(resourceId);
+    const payloadForwardType: ForwardType = importScopeType === "tunnel"
+      ? "gost"
+      : getForwardGroupRuleForwardType(selectedGroup, rule.forwardType);
     return {
-      hostId: importScopeType === "local" ? resourceId : importScopeType === "tunnel" ? Number(selectedTunnel?.entryHostId || 0) : undefined,
+      hostId: importScopeType === "tunnel" ? Number(selectedTunnel?.entryHostId || 0) : undefined,
       name: rule.name,
       forwardType: payloadForwardType,
       protocol: rule.protocol,
@@ -5039,11 +5121,20 @@ function RulesContent() {
       gostRelayHost: null,
       gostRelayPort: null,
       tunnelId: importScopeType === "tunnel" ? resourceId : null,
-      forwardGroupId: importScopeType === "chain" || importScopeType === "group" ? resourceId : null,
+      forwardGroupId: importScopeType === "tunnel" ? null : resourceId,
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
       telegramErrorNotifyEnabled: telegramBotReady && !!rule.telegramErrorNotifyEnabled,
+      proxyProtocolReceive: rule.proxyProtocolReceive,
+      proxyProtocolSend: rule.proxyProtocolSend,
+      proxyProtocolExitReceive: rule.proxyProtocolExitReceive,
+      proxyProtocolExitSend: rule.proxyProtocolExitSend,
+      proxyProtocolVersion: rule.proxyProtocolVersion,
+      tcpFastOpen: rule.tcpFastOpen,
+      zeroCopy: rule.zeroCopy,
+      udpOverTcp: rule.udpOverTcp,
+      udpOverTcpPort: rule.udpOverTcpPort || null,
       failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
       failoverStrategy: rule.failoverStrategy,
       failoverTargets: importScopeType === "chain" || !rule.failoverEnabled ? [] : rule.failoverTargets,
@@ -5059,22 +5150,30 @@ function RulesContent() {
       return;
     }
     setImportingRules(true);
-    let importedCount = 0;
     try {
-      for (const rule of importValidation.rules) {
-        await importCreateMutation.mutateAsync(buildImportRulePayload(rule));
-        importedCount += 1;
+      const results = await runBatchOperations(importValidation.rules, 6, (rule) => (
+        importCreateMutation.mutateAsync(buildImportRulePayload(rule))
+      ));
+      const importedCount = results.filter((result) => result.status === "fulfilled").length;
+      const failures = results.filter((result) => result.status === "rejected");
+      await Promise.all([
+        utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
+        utils.rules.trafficSummary.invalidate(),
+      ]);
+      if (showCopyDialog) await fullRulesQuery.refetch();
+      if (failures.length > 0) {
+        toast.error(`批量导入完成：成功 ${importedCount} 条，失败 ${failures.length} 条。${batchOperationErrorMessage(failures[0].reason)}`);
+      } else {
+        toast.success(`已导入 ${importedCount} 条规则`);
+        setShowImportDialog(false);
+        setShowCopyDialog(false);
+        resetImportDialog();
       }
-      await utils.rules.list.invalidate();
-      await utils.rules.listPage.invalidate();
-      await utils.rules.mapItems.invalidate();
-      await utils.rules.listSummary.invalidate();
-      await utils.rules.trafficSummary.invalidate();
-      toast.success(`已导入 ${importedCount} 条规则`);
-      setShowImportDialog(false);
-      resetImportDialog();
     } catch (error: any) {
-      toast.error(`导入失败：已导入 ${importedCount} 条，${error?.message || "请检查规则配置"}`);
+      toast.error(`批量导入处理失败：${error?.message || "请检查规则配置"}`);
     } finally {
       setImportingRules(false);
     }
@@ -7472,7 +7571,7 @@ function RulesContent() {
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="space-y-1">
                       <Label>导入目标</Label>
-                      <div className="text-xs text-muted-foreground">选择要导入到哪个隧道、转发链或转发组。</div>
+                      <div className="text-xs text-muted-foreground">选择要导入到哪个端口转发、隧道、转发链或转发组。</div>
                     </div>
                     <div className="inline-flex shrink-0 items-center gap-2 self-start whitespace-nowrap rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
                       <span>已选择</span>
@@ -7491,7 +7590,7 @@ function RulesContent() {
                     >
                       <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {ruleTransferScopeOptions.filter((option) => option.value !== "local").map((option) => (
+                        {importRuleTransferScopeOptions.map((option) => (
                           <SelectItem key={option.value} value={option.value}>
                             {option.label}
                           </SelectItem>

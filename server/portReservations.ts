@@ -16,8 +16,8 @@ type PortUsageCheck = (port: number) => Promise<boolean>;
 
 const reservations = new Map<number, Map<number, ReservationEntry[]>>();
 
-function protocolsConflict(left: ForwardRuleProtocol, right: ForwardRuleProtocol) {
-  return left === "both" || right === "both" || left === right;
+function protocolsConflict(_left: ForwardRuleProtocol, _right: ForwardRuleProtocol) {
+  return true;
 }
 
 function normalizedHostId(value: unknown) {

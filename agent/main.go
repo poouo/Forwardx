@@ -32,10 +32,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
-var Version = "2.2.160"
+var Version = "2.2.161"
+var agentProcessStartedAt = time.Now()
+var agentBootID = readAgentBootID()
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -137,6 +140,64 @@ var clockSyncRunning int32
 var lastClockSyncAttemptAt int64
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
+var fxpEndpointEventMu sync.Mutex
+var fxpEndpointEvents = map[string]fxpEndpointEvent{}
+var fxpEndpointLogPattern = regexp.MustCompile(`exit endpoint (unhealthy|recovered) index=[0-9]+ endpoint=([^[:space:]]+)(?: reason=(.*))?`)
+
+type fxpEndpointEvent struct {
+	TunnelID   int    `json:"tunnelId"`
+	RuleID     int    `json:"ruleId,omitempty"`
+	Role       string `json:"role"`
+	Endpoint   string `json:"endpoint"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	OccurredAt int64  `json:"occurredAt"`
+}
+
+func recordFXPEndpointLog(spec fxpSpec, message string) {
+	for _, line := range strings.Split(message, "\n") {
+		match := fxpEndpointLogPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(match) < 3 {
+			continue
+		}
+		status := strings.TrimSpace(match[1])
+		endpoint := strings.TrimSpace(match[2])
+		key := fmt.Sprintf("%s:%d:%d:%s", spec.Role, spec.TunnelID, spec.RuleID, endpoint)
+		now := time.Now().UnixMilli()
+		fxpEndpointEventMu.Lock()
+		previous := fxpEndpointEvents[key]
+		startedAt := previous.StartedAt
+		if status == "unhealthy" && (previous.Status != "unhealthy" || startedAt <= 0) {
+			startedAt = now
+		}
+		eventMessage := ""
+		if len(match) > 3 {
+			eventMessage = compactLogOutput(match[3])
+		}
+		fxpEndpointEvents[key] = fxpEndpointEvent{
+			TunnelID: spec.TunnelID, RuleID: spec.RuleID, Role: spec.Role, Endpoint: endpoint,
+			Status: status, Message: eventMessage, StartedAt: startedAt, OccurredAt: now,
+		}
+		fxpEndpointEventMu.Unlock()
+	}
+}
+
+func fxpEndpointEventsSnapshot() []fxpEndpointEvent {
+	now := time.Now().Add(-30 * time.Minute).UnixMilli()
+	fxpEndpointEventMu.Lock()
+	defer fxpEndpointEventMu.Unlock()
+	result := make([]fxpEndpointEvent, 0, len(fxpEndpointEvents))
+	for key, event := range fxpEndpointEvents {
+		if event.OccurredAt < now {
+			delete(fxpEndpointEvents, key)
+			continue
+		}
+		result = append(result, event)
+	}
+	return result
+}
+
 var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
 var failoverMu sync.Mutex
@@ -190,6 +251,9 @@ var protectedActionPortMu sync.Mutex
 var protectedActionPorts = map[string]int{}
 var compactAgentReports atomic.Bool
 var heartbeatStaticReport heartbeatStaticSnapshot
+var mimicEnvironmentMu sync.Mutex
+var mimicEnvironmentCached mimicEnvironmentReport
+var mimicEnvironmentCheckedAt time.Time
 var heartbeatStateMu sync.Mutex
 var heartbeatStateCache heartbeatStateSnapshot
 var heartbeatStateSignatures = map[string]string{}
@@ -249,6 +313,15 @@ type heartbeatStaticSnapshot struct {
 	Version                 string
 	ReportedAt              time.Time
 	Initialized             bool
+}
+
+type mimicEnvironmentReport struct {
+	Available    bool   `json:"available"`
+	CommandReady bool   `json:"commandReady"`
+	ModuleReady  bool   `json:"moduleReady"`
+	Version      string `json:"version,omitempty"`
+	Status       string `json:"status"`
+	Message      string `json:"message,omitempty"`
 }
 
 type runtimeActionState struct {
@@ -343,9 +416,13 @@ type localRuntimeTunnelState struct {
 }
 
 type localRuntimeServiceState struct {
-	Name    string `json:"name"`
-	Active  bool   `json:"active"`
-	HasWork bool   `json:"hasWork"`
+	Name            string `json:"name"`
+	Active          bool   `json:"active"`
+	HasWork         bool   `json:"hasWork"`
+	Status          string `json:"status,omitempty"`
+	Message         string `json:"message,omitempty"`
+	HooksReady      *bool  `json:"hooksReady,omitempty"`
+	ConnectionState string `json:"connectionState,omitempty"`
 }
 
 type localRuntimeReadiness struct {
@@ -515,13 +592,10 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		})
 	}
 	for _, service := range managedMimicServicesFromLocalConfig() {
-		active := mimicRuntimeServiceHealthy(service)
+		report := mimicRuntimeServiceReportFor(service)
+		active := report.Active
 		readiness.serviceActiveCache[service] = active
-		readiness.serviceStates = append(readiness.serviceStates, localRuntimeServiceState{
-			Name:    service,
-			Active:  active,
-			HasWork: true,
-		})
+		readiness.serviceStates = append(readiness.serviceStates, report)
 	}
 	return readiness
 }
@@ -1386,37 +1460,47 @@ type selfTestResp struct {
 }
 
 type action struct {
-	TunnelID         int            `json:"tunnelId"`
-	StatusType       string         `json:"statusType"`
-	RuleID           int            `json:"ruleId"`
-	PluginID         string         `json:"pluginId,omitempty"`
-	IssuedAt         int64          `json:"issuedAt,omitempty"`
-	KnownRunning     bool           `json:"knownRunning,omitempty"`
-	Op               string         `json:"op"`
-	ForwardType      string         `json:"forwardType"`
-	SourcePort       int            `json:"sourcePort"`
-	TargetIP         string         `json:"targetIp"`
-	TargetPort       int            `json:"targetPort"`
-	Protocol         string         `json:"protocol"`
-	PreCommands      []string       `json:"preCommands"`
-	ServiceName      string         `json:"svcName"`
-	ServiceNameExtra string         `json:"svcNameExtra"`
-	Unit             string         `json:"unit"`
-	UnitExtra        string         `json:"unitExtra"`
-	Commands         []string       `json:"commands"`
-	PostCommands     []string       `json:"postCommands"`
-	Fxp              *fxpSpec       `json:"fxp,omitempty"`
-	WireGuard        *wireGuardSpec `json:"wireGuard,omitempty"`
-	Failover         *failoverSpec  `json:"failover,omitempty"`
-	ReportStatus     *bool          `json:"reportStatus,omitempty"`
-	FailureMessage   string         `json:"failureMessage,omitempty"`
-	ForceRuntimeSync bool           `json:"forceRuntimeSync,omitempty"`
+	TunnelID                 int                 `json:"tunnelId"`
+	StatusType               string              `json:"statusType"`
+	RuleID                   int                 `json:"ruleId"`
+	PluginID                 string              `json:"pluginId,omitempty"`
+	IssuedAt                 int64               `json:"issuedAt,omitempty"`
+	ConfigRevision           int64               `json:"configRevision,omitempty"`
+	ConfigHash               string              `json:"configHash,omitempty"`
+	KnownRunning             bool                `json:"knownRunning,omitempty"`
+	Op                       string              `json:"op"`
+	ForwardType              string              `json:"forwardType"`
+	SourcePort               int                 `json:"sourcePort"`
+	TargetIP                 string              `json:"targetIp"`
+	TargetPort               int                 `json:"targetPort"`
+	Protocol                 string              `json:"protocol"`
+	PreCommands              []string            `json:"preCommands"`
+	ServiceName              string              `json:"svcName"`
+	ServiceNameExtra         string              `json:"svcNameExtra"`
+	Unit                     string              `json:"unit"`
+	UnitExtra                string              `json:"unitExtra"`
+	Commands                 []string            `json:"commands"`
+	RemovalCommands          []string            `json:"removalCommands,omitempty"`
+	RemovalToken             string              `json:"removalToken,omitempty"`
+	ManagedConfigs           []managedConfigSpec `json:"managedConfigs,omitempty"`
+	RollbackCommands         []string            `json:"rollbackCommands,omitempty"`
+	PostCommands             []string            `json:"postCommands"`
+	Fxp                      *fxpSpec            `json:"fxp,omitempty"`
+	WireGuard                *wireGuardSpec      `json:"wireGuard,omitempty"`
+	Failover                 *failoverSpec       `json:"failover,omitempty"`
+	ReportStatus             *bool               `json:"reportStatus,omitempty"`
+	FailureMessage           string              `json:"failureMessage,omitempty"`
+	ForceRuntimeSync         bool                `json:"forceRuntimeSync,omitempty"`
+	RequiresMimicEnvironment bool                `json:"requiresMimicEnvironment,omitempty"`
+	HandoffOnly              bool                `json:"-"`
 }
 
 type desiredState struct {
-	Version  int      `json:"version"`
-	IssuedAt int64    `json:"issuedAt,omitempty"`
-	Actions  []action `json:"actions"`
+	Version        int      `json:"version"`
+	IssuedAt       int64    `json:"issuedAt,omitempty"`
+	ConfigRevision int64    `json:"configRevision,omitempty"`
+	ConfigHash     string   `json:"configHash,omitempty"`
+	Actions        []action `json:"actions"`
 }
 
 type desiredActionRecord struct {
@@ -1513,8 +1597,9 @@ type agentEventMessage struct {
 }
 
 type agentRefreshEvent struct {
-	Reason string `json:"reason"`
-	Urgent bool   `json:"urgent"`
+	Reason          string `json:"reason"`
+	Urgent          bool   `json:"urgent"`
+	ForceMimicCheck bool   `json:"forceMimicCheck"`
 }
 
 // agentDesiredStatePush 是服务端经 SSE 下发的 desiredState 推送载荷，
@@ -1535,6 +1620,7 @@ func (e migratedPanelError) Error() string {
 
 type selfTest struct {
 	TestID          int    `json:"testId"`
+	Kind            string `json:"kind,omitempty"`
 	RuleID          int    `json:"ruleId"`
 	ForwardType     string `json:"forwardType"`
 	SourcePort      int    `json:"sourcePort"`
@@ -1727,7 +1813,7 @@ func main() {
 	resetDesiredActionRecordsAfterAgentUpgrade()
 	startDesiredActionRecordsFlusher()
 	startActionStatusReporter()
-	startPluginAgentTaskWorkers()
+	startPluginAgentTaskWorkers(cfg)
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
@@ -2008,6 +2094,126 @@ func defaultNetworkInterface() string {
 	return ""
 }
 
+func mimicEnvironment(force bool) mimicEnvironmentReport {
+	mimicEnvironmentMu.Lock()
+	defer mimicEnvironmentMu.Unlock()
+	if !force && !mimicEnvironmentCheckedAt.IsZero() && time.Since(mimicEnvironmentCheckedAt) < 30*time.Second {
+		return mimicEnvironmentCached
+	}
+	report := inspectMimicEnvironment(runtime.GOOS, commandExists, func() bool {
+		_, err := os.Stat("/sys/module/mimic")
+		return err == nil
+	}, runMimicEnvironmentCommand)
+	mimicEnvironmentCached = report
+	mimicEnvironmentCheckedAt = time.Now()
+	return report
+}
+
+func invalidateMimicEnvironmentCache() {
+	mimicEnvironmentMu.Lock()
+	mimicEnvironmentCached = mimicEnvironmentReport{}
+	mimicEnvironmentCheckedAt = time.Time{}
+	mimicEnvironmentMu.Unlock()
+}
+
+func mimicRuntimeEnvironment() mimicEnvironmentReport {
+	report := mimicEnvironment(true)
+	if !report.Available {
+		return report
+	}
+	output, err := runMimicEnvironmentCommand("modprobe", "mimic")
+	if err != nil {
+		report.Available = false
+		report.ModuleReady = false
+		report.Status = "kernel-module-load-failed"
+		report.Message = compactMimicEnvironmentOutput(output, 160)
+		if report.Message == "" {
+			report.Message = err.Error()
+		}
+		mimicEnvironmentMu.Lock()
+		mimicEnvironmentCached = report
+		mimicEnvironmentCheckedAt = time.Now()
+		mimicEnvironmentMu.Unlock()
+	}
+	return report
+}
+
+func inspectMimicEnvironment(
+	goos string,
+	hasCommand func(string) bool,
+	moduleLoaded func() bool,
+	runCommand func(string, ...string) (string, error),
+) mimicEnvironmentReport {
+	report := mimicEnvironmentReport{Status: "unknown"}
+	if goos != "linux" {
+		report.Status = "unsupported-os"
+		report.Message = "mimic requires Linux"
+		return report
+	}
+	if !hasCommand("mimic") {
+		report.Status = "command-missing"
+		report.Message = "mimic command is not installed"
+		return report
+	}
+	report.CommandReady = true
+	if output, err := runCommand("mimic", "--version"); err == nil {
+		report.Version = compactMimicEnvironmentOutput(output, 64)
+	} else {
+		report.Status = "command-unusable"
+		report.Message = compactMimicEnvironmentOutput(output, 160)
+		if report.Message == "" {
+			report.Message = err.Error()
+		}
+		return report
+	}
+	if moduleLoaded() {
+		report.ModuleReady = true
+	} else {
+		var output string
+		var moduleErr error
+		switch {
+		case hasCommand("modprobe"):
+			output, moduleErr = runCommand("modprobe", "-n", "mimic")
+		case hasCommand("modinfo"):
+			output, moduleErr = runCommand("modinfo", "mimic")
+		default:
+			report.Status = "module-check-unavailable"
+			report.Message = "modprobe and modinfo are unavailable"
+			return report
+		}
+		if moduleErr != nil {
+			report.Status = "kernel-module-missing"
+			report.Message = compactMimicEnvironmentOutput(output, 160)
+			if report.Message == "" {
+				report.Message = moduleErr.Error()
+			}
+			return report
+		}
+		report.ModuleReady = true
+	}
+	report.Available = report.CommandReady && report.ModuleReady
+	report.Status = "ready"
+	return report
+}
+
+func runMimicEnvironmentCommand(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(output), fmt.Errorf("%s check timed out", name)
+	}
+	return string(output), err
+}
+
+func compactMimicEnvironmentOutput(value string, limit int) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit > 0 && len(text) > limit {
+		return text[:limit]
+	}
+	return text
+}
+
 func defaultIPv4NetworkInterface(raw []byte) string {
 	lines := strings.Split(string(raw), "\n")
 	for _, line := range lines[1:] {
@@ -2065,6 +2271,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	diskUsageValue, diskUsed, diskTotal := diskStats()
 	cpuUsageValue := cpuUsage()
 	uptimeValue := uptime()
+	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
 	compactEnabled := compactAgentReports.Load()
 	currentStatic := heartbeatStaticSnapshot{
 		PrimaryIP:               primaryIP,
@@ -2082,6 +2289,15 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		heartbeatStaticChanged(currentStatic, previousStatic) ||
 		time.Since(previousStatic.ReportedAt) >= heartbeatStaticReportInterval
 	payload := map[string]any{}
+	payload["agentBootId"] = agentBootID
+	payload["agentBootedAt"] = time.Now().Unix() - uptimeValue
+	payload["agentProcessId"] = os.Getpid()
+	payload["agentProcessStartedAt"] = agentProcessStartedAt.Unix()
+	payload["agentLastReceivedRevision"] = receivedRevision
+	payload["agentLastAppliedRevision"] = appliedRevision
+	payload["agentLastReceivedHash"] = receivedHash
+	payload["agentLastAppliedHash"] = appliedHash
+	payload["fxpEndpointEvents"] = fxpEndpointEventsSnapshot()
 	if compactEnabled {
 		payload["m"] = []any{
 			cpuUsageValue,
@@ -2123,6 +2339,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	pluginVersions, pluginSyncSignatures := installedPluginInventory()
 	payload["pluginVersions"] = pluginVersions
 	payload["pluginSyncSignatures"] = pluginSyncSignatures
+	payload["mimicEnvironment"] = mimicEnvironment(false)
 	if (!compactEnabled || shouldReportStatic) && primaryIP != "" {
 		payload["ip"] = primaryIP
 	}
@@ -2217,10 +2434,18 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		}
 		actionDone = append(actionDone, enqueueAction(cfg, a))
 	}
-	if len(resp.SelfTests) > 0 && len(actionDone) > 0 {
-		waitForActionBatch(actionDone, 20*time.Second)
-	}
+	dependentSelfTests := make([]selfTest, 0, len(resp.SelfTests))
 	for _, t := range resp.SelfTests {
+		if t.WireGuardPeerID == "" {
+			enqueueSelfTest(cfg, t)
+			continue
+		}
+		dependentSelfTests = append(dependentSelfTests, t)
+	}
+	if len(dependentSelfTests) > 0 && len(actionDone) > 0 {
+		waitForActionBatch(actionDone, 8*time.Second)
+	}
+	for _, t := range dependentSelfTests {
 		enqueueSelfTest(cfg, t)
 	}
 	for port := range snapshotProtectedActionPorts() {
@@ -2279,7 +2504,21 @@ func heartbeatKeepalive(cfg Config) error {
 	shouldReportStatic := !previousStatic.Initialized ||
 		heartbeatStaticChanged(currentStatic, previousStatic) ||
 		time.Since(previousStatic.ReportedAt) >= heartbeatStaticReportInterval
-	payload := map[string]any{"busy": true}
+	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
+	uptimeValue := uptime()
+	payload := map[string]any{
+		"busy":                      true,
+		"agentBootId":               agentBootID,
+		"agentBootedAt":             time.Now().Unix() - uptimeValue,
+		"agentProcessId":            os.Getpid(),
+		"agentProcessStartedAt":     agentProcessStartedAt.Unix(),
+		"agentLastReceivedRevision": receivedRevision,
+		"agentLastAppliedRevision":  appliedRevision,
+		"agentLastReceivedHash":     receivedHash,
+		"agentLastAppliedHash":      appliedHash,
+		"fxpEndpointEvents":         fxpEndpointEventsSnapshot(),
+	}
+	payload["mimicEnvironment"] = mimicEnvironment(false)
 	if compactAgentReports.Load() {
 		payload["m"] = []any{
 			cpuUsage(),
@@ -2916,6 +3155,9 @@ func runAgentEventStream(cfg Config) error {
 					var refresh agentRefreshEvent
 					if err := json.Unmarshal(msg.Data, &refresh); err != nil {
 						logf("decode agent-refresh payload: %v", err)
+					} else if refresh.ForceMimicCheck {
+						invalidateMimicEnvironmentCache()
+						logf("mimic environment cache invalidated reason=%s", strings.TrimSpace(refresh.Reason))
 					}
 					wakeHeartbeatFromSSE(refresh.Urgent)
 				} else if msg.Type == "agent-desired-state" {
@@ -2931,6 +3173,13 @@ func runAgentEventStream(cfg Config) error {
 						logf("decode agent-panel-migration payload: %v", err)
 					} else if handlePanelMigrationDirective(cfg, &directive) {
 						return io.EOF
+					}
+				} else if msg.Type == "agent-support-bundle" {
+					var request supportBundleRequest
+					if err := json.Unmarshal(msg.Data, &request); err != nil {
+						logf("decode agent-support-bundle payload: %v", err)
+					} else {
+						go collectAndReportSupportBundle(cfg, request)
 					}
 				}
 			}
@@ -3039,7 +3288,49 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			logf("runtime reconciliation start forwardType=%s commands=%d", strings.TrimSpace(a.ForwardType), len(a.Commands))
 		}
 		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
-		ok = runShellBatch(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...)) && ok
+		if mimicAction && a.RequiresMimicEnvironment {
+			environment := mimicRuntimeEnvironment()
+			if !environment.Available {
+				ok = false
+				actionMessage.set("mimic environment unavailable (%s); install mimic/mimic-dkms manually and retry", environment.Status)
+				logf("mimic environment check failed status=%s commandReady=%v moduleReady=%v message=%s", environment.Status, environment.CommandReady, environment.ModuleReady, environment.Message)
+			}
+		}
+		var managedConfigTx *managedConfigTransaction
+		if ok && len(a.PreCommands) > 0 {
+			ok = runShellBatch(a.PreCommands) && ok
+		}
+		if ok && len(a.ManagedConfigs) > 0 {
+			var err error
+			managedConfigTx, err = applyManagedConfigs(a.ManagedConfigs)
+			if err != nil {
+				ok = false
+				actionMessage.set("managed config validation failed: %v", err)
+				logf("managed config apply failed forwardType=%s configs=%d error=%v", a.ForwardType, len(a.ManagedConfigs), err)
+			}
+		}
+		if ok {
+			ok = runShellBatch(append(append([]string{}, a.Commands...), a.PostCommands...)) && ok
+		}
+		if ok && mimicAction && len(a.RemovalCommands) > 0 {
+			if strings.TrimSpace(a.RemovalToken) == "" {
+				ok = false
+				actionMessage.set("mimic removal rejected: explicit removal token missing")
+				logf("mimic runtime removal rejected commands=%d reason=missing-token", len(a.RemovalCommands))
+			} else {
+				ok = runShellBatch(a.RemovalCommands) && ok
+			}
+		}
+		if !ok && (managedConfigTx != nil || len(a.RollbackCommands) > 0) {
+			rollbackOK := true
+			if managedConfigTx != nil {
+				rollbackOK = managedConfigTx.rollback()
+			}
+			if len(a.RollbackCommands) > 0 {
+				rollbackOK = runShellBatch(a.RollbackCommands) && rollbackOK
+			}
+			logf("managed config rollback complete forwardType=%s ok=%v configs=%d", a.ForwardType, rollbackOK, len(a.ManagedConfigs))
+		}
 		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
 		if mimicAction {
@@ -3051,7 +3342,10 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		invalidateLocalRuntimeReadinessCache()
 		if a.ReportStatus != nil && *a.ReportStatus {
 			if !ok {
-				message := strings.TrimSpace(a.FailureMessage)
+				message := strings.TrimSpace(actionMessage.get())
+				if message == "" {
+					message = strings.TrimSpace(a.FailureMessage)
+				}
 				if message == "" {
 					message = fmt.Sprintf("runtime action failed: %s", strings.TrimSpace(a.ForwardType))
 				}
@@ -3060,6 +3354,12 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			reportActionStatus(cfg, a, ok, actionMessage.get())
 		}
 		return ok
+	}
+	if a.HandoffOnly {
+		logf("runtime handoff cleanup start %s", actionLogSummary(a))
+		cleanupStaleRuntimeBeforeApply(a)
+		invalidateLocalRuntimeReadinessCache()
+		return true
 	}
 	logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logIPv6ActionDiagnostic(a)
@@ -3688,6 +3988,66 @@ func mimicRuntimeServiceHealthy(name string) bool {
 	return ok
 }
 
+func mimicConnectionState(output string) string {
+	text := strings.ToLower(output)
+	switch {
+	case strings.Contains(text, "established"):
+		return "established"
+	case strings.Contains(text, "connecting"):
+		return "connecting"
+	case strings.Contains(text, "no active connection"), strings.Contains(text, "waiting"):
+		return "waiting"
+	case strings.Contains(text, "idle"):
+		return "idle"
+	default:
+		return "unknown"
+	}
+}
+
+func mimicHooksReady(iface string) (bool, string) {
+	if !validNetworkInterfaceName(iface) {
+		return false, "invalid-interface"
+	}
+	parts := []string{}
+	if commandExists("ip") {
+		if out, err := exec.Command("ip", "-details", "link", "show", "dev", iface).CombinedOutput(); err == nil && strings.Contains(strings.ToLower(string(out)), "xdp") {
+			parts = append(parts, "xdp")
+		}
+	}
+	if commandExists("tc") {
+		for _, direction := range []string{"ingress", "egress"} {
+			if out, err := exec.Command("tc", "filter", "show", "dev", iface, direction).CombinedOutput(); err == nil && strings.TrimSpace(string(out)) != "" {
+				parts = append(parts, "tc-"+direction)
+			}
+		}
+	}
+	return len(parts) > 0, strings.Join(parts, ",")
+}
+
+func mimicRuntimeServiceReportFor(name string) localRuntimeServiceState {
+	report := localRuntimeServiceState{Name: name, HasWork: true, Status: "unknown", ConnectionState: "unknown"}
+	ok, message := mimicRuntimeServiceHealth(name)
+	report.Active = ok
+	report.Message = compactLogOutput(message)
+	if !ok {
+		report.Status = "unavailable"
+		return report
+	}
+	iface := strings.TrimPrefix(name, "mimic@")
+	hooksReady, hooks := mimicHooksReady(iface)
+	report.HooksReady = new(bool)
+	*report.HooksReady = hooksReady
+	report.ConnectionState = mimicConnectionState(message)
+	report.Status = report.ConnectionState
+	if report.Status == "unknown" {
+		report.Status = "active"
+	}
+	if hooks != "" {
+		report.Message = strings.TrimSpace(report.Message + " hooks=" + hooks)
+	}
+	return report
+}
+
 func mimicRuntimeServiceHealth(name string) (bool, string) {
 	if !strings.HasPrefix(name, "mimic@") {
 		return false, "invalid-service-name"
@@ -3925,6 +4285,18 @@ func actionCommandSignature(a action) string {
 		write(cmd)
 	}
 	for _, cmd := range a.Commands {
+		write(cmd)
+	}
+	for _, cmd := range a.RemovalCommands {
+		write(cmd)
+	}
+	write(strings.TrimSpace(a.RemovalToken))
+	for _, config := range a.ManagedConfigs {
+		if raw, err := json.Marshal(config); err == nil {
+			write(string(raw))
+		}
+	}
+	for _, cmd := range a.RollbackCommands {
 		write(cmd)
 	}
 	for _, cmd := range a.PostCommands {
@@ -6043,8 +6415,8 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 
 	cmd := exec.Command(runtimePath, "-config", configPath)
-	cmd.Stdout = fxpLogWriter{message: actionMessage}
-	cmd.Stderr = fxpLogWriter{message: actionMessage}
+	cmd.Stdout = fxpLogWriter{message: actionMessage, spec: originalSpec}
+	cmd.Stderr = fxpLogWriter{message: actionMessage, spec: originalSpec}
 	if err := cmd.Start(); err != nil {
 		releaseWireGuardRef()
 		_ = os.Remove(configPath)
@@ -6112,16 +6484,21 @@ func stopFXP(spec fxpSpec) {
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Signal(os.Interrupt)
-		time.Sleep(500 * time.Millisecond)
-		_ = s.cmd.Process.Kill()
+		process := s.cmd.Process
+		go func() {
+			timer := time.NewTimer(6 * time.Second)
+			defer timer.Stop()
+			<-timer.C
+			if process.Signal(syscall.Signal(0)) == nil {
+				logf("fxp graceful shutdown timeout; force kill tunnel=%d rule=%d port=%d", s.spec.TunnelID, s.spec.RuleID, s.spec.ListenPort)
+				_ = process.Kill()
+			}
+		}()
 	} else if s.configPath != "" {
 		killFXPByConfigPath(s.configPath)
 	}
 	if s.configPath != "" {
 		_ = os.Remove(s.configPath)
-	}
-	if s.spec.TransportVersion == forwardXWireGuardVersion {
-		releaseWireGuardRuntimeRef(s.spec.TunnelID, id)
 	}
 }
 
@@ -7783,12 +8160,14 @@ func minInt(a, b int) int {
 
 type fxpLogWriter struct {
 	message *actionMessage
+	spec    fxpSpec
 }
 
 func (w fxpLogWriter) Write(p []byte) (int, error) {
 	msg := strings.TrimSpace(string(p))
 	if msg != "" {
 		logf("fxp runtime: %s", msg)
+		recordFXPEndpointLog(w.spec, msg)
 		if w.message != nil {
 			w.message.remember("fxp runtime: %s", msg)
 		}
@@ -8536,6 +8915,14 @@ func uptime() int64 {
 	}
 	v, _ := strconv.ParseFloat(f[0], 64)
 	return int64(v)
+}
+
+func readAgentBootID() string {
+	raw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func cpuInfo() string {

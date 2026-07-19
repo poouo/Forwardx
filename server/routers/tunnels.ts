@@ -30,6 +30,7 @@ import {
   tunnelRelayFailoverSupported,
 } from "../../shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
+import { assertMimicEnvironment } from "../mimicEnvironment";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
@@ -55,6 +56,14 @@ async function requireForwardXWireGuardAgentVersions(hostIds: number[]) {
   if (unsupported.length === 0) return;
   const labels = unsupported.map(({ id, host }) => host?.name || host?.ip || `主机 ${id}`).slice(0, 5);
   throw new Error(`ForwardX V2 需要链路内所有 Agent 升级到 v${AGENT_FORWARDX_WIREGUARD_VERSION} 或更高版本：${labels.join("、")}`);
+}
+
+async function requireMimicEnvironmentForHosts(hostIds: number[]) {
+  const ids = Array.from(new Set(hostIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const hosts = await Promise.all(ids.map((id) => db.getHostById(id)));
+  assertMimicEnvironment(hosts.map((host, index) => host || { id: ids[index], isOnline: false }));
 }
 
 async function requireForwardXRelayFailoverAgentVersions(hostIds: number[]) {
@@ -530,7 +539,8 @@ export const tunnelsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       const tunnels = isAdmin ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
-      return attachTunnelEndpointHosts(tunnels as any[]);
+      const hydrated = await attachTunnelEndpointHosts(tunnels as any[]);
+      return isAdmin ? hydrated : hydrated.map(compactTunnelForUse);
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const scope = await visibleTunnelQueryScope(ctx.user);
@@ -546,7 +556,8 @@ export const tunnelsRouter = router({
       .query(async ({ input, ctx }) => {
         const scope = await visibleTunnelQueryScope(ctx.user);
         const pageData = await db.getTunnelsPage({ ...input, ...scope });
-        const items = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const hydratedItems = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const items = ctx.user.role === "admin" ? hydratedItems : hydratedItems.map(compactTunnelForUse);
         const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),
@@ -596,9 +607,9 @@ export const tunnelsRouter = router({
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel || !(await canAccessTunnelRecord(tunnel, ctx.user))) return null;
-        return (await attachTunnelEndpointHosts([tunnel]))[0] || null;
-      }),    listAll: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
+        const hydrated = (await attachTunnelEndpointHosts([tunnel]))[0] || null;
+        return ctx.user.role === "admin" ? hydrated : compactTunnelForUse(hydrated);
+      }),    listAll: adminProcedure.query(async () => {
       return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),
     reorder: adminProcedure
@@ -665,7 +676,7 @@ export const tunnelsRouter = router({
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ input, ctx }) => db.withDatabaseTransaction(async () => {
         const heldReservations: HostPortReservation[] = [];
         try {
         const normalizedMode = normalizeTunnelMode(input.mode);
@@ -769,6 +780,18 @@ export const tunnelsRouter = router({
           await requireForwardXRelayFailoverAgentVersions(entryHostIds);
         }
         const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
+        if (runtimeOptions.udpOverTcp) {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            entryGroupId: input.entryGroupId ?? null,
+            entryHostId,
+          });
+          await requireMimicEnvironmentForHosts([
+            ...entryHostIds,
+            ...(hopHostIds || []),
+            exitHostId,
+            ...extraExitNodes.map((node) => node.hostId),
+          ]);
+        }
         const mimicPort = (runtimeOptions.udpOverTcp || forwardxVersion === "v2")
           ? await validateMimicUdpPort({
             port: input.mimicPort,
@@ -858,7 +881,7 @@ export const tunnelsRouter = router({
         } finally {
           releaseHostPortReservations(heldReservations);
         }
-      }),
+      })),
     update: protectedProcedure
       .input(z.object({
         id: z.number(),
@@ -898,7 +921,7 @@ export const tunnelsRouter = router({
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
-      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
+      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => db.withDatabaseTransaction(async () => {
         const heldReservations: HostPortReservation[] = [];
         try {
         const tunnel = await db.getTunnelById(input.id);
@@ -1174,6 +1197,31 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
+        const mimicActivationChanged = nextMimicEnabled && nextTunnelEnabled && (
+          !isTunnelForwardXMode((tunnel as any).mode)
+          || !(tunnel as any).udpOverTcp
+          || !(tunnel as any).isEnabled
+          || hopChanged
+          || loadBalanceChanged
+          || (data as any).entryGroupId !== undefined
+          || (data as any).entryHostId !== undefined
+          || (data as any).exitHostId !== undefined
+        );
+        if (mimicActivationChanged) {
+          const entryHostIds = await getTunnelEntryTestHostIds({
+            ...tunnel,
+            ...data,
+            entryHostId,
+            exitHostId,
+            entryGroupId: (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId,
+          });
+          await requireMimicEnvironmentForHosts([
+            ...entryHostIds,
+            ...normalizedRequestedHopIds,
+            exitHostId,
+            ...extraExitNodes.map((node) => node.hostId),
+          ]);
+        }
         let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
@@ -1285,12 +1333,12 @@ export const tunnelsRouter = router({
           success: true,
           reset: keyChanged,
           syncedRuleCount: (modeChanged || forwardXVersionChanged) ? activeReferencedRuleCount : 0,
-          tunnel: hydratedTunnel,
+          tunnel: ctx.user.role === "admin" ? hydratedTunnel : compactTunnelForUse(hydratedTunnel),
         };
         } finally {
           releaseHostPortReservations(heldReservations);
         }
-      })),
+      }))),
     deleteImpact: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
@@ -1337,12 +1385,12 @@ export const tunnelsRouter = router({
         const entryTestHostIds = await getTunnelEntryTestHostIds(tunnel);
         const hasEntryGroupTest = entryTestHostIds.length > 1;
         if (tunnelHopHostIds.length >= 3) {
-          await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, ...tunnelHopHostIds, ...tunnelExtraExitHostIds], "tunnel-test-refresh");
+          await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, ...tunnelHopHostIds, ...tunnelExtraExitHostIds], "tunnel-test-refresh", { urgent: true });
         } else if (tunnel.loadBalanceEnabled && tunnelExtraExitHostIds.length > 0) {
-          await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, Number(tunnel.exitHostId), ...tunnelExtraExitHostIds], "tunnel-load-balance-test-refresh");
+          await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, Number(tunnel.exitHostId), ...tunnelExtraExitHostIds], "tunnel-load-balance-test-refresh", { urgent: true });
         } else if (!tunnel.isRunning) {
           const testRefreshHostIds = Array.from(new Set([Number(tunnel.exitHostId), ...entryTestHostIds, ...tunnelExtraExitHostIds].filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
-          const pushedResults = testRefreshHostIds.map((hostId) => pushAgentRefresh(hostId, "tunnel-test-refresh"));
+          const pushedResults = testRefreshHostIds.map((hostId) => pushAgentRefresh(hostId, "tunnel-test-refresh", { urgent: true }));
           const pushed = pushedResults.every(Boolean);
           appendPanelLog(
             pushed ? "info" : "warn",
@@ -1404,6 +1452,7 @@ export const tunnelsRouter = router({
         if (!hasEntryGroupTest && Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
           const batchId = createTunnelHopBatch(Number(tunnel.id));
           const pendingDetails: any[] = [];
+          const testHostIds = new Set<number>();
           let queued = 0;
           for (let i = 0; i < tunnelHops.length - 1; i++) {
             const currentHop = tunnelHops[i] as any;
@@ -1447,8 +1496,8 @@ export const tunnelsRouter = router({
               userId: tunnel.userId,
               message: JSON.stringify(payload),
             } as any);
-            pushAgentRefresh(fromHostId, "tunnel-hop-selftest");
             registerTunnelHopTest(batchId, Number(testId));
+            testHostIds.add(fromHostId);
             queued += 1;
             appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued hop tcping ${hopLabel} target=${nextAddr}:${nextPort}`);
           }
@@ -1460,6 +1509,9 @@ export const tunnelsRouter = router({
             totalLatencyMs: null,
           });
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          for (const hostId of testHostIds) {
+            pushAgentRefresh(hostId, "tunnel-hop-selftest", { urgent: true });
+          }
           return { success: false, latencyMs: null, message, pending: true };
         }
 
@@ -1478,6 +1530,7 @@ export const tunnelsRouter = router({
           }
           const batchId = createTunnelHopBatch(Number(tunnel.id));
           const pendingDetails: any[] = [];
+          const testHostIds = new Set<number>();
           let queued = 0;
           for (const entryHostId of entryTestHostIds) {
             const entryHost = await db.getHostById(entryHostId);
@@ -1509,8 +1562,8 @@ export const tunnelsRouter = router({
               userId: tunnel.userId,
               message: JSON.stringify(payload),
             } as any);
-            pushAgentRefresh(entryHostId, "tunnel-entry-group-selftest");
             registerTunnelHopTest(batchId, Number(testId));
+            testHostIds.add(entryHostId);
             queued += 1;
             appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group TCPing ${hopLabel} target=${firstTarget}:${firstTargetPort}`);
           }
@@ -1558,8 +1611,8 @@ export const tunnelsRouter = router({
                 userId: tunnel.userId,
                 message: JSON.stringify(payload),
               } as any);
-              pushAgentRefresh(fromHostId, "tunnel-hop-selftest");
               registerTunnelHopTest(batchId, Number(testId));
+              testHostIds.add(fromHostId);
               queued += 1;
               appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group hop TCPing ${hopLabel} target=${nextAddr}:${nextPort}`);
             }
@@ -1572,6 +1625,9 @@ export const tunnelsRouter = router({
             totalLatencyMs: null,
           });
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          for (const hostId of testHostIds) {
+            pushAgentRefresh(hostId, "tunnel-entry-group-selftest", { urgent: true });
+          }
           appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group TCPing entries=${entryTestHostIds.length} segments=${queued}`);
           return { success: false, latencyMs: null, message, pending: true };
         }
@@ -1669,7 +1725,6 @@ export const tunnelsRouter = router({
             queued += 1;
             appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued load-balance TCPing ${hopLabel} target=${endpointTarget}:${endpointPort}`);
           }
-          pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest");
           const message = structuredLinkTestMessage({
             kind: "tunnel-load-balance-pending",
             tunnelId: tunnel.id,
@@ -1678,6 +1733,7 @@ export const tunnelsRouter = router({
             totalLatencyMs: null,
           });
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest", { urgent: true });
           appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued load-balance TCPing exits=${queued}`);
           return { success: false, latencyMs: null, message, pending: true };
         }
@@ -1695,9 +1751,9 @@ export const tunnelsRouter = router({
           userId: tunnel.userId,
           message: JSON.stringify(payload),
         } as any);
-        pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest");
         const message = `TUNNEL_LINK_TEST_PENDING ${target}:${targetPort}`;
         await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+        pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest", { urgent: true });
         appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-agent TCPing from entryHost=${entry.id} to exit ${target}:${targetPort}`);
         return { success: false, latencyMs: null, message, pending: true };
       })),

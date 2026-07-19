@@ -104,7 +104,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
-    await db.updateForwardTestResult(testId, {
+    const accepted = await db.completeForwardTestIfActive(testId, {
       status: success ? "success" : "failed",
       listenOk: true,
       targetReachable: !!targetReachable,
@@ -112,6 +112,10 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       latencyMs: cleanLatency,
       message: cleanMessage,
     });
+    if (!accepted) {
+      res.json({ success: true, ignored: true });
+      return;
+    }
     if (meta?.kind === "tunnel" && typeof meta.tunnelId === "number") {
       await db.updateTunnelRunningStatus(meta.tunnelId, success);
       await db.updateTunnelTestResult(meta.tunnelId, {

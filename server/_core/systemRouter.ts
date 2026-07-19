@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { ENV } from "../env";
 import { spawn } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
 import net from "net";
 import path from "path";
@@ -22,7 +23,9 @@ import {
 } from "../migration";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
-import { pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
+import { pushAgentRefresh, pushAgentSupportBundle, pushAgentUpgrade, requestHostTcping } from "../agentEvents";
+import { createSupportBundleTask, failSupportBundleHost, getSupportBundleTask } from "../supportBundle";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 import { AGENT_ASSET_NAMES } from "../agentAssets";
 import { maskSecret } from "../ddns";
 import type { DatabaseConfig } from "../dbRuntime";
@@ -2468,14 +2471,64 @@ export const systemRouter = router({
       targetPanelUrl: z.string().trim().max(256).optional(),
       confirmed: z.literal(true),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock("panel-backup-import", async () => {
+      // Always decrypt first so a repeated file cannot bypass password verification.
       const snapshot = decryptMigrationSnapshotBackup(input.content, input.password);
+      const fingerprint = crypto.createHash("sha256").update(input.content, "utf8").digest("hex");
+      const [previousFingerprint, previousResultRaw] = await Promise.all([
+        db.getSetting("lastPanelBackupImportFingerprint"),
+        db.getSetting("lastPanelBackupImportResult"),
+      ]);
+      if (previousFingerprint === fingerprint && previousResultRaw) {
+        try {
+          const previousResult = JSON.parse(previousResultRaw);
+          if (previousResult?.success === true) {
+            console.warn(`[Backup] Ignored duplicate encrypted backup import fingerprint=${fingerprint.slice(0, 12)}`);
+            return { ...previousResult, alreadyImported: true };
+          }
+        } catch {
+          // An invalid cached summary must not block a legitimate restore.
+        }
+      }
+
+      const importedHostIds = new Set<number>();
       const result = await importMigrationSnapshot(snapshot, {
         targetPanelUrl: input.targetPanelUrl || undefined,
+        onImportedIds: (ids) => {
+          Object.values(ids.hosts || {}).forEach((id) => {
+            const hostId = Number(id);
+            if (Number.isInteger(hostId) && hostId > 0) importedHostIds.add(hostId);
+          });
+        },
       });
-      console.info(`[Backup] Imported encrypted panel backup mode=${result.mode} hosts=${result.hostCount}`);
+
+      let reachedHosts = 0;
+      for (const hostId of importedHostIds) {
+        requestHostTcping(hostId);
+        if (pushAgentRefresh(hostId, "backup-restored-validation", {
+          urgent: true,
+          forceMimicCheck: true,
+        })) reachedHosts += 1;
+      }
+      result.agentValidation = {
+        requestedHosts: importedHostIds.size,
+        reachedHosts,
+        pendingHosts: Math.max(0, importedHostIds.size - reachedHosts),
+      };
+
+      try {
+        // Store the summary first; the fingerprint is the commit marker.
+        await db.setSetting("lastPanelBackupImportResult", JSON.stringify(result));
+        await db.setSetting("lastPanelBackupImportFingerprint", fingerprint);
+      } catch (error) {
+        const message = `备份防重复标记保存失败：${error instanceof Error ? error.message : String(error)}`;
+        result.partial = true;
+        result.warnings.push(message);
+        console.warn(`[Backup] ${message}`);
+      }
+      console.info(`[Backup] Imported encrypted panel backup mode=${result.mode} hosts=${result.hostCount} inserted=${result.insertedRows} reused=${result.reusedRows} skipped=${result.skippedRows} partial=${result.partial}`);
       return result;
-    }),
+    })),
 
   startPanelMigration: adminProcedure
     .input(z.object({
@@ -2618,6 +2671,26 @@ export const systemRouter = router({
         content: exported.content,
         count: exported.count,
       };
+    }),
+
+  startSupportBundle: adminProcedure.mutation(async () => {
+    const hosts = await db.getHosts();
+    const task = createSupportBundleTask(hosts as any[]);
+    for (const hostId of task.hostIds) {
+      if (!pushAgentSupportBundle(hostId, task.taskId)) {
+        failSupportBundleHost(task.taskId, hostId, "Agent event stream is offline");
+      }
+    }
+    console.info(`[SupportBundle] Started task=${task.taskId} requested=${task.hostIds.length}`);
+    return { taskId: task.taskId, requested: task.hostIds.length };
+  }),
+
+  supportBundleStatus: adminProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const task = await getSupportBundleTask(input.taskId);
+      if (!task) throw new Error("支持包任务不存在或已过期");
+      return task;
     }),
 
   clearPanelLogs: adminProcedure.mutation(() => {

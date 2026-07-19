@@ -49,6 +49,7 @@ export const selfTestRulesRouter = router({
           const probes = await db.getForwardGroupChainProbes(Number(group.id), { includeFinalTarget: true, templateRule: rule });
           if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
           const batchId = createHopTestBatch("fgr", Number(group.id));
+          const testHostIds = new Set<number>();
           let firstTestId = 0;
           let queued = 0;
           for (const probe of probes) {
@@ -77,9 +78,12 @@ export const selfTestRulesRouter = router({
             });
             if (!firstTestId) firstTestId = Number(testId);
             registerHopTest(batchId, Number(testId));
-            pushAgentRefresh(probe.fromHostId, "forward-chain-rule-selftest");
+            testHostIds.add(probe.fromHostId);
             queued += 1;
             appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}:${probe.targetPort}`);
+          }
+          for (const hostId of testHostIds) {
+            pushAgentRefresh(hostId, "forward-chain-rule-selftest", { urgent: true });
           }
           return { id: firstTestId, queued };
         }
@@ -113,7 +117,7 @@ export const selfTestRulesRouter = router({
         forwardOk: false,
         message,
       });
-      pushAgentRefresh(hostId, "forward-selftest");
+      pushAgentRefresh(hostId, "forward-selftest", { urgent: true });
       if (!(rule as any).tunnelId) {
         appendPanelLog("info", `[SelfTest] rule=${rule.id} queued direct test=${id} from host=${hostId} to target=${rule.targetIp}:${rule.targetPort}`);
       }

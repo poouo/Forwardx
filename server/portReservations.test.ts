@@ -10,16 +10,15 @@ import {
 
 test.beforeEach(() => clearHostPortReservationsForTest());
 
-test("allows TCP and UDP to share a port but blocks conflicting protocols", () => {
+test("reserves a listen port as one Agent runtime identity", () => {
   const tcp = tryReserveHostPort(1, 12000, "tcp");
   const udp = tryReserveHostPort(1, 12000, "udp");
   assert.ok(tcp);
-  assert.ok(udp);
+  assert.equal(udp, null);
   assert.equal(tryReserveHostPort(1, 12000, "both"), null);
   assert.deepEqual(reservedHostPorts(1, "tcp"), [12000]);
   tcp.release();
   assert.deepEqual(reservedHostPorts(1, "tcp"), []);
-  udp.release();
 });
 
 test("concurrent allocators retry collisions without serializing database work", async () => {

@@ -17,7 +17,7 @@ import {
   userSubscriptions, InsertUserSubscription,
   users,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, getPool, getPostgresPool, getSqlite, insertAndGetId, nowDate, quoteDbIdentifier, rawAffectedRows } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { getForwardRulesForUserSync } from "./forwardRuleRepository";
 import { getForwardGroupEntryPortRange } from "./forwardGroupRepository";
 import { getHostById } from "./hostRepository";
@@ -182,6 +182,19 @@ export async function getPaymentOrderByOutTradeNo(outTradeNo: string) {
   if (!db) return undefined;
   const r = await db.select().from(paymentOrders).where(eq(paymentOrders.outTradeNo, outTradeNo)).limit(1);
   return r[0];
+}
+
+export async function getPaymentOrderByOutTradeNoForUpdate(outTradeNo: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")} AS ${q("id")} FROM ${q("payment_orders")} WHERE ${q("outTradeNo")} = ? LIMIT 1${lock}`,
+    [outTradeNo],
+  );
+  if (!rows[0]) return undefined;
+  return getPaymentOrderByOutTradeNo(outTradeNo);
 }
 
 // ==================== Subscription Plans ====================
@@ -1669,6 +1682,7 @@ function pickActiveFiniteTrafficSubscription(activeSubscriptions: any[], planId?
 }
 
 export async function purchaseTrafficAddonWithBalance(userId: number, addonId: number, subscriptionId?: number | null) {
+  return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await expireDueTrafficAddons(userId);
@@ -1714,6 +1728,7 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
     expiresAt,
     trafficLimit: limits.trafficLimit,
   };
+  });
 }
 
 export async function adminAddUserTrafficAddon(input: {
@@ -1767,109 +1782,26 @@ export async function getUserBalance(userId: number) {
   return Number((user as any)?.balanceCents || 0);
 }
 
-async function addUserBalanceMysql(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
-  const pool = getPool();
-  if (!pool) throw new Error("Database not available");
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    const [rows] = await conn.execute<any[]>("SELECT balanceCents FROM users WHERE id = ? FOR UPDATE", [userId]);
-    const row = rows?.[0];
-    if (!row) throw new Error("用户不存在");
-    const current = Number(row.balanceCents || 0);
-    const next = current + Math.round(amountCents);
-    if (next < 0) throw new Error("余额不足");
-    const now = Math.floor(Date.now() / 1000);
-    await conn.execute("UPDATE users SET balanceCents = ?, updatedAt = ? WHERE id = ?", [next, now, userId]);
-    await conn.execute(
-      "INSERT INTO balance_transactions (userId, type, amountCents, balanceAfterCents, description, operatorUserId, paymentOrderNo, redemptionCodeId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [
-        userId,
-        meta.type,
-        Math.round(amountCents),
-        next,
-        meta.description ?? null,
-        meta.operatorUserId ?? null,
-        meta.paymentOrderNo ?? null,
-        meta.redemptionCodeId ?? null,
-        now,
-      ],
-    );
-    await conn.commit();
-    return { balanceCents: next };
-  } catch (error) {
-    await conn.rollback().catch(() => undefined);
-    throw error;
-  } finally {
-    conn.release();
-  }
-}
-
-function addUserBalanceSqlite(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
-  const sqlite = getSqlite();
-  if (!sqlite) throw new Error("Database not available");
-  const tx = sqlite.transaction(() => {
-    const user = sqlite.prepare("SELECT balanceCents FROM users WHERE id = ?").get(userId) as any;
-    if (!user) throw new Error("用户不存在");
-    const current = Number(user.balanceCents || 0);
-    const next = current + Math.round(amountCents);
-    if (next < 0) throw new Error("余额不足");
-    const now = Math.floor(Date.now() / 1000);
-    sqlite.prepare("UPDATE users SET balanceCents = ?, updatedAt = ? WHERE id = ?").run(next, now, userId);
-    sqlite.prepare(
-      "INSERT INTO balance_transactions (userId, type, amountCents, balanceAfterCents, description, operatorUserId, paymentOrderNo, redemptionCodeId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      userId,
-      meta.type,
-      Math.round(amountCents),
-      next,
-      meta.description ?? null,
-      meta.operatorUserId ?? null,
-      meta.paymentOrderNo ?? null,
-      meta.redemptionCodeId ?? null,
-      now,
-    );
-    return { balanceCents: next };
-  });
-  return tx();
-}
-
-async function addUserBalancePostgresql(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
-  const pool = getPostgresPool();
-  if (!pool) throw new Error("Database not available");
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const rows = await client.query('SELECT "balanceCents" FROM "users" WHERE "id" = $1 FOR UPDATE', [userId]);
-    const row = rows.rows?.[0];
-    if (!row) throw new Error("用户不存在");
-    const current = Number(row.balanceCents || 0);
-    const next = current + Math.round(amountCents);
-    if (next < 0) throw new Error("余额不足");
-    const now = Math.floor(Date.now() / 1000);
-    await client.query('UPDATE "users" SET "balanceCents" = $1, "updatedAt" = $2 WHERE "id" = $3', [next, now, userId]);
-    await client.query(
-      'INSERT INTO "balance_transactions" ("userId", "type", "amountCents", "balanceAfterCents", "description", "operatorUserId", "paymentOrderNo", "redemptionCodeId", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-      [
-        userId,
-        meta.type,
-        Math.round(amountCents),
-        next,
-        meta.description ?? null,
-        meta.operatorUserId ?? null,
-        meta.paymentOrderNo ?? null,
-        meta.redemptionCodeId ?? null,
-        now,
-      ],
-    );
-    await client.query("COMMIT");
-    return { balanceCents: next };
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+async function addUserBalanceInTransaction(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const rows = await queryRaw<{ balanceCents: number }>(
+    `SELECT ${q("balanceCents")} AS ${q("balanceCents")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`,
+    [userId],
+  );
+  const row = rows[0];
+  if (!row) throw new Error("用户不存在");
+  const current = Number(row.balanceCents || 0);
+  const delta = Math.round(amountCents);
+  const next = current + delta;
+  if (next < 0) throw new Error("余额不足");
+  const now = Math.floor(Date.now() / 1000);
+  await executeRaw(`UPDATE ${q("users")} SET ${q("balanceCents")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [next, now, userId]);
+  await executeRaw(
+    `INSERT INTO ${q("balance_transactions")} (${q("userId")}, ${q("type")}, ${q("amountCents")}, ${q("balanceAfterCents")}, ${q("description")}, ${q("operatorUserId")}, ${q("paymentOrderNo")}, ${q("redemptionCodeId")}, ${q("createdAt")}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId, meta.type, delta, next, meta.description ?? null, meta.operatorUserId ?? null, meta.paymentOrderNo ?? null, meta.redemptionCodeId ?? null, now],
+  );
+  return { balanceCents: next };
 }
 
 
@@ -2094,21 +2026,16 @@ export async function listBillingLedger(options?: {
 }
 
 export async function addUserBalance(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
   if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("金额无效");
-  const kind = getDatabaseKind();
-  if (kind === "mysql") return addUserBalanceMysql(userId, amountCents, meta);
-  if (kind === "postgresql") return addUserBalancePostgresql(userId, amountCents, meta);
-  if (kind === "sqlite") return addUserBalanceSqlite(userId, amountCents, meta);
-  throw new Error("Database not available");
+  return withDatabaseTransaction(() => addUserBalanceInTransaction(userId, amountCents, meta));
 }
 
 export async function setUserBalance(userId: number, balanceCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
   if (!Number.isFinite(balanceCents) || balanceCents < 0) throw new Error("金额无效");
-  const user = await getUserById(userId);
+  return withDatabaseTransaction(async () => {
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const [user] = await queryRaw<any>(`SELECT ${q("balanceCents")} AS ${q("balanceCents")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`, [userId]);
   if (!user) throw new Error("用户不存在");
   const previous = Number((user as any).balanceCents || 0);
   const next = Math.round(balanceCents);
@@ -2118,9 +2045,11 @@ export async function setUserBalance(userId: number, balanceCents: number, meta:
   }
   const result = await addUserBalance(userId, delta, meta);
   return { ...result, previousBalanceCents: previous, amountCents: delta, changed: true };
+  });
 }
 
 export async function purchasePlanWithBalance(userId: number, planId: number, discountCodeId?: number | null) {
+  return withDatabaseTransaction(async () => {
   const plan = await getSubscriptionPlanById(planId);
   if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
   const discount = discountCodeId ? await getDiscountCodeById(discountCodeId) : null;
@@ -2131,9 +2060,6 @@ export async function purchasePlanWithBalance(userId: number, planId: number, di
     }
   }
   const amountCents = calculateDiscountedAmount(Number(plan.priceCents || 0), discount);
-  const balance = await getUserBalance(userId);
-  if (balance < amountCents) throw new Error("余额不足");
-  const result = await applySubscriptionToUser(userId, planId, "balance", null);
   if (amountCents > 0) {
     await addUserBalance(userId, -amountCents, {
       type: "purchase",
@@ -2141,7 +2067,9 @@ export async function purchasePlanWithBalance(userId: number, planId: number, di
     } as any);
   }
   if (discount) await consumeDiscountCode(discount.id);
+  const result = await applySubscriptionToUser(userId, planId, "balance", null);
   return result;
+  });
 }
 
 // ==================== Redemption Codes ====================
@@ -2226,8 +2154,6 @@ export async function deleteRedemptionCode(id: number) {
 }
 
 export async function redeemCode(userId: number, code: string, attemptScope?: string | null) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
   return withRedemptionScopeLock(userId, attemptScope, async () => {
     const limited = redemptionAttemptRateLimitState(userId, attemptScope);
     if (limited.limited) {
@@ -2236,7 +2162,18 @@ export async function redeemCode(userId: number, code: string, attemptScope?: st
     const normalized = normalizeCode(code);
     try {
       return await withRedemptionCodeLock(normalized, async () => {
-        const rows = await db.select().from(redemptionCodes).where(eq(redemptionCodes.code, normalized)).limit(1);
+        return withDatabaseTransaction(async () => {
+        const db = await getDb();
+        if (!db) throw new Error("Database not available");
+        const q = quoteDbIdentifier;
+        const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+        const lockedRows = await queryRaw<{ id: number }>(
+          `SELECT ${q("id")} AS ${q("id")} FROM ${q("redemption_codes")} WHERE ${q("code")} = ? LIMIT 1${lock}`,
+          [normalized],
+        );
+        const rows = lockedRows[0]
+          ? await db.select().from(redemptionCodes).where(eq(redemptionCodes.id, Number(lockedRows[0].id))).limit(1)
+          : [];
         const item = rows[0] as any;
         if (!item || !item.isActive) throw new Error("兑换码无效");
         if (item.usedAt || item.usedByUserId) throw new Error("兑换码已被使用");
@@ -2277,6 +2214,7 @@ export async function redeemCode(userId: number, code: string, attemptScope?: st
         } else {
           throw new Error("兑换码类型无效");
         }
+        });
       });
     } catch (error) {
       const message = String((error as any)?.message || error || "");
@@ -2427,12 +2365,31 @@ export async function previewDiscount(code: string, amountCents: number, planId?
 }
 
 export async function consumeDiscountCode(id: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(discountCodes).set({
-    usedCount: sql`${discountCodes.usedCount} + 1`,
-    updatedAt: nowDate(),
-  } as any).where(eq(discountCodes.id, id));
+  const q = quoteDbIdentifier;
+  const now = Math.floor(Date.now() / 1000);
+  const result = await executeRaw(
+    `UPDATE ${q("discount_codes")}
+        SET ${q("usedCount")} = ${q("usedCount")} + 1, ${q("updatedAt")} = ?
+      WHERE ${q("id")} = ?
+        AND ${q("isActive")} = ?
+        AND (${q("startsAt")} IS NULL OR ${q("startsAt")} <= ?)
+        AND (${q("expiresAt")} IS NULL OR ${q("expiresAt")} > ?)
+        AND (${q("maxUses")} <= 0 OR ${q("usedCount")} < ${q("maxUses")})`,
+    [now, id, true, now, now],
+  );
+  if (rawAffectedRows(result) !== 1) throw new Error("折扣码已失效或使用次数已达上限");
+  return true;
+}
+
+export async function releaseDiscountCode(id: number) {
+  const q = quoteDbIdentifier;
+  const result = await executeRaw(
+    `UPDATE ${q("discount_codes")}
+        SET ${q("usedCount")} = ${q("usedCount")} - 1, ${q("updatedAt")} = ?
+      WHERE ${q("id")} = ? AND ${q("usedCount")} > 0`,
+    [Math.floor(Date.now() / 1000), id],
+  );
+  return rawAffectedRows(result) === 1;
 }
 
 export async function listPaymentOrders(limit = 100, userId?: number) {
@@ -2458,6 +2415,7 @@ export async function listPaymentOrders(limit = 100, userId?: number) {
       planId: paymentOrders.planId,
       subscriptionId: paymentOrders.subscriptionId,
       discountCodeId: paymentOrders.discountCodeId,
+      discountConsumed: paymentOrders.discountConsumed,
       discountAmountCents: paymentOrders.discountAmountCents,
       expiresAt: paymentOrders.expiresAt,
       paidAt: paymentOrders.paidAt,

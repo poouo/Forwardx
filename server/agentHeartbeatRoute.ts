@@ -73,6 +73,8 @@ import { resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
+import { hashConfig, latestConfigRevision, recordConfigAuditEvent } from "./configAudit";
+import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -86,10 +88,12 @@ const mimicRuntimeLogCache = new Map<number, { signature: string; loggedAt: numb
 const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
+const agentDesiredDispatchAuditHash = new Map<number, string>();
 const agentRuntimeSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 const fxpUdpTargetSignatureCache = new Map<string, string>();
 const agentRuntimeDriftLogCache = new Map<string, number>();
+const fxpEndpointStatusCache = new Map<string, string>();
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
@@ -106,7 +110,6 @@ const NGINX_BIN = "/usr/local/bin/forwardx-nginx";
 const NGINX_SERVICE_NAME = "forwardx-nginx";
 const NGINX_CONFIG_DIR = "/etc/forwardx/nginx";
 const NGINX_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf";
-const NGINX_STAGED_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf.next";
 const NGINX_CERT_DIR = "/etc/forwardx/nginx/certs";
 const REALM_CONFIG_DIR = "/etc/forwardx/realm";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
@@ -174,6 +177,10 @@ type AgentLocalRuntimeServiceState = {
   name: string;
   active: boolean;
   hasWork: boolean;
+  status?: string;
+  message?: string;
+  hooksReady?: boolean;
+  connectionState?: string;
 };
 type AgentLocalRuntimeState = {
   rules: AgentLocalRuntimeRuleState[];
@@ -196,6 +203,10 @@ function stableActionSignature(actions: any[]) {
     targetPort: Number(action?.targetPort || 0),
     protocol: action?.protocol || "",
     commands: action?.commands || [],
+    removalCommands: action?.removalCommands || [],
+    removalToken: action?.removalToken || "",
+    managedConfigs: action?.managedConfigs || [],
+    rollbackCommands: action?.rollbackCommands || [],
     preCommands: action?.preCommands || [],
     postCommands: action?.postCommands || [],
     serviceName: action?.serviceName || action?.svcName || "",
@@ -206,6 +217,7 @@ function stableActionSignature(actions: any[]) {
     wireGuard: action?.wireGuard || null,
     failover: action?.failover || null,
     forceRuntimeSync: action?.forceRuntimeSync === true,
+    requiresMimicEnvironment: action?.requiresMimicEnvironment === true,
   })));
 }
 
@@ -249,6 +261,16 @@ function normalizeRuntimeStateSignature(input: any) {
   return /^[a-f0-9]{1,128}$/i.test(value) ? value.toLowerCase() : "";
 }
 
+function normalizeMimicEnvironment(input: any) {
+  if (!input || typeof input !== "object" || typeof input.available !== "boolean") return null;
+  return {
+    available: input.available === true,
+    version: normalizeAgentText(input.version, 64) || null,
+    status: normalizeAgentText(input.status, 64) || (input.available ? "ready" : "unknown"),
+    message: normalizeAgentText(input.message, 512) || null,
+  };
+}
+
 function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | null {
   if (!input || typeof input !== "object") return null;
   const rules = Array.isArray(input.rules)
@@ -281,6 +303,10 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
         name: String(item?.name || "").trim(),
         active: item?.active === true,
         hasWork: item?.hasWork === true,
+        status: normalizeAgentText(item?.status, 32) || undefined,
+        message: normalizeAgentText(item?.message, 512) || undefined,
+        hooksReady: typeof item?.hooksReady === "boolean" ? item.hooksReady : undefined,
+        connectionState: normalizeAgentText(item?.connectionState, 32) || undefined,
       }))
       .filter((item: AgentLocalRuntimeServiceState) => !!item.name)
     : [];
@@ -341,7 +367,10 @@ function heartbeatUptimeSeconds(value: unknown) {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 }
 
-function heartbeatIndicatesAgentReboot(previousHost: any, uptime: unknown, nowMs = Date.now()) {
+function heartbeatIndicatesAgentReboot(previousHost: any, uptime: unknown, bootId?: unknown, nowMs = Date.now()) {
+  const nextBootId = normalizeAgentText(bootId, 128);
+  const previousBootId = normalizeAgentText(previousHost?.agentBootId, 128);
+  if (nextBootId && previousBootId) return nextBootId !== previousBootId;
   const lastHeartbeatMs = heartbeatTimestampMs(previousHost?.lastHeartbeat);
   const uptimeSeconds = heartbeatUptimeSeconds(uptime);
   if (lastHeartbeatMs <= 0 || uptimeSeconds <= 0) return false;
@@ -831,6 +860,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const { cpuInfo, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
+    const agentBootId = normalizeAgentText(req.body?.agentBootId, 128);
+    const agentBootedAtSeconds = Number(req.body?.agentBootedAt || 0);
+    const agentProcessId = Math.max(0, Math.floor(Number(req.body?.agentProcessId || 0)));
+    const agentProcessStartedAtSeconds = Number(req.body?.agentProcessStartedAt || 0);
+    const agentLastReceivedRevision = Math.max(0, Math.floor(Number(req.body?.agentLastReceivedRevision || 0)));
+    const agentLastAppliedRevision = Math.max(0, Math.floor(Number(req.body?.agentLastAppliedRevision || 0)));
+    const agentLastReceivedHash = normalizeAgentText(req.body?.agentLastReceivedHash, 64);
+    const agentLastAppliedHash = normalizeAgentText(req.body?.agentLastAppliedHash, 64);
     const reportedDefaultNetworkInterface = normalizeNetworkInterface(req.body?.defaultNetworkInterface);
     const previousHost = { ...(host as any) };
     const wasOnline = isHostStatusOnline(host);
@@ -843,6 +880,45 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       localRuntimeStateSignature,
       normalizeAgentLocalRuntimeState(req.body?.localState),
     );
+    const mimicEnvironment = normalizeMimicEnvironment(req.body?.mimicEnvironment);
+    const fxpEndpointEvents = Array.isArray(req.body?.fxpEndpointEvents) ? req.body.fxpEndpointEvents.slice(0, 256) : [];
+    for (const rawEvent of fxpEndpointEvents) {
+      const tunnelId = Math.max(0, Math.floor(Number(rawEvent?.tunnelId || 0)));
+      const ruleId = Math.max(0, Math.floor(Number(rawEvent?.ruleId || 0)));
+      const role = normalizeAgentText(rawEvent?.role, 16) || "unknown";
+      const endpoint = normalizeAgentText(rawEvent?.endpoint, 256);
+      const status = normalizeAgentText(rawEvent?.status, 16);
+      if (!endpoint || (status !== "unhealthy" && status !== "recovered")) continue;
+      const key = `${host.id}:${role}:${tunnelId}:${ruleId}:${endpoint}`;
+      if (fxpEndpointStatusCache.get(key) === status) continue;
+      fxpEndpointStatusCache.set(key, status);
+      const startedAt = Number(rawEvent?.startedAt || 0);
+      const occurredAt = Number(rawEvent?.occurredAt || 0);
+      const durationMs = status === "recovered" && startedAt > 0 && occurredAt >= startedAt ? occurredAt - startedAt : 0;
+      const message = normalizeAgentText(rawEvent?.message, 512);
+      appendPanelLog(
+        status === "unhealthy" ? "warn" : "info",
+        `[FXPEndpoint] host=${host.id} role=${role} tunnel=${tunnelId} rule=${ruleId} endpoint=${endpoint} status=${status}${durationMs > 0 ? ` durationMs=${durationMs}` : ""}${message ? ` message=${message}` : ""}`,
+      );
+    }
+    const reportedMimicRuntimeServices = (localRuntimeState.state?.services || [])
+      .filter((service) => String(service.name || "").startsWith("mimic@"));
+    const mimicRuntimeStatus = reportedMimicRuntimeServices.length === 0
+      ? "not-configured"
+      : reportedMimicRuntimeServices.some((service) => !service.active)
+        ? "unavailable"
+        : reportedMimicRuntimeServices.some((service) => service.connectionState === "established")
+          ? "established"
+          : reportedMimicRuntimeServices.some((service) => service.connectionState === "connecting")
+            ? "connecting"
+            : reportedMimicRuntimeServices.some((service) => service.connectionState === "waiting")
+              ? "waiting"
+              : reportedMimicRuntimeServices.some((service) => service.connectionState === "idle")
+                ? "idle"
+                : "active";
+    const mimicRuntimeMessage = reportedMimicRuntimeServices
+      .map((service) => `${service.name}:${service.status || (service.active ? "active" : "unavailable")}${service.hooksReady === false ? ":hooks-not-detected" : ""}${service.message ? `:${service.message}` : ""}`)
+      .join(" | ") || null;
     const dnsChangedIpByHost = new Map<string, string>();
     const dnsChangedScopes = new Set<string>();
     for (const report of dnsChangedReports) {
@@ -866,7 +942,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && isAgentVersionAtLeast(nextAgentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)
       && !isAgentVersionAtLeast(previousHost.agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION);
     const recoveredFromOffline = wasOnline === false;
-    const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime);
+    const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime, agentBootId);
+    const previousProcessStartedAt = heartbeatTimestampMs(previousHost.agentProcessStartedAt);
+    const processRestartDetected = !!agentBootId
+      && agentBootId === normalizeAgentText(previousHost.agentBootId, 128)
+      && previousProcessStartedAt > 0
+      && agentProcessStartedAtSeconds > 0
+      && Math.abs(agentProcessStartedAtSeconds * 1000 - previousProcessStartedAt) > 5_000;
+    const recoveryTriggered = recoveredFromOffline || rebootDetected || processRestartDetected;
     const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
     const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
     const supportsStateSignatures = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_STATE_SIGNATURE_VERSION);
@@ -879,6 +962,30 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       agentVersion: nextAgentVersion || (host as any).agentVersion || null,
       cpuInfo: nextCpuInfo || (host as any).cpuInfo || null,
       memoryTotal: memoryTotal || (host as any).memoryTotal || null,
+      ...(agentBootId ? { agentBootId } : {}),
+      ...(agentBootedAtSeconds > 0 ? { agentBootedAt: new Date(agentBootedAtSeconds * 1000) } : {}),
+      ...(agentProcessId > 0 ? { agentProcessId } : {}),
+      ...(agentProcessStartedAtSeconds > 0 ? { agentProcessStartedAt: new Date(agentProcessStartedAtSeconds * 1000) } : {}),
+      ...(agentLastReceivedRevision > 0 ? { agentLastReceivedRevision } : {}),
+      ...(agentLastAppliedRevision > 0 ? { agentLastAppliedRevision } : {}),
+      ...(agentLastReceivedHash ? { agentLastReceivedHash } : {}),
+      ...(agentLastAppliedHash ? { agentLastAppliedHash } : {}),
+      mimicRuntimeStatus,
+      mimicRuntimeMessage,
+      mimicRuntimeCheckedAt: new Date(),
+      ...(recoveryTriggered ? {
+        agentRecoveryStartedAt: new Date(),
+        agentRecoveryCompletedAt: null,
+        agentRecoveryExpected: 0,
+        agentRecoveryReady: 0,
+      } : {}),
+      ...(mimicEnvironment ? {
+        mimicAvailable: mimicEnvironment.available,
+        mimicVersion: mimicEnvironment.version,
+        mimicStatus: mimicEnvironment.status,
+        mimicMessage: mimicEnvironment.message,
+        mimicCheckedAt: new Date(),
+      } : {}),
       ...(addressChanged ? {
         geoCountryCode: null,
         geoCountryName: null,
@@ -890,6 +997,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
+    if (mimicEnvironment) {
+      Object.assign(host as any, {
+        mimicAvailable: mimicEnvironment.available,
+        mimicVersion: mimicEnvironment.version,
+        mimicStatus: mimicEnvironment.status,
+        mimicMessage: mimicEnvironment.message,
+        mimicCheckedAt: new Date(),
+      });
+      if (
+        previousHost.mimicAvailable !== mimicEnvironment.available
+        || String(previousHost.mimicStatus || "") !== mimicEnvironment.status
+        || String(previousHost.mimicVersion || "") !== String(mimicEnvironment.version || "")
+      ) {
+        appendPanelLog(
+          mimicEnvironment.available ? "info" : "warn",
+          `[Mimic] environment host=${host.id} name=${String((host as any).name || "-")} available=${mimicEnvironment.available} status=${mimicEnvironment.status} version=${mimicEnvironment.version || "-"}${mimicEnvironment.message ? ` message=${mimicEnvironment.message}` : ""}`,
+        );
+      }
+    }
     if (recoveredFromOffline) {
       void notifyHostOnlineIfNeeded(host).catch((error) => {
         console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -898,8 +1024,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (addressChanged) {
       await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
     }
-    if (recoveredFromOffline || rebootDetected) {
-      await resetAgentRuntimeStateForRecovery(host.id, recoveredFromOffline ? "agent-reconnected" : "agent-reboot-detected");
+    if (recoveryTriggered) {
+      const reason = recoveredFromOffline ? "agent-reconnected" : rebootDetected ? "agent-reboot-detected" : "agent-process-restarted";
+      await resetAgentRuntimeStateForRecovery(host.id, reason);
     }
     if (upgradedFirewallCounterAgent) {
       await resetAgentRuntimeStateForRecovery(host.id, "agent-firewall-counter-upgrade");
@@ -939,9 +1066,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     // 获取该主机的转发规则
-    const rules = await db.getForwardRulesForAgent(host.id);
-    const hostTunnels = await db.getTunnelsByHost(host.id);
-    const forwardProtocolSettings = await getForwardProtocolSettings();
+    const [rules, hostTunnels, forwardProtocolSettings, configRevision] = await Promise.all([
+      db.getForwardRulesForAgent(host.id),
+      db.getTunnelsByHost(host.id),
+      getForwardProtocolSettings(),
+      latestConfigRevision(),
+    ]);
     const actions: any[] = [];
     const dnsWatches = new Map<string, AgentDnsWatch>();
     const responseIssuedAt = Date.now();
@@ -973,18 +1103,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       dnsRuntimeGenerationByKey.set(key, next);
       return next;
     };
-    const buildMimicRuntimeSyncCmds = (dnsRefreshToken = "") => {
+    const buildMimicRuntimeSyncCmds = (dnsRefreshToken = "", approvedRemovals = new Map<string, string>()) => {
       if (mimicRequestedWithoutInterface && !hostInterface) {
-        return [
-          `echo "[mimic] no usable network interface; configure the host network interface or upgrade the Agent so it can report the default interface"; exit 1`,
-        ];
+        return {
+          commands: [`echo "[mimic] no usable network interface; configure the host network interface or upgrade the Agent so it can report the default interface"; exit 1`],
+          removalCommands: [] as string[],
+          rollbackCommands: [] as string[],
+        };
       }
       const cmds: string[] = [];
+      const removalCommands: string[] = [];
+      const rollbackCommands: string[] = [];
       const activeIfaces = Array.from(mimicFiltersByInterface.keys()).sort();
       const knownIfaces = new Set([
-        ...(hostInterface ? [hostInterface] : []),
         ...activeIfaces,
-        ...reportedMimicInterfaces,
+        ...approvedRemovals.keys(),
       ]);
       for (const networkInterface of Array.from(knownIfaces).sort()) {
         const desiredFilters = Array.from(mimicFiltersByInterface.get(networkInterface) || []).sort();
@@ -1006,8 +1139,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const enableRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update add ${serviceNameQuoted} default; else echo "[mimic] cannot restore enabled state for ${serviceName} on unsupported init system"; exit 1; fi`;
         const restartRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} restart; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} restart; else echo "[mimic] cannot restore service ${serviceName} on unsupported init system"; exit 1; fi`;
         if (filters.length === 0 && localPorts.length === 0) {
-          cmds.push(
-            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; fi`,
+          removalCommands.push(
+            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 2>/dev/null || true; fi`,
           );
           continue;
         }
@@ -1028,12 +1161,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `if ! command -v mimic >/dev/null 2>&1; then echo "[mimic] mimic is not installed; install mimic and mimic-dkms to use UDP camouflage"; exit 1; fi`,
           `if ! ip link show dev ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] network interface ${shQuote(networkInterface)} does not exist"; exit 1; fi`,
           `mkdir -p ${shQuote(MIMIC_CONFIG_DIR)}`,
-          `if [ -f ${shQuote(configPath)} ] && ! grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null && [ ! -f ${shQuote(backupPath)} ]; then if { ${serviceActiveCheck}; }; then : > ${shQuote(backupActivePath)}; else rm -f ${shQuote(backupActivePath)}; fi; if { ${serviceEnabledCheck}; }; then : > ${shQuote(backupEnabledPath)}; else rm -f ${shQuote(backupEnabledPath)}; fi; cp -p ${shQuote(configPath)} ${shQuote(backupPath)}; fi`,
+          `if [ -f ${shQuote(configPath)} ] && ! grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null && [ ! -f ${shQuote(backupPath)} ]; then if { ${serviceActiveCheck}; }; then : > ${shQuote(backupActivePath)}; else rm -f ${shQuote(backupActivePath)}; fi; if { ${serviceEnabledCheck}; }; then : > ${shQuote(backupEnabledPath)}; else rm -f ${shQuote(backupEnabledPath)}; fi; rm -f ${shQuote(`${configPath}.forwardx-last-good`)}; cp -p ${shQuote(configPath)} ${shQuote(backupPath)}; fi`,
           `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(configTempPath)}`,
           localPorts.length > 0
             ? `mimic_ipv4=$(ip -o -4 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk 'NR==1 { sub(/\\/.*/, "", $4); print $4 }'); mimic_ipv6=$(ip -o -6 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk '$4 !~ /^fe80:/ { sub(/\\/.*/, "", $4); print $4; exit }'); if [ -z "$mimic_ipv4$mimic_ipv6" ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] interface ${shQuote(networkInterface)} has no global IPv4 or IPv6 address"; exit 1; fi; for mimic_port in ${localPortList}; do [ -n "$mimic_ipv4" ] && printf '\\nfilter = local=%s:%s' "$mimic_ipv4" "$mimic_port" >> ${shQuote(configTempPath)}; [ -n "$mimic_ipv6" ] && printf '\\nfilter = local=[%s]:%s' "$mimic_ipv6" "$mimic_port" >> ${shQuote(configTempPath)}; done`
             : "",
-          `printf '\\n' >> ${shQuote(configTempPath)}; mimic_filter_count=$(grep -c '^filter = ' ${shQuote(configTempPath)} 2>/dev/null || true); if [ "$mimic_filter_count" -le 0 ] || [ "$mimic_filter_count" -gt 32 ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] invalid filter count: $mimic_filter_count (supported 1-32)"; exit 1; fi; mv -f ${shQuote(configTempPath)} ${shQuote(configPath)}; chmod 644 ${shQuote(configPath)}`,
+          `printf '\\n' >> ${shQuote(configTempPath)}; mimic_filter_count=$(grep -c '^filter = ' ${shQuote(configTempPath)} 2>/dev/null || true); if [ "$mimic_filter_count" -le 0 ] || [ "$mimic_filter_count" -gt 32 ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] invalid filter count: $mimic_filter_count (supported 1-32)"; exit 1; fi; if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then cp -p ${shQuote(configPath)} ${shQuote(`${configPath}.forwardx-last-good`)}; fi; mv -f ${shQuote(configTempPath)} ${shQuote(configPath)}; chmod 644 ${shQuote(configPath)}`,
           `echo "[mimic] sync ${shQuote(networkInterface)} filters=$mimic_filter_count"`,
           `if ! modprobe mimic 2>/dev/null; then echo "[mimic] kernel module could not be loaded"; exit 1; fi`,
           dnsRefreshToken
@@ -1045,8 +1178,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             : "",
           `if ! mimic show ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] runtime hooks are unavailable on ${shQuote(networkInterface)}"; systemctl status ${shQuote(serviceName)}.service --no-pager -l 2>/dev/null || true; journalctl -u ${shQuote(serviceName)}.service -n 80 --no-pager 2>/dev/null || true; exit 1; fi`,
         ].filter(Boolean).join("\n"));
+        rollbackCommands.push(`if [ -f ${shQuote(`${configPath}.forwardx-last-good`)} ]; then cp -p ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}; ${startManagedServiceCmd(serviceName)}; elif [ -f ${shQuote(backupPath)} ]; then ${stopManagedServiceCmd(serviceName)}; cp -p ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; rm -f ${shQuote(backupPath)} ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; else ${stopManagedServiceCmd(serviceName)}; rm -f ${shQuote(configPath)} 2>/dev/null || true; fi`);
       }
-      return cmds;
+      return { commands: cmds, removalCommands, rollbackCommands };
     };
 
     /** 包装一条只追加一次的 iptables 规则：先 -C 检查是否存在，不存在才 -A */
@@ -1276,7 +1410,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
-    const agentAllRules = await db.getForwardRulesForAgent(undefined);
+    const agentAllRules = await db.getForwardRulesForAgentScope(
+      Number(host.id),
+      (hostTunnels as any[]).map((tunnel: any) => Number(tunnel.id)),
+    );
     const hydrateRuntimeTarget = async (rule: any) => {
       if (!rule || !rule.targetIp) return;
       if (!(rule as any)._originalTargetIp) {
@@ -2557,8 +2694,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         };
       }))).filter(Boolean);
     const gostChains = [...tunnelGostChains];
+    const gostManagedConfigs: any[] = [];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
+      gostManagedConfigs.push({
+        path: RUNTIME_CONFIG_PATH,
+        contentBase64: encodedConfig,
+        format: "json",
+        serviceName: gostServiceName,
+      });
       const proxyDebugCmds = VERBOSE_AGENT_ACTIONS ? gostRules
         .filter((rule: any) => rule && Number(rule.tunnelId || 0) > 0 && (
           proxyProtocolEnabled(rule, "entryReceive") ||
@@ -2571,7 +2715,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         })) : [];
       const cmds = [
         `mkdir -p ${shQuote(RUNTIME_CONFIG_DIR)}`,
-        `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(RUNTIME_CONFIG_PATH)}`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(gostServiceName, gostServiceUnit),
         stopManagedServiceCmd(LEGACY_GOST_SERVICE_NAME),
@@ -2705,9 +2848,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }));
       }) : [];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
+      gostManagedConfigs.push({
+        path: TUNNEL_RUNTIME_CONFIG_PATH,
+        contentBase64: encodedConfig,
+        format: "json",
+        serviceName: TUNNEL_RUNTIME_SERVICE_NAME,
+      });
       const cmds = [
         `mkdir -p ${shQuote(RUNTIME_CONFIG_DIR)}`,
-        `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH)}`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME, [
           "[Unit]",
@@ -2840,15 +2988,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const config = shQuote(NGINX_CONFIG_PATH);
       return `[ -s ${config} ] && (${nginxRuntimeActiveCmd()}) && new_hash=$(${nginxConfigHashCmd()}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); [ -n "$new_hash" ] && [ "$new_hash" = "$old_hash" ]`;
     };
-    const deployNginxConfigCmd = (encodedConfig: string) => {
-      const staged = shQuote(NGINX_STAGED_CONFIG_PATH);
-      const live = shQuote(NGINX_CONFIG_PATH);
-      return [
-        `printf '%s' '${encodedConfig}' | base64 -d > ${staged}`,
-        `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c ${staged} -t`,
-        `if cmp -s ${staged} ${live} 2>/dev/null; then rm -f ${staged}; else mv -f ${staged} ${live}; fi`,
-      ].join(" && ");
-    };
     const reloadNginxIfConfigChangedCmd = () => {
       const config = shQuote(NGINX_CONFIG_PATH);
       const active = nginxRuntimeActiveCmd();
@@ -2857,11 +2996,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const reload = `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c ${config} -s reload || { [ -s /run/forwardx-nginx.pid ] && kill -HUP "$(cat /run/forwardx-nginx.pid)" 2>/dev/null; }`;
       return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ -z "$new_hash" ]; then echo "[service] ${NGINX_SERVICE_NAME} config hash failed"; exit 1; fi; if [ "$new_hash" != "$old_hash" ] || ! { ${active}; }; then if { ${active}; }; then ${reload} || { echo "[service] ${NGINX_SERVICE_NAME} reload failed"; exit 1; }; else ${start}; fi; printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${NGINX_SERVICE_NAME} config unchanged"; fi`;
     };
+    const nginxManagedConfigs: any[] = [];
+    const nginxManagedConfigPreCommands: string[] = [];
     const buildNginxRuntimeSyncCmds = async () => {
       const startedAt = Date.now();
       const upstreams: string[] = [];
       const servers: string[] = [];
-      const certCmds: string[] = [];
       const certFingerprints: string[] = [];
       const certKeys = new Set<string>();
       const countingCmds: string[] = [];
@@ -2903,11 +3043,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!certKeys.has(key)) {
           certKeys.add(key);
           certFingerprints.push(`# cert tunnel-${Number(tunnel?.id || 0)} ${cert.fingerprint}`);
-          certCmds.push(
-            `printf '%s' '${Buffer.from(cert.certPem, "utf8").toString("base64")}' | base64 -d > ${shQuote(cert.certPath)}`,
-            `printf '%s' '${Buffer.from(cert.keyPem, "utf8").toString("base64")}' | base64 -d > ${shQuote(cert.keyPath)}`,
-            `chmod 0644 ${shQuote(cert.certPath)} 2>/dev/null || true`,
-            `chmod 0600 ${shQuote(cert.keyPath)} 2>/dev/null || true`,
+          nginxManagedConfigs.push(
+            {
+              path: cert.certPath,
+              contentBase64: Buffer.from(cert.certPem, "utf8").toString("base64"),
+              format: "text",
+              mode: 0o644,
+            },
+            {
+              path: cert.keyPath,
+              contentBase64: Buffer.from(cert.keyPem, "utf8").toString("base64"),
+              format: "text",
+              mode: 0o600,
+            },
           );
         }
         return cert;
@@ -3066,12 +3214,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const encodedConfig = Buffer.from(config, "utf8").toString("base64");
       const cmds = [
         `mkdir -p ${shQuote(NGINX_CONFIG_DIR)} ${shQuote(NGINX_CERT_DIR)} /var/log/forwardx-agent`,
-        ...certCmds,
         `modules_conf=${shQuote(`${NGINX_CONFIG_DIR}/modules.conf`)}; : > "$modules_conf"; for mod in /usr/lib/nginx/modules/ngx_stream_module.so /usr/lib64/nginx/modules/ngx_stream_module.so /usr/share/nginx/modules/ngx_stream_module.so modules/ngx_stream_module.so; do if [ -s "$mod" ]; then printf 'load_module %s;\\n' "$mod" > "$modules_conf"; break; fi; done`,
       ];
+      nginxManagedConfigPreCommands.push(...cmds);
+      cmds.length = 0;
       if (hasServers) {
+        nginxManagedConfigs.push({
+          path: NGINX_CONFIG_PATH,
+          contentBase64: encodedConfig,
+          format: "text",
+          mode: 0o644,
+          validateCommand: `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c {{path}} -t`,
+          serviceName: NGINX_SERVICE_NAME,
+        });
         const nginxApplyCmd = [
-          deployNginxConfigCmd(encodedConfig),
           writeManagedServiceCmd(NGINX_SERVICE_NAME, [
             "[Unit]",
             "Description=ForwardX managed Nginx stream runtime",
@@ -3092,13 +3248,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ...(anyTunnelDnsRefresh(hostTunnels as any[]) ? [dnsRuntimeRefreshCmd("nginx"), `rm -f ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`] : []),
           reloadNginxIfConfigChangedCmd(),
         ].filter(Boolean).map((cmd) => `(${cmd})`).join(" && ");
-        cmds.unshift(ensureNginxBinaryCmd());
         cmds.push(nginxApplyCmd);
       } else {
-        cmds.push(
-          stopManagedServiceCmd(NGINX_SERVICE_NAME),
-          `rm -f ${shQuote(NGINX_CONFIG_PATH)} ${shQuote(NGINX_STAGED_CONFIG_PATH)} ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`,
-        );
+        cmds.push(stopManagedServiceCmd(NGINX_SERVICE_NAME));
       }
       cmds.push(...countingCmds);
       return cmds;
@@ -4954,10 +5106,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && Number(action?.sourcePort || 0) > 0
       && (action?.op === "apply" || action?.op === "remove")
     ));
+    const desiredMimicInterfaces = new Set(Array.from(mimicFiltersByInterface.keys()));
+    const approvedMimicRemovals = approveMimicInterfaceRemovals({
+      hostId: Number(host.id),
+      desiredInterfaces: desiredMimicInterfaces,
+      reportedInterfaces: reportedMimicInterfaces,
+      completeSnapshot: hasReportedRuntimeState && !localRuntimeState.requestLocalState,
+      rebootDetected: rebootDetected || processRestartDetected,
+      now: responseIssuedAt,
+    });
     const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0
       || mimicRequestedWithoutInterface
-      || reportedMimicInterfaces.size > 0;
-    const desiredMimicInterfaces = new Set(Array.from(mimicFiltersByInterface.keys()));
+      || approvedMimicRemovals.size > 0;
     const mimicRuntimeTopologyMismatch = desiredMimicInterfaces.size !== reportedMimicInterfaces.size
       || Array.from(desiredMimicInterfaces).some((iface) => !reportedMimicInterfaces.has(iface));
     const runtimeSyncBootstrap = !supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState;
@@ -4996,6 +5156,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         knownRunning: false,
         forceRuntimeSync: gostRuntimeServiceUnhealthy || runtimeSyncBootstrap || gostPeriodicReconcileDue,
         commands: await buildGostRuntimeSyncCmds(),
+        managedConfigs: gostManagedConfigs,
       } as any;
       const runtimeRepairResendMs = gostRuntimeServiceUnhealthy
         ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS
@@ -5037,6 +5198,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || nginxModelMayHaveChanged
       || nginxPeriodicReconcileDue
     )) {
+      const nginxRuntimeCommands = await getNginxRuntimeSyncCmds();
       const nginxRuntimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,
@@ -5049,7 +5211,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         protocol: "tcp",
         knownRunning: false,
         forceRuntimeSync: true,
-        commands: await getNginxRuntimeSyncCmds(),
+        preCommands: [ensureNginxBinaryCmd(), ...nginxManagedConfigPreCommands],
+        commands: nginxRuntimeCommands,
+        managedConfigs: nginxManagedConfigs,
       } as any;
       const runtimeRepairResendMs = nginxRuntimeServiceUnhealthy
         ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS
@@ -5089,6 +5253,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (shouldLogMimicRuntimePlan(Number(host.id), mimicLogSignature)) {
         appendPanelLog("info", `[Mimic] runtime plan host=${host.id} iface=${hostInterface || "-"} requestedWithoutInterface=${mimicRequestedWithoutInterface} dnsRefresh=${!!mimicDnsRefreshToken} ${mimicLogPlan || "plan=-"}`);
       }
+      const mimicCommandPlan = buildMimicRuntimeSyncCmds(mimicDnsRefreshToken, approvedMimicRemovals);
       const mimicRuntimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,
@@ -5102,8 +5267,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         knownRunning: false,
         forceRuntimeSync: true,
         reportStatus: true,
-        failureMessage: "mimic UDP camouflage synchronization failed; check the host network interface, mimic installation, kernel module, and Agent logs",
-        commands: buildMimicRuntimeSyncCmds(mimicDnsRefreshToken),
+        requiresMimicEnvironment: mimicFiltersByInterface.size > 0 || mimicRequestedWithoutInterface,
+        failureMessage: "mimic UDP 混淆同步失败，请检查主机网卡、mimic/mimic-dkms 环境和 Agent 日志",
+        commands: mimicCommandPlan.commands,
+        removalCommands: mimicCommandPlan.removalCommands,
+        removalToken: Array.from(approvedMimicRemovals.entries()).sort().map(([iface, token]) => `${iface}:${token}`).join(","),
+        rollbackCommands: mimicCommandPlan.rollbackCommands,
       } as any;
       if (shouldSendRuntimeSyncAction(
         Number(host.id),
@@ -5166,12 +5335,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return false;
     };
-    const normalizedActions = effectiveActions.map((action: any) => ({
-      ...action,
-      issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
-      knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
-      statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
-    }));
+    const normalizedActions = effectiveActions.map((action: any) => {
+      const normalized = {
+        ...action,
+        issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
+        configRevision,
+        knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
+        statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
+      };
+      return { ...normalized, configHash: hashConfig(normalized) };
+    });
     if (!deferActionsForLocalState) {
       const runningRuleKeys = new Set(runningRules.map((rule: any) => ruleRuntimeIdentityKey(rule.ruleId, rule.sourcePort, rule.protocol)));
       for (const action of normalizedActions) {
@@ -5198,6 +5371,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const activeWorkActions = supportsDesiredState
       ? (deferActionsForLocalState ? [] : orderedActions.filter((action: any) => action.op === "remove" || !action.knownRunning))
       : orderedActions;
+    const recoveryWasInProgress = recoveryTriggered
+      || (!!previousHost.agentRecoveryStartedAt && !previousHost.agentRecoveryCompletedAt);
+    if (recoveryWasInProgress) {
+      const currentApplyCount = activeWorkActions.filter((action: any) => action.op === "apply").length;
+      const expected = recoveryTriggered
+        ? orderedActions.filter((action: any) => action.op === "apply").length
+        : Math.max(Number(previousHost.agentRecoveryExpected || 0), currentApplyCount);
+      const ready = Math.max(0, expected - currentApplyCount);
+      const completed = !deferActionsForLocalState && currentApplyCount === 0;
+      await db.updateHostHeartbeat(host.id, {
+        agentRecoveryExpected: expected,
+        agentRecoveryReady: completed ? expected : ready,
+        ...(completed ? { agentRecoveryCompletedAt: new Date() } : {}),
+      } as any);
+      if (completed && !previousHost.agentRecoveryCompletedAt) {
+        appendPanelLog("info", `[AgentRecovery] host=${host.id} complete ready=${expected}/${expected} bootId=${agentBootId || "-"} pid=${agentProcessId || "-"}`);
+      }
+    }
     const hasTunnelApplyActions = activeWorkActions.some((action: any) => (
       action.op === "apply"
       && !Number(action.ruleId || 0)
@@ -5255,6 +5446,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const desiredState = sendDesiredState ? {
       version: 1,
       issuedAt: actionBatchIssuedAt,
+      configRevision,
+      configHash: hashConfig(orderedActions.map((action: any) => ({ ...action, issuedAt: 0 }))),
       actions: orderedActions,
     } : undefined;
     const stateSections = buildAgentStateResponseSections({
@@ -5271,6 +5464,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // 无需等待下一个心跳周期即可执行转发规则变更。
     // heartbeat response 里仍携带 desiredState 作为兜底（SSE 断开时的最终一致保证）。
     if (desiredState) {
+      if (agentDesiredDispatchAuditHash.get(Number(host.id)) !== desiredState.configHash) {
+        agentDesiredDispatchAuditHash.set(Number(host.id), desiredState.configHash);
+        void recordConfigAuditEvent({
+          resourceType: "runtime",
+          resourceId: Number(host.id),
+          hostId: Number(host.id),
+          action: "dispatch",
+          source: "system:desired-state",
+          after: { configRevision, configHash: desiredState.configHash, actionCount: orderedActions.length },
+        });
+      }
       pushAgentDesiredState(Number(host.id), {
         desiredState,
         runningRules,

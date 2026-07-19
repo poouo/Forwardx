@@ -6,7 +6,7 @@ export function getSessionCookieOptions(req: Request): CookieOptions {
   return {
     httpOnly: true,
     secure: isSecure,
-    sameSite: isSecure ? "none" : "lax",
+    sameSite: "lax",
     maxAge: TEN_DAYS_MS,
     path: "/",
   };

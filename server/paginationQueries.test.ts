@@ -178,6 +178,14 @@ test("database-backed list queries page, search, scope, and hydrate only request
       const tunnelPage = await tunnels.getTunnelsPage({ page: 1, pageSize: 10, search: "Tokyo Entry" });
       assert.equal(tunnelPage.totalItems, 1);
       assert.equal(tunnelPage.items[0].id, 20);
+      assert.equal(tunnelPage.availableItems, 1);
+
+      await runtime.executeRaw(
+        'UPDATE "tunnels" SET "lastLatencyMs" = ?, "lastTestStatus" = ?, "lastTestAt" = ? WHERE "id" = ?',
+        [25, "success", now, 21],
+      );
+      const allTunnelPage = await tunnels.getTunnelsPage({ page: 1, pageSize: 10 });
+      assert.equal(allTunnelPage.availableItems, 2);
 
       const groupPage = await groups.getForwardGroupsPage({
         page: 1,

@@ -19,6 +19,8 @@ type selfTestJob struct {
 
 var selfTestQueue = make(chan selfTestJob, selfTestQueueCapacity)
 var selfTestWorkersOnce sync.Once
+var selfTestInFlightMu sync.Mutex
+var selfTestInFlight = map[int]bool{}
 
 func selfTestPoller(cfg Config) {
 	activeUntil := time.Time{}
@@ -43,10 +45,14 @@ func selfTestPoller(cfg Config) {
 }
 
 func enqueueSelfTest(cfg Config, t selfTest) {
+	if !claimSelfTest(t.TestID) {
+		return
+	}
 	selfTestWorkersOnce.Do(startSelfTestWorkers)
 	select {
 	case selfTestQueue <- selfTestJob{cfg: cfg, test: t}:
 	default:
+		releaseSelfTest(t.TestID)
 		if shouldLogAgentReport("selftest-queue-full", agentReportLogInterval) {
 			logf("selftest queue full; dropping test=%d target=%s", t.TestID, t.TargetIP)
 		}
@@ -57,10 +63,32 @@ func startSelfTestWorkers() {
 	for i := 0; i < selfTestWorkerConcurrency; i++ {
 		go func() {
 			for job := range selfTestQueue {
-				handleSelfTest(job.cfg, job.test)
+				func() {
+					defer releaseSelfTest(job.test.TestID)
+					handleSelfTest(job.cfg, job.test)
+				}()
 			}
 		}()
 	}
+}
+
+func claimSelfTest(testID int) bool {
+	if testID <= 0 {
+		return false
+	}
+	selfTestInFlightMu.Lock()
+	defer selfTestInFlightMu.Unlock()
+	if selfTestInFlight[testID] {
+		return false
+	}
+	selfTestInFlight[testID] = true
+	return true
+}
+
+func releaseSelfTest(testID int) {
+	selfTestInFlightMu.Lock()
+	delete(selfTestInFlight, testID)
+	selfTestInFlightMu.Unlock()
 }
 
 func handleSelfTest(cfg Config, t selfTest) {
@@ -92,10 +120,18 @@ func handleSelfTest(cfg Config, t selfTest) {
 	}
 
 	latency, reachable, resolvedTarget := 0, false, ""
-	if t.WireGuardPeerID != "" && t.TunnelID > 0 {
-		latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, 3*time.Second)
-	} else {
-		latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, 3*time.Second)
+	for attempt := 0; attempt < selfTestTCPAttempts(t); attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+		if t.WireGuardPeerID != "" && t.TunnelID > 0 {
+			latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, 3*time.Second)
+		} else {
+			latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, 3*time.Second)
+		}
+		if reachable {
+			break
+		}
 	}
 	target := net.JoinHostPort(t.TargetIP, strconv.Itoa(t.TargetPort))
 	msg := ""
@@ -119,6 +155,15 @@ func handleSelfTest(cfg Config, t selfTest) {
 	}
 	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
 		logSelfTestReportError(t.TestID, target, err)
+	}
+}
+
+func selfTestTCPAttempts(t selfTest) int {
+	switch strings.ToLower(strings.TrimSpace(t.Kind)) {
+	case "tunnel", "tunnel-hop", "forward-via-tunnel", "forward-via-tunnel-entry":
+		return 4
+	default:
+		return 1
 	}
 }
 

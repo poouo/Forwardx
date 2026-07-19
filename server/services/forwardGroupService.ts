@@ -338,6 +338,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
   if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
 
   const batchId = createHopTestBatch("fg", groupId);
+  const testHostIds = new Set<number>();
   let queued = 0;
   for (const probe of probes) {
     const message = JSON.stringify({
@@ -363,9 +364,12 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
       message,
     } as any);
     registerHopTest(batchId, Number(testId));
-    pushAgentRefresh(probe.fromHostId, "forward-chain-selftest");
+    testHostIds.add(probe.fromHostId);
     queued += 1;
     appendPanelLog("info", `[SelfTest] forward-chain=${groupId} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}${probe.targetPort ? `:${probe.targetPort}` : ""}`);
+  }
+  for (const hostId of testHostIds) {
+    pushAgentRefresh(hostId, "forward-chain-selftest", { urgent: true });
   }
   return { success: false, pending: true, queued };
 }

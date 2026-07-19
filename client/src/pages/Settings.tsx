@@ -808,6 +808,8 @@ function PanelLogsSection() {
   const [exportLevel, setExportLevel] = useState<PanelLogLevel>("all");
   const [panelLogOffset, setPanelLogOffset] = useState(0);
   const panelLogSummaryRef = useRef<PanelLogSummary>(EMPTY_PANEL_LOG_SUMMARY);
+  const [supportTaskId, setSupportTaskId] = useState("");
+  const downloadedSupportTaskRef = useRef("");
   const { data: panelLogs, isLoading: panelLogsLoading, isFetching: panelLogsFetching, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({
     level: panelLogLevel,
     limit: LOG_PAGE_SIZE,
@@ -831,6 +833,27 @@ function PanelLogsSection() {
     },
     onError: (err) => toast.error(err.message || "清空日志失败"),
   });
+  const startSupportBundleMutation = trpc.system.startSupportBundle.useMutation({
+    onSuccess: (data) => {
+      downloadedSupportTaskRef.current = "";
+      setSupportTaskId(data.taskId);
+      toast.info(`正在收集 ${data.requested} 台在线 Agent 的诊断信息`);
+    },
+    onError: (err) => toast.error(err.message || "启动支持包任务失败"),
+  });
+  const supportBundleQuery = trpc.system.supportBundleStatus.useQuery(
+    { taskId: supportTaskId || "00000000-0000-0000-0000-000000000000" },
+    { enabled: !!supportTaskId, refetchInterval: supportTaskId ? 1000 : false },
+  );
+  useEffect(() => {
+    const data = supportBundleQuery.data;
+    if (!supportTaskId || !data?.complete || !data.download || downloadedSupportTaskRef.current === supportTaskId) return;
+    downloadedSupportTaskRef.current = supportTaskId;
+    downloadTextFile(data.download.filename, data.download.content, data.download.mimeType);
+    const failed = data.hosts.filter((host) => host.status !== "complete").length;
+    toast.success(failed > 0 ? `支持包已生成，${failed} 台 Agent 未返回完整诊断` : "支持包已生成");
+    setSupportTaskId("");
+  }, [supportBundleQuery.data, supportTaskId]);
   const logLevelClass = (level: string) => {
     if (level === "error") return "text-destructive";
     if (level === "warn") return "text-amber-600 dark:text-amber-400";
@@ -899,6 +922,16 @@ function PanelLogsSection() {
                 </Button>
               </div>
               <Button variant="outline" size="sm" onClick={refreshPanelLogs} disabled={panelLogsFetching}>刷新</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startSupportBundleMutation.mutate()}
+                disabled={startSupportBundleMutation.isPending || !!supportTaskId}
+                title="收集面板日志、配置审计和在线 Agent 的脱敏诊断"
+              >
+                {supportTaskId ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1.5 h-3.5 w-3.5" />}
+                {supportTaskId ? `收集中 ${supportBundleQuery.data?.total ? supportBundleQuery.data.total - supportBundleQuery.data.pending : 0}/${supportBundleQuery.data?.total || 0}` : "生成支持包"}
+              </Button>
               <Button variant="destructive" size="sm" onClick={() => clearLogsMutation.mutate()} disabled={clearLogsMutation.isPending}>清空日志</Button>
             </div>
           </div>
@@ -1207,6 +1240,14 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
 
   const importBackupMutation = trpc.system.importPanelBackup.useMutation({
     onSuccess: async (result) => {
+      const insertedRows = Number(result.insertedRows || 0);
+      const updatedRows = Number(result.updatedRows || 0);
+      const reusedRows = Number(result.reusedRows || 0);
+      const skippedRows = Number(result.skippedRows || 0);
+      const validation = result.agentValidation;
+      const validationText = validation?.requestedHosts
+        ? ` 已请求 ${validation.requestedHosts} 台 Agent 重新检查连接和 Mimic 环境，${validation.pendingHosts || 0} 台离线主机将在重新连接后上报。`
+        : "";
       setImportProgress({
         percent: 88,
         step: "正在刷新面板数据",
@@ -1221,11 +1262,25 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       await utils.system.backupSummary.invalidate();
       finishImportProgress({
         percent: 100,
-        step: result.mode === "incremental" ? "增量导入完成" : "备份恢复完成",
-        detail: result.mode === "incremental" ? "当前面板数据已保留，备份数据已增量导入。" : "备份数据已恢复到当前面板。",
+        step: result.alreadyImported
+          ? "已阻止重复导入"
+          : result.partial
+          ? "备份已部分恢复"
+          : result.mode === "incremental"
+          ? "增量导入完成"
+          : "备份恢复完成",
+        detail: result.alreadyImported
+          ? "该备份文件已经导入过，本次未再次写入数据。"
+          : `其余可用数据已经导入：新增 ${insertedRows} 条，更新 ${updatedRows} 条，复用 ${reusedRows} 条，跳过 ${skippedRows} 条。${validationText}`,
         status: "success",
       });
-      toast.success(result.mode === "incremental" ? "增量导入完成，当前面板数据已保留" : "备份恢复完成");
+      if (result.alreadyImported) {
+        toast.warning("该备份已经导入过，已阻止重复写入");
+      } else if (result.partial) {
+        toast.warning(result.warnings?.[0] || `备份已部分恢复，跳过 ${skippedRows} 条；其余数据已经导入`);
+      } else {
+        toast.success(result.mode === "incremental" ? "增量导入完成，当前面板数据已保留" : "备份恢复完成");
+      }
     },
     onError: (err) => {
       finishImportProgress({

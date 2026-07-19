@@ -53,6 +53,18 @@ export interface MigrationSnapshotSummary {
 export interface MigrationImportResult {
   success: true;
   mode: "restore" | "incremental";
+  partial: boolean;
+  warnings: string[];
+  insertedRows: number;
+  updatedRows: number;
+  reusedRows: number;
+  skippedRows: number;
+  alreadyImported?: boolean;
+  agentValidation?: {
+    requestedHosts: number;
+    reachedHosts: number;
+    pendingHosts: number;
+  };
   summary: MigrationSnapshotSummary;
   existingData: {
     hasExistingData: boolean;
@@ -463,6 +475,7 @@ const IMPORT_TABLE_ORDER = [
   "plugin_store_sources",
   "plugin_assets",
   "plugin_agent_states",
+  "config_audit_events",
   "system_settings",
 ] as const;
 
@@ -479,6 +492,7 @@ const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
   "tcping_stats",
   "forward_tests",
   "forward_group_events",
+  "config_audit_events",
   "system_settings",
 ]);
 
@@ -878,6 +892,8 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
         "panelMigrationStartedAt",
         "agentMigrationTargetPanelUrl",
         "agentMigrationTargetExpiresAt",
+        "lastPanelBackupImportFingerprint",
+        "lastPanelBackupImportResult",
       ]);
       if (skippedKeys.has(key)) return null;
       return { row: { key, value: source.value ?? null, updatedAt: source.updatedAt || nowDate() }, existingWhere: { key } };
@@ -940,6 +956,11 @@ async function resetImportedRuntimeState(maps: ImportMaps) {
   await updateByIds("hosts", hostIds, {
     isOnline: false,
     lastHeartbeat: null,
+    mimicAvailable: null,
+    mimicVersion: null,
+    mimicStatus: "pending",
+    mimicMessage: null,
+    mimicCheckedAt: null,
     agentUpgradeRequested: false,
     agentUpgradeTargetVersion: null,
     agentUpgradeReleaseVersion: null,
@@ -987,6 +1008,7 @@ export async function importMigrationSnapshot(
   const updated: Record<string, number> = {};
   const reused: Record<string, number> = {};
   const skipped: Record<string, number> = {};
+  const warnings: string[] = [];
   for (const table of MIGRATION_TABLES) maps[table] = new Map();
 
   const totalRows = Math.max(1, IMPORT_TABLE_ORDER.reduce((sum, table) => sum + (snapshot.tables?.[table]?.length || 0), 0));
@@ -1037,7 +1059,7 @@ export async function importMigrationSnapshot(
   const criticalSkipped = Object.entries(skipped)
     .filter(([table, count]) => count > 0 && !BEST_EFFORT_MIGRATION_TABLES.has(table as MigrationTableName));
   if (criticalSkipped.length > 0) {
-    throw new Error(`关键数据导入不完整：${criticalSkipped.map(([table, count]) => `${table} ${count} 条`).join("，")}`);
+    warnings.push(`部分关键数据未能导入：${criticalSkipped.map(([table, count]) => `${table} ${count} 条`).join("，")}。其余数据已经导入，请先检查结果，不要重复提交同一备份。`);
   }
 
   onImportedIds?.({
@@ -1046,19 +1068,31 @@ export async function importMigrationSnapshot(
     forwardRules: Object.fromEntries(maps.forward_rules || []),
   });
 
+  const runPostImportStep = async (label: string, task: () => Promise<void>) => {
+    try {
+      await task();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      warnings.push(`${label}未完全完成：${detail}`);
+      console.warn(`[Migration] ${label} failed after rows were imported: ${detail}`);
+    }
+  };
+
   onProgress?.(92, "正在修复关联关系");
-  await fixDeferredForwardGroupReferences(snapshot, maps);
-  await resetImportedRuntimeState(maps);
-  await syncPostgresqlSequences();
+  await runPostImportStep("关联关系修复", () => fixDeferredForwardGroupReferences(snapshot, maps));
+  await runPostImportStep("运行状态重置", () => resetImportedRuntimeState(maps));
+  await runPostImportStep("数据库序列同步", syncPostgresqlSequences);
 
   onProgress?.(95, "正在恢复系统标记");
-  if (!snapshot.tables.system_settings?.some((row) => row.key === "storeEnabled")) {
-    await setSetting("storeEnabled", "false");
-  }
-  await setSetting("setupDataChoice", "use-existing");
-  await setSetting("lastPanelImportAt", String(Math.floor(Date.now() / 1000)));
-  await setSetting("lastPanelImportMode", mode);
-  if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
+  await runPostImportStep("系统标记恢复", async () => {
+    if (!snapshot.tables.system_settings?.some((row) => row.key === "storeEnabled")) {
+      await setSetting("storeEnabled", "false");
+    }
+    await setSetting("setupDataChoice", "use-existing");
+    await setSetting("lastPanelImportAt", String(Math.floor(Date.now() / 1000)));
+    await setSetting("lastPanelImportMode", mode);
+    if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
+  });
   invalidatePanelDataSummaryCache();
 
   onProgress?.(96, "正在重建流量汇总缓存");
@@ -1077,9 +1111,22 @@ export async function importMigrationSnapshot(
     console.warn("[MySQL] Post-migration maintenance skipped:", error instanceof Error ? error.message : String(error));
   });
 
+  const countRows = (counts: Record<string, number>) => Object.values(counts)
+    .reduce((sum, count) => sum + Math.max(0, Number(count) || 0), 0);
+  const insertedRows = countRows(inserted);
+  const updatedRows = countRows(updated);
+  const reusedRows = countRows(reused);
+  const skippedRows = countRows(skipped);
+
   return {
     success: true,
     mode,
+    partial: criticalSkipped.length > 0 || warnings.length > 0,
+    warnings,
+    insertedRows,
+    updatedRows,
+    reusedRows,
+    skippedRows,
     summary,
     existingData: {
       hasExistingData: existingData.hasExistingData,
@@ -1423,6 +1470,9 @@ export function startPanelMigration(input: {
         onProgress: (progress, step) => setJob(job, { progress, step }),
         onImportedIds: (ids) => { importedIds = ids; },
       });
+      if (imported.partial) {
+        throw new Error(imported.warnings[0] || "迁移数据导入不完整，已停止切换 Agent");
+      }
       if (!importedIds) throw new Error("迁移数据关联映射生成失败");
       expectations = buildMigrationRuntimeExpectations(snapshot, importedIds);
       setJob(job, { progress: 98, step: "正在验证新面板公开地址" });

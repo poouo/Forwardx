@@ -350,7 +350,7 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
     if (shouldScheduleGeoRefresh) scheduleHostGeoRefresh(hosts);
     return hosts;
   }
-  // 鏅€氱敤鎴凤細杩斿洖鑷繁鍒涘缓鐨勪富鏈?+ 鏅€氭巿鏉冧富鏈?+ 宸叉巿鏉冪殑娴侀噺璁¤垂涓绘満
+  // 普通用户可见自己创建、获授权及按量计费授权的主机。
   const [allowedHostIds, billingResourceIds] = await Promise.all([
     db.getUserEffectiveAllowedHostIds(user.id),
     db.getUserUsableTrafficBillingResourceIds(user.id),
@@ -942,7 +942,7 @@ export const hostsRouter = router({
             if (!hasPermission) return null;
           }
         }
-        return host;
+        return ctx.user.role === "admin" ? host : compactHostForList(host);
       }),
     create: protectedProcedure
       .input(z.object({

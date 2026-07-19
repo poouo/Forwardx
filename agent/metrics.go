@@ -192,22 +192,9 @@ func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) ti
 func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
 	ruleTasks := []tcpingTask{}
 	for _, state := range readLocalRuleStates() {
-		if state.RuleID <= 0 || state.TargetIP == "" || state.TargetPort <= 0 {
-			continue
+		if task, ok := buildRuleLatencyProbeTask(state); ok {
+			ruleTasks = append(ruleTasks, task)
 		}
-		method := "tcping"
-		if normalizeRuntimeProtocol(state.Protocol) == "udp" {
-			method = "ping"
-		}
-		ruleTasks = append(ruleTasks, tcpingTask{
-			Kind:       "rule",
-			RuleID:     state.RuleID,
-			Method:     method,
-			TargetIP:   state.TargetIP,
-			TargetPort: state.TargetPort,
-			SourcePort: parseStatePort(state.Port),
-			ProbeKey:   fmt.Sprintf("rule:%d:%s:%d:%s", state.RuleID, strings.ToLower(strings.TrimSpace(state.TargetIP)), state.TargetPort, method),
-		})
 	}
 
 	tunnelTasks := []tcpingTask{}
@@ -324,6 +311,33 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			}
 		}
 	}
+}
+
+func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
+	port := parseStatePort(state.Port)
+	if desired, ok := desiredRunningRuleForStatePort(state.RuleID, port); ok {
+		state.TunnelID = desired.TunnelID
+		state.ForwardType = desired.ForwardType
+		state.TargetIP = desired.TargetIP
+		state.TargetPort = desired.TargetPort
+		state.Protocol = desired.Protocol
+	}
+	if state.RuleID <= 0 || port <= 0 || strings.TrimSpace(state.TargetIP) == "" || state.TargetPort <= 0 {
+		return tcpingTask{}, false
+	}
+	method := "tcping"
+	if normalizeRuntimeProtocol(state.Protocol) == "udp" {
+		method = "ping"
+	}
+	return tcpingTask{
+		Kind:       "rule",
+		RuleID:     state.RuleID,
+		Method:     method,
+		TargetIP:   state.TargetIP,
+		TargetPort: state.TargetPort,
+		SourcePort: port,
+		ProbeKey:   fmt.Sprintf("rule:%d:%s:%d:%s", state.RuleID, strings.ToLower(strings.TrimSpace(state.TargetIP)), state.TargetPort, method),
+	}, true
 }
 
 func scheduleTCPingCollection(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {

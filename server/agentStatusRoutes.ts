@@ -5,7 +5,7 @@ import { pushAgentRefresh, requestHostTcping } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
 import {
   getTunnelRuntimeHostStatus,
-  getTunnelRuntimeReadyCount,
+  getTunnelRuntimeTopologyStatus,
   recordTunnelRuntimeHostStatus,
 } from "./tunnelRuntimeStatus";
 import { getAgentHostFromRequest } from "./agentAuth";
@@ -187,35 +187,36 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     const hopHostIds = Array.isArray(hops)
       ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
       : [];
-    if (isExtraExit) {
+    const usesExitCandidates = !!(tunnel as any).loadBalanceEnabled
+      && String((tunnel as any).loadBalanceStrategy || "").toLowerCase() !== "none";
+    const aggregateRuntime = hopHostIds.length >= 3 || isExtraExit || (usesExitCandidates && Number(tunnel.exitHostId) === Number(host.id));
+    if (aggregateRuntime) {
       recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
-      if (shouldLogStatus(`tunnel:${tunnelId}:extra:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
-        appendPanelLog(
-          !!isRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} extraExit=${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-        );
-      }
-      return { status: 200, body: { success: true } };
-    }
-    if (hopHostIds.length >= 3) {
-      recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
-      const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
-      const nextRunning = !!isRunning && readyCount >= hopHostIds.length;
+      const topology = getTunnelRuntimeTopologyStatus(tunnelId, {
+        entryHostIds: tunnelEntryHostIds,
+        hopHostIds,
+        primaryExitHostId: Number(tunnel.exitHostId),
+        extraExitHostIds,
+        relayMode: String((tunnel as any).relayMode || "chain"),
+        loadBalanceEnabled: !!(tunnel as any).loadBalanceEnabled,
+        loadBalanceStrategy: String((tunnel as any).loadBalanceStrategy || "none"),
+      });
+      const nextRunning = topology.running;
       await db.updateTunnelRunningStatus(tunnelId, nextRunning);
       if (isRunning) {
-        requestTunnelTcpingRefresh(hopHostIds.slice(0, -1), nextRunning ? "tunnel-tcping-refresh" : "tunnel-runtime-probe-refresh");
+        requestTunnelTcpingRefresh(tunnelEntryHostIds, nextRunning ? "tunnel-tcping-refresh" : "tunnel-runtime-probe-refresh");
       }
       if (!nextRunning && isRunning) {
-        for (const hostId of hopHostIds) {
+        for (const hostId of topology.missingHostIds) {
           if (Number(hostId) !== Number(host.id) && getTunnelRuntimeHostStatus(tunnelId, hostId) !== true) {
             pushAgentRefresh(hostId, "tunnel-runtime-sync");
           }
         }
       }
-      if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:ready=${readyCount}/${hopHostIds.length}`, !isRunning || !!message)) {
+      if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}:ready=${topology.readyCount}/${topology.hostCount}`, !nextRunning || !!message)) {
         appendPanelLog(
-          !!isRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
+          nextRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${isExtraExit ? "extraExit=" : ""}${hostLogText} running=${!!isRunning} effective=${nextRunning} ready=${topology.readyCount}/${topology.hostCount}${message ? ` message=${message}` : ""}`,
         );
       }
       return { status: 200, body: { success: true } };

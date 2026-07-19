@@ -1532,6 +1532,16 @@ function withEmptyTrafficLatency(rows: TrafficSummaryRow[]) {
   }));
 }
 
+export function shouldUseLatencyCandidate(
+  current: { recordedAt?: Date | string | null } | null | undefined,
+  candidate: { recordedAt?: Date | string | null },
+) {
+  const currentAt = current?.recordedAt ? new Date(current.recordedAt).getTime() : 0;
+  const candidateAt = candidate.recordedAt ? new Date(candidate.recordedAt).getTime() : 0;
+  if (!Number.isFinite(candidateAt) || candidateAt <= 0) return currentAt <= 0;
+  return !Number.isFinite(currentAt) || candidateAt >= currentAt;
+}
+
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
@@ -1813,13 +1823,16 @@ export async function getTrafficSummaryByRule(opts: {
     const ruleId = Number(row.ruleId);
     if (!chainParentRuleIds.has(ruleId) || latestByRule.get(ruleId)?.source === "forward_test") continue;
     const status = String(row.status || "").toLowerCase();
-    latestByRule.set(ruleId, {
+    const candidate = {
       ruleId,
       latencyMs: status === "success" && row.latencyMs !== null && row.latencyMs !== undefined ? Number(row.latencyMs) : null,
       isTimeout: status !== "success",
       recordedAt: rowDate(row.updatedAt || row.createdAt),
       source: "forward_test",
-    });
+    };
+    if (shouldUseLatencyCandidate(latestByRule.get(ruleId), candidate)) {
+      latestByRule.set(ruleId, candidate);
+    }
   }
   const tunnelRuleIdsForTests = Array.from(tunnelRuleIds);
   const latestTunnelTestRows = tunnelRuleIdsForTests.length > 0
@@ -1848,13 +1861,16 @@ export async function getTrafficSummaryByRule(opts: {
     const ruleId = Number(row.ruleId);
     if (!tunnelRuleIds.has(ruleId) || latestByRule.get(ruleId)?.source === "forward_test") continue;
     const status = String(row.status || "").toLowerCase();
-    latestByRule.set(ruleId, {
+    const candidate = {
       ruleId,
       latencyMs: status === "success" && row.latencyMs !== null && row.latencyMs !== undefined ? Number(row.latencyMs) : null,
       isTimeout: status !== "success",
       recordedAt: rowDate(row.updatedAt || row.createdAt),
       source: "forward_test",
-    });
+    };
+    if (shouldUseLatencyCandidate(latestByRule.get(ruleId), candidate)) {
+      latestByRule.set(ruleId, candidate);
+    }
   }
   return result.map((item) => {
     const latest = latestByRule.get(item.ruleId);
@@ -2393,7 +2409,7 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
     `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
      FROM ${quoteIdentifier("forward_tests")}
      WHERE ${quoteIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteIdentifier("updatedAt")} < ?`,
+       AND ${quoteIdentifier("createdAt")} < ?`,
     [cutoffSec],
   );
   if (staleTests.length === 0) return [];
@@ -2411,7 +2427,7 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
          ${quoteIdentifier("updatedAt")} = ?
      WHERE ${quoteIdentifier("id")} IN (${placeholders})
        AND ${quoteIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteIdentifier("updatedAt")} < ?`,
+       AND ${quoteIdentifier("createdAt")} < ?`,
     [ttlSeconds, nowSec, ...ids, cutoffSec],
   );
   const changed = rawAffectedRows(info);

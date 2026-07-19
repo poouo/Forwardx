@@ -85,6 +85,11 @@ jobs:
       - name: Check version split
         run: pnpm check:versions
 
+      - name: Type check and test shared application code
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm test:server
+
       - name: Check existing Android APK
         id: existing_apk
         if: steps.release.outputs.publish_release == 'true' && steps.release.outputs.build_type == 'release'
@@ -132,31 +137,16 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEY_PASSWORD" ]]; then
-            mkdir -p android/app/keystore
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/keystore/release.jks
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "source=secrets" >> "$GITHUB_OUTPUT"
-            echo "keystore_file=keystore/release.jks" >> "$GITHUB_OUTPUT"
-            echo "keystore_type=" >> "$GITHUB_OUTPUT"
-          else
-            FALLBACK_ALIAS="$(keytool -list -storetype PKCS12 -keystore android/app/keystore/community-release.p12 -storepass forwardx-community-release 2>/dev/null | awk -F, '/PrivateKeyEntry/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }')"
-            if [[ -z "$FALLBACK_ALIAS" ]]; then
-              FALLBACK_ALIAS=1
-            fi
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "source=fallback" >> "$GITHUB_OUTPUT"
-            echo "keystore_file=keystore/community-release.p12" >> "$GITHUB_OUTPUT"
-            echo "keystore_type=pkcs12" >> "$GITHUB_OUTPUT"
-            echo "key_alias=$FALLBACK_ALIAS" >> "$GITHUB_OUTPUT"
-            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          ### Android signing
-
-          Release signing secrets are not configured. This build uses the repository community fallback keystore.
-          Configure `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`
-          to publish APKs signed with your own private release key.
-          EOF
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          mkdir -p android/app/keystore
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/keystore/release.jks
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "source=secrets" >> "$GITHUB_OUTPUT"
+          echo "keystore_file=keystore/release.jks" >> "$GITHUB_OUTPUT"
+          echo "keystore_type=" >> "$GITHUB_OUTPUT"
 
       - name: Require release signing
         if: steps.existing_apk.outputs.exists != 'true' && steps.release.outputs.build_type == 'release' && steps.signing.outputs.signed != 'true'
@@ -165,17 +155,6 @@ jobs:
           echo "Add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
           echo "Use a workflow_dispatch debug build only for local testing."
           exit 1
-
-      - name: Build release APK with repository fallback signing
-        if: steps.existing_apk.outputs.exists != 'true' && steps.release.outputs.build_type == 'release' && steps.signing.outputs.source == 'fallback'
-        working-directory: android
-        env:
-          ANDROID_KEYSTORE_FILE: ${{ steps.signing.outputs.keystore_file }}
-          ANDROID_KEYSTORE_TYPE: ${{ steps.signing.outputs.keystore_type }}
-          ANDROID_KEYSTORE_PASSWORD: forwardx-community-release
-          ANDROID_KEY_ALIAS: ${{ steps.signing.outputs.key_alias }}
-          ANDROID_KEY_PASSWORD: forwardx-community-release
-        run: ./gradlew assembleRelease
 
       - name: Build release APK with secret signing
         if: steps.existing_apk.outputs.exists != 'true' && steps.release.outputs.build_type == 'release' && steps.signing.outputs.source == 'secrets'

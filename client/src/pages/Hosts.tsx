@@ -2526,6 +2526,18 @@ function HostsContent() {
                       const expiryTitle = formatHostExpiryTitle(host.stoppedAt, remainingDays);
                       const memoryDetail = formatMetricSizeDetail(latestMetric?.memoryUsed, host.memoryTotal);
                       const diskDetail = formatMetricSizeDetail(latestMetric?.diskUsed, latestMetric?.diskTotal);
+                      const recoveryStartedText = formatHostDateTimeText(host.agentRecoveryStartedAt);
+                      const recoveryCompletedText = formatHostDateTimeText(host.agentRecoveryCompletedAt);
+                      const hostRuntimeTitle = [
+                        String(host.name || ""),
+                        host.agentBootId ? `Boot ID: ${host.agentBootId}` : "",
+                        host.agentProcessId ? `Agent PID: ${host.agentProcessId}` : "",
+                        recoveryStartedText ? `恢复开始: ${recoveryStartedText}` : "",
+                        recoveryCompletedText ? `恢复完成: ${recoveryCompletedText}` : "",
+                        Number(host.agentRecoveryExpected || 0) > 0 ? `恢复进度: ${Number(host.agentRecoveryReady || 0)}/${Number(host.agentRecoveryExpected || 0)}` : "",
+                        host.mimicRuntimeStatus ? `Mimic: ${host.mimicRuntimeStatus}` : "",
+                        host.mimicRuntimeMessage ? String(host.mimicRuntimeMessage) : "",
+                      ].filter(Boolean).join("\n");
                       return (
                       <SortableItem key={host.id} id={Number(host.id)} disabled={!hostSortingEnabled || hostSortable.disabled} itemKind="row">
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
@@ -2548,7 +2560,7 @@ function HostsContent() {
                             <div className="min-w-0 flex-1 space-y-0.5">
                               <div className="flex min-w-0 items-center gap-1.5">
                                 <HostListStatusBadge host={host} />
-                                <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name}</span>
+                                <span className="min-w-0 truncate font-semibold" title={hostRuntimeTitle}>{host.name}</span>
                               </div>
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
                                 {host.agentVersion && (

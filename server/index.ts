@@ -72,6 +72,22 @@ function installMobileCors(app: express.Express) {
   });
 }
 
+function installSecurityHeaders(app: express.Express) {
+  app.disable("x-powered-by");
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' data: https: http:; media-src 'self' data: blob: https: http:",
+    );
+    if (req.secure) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    next();
+  });
+}
+
 async function startServer() {
   const databaseStatus = await initDatabase();
 
@@ -82,11 +98,13 @@ async function startServer() {
   const server = panelSsl.enabled && panelSsl.options
     ? createHttpsServer(panelSsl.options, app)
     : createHttpServer(app);
+  installSecurityHeaders(app);
 
   // Payment webhooks need the original request body for signature verification.
   app.use(paymentCallbackRouter);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Plugin archives are accepted as base64 JSON and can expand beyond the 5 MB binary limit.
+  app.use(express.json({ limit: "10mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true }));
   app.use(cookieParser());
   installMobileCors(app);
   app.use(agentRouter);
@@ -124,4 +142,7 @@ async function startServer() {
   }
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

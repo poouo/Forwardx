@@ -2752,7 +2752,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                               {action.description && <p className="text-xs text-muted-foreground">{action.description}</p>}
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                 <Badge variant="outline" className="font-mono text-[10px]">{action.type}</Badge>
-                                {action.type === "panel.request" && !selectedPlugin.trusted && (
+                                {(action.type === "panel.request" || action.type === "agent.request") && !selectedPlugin.trusted && (
                                   <Badge variant="destructive" className="text-[10px]">需要插件信任</Badge>
                                 )}
                                 {Array.isArray(action.inputSchema) && action.inputSchema.length > 0 && (
@@ -2763,7 +2763,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             <Button
                               className="gap-2"
                               variant="outline"
-                              disabled={selectedPlugin.status !== "enabled" || runActionMutation.isPending || (action.type === "panel.request" && !selectedPlugin.trusted)}
+                              disabled={selectedPlugin.status !== "enabled" || runActionMutation.isPending || ((action.type === "panel.request" || action.type === "agent.request") && !selectedPlugin.trusted)}
                               onClick={() => handleRunAction(action)}
                             >
                               {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
