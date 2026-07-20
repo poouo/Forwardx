@@ -11,7 +11,7 @@ import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
 import { consumeTelegramWebAppLoginChallenge } from "../telegramWebAppLogin";
 import { SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, stripSessionSensitiveFields, type SessionKind } from "../session";
-import { createAuthSession } from "../repositories/sessionRepository";
+import { createLoginAuthSession } from "../loginSessionService";
 
 const BIND_CODE_TTL_MS = 5 * 60 * 1000;
 const MOBILE_LOGIN_TTL_MS = 5 * 60 * 1000;
@@ -179,7 +179,7 @@ async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKin
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
   const sid = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
-  await createAuthSession({
+  await createLoginAuthSession({
     userId: user.id,
     sid,
     kind: sessionKind,

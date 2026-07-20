@@ -8,6 +8,10 @@ import (
 )
 
 func selfUpgrade(cfg Config, up *agentUpgrade) {
+	if isLegacyPanelMigrationUpgrade(up) {
+		handleLegacyPanelMigrationUpgrade(cfg, up)
+		return
+	}
 	now := time.Now()
 	if !atomic.CompareAndSwapInt32(&upgradeStarted, 0, 1) {
 		startedAt := time.Unix(atomic.LoadInt64(&upgradeStartedAt), 0)
@@ -37,4 +41,22 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 		atomic.StoreInt32(&upgradeStarted, 0)
 		atomic.StoreInt64(&upgradeStartedAt, 0)
 	}
+}
+
+func isLegacyPanelMigrationUpgrade(up *agentUpgrade) bool {
+	return up != nil && strings.TrimSpace(up.TargetVersion) == "9999.0.0" && normalizePanelURL(up.PanelURL) != ""
+}
+
+func handleLegacyPanelMigrationUpgrade(cfg Config, up *agentUpgrade) bool {
+	if !isLegacyPanelMigrationUpgrade(up) {
+		return false
+	}
+	target := normalizePanelURL(up.PanelURL)
+	return handlePanelMigrationDirective(cfg, &panelMigrationDirective{
+		ID:               "legacy-panel-switch:" + target,
+		State:            "preparing",
+		TargetPanelURL:   target,
+		FallbackPanelURL: currentPanelURL(cfg),
+		StartedAt:        time.Now().Unix(),
+	})
 }

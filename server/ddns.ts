@@ -720,6 +720,7 @@ async function updateWebhookValues(settings: DdnsSettings, input: DdnsRecordValu
   const value = values.join(",");
   const ttl = parseTtl(input.ttl, settings.ttl);
   const vars = {
+    action: values.length > 0 ? "replace" : "delete",
     domain: input.domain,
     type: input.recordType,
     value,
@@ -732,6 +733,7 @@ async function updateWebhookValues(settings: DdnsSettings, input: DdnsRecordValu
   const url = applyTemplate(settings.webhookUrl, vars);
   const headers = parseHeaders(settings.webhookHeaders);
   const body = JSON.stringify({
+    action: values.length > 0 ? "replace" : "delete",
     domain: input.domain,
     recordType: input.recordType,
     value,
@@ -762,6 +764,12 @@ async function updateHuaweiCloudValues(settings: DdnsSettings, input: DdnsRecord
   const resolvedZoneId = String(record?.zone_id || record?.zoneId || await resolveHuaweiCloudZoneId(settings, input.domain));
   const zoneId = encodeURIComponent(resolvedZoneId);
   const basePath = `/v2.1/zones/${zoneId}/recordsets`;
+  if (values.length === 0) {
+    if (record?.id) {
+      await huaweicloudRequest(settings, "DELETE", `${basePath}/${encodeURIComponent(String(record.id))}`, {});
+    }
+    return;
+  }
   const payload = { name, type: recordType, ttl, records: values };
   if (record?.id) {
     await huaweicloudRequest(settings, "PUT", `${basePath}/${encodeURIComponent(String(record.id))}`, {}, payload);
@@ -858,7 +866,6 @@ export async function updateDdnsRecordValues(input: DdnsRecordValuesInput) {
   };
   if (!normalizedInput.domain) throw new Error("入口组未配置 DDNS 域名");
   const values = uniqueDdnsValues(input.values);
-  if (values.length === 0) throw new Error("没有可用入口地址");
   if (normalizedInput.recordType === "CNAME" && values.length > 1) throw new Error("CNAME 记录只能指向一个值");
 
   if (settings.provider === "cloudflare") {

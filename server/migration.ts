@@ -27,6 +27,7 @@ import { assertSafeOutboundUrl } from "./ssrf";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
+import { AGENT_PANEL_MIGRATION_VERSION, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import {
   abortTakeoverToken,
@@ -1374,6 +1375,8 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
         "migratedAt",
         "panelMigrationId",
         "panelMigrationPhase",
+        "panelMigrationTargetPanelUrl",
+        "panelMigrationHostIds",
         "panelMigrationSourceUrl",
         "panelMigrationStartedAt",
         "agentMigrationTargetPanelUrl",
@@ -1584,6 +1587,8 @@ export async function importDirectSqliteBackup(
     migratedAt: null,
     panelMigrationId: null,
     panelMigrationPhase: null,
+    panelMigrationTargetPanelUrl: null,
+    panelMigrationHostIds: null,
     panelMigrationSourceUrl: null,
     panelMigrationStartedAt: null,
     agentMigrationTargetPanelUrl: null,
@@ -1957,15 +1962,39 @@ export async function importMigrationSnapshot(
 
 export async function announcePanelMigration(
   targetPanelUrl: string,
-  options: { forceAgentSwitch?: boolean; updatePanelPublicUrl?: boolean } = {},
+  options: {
+    forceAgentSwitch?: boolean;
+    updatePanelPublicUrl?: boolean;
+    directive?: {
+      id: string;
+      state: "preparing" | "committing" | "committed" | "aborted";
+      targetPanelUrl?: string;
+      fallbackPanelUrl?: string;
+      startedAt?: number;
+    };
+  } = {},
 ) {
   const normalized = normalizePanelUrl(targetPanelUrl);
   if (options.updatePanelPublicUrl !== false) await setSetting("panelPublicUrl", normalized);
   const hosts = await getHosts();
   const targetVersion = options.forceAgentSwitch ? "9999.0.0" : AGENT_VERSION;
-  for (const host of hosts as any[]) {
-    await requestHostAgentUpgrade(Number(host.id), targetVersion);
-    pushAgentUpgrade(Number(host.id), targetVersion, normalized);
+  for (const wave of chunkValues(hosts as any[], 25)) {
+    await Promise.all(wave.map(async (host) => {
+      if (options.directive) {
+        pushAgentPanelMigration(Number(host.id), {
+          ...options.directive,
+          targetPanelUrl: normalizePanelUrl(options.directive.targetPanelUrl || normalized),
+        });
+        if (isAgentVersionAtLeast(String(host.agentVersion || ""), AGENT_PANEL_MIGRATION_VERSION)) {
+          if (host.agentUpgradeRequested && host.agentUpgradeTargetVersion === "9999.0.0") {
+            await clearHostAgentUpgradeRequest(Number(host.id));
+          }
+          return;
+        }
+      }
+      await requestHostAgentUpgrade(Number(host.id), targetVersion);
+      pushAgentUpgrade(Number(host.id), targetVersion, normalized);
+    }));
   }
   return { hostCount: hosts.length, panelUrl: normalized };
 }
@@ -2307,7 +2336,13 @@ async function verifyTargetPanelIdentity(job: MigrationJob, targetPanelUrl: stri
 
 function pushMigrationDirectiveToHosts(
   hostIds: number[],
-  directive: { id: string; state: "preparing" | "committed" | "aborted"; fallbackPanelUrl?: string },
+  directive: {
+    id: string;
+    state: "preparing" | "committing" | "committed" | "aborted";
+    targetPanelUrl?: string;
+    fallbackPanelUrl?: string;
+    startedAt?: number;
+  },
 ) {
   for (const hostId of hostIds) pushAgentPanelMigration(hostId, directive);
 }
@@ -2411,8 +2446,10 @@ export function startPanelMigration(input: {
       await setPanelMigrationAgentDirective({
         id: job.id,
         state: "preparing",
+        targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
         fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
         startedAt: Math.floor(switchedAt / 1000),
+        hostIds: expectations.allImportedHostIds,
       });
       setJob(job, { progress: 98, step: "正在预切换 Agent，旧面板继续保留运行" });
       takeoverPrepareStarted = true;
@@ -2423,16 +2460,27 @@ export function startPanelMigration(input: {
       await setPanelMigrationAgentDirective({
         id: job.id,
         state: "committing",
+        targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
         fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
         startedAt: Math.floor(switchedAt / 1000),
+        hostIds: expectations.allImportedHostIds,
       });
       commitStarted = true;
       await finalizeOldPanelTakeover({
         ...takeoverInput,
       });
       startBackgroundServices();
-      await setPanelMigrationAgentDirective({ id: job.id, state: "committed" });
-      pushMigrationDirectiveToHosts(expectations.allImportedHostIds, { id: job.id, state: "committed" });
+      await setPanelMigrationAgentDirective({
+        id: job.id,
+        state: "committed",
+        targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
+        hostIds: expectations.allImportedHostIds,
+      });
+      pushMigrationDirectiveToHosts(expectations.allImportedHostIds, {
+        id: job.id,
+        state: "committed",
+        targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
+      });
       markLocalSetupComplete();
       setJob(job, {
         status: "success",
@@ -2448,13 +2496,16 @@ export function startPanelMigration(input: {
         await setPanelMigrationAgentDirective({
           id: job.id,
           state: "aborted",
+          targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
           fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
           startedAt: Math.floor(Date.now() / 1000),
+          hostIds: expectations!.allImportedHostIds,
         }).catch(() => undefined);
         if (expectations) {
           pushMigrationDirectiveToHosts(expectations.allImportedHostIds, {
             id: job.id,
             state: "aborted",
+            targetPanelUrl: normalizePanelUrl(input.targetPanelUrl),
             fallbackPanelUrl: normalizePanelUrl(input.oldPanelUrl),
           });
         }
@@ -2608,8 +2659,10 @@ migrationRouter.post("/api/migration/takeover-prepare", async (req: Request, res
   try {
     const takeoverToken = String(req.body?.takeoverToken || "");
     const targetPanelUrl = normalizePanelUrl(String(req.body?.targetPanelUrl || ""));
-    if (!takeoverToken || !targetPanelUrl) {
-      res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
+    const migrationId = String(req.body?.migrationId || "").trim();
+    const fallbackPanelUrl = normalizePanelUrl(String(req.body?.fallbackPanelUrl || ""));
+    if (!takeoverToken || !targetPanelUrl || !migrationId || !fallbackPanelUrl) {
+      res.status(400).json({ error: "takeoverToken/targetPanelUrl/migrationId/fallbackPanelUrl required" });
       return;
     }
     const migratedToPanelUrl = normalizePanelUrl((await getAllSettings()).migratedToPanelUrl || "");
@@ -2627,10 +2680,18 @@ migrationRouter.post("/api/migration/takeover-prepare", async (req: Request, res
     }
     await setSetting("agentMigrationTargetPanelUrl", targetPanelUrl);
     await setSetting("agentMigrationTargetExpiresAt", String(Math.floor(Date.now() / 1000) + 60 * 60));
-    invalidatePanelMigrationAgentStateCache();
+    const directive = {
+      id: migrationId,
+      state: "preparing" as const,
+      targetPanelUrl,
+      fallbackPanelUrl,
+      startedAt: Math.floor(Date.now() / 1000),
+    };
+    await setPanelMigrationAgentDirective(directive);
     const takeover = await announcePanelMigration(targetPanelUrl, {
       forceAgentSwitch: true,
       updatePanelPublicUrl: false,
+      directive,
     });
     res.json({ success: true, phase: "prepared", ...takeover, oldPanelActive: true, dataPreserved: true });
   } catch (error) {
@@ -2642,6 +2703,8 @@ migrationRouter.post("/api/migration/takeover-abort", async (req: Request, res: 
   try {
     const takeoverToken = String(req.body?.takeoverToken || "");
     const targetPanelUrl = normalizePanelUrl(String(req.body?.targetPanelUrl || ""));
+    const migrationId = String(req.body?.migrationId || "").trim();
+    const fallbackPanelUrl = normalizePanelUrl(String(req.body?.fallbackPanelUrl || ""));
     if (!takeoverToken || !targetPanelUrl) {
       res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
       return;
@@ -2649,6 +2712,18 @@ migrationRouter.post("/api/migration/takeover-abort", async (req: Request, res: 
     if (!abortTakeoverToken(takeoverToken, targetPanelUrl)) {
       res.status(401).json({ error: "接管令牌无效、已过期或目标面板不匹配" });
       return;
+    }
+    if (migrationId) {
+      const directive = {
+        id: migrationId,
+        state: "aborted" as const,
+        targetPanelUrl,
+        fallbackPanelUrl: fallbackPanelUrl || undefined,
+        startedAt: Math.floor(Date.now() / 1000),
+      };
+      await setPanelMigrationAgentDirective(directive);
+      const hosts = await getHosts();
+      for (const host of hosts as any[]) pushAgentPanelMigration(Number(host.id), directive);
     }
     const hostCount = await cancelPanelMigrationAnnouncement();
     res.json({ success: true, phase: "aborted", hostCount, oldPanelActive: true, dataPreserved: true });
@@ -2661,18 +2736,27 @@ migrationRouter.post("/api/migration/takeover-complete", async (req: Request, re
   try {
     const takeoverToken = String(req.body?.takeoverToken || "");
     const targetPanelUrl = String(req.body?.targetPanelUrl || "");
-    if (!takeoverToken || !targetPanelUrl) {
-      res.status(400).json({ error: "takeoverToken/targetPanelUrl required" });
+    const migrationId = String(req.body?.migrationId || "").trim();
+    if (!takeoverToken || !targetPanelUrl || !migrationId) {
+      res.status(400).json({ error: "takeoverToken/targetPanelUrl/migrationId required" });
       return;
     }
     const normalizedTarget = normalizePanelUrl(targetPanelUrl);
+    const directive = {
+      id: migrationId,
+      state: "committed" as const,
+      targetPanelUrl: normalizedTarget,
+      startedAt: Math.floor(Date.now() / 1000),
+    };
     const alreadyMigratedTo = normalizePanelUrl((await getAllSettings()).migratedToPanelUrl || "");
     if (alreadyMigratedTo === normalizedTarget) {
       await markPanelAsMigrated(normalizedTarget);
+      await setPanelMigrationAgentDirective(directive);
       await setSetting("agentMigrationTargetPanelUrl", null);
       await setSetting("agentMigrationTargetExpiresAt", null);
       invalidatePanelMigrationAgentStateCache();
-      res.json({ success: true, panelUrl: normalizedTarget, alreadyCompleted: true, dataPreserved: true });
+      const takeover = await announcePanelMigration(normalizedTarget, { directive });
+      res.json({ success: true, ...takeover, alreadyCompleted: true, dataPreserved: true });
       return;
     }
     if (!validatePreparedTakeoverToken(takeoverToken, normalizedTarget)) {
@@ -2681,10 +2765,11 @@ migrationRouter.post("/api/migration/takeover-complete", async (req: Request, re
     }
     await markPanelAsMigrated(normalizedTarget);
     consumeTakeoverToken(takeoverToken, normalizedTarget);
+    await setPanelMigrationAgentDirective(directive);
     await setSetting("agentMigrationTargetPanelUrl", null);
     await setSetting("agentMigrationTargetExpiresAt", null);
     invalidatePanelMigrationAgentStateCache();
-    const takeover = await announcePanelMigration(normalizedTarget, { forceAgentSwitch: true });
+    const takeover = await announcePanelMigration(normalizedTarget, { directive });
     res.json({ success: true, ...takeover, dataPreserved: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });

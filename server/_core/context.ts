@@ -16,7 +16,7 @@ import {
   type SessionKind,
 } from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
-import { getActiveAuthSession, touchAuthSession } from "../repositories/sessionRepository";
+import { getActiveAuthSession, revokeAuthSession, touchAuthSession } from "../repositories/sessionRepository";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 
 export interface AuthSession {
@@ -32,7 +32,7 @@ export interface TrpcContext {
   res: Response;
   user: User | null;
   authSession: AuthSession | null;
-  authFailureReason: "session_replaced" | "session_busy" | null;
+  authFailureReason: "session_replaced" | null;
 }
 
 type TokenSource = "cookie" | "bearer";
@@ -103,7 +103,7 @@ async function claimSessionLease(user: User, sessionKind: SessionKind, sid: stri
 
 type ResolveSessionResult =
   | { user: User; authSession: AuthSession; failureReason?: never }
-  | { user: null; authSession: null; failureReason: "session_replaced" | "session_busy" | null };
+  | { user: null; authSession: null; failureReason: "session_replaced" | null };
 
 async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<ResolveSessionResult> {
   try {
@@ -130,10 +130,14 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
       };
     }
     if (!(await allowMultiDeviceLogin()) && !(await claimSessionLease(found, sessionKind, normalized.sid))) {
+      await revokeAuthSession(found.id, normalized.sid, sessionKind, "lease_replaced").catch((error) => {
+        console.warn(`[Auth] conflicting session cleanup failed userId=${found.id} kind=${sessionKind}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      if (source === "cookie") clearSessionCookie(res, req);
       return {
         user: null,
         authSession: null,
-        failureReason: "session_busy",
+        failureReason: "session_replaced",
       };
     }
     await touchAuthSession(found.id, normalized.sid, sessionKind).catch((error) => {

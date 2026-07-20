@@ -5383,7 +5383,7 @@ function SystemInfoSection() {
               <div className="min-w-0">
                 <p className="text-sm font-medium">允许多设备在线</p>
                 <p className="text-xs text-muted-foreground">
-                  关闭时保留各设备登录状态，但同一时间只允许一个设备使用；切换设备无需重新登录。
+                  关闭时后登录的设备会立即接管，正在使用的旧会话将退出；仅保留 Cookie 但未在使用的设备不会阻止新登录。
                 </p>
               </div>
               <Switch className="shrink-0" checked={allowMultiDeviceLogin} onCheckedChange={setAllowMultiDeviceLogin} />

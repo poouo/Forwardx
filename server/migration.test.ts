@@ -380,6 +380,9 @@ test("incremental structured migration batches generated IDs and keeps valid rul
       );
       assert.ok(importedIds);
       assert.notEqual(importedIds.hosts[100], 100);
+      const [importedHost] = await runtime.queryRaw("SELECT id, agentToken, isOnline FROM hosts WHERE id = ?", [importedIds.hosts[100]]);
+      assert.equal(importedHost.agentToken, "new-token");
+      assert.equal(importedHost.isOnline, 0);
       const [firstRule] = await runtime.queryRaw("SELECT id, hostId, userId FROM forward_rules WHERE name = ?", ["incremental-rule-0"]);
       assert.equal(firstRule.hostId, importedIds.hosts[100]);
       assert.equal(firstRule.userId, 1);

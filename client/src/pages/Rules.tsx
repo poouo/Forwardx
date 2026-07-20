@@ -45,6 +45,16 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
 import { batchOperationErrorMessage, chunkBatchItems, isBatchPortConflictError, runBatchOperations } from "@/lib/batchOperations";
+import {
+  RULE_TRANSFER_FILE_KIND,
+  RULE_TRANSFER_FILE_VERSION,
+  RULE_TRANSFER_MAX_FILE_SIZE,
+  RULE_TRANSFER_MAX_IMPORT_COUNT,
+  findRuleTransferPortConflict,
+  parseRuleTransferFile,
+  type RuleTransferFile,
+  type RuleTransferFileRule,
+} from "@/lib/ruleTransfer";
 import { cn } from "@/lib/utils";
 import {
   Plus,
@@ -346,10 +356,6 @@ type RuleBatchManageMode = "copy" | "edit" | "export" | "import";
 type BatchEditFormData = Pick<RuleFormData, "routeMode" | "forwardType" | "tunnelId" | "forwardGroupId" | "targetIp" | "targetPort">;
 
 const RULE_CATEGORIES = ["all", "local", "tunnel", "chain", "group"] as const;
-const RULE_TRANSFER_FILE_KIND = "forwardx.forward-rules";
-const RULE_TRANSFER_FILE_VERSION = 1;
-const RULE_TRANSFER_MAX_IMPORT_COUNT = 500;
-
 const ruleTransferScopeLabels: Record<RuleTransferScopeType, string> = {
   local: "端口转发",
   tunnel: "隧道",
@@ -364,43 +370,6 @@ const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: str
   { value: "group", label: "转发组" },
 ];
 const importRuleTransferScopeOptions = ruleTransferScopeOptions;
-
-type RuleTransferFileRule = {
-  name: string;
-  forwardType: ForwardType;
-  protocol: RuleProtocol;
-  sourcePort: number;
-  targetIp: string;
-  targetPort: number;
-  telegramErrorNotifyEnabled?: boolean;
-  proxyProtocolReceive: boolean;
-  proxyProtocolSend: boolean;
-  proxyProtocolExitReceive: boolean;
-  proxyProtocolExitSend: boolean;
-  proxyProtocolVersion: ProxyProtocolVersion;
-  tcpFastOpen: boolean;
-  zeroCopy: boolean;
-  udpOverTcp: boolean;
-  udpOverTcpPort: number;
-  failoverEnabled: boolean;
-  failoverStrategy: FailoverStrategy;
-  failoverTargets: Array<{ targetIp: string; targetPort: number }>;
-  failoverSeconds: number;
-  recoverSeconds: number;
-  autoFailback: boolean;
-};
-
-type RuleTransferFile = {
-  kind?: string;
-  version?: number;
-  exportedAt?: string;
-  scope?: {
-    type?: string;
-    id?: number;
-    name?: string;
-  };
-  rules?: unknown[];
-};
 
 const RULE_VIEW_MODE_STORAGE_KEY = "forwardx.rules.viewMode";
 const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
@@ -1993,6 +1962,11 @@ function normalizePositiveRuleNumber(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function normalizeRuleTransferSeconds(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(3600, Math.max(10, Math.round(parsed))) : fallback;
+}
+
 function sanitizeRuleTransferFilePart(value: string) {
   return value
     .trim()
@@ -2053,6 +2027,7 @@ function exportRuleForTransfer(rule: any): RuleTransferFileRule {
     sourcePort: Number(rule?.sourcePort || 0),
     targetIp: String(rule?.targetIp || ""),
     targetPort: Number(rule?.targetPort || 0),
+    isEnabled: rule?.isEnabled !== false,
     telegramErrorNotifyEnabled: Boolean(rule?.telegramErrorNotifyEnabled),
     proxyProtocolReceive: Boolean(rule?.proxyProtocolReceive),
     proxyProtocolSend: Boolean(rule?.proxyProtocolSend),
@@ -2066,64 +2041,38 @@ function exportRuleForTransfer(rule: any): RuleTransferFileRule {
     failoverEnabled: Boolean(rule?.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(rule?.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(rule?.failoverTargets),
-    failoverSeconds: normalizePositiveRuleNumber(rule?.failoverSeconds, 60),
-    recoverSeconds: normalizePositiveRuleNumber(rule?.recoverSeconds, 120),
+    failoverSeconds: normalizeRuleTransferSeconds(rule?.failoverSeconds, 60),
+    recoverSeconds: normalizeRuleTransferSeconds(rule?.recoverSeconds, 120),
     autoFailback: rule?.autoFailback !== false,
   };
 }
 
-function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
-  if (!raw || typeof raw !== "object") return null;
-  const source = raw as Record<string, unknown>;
-  const name = String(source.name || "导入规则").trim().slice(0, 128) || "导入规则";
-  const sourcePort = Number(source.sourcePort || 0);
-  const targetPort = Number(source.targetPort || 0);
-  const targetIp = String(source.targetIp || "").trim();
-  if (!Number.isInteger(sourcePort) || sourcePort < 0 || sourcePort > 65535) return null;
-  if (!targetIp || !isValidTargetHost(targetIp)) return null;
-  if (!isValidPort(targetPort, false)) return null;
-  return {
-    name,
-    forwardType: normalizeRuleForwardType(source.forwardType),
-    protocol: normalizeRuleProtocol(source.protocol),
-    sourcePort,
-    targetIp,
-    targetPort,
-    telegramErrorNotifyEnabled: Boolean(source.telegramErrorNotifyEnabled),
-    proxyProtocolReceive: Boolean(source.proxyProtocolReceive),
-    proxyProtocolSend: Boolean(source.proxyProtocolSend),
-    proxyProtocolExitReceive: Boolean(source.proxyProtocolExitReceive),
-    proxyProtocolExitSend: Boolean(source.proxyProtocolExitSend),
-    proxyProtocolVersion: normalizeProxyProtocolVersion(source.proxyProtocolVersion),
-    tcpFastOpen: Boolean(source.tcpFastOpen),
-    zeroCopy: Boolean(source.zeroCopy),
-    udpOverTcp: Boolean(source.udpOverTcp),
-    udpOverTcpPort: isValidPort(Number(source.udpOverTcpPort || 0), true) ? Number(source.udpOverTcpPort || 0) : 0,
-    failoverEnabled: Boolean(source.failoverEnabled),
-    failoverStrategy: normalizeFailoverStrategy(source.failoverStrategy),
-    failoverTargets: parseRuleFailoverTargets(source.failoverTargets),
-    failoverSeconds: normalizePositiveRuleNumber(source.failoverSeconds, 60),
-    recoverSeconds: normalizePositiveRuleNumber(source.recoverSeconds, 120),
-    autoFailback: source.autoFailback !== false,
-  };
-}
-
-function normalizeRuleTransferFile(raw: unknown): RuleTransferFile {
-  if (!raw || typeof raw !== "object") return {};
-  const source = raw as RuleTransferFile;
-  return {
-    kind: typeof source.kind === "string" ? source.kind : undefined,
-    version: typeof source.version === "number" ? source.version : undefined,
-    exportedAt: typeof source.exportedAt === "string" ? source.exportedAt : undefined,
-    scope: source.scope && typeof source.scope === "object"
-      ? {
-          type: typeof source.scope.type === "string" ? source.scope.type : undefined,
-          id: typeof source.scope.id === "number" ? source.scope.id : undefined,
-          name: typeof source.scope.name === "string" ? source.scope.name : undefined,
-        }
-      : undefined,
-    rules: Array.isArray(source.rules) ? source.rules : undefined,
-  };
+function downloadRuleTransferFiles(
+  rules: readonly any[],
+  scope: Record<string, unknown>,
+  fileNameBase: string,
+) {
+  const chunks = chunkBatchItems(rules, RULE_TRANSFER_MAX_IMPORT_COUNT);
+  chunks.forEach((chunk, index) => {
+    const payload = {
+      kind: RULE_TRANSFER_FILE_KIND,
+      version: RULE_TRANSFER_FILE_VERSION,
+      exportedAt: new Date().toISOString(),
+      scope,
+      rules: chunk.map(exportRuleForTransfer),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const partSuffix = chunks.length > 1 ? `-part-${index + 1}-of-${chunks.length}` : "";
+    anchor.href = url;
+    anchor.download = `${fileNameBase}${partSuffix}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 0);
+  });
+  return chunks.length;
 }
 
 function normalizeFailoverTargetsForSubmit(text: string) {
@@ -2268,6 +2217,7 @@ function RulesContent() {
   const [importFileInputKey, setImportFileInputKey] = useState(0);
   const [importManualText, setImportManualText] = useState("");
   const [importingRules, setImportingRules] = useState(false);
+  const importingRulesRef = useRef(false);
   const rulePageRequest = usePersistentPageRequest("forwardx.rules.page");
   const rulePageEntryHostId = /^\d+$/.test(filterHost) ? Number(filterHost) : null;
   const rulePageFilterKey = [filterUser, filterHost, ruleCategory, ruleSearchQuery.trim(), rulePageSize].join(":");
@@ -3444,27 +3394,13 @@ function RulesContent() {
       toast.error("请选择要导出的规则");
       return;
     }
-    const payload = {
-      kind: RULE_TRANSFER_FILE_KIND,
-      version: RULE_TRANSFER_FILE_VERSION,
-      exportedAt: new Date().toISOString(),
-      scope: {
-        type: "batch",
-        name: "批量管理选中规则",
-      },
-      rules: copySelectedRules.map(exportRuleForTransfer),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    anchor.href = url;
-    anchor.download = "forwardx-rules-batch-" + date + ".json";
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-    toast.success("已导出 " + copySelectedRules.length + " 条规则");
+    const partCount = downloadRuleTransferFiles(
+      copySelectedRules,
+      { type: "batch", name: "批量管理选中规则" },
+      `forwardx-rules-batch-${date}`,
+    );
+    toast.success(`已导出 ${copySelectedRules.length} 条规则${partCount > 1 ? `，共 ${partCount} 个文件` : ""}`);
   };
 
   const handleBatchDeleteRules = async () => {
@@ -4990,6 +4926,7 @@ function RulesContent() {
         sourcePort: targetPort,
         targetIp,
         targetPort,
+        isEnabled: true,
         telegramErrorNotifyEnabled: false,
         proxyProtocolReceive: false,
         proxyProtocolSend: false,
@@ -5013,32 +4950,33 @@ function RulesContent() {
 
   const importValidation = useMemo<{ ok: boolean; message: string; rules: RuleTransferFileRule[] }>(() => {
     if (!importResourceId) return { ok: false, message: `请选择${ruleTransferScopeLabels[importScopeType]}`, rules: [] };
-    if (importSourceMode === "manual") return manualImportValidation;
+    if (importSourceMode === "manual") {
+      if (!manualImportValidation.ok) return manualImportValidation;
+      const conflict = findRuleTransferPortConflict(manualImportValidation.rules);
+      if (conflict) {
+        return {
+          ok: false,
+          message: `第 ${conflict.firstIndex + 1} 行与第 ${conflict.secondIndex + 1} 行的监听端口 ${conflict.port} 和协议冲突`,
+          rules: [],
+        };
+      }
+      return manualImportValidation;
+    }
     if (importFileError) return { ok: false, message: importFileError, rules: [] };
     if (!importFile) return { ok: false, message: "请选择导入文件", rules: [] };
-    if (importFile.kind !== RULE_TRANSFER_FILE_KIND) {
-      return { ok: false, message: "文件不是 ForwardX 转发规则导出文件", rules: [] };
-    }
-    if (importFile.version !== RULE_TRANSFER_FILE_VERSION) {
-      return { ok: false, message: `不支持该规则文件版本（当前支持 v${RULE_TRANSFER_FILE_VERSION}）`, rules: [] };
-    }
-    if (!Array.isArray(importFile.rules) || importFile.rules.length === 0) {
-      return { ok: false, message: "文件中没有可导入的规则", rules: [] };
-    }
-    if (importFile.rules.length > RULE_TRANSFER_MAX_IMPORT_COUNT) {
-      return { ok: false, message: `单次最多导入 ${RULE_TRANSFER_MAX_IMPORT_COUNT} 条规则`, rules: [] };
-    }
-    const normalizedRules = importFile.rules.map(normalizeRuleTransferRule);
-    const invalidIndex = normalizedRules.findIndex((rule) => !rule);
-    if (invalidIndex >= 0) {
-      return { ok: false, message: `第 ${invalidIndex + 1} 条规则格式不完整`, rules: [] };
-    }
-    const fixedRules = normalizedRules as RuleTransferFileRule[];
-    const zeroPortIndex = fixedRules.findIndex((rule) => rule.sourcePort <= 0);
+    const zeroPortIndex = importFile.rules.findIndex((rule) => rule.sourcePort <= 0);
     if (importScopeType !== "tunnel" && zeroPortIndex >= 0) {
       return { ok: false, message: `第 ${zeroPortIndex + 1} 条规则缺少监听端口`, rules: [] };
     }
-    return { ok: true, message: `已识别 ${fixedRules.length} 条${ruleTransferScopeLabels[importScopeType]}规则`, rules: fixedRules };
+    const conflict = findRuleTransferPortConflict(importFile.rules);
+    if (conflict) {
+      return {
+        ok: false,
+        message: `第 ${conflict.firstIndex + 1} 条与第 ${conflict.secondIndex + 1} 条规则的监听端口 ${conflict.port} 和协议冲突`,
+        rules: [],
+      };
+    }
+    return { ok: true, message: `已识别 ${importFile.rules.length} 条${ruleTransferScopeLabels[importScopeType]}规则`, rules: importFile.rules };
   }, [importFile, importFileError, importResourceId, importScopeType, importSourceMode, manualImportValidation]);
 
   const resetImportDialog = () => {
@@ -5096,10 +5034,19 @@ function RulesContent() {
     setImportFileError("");
     setImportFileName(file?.name || "");
     if (!file) return;
+    if (Number(file.size || 0) > RULE_TRANSFER_MAX_FILE_SIZE) {
+      setImportFileError("规则文件不能超过 5 MiB");
+      return;
+    }
     try {
       const rawText = await file.text();
       const parsed = JSON.parse(rawText);
-      setImportFile(normalizeRuleTransferFile(parsed));
+      const result = parseRuleTransferFile(parsed);
+      if (!result.ok) {
+        setImportFileError(result.error);
+        return;
+      }
+      setImportFile(result.file);
     } catch {
       setImportFileError("文件无法解析，请选择 JSON 格式的规则文件");
     }
@@ -5125,6 +5072,7 @@ function RulesContent() {
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
+      isEnabled: rule.isEnabled,
       telegramErrorNotifyEnabled: telegramBotReady && !!rule.telegramErrorNotifyEnabled,
       proxyProtocolReceive: rule.proxyProtocolReceive,
       proxyProtocolSend: rule.proxyProtocolSend,
@@ -5145,10 +5093,12 @@ function RulesContent() {
   };
 
   const handleImportRules = async () => {
+    if (importingRulesRef.current) return;
     if (!importValidation.ok) {
       toast.error(importValidation.message);
       return;
     }
+    importingRulesRef.current = true;
     setImportingRules(true);
     try {
       const results = await runBatchOperations(importValidation.rules, 6, (rule) => (
@@ -5165,7 +5115,15 @@ function RulesContent() {
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       if (failures.length > 0) {
-        toast.error(`批量导入完成：成功 ${importedCount} 条，失败 ${failures.length} 条。${batchOperationErrorMessage(failures[0].reason)}`);
+        const failedRules = failures.map((result) => result.item);
+        if (importSourceMode === "file") {
+          setImportFile((current) => current ? { ...current, rules: failedRules } : current);
+        } else {
+          setImportManualText(failedRules
+            .map((rule) => formatAddressWithPort(rule.targetIp, rule.targetPort))
+            .join("\n"));
+        }
+        toast.error(`批量导入完成：成功 ${importedCount} 条，失败 ${failures.length} 条，已仅保留失败项供重试。${batchOperationErrorMessage(failures[0].reason)}`);
       } else {
         toast.success(`已导入 ${importedCount} 条规则`);
         setShowImportDialog(false);
@@ -5175,6 +5133,7 @@ function RulesContent() {
     } catch (error: any) {
       toast.error(`批量导入处理失败：${error?.message || "请检查规则配置"}`);
     } finally {
+      importingRulesRef.current = false;
       setImportingRules(false);
     }
   };
@@ -5190,28 +5149,17 @@ function RulesContent() {
       return;
     }
     const resourceLabel = getTransferResourceLabel(exportScopeType, resource);
-    const payload = {
-      kind: RULE_TRANSFER_FILE_KIND,
-      version: RULE_TRANSFER_FILE_VERSION,
-      exportedAt: new Date().toISOString(),
-      scope: {
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const partCount = downloadRuleTransferFiles(
+      exportableRules,
+      {
         type: exportScopeType,
         id: Number(exportResourceId),
         name: resourceLabel,
       },
-      rules: exportableRules.map(exportRuleForTransfer),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    anchor.href = url;
-    anchor.download = `forwardx-rules-${exportScopeType}-${sanitizeRuleTransferFilePart(resourceLabel)}-${date}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-    toast.success(`已导出 ${exportableRules.length} 条规则`);
+      `forwardx-rules-${exportScopeType}-${sanitizeRuleTransferFilePart(resourceLabel)}-${date}`,
+    );
+    toast.success(`已导出 ${exportableRules.length} 条规则${partCount > 1 ? `，共 ${partCount} 个文件` : ""}`);
     setShowExportDialog(false);
   };
   const getRuleOwnerName = (rule: any) => {

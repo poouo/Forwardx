@@ -17,6 +17,7 @@ import {
 } from "../portReservations";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
+import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -689,14 +690,6 @@ export async function createDirectForwardRuleForActor(
   if (actor.role !== "admin" && currentUser?.expiresAt && new Date(currentUser.expiresAt) <= new Date()) {
     throw new Error("您的账户已到期，无法添加规则");
   }
-  if (currentUser && currentUser.maxRules > 0) {
-    const ruleCount = await db.getUserRuleCount(actor.id);
-    if (ruleCount >= currentUser.maxRules) throw new Error(`您已达到最大规则数量限制（${currentUser.maxRules} 条）`);
-  }
-  if (currentUser && currentUser.maxPorts > 0) {
-    const portCount = await db.getUserPortCount(actor.id);
-    if (portCount >= currentUser.maxPorts) throw new Error(`您已达到最大端口数量限制（${currentUser.maxPorts} 个）`);
-  }
   await requireRuleProtocolEnabled({ forwardType: input.forwardType, tunnelId }, selectedTunnelForRule);
   if (!isTrafficBillingRule && Number((currentUser as any)?.trafficLimit || 0) > 0 && Number((currentUser as any)?.trafficUsed || 0) >= Number((currentUser as any)?.trafficLimit || 0)) {
     throw new Error("您的流量已用完，无法添加规则");
@@ -722,34 +715,42 @@ export async function createDirectForwardRuleForActor(
   let sourcePort = Number(input.sourcePort || 0);
   let sourcePortReservation: HostPortReservation | null = null;
   let tunnelExitPortReservation: HostPortReservation | null = null;
-  if (sourcePort === 0) {
-    let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
-    let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
-    if (planRange) {
-      randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
-      randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
-    }
-    sourcePortReservation = await reserveAvailableHostPort({
-      hostId: input.hostId,
-      protocol: input.protocol,
-      findPort: (reservedPorts) => db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd, input.protocol, reservedPorts),
-      isUsed: (port) => db.isPortUsedOnHost(input.hostId, port, undefined, input.protocol),
-    });
-    if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
-    sourcePort = sourcePortReservation.port;
-  } else {
-    if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
-    sourcePortReservation = tryReserveHostPort(input.hostId, sourcePort, input.protocol);
-    if (!sourcePortReservation) throw new Error(`端口 ${sourcePort} 正在被其他请求分配，请稍后重试`);
-    const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
-    if (used) {
-      sourcePortReservation.release();
-      sourcePortReservation = null;
-      throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
-    }
-  }
-
+  let quotaReservation: RuleQuotaReservation | null = null;
   try {
+    if (sourcePort === 0) {
+      let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
+      let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
+      if (planRange) {
+        randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
+        randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
+      }
+      sourcePortReservation = await reserveAvailableHostPort({
+        hostId: input.hostId,
+        protocol: input.protocol,
+        findPort: (reservedPorts) => db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd, input.protocol, reservedPorts),
+        isUsed: (port) => db.isPortUsedOnHost(input.hostId, port, undefined, input.protocol),
+      });
+      if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
+      sourcePort = sourcePortReservation.port;
+    } else {
+      if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
+      sourcePortReservation = tryReserveHostPort(input.hostId, sourcePort, input.protocol);
+      if (!sourcePortReservation) throw new Error(`端口 ${sourcePort} 正在被其他请求分配，请稍后重试`);
+      const used = await db.isPortUsedOnHost(input.hostId, sourcePort, undefined, input.protocol);
+      if (used) {
+        sourcePortReservation.release();
+        sourcePortReservation = null;
+        throw new Error(`端口 ${sourcePort} 已被其他规则占用`);
+      }
+    }
+
+    quotaReservation = await reserveRuleCreateQuota({
+      userId: actor.id,
+      maxRules: Number(currentUser?.maxRules || 0),
+      maxPorts: Number(currentUser?.maxPorts || 0),
+      getRuleCount: () => db.getUserRuleCount(actor.id),
+      getPortCount: () => db.getUserPortCount(actor.id),
+    });
     let tunnelExitPort: number | null = null;
     assertNoDirectSelfForwardLoop({ host, sourcePort, targetIp: input.targetIp, targetPort: input.targetPort, tunnelId });
     if (tunnelId) {
@@ -787,6 +788,8 @@ export async function createDirectForwardRuleForActor(
       tunnelExitPort,
       userId: actor.id,
     });
+    await quotaReservation.release();
+    quotaReservation = null;
     if (tunnelId) {
       const tunnel = await db.getTunnelById(tunnelId);
       if (tunnel) await db.reconcileForwardRuleTunnelExits({ ...input, id, tunnelExitPort, sourcePort, tunnelId }, tunnel);
@@ -797,6 +800,7 @@ export async function createDirectForwardRuleForActor(
     }
     return { id, sourcePort };
   } finally {
+    await quotaReservation?.release();
     tunnelExitPortReservation?.release();
     sourcePortReservation?.release();
   }
@@ -820,6 +824,7 @@ export const crudRulesRouter = router({
         "请输入有效的 IP 地址或域名"
       ),
       targetPort: z.number().min(1).max(65535),
+      isEnabled: z.boolean().optional().default(true),
       telegramErrorNotifyEnabled: z.boolean().optional().default(false),
       blockHttp: z.boolean().optional(),
       blockSocks: z.boolean().optional(),
@@ -844,6 +849,7 @@ export const crudRulesRouter = router({
         const forwardGroupId = Number(input.forwardGroupId);
         return withKeyedTaskLock(`forward-group:${forwardGroupId}`, async () => {
         const groupReservations: HostPortReservation[] = [];
+        let quotaReservation: RuleQuotaReservation | null = null;
         try {
         if (input.sourcePort === 0) throw new Error("转发组规则需要指定固定入口端口");
         const sourcePort = input.sourcePort;
@@ -851,18 +857,6 @@ export const crudRulesRouter = router({
           currentUser = await requireForwardAccessReady(ctx.user.id);
           if (currentUser?.expiresAt && new Date(currentUser.expiresAt) <= new Date()) {
             throw new Error("您的账户已到期，无法添加规则");
-          }
-          if (currentUser && currentUser.maxRules > 0) {
-            const ruleCount = await db.getUserRuleCount(ctx.user.id);
-            if (ruleCount >= currentUser.maxRules) {
-              throw new Error(`您已达到最大规则数量限制（${currentUser.maxRules} 条）`);
-            }
-          }
-          if (currentUser && currentUser.maxPorts > 0) {
-            const portCount = await db.getUserPortCount(ctx.user.id);
-            if (portCount >= currentUser.maxPorts) {
-              throw new Error(`您已达到最大端口数量限制（${currentUser.maxPorts} 个）`);
-            }
           }
         }
         if (ctx.user.role !== "admin") {
@@ -910,6 +904,13 @@ export const crudRulesRouter = router({
             const allowed = new Set(allowedRaw.split(",").map(s => s.trim()).filter(Boolean));
             if (!allowed.has(forwardType)) throw new Error(`您没有使用 ${forwardType} 转发方式的权限，请联系管理员`);
           }
+          quotaReservation = await reserveRuleCreateQuota({
+            userId: ctx.user.id,
+            maxRules: Number(currentUser?.maxRules || 0),
+            maxPorts: Number(currentUser?.maxPorts || 0),
+            getRuleCount: () => db.getUserRuleCount(ctx.user.id),
+            getPortCount: () => db.getUserPortCount(ctx.user.id),
+          });
         }
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
         const entryHostIds = await db.getForwardGroupRuleEntryHostIds(forwardGroupId);
@@ -940,6 +941,7 @@ export const crudRulesRouter = router({
           sourcePort,
           targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId: forwardType === "gost" && !isForwardChain && (group as any).groupType === "tunnel" ? 1 : null }),
           targetPort: input.targetPort,
+          isEnabled: input.isEnabled,
           telegramErrorNotifyEnabled: !!input.telegramErrorNotifyEnabled,
           blockHttp: false,
           blockSocks: false,
@@ -966,10 +968,13 @@ export const crudRulesRouter = router({
           isRunning: false,
           userId: ctx.user.id,
         } as any);
+        await quotaReservation?.release();
+        quotaReservation = null;
         await db.syncForwardGroupRules(forwardGroupId);
         await db.runForwardGroupFailover(forwardGroupId);
         return { id, sourcePort };
         } finally {
+          await quotaReservation?.release();
           releaseHostPortReservations(groupReservations);
         }
         });

@@ -834,6 +834,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (!busyHeartbeat) {
       releaseHeartbeatReconciliation = agentHeartbeatGate.tryAcquire(logHostId, { force: forceReconcile });
       if (!releaseHeartbeatReconciliation) {
+        const panelMigration = await getPanelMigrationAgentDirective(logHostId);
         res.json({
           success: true,
           actions: [],
@@ -841,6 +842,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           nextInterval: 1,
           compactReports: true,
           reconciliationCoalesced: true,
+          panelMigration,
         });
         return;
       }
@@ -5026,7 +5028,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     const panelUrl = await resolveAgentAdvertisedPanelUrl();
     const agentMigrationTargetPanelUrl = await getAgentMigrationSwitchTarget();
-    const panelMigration = await getPanelMigrationAgentDirective();
+    const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
     const staleMigrationUpgrade = (host as any).agentUpgradeRequested
       && requestedTargetVersion === "9999.0.0"
       && !agentMigrationTargetPanelUrl;

@@ -59,6 +59,133 @@ func readPanelMigrationTestConfig(t *testing.T, path string) map[string]any {
 	return data
 }
 
+func TestPanelMigrationPreparePersistsAndSwitchesToNewPanel(t *testing.T) {
+	cfg := Config{
+		PanelURL: "https://old.example.com",
+		Token:    "token",
+		Interval: 30,
+	}
+	activeConfigPath = writePanelMigrationTestConfig(t, cfg)
+	setRuntimePanelURL(cfg.PanelURL)
+	initializePanelMigration(cfg)
+	startedAt := time.Now().Add(-time.Minute).Unix()
+
+	changed := handlePanelMigrationDirective(cfg, &panelMigrationDirective{
+		ID:               "migration-prepare",
+		State:            "preparing",
+		TargetPanelURL:   "https://new.example.com/",
+		FallbackPanelURL: "https://old.example.com/",
+		StartedAt:        startedAt,
+	})
+	if !changed {
+		t.Fatal("expected panel URL to change")
+	}
+	if got := currentPanelURL(cfg); got != "https://new.example.com" {
+		t.Fatalf("unexpected runtime panel URL: %s", got)
+	}
+	data := readPanelMigrationTestConfig(t, activeConfigPath)
+	if data["panelUrl"] != "https://new.example.com" {
+		t.Fatalf("unexpected persisted panel URL: %v", data["panelUrl"])
+	}
+	if data["migrationFallbackPanelUrl"] != "https://old.example.com" {
+		t.Fatalf("unexpected migration fallback: %v", data["migrationFallbackPanelUrl"])
+	}
+	if data["panelMigrationId"] != "migration-prepare" {
+		t.Fatalf("unexpected migration id: %v", data["panelMigrationId"])
+	}
+	if got := int64(data["panelMigrationStartedAt"].(float64)); got != startedAt {
+		t.Fatalf("unexpected migration start: %d", got)
+	}
+}
+
+func TestPanelMigrationCommittedRedirectSwitchesPreviouslyOfflineAgent(t *testing.T) {
+	cfg := Config{
+		PanelURL: "https://old.example.com",
+		Token:    "token",
+		Interval: 30,
+	}
+	activeConfigPath = writePanelMigrationTestConfig(t, cfg)
+	setRuntimePanelURL(cfg.PanelURL)
+	initializePanelMigration(cfg)
+
+	changed := handlePanelMigrationDirective(cfg, &panelMigrationDirective{
+		ID:             "migration-offline",
+		State:          "committed",
+		TargetPanelURL: "https://new.example.com",
+	})
+	if !changed {
+		t.Fatal("expected committed redirect to switch an Agent that missed prepare")
+	}
+	if got := currentPanelURL(cfg); got != "https://new.example.com" {
+		t.Fatalf("unexpected runtime panel URL: %s", got)
+	}
+	data := readPanelMigrationTestConfig(t, activeConfigPath)
+	if data["panelUrl"] != "https://new.example.com" {
+		t.Fatalf("unexpected persisted panel URL: %v", data["panelUrl"])
+	}
+	if _, ok := data["migrationFallbackPanelUrl"]; ok {
+		t.Fatal("committed redirect must not retain fallback metadata")
+	}
+	if handlePanelMigrationDirective(cfg, &panelMigrationDirective{
+		ID:               "migration-offline",
+		State:            "preparing",
+		TargetPanelURL:   "https://new.example.com",
+		FallbackPanelURL: "https://old.example.com",
+	}) {
+		t.Fatal("stale prepare directive must be ignored after committed redirect")
+	}
+}
+
+func TestPanelMigrationPrepareDoesNotSwitchWhenConfigCannotBePersisted(t *testing.T) {
+	cfg := Config{
+		PanelURL: "https://old.example.com",
+		Token:    "token",
+		Interval: 30,
+	}
+	activeConfigPath = writePanelMigrationTestConfig(t, cfg)
+	setRuntimePanelURL(cfg.PanelURL)
+	initializePanelMigration(cfg)
+	if err := os.Remove(activeConfigPath); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := handlePanelMigrationDirective(cfg, &panelMigrationDirective{
+		ID:               "migration-persist-failure",
+		State:            "preparing",
+		TargetPanelURL:   "https://new.example.com",
+		FallbackPanelURL: "https://old.example.com",
+	})
+	if changed {
+		t.Fatal("runtime panel changed even though config persistence failed")
+	}
+	if got := currentPanelURL(cfg); got != "https://old.example.com" {
+		t.Fatalf("unexpected runtime panel URL after persist failure: %s", got)
+	}
+}
+
+func TestPanelMigrationRestartKeepsFallbackRecovery(t *testing.T) {
+	originalReporter := sendPanelMigrationRollback
+	sendPanelMigrationRollback = func(Config, string) {}
+	t.Cleanup(func() { sendPanelMigrationRollback = originalReporter })
+	cfg := Config{
+		PanelURL:                  "https://new.example.com",
+		Token:                     "token",
+		Interval:                  30,
+		MigrationFallbackPanelURL: "https://old.example.com",
+		PanelMigrationID:          "migration-restart",
+		PanelMigrationStartedAt:   time.Now().Add(-time.Minute).Unix(),
+	}
+	activeConfigPath = writePanelMigrationTestConfig(t, cfg)
+	setRuntimePanelURL(cfg.PanelURL)
+	initializePanelMigration(cfg)
+
+	recordPanelMigrationHeartbeatFailure(cfg, errors.New("new panel unavailable"))
+	recordPanelMigrationHeartbeatFailure(cfg, errors.New("new panel still unavailable"))
+	if got := currentPanelURL(cfg); got != "https://old.example.com" {
+		t.Fatalf("expected restart recovery to restore old panel, got %s", got)
+	}
+}
+
 func TestPanelMigrationAbortRestoresOldPanel(t *testing.T) {
 	originalReporter := sendPanelMigrationRollback
 	sendPanelMigrationRollback = func(Config, string) {}

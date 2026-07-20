@@ -80,7 +80,13 @@ export function pushAgentUpgrade(hostId: number, targetVersion: string | null, p
 
 export function pushAgentPanelMigration(
   hostId: number,
-  data: { id: string; state: "preparing" | "committed" | "aborted"; fallbackPanelUrl?: string },
+  data: {
+    id: string;
+    state: "preparing" | "committing" | "committed" | "aborted";
+    targetPanelUrl?: string;
+    fallbackPanelUrl?: string;
+    startedAt?: number;
+  },
 ) {
   return sendAgentEvent(hostId, "agent-panel-migration", data);
 }

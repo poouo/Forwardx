@@ -13,7 +13,7 @@ import {
 } from "../../drizzle/schema";
 import { pushAgentRefresh, requestHostTcping } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
-import { getDdnsSettings, updateDdnsRecord, updateDdnsRecordValues } from "../ddns";
+import { getDdnsSettings, updateDdnsRecordValues } from "../ddns";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, countAll, inList, quoteIdentifier } from "../dbCompat";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
@@ -158,6 +158,7 @@ type ForwardGroupFailoverOptions = {
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
 const lastDdnsEventByKey = new Map<string, string>();
+const exactDdnsReconciledGroups = new Map<number, string>();
 
 export function normalizeChinaHealthTarget(raw: unknown) {
   const source = String(raw || "").trim() || DEFAULT_CHINA_HEALTH_TARGET;
@@ -214,6 +215,7 @@ function forwardGroupFailoverDelayMs(group: any) {
 function agentFailureSince(host: any, group: any, now: Date) {
   if (!host) return now;
   const heartbeatAt = toDate(host.lastHeartbeat);
+  if (!dbBool(host.isOnline)) return heartbeatAt && heartbeatAt.getTime() <= now.getTime() ? heartbeatAt : now;
   if (!heartbeatAt) return now;
   if (now.getTime() - heartbeatAt.getTime() < forwardGroupFailoverDelayMs(group)) return null;
   return heartbeatAt.getTime() <= now.getTime() ? heartbeatAt : now;
@@ -1311,9 +1313,17 @@ async function memberDdnsValue(member: any, recordType: ForwardGroupRecordType) 
   return "";
 }
 
-async function firstResolvableMember(members: any[], recordType: ForwardGroupRecordType) {
+async function memberAgentAvailable(member: any, group: any) {
+  const hostId = await memberEntryHostId(member).catch(() => 0);
+  if (!hostId) return false;
+  const host = await getHostById(hostId).catch(() => null);
+  return agentFailureSince(host, group, nowDate()) === null;
+}
+
+async function firstAvailableResolvableMember(members: any[], group: any, recordType: ForwardGroupRecordType) {
   for (const member of members) {
     if (member?.isEnabled === false) continue;
+    if (!(await memberAgentAvailable(member, group))) continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (value) return { member, value };
   }
@@ -2903,6 +2913,88 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
   return { ...member, healthy, latencyMs, message, failureSince, healthySince, failedLongEnough, recoveredLongEnough };
 }
 
+function exactDdnsSignature(group: any, value: string) {
+  return [
+    String(group?.domain || "").trim().toLowerCase(),
+    normalizeForwardGroupRecordType(group?.recordType),
+    value,
+  ].join("|");
+}
+
+function exactDdnsReconciliationDue(group: any, value: string) {
+  const groupId = Number(group?.id || 0);
+  return exactDdnsReconciledGroups.get(groupId) !== exactDdnsSignature(group, value);
+}
+
+function rememberExactDdnsReconciliation(group: any, value: string) {
+  exactDdnsReconciledGroups.set(Number(group?.id || 0), exactDdnsSignature(group, value));
+}
+
+async function clearForwardGroupDdns(
+  group: any,
+  ddnsSettings: any,
+  options: ForwardGroupFailoverOptions,
+  reason: string,
+) {
+  const db = await getDb();
+  const groupId = Number(group.id);
+  const domain = String(group.domain || "").trim();
+  const recordType = normalizeForwardGroupRecordType(group.recordType);
+  const shouldReconcile = !!options.forceSync
+    || !!String(group.lastDdnsValue || "").trim()
+    || exactDdnsReconciliationDue(group, "");
+
+  if (!ddnsSettings.enabled || ddnsSettings.provider === "disabled") {
+    await db.update(forwardGroups).set({
+      activeMemberId: null,
+      lastStatus: "down",
+      lastMessage: `${reason}；系统 DDNS 未启用，无法清理服务商解析`,
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, groupId));
+    return;
+  }
+
+  if (!shouldReconcile) {
+    await db.update(forwardGroups).set({
+      activeMemberId: null,
+      lastStatus: "down",
+      lastMessage: `${reason}；服务商端已无受管解析`,
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, groupId));
+    return;
+  }
+
+  try {
+    await updateDdnsRecordValues({
+      groupId,
+      domain,
+      recordType,
+      values: [],
+      ttl: Number(ddnsSettings.ttl || 600),
+    });
+    rememberExactDdnsReconciliation(group, "");
+    await db.update(forwardGroups).set({
+      activeMemberId: null,
+      lastDdnsValue: null,
+      lastDdnsAt: nowDate(),
+      lastFailoverAt: nowDate(),
+      lastStatus: "down",
+      lastMessage: `${reason}；已清除服务商端受管解析`,
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, groupId));
+    await insertForwardGroupEvent(groupId, null, "ddns-clear", `没有健康成员，已清除 DDNS 解析；domain=${domain} type=${recordType}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await db.update(forwardGroups).set({
+      activeMemberId: null,
+      lastStatus: "error",
+      lastMessage: `${reason}；清理服务商解析失败：${message}`,
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, groupId));
+    await insertForwardGroupEvent(groupId, null, "ddns-error", `清理 DDNS 解析失败：${message}；domain=${domain} type=${recordType}`);
+  }
+}
+
 async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: ForwardGroupFailoverOptions = {}) {
   const db = await getDb();
   const members = sortedMembers(group, true) as any[];
@@ -2917,6 +3009,10 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     if (member.memberType !== "host") continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
+    if (!(await memberAgentAvailable(member, group))) {
+      if (!excluded.includes(value)) excluded.push(value);
+      continue;
+    }
     if (chinaHealthEnabled && String(member.chinaHealthStatus || "unknown") === "unhealthy") {
       if (!excluded.includes(value)) excluded.push(value);
       continue;
@@ -2940,11 +3036,17 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   }
   if (values.length === 0) {
     const requirement = recordTypeRequirementLabel(recordType);
-    await db.update(forwardGroups).set({
-      lastStatus: "down",
-      lastMessage: excluded.length > 0 ? `入口组没有健康的${requirement}。` : `入口组没有可用${requirement}。`,
-      updatedAt: nowDate(),
-    }).where(eq(forwardGroups.id, group.id));
+    const reason = excluded.length > 0 ? `入口组没有健康的${requirement}` : `入口组没有可用${requirement}`;
+    if (group.ddnsAutoResolveEnabled === false) {
+      await db.update(forwardGroups).set({
+        activeMemberId: null,
+        lastStatus: "down",
+        lastMessage: `${reason}；自动解析已关闭，请手动清理解析`,
+        updatedAt: nowDate(),
+      }).where(eq(forwardGroups.id, group.id));
+    } else {
+      await clearForwardGroupDdns(group, ddnsSettings, options, reason);
+    }
     return;
   }
 
@@ -2971,7 +3073,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     return;
   }
 
-  if (!forceSync && String(group.lastDdnsValue || "") === joined) {
+  if (!forceSync && String(group.lastDdnsValue || "") === joined && !exactDdnsReconciliationDue(group, joined)) {
     await db.update(forwardGroups).set({
       lastStatus: "healthy",
       lastMessage: `入口组 DDNS 已是最新；${values.length} 个入口${excludedSuffix}`,
@@ -2988,6 +3090,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
       values,
       ttl: Number(ddnsSettings.ttl || 600),
     });
+    rememberExactDdnsReconciliation(group, joined);
     await db.update(forwardGroups).set({
       activeMemberId,
       lastDdnsValue: joined,
@@ -3076,7 +3179,12 @@ async function syncSingleForwardGroupDdns(
     return;
   }
 
-  if (!forceSync && Number(group.activeMemberId) === Number(memberId) && String(group.lastDdnsValue || "") === value) {
+  if (
+    !forceSync
+    && Number(group.activeMemberId) === Number(memberId)
+    && String(group.lastDdnsValue || "") === value
+    && !exactDdnsReconciliationDue(group, value)
+  ) {
     await db.update(forwardGroups).set({
       lastStatus: "healthy",
       lastMessage: `当前入口 ${value}`,
@@ -3088,12 +3196,14 @@ async function syncSingleForwardGroupDdns(
 
   try {
     await insertForwardGroupEvent(group.id, memberId, "ddns-update", `Starting DDNS update; ${detail}${forceSync ? " force=true" : ""}`);
-    await updateDdnsRecord({
+    await updateDdnsRecordValues({
       groupId: Number(group.id),
       domain: String(group.domain || ""),
       recordType,
-      value,
+      values: [value],
+      ttl: Number(ddnsSettings.ttl || 600),
     });
+    rememberExactDdnsReconciliation(group, value);
     await db.update(forwardGroups).set({
       activeMemberId: memberId,
       lastDdnsValue: value,
@@ -3166,15 +3276,19 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
     if (members.length === 0) continue;
     const templates = await getForwardGroupTemplateRules(Number(group.id));
     if (templates.length === 0) {
-      const { member: firstMember, value: firstValue } = await firstResolvableMember(members, recordType);
-      if (group.domain && firstMember && firstValue) {
-        await syncSingleForwardGroupDdns(group, firstMember, firstValue, ddnsSettings, {
-          forceSync: !!options.forceSync,
-          eventType: options.forcePriority ? "failover" : "ddns-update",
-          successMessage: "DDNS 已切换",
-          currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
-          suppressSwitchNotify: true,
-        });
+      const { member: firstMember, value: firstValue } = await firstAvailableResolvableMember(members, group, recordType);
+      if (group.domain) {
+        if (firstMember && firstValue) {
+          await syncSingleForwardGroupDdns(group, firstMember, firstValue, ddnsSettings, {
+            forceSync: !!options.forceSync,
+            eventType: options.forcePriority ? "failover" : "ddns-update",
+            successMessage: "DDNS 已切换",
+            currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
+            suppressSwitchNotify: true,
+          });
+        } else {
+          await clearForwardGroupDdns(group, ddnsSettings, options, `没有在线且具备${recordTypeRequirementLabel(recordType)}的成员`);
+        }
         continue;
       }
       await db.update(forwardGroups).set({
@@ -3222,7 +3336,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
     let next = active;
     let switchReason = "";
     let switchDetail = "";
-    if (options.forcePriority) next = (await firstResolvableMember(members, recordType)).member || firstHealthy;
+    if (options.forcePriority) next = firstHealthy;
     else if (shouldFailback) {
       next = failbackCandidate;
       switchReason = "高优先级入口恢复，已自动回切";
@@ -3238,11 +3352,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
     }
 
     if (!next) {
-      await db.update(forwardGroups).set({
-        lastStatus: "down",
-        lastMessage: "没有可用于 DDNS 故障转移的健康成员。",
-        updatedAt: nowDate(),
-      }).where(eq(forwardGroups.id, group.id));
+      await clearForwardGroupDdns(group, ddnsSettings, options, "没有可用于 DDNS 故障转移的健康成员");
       continue;
     }
 

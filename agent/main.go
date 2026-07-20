@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.162"
+var Version = "2.2.163"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -380,7 +380,9 @@ type heartbeatResp struct {
 type panelMigrationDirective struct {
 	ID               string `json:"id"`
 	State            string `json:"state"`
+	TargetPanelURL   string `json:"targetPanelUrl,omitempty"`
 	FallbackPanelURL string `json:"fallbackPanelUrl,omitempty"`
+	StartedAt        int64  `json:"startedAt,omitempty"`
 }
 
 type heartbeatStateSnapshot struct {
@@ -2393,8 +2395,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		queuePendingDNSChanges(dnsChanges)
 		var migrated migratedPanelError
 		if errors.As(err, &migrated) {
-			go selfUpgrade(cfg, &agentUpgrade{TargetVersion: "9999.0.0", PanelURL: migrated.PanelURL})
-			return cfg.Interval, nil
+			if switchToCommittedPanel(cfg, migrated.PanelURL, "", "old panel redirect") {
+				return cfg.Interval, nil
+			}
 		}
 		return cfg.Interval, err
 	}
@@ -2409,6 +2412,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.AgentUpgrade != nil {
+		if handleLegacyPanelMigrationUpgrade(cfg, resp.AgentUpgrade) {
+			return cfg.Interval, nil
+		}
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
 	// Interactive tasks are independent from desired-state reconciliation. Accept
@@ -3168,6 +3174,8 @@ func runAgentEventStream(cfg Config) error {
 					var up agentUpgrade
 					if err := json.Unmarshal(msg.Data, &up); err != nil {
 						logf("decode agent upgrade payload: %v", err)
+					} else if handleLegacyPanelMigrationUpgrade(cfg, &up) {
+						return io.EOF
 					} else {
 						go selfUpgrade(cfg, &up)
 					}

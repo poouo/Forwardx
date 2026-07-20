@@ -7,7 +7,7 @@ import { generateInstallScript } from "./agentInstallScripts";
 import { isNginxForwardProtocolEnabled } from "../shared/forwardTypes";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
-import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
+import { AGENT_PANEL_MIGRATION_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
@@ -113,7 +113,20 @@ async function openAgentEventStream(input: {
     setAgentEventStreamHeaders(res, "close");
     res.flushHeaders?.();
     res.write(`event: message\n`);
-    res.write(`data: ${JSON.stringify(encryptPayload({ type: "agent-upgrade", data: migratedAgentPayload(migratedTo).agentUpgrade }, token))}\n\n`);
+    if (isAgentVersionAtLeast(input.agentVersion, AGENT_PANEL_MIGRATION_VERSION)) {
+      const migration = await getPanelMigrationAgentDirective();
+      res.write(`data: ${JSON.stringify(encryptPayload({
+        type: "agent-panel-migration",
+        data: {
+          id: migration?.id || `panel-migrated:${migratedTo}`,
+          state: "committed",
+          targetPanelUrl: migratedTo,
+          startedAt: migration?.startedAt,
+        },
+      }, token))}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify(encryptPayload({ type: "agent-upgrade", data: migratedAgentPayload(migratedTo).agentUpgrade }, token))}\n\n`);
+    }
     res.end();
     return;
   }

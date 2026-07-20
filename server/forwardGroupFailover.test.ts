@@ -35,6 +35,7 @@ test("forward group switches after its configured heartbeat failure window", () 
       await schema.ensureDatabaseSchema();
 
       const settings = await import(moduleUrl("server/repositories/settingsRepository.ts"));
+      const ddns = await import(moduleUrl("server/ddns.ts"));
       const hosts = await import(moduleUrl("server/repositories/hostRepository.ts"));
       const forwardGroups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
       const address = webhook.address();
@@ -112,6 +113,98 @@ test("forward group switches after its configured heartbeat failure window", () 
       assert.equal(Number(state.activeMemberId), 102);
       assert.equal(state.lastDdnsValue, "198.51.100.20");
       assert.deepEqual(requests.map((request) => request.value), ["198.51.100.10", "198.51.100.20"]);
+      assert.deepEqual(requests.map((request) => request.values), [["198.51.100.10"], ["198.51.100.20"]]);
+
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "domain", "recordType", "targetIp", "userId", "isEnabled", "failoverSeconds"],
+        [20, "entry", "host", "entry", "entry.example.test", "A", "0.0.0.0", 1, 1, 60],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [201, 20, "host", 1, 0, 1],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [202, 20, "host", 2, 1, 1],
+      );
+
+      await forwardGroups.runForwardGroupFailover(20, { forceSync: true });
+      let entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 202);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.20");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
+
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0 WHERE "id" = 2');
+      await forwardGroups.runForwardGroupFailover(20, { forceSync: true });
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(entryState.activeMemberId, null);
+      assert.equal(entryState.lastDdnsValue, null);
+      assert.equal(entryState.lastStatus, "down");
+      assert.equal(requests.at(-1).action, "delete");
+      assert.deepEqual(requests.at(-1).values, []);
+
+      await runtime.executeRaw('UPDATE "hosts" SET "lastHeartbeat" = ? WHERE "id" = 2', [now - 75]);
+      await forwardGroups.runForwardGroupFailover(10, { forceSync: true });
+      state = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 10',
+      ))[0];
+      assert.equal(state.activeMemberId, null);
+      assert.equal(state.lastDdnsValue, null);
+      assert.equal(state.lastStatus, "down");
+      assert.equal(requests.at(-1).domain, "edge.example.test");
+      assert.equal(requests.at(-1).action, "delete");
+      assert.deepEqual(requests.at(-1).values, []);
+
+      await settings.setSettings({
+        ddnsEnabled: "true",
+        ddnsProvider: "cloudflare",
+        ddnsCloudflareZoneId: "zone-1",
+        ddnsCloudflareApiToken: "token-1",
+        ddnsTtl: "60",
+      });
+      let cloudflareRecords = [
+        { id: "old-1", name: "edge.cloudflare.test", type: "A", content: "198.51.100.10", proxied: false },
+        { id: "old-2", name: "edge.cloudflare.test", type: "A", content: "198.51.100.20", proxied: false },
+      ];
+      globalThis.fetch = async (rawUrl, init = {}) => {
+        const url = String(rawUrl);
+        const method = String(init.method || "GET").toUpperCase();
+        if (method === "GET") {
+          return new Response(JSON.stringify({ success: true, result: cloudflareRecords }), { status: 200 });
+        }
+        if (method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").at(-1));
+          cloudflareRecords = cloudflareRecords.filter((record) => record.id !== id);
+          return new Response(JSON.stringify({ success: true, result: null }), { status: 200 });
+        }
+        if (method === "POST") {
+          const payload = JSON.parse(String(init.body || "{}"));
+          cloudflareRecords.push({ id: "new-" + (cloudflareRecords.length + 1), ...payload });
+          return new Response(JSON.stringify({ success: true, result: payload }), { status: 200 });
+        }
+        throw new Error("unexpected Cloudflare request " + method + " " + url);
+      };
+      await ddns.updateDdnsRecordValues({
+        groupId: 99,
+        domain: "edge.cloudflare.test",
+        recordType: "A",
+        values: ["198.51.100.20"],
+      });
+      assert.deepEqual(cloudflareRecords.map((record) => record.content), ["198.51.100.20"]);
+      await ddns.updateDdnsRecordValues({
+        groupId: 99,
+        domain: "edge.cloudflare.test",
+        recordType: "A",
+        values: [],
+      });
+      assert.deepEqual(cloudflareRecords, []);
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
       await new Promise((resolve) => webhook.close(resolve));

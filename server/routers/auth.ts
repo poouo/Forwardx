@@ -1,14 +1,15 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
-import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, SESSION_BUSY_ERR_MSG, SESSION_REPLACED_ERR_MSG } from "../../shared/const";
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, SESSION_REPLACED_ERR_MSG } from "../../shared/const";
 import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
 import * as db from "../db";
 import { getSessionKindField, isSessionLeaseActive, parseSessionLease, resolveRequestedSessionKind, SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, stripSessionSensitiveFields, type SessionKind } from "../session";
-import { createAuthSession, revokeAuthSession } from "../repositories/sessionRepository";
+import { revokeAuthSession } from "../repositories/sessionRepository";
+import { createLoginAuthSession } from "../loginSessionService";
 import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
@@ -139,7 +140,7 @@ async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, 
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
   const sid = nanoid(24);
-  await createAuthSession({
+  await createLoginAuthSession({
     userId: user.id,
     sid,
     kind: sessionKind,
@@ -207,9 +208,6 @@ function verifyEmailCode(email: string, code?: string) {
 export const authRouter = router({
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) {
-      if (ctx.authFailureReason === "session_busy") {
-        throw new TRPCError({ code: "CONFLICT", message: SESSION_BUSY_ERR_MSG });
-      }
       if (ctx.authFailureReason === "session_replaced") {
         throw new TRPCError({ code: "UNAUTHORIZED", message: SESSION_REPLACED_ERR_MSG });
       }

@@ -94,6 +94,11 @@ func handlePanelMigrationDirective(cfg Config, directive *panelMigrationDirectiv
 	}
 
 	if state == "preparing" || state == "committing" {
+		target := normalizePanelURL(directive.TargetPanelURL)
+		current := currentPanelURL(cfg)
+		if target == "" {
+			target = current
+		}
 		fallback := normalizePanelURL(directive.FallbackPanelURL)
 		panelMigrationRuntime.Lock()
 		if panelMigrationRuntime.terminalID == id {
@@ -103,24 +108,55 @@ func handlePanelMigrationDirective(cfg Config, directive *panelMigrationDirectiv
 		if fallback == "" {
 			fallback = panelMigrationRuntime.fallback
 		}
-		alreadyActive := panelMigrationRuntime.active &&
-			panelMigrationRuntime.id == id &&
-			panelMigrationRuntime.fallback == fallback
-		if fallback != "" {
-			panelMigrationRuntime.active = true
-			panelMigrationRuntime.id = id
-			panelMigrationRuntime.fallback = fallback
-			panelMigrationRuntime.failures = 0
-			if panelMigrationRuntime.startedAt.IsZero() {
-				panelMigrationRuntime.startedAt = time.Now()
+		if fallback == "" && target != current {
+			fallback = current
+		}
+		if fallback == "" {
+			panelMigrationRuntime.Unlock()
+			return false
+		}
+		startedAt := time.Unix(directive.StartedAt, 0)
+		if directive.StartedAt <= 0 || startedAt.After(time.Now()) {
+			if panelMigrationRuntime.id == id && !panelMigrationRuntime.startedAt.IsZero() {
+				startedAt = panelMigrationRuntime.startedAt
+			} else {
+				startedAt = time.Now()
 			}
 		}
-		startedAt := panelMigrationRuntime.startedAt
+		alreadyActive := panelMigrationRuntime.active &&
+			panelMigrationRuntime.id == id &&
+			panelMigrationRuntime.fallback == fallback &&
+			current == target
+		if !alreadyActive {
+			if err := persistPanelMigrationConfig(target, fallback, id, startedAt, false); err != nil {
+				panelMigrationRuntime.Unlock()
+				logf("panel migration prepare persist failed target=%s fallback=%s: %v", target, fallback, err)
+				return false
+			}
+		}
+		panelMigrationRuntime.active = true
+		panelMigrationRuntime.id = id
+		panelMigrationRuntime.fallback = fallback
+		panelMigrationRuntime.startedAt = startedAt
+		panelMigrationRuntime.failures = 0
+		if current != target {
+			panelMigrationRuntime.streamConnected = false
+		}
 		panelMigrationRuntime.Unlock()
-		if fallback != "" && !alreadyActive {
-			_ = persistPanelMigrationConfig(currentPanelURL(cfg), fallback, id, startedAt, false)
+		if current != target {
+			setRuntimePanelURL(target)
+			logf("panel migration switched to %s fallback=%s id=%s", target, fallback, id)
+			wakeHeartbeat()
+			return true
 		}
 		return false
+	}
+
+	if state == "committed" {
+		target := normalizePanelURL(directive.TargetPanelURL)
+		if target != "" && target != currentPanelURL(cfg) {
+			return switchToCommittedPanel(cfg, target, id, "migration committed by panel")
+		}
 	}
 
 	panelMigrationRuntime.Lock()
@@ -146,21 +182,52 @@ func switchToPanelMigrationFallback(cfg Config, reason string) bool {
 	}
 	fallback := panelMigrationRuntime.fallback
 	migrationID := panelMigrationRuntime.id
+	if fallback == "" {
+		panelMigrationRuntime.Unlock()
+		return false
+	}
+	if err := persistPanelMigrationConfig(fallback, "", "", time.Time{}, true); err != nil {
+		panelMigrationRuntime.Unlock()
+		logf("panel migration fallback persist failed target=%s: %v", fallback, err)
+		return false
+	}
 	panelMigrationRuntime.terminalID = migrationID
 	panelMigrationRuntime.active = false
 	panelMigrationRuntime.failures = 0
 	panelMigrationRuntime.streamConnected = false
 	panelMigrationRuntime.Unlock()
-	if fallback == "" || fallback == currentPanelURL(cfg) {
+	if fallback == currentPanelURL(cfg) {
 		return false
 	}
 	setRuntimePanelURL(fallback)
-	if err := persistPanelMigrationConfig(fallback, "", "", time.Time{}, true); err != nil {
-		logf("panel migration fallback switched runtime to %s, persist failed: %v", fallback, err)
-	} else {
-		logf("panel migration fallback restored %s reason=%s", fallback, reason)
-	}
+	logf("panel migration fallback restored %s reason=%s", fallback, reason)
 	sendPanelMigrationRollback(cfg, migrationID)
+	wakeHeartbeat()
+	return true
+}
+
+func switchToCommittedPanel(cfg Config, panelURL string, migrationID string, reason string) bool {
+	target := normalizePanelURL(panelURL)
+	if target == "" || target == currentPanelURL(cfg) {
+		return false
+	}
+	panelMigrationRuntime.Lock()
+	if err := persistPanelMigrationConfig(target, "", "", time.Time{}, true); err != nil {
+		panelMigrationRuntime.Unlock()
+		logf("panel migration committed switch persist failed target=%s: %v", target, err)
+		return false
+	}
+	if strings.TrimSpace(migrationID) != "" {
+		panelMigrationRuntime.terminalID = strings.TrimSpace(migrationID)
+	} else {
+		panelMigrationRuntime.terminalID = panelMigrationRuntime.id
+	}
+	panelMigrationRuntime.active = false
+	panelMigrationRuntime.failures = 0
+	panelMigrationRuntime.streamConnected = false
+	panelMigrationRuntime.Unlock()
+	setRuntimePanelURL(target)
+	logf("panel migration committed switch to %s reason=%s", target, reason)
 	wakeHeartbeat()
 	return true
 }
@@ -179,12 +246,7 @@ func reportPanelMigrationRollback(cfg Config, migrationID string) {
 	var migrated migratedPanelError
 	if errors.As(err, &migrated) && normalizePanelURL(migrated.PanelURL) != "" {
 		target := normalizePanelURL(migrated.PanelURL)
-		setRuntimePanelURL(target)
-		if persistErr := persistPanelMigrationConfig(target, "", "", time.Time{}, true); persistErr != nil {
-			logf("old panel already committed migration; restore new panel persist failed: %v", persistErr)
-		} else {
-			logf("old panel already committed migration; staying on %s", target)
-		}
+		switchToCommittedPanel(cfg, target, migrationID, "old panel already committed migration")
 		return
 	}
 	logf("panel migration rollback report failed: %v", err)
@@ -196,15 +258,16 @@ func clearPanelMigrationFallback(cfg Config) {
 		panelMigrationRuntime.Unlock()
 		return
 	}
+	if err := persistPanelMigrationConfig(currentPanelURL(cfg), "", "", time.Time{}, true); err != nil {
+		panelMigrationRuntime.Unlock()
+		logf("clear panel migration fallback failed: %v", err)
+		return
+	}
 	panelMigrationRuntime.terminalID = panelMigrationRuntime.id
 	panelMigrationRuntime.active = false
 	panelMigrationRuntime.failures = 0
 	panelMigrationRuntime.streamConnected = false
 	panelMigrationRuntime.Unlock()
-	if err := persistPanelMigrationConfig(currentPanelURL(cfg), "", "", time.Time{}, true); err != nil {
-		logf("clear panel migration fallback failed: %v", err)
-		return
-	}
 	logf("panel migration committed; fallback cleared")
 }
 
