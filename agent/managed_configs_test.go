@@ -32,6 +32,9 @@ func TestManagedConfigRollbackRestoresPreviousContent(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"version":1}`), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path+".sha256", []byte("new-config-hash"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := applyManagedConfigs([]managedConfigSpec{{
 		Path: path, Format: "json", ContentBase64: base64.StdEncoding.EncodeToString([]byte(`{"version":2}`)),
 	}})
@@ -44,6 +47,9 @@ func TestManagedConfigRollbackRestoresPreviousContent(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if string(raw) != `{"version":1}` {
 		t.Fatalf("unexpected restored config: %s", raw)
+	}
+	if _, err := os.Stat(path + ".sha256"); !os.IsNotExist(err) {
+		t.Fatalf("rollback must invalidate the applied config hash, stat error=%v", err)
 	}
 }
 

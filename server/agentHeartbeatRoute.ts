@@ -75,6 +75,7 @@ import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
 import { hashConfig, latestConfigRevision, recordConfigAuditEvent } from "./configAudit";
 import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
+import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -142,6 +143,7 @@ const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWA
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
 const AGENT_STATE_SECTION_NAMES = [
   "runningRules",
+  "ruleLatencyProbes",
   "tunnelProbes",
   "forwardGroupProbes",
   "hostProbeServices",
@@ -1195,6 +1197,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       "[Unit]",
       "Description=ForwardX unified runtime forwarder",
       "After=network.target",
+      "StartLimitIntervalSec=60",
+      "StartLimitBurst=5",
       "",
       "[Service]",
       "Type=simple",
@@ -2861,6 +2865,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           "[Unit]",
           "Description=ForwardX managed tunnel runtime",
           "After=network.target",
+          "StartLimitIntervalSec=60",
+          "StartLimitBurst=5",
           "",
           "[Service]",
           "Type=simple",
@@ -4033,6 +4039,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "[Unit]",
               `Description=ForwardX guarded realm backend ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
               "After=network.target",
+              "StartLimitIntervalSec=60",
+              "StartLimitBurst=5",
               "",
               "[Service]",
               "Type=simple",
@@ -4203,6 +4211,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
             "After=network.target",
+            "StartLimitIntervalSec=60",
+            "StartLimitBurst=5",
             "",
             "[Service]",
             "Type=simple",
@@ -4863,6 +4873,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     }
     const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
+    const ruleLatencyProbes = (agentAllRules as any[])
+      .filter((rule: any) => {
+        if (!rule || rule.pendingDelete || !rule.isEnabled || !rule.isRunning) return false;
+        const tunnelId = Number(rule.tunnelId || 0);
+        if (tunnelId <= 0) return false;
+        const tunnel = tunnelById.get(tunnelId) as any;
+        return !!tunnel
+          && tunnel.isEnabled
+          && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
+          && isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel);
+      })
+      .map((rule: any) => buildTunnelRuleLatencyProbe({
+        hostId: host.id,
+        rule,
+        tunnel: tunnelById.get(Number(rule.tunnelId || 0)),
+        targetIp: processTarget(rule),
+      }))
+      .filter(Boolean)
+      .sort((left: any, right: any) => Number(left.ruleId) - Number(right.ruleId));
     const hostProbeServices = await db.getHostProbeTasksForHost(host.id);
 
     if (isAgentVersionAtLeast(String((host as any).agentVersion || ""), AGENT_FORWARDX_WIREGUARD_VERSION)) {
@@ -5452,13 +5481,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     } : undefined;
     const stateSections = buildAgentStateResponseSections({
       runningRules,
+      ruleLatencyProbes,
       tunnelProbes,
       forwardGroupProbes,
       hostProbeServices,
       guardRules,
       dnsWatch: Array.from(dnsWatches.values()),
     }, agentStateSignatures);
-    const probeStateRefreshed = ["runningRules", "tunnelProbes", "forwardGroupProbes", "hostProbeServices"]
+    const probeStateRefreshed = ["runningRules", "ruleLatencyProbes", "tunnelProbes", "forwardGroupProbes", "hostProbeServices"]
       .some((name) => Object.prototype.hasOwnProperty.call(stateSections.payload, name));
     // 有 SSE 长连接时立即将 desiredState + runningRules 推送给 Agent，
     // 无需等待下一个心跳周期即可执行转发规则变更。
@@ -5478,7 +5508,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       pushAgentDesiredState(Number(host.id), {
         desiredState,
         runningRules,
-        stateSignatures: stateSections.signatures,
+        ruleLatencyProbes,
+        stateSignatures: {
+          runningRules: stateSections.signatures.runningRules,
+          ruleLatencyProbes: stateSections.signatures.ruleLatencyProbes,
+        },
       });
     }
     res.json({

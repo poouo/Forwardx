@@ -1396,6 +1396,7 @@ func actionDiagnosticKey(a action) string {
 
 func actionStaleKeys(a action) []string {
 	keys := []string{}
+	isRemove := strings.TrimSpace(a.Op) == "remove"
 	statusType := strings.TrimSpace(a.StatusType)
 	if statusType == "" {
 		if a.RuleID > 0 {
@@ -1409,16 +1410,21 @@ func actionStaleKeys(a action) []string {
 	}
 	if statusType == "tunnel" && a.TunnelID > 0 {
 		keys = append(keys, fmt.Sprintf("tunnel:%d:%d", a.TunnelID, a.SourcePort))
-		// A host can have only one listener for a tunnel. Make a newer port
-		// assignment supersede queued work for the old port.
-		keys = append(keys, fmt.Sprintf("tunnel:%d", a.TunnelID))
+		if !isRemove {
+			// A host can have only one listener for a tunnel. Make a newer apply
+			// supersede queued apply work for the old port. Cleanup for that old
+			// identity must still run after the replacement has been accepted.
+			keys = append(keys, fmt.Sprintf("tunnel:%d", a.TunnelID))
+		}
 	}
 	if a.RuleID > 0 {
 		keys = append(keys, fmt.Sprintf("rule:%d:%d:%d", a.RuleID, a.TunnelID, a.SourcePort))
 		keys = append(keys, fmt.Sprintf("rule:%d:%d", a.RuleID, a.SourcePort))
-		// A rule has one active listener identity per Agent. A newer host, tunnel,
-		// port, or protocol assignment must supersede queued work for the old one.
-		keys = append(keys, fmt.Sprintf("rule:%d", a.RuleID))
+		if !isRemove {
+			// New apply work supersedes prior assignments for the rule. Remove work
+			// remains scoped to its old port so edits cannot strand that listener.
+			keys = append(keys, fmt.Sprintf("rule:%d", a.RuleID))
+		}
 	}
 	if validActionPort(a.SourcePort) {
 		for _, protocol := range runtimeProtocols(a.Protocol) {

@@ -30,6 +30,7 @@ import {
 } from "../setupState";
 import { startBackgroundServices } from "../backgroundServices";
 import { isDevPanelMode } from "../devPanel";
+import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
 
 let setupSchemaReadyKey = "";
 
@@ -344,6 +345,7 @@ export const setupRouter = router({
       oldPanelUrl: z.string().trim().min(1, "请输入旧面板地址"),
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码"),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址"),
+      dataScope: z.enum(PANEL_MIGRATION_SCOPES).default("essential"),
     }))
     .mutation(async ({ input, ctx }) => {
       await ensureSetupWriteAllowed(ctx);

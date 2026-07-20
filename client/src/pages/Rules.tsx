@@ -8166,10 +8166,14 @@ function SelfTestDialog({
   useEffect(() => {
     if (!optimisticTesting || !activeTestId || !isTerminalStatus) return;
     if (latestTestId >= activeTestId) {
+      void Promise.all([
+        utils.rules.trafficSummary.invalidate(),
+        utils.rules.tcpingSeries.invalidate({ ruleId, hours: 24 }),
+      ]);
       setOptimisticTesting(false);
       setActiveTestId(null);
     }
-  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting]);
+  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting, ruleId, utils]);
   useEffect(() => {
     if (!startMutation.isError) return;
     setOptimisticTesting(false);

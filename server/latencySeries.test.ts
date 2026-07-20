@@ -17,6 +17,8 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     const runtime = await import(moduleUrl("server/dbRuntime.ts"));
     const schema = await import(moduleUrl("server/dbSchema.ts"));
     const metrics = await import(moduleUrl("server/repositories/metricsRepository.ts"));
+    const forwardTests = await import(moduleUrl("server/repositories/forwardTestRepository.ts"));
+    const database = await import(moduleUrl("server/db.ts"));
     const probes = await import(moduleUrl("server/repositories/hostProbeServiceRepository.ts"));
 
     await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
@@ -43,11 +45,16 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     await insert("forward_rules", ruleColumns, [110, 1, "child-1", "iptables", "tcp", 10, 100, 101, 0, 10000, "example.test", 443, 1, 1, 1]);
     await insert("forward_rules", ruleColumns, [120, 2, "child-2", "iptables", "tcp", 10, 100, 102, 0, 10000, "example.test", 443, 1, 1, 1]);
     await insert("forward_rules", ruleColumns, [130, 1, "direct", "iptables", "tcp", null, null, null, 0, 10001, "example.test", 443, 1, 1, 1]);
+    await insert("forward_rules", [...ruleColumns, "tunnelId"], [140, 1, "tunnel", "gost", "tcp", null, null, null, 0, 10002, "example.test", 443, 1, 1, 1, 30]);
 
     await insert("tcping_stats", ["ruleId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [110, 1, 11, 0, now - 120]);
     await insert("tcping_stats", ["ruleId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [120, 2, 42, 0, now - 90]);
     await insert("tcping_stats", ["ruleId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [130, 1, 33, 0, now - 60]);
+    await insert("tcping_stats", ["ruleId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [140, 1, 999, 0, now - 55]);
     await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "recordedAt"], [30, 55, 0, now - 50]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [31, 9, 0, "primary", now - 20]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [31, 15, 0, "total", now - 20]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [31, 7, 0, "exit-2", now - 10]);
     await insert("forward_group_latency_stats", ["groupId", "latencyMs", "isTimeout", "recordedAt"], [20, 66, 0, now - 40]);
     await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [40, 1, 77, 0, now - 30]);
 
@@ -62,10 +69,20 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     assert.deepEqual(directSeries.map((item) => item.latencyMs), [33]);
     const tunnelSeries = await metrics.getTunnelLatencySeries(30, { since });
     assert.deepEqual(tunnelSeries.map((item) => item.latencyMs), [55]);
+    const latestTunnelTotal = await forwardTests.getLatestTunnelLatency(31);
+    assert.equal(latestTunnelTotal?.seriesKey, "total");
+    assert.equal(latestTunnelTotal?.latencyMs, 15);
     const chainSeries = await metrics.getForwardGroupLatencySeries(20, { since });
     assert.deepEqual(chainSeries.map((item) => item.latencyMs), [66]);
     const serviceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [40], hostId: 1, hours: 1 });
     assert.deepEqual(serviceSeries.map((item) => item.latencyMs), [77]);
+
+    assert.equal(await database.clearLegacyTunnelRuleLatencyHistoryOnce(), 1);
+    assert.equal(Number((await runtime.queryRaw('SELECT COUNT(*) AS count FROM "tcping_stats" WHERE "ruleId" = 140'))[0]?.count || 0), 0);
+    assert.equal(Number((await runtime.queryRaw('SELECT COUNT(*) AS count FROM "tcping_stats" WHERE "ruleId" = 130'))[0]?.count || 0), 1);
+    await insert("tcping_stats", ["ruleId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [140, 1, 44, 0, now]);
+    assert.equal(await database.clearLegacyTunnelRuleLatencyHistoryOnce(), 0);
+    assert.equal(Number((await runtime.queryRaw('SELECT COUNT(*) AS count FROM "tcping_stats" WHERE "ruleId" = 140'))[0]?.count || 0), 1);
 
     await runtime.closeDatabase();
   `;

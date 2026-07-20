@@ -1,7 +1,24 @@
 import { Request, Response, Router } from "express";
 import nodeCrypto from "crypto";
-import { MIGRATION_TABLES, ensureDatabaseSchema } from "./dbSchema";
-import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
+import fs from "fs";
+import path from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
+import { createGzip } from "zlib";
+import Database from "better-sqlite3";
+import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs } from "./dbSchema";
+import {
+  connectDatabase,
+  defaultSqlitePath,
+  executeRaw,
+  getDatabaseKind,
+  nowDate,
+  queryRaw,
+  readDatabaseConfig,
+  requireSqlite,
+  withDatabaseTransaction,
+  withSqliteExclusive,
+} from "./dbRuntime";
 import { countAll, quoteIdentifier } from "./dbCompat";
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { clearHostAgentUpgradeRequest, getHosts, HOST_ONLINE_TTL_MS, requestHostAgentUpgrade } from "./db";
@@ -26,6 +43,11 @@ import {
 } from "./panelMigrationAgentState";
 import { markLocalSetupComplete } from "./setupState";
 import { startBackgroundServices } from "./backgroundServices";
+import {
+  normalizePanelMigrationScope,
+  panelMigrationScopeLabel,
+  type PanelMigrationScope,
+} from "../shared/panelMigration";
 
 export type MigrationJobStatus = "pending" | "running" | "success" | "failed";
 
@@ -34,6 +56,7 @@ export interface MigrationSnapshot {
   exportedAt: number;
   appVersion?: string;
   sourcePanelUrl?: string;
+  dataScope?: PanelMigrationScope;
   takeoverToken?: string;
   tables: Record<string, Record<string, any>[]>;
 }
@@ -81,6 +104,8 @@ export interface MigrationImportResult {
   skipped: Record<string, number>;
   hostCount: number;
   panelUrl?: string;
+  dataScope?: PanelMigrationScope;
+  transferMode?: "structured" | "sqlite-direct";
 }
 
 export interface MigrationImportedIds {
@@ -122,6 +147,32 @@ export interface MigrationJob {
 
 const jobs = new Map<string, MigrationJob>();
 const migrationJobProbeTokens = new Map<string, string>();
+const SQLITE_MIGRATION_FORMAT = "forwardx-sqlite-backup-v1";
+const SQLITE_MIGRATION_META_HEADER = "x-forwardx-migration-meta";
+const SQLITE_MIGRATION_FORMAT_HEADER = "x-forwardx-migration-format";
+const configuredMigrationExportTimeoutMs = Number(process.env.FORWARDX_MIGRATION_EXPORT_TIMEOUT_MS);
+const MIGRATION_EXPORT_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.isFinite(configuredMigrationExportTimeoutMs) && configuredMigrationExportTimeoutMs > 0
+    ? configuredMigrationExportTimeoutMs
+    : 30 * 60 * 1000,
+);
+
+export type DirectSqliteMigrationMeta = {
+  version: 1;
+  format: typeof SQLITE_MIGRATION_FORMAT;
+  exportedAt: number;
+  appVersion: string;
+  sourcePanelUrl?: string;
+  takeoverToken: string;
+  dataScope: "full";
+  byteLength: number;
+  sha256: string;
+};
+
+type FetchedMigrationPayload =
+  | { kind: "snapshot"; snapshot: MigrationSnapshot }
+  | { kind: "sqlite-direct"; filePath: string; meta: DirectSqliteMigrationMeta };
 
 const configuredMigrationRuntimeTimeoutMs = Number(process.env.FORWARDX_MIGRATION_RUNTIME_TIMEOUT_MS);
 const MIGRATION_RUNTIME_TIMEOUT_MS = Math.max(
@@ -147,29 +198,193 @@ export function getMigrationJob(id: string) {
   return jobs.get(id) || null;
 }
 
-export async function exportMigrationSnapshot(sourcePanelUrl?: string): Promise<MigrationSnapshot> {
-  await connectDatabase();
-  await ensureDatabaseSchema();
-  const tables: MigrationSnapshot["tables"] = {};
-  for (const table of MIGRATION_TABLES) {
-    tables[table] = await queryRaw(`SELECT * FROM ${quote(table)}`);
-  }
-  return { version: 1, exportedAt: Date.now(), appVersion: APP_VERSION, sourcePanelUrl, tables };
-}
-
-type MigrationTableName = (typeof MIGRATION_TABLES)[number];
-
-const PANEL_BACKUP_OMITTED_TABLES = new Set<MigrationTableName>([
+export const ESSENTIAL_MIGRATION_OMITTED_TABLES = new Set<(typeof MIGRATION_TABLES)[number]>([
   "host_metrics",
   "host_probe_service_stats",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "traffic_stats",
+  "traffic_stat_buckets",
   "tcping_stats",
   "forward_tests",
   "forward_group_events",
   "ip_geo_cache",
+  "config_audit_events",
 ]);
+
+export async function exportMigrationSnapshot(
+  sourcePanelUrl?: string,
+  options: { dataScope?: PanelMigrationScope } = {},
+): Promise<MigrationSnapshot> {
+  await connectDatabase();
+  await ensureDatabaseSchema();
+  const dataScope = normalizePanelMigrationScope(options.dataScope);
+  const tables: MigrationSnapshot["tables"] = {};
+  for (const table of MIGRATION_TABLES) {
+    if (dataScope === "essential" && ESSENTIAL_MIGRATION_OMITTED_TABLES.has(table)) continue;
+    tables[table] = await queryRaw(`SELECT * FROM ${quote(table)}`);
+  }
+  return { version: 1, exportedAt: Date.now(), appVersion: APP_VERSION, sourcePanelUrl, dataScope, tables };
+}
+
+function sqliteIdentifier(value: string) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function currentSqlitePath() {
+  const config = readDatabaseConfig();
+  if (config?.type !== "sqlite") throw new Error("当前面板未使用 SQLite，无法使用数据库快速迁移");
+  return path.resolve(config.sqlite.path || defaultSqlitePath());
+}
+
+function sqliteMigrationTempPath(label: string) {
+  const databasePath = currentSqlitePath();
+  const safeLabel = String(label || "transfer").replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 64) || "transfer";
+  return path.join(path.dirname(databasePath), `.forwardx-migration-${safeLabel}-${nodeCrypto.randomUUID()}.sqlite`);
+}
+
+async function sha256File(filePath: string) {
+  const hash = nodeCrypto.createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
+}
+
+function encodeDirectSqliteMeta(meta: DirectSqliteMigrationMeta) {
+  return Buffer.from(JSON.stringify(meta), "utf8").toString("base64url");
+}
+
+function decodeDirectSqliteMeta(value: string | null): DirectSqliteMigrationMeta {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+  } catch {
+    throw new Error("旧面板返回的 SQLite 迁移元数据无效");
+  }
+  if (parsed?.version !== 1
+    || parsed?.format !== SQLITE_MIGRATION_FORMAT
+    || parsed?.dataScope !== "full"
+    || !parsed?.takeoverToken
+    || !/^[a-f0-9]{64}$/i.test(String(parsed?.sha256 || ""))
+    || !Number.isFinite(Number(parsed?.byteLength))
+    || Number(parsed.byteLength) <= 0) {
+    throw new Error("旧面板返回的 SQLite 迁移元数据不完整");
+  }
+  return {
+    version: 1,
+    format: SQLITE_MIGRATION_FORMAT,
+    exportedAt: Number(parsed.exportedAt || Date.now()),
+    appVersion: String(parsed.appVersion || ""),
+    sourcePanelUrl: parsed.sourcePanelUrl ? String(parsed.sourcePanelUrl) : undefined,
+    takeoverToken: String(parsed.takeoverToken),
+    dataScope: "full",
+    byteLength: Number(parsed.byteLength),
+    sha256: String(parsed.sha256).toLowerCase(),
+  };
+}
+
+function validateSqliteMigrationFile(filePath: string) {
+  const sqlite = new Database(filePath, { readonly: true, fileMustExist: true });
+  try {
+    const quickCheck = String(sqlite.pragma("quick_check", { simple: true }) || "");
+    if (quickCheck.toLowerCase() !== "ok") throw new Error(`SQLite 完整性检查失败：${quickCheck || "unknown"}`);
+    const tables = new Set((sqlite.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    ).all() as Array<{ name: string }>).map((row) => String(row.name)));
+    for (const table of ["users", "hosts", "forward_rules", "tunnels", "system_settings"]) {
+      if (!tables.has(table)) throw new Error(`SQLite 迁移文件缺少数据表 ${table}`);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+async function createDirectSqliteBackup(meta: Omit<DirectSqliteMigrationMeta, "byteLength" | "sha256">) {
+  const filePath = sqliteMigrationTempPath(`export-${Date.now()}`);
+  try {
+    await requireSqlite().backup(filePath);
+    validateSqliteMigrationFile(filePath);
+    const stat = await fs.promises.stat(filePath);
+    const sha256 = await sha256File(filePath);
+    return { filePath, meta: { ...meta, byteLength: stat.size, sha256 } as DirectSqliteMigrationMeta };
+  } catch (error) {
+    await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function sendDirectSqliteBackup(res: Response, transfer: Awaited<ReturnType<typeof createDirectSqliteBackup>>) {
+  res.status(200);
+  res.setHeader("Content-Type", "application/vnd.forwardx.sqlite");
+  res.setHeader("Content-Length", String(transfer.meta.byteLength));
+  res.setHeader(SQLITE_MIGRATION_FORMAT_HEADER, SQLITE_MIGRATION_FORMAT);
+  res.setHeader(SQLITE_MIGRATION_META_HEADER, encodeDirectSqliteMeta(transfer.meta));
+  res.setHeader("Content-Disposition", 'attachment; filename="forwardx-panel.sqlite"');
+  res.setHeader("Cache-Control", "no-store");
+  const input = fs.createReadStream(transfer.filePath);
+  const cleanup = () => { void fs.promises.rm(transfer.filePath, { force: true }).catch(() => undefined); };
+  input.once("error", cleanup);
+  res.once("close", cleanup);
+  res.once("finish", cleanup);
+  input.pipe(res);
+}
+
+async function downloadDirectSqliteBackup(response: globalThis.Response, jobId: string) {
+  const meta = decodeDirectSqliteMeta(response.headers.get(SQLITE_MIGRATION_META_HEADER));
+  if (meta.appVersion !== APP_VERSION) {
+    throw new Error(`SQLite 快速迁移要求新旧面板版本一致，旧面板 ${meta.appVersion || "未知"}，新面板 ${APP_VERSION}`);
+  }
+  const filePath = sqliteMigrationTempPath(`incoming-${jobId}`);
+  try {
+    if (!response.body) throw new Error("旧面板未返回 SQLite 数据流");
+    await pipeline(
+      Readable.fromWeb(response.body as any),
+      fs.createWriteStream(filePath, { flags: "wx", mode: 0o600 }),
+    );
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size !== meta.byteLength) throw new Error(`SQLite 迁移文件大小不一致：预期 ${meta.byteLength}，实际 ${stat.size}`);
+    const sha256 = await sha256File(filePath);
+    if (sha256 !== meta.sha256) throw new Error("SQLite 迁移文件校验失败，请重新迁移");
+    validateSqliteMigrationFile(filePath);
+    return { kind: "sqlite-direct" as const, filePath, meta };
+  } catch (error) {
+    await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function sendStructuredMigrationSnapshot(req: Request, res: Response, snapshot: MigrationSnapshot) {
+  const acceptsGzip = String(req.headers["accept-encoding"] || "")
+    .split(",")
+    .some((value) => {
+      const [encoding, ...parameters] = value.trim().split(";");
+      if (encoding.toLowerCase() !== "gzip") return false;
+      const quality = parameters.find((parameter) => parameter.trim().toLowerCase().startsWith("q="));
+      return !quality || Number(quality.split("=", 2)[1]) > 0;
+    });
+  res.setHeader("Cache-Control", "no-store");
+  if (!acceptsGzip) {
+    res.json(snapshot);
+    return;
+  }
+  res.status(200);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Encoding", "gzip");
+  res.setHeader("Vary", "Accept-Encoding");
+  await pipeline(
+    Readable.from([JSON.stringify(snapshot)]),
+    createGzip({ level: 1 }),
+    res,
+  );
+}
+
+type MigrationTableName = (typeof MIGRATION_TABLES)[number];
+
+const PANEL_BACKUP_OMITTED_TABLES = ESSENTIAL_MIGRATION_OMITTED_TABLES;
 
 export function pruneMigrationSnapshotForPanelBackup(snapshot: MigrationSnapshot): MigrationSnapshot {
   const tables: MigrationSnapshot["tables"] = {};
@@ -197,6 +412,26 @@ function compact<T extends Record<string, any>>(obj: T): T {
     if (value !== undefined) out[key] = value;
   }
   return out as T;
+}
+
+const migrationBoolColumns = new Map(
+  getDatabaseTableDefs().map((table) => [
+    table.name,
+    table.columns.filter((column) => column.type === "bool").map((column) => column.name),
+  ]),
+);
+
+function normalizeImportPayload(table: string, row: Record<string, any>) {
+  const normalized = compact(row);
+  for (const column of migrationBoolColumns.get(table) || []) {
+    const value = normalized[column];
+    if (value === undefined || value === null) continue;
+    normalized[column] = value === true
+      || value === 1
+      || value === "1"
+      || String(value).trim().toLowerCase() === "true";
+  }
+  return normalized;
 }
 
 function toNumberId(value: unknown) {
@@ -448,6 +683,7 @@ const IMPORT_TABLE_ORDER = [
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "traffic_stats",
+  "traffic_stat_buckets",
   "tcping_stats",
   "forward_tests",
   "forward_group_events",
@@ -486,6 +722,7 @@ const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
   "user_traffic_counters",
   "forward_rule_traffic_counters",
   "traffic_stats",
+  "traffic_stat_buckets",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "ip_geo_cache",
@@ -539,10 +776,245 @@ async function insertOrReuseSystemSetting(row: Record<string, any>, mode: "resto
   return "inserted" as const;
 }
 
-async function insertImportRow(table: string, row: Record<string, any>) {
-  const payload = compact(row);
-  delete payload.id;
-  return insertAndGetId(table, payload);
+type PreparedRestoreRow = {
+  source: Record<string, any>;
+  oldId: number;
+  payload: Record<string, any>;
+};
+
+type PreparedGeneratedRow = PreparedRestoreRow & {
+  existingWhere?: Record<string, any>;
+};
+
+const STRUCTURED_MIGRATION_BATCH_ROWS = 500;
+
+function chunkValues<T>(values: T[], size: number) {
+  const chunks: T[][] = [];
+  const safeSize = Math.max(1, Math.floor(size));
+  for (let index = 0; index < values.length; index += safeSize) {
+    chunks.push(values.slice(index, index + safeSize));
+  }
+  return chunks;
+}
+
+function importLookupEntries(where?: Record<string, any>) {
+  if (!where) return [];
+  return Object.entries(where)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .sort(([left], [right]) => left.localeCompare(right));
+}
+
+function canonicalImportLookupValue(value: any) {
+  const normalized = normalizeValue(value);
+  if (typeof normalized === "boolean") return `n:${normalized ? "1" : "0"}`;
+  if (typeof normalized === "number" || typeof normalized === "bigint") return `n:${String(normalized)}`;
+  const text = String(normalized);
+  return `s:${getDatabaseKind() === "mysql" ? text.toLocaleLowerCase("en-US") : text}`;
+}
+
+function importLookupDescriptor(where?: Record<string, any>) {
+  const entries = importLookupEntries(where);
+  if (entries.length === 0) return null;
+  const columns = entries.map(([column]) => column);
+  const signature = columns.join("\u001f");
+  return {
+    columns,
+    signature,
+    key: `${signature}\u001d${entries.map(([, value]) => canonicalImportLookupValue(value)).join("\u001e")}`,
+  };
+}
+
+async function preloadExistingImportIds(table: string, rows: PreparedGeneratedRow[]) {
+  const groups = new Map<string, string[]>();
+  for (const row of rows) {
+    const descriptor = importLookupDescriptor(row.existingWhere);
+    if (descriptor) groups.set(descriptor.signature, descriptor.columns);
+  }
+  const ids = new Map<string, number>();
+  for (const columns of groups.values()) {
+    const existingRows = await queryRaw<Record<string, any>>(
+      `SELECT ${[quote("id"), ...columns.map(quote)].join(", ")} FROM ${quote(table)}`,
+    );
+    for (const existing of existingRows) {
+      const descriptor = importLookupDescriptor(Object.fromEntries(columns.map((column) => [column, existing[column]])));
+      const id = toNumberId(existing.id);
+      if (descriptor && id) ids.set(descriptor.key, id);
+    }
+  }
+  return ids;
+}
+
+function structuredMigrationParameterLimit() {
+  if (getDatabaseKind() === "sqlite") return 900;
+  if (getDatabaseKind() === "postgresql") return 30_000;
+  return 10_000;
+}
+
+function restoreRowSignature(payload: Record<string, any>) {
+  return Object.keys(payload).sort().join("\u0000");
+}
+
+async function executeRestoreBatch(table: string, columns: string[], rows: PreparedRestoreRow[]) {
+  const rowPlaceholders = `(${columns.map(() => "?").join(", ")})`;
+  const sql = `INSERT INTO ${quote(table)} (${columns.map(quote).join(", ")}) VALUES ${rows.map(() => rowPlaceholders).join(", ")}`;
+  const params = rows.flatMap((item) => columns.map((column) => normalizeValue(item.payload[column])));
+  await withDatabaseTransaction(async () => {
+    await executeRaw(sql, params);
+  });
+}
+
+async function insertRestoreBatchWithIsolation(
+  table: string,
+  columns: string[],
+  rows: PreparedRestoreRow[],
+  onInserted: (row: PreparedRestoreRow) => void,
+  onSkipped: (row: PreparedRestoreRow, error: unknown) => void,
+): Promise<void> {
+  if (rows.length === 0) return;
+  try {
+    await executeRestoreBatch(table, columns, rows);
+    for (const row of rows) onInserted(row);
+  } catch (error) {
+    if (rows.length === 1) {
+      onSkipped(rows[0], error);
+      return;
+    }
+    const middle = Math.ceil(rows.length / 2);
+    await insertRestoreBatchWithIsolation(table, columns, rows.slice(0, middle), onInserted, onSkipped);
+    await insertRestoreBatchWithIsolation(table, columns, rows.slice(middle), onInserted, onSkipped);
+  }
+}
+
+async function insertRestoreRows(
+  table: string,
+  rows: PreparedRestoreRow[],
+  onInserted: (row: PreparedRestoreRow) => void,
+  onSkipped: (row: PreparedRestoreRow, error: unknown) => void,
+) {
+  const groups = new Map<string, PreparedRestoreRow[]>();
+  for (const row of rows) {
+    const signature = restoreRowSignature(row.payload);
+    const group = groups.get(signature) || [];
+    group.push(row);
+    groups.set(signature, group);
+  }
+  for (const group of groups.values()) {
+    const columns = Object.keys(group[0].payload).sort();
+    const rowsPerBatch = Math.max(1, Math.min(
+      STRUCTURED_MIGRATION_BATCH_ROWS,
+      Math.floor(structuredMigrationParameterLimit() / Math.max(1, columns.length)),
+    ));
+    for (let index = 0; index < group.length; index += rowsPerBatch) {
+      await insertRestoreBatchWithIsolation(
+        table,
+        columns,
+        group.slice(index, index + rowsPerBatch),
+        onInserted,
+        onSkipped,
+      );
+    }
+  }
+}
+
+async function executeGeneratedBatch(
+  table: string,
+  columns: string[],
+  rows: PreparedGeneratedRow[],
+  mysqlStep: number,
+) {
+  const rowPlaceholders = `(${columns.map(() => "?").join(", ")})`;
+  const sql = `INSERT INTO ${quote(table)} (${columns.map(quote).join(", ")}) VALUES ${rows.map(() => rowPlaceholders).join(", ")}`;
+  const params = rows.flatMap((item) => columns.map((column) => normalizeValue(item.payload[column])));
+  return withDatabaseTransaction(async () => {
+    if (getDatabaseKind() === "mysql") {
+      const result: any = await executeRaw(sql, params);
+      const firstId = toNumberId(result?.insertId);
+      if (!firstId) throw new Error("批量写入后未返回有效 ID");
+      return rows.map((_, index) => firstId + index * mysqlStep);
+    }
+    const returned = await queryRaw<{ id: number | string }>(`${sql} RETURNING ${quote("id")}`, params);
+    const ids = returned.map((item) => toNumberId(item.id)).filter((id): id is number => !!id);
+    if (ids.length !== rows.length) throw new Error("批量写入返回的 ID 数量不一致");
+    return ids;
+  });
+}
+
+async function insertGeneratedBatchWithIsolation(
+  table: string,
+  columns: string[],
+  rows: PreparedGeneratedRow[],
+  mysqlStep: number,
+  onInserted: (row: PreparedGeneratedRow, id: number) => void,
+  onReused: (row: PreparedGeneratedRow, id: number) => void,
+  onSkipped: (row: PreparedGeneratedRow, error: unknown) => void,
+): Promise<void> {
+  if (rows.length === 0) return;
+  try {
+    const ids = await executeGeneratedBatch(table, columns, rows, mysqlStep);
+    rows.forEach((row, index) => onInserted(row, ids[index]));
+  } catch (error) {
+    if (rows.length === 1) {
+      const row = rows[0];
+      const existingId = row.existingWhere ? await findExistingId(table, row.existingWhere) : null;
+      if (existingId) onReused(row, existingId);
+      else onSkipped(row, error);
+      return;
+    }
+    const middle = Math.ceil(rows.length / 2);
+    await insertGeneratedBatchWithIsolation(
+      table,
+      columns,
+      rows.slice(0, middle),
+      mysqlStep,
+      onInserted,
+      onReused,
+      onSkipped,
+    );
+    await insertGeneratedBatchWithIsolation(
+      table,
+      columns,
+      rows.slice(middle),
+      mysqlStep,
+      onInserted,
+      onReused,
+      onSkipped,
+    );
+  }
+}
+
+async function insertGeneratedRows(
+  table: string,
+  rows: PreparedGeneratedRow[],
+  mysqlStep: number,
+  onInserted: (row: PreparedGeneratedRow, id: number) => void,
+  onReused: (row: PreparedGeneratedRow, id: number) => void,
+  onSkipped: (row: PreparedGeneratedRow, error: unknown) => void,
+) {
+  const groups = new Map<string, PreparedGeneratedRow[]>();
+  for (const row of rows) {
+    const signature = restoreRowSignature(row.payload);
+    const group = groups.get(signature) || [];
+    group.push(row);
+    groups.set(signature, group);
+  }
+  for (const group of groups.values()) {
+    const columns = Object.keys(group[0].payload).sort();
+    const rowsPerBatch = Math.max(1, Math.min(
+      STRUCTURED_MIGRATION_BATCH_ROWS,
+      Math.floor(structuredMigrationParameterLimit() / Math.max(1, columns.length)),
+    ));
+    for (let index = 0; index < group.length; index += rowsPerBatch) {
+      await insertGeneratedBatchWithIsolation(
+        table,
+        columns,
+        group.slice(index, index + rowsPerBatch),
+        mysqlStep,
+        onInserted,
+        onReused,
+        onSkipped,
+      );
+    }
+  }
 }
 
 async function sanitizeUserUniqueFields(row: Record<string, any>) {
@@ -693,6 +1165,20 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row };
+
+    case "traffic_stat_buckets":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return {
+        row,
+        existingWhere: {
+          bucketStart: row.bucketStart,
+          bucketMinutes: row.bucketMinutes,
+          ruleId: row.ruleId,
+          hostId: row.hostId,
+        },
+      };
 
     case "tunnel_latency_stats":
       row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
@@ -904,40 +1390,72 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
   }
 }
 
-async function updateMappedId(table: string, id: number, patch: Record<string, any>) {
-  const columns = Object.keys(patch).filter((key) => patch[key] !== undefined);
-  if (columns.length === 0) return;
-  await executeRaw(
-    `UPDATE ${quote(table)} SET ${columns.map((key) => `${quote(key)} = ?`).join(", ")} WHERE ${quote("id")} = ?`,
-    [...columns.map((key) => normalizeValue(patch[key])), id],
-  );
+const MIGRATION_ID_BATCH_SIZE = 400;
+const MIGRATION_CASE_UPDATE_BATCH_SIZE = 250;
+
+async function updateMappedColumn(
+  table: string,
+  column: string,
+  updates: Array<{ id: number; value: number }>,
+) {
+  const deduplicated = new Map(updates.map((item) => [item.id, item.value]));
+  const rows = [...deduplicated].map(([id, value]) => ({ id, value }));
+  for (const chunk of chunkValues(rows, MIGRATION_CASE_UPDATE_BATCH_SIZE)) {
+    const cases = chunk.map(() => `WHEN ? THEN ?`).join(" ");
+    await executeRaw(
+      `UPDATE ${quote(table)} SET ${quote(column)} = CASE ${quote("id")} ${cases} ELSE ${quote(column)} END WHERE ${quote("id")} IN (${chunk.map(() => "?").join(", ")})`,
+      [
+        ...chunk.flatMap((item) => [item.id, item.value]),
+        ...chunk.map((item) => item.id),
+      ],
+    );
+  }
 }
 
 async function fixDeferredForwardGroupReferences(snapshot: MigrationSnapshot, maps: ImportMaps) {
+  const groupUpdates: Array<{ id: number; value: number }> = [];
+  const memberUpdates: Array<{ id: number; value: number }> = [];
+  const ruleUpdates: Array<{ id: number; value: number }> = [];
+  const errors: string[] = [];
   for (const group of sortedSnapshotRows(snapshot, "forward_groups")) {
     const nextId = mapId(maps, "forward_groups", group.id);
     if (!nextId) continue;
-    const activeMemberId = mapOptionalId(maps, "forward_group_members", group.activeMemberId);
-    if (activeMemberId) await updateMappedId("forward_groups", nextId, { activeMemberId });
+    try {
+      const activeMemberId = mapOptionalId(maps, "forward_group_members", group.activeMemberId);
+      if (activeMemberId) groupUpdates.push({ id: nextId, value: activeMemberId });
+    } catch (error) {
+      errors.push(`forward_groups#${group.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   for (const member of sortedSnapshotRows(snapshot, "forward_group_members")) {
     const nextId = mapId(maps, "forward_group_members", member.id);
     if (!nextId) continue;
-    const ruleId = mapOptionalId(maps, "forward_rules", member.ruleId);
-    if (ruleId) await updateMappedId("forward_group_members", nextId, { ruleId });
+    try {
+      const ruleId = mapOptionalId(maps, "forward_rules", member.ruleId);
+      if (ruleId) memberUpdates.push({ id: nextId, value: ruleId });
+    } catch (error) {
+      errors.push(`forward_group_members#${member.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   for (const rule of sortedSnapshotRows(snapshot, "forward_rules")) {
     const nextId = mapId(maps, "forward_rules", rule.id);
     if (!nextId) continue;
-    await updateMappedId("forward_rules", nextId, {
-      forwardGroupRuleId: mapOptionalId(maps, "forward_rules", rule.forwardGroupRuleId),
-      forwardGroupMemberId: mapOptionalId(maps, "forward_group_members", rule.forwardGroupMemberId),
-      isRunning: false,
-      pendingDelete: false,
-    });
+    try {
+      const forwardGroupRuleId = mapOptionalId(maps, "forward_rules", rule.forwardGroupRuleId);
+      if (forwardGroupRuleId) ruleUpdates.push({ id: nextId, value: forwardGroupRuleId });
+    } catch (error) {
+      errors.push(`forward_rules#${rule.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+
+  await withDatabaseTransaction(async () => {
+    await updateMappedColumn("forward_groups", "activeMemberId", groupUpdates);
+    await updateMappedColumn("forward_group_members", "ruleId", memberUpdates);
+    await updateMappedColumn("forward_rules", "forwardGroupRuleId", ruleUpdates);
+  });
+  if (errors.length > 0) throw new Error(`${errors.length} 条延迟关联无法恢复；${errors.slice(0, 3).join("；")}`);
 }
 
 async function resetImportedRuntimeState(maps: ImportMaps) {
@@ -948,27 +1466,169 @@ async function resetImportedRuntimeState(maps: ImportMaps) {
   const updateByIds = async (table: string, ids: number[], patch: Record<string, any>) => {
     if (ids.length === 0) return;
     const columns = Object.keys(patch);
-    await executeRaw(
-      `UPDATE ${quote(table)} SET ${columns.map((key) => `${quote(key)} = ?`).join(", ")} WHERE ${quote("id")} IN (${ids.map(() => "?").join(", ")})`,
-      [...columns.map((key) => normalizeValue(patch[key])), ...ids],
-    );
+    for (const chunk of chunkValues(ids, MIGRATION_ID_BATCH_SIZE)) {
+      await executeRaw(
+        `UPDATE ${quote(table)} SET ${columns.map((key) => `${quote(key)} = ?`).join(", ")} WHERE ${quote("id")} IN (${chunk.map(() => "?").join(", ")})`,
+        [...columns.map((key) => normalizeValue(patch[key])), ...chunk],
+      );
+    }
   };
-  await updateByIds("hosts", hostIds, {
-    isOnline: false,
-    lastHeartbeat: null,
-    mimicAvailable: null,
-    mimicVersion: null,
-    mimicStatus: "pending",
-    mimicMessage: null,
-    mimicCheckedAt: null,
-    agentUpgradeRequested: false,
-    agentUpgradeTargetVersion: null,
-    agentUpgradeReleaseVersion: null,
-    agentUpgradeRequestedAt: null,
-    updatedAt: now,
+  await withDatabaseTransaction(async () => {
+    await updateByIds("hosts", hostIds, {
+      isOnline: false,
+      lastHeartbeat: null,
+      mimicAvailable: null,
+      mimicVersion: null,
+      mimicStatus: "pending",
+      mimicMessage: null,
+      mimicCheckedAt: null,
+      agentUpgradeRequested: false,
+      agentUpgradeTargetVersion: null,
+      agentUpgradeReleaseVersion: null,
+      agentUpgradeRequestedAt: null,
+      updatedAt: now,
+    });
+    await updateByIds("tunnels", tunnelIds, { isRunning: false, updatedAt: now });
+    await updateByIds("forward_rules", ruleIds, { isRunning: false, pendingDelete: false, updatedAt: now });
   });
-  await updateByIds("tunnels", tunnelIds, { isRunning: false, updatedAt: now });
-  await updateByIds("forward_rules", ruleIds, { isRunning: false, pendingDelete: false, updatedAt: now });
+}
+
+export async function importDirectSqliteBackup(
+  transfer: Extract<FetchedMigrationPayload, { kind: "sqlite-direct" }>,
+  targetPanelUrl: string,
+) {
+  if (getDatabaseKind() !== "sqlite") throw new Error("目标面板不是 SQLite，无法使用数据库快速迁移");
+  const existingData = await getPanelDataSummary({ useCache: false });
+  if (existingData.hasExistingData || existingData.userCount > 0) {
+    throw new Error("目标面板已有数据，不能直接写入 SQLite 数据库，已停止迁移");
+  }
+
+  const runtimeSnapshot: MigrationSnapshot = {
+    version: 1,
+    exportedAt: transfer.meta.exportedAt,
+    appVersion: transfer.meta.appVersion,
+    sourcePanelUrl: transfer.meta.sourcePanelUrl,
+    dataScope: "full",
+    tables: {},
+  };
+  const tableDefs = [...getDatabaseTableDefs()];
+
+  await withSqliteExclusive((sqlite) => {
+    sqlite.prepare("ATTACH DATABASE ? AS migration_source").run(transfer.filePath);
+    try {
+      const sourceTables = new Set((sqlite.prepare(
+        "SELECT name FROM migration_source.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+      ).all() as Array<{ name: string }>).map((row) => String(row.name)));
+      for (const table of tableDefs) {
+        if (!sourceTables.has(table.name)) throw new Error(`源 SQLite 数据库缺少数据表 ${table.name}`);
+      }
+
+      runtimeSnapshot.tables.hosts = sqlite.prepare("SELECT * FROM migration_source.hosts").all() as Record<string, any>[];
+      runtimeSnapshot.tables.forward_rules = sqlite.prepare("SELECT * FROM migration_source.forward_rules").all() as Record<string, any>[];
+      runtimeSnapshot.tables.tunnels = sqlite.prepare("SELECT * FROM migration_source.tunnels").all() as Record<string, any>[];
+      runtimeSnapshot.tables.users = sqlite.prepare("SELECT * FROM migration_source.users").all() as Record<string, any>[];
+      runtimeSnapshot.tables.forward_groups = sqlite.prepare("SELECT * FROM migration_source.forward_groups").all() as Record<string, any>[];
+
+      sqlite.exec("BEGIN IMMEDIATE");
+      try {
+        sqlite.pragma("defer_foreign_keys = ON");
+        for (const table of [...tableDefs].reverse()) {
+          sqlite.exec(`DELETE FROM main.${sqliteIdentifier(table.name)}`);
+        }
+        for (const table of tableDefs) {
+          const columns = table.columns.map((column) => sqliteIdentifier(column.name)).join(", ");
+          sqlite.exec(
+            `INSERT INTO main.${sqliteIdentifier(table.name)} (${columns}) SELECT ${columns} FROM migration_source.${sqliteIdentifier(table.name)}`,
+          );
+        }
+        const foreignKeyErrors = sqlite.pragma("foreign_key_check") as unknown[];
+        if (foreignKeyErrors.length > 0) throw new Error(`SQLite 外键检查失败，共 ${foreignKeyErrors.length} 项`);
+        sqlite.exec("COMMIT");
+      } catch (error) {
+        try { sqlite.exec("ROLLBACK"); } catch { /* transaction was not active */ }
+        throw error;
+      }
+    } finally {
+      try { sqlite.exec("DETACH DATABASE migration_source"); } catch { /* cleanup only */ }
+    }
+  });
+
+  await ensureDatabaseSchema();
+  const importedIds: MigrationImportedIds = {
+    hosts: Object.fromEntries((runtimeSnapshot.tables.hosts || []).map((row) => [Number(row.id), Number(row.id)]).filter(([id]) => id > 0)),
+    tunnels: Object.fromEntries((runtimeSnapshot.tables.tunnels || []).map((row) => [Number(row.id), Number(row.id)]).filter(([id]) => id > 0)),
+    forwardRules: Object.fromEntries((runtimeSnapshot.tables.forward_rules || []).map((row) => [Number(row.id), Number(row.id)]).filter(([id]) => id > 0)),
+  };
+  const maps: ImportMaps = {
+    hosts: new Map(Object.entries(importedIds.hosts).map(([oldId, newId]) => [Number(oldId), Number(newId)])),
+    tunnels: new Map(Object.entries(importedIds.tunnels).map(([oldId, newId]) => [Number(oldId), Number(newId)])),
+    forward_rules: new Map(Object.entries(importedIds.forwardRules).map(([oldId, newId]) => [Number(oldId), Number(newId)])),
+  };
+  await resetImportedRuntimeState(maps);
+
+  const target = normalizePanelUrl(targetPanelUrl);
+  const targetSqlitePath = currentSqlitePath();
+  const resetSettings: Record<string, string | null> = {
+    databaseConfigured: "true",
+    databaseType: "sqlite",
+    mysqlConfigured: "false",
+    mysqlHost: "",
+    mysqlDatabase: "",
+    postgresqlConfigured: "false",
+    postgresqlHost: "",
+    postgresqlDatabase: "",
+    sqlitePath: targetSqlitePath,
+    setupDataChoice: "use-existing",
+    panelPublicUrl: target,
+    migratedToPanelUrl: null,
+    migratedAt: null,
+    panelMigrationId: null,
+    panelMigrationPhase: null,
+    panelMigrationSourceUrl: null,
+    panelMigrationStartedAt: null,
+    agentMigrationTargetPanelUrl: null,
+    agentMigrationTargetExpiresAt: null,
+    lastPanelBackupImportFingerprint: null,
+    lastPanelBackupImportResult: null,
+    lastPanelImportAt: String(Math.floor(Date.now() / 1000)),
+    lastPanelImportMode: "restore",
+    lastPanelMigrationScope: "full",
+  };
+  for (const [key, value] of Object.entries(resetSettings)) await setSetting(key, value);
+  invalidatePanelDataSummaryCache();
+
+  return {
+    importedIds,
+    runtimeSnapshot,
+    result: {
+      success: true,
+      mode: "restore",
+      partial: false,
+      warnings: [],
+      insertedRows: 0,
+      updatedRows: 0,
+      reusedRows: 0,
+      skippedRows: 0,
+      summary: summarizeMigrationSnapshot(runtimeSnapshot),
+      existingData: {
+        hasExistingData: existingData.hasExistingData,
+        businessDataCount: existingData.businessDataCount,
+        userCount: existingData.userCount,
+        hostCount: existingData.hostCount,
+        ruleCount: existingData.ruleCount,
+        tunnelCount: existingData.tunnelCount,
+        forwardGroupCount: existingData.forwardGroupCount,
+      },
+      inserted: {},
+      updated: {},
+      reused: {},
+      skipped: {},
+      hostCount: Object.keys(importedIds.hosts).length,
+      panelUrl: target,
+      dataScope: "full",
+      transferMode: "sqlite-direct",
+    } satisfies MigrationImportResult,
+  };
 }
 
 async function syncPostgresqlSequences() {
@@ -1002,6 +1662,7 @@ export async function importMigrationSnapshot(
 
   const existingData = await getPanelDataSummary({ useCache: false });
   const mode = existingData.hasExistingData ? "incremental" : "restore";
+  const dataScope = normalizePanelMigrationScope(snapshot.dataScope);
   const summary = summarizeMigrationSnapshot(snapshot);
   const maps: ImportMaps = {};
   const inserted: Record<string, number> = {};
@@ -1013,47 +1674,180 @@ export async function importMigrationSnapshot(
 
   const totalRows = Math.max(1, IMPORT_TABLE_ORDER.reduce((sum, table) => sum + (snapshot.tables?.[table]?.length || 0), 0));
   let processed = 0;
+  let lastProgress = -1;
+  let lastProgressAt = 0;
+  const reportRowProgress = (table: string, force = false) => {
+    const progress = Math.min(90, 45 + Math.floor((processed / totalRows) * 45));
+    const now = Date.now();
+    if (!force && progress === lastProgress && now - lastProgressAt < 1_000) return;
+    lastProgress = progress;
+    lastProgressAt = now;
+    onProgress?.(progress, `正在导入 ${table}（${processed}/${totalRows}）`);
+  };
+  let mysqlStep = 1;
+  if (getDatabaseKind() === "mysql") {
+    const [row] = await queryRaw<{ step: number | string }>("SELECT @@auto_increment_increment AS step");
+    mysqlStep = Math.max(1, Number(row?.step || 1));
+  }
 
   onProgress?.(40, mode === "incremental" ? "正在增量合并旧面板数据" : "正在导入旧面板数据");
   for (const table of IMPORT_TABLE_ORDER) {
     const rows = sortedSnapshotRows(snapshot, table);
     if (rows.length === 0) continue;
-    onProgress?.(45 + Math.floor((processed / totalRows) * 45), `正在处理 ${table}`);
-    for (const source of rows) {
-      processed += 1;
-      const oldId = toNumberId(source.id);
-      try {
-        if (table !== "system_settings" && !oldId) {
-          throw new Error("源数据缺少有效 ID");
-        }
-        const prepared = await prepareImportRow(table, source, maps);
-        if (!prepared) {
+    reportRowProgress(table, true);
+
+    if (mode === "restore" && table !== "users" && table !== "system_settings") {
+      const preparedRows: PreparedRestoreRow[] = [];
+      for (const source of rows) {
+        const oldId = toNumberId(source.id);
+        try {
+          if (!oldId) throw new Error("源数据缺少有效 ID");
+          const prepared = await prepareImportRow(table, source, maps);
+          if (!prepared) {
+            incrementCounter(skipped, table);
+            processed += 1;
+            reportRowProgress(table);
+            continue;
+          }
+          preparedRows.push({
+            source,
+            oldId,
+            payload: normalizeImportPayload(table, { id: oldId, ...prepared.row }),
+          });
+        } catch (error) {
           incrementCounter(skipped, table);
-          continue;
+          processed += 1;
+          reportRowProgress(table);
+          console.warn(`[Migration] skipped ${table}#${source.id || "-"}: ${error instanceof Error ? error.message : String(error)}`);
         }
-        if (table === "system_settings") {
+      }
+      await insertRestoreRows(
+        table,
+        preparedRows,
+        (row) => {
+          maps[table].set(row.oldId, row.oldId);
+          incrementCounter(inserted, table);
+          processed += 1;
+          reportRowProgress(table);
+        },
+        (row, error) => {
+          incrementCounter(skipped, table);
+          processed += 1;
+          reportRowProgress(table);
+          console.warn(`[Migration] skipped ${table}#${row.source.id || "-"}: ${error instanceof Error ? error.message : String(error)}`);
+        },
+      );
+      reportRowProgress(table, true);
+      continue;
+    }
+
+    if (table === "system_settings") {
+      for (const source of rows) {
+        try {
+          const prepared = await prepareImportRow(table, source, maps);
+          if (!prepared) {
+            incrementCounter(skipped, table);
+            continue;
+          }
           const status = await insertOrReuseSystemSetting(prepared.row, mode);
           if (status === "inserted") incrementCounter(inserted, table);
           else if (status === "updated") incrementCounter(updated, table);
           else if (status === "reused") incrementCounter(reused, table);
           else incrementCounter(skipped, table);
+        } catch (error) {
+          incrementCounter(skipped, table);
+          console.warn(`[Migration] skipped ${table}#${source.id || "-"}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          processed += 1;
+          reportRowProgress(table);
+        }
+      }
+      reportRowProgress(table, true);
+      continue;
+    }
+
+    const destinationHasRows = await hasAnyRows(table);
+    const preparedGeneratedRows: PreparedGeneratedRow[] = [];
+    for (const source of rows) {
+      const oldId = toNumberId(source.id);
+      try {
+        if (!oldId) throw new Error("源数据缺少有效 ID");
+        const prepared = await prepareImportRow(table, source, maps);
+        if (!prepared) {
+          incrementCounter(skipped, table);
+          processed += 1;
+          reportRowProgress(table);
           continue;
         }
-        const existingId = prepared.existingWhere ? await findExistingId(table, prepared.existingWhere) : null;
-        if (existingId) {
-          if (oldId) maps[table].set(oldId, existingId);
-          incrementCounter(reused, table);
-          continue;
-        }
-        const newId = await insertImportRow(table, prepared.row);
-        if (!newId) throw new Error("写入后未返回有效 ID");
-        if (oldId) maps[table].set(oldId, newId);
-        incrementCounter(inserted, table);
+        preparedGeneratedRows.push({
+          source,
+          oldId,
+          payload: normalizeImportPayload(table, prepared.row),
+          existingWhere: prepared.existingWhere,
+        });
       } catch (error) {
         incrementCounter(skipped, table);
+        processed += 1;
+        reportRowProgress(table);
         console.warn(`[Migration] skipped ${table}#${source.id || "-"}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+
+    let existingIds = new Map<string, number>();
+    let preloadFailed = false;
+    if (destinationHasRows && preparedGeneratedRows.some((row) => !!row.existingWhere)) {
+      try {
+        existingIds = await preloadExistingImportIds(table, preparedGeneratedRows);
+      } catch (error) {
+        preloadFailed = true;
+        console.warn(`[Migration] bulk duplicate lookup failed table=${table}, falling back to row lookup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const generatedRows: PreparedGeneratedRow[] = [];
+    for (const row of preparedGeneratedRows) {
+      let existingId: number | null = null;
+      if (destinationHasRows && row.existingWhere) {
+        if (preloadFailed) {
+          existingId = await findExistingId(table, row.existingWhere);
+        } else {
+          const descriptor = importLookupDescriptor(row.existingWhere);
+          existingId = descriptor ? existingIds.get(descriptor.key) || null : null;
+        }
+      }
+      if (existingId) {
+        maps[table].set(row.oldId, existingId);
+        incrementCounter(reused, table);
+        processed += 1;
+        reportRowProgress(table);
+      } else {
+        generatedRows.push(row);
+      }
+    }
+    await insertGeneratedRows(
+      table,
+      generatedRows,
+      mysqlStep,
+      (row, newId) => {
+        maps[table].set(row.oldId, newId);
+        incrementCounter(inserted, table);
+        processed += 1;
+        reportRowProgress(table);
+      },
+      (row, existingId) => {
+        maps[table].set(row.oldId, existingId);
+        incrementCounter(reused, table);
+        processed += 1;
+        reportRowProgress(table);
+      },
+      (row, error) => {
+        incrementCounter(skipped, table);
+        processed += 1;
+        reportRowProgress(table);
+        console.warn(`[Migration] skipped ${table}#${row.source.id || "-"}: ${error instanceof Error ? error.message : String(error)}`);
+      },
+    );
+    reportRowProgress(table, true);
   }
 
   const criticalSkipped = Object.entries(skipped)
@@ -1091,15 +1885,28 @@ export async function importMigrationSnapshot(
     await setSetting("setupDataChoice", "use-existing");
     await setSetting("lastPanelImportAt", String(Math.floor(Date.now() / 1000)));
     await setSetting("lastPanelImportMode", mode);
+    await setSetting("lastPanelMigrationScope", dataScope);
     if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
   });
   invalidatePanelDataSummaryCache();
 
   onProgress?.(96, "正在重建流量汇总缓存");
-  await ensureTrafficStatBucketsBackfilled({ force: true }).catch((error) => {
+  const importedTrafficBuckets = (snapshot.tables.traffic_stat_buckets?.length || 0) > 0;
+  const importedTrafficCounters = (snapshot.tables.forward_rule_traffic_counters?.length || 0) > 0
+    || (snapshot.tables.user_traffic_counters?.length || 0) > 0;
+  const rebuildCombinedTrafficBuckets = mode === "incremental"
+    && dataScope === "full"
+    && (snapshot.tables.traffic_stats?.length || 0) > 0;
+  await ensureTrafficStatBucketsBackfilled({
+    preserveExisting: !rebuildCombinedTrafficBuckets && (mode === "incremental" || importedTrafficBuckets),
+    force: dataScope === "full" && (snapshot.tables.traffic_stats?.length || 0) > 0,
+  }).catch((error) => {
     console.warn("[TrafficSummary] Post-migration bucket backfill skipped:", error instanceof Error ? error.message : String(error));
   });
-  await ensureUserTrafficCountersBackfilled().catch((error) => {
+  await ensureUserTrafficCountersBackfilled({
+    preserveExisting: mode === "incremental" || importedTrafficCounters,
+    force: true,
+  }).catch((error) => {
     console.warn("[TrafficCounter] Post-migration cumulative counter backfill skipped:", error instanceof Error ? error.message : String(error));
   });
 
@@ -1143,6 +1950,8 @@ export async function importMigrationSnapshot(
     skipped,
     hostCount: maps.hosts?.size || summary.hostCount,
     panelUrl: targetPanelUrl ? normalizePanelUrl(targetPanelUrl) : undefined,
+    dataScope,
+    transferMode: "structured",
   };
 }
 
@@ -1182,29 +1991,51 @@ async function markPanelAsMigrated(targetPanelUrl: string) {
 }
 
 async function fetchSnapshotFromOldPanelWithApproval(input: {
+  jobId: string;
   oldPanelUrl: string;
   migrationCode: string;
   targetPanelUrl: string;
+  dataScope: PanelMigrationScope;
+  targetDatabaseType: ReturnType<typeof getDatabaseKind>;
+  directSqliteRequested: boolean;
   onPendingApproval?: () => void;
-}) {
+  onApproved?: () => void;
+}): Promise<FetchedMigrationPayload> {
   const url = `${normalizePanelUrl(input.oldPanelUrl)}/api/migration/export`;
   await assertSafeOutboundUrl(url, { allowPrivate: true, purpose: "面板迁移请求" });
   const normalizedTargetPanelUrl = normalizePanelUrl(input.targetPanelUrl);
   let requestId = "";
   const deadline = Date.now() + 6 * 60 * 1000;
+  const requestBody = (approvalOnly: boolean) => JSON.stringify({
+    migrationCode: input.migrationCode,
+    targetPanelUrl: normalizedTargetPanelUrl,
+    requestId: requestId || undefined,
+    dataScope: input.dataScope,
+    targetDatabaseType: input.targetDatabaseType,
+    directSqliteRequested: input.directSqliteRequested,
+    approvalOnly,
+  });
 
   while (Date.now() < deadline) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      redirect: "manual",
-      body: JSON.stringify({
-        migrationCode: input.migrationCode,
-        targetPanelUrl: normalizedTargetPanelUrl,
-        requestId: requestId || undefined,
-      }),
-    });
-    const body = await resp.text();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    let resp: globalThis.Response;
+    let body = "";
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        redirect: "manual",
+        signal: controller.signal,
+        body: requestBody(true),
+      });
+      body = await resp.text();
+    } catch (error) {
+      if ((error as any)?.name === "AbortError") throw new Error("连接旧面板迁移接口超时");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (resp.status === 202) {
       const pending = body ? JSON.parse(body) : {};
@@ -1217,11 +2048,50 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
     if (!resp.ok) {
       throw new Error(body || `旧面板返回 ${resp.status}`);
     }
-
-    return JSON.parse(body) as MigrationSnapshot;
+    const payload = body ? JSON.parse(body) : {};
+    if (payload?.status === "approved") {
+      requestId = payload.requestId || requestId;
+      break;
+    }
+    if (payload?.version === 1 && payload?.tables) {
+      return { kind: "snapshot", snapshot: payload as MigrationSnapshot };
+    }
+    throw new Error("旧面板返回的迁移审批状态无效");
   }
 
-  throw new Error("等待旧面板管理员确认迁移超时，请重新生成迁移码");
+  if (!requestId || Date.now() >= deadline) {
+    throw new Error("等待旧面板管理员确认迁移超时，请重新生成迁移码");
+  }
+
+  input.onApproved?.();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MIGRATION_EXPORT_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      redirect: "manual",
+      signal: controller.signal,
+      body: requestBody(false),
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(body || `旧面板返回 ${resp.status}`);
+    }
+    if (resp.headers.get(SQLITE_MIGRATION_FORMAT_HEADER) === SQLITE_MIGRATION_FORMAT) {
+      return await downloadDirectSqliteBackup(resp, input.jobId);
+    }
+    const snapshot = await resp.json() as MigrationSnapshot;
+    if (!snapshot || snapshot.version !== 1 || !snapshot.tables) throw new Error("旧面板返回的迁移数据无效");
+    return { kind: "snapshot", snapshot };
+  } catch (error) {
+    if ((error as any)?.name === "AbortError") {
+      throw new Error(`旧面板导出超时，已等待 ${Math.round(MIGRATION_EXPORT_TIMEOUT_MS / 60_000)} 分钟`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type OldPanelTakeoverInput = {
@@ -1351,11 +2221,19 @@ async function readyIds(
   predicate: (row: Record<string, any>) => boolean,
 ) {
   if (ids.length === 0) return 0;
-  const rows = await queryRaw<Record<string, any>>(
-    `SELECT * FROM ${quote(table)} WHERE ${quote("id")} IN (${ids.map(() => "?").join(", ")})`,
-    ids,
-  );
-  return rows.filter(predicate).length;
+  let ready = 0;
+  const chunks = chunkValues(ids, MIGRATION_ID_BATCH_SIZE);
+  for (const wave of chunkValues(chunks, 4)) {
+    const counts = await Promise.all(wave.map(async (chunk) => {
+      const rows = await queryRaw<Record<string, any>>(
+        `SELECT * FROM ${quote(table)} WHERE ${quote("id")} IN (${chunk.map(() => "?").join(", ")})`,
+        chunk,
+      );
+      return rows.filter(predicate).length;
+    }));
+    ready += counts.reduce((sum, count) => sum + count, 0);
+  }
+  return ready;
 }
 
 async function getMigrationRuntimeReadiness(expectations: MigrationRuntimeExpectations, switchedAt: number) {
@@ -1438,6 +2316,7 @@ export function startPanelMigration(input: {
   oldPanelUrl: string;
   migrationCode: string;
   targetPanelUrl: string;
+  dataScope: PanelMigrationScope;
 }) {
   const activeJob = [...jobs.values()].find((item) => item.status === "pending" || item.status === "running");
   if (activeJob) throw new Error(`已有迁移任务正在执行：${activeJob.step}`);
@@ -1450,30 +2329,72 @@ export function startPanelMigration(input: {
   };
   jobs.set(job.id, job);
   migrationJobProbeTokens.set(job.id, nodeCrypto.randomBytes(32).toString("hex"));
+  const dataScope = normalizePanelMigrationScope(input.dataScope);
 
   void (async () => {
     let takeoverInput: OldPanelTakeoverInput | null = null;
     let takeoverPrepareStarted = false;
     let commitStarted = false;
     let expectations: MigrationRuntimeExpectations | null = null;
+    let incomingSqlitePath = "";
     try {
       setJob(job, { status: "running", progress: 10, step: "正在连接旧面板" });
-      const snapshot = await fetchSnapshotFromOldPanelWithApproval({
-        ...input,
-        onPendingApproval: () => setJob(job, { progress: 20, step: "等待旧面板管理员确认迁移请求" }),
-      });
-      if (!snapshot.takeoverToken) throw new Error("旧面板未提供安全接管令牌，请先升级旧面板后再迁移");
-      setJob(job, { progress: 35, step: "已获取旧面板数据，正在准备新数据库" });
-      let importedIds: MigrationImportedIds | null = null;
-      const imported = await importMigrationSnapshot(snapshot, {
+      const targetDatabaseType = getDatabaseKind();
+      const targetSummary = await getPanelDataSummary({ useCache: false });
+      const directSqliteRequested = dataScope === "full"
+        && targetDatabaseType === "sqlite"
+        && !targetSummary.hasExistingData
+        && targetSummary.userCount === 0;
+      const transfer = await fetchSnapshotFromOldPanelWithApproval({
+        jobId: job.id,
+        oldPanelUrl: input.oldPanelUrl,
+        migrationCode: input.migrationCode,
         targetPanelUrl: input.targetPanelUrl,
-        onProgress: (progress, step) => setJob(job, { progress, step }),
-        onImportedIds: (ids) => { importedIds = ids; },
+        dataScope,
+        targetDatabaseType,
+        directSqliteRequested,
+        onPendingApproval: () => setJob(job, { progress: 20, step: "等待旧面板管理员确认迁移请求" }),
+        onApproved: () => setJob(job, {
+          progress: 25,
+          step: dataScope === "essential" ? "审批已通过，正在导出关键数据" : "审批已通过，正在准备全量数据",
+        }),
       });
+      let snapshot: MigrationSnapshot;
+      let importedIds: MigrationImportedIds;
+      let imported: MigrationImportResult;
+      let takeoverToken = "";
+      setJob(job, { progress: 35, step: "已获取旧面板数据，正在准备新数据库" });
+      if (transfer.kind === "sqlite-direct") {
+        incomingSqlitePath = transfer.filePath;
+        setJob(job, { progress: 40, step: "正在直接迁移 SQLite 数据库" });
+        const direct = await importDirectSqliteBackup(transfer, input.targetPanelUrl);
+        snapshot = direct.runtimeSnapshot;
+        importedIds = direct.importedIds;
+        imported = direct.result;
+        takeoverToken = transfer.meta.takeoverToken;
+      } else {
+        snapshot = transfer.snapshot;
+        if (dataScope === "essential") {
+          snapshot = pruneMigrationSnapshotForPanelBackup({ ...snapshot, dataScope: "essential" });
+        } else {
+          const returnedScope = snapshot.dataScope ? normalizePanelMigrationScope(snapshot.dataScope) : "full";
+          if (returnedScope !== "full") throw new Error("旧面板未返回全量迁移数据，请重新选择全量迁移");
+          snapshot.dataScope = "full";
+        }
+        takeoverToken = String(snapshot.takeoverToken || "");
+        let nextImportedIds: MigrationImportedIds | null = null;
+        imported = await importMigrationSnapshot(snapshot, {
+          targetPanelUrl: input.targetPanelUrl,
+          onProgress: (progress, step) => setJob(job, { progress, step }),
+          onImportedIds: (ids) => { nextImportedIds = ids; },
+        });
+        if (!nextImportedIds) throw new Error("迁移数据关联映射生成失败");
+        importedIds = nextImportedIds;
+      }
+      if (!takeoverToken) throw new Error("旧面板未提供安全接管令牌，请先升级旧面板后再迁移");
       if (imported.partial) {
         throw new Error(imported.warnings[0] || "迁移数据导入不完整，已停止切换 Agent");
       }
-      if (!importedIds) throw new Error("迁移数据关联映射生成失败");
       expectations = buildMigrationRuntimeExpectations(snapshot, importedIds);
       setJob(job, { progress: 98, step: "正在验证新面板公开地址" });
       await setSetting("panelPublicUrl", normalizePanelUrl(input.targetPanelUrl));
@@ -1484,7 +2405,7 @@ export function startPanelMigration(input: {
       takeoverInput = {
         oldPanelUrl: input.oldPanelUrl,
         targetPanelUrl: input.targetPanelUrl,
-        takeoverToken: snapshot.takeoverToken,
+        takeoverToken,
         migrationId: job.id,
       };
       await setPanelMigrationAgentDirective({
@@ -1516,10 +2437,10 @@ export function startPanelMigration(input: {
       setJob(job, {
         status: "success",
         progress: 100,
-        step: imported.mode === "incremental" ? "增量迁移完成" : "迁移完成",
+        step: `${panelMigrationScopeLabel(dataScope)}完成`,
         message: imported.mode === "incremental"
-          ? "新面板已有业务数据已保留，旧面板数据已增量导入并通过运行验证；旧面板数据仍完整保留。"
-          : "新面板已通过 Agent 和转发运行验证；旧面板数据仍完整保留，可由用户确认后手动处理。",
+          ? `${panelMigrationScopeLabel(dataScope)}已增量导入并通过运行验证；新面板原有数据和旧面板数据均已保留。`
+          : `${panelMigrationScopeLabel(dataScope)}已完成并通过 Agent 与转发运行验证；旧面板数据仍完整保留。`,
         finishedAt: Date.now(),
       });
     } catch (error) {
@@ -1552,6 +2473,7 @@ export function startPanelMigration(input: {
         finishedAt: Date.now(),
       });
     } finally {
+      if (incomingSqlitePath) await fs.promises.rm(incomingSqlitePath, { force: true }).catch(() => undefined);
       migrationJobProbeTokens.delete(job.id);
     }
   })();
@@ -1590,15 +2512,35 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
     const migrationCode = String(req.body?.migrationCode || "");
     const targetPanelUrl = String(req.body?.targetPanelUrl || "");
     const requestId = String(req.body?.requestId || "");
+    const dataScope = normalizePanelMigrationScope(req.body?.dataScope);
+    const requestedTargetDatabaseType = String(req.body?.targetDatabaseType || "").trim().toLowerCase();
+    const targetDatabaseType = requestedTargetDatabaseType === "sqlite"
+      || requestedTargetDatabaseType === "mysql"
+      || requestedTargetDatabaseType === "postgresql"
+      ? requestedTargetDatabaseType
+      : undefined;
+    const directSqliteRequested = req.body?.directSqliteRequested === true;
+    const approvalOnly = req.body?.approvalOnly === true;
     if (!migrationCode) {
       res.status(400).json({ error: "migrationCode required" });
       return;
     }
     const request = requestId
       ? getMigrationRequest(requestId, migrationCode)
-      : createMigrationRequest(migrationCode, normalizePanelUrl(targetPanelUrl));
+      : createMigrationRequest(migrationCode, normalizePanelUrl(targetPanelUrl), {
+          dataScope,
+          targetDatabaseType,
+          directSqliteRequested,
+        });
     if (!request) {
       res.status(401).json({ error: "迁移码无效、已过期或已使用" });
+      return;
+    }
+    if (request.targetPanelUrl !== normalizePanelUrl(targetPanelUrl)
+      || request.dataScope !== dataScope
+      || request.targetDatabaseType !== targetDatabaseType
+      || request.directSqliteRequested !== (dataScope === "full" && targetDatabaseType === "sqlite" && directSqliteRequested)) {
+      res.status(409).json({ error: "迁移请求参数已变化，请重新生成迁移码" });
       return;
     }
     if (request.status === "rejected") {
@@ -1610,7 +2552,19 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
         status: "pending",
         requestId: request.id,
         targetPanelUrl: request.targetPanelUrl,
+        dataScope: request.dataScope,
+        directSqliteRequested: request.directSqliteRequested,
         expiresAt: request.expiresAt,
+      });
+      return;
+    }
+    if (approvalOnly) {
+      res.json({
+        status: "approved",
+        requestId: request.id,
+        targetPanelUrl: request.targetPanelUrl,
+        dataScope: request.dataScope,
+        directSqliteRequested: request.directSqliteRequested,
       });
       return;
     }
@@ -1620,10 +2574,32 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
       return;
     }
     const settings = await getAllSettings();
-    const snapshot = await exportMigrationSnapshot(settings.panelPublicUrl || undefined);
+    if (takeover.dataScope === "full"
+      && takeover.directSqliteRequested
+      && takeover.targetDatabaseType === "sqlite"
+      && getDatabaseKind() === "sqlite") {
+      const transfer = await createDirectSqliteBackup({
+        version: 1,
+        format: SQLITE_MIGRATION_FORMAT,
+        exportedAt: Date.now(),
+        appVersion: APP_VERSION,
+        sourcePanelUrl: settings.panelPublicUrl || undefined,
+        takeoverToken: takeover.takeoverToken,
+        dataScope: "full",
+      });
+      await sendDirectSqliteBackup(res, transfer);
+      return;
+    }
+    const snapshot = await exportMigrationSnapshot(settings.panelPublicUrl || undefined, {
+      dataScope: takeover.dataScope,
+    });
     snapshot.takeoverToken = takeover.takeoverToken;
-    res.json(snapshot);
+    await sendStructuredMigrationSnapshot(req, res, snapshot);
   } catch (error) {
+    if (res.headersSent) {
+      res.destroy(error instanceof Error ? error : undefined);
+      return;
+    }
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });

@@ -309,6 +309,19 @@ export async function getTunnelById(id: number) {
   return r[0];
 }
 
+export async function getTunnelsByIds(tunnelIds: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = Array.from(new Set(tunnelIds
+    .map(Number)
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const rows: any[] = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    rows.push(...await db.select().from(tunnels).where(inArray(tunnels.id, ids.slice(index, index + 400))));
+  }
+  return rows;
+}
+
 export async function backfillTunnelExitGroupReferences() {
   const db = await getDb();
   if (!db) return 0;

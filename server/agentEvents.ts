@@ -141,6 +141,7 @@ export function pushAgentDesiredState(
   payload: {
     desiredState?: unknown;
     runningRules?: unknown[];
+    ruleLatencyProbes?: unknown[];
     stateSignatures?: Record<string, string>;
   }
 ) {

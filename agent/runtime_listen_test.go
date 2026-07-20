@@ -80,4 +80,24 @@ func TestSharedManagedRuntimeOwnedPortIsPreserved(t *testing.T) {
 	if sharedManagedRuntimeOwnsPort(configPath, 10008) {
 		t.Fatalf("unconfigured port must not be treated as shared runtime owned")
 	}
+	if !sharedManagedRuntimeOwnsPortProtocol(configPath, 10007, "tcp") || !sharedManagedRuntimeOwnsPortProtocol(configPath, 10007, "udp") {
+		t.Fatal("configured TCP and UDP lanes must both be recognized")
+	}
+	if sharedManagedRuntimeOwnsPortProtocol(configPath, 10008, "tcp") {
+		t.Fatal("an unconfigured protocol lane must not be treated as shared runtime owned")
+	}
+}
+
+func TestSharedManagedRuntimeOwnershipIsProtocolAware(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gost.json")
+	config := `{"services":[{"addr":":10009","listener":{"type":"udp"}}]}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !sharedManagedRuntimeOwnsPortProtocol(configPath, 10009, "udp") {
+		t.Fatal("configured UDP lane was not recognized")
+	}
+	if sharedManagedRuntimeOwnsPortProtocol(configPath, 10009, "tcp") {
+		t.Fatal("UDP config must not claim a TCP listener on the same numeric port")
+	}
 }

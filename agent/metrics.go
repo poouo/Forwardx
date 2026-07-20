@@ -189,10 +189,15 @@ func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) ti
 	return next
 }
 
-func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
+func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
 	ruleTasks := []tcpingTask{}
 	for _, state := range readLocalRuleStates() {
 		if task, ok := buildRuleLatencyProbeTask(state); ok {
+			ruleTasks = append(ruleTasks, task)
+		}
+	}
+	for _, probe := range ruleProbes {
+		if task, ok := buildExplicitRuleLatencyProbeTask(probe); ok {
 			ruleTasks = append(ruleTasks, task)
 		}
 	}
@@ -322,6 +327,12 @@ func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
 		state.TargetPort = desired.TargetPort
 		state.Protocol = desired.Protocol
 	}
+	// Tunnel rules are measured from an explicit exit-host probe supplied by
+	// the panel. Probing their final target from an entry or relay host bypasses
+	// the tunnel and produces unrelated latency or false timeouts.
+	if state.TunnelID > 0 {
+		return tcpingTask{}, false
+	}
 	if state.RuleID <= 0 || port <= 0 || strings.TrimSpace(state.TargetIP) == "" || state.TargetPort <= 0 {
 		return tcpingTask{}, false
 	}
@@ -340,20 +351,45 @@ func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
 	}, true
 }
 
-func scheduleTCPingCollection(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
+func buildExplicitRuleLatencyProbeTask(probe ruleLatencyProbe) (tcpingTask, bool) {
+	method := strings.ToLower(strings.TrimSpace(probe.Method))
+	if method != "ping" {
+		method = "tcping"
+	}
+	if probe.RuleID <= 0 || probe.TunnelID <= 0 || strings.TrimSpace(probe.TargetIP) == "" || probe.TargetPort <= 0 {
+		return tcpingTask{}, false
+	}
+	probeKey := strings.TrimSpace(probe.ProbeKey)
+	if probeKey == "" {
+		probeKey = fmt.Sprintf("rule:%d:tunnel:%d:%s:%d:%s", probe.RuleID, probe.TunnelID, strings.ToLower(strings.TrimSpace(probe.TargetIP)), probe.TargetPort, method)
+	}
+	return tcpingTask{
+		Kind:        "rule",
+		RuleID:      probe.RuleID,
+		TunnelID:    probe.TunnelID,
+		Method:      method,
+		TargetIP:    probe.TargetIP,
+		TargetPort:  probe.TargetPort,
+		ProbeKey:    probeKey,
+		TopologyKey: strings.TrimSpace(probe.TopologyKey),
+	}, true
+}
+
+func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
 	if !atomic.CompareAndSwapInt32(&tcpingCollectRunning, 0, 1) {
 		logVerbosef("tcping collect skip because previous run is still active")
 		return false
 	}
+	ruleProbesCopy := append([]ruleLatencyProbe(nil), ruleProbes...)
 	probesCopy := append([]tunnelProbe(nil), probes...)
 	groupProbesCopy := append([]forwardGroupProbe(nil), groupProbes...)
 	serviceProbesCopy := append([]hostProbeServiceProbe(nil), serviceProbes...)
 	go func() {
 		started := time.Now()
 		defer atomic.StoreInt32(&tcpingCollectRunning, 0)
-		collectTCPing(cfg, probesCopy, groupProbesCopy, serviceProbesCopy, force)
+		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force)
 		if elapsed := time.Since(started); elapsed >= 5*time.Second && shouldLogAgentReport("tcping-collect-slow-async", 5*time.Minute) {
-			logf("tcping collect slow duration=%s tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
+			logf("tcping collect slow duration=%s ruleProbes=%d tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(ruleProbesCopy), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
 		}
 	}()
 	return true

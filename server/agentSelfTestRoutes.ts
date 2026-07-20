@@ -7,9 +7,23 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { getAgentHostFromRequest } from "./agentAuth";
 import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
+import { combineTunnelRuleLatencySample } from "./ruleLatency";
+import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
+}
+
+async function waitForTunnelLatencyRefresh(tunnelId: number, baselineId: number, waitMs = 4500) {
+  const deadline = Date.now() + Math.max(0, waitMs);
+  let latest = await db.getLatestTunnelLatency(tunnelId);
+  while (Date.now() < deadline) {
+    const latestId = Number((latest as any)?.id || 0);
+    if (latestId > 0 && (baselineId <= 0 || latestId !== baselineId)) return latest;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    latest = await db.getLatestTunnelLatency(tunnelId);
+  }
+  return latest;
 }
 
 function tunnelSeriesKey(value: unknown, fallback: string) {
@@ -104,6 +118,9 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
+    const refreshedTunnelLatency = meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number"
+      ? await waitForTunnelLatencyRefresh(meta.tunnelId, Number((meta as any).tunnelLatencyBaselineId || 0))
+      : null;
     const accepted = await db.completeForwardTestIfActive(testId, {
       status: success ? "success" : "failed",
       listenOk: true,
@@ -207,16 +224,18 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
+      const tunnelLatency = refreshedTunnelLatency;
       const tunnel = await db.getTunnelById(meta.tunnelId);
-      const tunnelLatency = await db.getLatestTunnelLatency(meta.tunnelId);
-      let tunnelLatencyMs =
-        tunnelLatency && !(tunnelLatency as any).isTimeout && typeof (tunnelLatency as any).latencyMs === "number"
-          ? Number((tunnelLatency as any).latencyMs)
-          : 0;
-      if (tunnelLatencyMs <= 0) {
-        const last = Number((tunnel as any)?.lastLatencyMs) || 0;
-        if (last > 0) tunnelLatencyMs = last;
-      }
+      const combinedLatency = combineTunnelRuleLatencySample({
+        targetLatencyMs: cleanLatency,
+        targetIsTimeout: !success,
+        tunnelLatencyMs: (tunnelLatency as any)?.latencyMs,
+        tunnelIsTimeout: !!(tunnelLatency as any)?.isTimeout,
+        tunnelRecordedAt: (tunnelLatency as any)?.recordedAt,
+      });
+      const tunnelLatencyMs = combinedLatency && !combinedLatency.isTimeout && typeof (tunnelLatency as any)?.latencyMs === "number"
+        ? Number((tunnelLatency as any).latencyMs)
+        : 0;
       let tunnelDetails: any[] = [];
       const tunnelMessage = typeof (tunnel as any)?.lastTestMessage === "string" ? String((tunnel as any).lastTestMessage).trim() : "";
       const tunnelTestStatus = String((tunnel as any)?.lastTestStatus || "");
@@ -243,17 +262,19 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           tunnelDetails = [];
         }
       }
-      const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
+      const overallSuccess = success && combinedLatency?.isTimeout !== true;
+      const totalLatency = combinedLatency && !combinedLatency.isTimeout ? combinedLatency.latencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
       const targetMethod = normalizeLinkProbeMethod(meta.method);
       const resolvedTargetText = cleanResolvedTargetIp && cleanResolvedTargetIp !== String(meta.targetIp || "").trim()
         ? `解析到 ${cleanResolvedTargetIp}`
         : "";
       const messageParts = [
-        `隧道整体链路测试 ${success ? "成功" : "失败"}`,
+        `隧道整体链路测试 ${overallSuccess ? "成功" : "失败"}`,
         `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}${resolvedTargetText ? `，${resolvedTargetText}` : ""}`,
       ];
       if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
+      if (success && !combinedLatency) messageParts.push("隧道段暂无新鲜探测结果");
       if (cleanMessage && !success) messageParts.push(cleanMessage);
       const detailMessage = cleanMessage || messageParts.join("; ");
       const structuredMessage = structuredLinkTestMessage({
@@ -271,14 +292,23 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         totalLatencyMs: totalLatency,
       });
       await db.updateForwardTestResult(testId, {
-        status: success ? "success" : "failed",
+        status: overallSuccess ? "success" : "failed",
         listenOk: true,
         targetReachable: success,
-        forwardOk: success,
+        forwardOk: overallSuccess,
         latencyMs: totalLatency,
         message: structuredMessage,
       });
-      console.log(`[SelfTest] tunnel rule overall test=${testId} tunnel=${meta.tunnelId} success=${success} targetLatency=${cleanLatency ?? "-"}ms tunnelLatency=${tunnelLatencyMs || "-"}ms total=${totalLatency ?? "-"}ms`);
+      if (combinedLatency) {
+        await db.insertTcpingStat({
+          ruleId: Number(t.ruleId),
+          hostId: Number(host.id),
+          latencyMs: combinedLatency.isTimeout ? null : combinedLatency.latencyMs,
+          isTimeout: combinedLatency.isTimeout,
+        });
+        clearRuleLatencyQueryCaches();
+      }
+      console.log(`[SelfTest] tunnel rule overall test=${testId} tunnel=${meta.tunnelId} success=${overallSuccess} targetLatency=${cleanLatency ?? "-"}ms tunnelLatency=${tunnelLatencyMs || "-"}ms total=${totalLatency ?? "-"}ms`);
     }
     if (meta?.kind === "forward-via-tunnel-entry" && typeof meta.tunnelId === "number") {
       const entryTarget = `${meta.entryIp || "-"}:${meta.entrySourcePort || "-"}`;
@@ -369,6 +399,13 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       );
     }
     if (!meta) {
+      await db.insertTcpingStat({
+        ruleId: Number(t.ruleId),
+        hostId: Number(host.id),
+        latencyMs: success && cleanLatency !== null ? cleanLatency : null,
+        isTimeout: !success || cleanLatency === null,
+      });
+      clearRuleLatencyQueryCaches();
       appendPanelLog(
         success ? "info" : "warn",
         `[SelfTest] rule=${t.ruleId} direct test=${testId} host=${host.id} success=${success} latency=${success && cleanLatency !== null ? `${cleanLatency}ms` : "-"}${cleanMessage ? ` message=${cleanMessage}` : ""}`,

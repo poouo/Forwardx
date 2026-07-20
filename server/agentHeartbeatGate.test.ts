@@ -32,6 +32,7 @@ test("busy heartbeat responses preserve cached state sections on the Agent", () 
   });
   const stateSections = [
     "runningRules",
+    "ruleLatencyProbes",
     "tunnelProbes",
     "forwardGroupProbes",
     "hostProbeServices",

@@ -40,7 +40,7 @@ func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	defer atomic.StoreInt32(&tcpingCollectRunning, 0)
 
 	started := time.Now()
-	if scheduleTCPingCollection(Config{}, nil, nil, nil, false) {
+	if scheduleTCPingCollection(Config{}, nil, nil, nil, nil, false) {
 		t.Fatal("busy tcping collection must remain due for a retry")
 	}
 	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
@@ -120,5 +120,24 @@ func TestRuleLatencyProbePrefersLatestDesiredProtocol(t *testing.T) {
 	}
 	if task.Method != "ping" || task.TargetIP != "new-hy2.example.com" || task.TargetPort != 8443 {
 		t.Fatalf("probe did not use desired rule metadata: %+v", task)
+	}
+}
+
+func TestTunnelRuleLatencySkipsLocalEntryAndUsesExplicitExitProbe(t *testing.T) {
+	if _, ok := buildRuleLatencyProbeTask(localRuleState{
+		Port: "10080", RuleID: 12, TunnelID: 3, TargetIP: "target.example.com", TargetPort: 443, Protocol: "tcp",
+	}); ok {
+		t.Fatal("tunnel rule must not probe its final target from a local entry or relay state")
+	}
+
+	task, ok := buildExplicitRuleLatencyProbeTask(ruleLatencyProbe{
+		RuleID: 12, TunnelID: 3, TargetIP: "target.example.com", TargetPort: 443,
+		Method: "tcping", ProbeKey: "rule-latency", TopologyKey: "topology-v1",
+	})
+	if !ok {
+		t.Fatal("explicit tunnel exit probe was rejected")
+	}
+	if task.SourcePort != 0 || task.Method != "tcping" || task.ProbeKey != "rule-latency" || task.TopologyKey != "topology-v1" {
+		t.Fatalf("unexpected explicit tunnel rule probe: %+v", task)
 	}
 }

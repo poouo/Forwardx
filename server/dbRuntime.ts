@@ -587,6 +587,21 @@ export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promis
   throw new DatabaseNotConfiguredError();
 }
 
+export async function withSqliteExclusive<T>(work: (sqlite: Database.Database) => Promise<T> | T): Promise<T> {
+  if (transactionContext.getStore()) throw new Error("SQLite exclusive work cannot start inside a database transaction");
+  if (!_db || !_kind) await connectDatabase();
+  if (_kind !== "sqlite" || !_sqlite) throw new Error("SQLite direct migration requires an active SQLite database");
+  while (sqliteTransactionGate) await sqliteTransactionGate;
+  let release: () => void = () => {};
+  sqliteTransactionGate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    return await work(_sqlite);
+  } finally {
+    sqliteTransactionGate = null;
+    release();
+  }
+}
+
 export function getDatabaseKind() {
   return _kind;
 }

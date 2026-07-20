@@ -88,6 +88,7 @@ export type SelfTestMeta =
       targetIp?: string;
       targetPort?: number;
       method?: "tcp" | "ping";
+      tunnelLatencyBaselineId?: number;
     }
   | {
       kind: "forward-via-tunnel-entry";

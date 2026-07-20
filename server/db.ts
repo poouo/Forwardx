@@ -8,7 +8,7 @@
 import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
-import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
 import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
@@ -204,6 +204,24 @@ async function migrateLegacyUserAvatarsOnce() {
   return migrated;
 }
 
+export async function clearLegacyTunnelRuleLatencyHistoryOnce() {
+  const marker = "tunnel-rule-exit-latency-v1";
+  if (await getSetting(marker)) return 0;
+  const q = quoteIdentifier;
+  const result = await executeRaw(
+    `DELETE FROM ${q("tcping_stats")}
+      WHERE ${q("ruleId")} IN (
+        SELECT ${q("id")}
+          FROM ${q("forward_rules")}
+         WHERE ${q("tunnelId")} IS NOT NULL
+           AND ${q("tunnelId")} <> 0
+      )`,
+  );
+  const deleted = rawAffectedRows(result);
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  return deleted;
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -214,6 +232,11 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await clearLegacyTunnelRuleLatencyHistoryOnce().then((count) => {
+      if (count > 0) console.log(`[Database] Cleared legacy tunnel rule latency samples count=${count}`);
+    }).catch((error) => {
+      console.warn("[Database] Legacy tunnel rule latency cleanup skipped:", error instanceof Error ? error.message : String(error));
+    });
     await repairPortForwardRuleHostReferencesOnce().then((repairs) => {
       if (repairs.length > 0) console.log(`[Database] Repaired stale port-forward rule hosts count=${repairs.length}`);
     }).catch((error) => {

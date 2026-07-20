@@ -28,6 +28,11 @@ import { withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
 import { isRuleLatencyReportMethodCompatible } from "../shared/latencyProbe";
 import { completeSupportBundleHost } from "./supportBundle";
+import {
+  combineTunnelRuleLatencySample,
+  validateTunnelRuleLatencyReport,
+} from "./ruleLatency";
+import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -69,12 +74,11 @@ function trafficAccountingHostId(rule: any, tunnel: any | null) {
   return isForwardXTunnel(tunnel) ? Number(tunnel.entryHostId) : Number(tunnel.exitHostId);
 }
 
-async function shouldAccountForwardRuleTraffic(rule: any) {
+function shouldAccountForwardRuleTraffic(rule: any, group: any | null) {
   const groupId = Number(rule?.forwardGroupId || 0);
   const templateId = Number(rule?.forwardGroupRuleId || 0);
   const memberId = Number(rule?.forwardGroupMemberId || 0);
   if (!groupId || !templateId || !memberId) return true;
-  const group = await db.getForwardGroupById(groupId) as any;
   if (String(group?.groupMode || "failover") !== "chain") return true;
   const members = [...(group.members || [])]
     .filter((member: any) => !!member.isEnabled)
@@ -82,10 +86,9 @@ async function shouldAccountForwardRuleTraffic(rule: any) {
   return Number(members[0]?.id || 0) === memberId;
 }
 
-async function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null) {
+function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null, group: any | null) {
   const groupId = Number(rule?.forwardGroupId || 0);
   if (groupId > 0) {
-    const group = await db.getForwardGroupById(groupId) as any;
     if (group && ["port", "chain", "failover"].includes(String(group?.groupMode || "failover"))) {
       return normalizeTrafficMultiplier(group?.trafficMultiplier);
     }
@@ -433,8 +436,10 @@ agentRouter.post("/api/agent/plugin-action-result", async (req: Request, res: Re
 });
 
 agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
+  const requestStartedAt = Date.now();
   let logHostId = 0;
   let logHostName = "";
+  let reportedStatCount = 0;
   try {
     const host = await getAgentHostFromRequest(req);
     if (!host) {
@@ -449,6 +454,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       : [];
     const compactStats = compactTrafficStats(req.body?.s);
     const stats: AgentTrafficStat[] = objectStats.length > 0 ? objectStats : compactStats;
+    reportedStatCount = stats.length;
     const hostTraffic: AgentHostTrafficStat | null = isAgentHostTrafficStat(req.body?.hostTraffic)
       ? req.body.hostTraffic
       : compactHostTraffic(req.body?.h);
@@ -467,21 +473,31 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 
     const quotaTrafficByUser = new Map<number, number>();
     const trafficBillingEnabled = await db.isTrafficBillingEnabled();
+    const ruleRows = await db.getForwardRulesByIds(stats.map((stat) => Number(stat.ruleId)));
+    const rulesById = new Map((ruleRows as any[]).map((rule) => [Number(rule.id), rule]));
+    const [tunnelRows, groupRows] = await Promise.all([
+      db.getTunnelsByIds((ruleRows as any[]).map((rule) => Number(rule.tunnelId || 0))),
+      db.getForwardGroupTrafficContextsByIds((ruleRows as any[]).map((rule) => Number(rule.forwardGroupId || 0))),
+    ]);
+    const tunnelsById = new Map((tunnelRows as any[]).map((tunnel) => [Number(tunnel.id), tunnel]));
+    const groupsById = new Map((groupRows as any[]).map((group) => [Number(group.id), group]));
     await mapWithConcurrency(stats, 16, async (stat) => {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
-      const rule = await db.getForwardRuleById(stat.ruleId);
+      const rule = rulesById.get(Number(stat.ruleId));
       if (!rule) {
         return;
       }
       if ((rule as any).pendingDelete || !(rule as any).isEnabled) {
         return;
       }
-      if (!await shouldAccountForwardRuleTraffic(rule)) {
+      const groupId = Number((rule as any).forwardGroupId || 0);
+      const group = groupId > 0 ? groupsById.get(groupId) || null : null;
+      if (!shouldAccountForwardRuleTraffic(rule, group)) {
         return;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
-      const tunnel = tunnelId > 0 ? await db.getTunnelById(tunnelId) : null;
+      const tunnel = tunnelId > 0 ? tunnelsById.get(tunnelId) || null : null;
       const accountingHostId = trafficAccountingHostId(rule, tunnel);
       if (accountingHostId !== Number(host.id)) {
         const ruleBytes = bytesIn + bytesOut;
@@ -541,7 +557,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             }
           });
         } else {
-          const quotaBytes = applyTrafficMultiplier(ruleBytes, await quotaTrafficMultiplierForRule(rule, tunnel));
+          const quotaBytes = applyTrafficMultiplier(ruleBytes, quotaTrafficMultiplierForRule(rule, tunnel, group));
           quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + quotaBytes);
         }
       }
@@ -570,6 +586,11 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       }
     });
     });
+
+    const durationMs = Date.now() - requestStartedAt;
+    if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {
+      console.warn(`[Agent Traffic] slow host=${logHostId} name=${logHostName || "-"} stats=${reportedStatCount} duration=${durationMs}ms`);
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -821,23 +842,25 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     }
 
     const stats: Array<{ ruleId: number; hostId: number; latencyMs: number | null; isTimeout: boolean }> = [];
-    const tunnelLatencyById = new Map<number, number>();
-    const tunnelContextById = new Map<number, Promise<{ tunnel: any; allowedHostIds: Set<number> } | null>>();
+    const tunnelLatencyById = new Map<number, Promise<any>>();
+    const tunnelContextById = new Map<number, Promise<{ tunnel: any } | null>>();
     const getTunnelContext = (tunnelId: number) => {
       let work = tunnelContextById.get(tunnelId);
       if (!work) {
         work = (async () => {
           const tunnel = await db.getTunnelById(tunnelId) as any;
           if (!tunnel) return null;
-          const allowedHostIds = await tunnelEntryHostIds(tunnel);
-          allowedHostIds.add(Number(tunnel.exitHostId || 0));
-          for (const hop of await db.getTunnelHops(tunnelId) as any[]) allowedHostIds.add(Number(hop?.hostId || 0));
-          for (const node of await db.getTunnelExitNodes(tunnelId) as any[]) {
-            if (node?.isEnabled !== false) allowedHostIds.add(Number(node?.hostId || 0));
-          }
-          return { tunnel, allowedHostIds };
+          return { tunnel };
         })();
         tunnelContextById.set(tunnelId, work);
+      }
+      return work;
+    };
+    const getLatestTunnelLatency = (tunnelId: number) => {
+      let work = tunnelLatencyById.get(tunnelId);
+      if (!work) {
+        work = db.getLatestTunnelLatency(tunnelId);
+        tunnelLatencyById.set(tunnelId, work);
       }
       return work;
     };
@@ -846,39 +869,51 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       if (ruleId <= 0) return null;
       const rule = await db.getForwardRuleById(ruleId) as any;
       if (!rule || rule.pendingDelete || !rule.isEnabled) return null;
-      if (report.sourcePort && Number(report.sourcePort) !== Number(rule.sourcePort || 0)) return null;
       const tunnelId = Number(rule.tunnelId || 0);
-      const tunnelContext = tunnelId > 0 ? await getTunnelContext(tunnelId) : null;
-      const allowed = Number(rule.hostId || 0) === Number(host.id)
-        || !!tunnelContext?.allowedHostIds.has(Number(host.id));
-      if (!allowed) return null;
-      if (!tunnelId && report.targetPort && Number(report.targetPort) !== Number(rule.targetPort || 0)) return null;
-      if (!isRuleLatencyReportMethodCompatible(rule.protocol, report.method)) return null;
-      const baseLatency = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
-      let latencyMs = baseLatency;
-      if (!report.isTimeout && baseLatency && tunnelId > 0) {
-        let tunnelLatency = tunnelLatencyById.get(tunnelId);
-        if (tunnelLatency === undefined) {
-          const latest = await db.getLatestTunnelLatency(tunnelId) as any;
-          const latestAt = latest?.recordedAt ? new Date(latest.recordedAt).getTime() : 0;
-          tunnelLatency = latest && Date.now() - latestAt <= 5 * 60 * 1000 && !latest.isTimeout && typeof latest.latencyMs === "number"
-            ? Number(latest.latencyMs)
-            : 0;
-          tunnelLatencyById.set(tunnelId, tunnelLatency);
-        }
-        if (tunnelLatency > 0) latencyMs = baseLatency + tunnelLatency;
+      const baseLatency = typeof report.latencyMs === "number" && Number.isFinite(report.latencyMs) && report.latencyMs >= 0
+        ? Number(report.latencyMs)
+        : null;
+      if (tunnelId <= 0) {
+        if (Number(rule.hostId || 0) !== Number(host.id)) return null;
+        if (report.sourcePort && Number(report.sourcePort) !== Number(rule.sourcePort || 0)) return null;
+        if (report.targetPort && Number(report.targetPort) !== Number(rule.targetPort || 0)) return null;
+        if (!isRuleLatencyReportMethodCompatible(rule.protocol, report.method)) return null;
+        return {
+          ruleId,
+          hostId: host.id,
+          latencyMs: report.isTimeout || baseLatency === null ? null : baseLatency,
+          isTimeout: !!report.isTimeout || baseLatency === null,
+        };
       }
+
+      const tunnelContext = await getTunnelContext(tunnelId);
+      if (!tunnelContext || !validateTunnelRuleLatencyReport({
+        hostId: host.id,
+        rule,
+        tunnel: tunnelContext.tunnel,
+        report,
+      })) return null;
+      const latestTunnelLatency = report.isTimeout ? null : await getLatestTunnelLatency(tunnelId);
+      const combined = combineTunnelRuleLatencySample({
+        targetLatencyMs: baseLatency,
+        targetIsTimeout: !!report.isTimeout,
+        tunnelLatencyMs: latestTunnelLatency?.latencyMs,
+        tunnelIsTimeout: !!latestTunnelLatency?.isTimeout,
+        tunnelRecordedAt: latestTunnelLatency?.recordedAt,
+      });
+      if (!combined) return null;
       return {
         ruleId,
         hostId: host.id,
-        latencyMs,
-        isTimeout: !!report.isTimeout,
+        latencyMs: combined.latencyMs,
+        isTimeout: combined.isTimeout,
       };
     });
     stats.push(...ruleStats.filter((stat): stat is NonNullable<typeof stat> => !!stat));
 
     if (stats.length > 0) {
       await db.insertTcpingStats(stats);
+      clearRuleLatencyQueryCaches();
     }
 
     res.json({ success: true });

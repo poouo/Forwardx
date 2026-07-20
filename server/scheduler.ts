@@ -8,10 +8,12 @@ import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
 import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
+import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
+import { createNonOverlappingScheduledTask } from "./scheduledTask";
 
 type TimedOutForwardTest = {
   id: number;
@@ -233,6 +235,15 @@ async function runSelfTestTimeoutSweep() {
       for (const test of timedOutTests) {
         const meta = parseSelfTestMeta(test.message);
         if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
+        if (!meta || meta.kind === "forward-via-tunnel") {
+          await db.insertTcpingStat({
+            ruleId: Number(test.ruleId),
+            hostId: Number(test.hostId),
+            latencyMs: null,
+            isTimeout: true,
+          });
+          clearRuleLatencyQueryCaches();
+        }
         const targetPart = meta?.kind === "forward-chain"
           ? ` group=${meta.groupId}`
           : meta && "tunnelId" in meta && typeof meta.tunnelId === "number"
@@ -505,55 +516,51 @@ export function startScheduler() {
     hostStatusPrimePromise = null;
   });
 
-  setInterval(async () => {
-    const now = new Date();
+  const monthlyTrafficReset = createNonOverlappingScheduledTask("monthly traffic reset", async () => {
     await runMonthlyTrafficReset();
-  }, 60 * 60 * 1000);
-
-  setInterval(async () => {
+  });
+  const expirationCheck = createNonOverlappingScheduledTask("subscription and account expiration", async () => {
     await runSubscriptionExpirationCheck();
     await runExpirationCheck();
-  }, 60 * 60 * 1000);
-
-  setInterval(async () => {
+  });
+  const selfTestTimeoutSweep = createNonOverlappingScheduledTask("self-test timeout sweep", async () => {
     await runSelfTestTimeoutSweep();
-  }, 30 * 1000);
-
-  setInterval(async () => {
+  });
+  const historyCleanup = createNonOverlappingScheduledTask("history cleanup", async () => {
     await runTcpingCleanup();
-  }, 60 * 60 * 1000);
-
-  setInterval(async () => {
+  }, { slowTaskMs: 15_000 });
+  const forwardingMaintenance = createNonOverlappingScheduledTask("forward-group and DDNS maintenance", async () => {
     await runForwardGroupFailover();
     await runHostDdnsReconcile();
-  }, 30 * 1000);
-
-  setInterval(async () => {
+  });
+  const hostStatusSweep = createNonOverlappingScheduledTask("host status sweep", async () => {
     await runHostStatusSweep();
-  }, 30 * 1000);
-
-  setInterval(async () => {
+  });
+  const reminderSweep = createNonOverlappingScheduledTask("email and Telegram reminders", async () => {
     await runEmailReminders();
     await runTelegramReminders();
-  }, 6 * 60 * 60 * 1000);
-
-  setInterval(async () => {
+  }, { slowTaskMs: 15_000 });
+  const updateCheck = createNonOverlappingScheduledTask("panel update check", async () => {
     await runUpdateAutoCheck();
-  }, UPDATE_AUTO_CHECK_INTERVAL_MS);
+  }, { slowTaskMs: 15_000 });
 
-  setTimeout(async () => {
-    await runMonthlyTrafficReset();
-    await runSubscriptionExpirationCheck();
-    await runExpirationCheck();
-    await runSelfTestTimeoutSweep();
-    await runTcpingCleanup();
-    await runForwardGroupFailover();
-    await runHostDdnsReconcile();
-    await runHostStatusSweep();
-    await runEmailReminders();
-    await runTelegramReminders();
-    await runUpdateAutoCheck();
-  }, 5000);
+  const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {
+    const startTimer = setTimeout(() => {
+      void task();
+      const intervalTimer = setInterval(() => { void task(); }, intervalMs);
+      intervalTimer.unref?.();
+    }, delayMs);
+    startTimer.unref?.();
+  };
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host DDNS reconcile + host status + email/telegram reminders + update auto-check)");
+  repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
+  repeatAfter(selfTestTimeoutSweep, 30 * 1000, 8_000);
+  repeatAfter(forwardingMaintenance, 30 * 1000, 12_000);
+  repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
+  repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
+  repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
+  repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
+  repeatAfter(historyCleanup, 60 * 60 * 1000, 2 * 60_000);
+
+  console.log("[Scheduler] Scheduled tasks started with overlap guards and staggered startup");
 }

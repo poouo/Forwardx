@@ -913,10 +913,24 @@ export async function cleanOldTrafficStatBuckets(retainHours: number = 72) {
   );
 }
 
-export async function ensureTrafficStatBucketsBackfilled(options: { force?: boolean; logger?: Pick<typeof console, "info" | "warn"> } = {}) {
+export async function ensureTrafficStatBucketsBackfilled(options: {
+  force?: boolean;
+  preserveExisting?: boolean;
+  logger?: Pick<typeof console, "info" | "warn">;
+} = {}) {
   const db = await getDb();
   const logger = options.logger ?? console;
   if (!db) return { skipped: true, rows: 0 };
+  if (options.preserveExisting) {
+    const existingRows = await tableRowCount("traffic_stat_buckets");
+    if (existingRows > 0) {
+      await setSetting(TRAFFIC_BUCKET_BACKFILL_SETTING, TRAFFIC_BUCKET_BACKFILL_MARKER);
+      await setSetting("trafficStatBucketsBackfilledAt", String(epochSeconds(nowDate())));
+      trafficBucketsReadyState = true;
+      logger.info?.(`[TrafficSummary] Imported buckets preserved rows=${existingRows}`);
+      return { skipped: true, rows: existingRows };
+    }
+  }
   const marker = await getSetting(TRAFFIC_BUCKET_BACKFILL_SETTING).catch(() => null);
   if (!options.force && marker === TRAFFIC_BUCKET_BACKFILL_MARKER) {
     trafficBucketsReadyState = true;
@@ -952,10 +966,25 @@ export async function ensureTrafficStatBucketsBackfilled(options: { force?: bool
   return { skipped: false, rows };
 }
 
-export async function ensureUserTrafficCountersBackfilled(options: { force?: boolean; logger?: Pick<typeof console, "info" | "warn"> } = {}) {
+export async function ensureUserTrafficCountersBackfilled(options: {
+  force?: boolean;
+  preserveExisting?: boolean;
+  logger?: Pick<typeof console, "info" | "warn">;
+} = {}) {
   const db = await getDb();
   const logger = options.logger ?? console;
   if (!db) return { skipped: true, rows: 0 };
+  if (options.preserveExisting) {
+    const [ruleRows, userRows] = await Promise.all([
+      tableRowCount("forward_rule_traffic_counters"),
+      tableRowCount("user_traffic_counters"),
+    ]);
+    if (ruleRows > 0 || userRows > 0) {
+      await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, "v1");
+      logger.info?.(`[TrafficCounter] Imported cumulative counters preserved ruleRows=${ruleRows} userRows=${userRows}`);
+      return { skipped: true, rows: ruleRows + userRows };
+    }
+  }
   const marker = await getSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING).catch(() => null);
   if (!options.force && marker === "v1") {
     logger.info?.("[TrafficCounter] User/rule counter backfill already completed; skipping");

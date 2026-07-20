@@ -374,10 +374,22 @@ function buildForwardRuleSqlFilter(
   };
 }
 
-async function hydrateForwardRuleListIds(ids: number[]) {
+export async function getForwardRulesByIds(ruleIds: number[]) {
   const db = await getDb();
-  if (!db || ids.length === 0) return [];
-  const rows = await db.select().from(forwardRules).where(inArray(forwardRules.id, ids));
+  if (!db) return [];
+  const ids = Array.from(new Set(ruleIds
+    .map(Number)
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const rows: any[] = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    rows.push(...await db.select().from(forwardRules).where(inArray(forwardRules.id, ids.slice(index, index + 400))));
+  }
+  return rows;
+}
+
+async function hydrateForwardRuleListIds(ids: number[]) {
+  if (ids.length === 0) return [];
+  const rows = await getForwardRulesByIds(ids);
   const byId = new Map((rows as any[]).map((row: any) => [Number(row.id), row]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
