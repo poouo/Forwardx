@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type pg from "pg";
 import { getDatabaseKind, getPool, getPostgresPool, getSqlite } from "./dbRuntime";
 
-export type ColumnType = "id" | "text" | "varchar" | "int" | "bigint" | "bool" | "epoch";
+export type ColumnType = "id" | "text" | "longtext" | "varchar" | "int" | "bigint" | "bool" | "epoch";
 
 export type ColumnDef = {
   name: string;
@@ -300,7 +300,7 @@ const tables: TableDef[] = [
   { name: "user_host_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "hostId"]], indexes: [["hostId"]] },
   { name: "user_tunnel_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "tunnelId"]], indexes: [["tunnelId"]] },
   { name: "user_forward_group_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("forwardGroupId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "forwardGroupId"]], indexes: [["forwardGroupId"]] },
-  { name: "system_settings", columns: [c("key", "varchar", { length: 191, notNull: true }), c("value", "text"), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["key"]] },
+  { name: "system_settings", columns: [c("key", "varchar", { length: 191, notNull: true }), c("value", "longtext"), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["key"]] },
   { name: "payment_orders", columns: [c("id", "id"), c("outTradeNo", "text", { notNull: true }), c("userId", "int", { notNull: true }), c("provider", "varchar", { length: 32, notNull: true }), c("paymentType", "varchar", { length: 32, notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "pending" }), c("subject", "text", { notNull: true }), c("amountCents", "bigint", { notNull: true }), c("currency", "varchar", { length: 16, notNull: true, default: "CNY" }), c("tradeNo", "text"), c("payUrl", "text"), c("qrCode", "text"), c("orderType", "varchar", { length: 32, notNull: true, default: "balance" }), c("planId", "int"), c("subscriptionId", "int"), c("discountCodeId", "int"), c("discountConsumed", "bool", { notNull: true, default: false }), c("discountAmountCents", "bigint", { notNull: true, default: 0 }), c("clientIp", "text"), c("rawNotify", "text"), c("expiresAt", "epoch"), c("paidAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["outTradeNo"]], indexes: [["userId", "createdAt"], ["status", "createdAt"]] },
   { name: "subscription_plans", columns: [c("id", "id"), c("name", "text", { notNull: true }), c("description", "text"), c("priceCents", "bigint", { notNull: true, default: 0 }), c("currency", "varchar", { length: 16, notNull: true, default: "CNY" }), c("durationDays", "int", { notNull: true, default: 30 }), c("portCount", "int", { notNull: true, default: 20 }), c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("rateLimitMbps", "int", { notNull: true, default: 0 }), c("maxRules", "int", { notNull: true, default: 20 }), c("maxConnections", "int", { notNull: true, default: 2000 }), c("maxIPs", "int", { notNull: true, default: 10 }), c("isActive", "bool", { notNull: true, default: true }), c("isStoreVisible", "bool", { notNull: true, default: true }), c("sortOrder", "int", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })] },
   { name: "subscription_plan_hosts", columns: [c("id", "id"), c("planId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["planId", "hostId"]] },
@@ -359,7 +359,7 @@ function quote(kind: SchemaKind, id: string) {
 
 function defaultSql(kind: SchemaKind, value: ColumnDef["default"], columnType?: ColumnType) {
   if (value === undefined || value === null) return "";
-  if (kind === "mysql" && columnType === "text") return "";
+  if (kind === "mysql" && (columnType === "text" || columnType === "longtext")) return "";
   if (value === "now") {
     if (kind === "mysql") return " DEFAULT (UNIX_TIMESTAMP())";
     if (kind === "postgresql") return " DEFAULT (EXTRACT(EPOCH FROM NOW())::INT)";
@@ -381,10 +381,11 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
     return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
   }
   const type = kind === "sqlite"
-    ? (column.type === "varchar" || column.type === "text" ? "TEXT" : "INTEGER")
+    ? (column.type === "varchar" || column.type === "text" || column.type === "longtext" ? "TEXT" : "INTEGER")
     : kind === "postgresql"
       ? ({
         text: "TEXT",
+        longtext: "TEXT",
         varchar: `VARCHAR(${column.length || 191})`,
         int: "INTEGER",
         bigint: "BIGINT",
@@ -393,6 +394,7 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
       } as Record<ColumnType, string>)[column.type]
     : ({
       text: "TEXT",
+      longtext: "LONGTEXT",
       varchar: `VARCHAR(${column.length || 191})`,
       int: "INT",
       bigint: "BIGINT",
@@ -407,7 +409,7 @@ function mysqlKey(table: string, prefix: string, cols: string[]) {
   const expr = cols.map((col) => {
     const def = tables.find((t) => t.name === table)?.columns.find((c) => c.name === col);
     const q = quote("mysql", col);
-    return def?.type === "text" ? `${q}(191)` : q;
+    return def?.type === "text" || def?.type === "longtext" ? `${q}(191)` : q;
   }).join(", ");
   return { name, expr };
 }
@@ -429,6 +431,10 @@ async function ensureMysqlSchema(pool: Pool) {
     for (const column of table.columns) {
       if (column.type === "id") continue;
       await pool.query(`ALTER TABLE ${quote("mysql", table.name)} ADD COLUMN ${columnSql("mysql", column, true)}`).catch(() => undefined);
+      if (column.type === "longtext") {
+        const definition = columnSql("mysql", column, true);
+        await pool.query(`ALTER TABLE ${quote("mysql", table.name)} MODIFY COLUMN ${definition}${column.notNull ? "" : " NULL"}`);
+      }
     }
     for (const cols of [...(table.indexes || []), ...(table.unique || [])]) {
       const uniquePrefix = (table.unique || []).some((u) => u.join("|") === cols.join("|")) ? "uniq" : "idx";

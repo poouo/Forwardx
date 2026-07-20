@@ -6,6 +6,7 @@ import {
   boolean as mysqlBoolean,
   customType,
   int as mysqlInt,
+  longtext as mysqlLongText,
   mysqlTable,
   serial as mysqlSerial,
   text as mysqlText,
@@ -79,6 +80,7 @@ const serial = (name: string): any =>
       ? pgBigSerial(name, { mode: "number" }).primaryKey()
       : mysqlSerial(name);
 const text = (name: string): any => (isSqliteDialect ? sqliteText(name) : isPostgresqlDialect ? pgText(name) : mysqlText(name));
+const longtext = (name: string): any => (isSqliteDialect ? sqliteText(name) : isPostgresqlDialect ? pgText(name) : mysqlLongText(name));
 const varchar = (name: string, config: { length: number }): any =>
   isSqliteDialect ? sqliteText(name) : isPostgresqlDialect ? pgVarchar(name, config) : mysqlVarchar(name, config);
 const int = (name: string): any => (isSqliteDialect ? sqliteInteger(name) : isPostgresqlDialect ? pgInteger(name) : mysqlInt(name));
@@ -746,7 +748,7 @@ export type InsertTcpingStat = typeof tcpingStats.$inferInsert;
 // ===== 系统设置表（键值存储） =====
 export const systemSettings = table("system_settings", {
   key: varchar("key", { length: 191 }).primaryKey(),
-  value: text("value"),
+  value: longtext("value"),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
 });
 export type SystemSetting = typeof systemSettings.$inferSelect;
