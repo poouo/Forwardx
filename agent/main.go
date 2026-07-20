@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.161"
+var Version = "2.2.162"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -358,6 +358,7 @@ type heartbeatResp struct {
 	DesiredState       *desiredState            `json:"desiredState,omitempty"`
 	SelfTests          []selfTest               `json:"selfTests"`
 	RunningRules       []runningRule            `json:"runningRules"`
+	RuleLatencyProbes  []ruleLatencyProbe       `json:"ruleLatencyProbes"`
 	TunnelProbes       []tunnelProbe            `json:"tunnelProbes"`
 	ForwardGroupProbes []forwardGroupProbe      `json:"forwardGroupProbes"`
 	HostProbeServices  []hostProbeServiceProbe  `json:"hostProbeServices"`
@@ -384,6 +385,7 @@ type panelMigrationDirective struct {
 
 type heartbeatStateSnapshot struct {
 	RunningRules       []runningRule
+	RuleLatencyProbes  []ruleLatencyProbe
 	TunnelProbes       []tunnelProbe
 	ForwardGroupProbes []forwardGroupProbe
 	HostProbeServices  []hostProbeServiceProbe
@@ -470,6 +472,12 @@ func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
 			delete(heartbeatStateSignatures, "runningRules")
 		}
 	}
+	if resp.RuleLatencyProbes != nil {
+		heartbeatStateCache.RuleLatencyProbes = append([]ruleLatencyProbe(nil), resp.RuleLatencyProbes...)
+		if !hasStateSignature("ruleLatencyProbes") {
+			delete(heartbeatStateSignatures, "ruleLatencyProbes")
+		}
+	}
 	if resp.TunnelProbes != nil {
 		heartbeatStateCache.TunnelProbes = append([]tunnelProbe(nil), resp.TunnelProbes...)
 		if !hasStateSignature("tunnelProbes") {
@@ -509,6 +517,7 @@ func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
 	}
 	return heartbeatStateSnapshot{
 		RunningRules:       append([]runningRule(nil), heartbeatStateCache.RunningRules...),
+		RuleLatencyProbes:  append([]ruleLatencyProbe(nil), heartbeatStateCache.RuleLatencyProbes...),
 		TunnelProbes:       append([]tunnelProbe(nil), heartbeatStateCache.TunnelProbes...),
 		ForwardGroupProbes: append([]forwardGroupProbe(nil), heartbeatStateCache.ForwardGroupProbes...),
 		HostProbeServices:  append([]hostProbeServiceProbe(nil), heartbeatStateCache.HostProbeServices...),
@@ -1551,6 +1560,16 @@ type tunnelProbe struct {
 	TopologyKey     string `json:"topologyKey,omitempty"`
 }
 
+type ruleLatencyProbe struct {
+	RuleID      int    `json:"ruleId"`
+	TunnelID    int    `json:"tunnelId"`
+	TargetIP    string `json:"targetIp"`
+	TargetPort  int    `json:"targetPort"`
+	Method      string `json:"method"`
+	ProbeKey    string `json:"probeKey,omitempty"`
+	TopologyKey string `json:"topologyKey,omitempty"`
+}
+
 type hostProbeServiceProbe struct {
 	ServiceID       int    `json:"serviceId"`
 	TargetIP        string `json:"targetIp"`
@@ -1603,11 +1622,12 @@ type agentRefreshEvent struct {
 }
 
 // agentDesiredStatePush 是服务端经 SSE 下发的 desiredState 推送载荷，
-// 包含 desired state 及 running rules，让 Agent 无需等待下一个心跳即可立即执行。
+// 包含运行规则及其延迟探测配置，让 Agent 无需等待下一个心跳即可立即执行。
 type agentDesiredStatePush struct {
-	DesiredState    *desiredState     `json:"desiredState,omitempty"`
-	RunningRules    []runningRule     `json:"runningRules,omitempty"`
-	StateSignatures map[string]string `json:"stateSignatures,omitempty"`
+	DesiredState      *desiredState      `json:"desiredState,omitempty"`
+	RunningRules      []runningRule      `json:"runningRules,omitempty"`
+	RuleLatencyProbes []ruleLatencyProbe `json:"ruleLatencyProbes,omitempty"`
+	StateSignatures   map[string]string  `json:"stateSignatures,omitempty"`
 }
 
 type migratedPanelError struct {
@@ -2463,11 +2483,11 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	}
 	tcpingInterval := tcpingDueInterval(
 		state.HostProbeServices,
-		len(state.RunningRules),
+		len(state.RunningRules)+len(state.RuleLatencyProbes),
 		len(state.TunnelProbes)+len(state.ForwardGroupProbes),
 	)
 	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
-		if scheduleTCPingCollection(cfg, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing) {
+		if scheduleTCPingCollection(cfg, state.RuleLatencyProbes, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing) {
 			lastTCPingAt = time.Now()
 		}
 	}
@@ -3222,14 +3242,15 @@ func decodeEventData(raw string, token string, out any) error {
 // 与心跳路径的 syncDesiredState 共享同一幂等性机制（签名 + desired_state_records.json），
 // 因此即使心跳和 SSE 推送同时触发也不会重复执行。
 func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
-	if push.DesiredState == nil && len(push.RunningRules) == 0 {
+	if push.DesiredState == nil && len(push.RunningRules) == 0 && len(push.RuleLatencyProbes) == 0 && len(push.StateSignatures) == 0 {
 		return
 	}
 	// 先应用 running rules，stale-remove 保护依赖这份数据。
-	if len(push.RunningRules) > 0 || len(push.StateSignatures) > 0 {
+	if len(push.RunningRules) > 0 || len(push.RuleLatencyProbes) > 0 || len(push.StateSignatures) > 0 {
 		partial := heartbeatResp{
-			RunningRules:    push.RunningRules,
-			StateSignatures: push.StateSignatures,
+			RunningRules:      push.RunningRules,
+			RuleLatencyProbes: push.RuleLatencyProbes,
+			StateSignatures:   push.StateSignatures,
 		}
 		state := applyHeartbeatState(partial)
 		rememberDesiredRunningRules(state.RunningRules)
@@ -3311,6 +3332,14 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		}
 		if ok {
 			ok = runShellBatch(append(append([]string{}, a.Commands...), a.PostCommands...)) && ok
+		}
+		if ok && shouldVerifyManagedRuntimeSync(a) {
+			invalidateLocalRuntimeReadinessCache()
+			if !waitForManagedRuntimeSyncReady(a, 12*time.Second) {
+				ok = false
+				actionMessage.set("managed runtime listeners not ready after sync: %s", strings.TrimSpace(a.ForwardType))
+				logf("managed runtime sync listener verification failed forwardType=%s configs=%d; rolling back", strings.TrimSpace(a.ForwardType), len(a.ManagedConfigs))
+			}
 		}
 		if ok && mimicAction && len(a.RemovalCommands) > 0 {
 			if strings.TrimSpace(a.RemovalToken) == "" {
@@ -3902,6 +3931,77 @@ func runtimeActionServicesHealthy(a action) bool {
 	return true
 }
 
+func shouldVerifyManagedRuntimeSync(a action) bool {
+	if strings.TrimSpace(a.StatusType) != "runtime" || strings.TrimSpace(a.Op) != "apply" || len(a.ManagedConfigs) == 0 {
+		return false
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "gost-runtime-sync", "nginx-runtime-sync":
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForManagedRuntimeSyncReady(a action, timeout time.Duration) bool {
+	if managedRuntimeSyncReady(a) {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		if managedRuntimeSyncReady(a) {
+			return true
+		}
+	}
+	return managedRuntimeSyncReady(a)
+}
+
+func managedRuntimeSyncReady(a action) bool {
+	snapshot := newRuntimeListenSnapshot()
+	for _, spec := range a.ManagedConfigs {
+		service := sanitizeServiceName(spec.ServiceName)
+		if service == "" {
+			continue
+		}
+		listens, ok := managedConfigRuntimeListens(spec)
+		if !ok {
+			return false
+		}
+		if len(listens) == 0 {
+			if managedServiceActive(service) {
+				return false
+			}
+			continue
+		}
+		if !managedServiceActive(service) {
+			return false
+		}
+		needles := []string{"gost", "forwardx-runt"}
+		if strings.Contains(strings.ToLower(service), "nginx") || strings.Contains(strings.ToLower(spec.Path), "nginx") {
+			needles = []string{"nginx"}
+		}
+		for _, listen := range listens {
+			port := addrPort(listen.Addr)
+			if port <= 0 || !runtimeListenPortReady(snapshot, port, listen.Protocol, needles) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func managedConfigRuntimeListens(spec managedConfigSpec) ([]runtimeListenConfig, bool) {
+	path := strings.TrimSpace(spec.Path)
+	if strings.HasSuffix(strings.ToLower(path), ".json") {
+		return readGostRuntimeServiceListens(path)
+	}
+	if strings.Contains(strings.ToLower(spec.ServiceName), "nginx") || strings.Contains(strings.ToLower(path), "nginx") {
+		return nginxRuntimeListenConfigs(path)
+	}
+	return nil, true
+}
+
 func mimicRuntimeDiagnostics() string {
 	services := managedMimicServicesFromLocalConfig()
 	if len(services) == 0 {
@@ -4373,12 +4473,12 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 				return true
 			}
 			if actionUsesManagedListener(a) {
-				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
+				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 				if !sharedNginxRuntimePort {
 					waitForActionListenPortFree(a, 2*time.Second)
 				}
 			}
-			cleanupGostRuntimeIfPortBusy(a.SourcePort)
+			cleanupGostRuntimeIfPortBusy(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 			if !sharedNginxRuntimePort {
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
@@ -4427,12 +4527,12 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			return true
 		}
 		if actionUsesManagedListener(a) {
-			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
+			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 			if !sharedNginxRuntimePort {
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
 		}
-		cleanupGostRuntimeIfPortBusy(a.SourcePort)
+		cleanupGostRuntimeIfPortBusy(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 		if !sharedNginxRuntimePort {
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
@@ -4451,6 +4551,14 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		return false
 	}
 	if localRuleID > 0 && localRuleID != a.RuleID && hasLocalProtocol && !runtimeProtocolsOverlap(localProtocol, a.Protocol) {
+		// The legacy marker stores only one rule per numeric port. A valid UDP
+		// marker can therefore hide a leaked TCP Realm/Socat service (and vice
+		// versa). Clean only the lane needed by this apply; keep the disjoint rule.
+		cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+		cleanupGostRuntimeIfPortBusy(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+		if !sharedNginxRuntimePort {
+			waitForActionListenPortFree(a, 2*time.Second)
+		}
 		return false
 	}
 	logf(
@@ -4514,50 +4622,90 @@ func actionUsesManagedListener(a action) bool {
 	}
 }
 
-func cleanupUnknownManagedListener(port string, listenPort int, forwardType string) {
-	logf("runtime cleanup unknown local state port=%s newForwardType=%s", port, forwardType)
-	stopFXPByListenPort(listenPort)
-	for _, cmd := range managedListenerCleanupCmds(port) {
+func cleanupUnknownManagedListener(port string, listenPort int, forwardType string, protocol string) {
+	logf("runtime cleanup unknown local state port=%s protocol=%s newForwardType=%s", port, normalizeRuntimeProtocol(protocol), forwardType)
+	stopConflictingFXP(fxpSpec{ListenPort: listenPort, UDPListenPort: listenPort, Protocol: protocol})
+	for _, name := range managedListenerServiceNamesForProtocol(listenPort, protocol) {
+		cleanupManagedService(name)
+		if strings.HasPrefix(name, "forwardx-realm-") {
+			_ = runShell("rm -f /etc/forwardx/realm/" + name + ".toml /etc/forwardx/realm/" + name + ".toml.sha256 2>/dev/null || true")
+		}
+	}
+	for _, cmd := range managedListenerCleanupCmdsForProtocol(port, protocol) {
 		_ = runShell(cmd)
 	}
 }
 
-func cleanupGostRuntimeIfPortBusy(port int) {
+func managedListenerServiceNamesForProtocol(port int, protocol string) []string {
+	if !validActionPort(port) {
+		return nil
+	}
+	portText := strconv.Itoa(port)
+	seen := map[string]bool{}
+	names := []string{}
+	appendName := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if proto == "udp" {
+			appendName("forwardx-socat-udp-" + portText)
+			appendName("forwardx-realm-udp-" + portText)
+			appendName("forwardx-realm-both-" + portText)
+			continue
+		}
+		appendName("forwardx-socat-" + portText)
+		appendName("forwardx-socat-tcp-" + portText)
+		appendName("forwardx-realm-" + portText)
+		appendName("forwardx-realm-tcp-" + portText)
+		appendName("forwardx-realm-both-" + portText)
+	}
+	return names
+}
+
+func cleanupGostRuntimeIfPortBusy(port int, protocol string) {
 	if !validActionPort(port) {
 		return
 	}
-	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
-	if err == nil {
-		_ = ln.Close()
+	for _, proto := range runtimeProtocols(protocol) {
+		cleanupGostRuntimeProtocolIfPortBusy(port, proto)
+	}
+}
+
+func cleanupGostRuntimeProtocolIfPortBusy(port int, protocol string) {
+	protocol = normalizeRuntimeProtocol(protocol)
+	if !listenPortBusy(protocol, port) {
 		return
 	}
-	stopped := false
-	for _, item := range managedRuntimeConfigs() {
-		if sharedManagedRuntimeOwnsPort(item.path, port) {
-			// A matching shared runtime listener is desired state, not a stale per-rule
-			// process. Stopping it here drops every port hosted by the same runtime.
-			logf("runtime cleanup keeps shared %s for busy port=%d; runtime sync owns config=%s", item.service, port, item.path)
-			stopped = true
+	handled := false
+	for _, configPath := range managedGostConfigPathsForListenPortProtocol(port, protocol) {
+		svcName := managedGostServiceNameForConfig(configPath)
+		if svcName == "" {
 			continue
 		}
-	}
-	for _, configPath := range managedGostConfigPathsForListenPort(port) {
-		svcName := managedGostServiceNameForConfig(configPath)
-		if svcName == "" || managedRuntimeConfigUsesPort(configPath, port) {
+		if managedRuntimeConfigUsesPortProtocol(configPath, port, protocol) {
+			// Only preserve the shared runtime when the process that actually owns
+			// this protocol lane uses the matching managed config. Merely seeing the
+			// port in a new config is insufficient; a leaked Realm process may own it.
+			logf("runtime cleanup keeps shared %s for busy port=%d protocol=%s config=%s", svcName, port, protocol, configPath)
+			handled = true
 			continue
 		}
 		serviceCount, ok := managedRuntimeConfigServiceCount(configPath)
 		if !ok || serviceCount > 0 {
-			logf("runtime cleanup restarting %s for stale gost listener port=%d config=%s", svcName, port, configPath)
+			logf("runtime cleanup restarting %s for stale gost listener port=%d protocol=%s config=%s", svcName, port, protocol, configPath)
 			restartManagedService(svcName)
 		} else {
-			logf("runtime cleanup stopping %s for stale gost listener port=%d config=%s", svcName, port, configPath)
+			logf("runtime cleanup stopping %s for stale gost listener port=%d protocol=%s config=%s", svcName, port, protocol, configPath)
 			cleanupManagedService(svcName)
 		}
-		stopped = true
+		handled = true
 	}
-	if !stopped {
-		logf("runtime cleanup found busy port=%d but no managed gost config owns it: %v", port, err)
+	if !handled {
+		logf("runtime cleanup found busy port=%d protocol=%s but owner is not a managed shared runtime: %s", port, protocol, listenPortOwnerSummary(port))
 	}
 }
 
@@ -4565,11 +4713,35 @@ func sharedManagedRuntimeOwnsPort(configPath string, port int) bool {
 	return validActionPort(port) && managedRuntimeConfigUsesPort(configPath, port)
 }
 
+func sharedManagedRuntimeOwnsPortProtocol(configPath string, port int, protocol string) bool {
+	return validActionPort(port) && managedRuntimeConfigUsesPortProtocol(configPath, port, protocol)
+}
+
 func managedRuntimeConfigUsesPort(path string, port int) bool {
 	if strings.HasSuffix(path, ".json") {
 		return gostRuntimeConfigUsesPort(path, port)
 	}
 	return nginxRuntimeConfigUsesPort(path, port)
+}
+
+func managedRuntimeConfigUsesPortProtocol(path string, port int, protocol string) bool {
+	var listens []runtimeListenConfig
+	var ok bool
+	if strings.HasSuffix(path, ".json") {
+		listens, ok = readGostRuntimeServiceListens(path)
+	} else {
+		listens, ok = nginxRuntimeListenConfigs(path)
+	}
+	if !ok {
+		return false
+	}
+	protocol = normalizeRuntimeProtocol(protocol)
+	for _, listen := range listens {
+		if addrUsesPort(listen.Addr, port) && normalizeRuntimeProtocol(listen.Protocol) == protocol {
+			return true
+		}
+	}
+	return false
 }
 
 func managedRuntimeConfigServiceCount(path string) (int, bool) {
@@ -4729,7 +4901,22 @@ func addrUsesPort(addr string, port int) bool {
 
 func managedGostConfigPathsForListenPort(port int) []string {
 	paths := map[string]bool{}
-	for _, pid := range listenPortOwnerPIDs(port) {
+	for _, protocol := range []string{"tcp", "udp"} {
+		for _, path := range managedGostConfigPathsForListenPortProtocol(port, protocol) {
+			paths[path] = true
+		}
+	}
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func managedGostConfigPathsForListenPortProtocol(port int, protocol string) []string {
+	paths := map[string]bool{}
+	for _, pid := range listenPortOwnerPIDsForProtocol(port, protocol) {
 		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 		if err != nil {
 			continue
@@ -4781,6 +4968,21 @@ func shouldReportActionStatus(a action) bool {
 }
 
 func listenPortOwnerPIDs(port int) []int {
+	seen := map[int]bool{}
+	for _, protocol := range []string{"tcp", "udp"} {
+		for _, pid := range listenPortOwnerPIDsForProtocol(port, protocol) {
+			seen[pid] = true
+		}
+	}
+	pids := make([]int, 0, len(seen))
+	for pid := range seen {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	return pids
+}
+
+func listenPortOwnerPIDsForProtocol(port int, protocol string) []int {
 	if port <= 0 {
 		return nil
 	}
@@ -4788,7 +4990,11 @@ func listenPortOwnerPIDs(port int) []int {
 		return nil
 	}
 	portText := strconv.Itoa(port)
-	out, _ := exec.Command("ss", "-ltnup").CombinedOutput()
+	args := []string{"-H", "-ltnp"}
+	if normalizeRuntimeProtocol(protocol) == "udp" {
+		args = []string{"-H", "-lunp"}
+	}
+	out, _ := exec.Command("ss", args...).CombinedOutput()
 	text := filterListenPortLines(string(out), portText)
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -5263,6 +5469,9 @@ func cleanupManagedRuleProtocol(forwardType string, port int, protocol string) b
 			_ = runShell("rm -f /etc/forwardx/realm/" + name + ".toml /etc/forwardx/realm/" + name + ".toml.sha256 2>/dev/null || true")
 		}
 	}
+	for _, cmd := range managedListenerCleanupCmdsForProtocol(strconv.Itoa(port), protocol) {
+		_ = runShell(cmd)
+	}
 	return len(names) > 0
 }
 
@@ -5296,7 +5505,7 @@ func restartManagedService(name string) {
 		return
 	}
 	q := shellQuote(name)
-	_ = runShell("if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart " + q + ".service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " restart 2>/dev/null || true; elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " restart 2>/dev/null || true; fi")
+	_ = runShell("if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl reset-failed " + q + ".service 2>/dev/null || true; systemctl restart " + q + ".service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " restart 2>/dev/null || true; elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " restart 2>/dev/null || true; fi")
 }
 
 func sanitizeServiceName(name string) string {
@@ -5816,11 +6025,34 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 
 func managedListenerCleanupCmds(port string) []string {
 	cmds := append([]string{}, fxpPortCleanupCmds(port)...)
-	cmds = append(cmds,
-		"for pid in $(pgrep -f '[s]ocat .*LISTEN:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
-		"for pid in $(pgrep -f '[r]ealm .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
-		"for pid in $(pgrep -f '[f]orwardx-udp2raw .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
-	)
+	cmds = append(cmds, managedListenerCleanupCmdsForProtocol(port, "both")...)
+	return cmds
+}
+
+func managedListenerCleanupCmdsForProtocol(port string, protocol string) []string {
+	protocol = normalizeRuntimeProtocol(protocol)
+	cmds := []string{}
+	seen := map[string]bool{}
+	appendKill := func(pattern string) {
+		if pattern == "" || seen[pattern] {
+			return
+		}
+		seen[pattern] = true
+		cmds = append(cmds, "for pid in $(pgrep -f '"+pattern+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done")
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if proto == "udp" {
+			appendKill("[s]ocat .*UDP.*LISTEN:" + port)
+			appendKill("[r]ealm .*forwardx-realm-udp-" + port + "[.]toml")
+			appendKill("[r]ealm .*forwardx-realm-both-" + port + "[.]toml")
+			appendKill("[f]orwardx-udp2raw .*:" + port)
+			continue
+		}
+		appendKill("[s]ocat .*TCP.*LISTEN:" + port)
+		appendKill("[r]ealm .*forwardx-realm-" + port + "[.]toml")
+		appendKill("[r]ealm .*forwardx-realm-tcp-" + port + "[.]toml")
+		appendKill("[r]ealm .*forwardx-realm-both-" + port + "[.]toml")
+	}
 	return cmds
 }
 
@@ -7425,7 +7657,7 @@ func prepareProtocolGuardPort(rule guardRule) {
 		backendPort = rule.TargetPort
 	}
 	if backendPort != rule.ListenPort {
-		cleanupGostRuntimeIfPortBusy(rule.ListenPort)
+		cleanupGostRuntimeIfPortBusy(rule.ListenPort, rule.Protocol)
 	}
 	for _, cmd := range managedListenerCleanupCmds(port) {
 		_ = runShell(cmd)

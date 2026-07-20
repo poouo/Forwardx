@@ -1,3 +1,6 @@
+import type { DatabaseKind } from "./dbRuntime";
+import { normalizePanelMigrationScope, type PanelMigrationScope } from "../shared/panelMigration";
+
 const migrationCodes = new Map<string, { expiresAt: number; createdAt: number }>();
 const takeoverTokens = new Map<string, {
   expiresAt: number;
@@ -15,6 +18,9 @@ const migrationRequests = new Map<string, {
   expiresAt: number;
   approvedAt?: number;
   rejectedAt?: number;
+  dataScope: PanelMigrationScope;
+  targetDatabaseType?: DatabaseKind;
+  directSqliteRequested: boolean;
 }>();
 const MIGRATION_CODE_TTL_MS = 5 * 60 * 1000;
 const TAKEOVER_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -101,19 +107,40 @@ export function getCurrentMigrationCode() {
           expiresAt: pendingRequest.expiresAt,
           approvedAt: pendingRequest.approvedAt,
           rejectedAt: pendingRequest.rejectedAt,
+          dataScope: pendingRequest.dataScope,
+          targetDatabaseType: pendingRequest.targetDatabaseType,
+          directSqliteRequested: pendingRequest.directSqliteRequested,
         }
       : null,
   };
 }
 
-export function createMigrationRequest(code: string, targetPanelUrl: string) {
+export function createMigrationRequest(
+  code: string,
+  targetPanelUrl: string,
+  options: {
+    dataScope?: PanelMigrationScope;
+    targetDatabaseType?: DatabaseKind;
+    directSqliteRequested?: boolean;
+  } = {},
+) {
   cleanupMigrationCodes();
   const normalized = normalizeCode(code);
   const entry = migrationCodes.get(normalized);
   if (!entry || entry.expiresAt <= Date.now()) return null;
   const normalizedTarget = targetPanelUrl.trim();
+  const dataScope = normalizePanelMigrationScope(options.dataScope);
+  const targetDatabaseType = options.targetDatabaseType;
+  const directSqliteRequested = dataScope === "full"
+    && targetDatabaseType === "sqlite"
+    && options.directSqliteRequested === true;
   const existing = [...migrationRequests.values()]
-    .filter((request) => request.code === normalized && request.targetPanelUrl === normalizedTarget && request.status !== "used")
+    .filter((request) => request.code === normalized
+      && request.targetPanelUrl === normalizedTarget
+      && request.dataScope === dataScope
+      && request.targetDatabaseType === targetDatabaseType
+      && request.directSqliteRequested === directSqliteRequested
+      && request.status !== "used")
     .sort((a, b) => b.createdAt - a.createdAt)[0];
   if (existing) return existing;
   const now = Date.now();
@@ -124,6 +151,9 @@ export function createMigrationRequest(code: string, targetPanelUrl: string) {
     status: "pending" as const,
     createdAt: now,
     expiresAt: entry.expiresAt,
+    dataScope,
+    targetDatabaseType,
+    directSqliteRequested,
   };
   migrationRequests.set(request.id, request);
   return request;
@@ -176,6 +206,9 @@ export function consumeApprovedMigrationRequest(requestId: string, code: string,
     takeoverToken,
     expiresAt: takeoverEntry.expiresAt,
     expiresInSeconds: TAKEOVER_TOKEN_TTL_MS / 1000,
+    dataScope: request.dataScope,
+    targetDatabaseType: request.targetDatabaseType,
+    directSqliteRequested: request.directSqliteRequested,
   };
 }
 

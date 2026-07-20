@@ -25,8 +25,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
+import { type PanelMigrationScope } from "@shared/panelMigration";
 
 type DatabaseType = "mysql" | "postgresql" | "sqlite";
 type SetupMode = "new" | "migrate" | null;
@@ -85,7 +87,12 @@ export default function Setup() {
   });
   const [sqlitePath, setSqlitePath] = useState(defaultSqlitePath);
   const [admin, setAdmin] = useState({ email: "", password: "", name: "" });
-  const [migration, setMigration] = useState({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin });
+  const [migration, setMigration] = useState<{
+    oldPanelUrl: string;
+    migrationCode: string;
+    targetPanelUrl: string;
+    dataScope: PanelMigrationScope;
+  }>({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin, dataScope: "essential" });
   const [jobId, setJobId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -565,6 +572,23 @@ export default function Setup() {
                           MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
                         </AlertDescription>
                       </Alert>
+                      <div className="space-y-2">
+                        <Label>迁移内容</Label>
+                        <Tabs
+                          value={migration.dataScope}
+                          onValueChange={(value) => setMigration({ ...migration, dataScope: value as PanelMigrationScope })}
+                        >
+                          <TabsList className="grid h-auto w-full grid-cols-2">
+                            <TabsTrigger value="essential">关键数据迁移</TabsTrigger>
+                            <TabsTrigger value="full">全量迁移</TabsTrigger>
+                          </TabsList>
+                        </Tabs>
+                        <p className="text-xs text-muted-foreground">
+                          {migration.dataScope === "essential"
+                            ? "保留用户、主机、规则、计费和设置，跳过监控、延迟与测试历史。"
+                            : "迁移全部数据；两端均为 SQLite 且目标库为空时自动使用数据库快速传输。"}
+                        </p>
+                      </div>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <Label>旧面板地址</Label>

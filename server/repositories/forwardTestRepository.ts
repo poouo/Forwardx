@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
 import { quoteIdentifier } from "../dbCompat";
@@ -95,8 +95,15 @@ export async function getLatestTunnelLatency(tunnelId: number) {
   const rows = await db
     .select()
     .from(tunnelLatencyStats)
-    .where(eq(tunnelLatencyStats.tunnelId, tunnelId))
-    .orderBy(desc(tunnelLatencyStats.recordedAt))
+    .where(and(
+      eq(tunnelLatencyStats.tunnelId, tunnelId),
+      or(
+        isNull(tunnelLatencyStats.seriesKey),
+        eq(tunnelLatencyStats.seriesKey, ""),
+        eq(tunnelLatencyStats.seriesKey, "total"),
+      ),
+    ))
+    .orderBy(desc(tunnelLatencyStats.recordedAt), desc(tunnelLatencyStats.id))
     .limit(1);
   return rows[0];
 }

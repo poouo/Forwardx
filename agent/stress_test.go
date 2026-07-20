@@ -146,6 +146,40 @@ func TestRulePortChangeSupersedesOlderAction(t *testing.T) {
 	}
 }
 
+func TestRulePortChangeDoesNotDiscardOldPortCleanup(t *testing.T) {
+	actionEpochMu.Lock()
+	previous := latestActionIssuedAt
+	latestActionIssuedAt = map[string]int64{}
+	actionEpochMu.Unlock()
+	t.Cleanup(func() {
+		actionEpochMu.Lock()
+		latestActionIssuedAt = previous
+		actionEpochMu.Unlock()
+	})
+
+	oldApply := action{StatusType: "rule", RuleID: 52, Op: "apply", ForwardType: "realm", SourcePort: 11001, Protocol: "tcp", IssuedAt: 100}
+	newApply := oldApply
+	newApply.ForwardType = "gost"
+	newApply.SourcePort = 11002
+	newApply.IssuedAt = 200
+	if isOlderAction(oldApply, true) || isOlderAction(newApply, true) {
+		t.Fatal("rule port transition applies must be accepted")
+	}
+
+	oldRemove := oldApply
+	oldRemove.Op = "remove"
+	oldRemove.IssuedAt = 150
+	if isOlderAction(oldRemove, false) {
+		t.Fatal("cleanup for the superseded port must survive a newer apply on another port")
+	}
+
+	staleSamePortRemove := oldRemove
+	staleSamePortRemove.SourcePort = newApply.SourcePort
+	if !isOlderAction(staleSamePortRemove, false) {
+		t.Fatal("an older remove must not tear down the replacement listener on the same port")
+	}
+}
+
 func TestActionStalenessKeepsTCPAndUDPPortLanesIndependent(t *testing.T) {
 	actionEpochMu.Lock()
 	previous := latestActionIssuedAt

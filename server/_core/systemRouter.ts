@@ -10,6 +10,7 @@ import net from "net";
 import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getPanelLogPage } from "./panelLogger";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
+import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
 import {
   decryptMigrationSnapshotBackup,
   encryptMigrationSnapshot,
@@ -2535,6 +2536,7 @@ export const systemRouter = router({
       oldPanelUrl: z.string().trim().min(1, "请输入旧面板地址").max(256),
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码").max(64),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址").max(256),
+      dataScope: z.enum(PANEL_MIGRATION_SCOPES).default("essential"),
       confirmed: z.literal(true),
     }))
     .mutation(({ input }) => {
@@ -2542,6 +2544,7 @@ export const systemRouter = router({
         oldPanelUrl: input.oldPanelUrl,
         migrationCode: input.migrationCode,
         targetPanelUrl: input.targetPanelUrl,
+        dataScope: input.dataScope,
       });
       return job;
     }),

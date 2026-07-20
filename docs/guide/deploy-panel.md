@@ -149,6 +149,11 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     volumes:
       - forwardx-data:/data
+    logging:
+      driver: local
+      options:
+        max-size: "${FORWARDX_LOG_MAX_SIZE:-20m}"
+        max-file: "${FORWARDX_LOG_MAX_FILES:-3}"
 
 volumes:
   forwardx-data:

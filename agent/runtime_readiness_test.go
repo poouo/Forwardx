@@ -136,6 +136,33 @@ func TestManagedPortCleanupCoversAllRealmServiceVariants(t *testing.T) {
 	}
 }
 
+func TestUnknownListenerCleanupKeepsProtocolLanesSeparate(t *testing.T) {
+	tcpCommands := strings.Join(managedListenerCleanupCmdsForProtocol("12002", "tcp"), "\n")
+	if !strings.Contains(tcpCommands, "forwardx-realm-tcp-12002") || !strings.Contains(tcpCommands, "forwardx-realm-12002") {
+		t.Fatal("TCP cleanup does not cover current and legacy Realm processes")
+	}
+	if strings.Contains(tcpCommands, "forwardx-realm-udp-12002") {
+		t.Fatal("TCP cleanup must not terminate a disjoint UDP Realm process")
+	}
+
+	udpCommands := strings.Join(managedListenerCleanupCmdsForProtocol("12002", "udp"), "\n")
+	if !strings.Contains(udpCommands, "forwardx-realm-udp-12002") {
+		t.Fatal("UDP cleanup does not cover the Realm UDP process")
+	}
+	if strings.Contains(udpCommands, "forwardx-realm-tcp-12002") || strings.Contains(udpCommands, "forwardx-realm-12002[.]toml") {
+		t.Fatal("UDP cleanup must not terminate a disjoint TCP or legacy Realm process")
+	}
+
+	tcpServices := strings.Join(managedListenerServiceNamesForProtocol(12002, "tcp"), ",")
+	udpServices := strings.Join(managedListenerServiceNamesForProtocol(12002, "udp"), ",")
+	if !strings.Contains(tcpServices, "forwardx-realm-tcp-12002") || strings.Contains(tcpServices, "forwardx-realm-udp-12002") {
+		t.Fatalf("unexpected TCP cleanup services: %s", tcpServices)
+	}
+	if !strings.Contains(udpServices, "forwardx-realm-udp-12002") || strings.Contains(udpServices, "forwardx-realm-tcp-12002") {
+		t.Fatalf("unexpected UDP cleanup services: %s", udpServices)
+	}
+}
+
 func TestDesiredRuleSnapshotKeepsDisjointProtocolsOnSamePort(t *testing.T) {
 	rememberDesiredRunningRules([]runningRule{
 		{RuleID: 101, SourcePort: 12003, Protocol: "tcp", ForwardType: "socat", TargetIP: "192.0.2.10", TargetPort: 80},

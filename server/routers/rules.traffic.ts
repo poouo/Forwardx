@@ -4,9 +4,8 @@ import * as db from "../db";
 import { lookupAddressGeo } from "../hostGeo";
 import { requireRuleAccess } from "./helpers";
 import { appendPanelLog } from "../_core/panelLogger";
-import { createQueryCache } from "../queryCache";
+import { ruleTrafficQueryCache as trafficQueryCache } from "../ruleLatencyQueryCache";
 
-const trafficQueryCache = createQueryCache(500);
 const TRAFFIC_RETENTION_HOURS = 24 * 3;
 
 function ruleResetLogItem(rule: any) {

@@ -5,11 +5,9 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
-import { createQueryCache } from "../queryCache";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
 import { linkProbeMethodForRule } from "@shared/latencyProbe";
-
-const selfTestQueryCache = createQueryCache(300);
+import { ruleLatencySeriesQueryCache as selfTestQueryCache } from "../ruleLatencyQueryCache";
 
 export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
@@ -94,6 +92,7 @@ export const selfTestRulesRouter = router({
         hostId = tunnel.exitHostId;
         const targetIp = rule.targetIp;
         if (!targetIp) throw new Error("目标地址不可用，请检查规则目标地址");
+        const tunnelLatencyBaseline = await db.getLatestTunnelLatency(Number(tunnel.id));
         const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
         message = JSON.stringify({
           kind: "forward-via-tunnel",
@@ -103,6 +102,7 @@ export const selfTestRulesRouter = router({
           targetIp,
           targetPort: rule.targetPort,
           method: linkProbeMethodForRule(rule),
+          tunnelLatencyBaselineId: Number((tunnelLatencyBaseline as any)?.id || 0),
           refreshPushed: pushed,
         });
         appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${targetIp}:${rule.targetPort}`);

@@ -52,6 +52,7 @@ import {
   type CustomSidebarPage,
   type CustomSidebarVisibility,
 } from "@shared/customSidebarPages";
+import { panelMigrationScopeLabel, type PanelMigrationScope } from "@shared/panelMigration";
 import {
   Trash2,
   Key,
@@ -1012,6 +1013,9 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       expiresAt: number;
       approvedAt?: number;
       rejectedAt?: number;
+      dataScope: PanelMigrationScope;
+      targetDatabaseType?: "sqlite" | "mysql" | "postgresql";
+      directSqliteRequested: boolean;
     } | null;
   } | null>(null);
   const [migrationCodeTick, setMigrationCodeTick] = useState(Date.now());
@@ -1023,10 +1027,16 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const [exportProgress, setExportProgress] = useState<BackupTaskProgress | null>(null);
   const [importProgress, setImportProgress] = useState<BackupTaskProgress | null>(null);
-  const [onlineMigration, setOnlineMigration] = useState({
+  const [onlineMigration, setOnlineMigration] = useState<{
+    oldPanelUrl: string;
+    migrationCode: string;
+    targetPanelUrl: string;
+    dataScope: PanelMigrationScope;
+  }>({
     oldPanelUrl: "",
     migrationCode: "",
     targetPanelUrl: panelUrl,
+    dataScope: "essential",
   });
   const [showOnlineConfirm, setShowOnlineConfirm] = useState(false);
   const [migrationJobId, setMigrationJobId] = useState<string | null>(null);
@@ -1574,6 +1584,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
                     <p className="mt-1 break-all text-xs text-muted-foreground">
                       目标面板：{migrationRequest.targetPanelUrl}
                     </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      迁移内容：{panelMigrationScopeLabel(migrationRequest.dataScope || "full")}
+                      {migrationRequest.directSqliteRequested ? " · SQLite 快速传输" : ""}
+                    </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
                         size="sm"
@@ -1628,6 +1642,23 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            <div className="space-y-2">
+              <Label>迁移内容</Label>
+              <Tabs
+                value={onlineMigration.dataScope}
+                onValueChange={(value) => setOnlineMigration({ ...onlineMigration, dataScope: value as PanelMigrationScope })}
+              >
+                <TabsList className="grid h-auto w-full grid-cols-2">
+                  <TabsTrigger value="essential">关键数据迁移</TabsTrigger>
+                  <TabsTrigger value="full">全量迁移</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <p className="text-xs text-muted-foreground">
+                {onlineMigration.dataScope === "essential"
+                  ? "跳过监控、延迟、测试和审计历史，迁移速度更快。"
+                  : "保留全部数据；空 SQLite 目标会自动使用数据库快速传输。"}
+              </p>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>旧面板地址</Label>
@@ -1992,9 +2023,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
           </DialogHeader>
           <Alert>
             <ShieldCheck className="h-4 w-4" />
-            <AlertTitle>{hasExistingData ? "将执行增量迁移" : "将执行完整迁移"}</AlertTitle>
+            <AlertTitle>{panelMigrationScopeLabel(onlineMigration.dataScope)}</AlertTitle>
             <AlertDescription>
-              Agent 和原有转发恢复后才会完成接管；旧面板数据不会自动删除。
+              {hasExistingData ? "当前面板数据会保留并执行增量合并；" : "目标面板验证通过后才会接管；"}
+              旧面板数据不会自动删除。
             </AlertDescription>
           </Alert>
           <DialogFooter>
@@ -2006,6 +2038,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
                 oldPanelUrl: onlineMigration.oldPanelUrl.trim(),
                 migrationCode: onlineMigration.migrationCode.trim(),
                 targetPanelUrl: onlineMigration.targetPanelUrl.trim(),
+                dataScope: onlineMigration.dataScope,
                 confirmed: true,
               })}
               disabled={startPanelMigrationMutation.isPending}

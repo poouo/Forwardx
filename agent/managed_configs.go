@@ -178,12 +178,17 @@ func (tx *managedConfigTransaction) rollback() bool {
 			ok = false
 			logf("managed config restore failed path=%s error=%v", backup.spec.Path, err)
 		}
-		if backup.hadPrevious && strings.TrimSpace(backup.spec.ServiceName) != "" {
-			services[strings.TrimSpace(backup.spec.ServiceName)] = true
+		_ = os.Remove(backup.spec.Path + ".sha256")
+		if service := strings.TrimSpace(backup.spec.ServiceName); service != "" {
+			services[service] = services[service] || backup.hadPrevious
 		}
 	}
-	for service := range services {
-		restartManagedService(service)
+	for service, restore := range services {
+		if restore {
+			restartManagedService(service)
+		} else {
+			cleanupManagedService(service)
+		}
 	}
 	return ok
 }

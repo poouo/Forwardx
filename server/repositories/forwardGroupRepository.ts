@@ -916,6 +916,46 @@ export async function getForwardGroupModesByIds(groupIds: number[]) {
   }));
 }
 
+export async function getForwardGroupTrafficContextsByIds(groupIds: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = Array.from(new Set(groupIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+  if (ids.length === 0) return [];
+  const groupRows: any[] = [];
+  const memberRows: any[] = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    const chunk = ids.slice(index, index + 400);
+    const [groups, members] = await Promise.all([
+      db.select({
+        id: forwardGroups.id,
+        groupMode: forwardGroups.groupMode,
+        trafficMultiplier: forwardGroups.trafficMultiplier,
+      }).from(forwardGroups).where(inArray(forwardGroups.id, chunk)),
+      db.select({
+        id: forwardGroupMembers.id,
+        groupId: forwardGroupMembers.groupId,
+        isEnabled: forwardGroupMembers.isEnabled,
+        priority: forwardGroupMembers.priority,
+      }).from(forwardGroupMembers).where(inArray(forwardGroupMembers.groupId, chunk)),
+    ]);
+    groupRows.push(...groups);
+    memberRows.push(...members);
+  }
+  const membersByGroupId = new Map<number, any[]>();
+  for (const member of memberRows) {
+    const groupId = Number(member.groupId || 0);
+    const members = membersByGroupId.get(groupId) || [];
+    members.push(member);
+    membersByGroupId.set(groupId, members);
+  }
+  return groupRows.map((group) => ({
+    ...group,
+    groupMode: groupModeOf(group),
+    members: (membersByGroupId.get(Number(group.id)) || [])
+      .sort((a, b) => Number(a.priority) - Number(b.priority)),
+  }));
+}
+
 export async function getForwardGroupEvents(groupId: number, limit = 50) {
   const db = await getDb();
   if (!db) return [];
