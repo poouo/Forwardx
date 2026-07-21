@@ -63,6 +63,7 @@ export const selfTestRulesRouter = router({
               hopLabel: probe.hopLabel,
               routeLabel: probe.routeLabel,
               batchId,
+              runtimeDependent: probe.runtimeDependent,
             });
             const testId = await db.createForwardTest({
               ruleId: rule.id,

@@ -209,7 +209,7 @@ status_rules_json() {
     fi
   fi
 
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
     service_active="true"
   elif command -v rc-service >/dev/null 2>&1 && rc-service "${CN_SERVICE_NAME%.service}" status >/dev/null 2>&1; then
     service_active="true"

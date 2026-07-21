@@ -20,6 +20,12 @@ test("forward self-test leases recover lost deliveries and keep an absolute time
       await schema.ensureDatabaseSchema();
       const tests = await import(url("server/repositories/forwardTestRepository.ts"));
       const metrics = await import(url("server/repositories/metricsRepository.ts"));
+      const indexes = await runtime.queryRaw('PRAGMA index_list("forward_tests")');
+      const indexColumns = await Promise.all(indexes.map(async (index) => (
+        (await runtime.queryRaw('PRAGMA index_info("' + String(index.name).replaceAll('"', '""') + '")'))
+          .map((column) => String(column.name))
+      )));
+      assert.equal(indexColumns.some((columns) => columns.join(",") === "status,createdAt"), true);
       const now = Math.floor(Date.now() / 1000);
       await runtime.executeRaw(
         'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)',

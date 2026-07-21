@@ -42,6 +42,7 @@ var (
 	networkTargetDNSCache    = map[string]networkTargetDNSCacheEntry{}
 	networkTargetDNSCalls    = map[string]*networkTargetDNSCall{}
 	lookupNetworkTargetIPs   = net.DefaultResolver.LookupIPAddr
+	dialNetworkTimeout       = net.DialTimeout
 	trafficPrevMu            sync.Mutex
 	trafficPrevCache         = map[string]trafficPrevState{}
 )
@@ -764,17 +765,22 @@ func tcpLatencyResolved(host string, port int, timeout time.Duration) (int, bool
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
+	deadline := time.Now().Add(timeout)
 	targets := []string{target}
 	if net.ParseIP(target) == nil {
-		resolved := resolveNetworkTargetIPs(target, timeout)
+		resolved := resolveNetworkTargetIPs(target, time.Until(deadline))
 		if len(resolved) == 0 {
 			return 0, false, ""
 		}
 		targets = resolved
 	}
 	for _, dialHost := range targets {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(dialHost, strconv.Itoa(port)), timeout)
+		conn, err := dialNetworkTimeout("tcp", net.JoinHostPort(dialHost, strconv.Itoa(port)), remaining)
 		if err != nil {
 			continue
 		}

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { failedResourceSnapshot, optimisticResourceData, pluginTaskFailureInfo } from "./agentResourceState";
+import {
+  failedResourceSnapshot,
+  hydrateCachedResourceSnapshot,
+  optimisticResourceData,
+  pluginTaskFailureInfo,
+} from "./agentResourceState";
 
 test("extracts structured plugin errors before the process exit error", () => {
   const failure = pluginTaskFailureInfo({
@@ -63,4 +68,14 @@ test("failed refresh preserves the last successful source data", () => {
   assert.equal(failed.loadedAt, 100);
   assert.equal(failed.failedAt, 200);
   assert.equal(failed.error, "Agent timeout");
+});
+
+test("hydrates an empty resource view from the last Agent result without replacing fresher data", () => {
+  const cached = { items: [{ id: "whitelist", ruleCount: 3685 }] };
+  const hydrated = hydrateCachedResourceSnapshot(undefined, cached, "2026-07-21T15:30:00.000Z");
+  assert.equal(hydrated?.data, cached);
+  assert.equal(hydrated?.loadedAt, Date.parse("2026-07-21T15:30:00.000Z"));
+
+  const current = { data: { items: [{ id: "whitelist", ruleCount: 3690 }] }, loadedAt: Date.now() };
+  assert.equal(hydrateCachedResourceSnapshot(current, cached), current);
 });

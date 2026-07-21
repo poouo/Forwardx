@@ -1044,6 +1044,7 @@ export type ForwardGroupChainProbe = {
   hopCount: number;
   hopLabel: string;
   routeLabel: string;
+  runtimeDependent: boolean;
 };
 
 export type ForwardGroupChinaHealthProbe = {
@@ -1104,6 +1105,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
           hopCount,
           hopLabel: `${hopIndex + 1}/${hopCount} ${entryHostId}->${firstHostId}`,
           routeLabel: `${entryName} -> ${firstName}`,
+          runtimeDependent: true,
         });
       }
     }
@@ -1130,6 +1132,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
       hopCount,
       hopLabel: `${hopIndex + 1}/${hopCount} ${currentHostId}->${nextHostId}`,
       routeLabel: `${currentName} -> ${nextName}`,
+      runtimeDependent: true,
     });
     hopIndex += 1;
   }
@@ -1152,6 +1155,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
         hopCount,
         hopLabel: `${hopIndex + 1}/${hopCount} ${lastHostId}->target`,
         routeLabel: `${hostDisplayLabel(lastHost, `主机${lastHostId}`)} -> ${targetLabel}`,
+        runtimeDependent: false,
       });
     }
   }

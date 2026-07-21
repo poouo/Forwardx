@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
-import { AGENT_PLUGIN_TASK_VERSION, buildTunnelAgentSelfTestPayload, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
+import { AGENT_PLUGIN_TASK_VERSION, buildMetaAgentSelfTestPayload, buildRuleAgentSelfTestPayload, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import { getAgentMigrationSwitchTarget, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 import * as hopRepo from "./repositories/tunnelRepository";
@@ -53,7 +53,7 @@ import {
 } from "./agentActionCommands";
 import { handleHostAddressChanged, hostIngressAddress, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
-import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
+import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { buildPluginHostAssetSyncActions } from "./repositories/pluginRepository";
 import {
   forwardRuleProtocols,
@@ -4928,72 +4928,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const claimed = await db.markForwardTestRunning(t.id);
       if (!claimed) continue;
       const meta = parseSelfTestMeta((t as any).message);
-      const tunnelSelfTest = buildTunnelAgentSelfTestPayload(t, meta);
-      if (tunnelSelfTest) {
-        selfTests.push(tunnelSelfTest);
-        continue;
-      }
-      if (meta?.kind === "forward-via-tunnel") {
-        const method = normalizeLinkProbeMethod(meta.method);
-        selfTests.push({
-          testId: t.id,
-          kind: "forward-via-tunnel",
-          tunnelId: meta.tunnelId,
-          ruleId: t.ruleId,
-          forwardType: "gost-tunnel",
-          protocol: method,
-          method,
-          sourcePort: 0,
-          targetIp: meta.targetIp,
-          targetPort: meta.targetPort,
-        });
-        continue;
-      }
-      if (meta?.kind === "forward-via-tunnel-entry") {
-        const method = normalizeLinkProbeMethod(meta.method);
-        selfTests.push({
-          testId: t.id,
-          kind: "forward-via-tunnel-entry",
-          tunnelId: meta.tunnelId,
-          ruleId: t.ruleId,
-          forwardType: "gost-tunnel",
-          protocol: method,
-          method,
-          sourcePort: meta.entrySourcePort || 0,
-          targetIp: meta.entryIp,
-          targetPort: meta.entrySourcePort,
-        });
-        continue;
-      }
-      if (meta?.kind === "forward-chain") {
-        const method = normalizeLinkProbeMethod(meta.method);
-        selfTests.push({
-          testId: t.id,
-          kind: "forward-chain",
-          groupId: meta.groupId,
-          ruleId: t.ruleId,
-          forwardType: "forward-chain",
-          protocol: method,
-          method,
-          sourcePort: meta.entrySourcePort || 0,
-          targetIp: meta.targetIp || meta.entryIp,
-          targetPort: meta.targetPort || meta.entrySourcePort,
-        });
+      const metaSelfTest = buildMetaAgentSelfTestPayload(t, meta);
+      if (metaSelfTest) {
+        selfTests.push(metaSelfTest);
         continue;
       }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
-      const method = linkProbeMethodForRule(rule);
-      selfTests.push({
-        testId: t.id,
-        ruleId: rule.id,
-        forwardType: rule.forwardType,
-        protocol: method,
-        method,
-        sourcePort: rule.sourcePort,
-        targetIp: rule.targetIp,
-        targetPort: rule.targetPort,
-      });
+      selfTests.push(buildRuleAgentSelfTestPayload(t, rule));
     }
 
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;

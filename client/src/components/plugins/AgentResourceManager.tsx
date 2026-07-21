@@ -43,6 +43,7 @@ import {
 import { toast } from "sonner";
 import {
   failedResourceSnapshot,
+  hydrateCachedResourceSnapshot,
   optimisticResourceData,
   pluginTaskFailureInfo,
   type ResourceOperationKind,
@@ -551,7 +552,7 @@ export function AgentResourceManager({
     const automaticSources = view.sources.filter((source) => (
       source.triggers?.includes("onOpen") || source.triggers?.includes("onHostSelected")
     ));
-    void Promise.allSettled(automaticSources.map((source) => loadSource(source, { force: true, generation }))).then((results) => {
+    void Promise.allSettled(automaticSources.map((source) => loadSource(source, { generation }))).then((results) => {
       if (!mountedRef.current || generation !== generationRef.current) return;
       const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) notifyTaskError(failed.reason);
@@ -559,6 +560,25 @@ export function AgentResourceManager({
   }, [loadSource, selectedHost?.agentPluginSupported, selectedHost?.isOnline, selectedHost?.pluginSyncPending, selectedHostId, view.sources]);
 
   const listSource = view.sources.find((source) => source.id === view.listSourceId);
+
+  useEffect(() => {
+    if (!listSource) return;
+    setSnapshots((current) => {
+      let next = current;
+      for (const state of resourceStates) {
+        if (String(state?.actionId || "") !== listSource.actionId || state?.data === undefined) continue;
+        const hostId = Number(state?.hostId || 0);
+        if (!Number.isInteger(hostId) || hostId <= 0) continue;
+        const key = sourceCacheKey(hostId, listSource.id);
+        const hydrated = hydrateCachedResourceSnapshot(current[key], state.data, state.updatedAt);
+        if (!hydrated || hydrated === current[key]) continue;
+        if (next === current) next = { ...current };
+        next[key] = hydrated;
+      }
+      return next;
+    });
+  }, [listSource, resourceStates, sourceCacheKey]);
+
   const listSnapshot = listSource ? snapshots[sourceCacheKey(selectedHostId, listSource.id)] : undefined;
   const listValue = valueAtPath(listSnapshot?.data, listSource?.itemsPath);
   const rows = Array.isArray(listValue) ? listValue : Array.isArray(listSnapshot?.data) ? listSnapshot?.data : [];

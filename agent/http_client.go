@@ -39,7 +39,7 @@ func newAgentHTTPTransport(enableHTTP2 bool) *http.Transport {
 }
 
 func newAgentEventHTTPTransport() *http.Transport {
-	transport := newAgentHTTPTransport(false)
+	transport := newAgentHTTPTransport(true)
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	return transport
 }
