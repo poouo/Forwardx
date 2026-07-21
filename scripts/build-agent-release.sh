@@ -5,12 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/dist/agent"
 GO_CACHE_ROOT="${GOCACHE:-}"
 GO_HOME_ROOT="${HOME:-}"
+RUST_HOME_ROOT="${HOME:-}"
 XDG_CACHE_ROOT="${XDG_CACHE_HOME:-}"
 REQUESTED_TAG="${1:-}"
 MIN_GO_MAJOR=1
 MIN_GO_MINOR=23
 GOST_VERSION="${GOST_VERSION:-3.2.6}"
 GOST_VERSION="${GOST_VERSION#v}"
+FXP_IMPLEMENTATION="${FXP_IMPLEMENTATION:-rust}"
 AGENT_VERSION="$(sed -nE "s/.*AGENT_VERSION[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$ROOT_DIR/shared/versions.ts" | head -n 1)"
 if [ -z "$AGENT_VERSION" ]; then
   echo "[agent] AGENT_VERSION not found in shared/versions.ts" >&2
@@ -76,10 +78,10 @@ build_one() {
 build_one amd64 forwardx-agent-linux-amd64
 build_one arm64 forwardx-agent-linux-arm64
 
-build_fxp() {
+build_fxp_go() {
   local goarch="$1"
   local out="$2"
-  echo "[fxp] building linux/$goarch -> $out"
+  echo "[fxp-go] building linux/$goarch -> $out"
   (
     cd "$ROOT_DIR/forwardx-fxp"
     CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
@@ -87,8 +89,45 @@ build_fxp() {
   )
 }
 
-build_fxp amd64 forwardx-fxp-linux-amd64
-build_fxp arm64 forwardx-fxp-linux-arm64
+build_fxp_rust() {
+  local target="$1"
+  local out="$2"
+  local builder="cargo"
+  local -a build_cmd=(cargo build)
+  if command -v cross >/dev/null 2>&1; then
+    builder="cross"
+    build_cmd=(cross build)
+  elif command -v cargo-zigbuild >/dev/null 2>&1; then
+    builder="cargo-zigbuild"
+    build_cmd=(cargo zigbuild)
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "[fxp-rust] cargo is required to build the Rust runtime" >&2
+    exit 1
+  fi
+  echo "[fxp-rust] building $target with $builder -> $out"
+  (
+    if [ -n "$RUST_HOME_ROOT" ]; then export HOME="$RUST_HOME_ROOT"; fi
+    cd "$ROOT_DIR/forwardx-fxp-rust"
+    "${build_cmd[@]}" --release --locked --target "$target"
+    install -m 0755 "target/$target/release/forwardx-fxp" "$OUT_DIR/$out"
+  )
+}
+
+case "$FXP_IMPLEMENTATION" in
+  rust)
+    build_fxp_rust x86_64-unknown-linux-musl forwardx-fxp-linux-amd64
+    build_fxp_rust aarch64-unknown-linux-musl forwardx-fxp-linux-arm64
+    ;;
+  go)
+    build_fxp_go amd64 forwardx-fxp-linux-amd64
+    build_fxp_go arm64 forwardx-fxp-linux-arm64
+    ;;
+  *)
+    echo "[fxp] unsupported FXP_IMPLEMENTATION=$FXP_IMPLEMENTATION (expected rust or go)" >&2
+    exit 1
+    ;;
+esac
 
 download_gost_runtime() {
   local gost_arch="$1"

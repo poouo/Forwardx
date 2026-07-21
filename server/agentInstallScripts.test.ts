@@ -69,3 +69,11 @@ test("Managed systemd units receive bounded logging defaults idempotently", () =
   assert.match(hardened, /LogRateLimitBurst=200/);
   assert.equal(hardenManagedServiceUnit(hardened), hardened);
 });
+
+test("Mimic installer provisions the NIC offload management dependency", () => {
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-mimic.sh"), "utf8");
+
+  assert.match(script, /ensure_ethtool\(\)/);
+  assert.match(script, /apt-get install -y ethtool/);
+  assert.match(script, /ensure_ethtool \|\| log/);
+});

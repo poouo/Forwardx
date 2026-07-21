@@ -120,6 +120,8 @@ curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- unin
 
 ForwardX V2 不要求系统安装 `wg`，不会创建系统 WireGuard 网卡或修改主机路由。防火墙和安全组需要放行配置的 WireGuard UDP 端口。
 
+Agent 安装的 `forwardx-fxp` 默认使用 Rust 实现，并保持原有配置格式与加密传输协议，因此升级时允许 Rust 与旧 Go 节点混合组成同一条隧道。仓库继续保留 Go 实现作为协议参考和紧急发布回退，不会在服务器上重复安装两份 FXP。
+
 Nginx 运行时监听规则或隧道配置中的端口，不会固定占用 80 端口。若主机上的其他 Nginx 出现 80 端口冲突，应检查该服务自身的站点配置和监听进程。
 
 ## mimic UDP 混淆

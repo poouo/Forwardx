@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import crypto from "node:crypto";
 import { buildTunnelAgentSelfTestPayload } from "./agentRouteUtils";
-import { buildForwardXWireGuardPlans, deriveForwardXWireGuardKeyPair } from "./forwardXWireGuard";
+import {
+  FORWARDX_WIREGUARD_DEFAULT_MTU,
+  FORWARDX_WIREGUARD_MIMIC_MTU,
+  buildForwardXWireGuardPlans,
+  deriveForwardXWireGuardKeyPair,
+  forwardXWireGuardMTU,
+} from "./forwardXWireGuard";
 
 test("derives stable, valid X25519 WireGuard keys", () => {
   const left = deriveForwardXWireGuardKeyPair("seed", 12, 41);
@@ -65,4 +71,20 @@ test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests"
     targetPort: 31000,
     wireGuardPeerId: "20",
   });
+});
+
+test("reserves outer packet headroom only when Mimic is active", () => {
+  assert.equal(forwardXWireGuardMTU(false), FORWARDX_WIREGUARD_DEFAULT_MTU);
+  assert.equal(forwardXWireGuardMTU(true), FORWARDX_WIREGUARD_MIMIC_MTU);
+  assert.ok(FORWARDX_WIREGUARD_DEFAULT_MTU - FORWARDX_WIREGUARD_MIMIC_MTU >= 12);
+
+  const plans = buildForwardXWireGuardPlans({
+    tunnelId: 8,
+    seed: "mimic-mtu",
+    mtu: forwardXWireGuardMTU(true),
+    nodes: [{ hostId: 1 }, { hostId: 2, listenPort: 32000 }],
+    links: [{ fromHostId: 1, toHostId: 2, endpointHost: "2001:db8::2", endpointPort: 32000 }],
+  });
+  assert.equal(plans.get(1)?.mtu, FORWARDX_WIREGUARD_MIMIC_MTU);
+  assert.equal(plans.get(2)?.mtu, FORWARDX_WIREGUARD_MIMIC_MTU);
 });

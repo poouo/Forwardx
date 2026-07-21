@@ -55,3 +55,54 @@ func TestManagedMimicServicesFromConfigDir(t *testing.T) {
 		t.Fatalf("managedMimicServicesFromConfigDir() = %#v, want %#v", got, want)
 	}
 }
+
+func TestEnabledMimicOffloads(t *testing.T) {
+	raw := `Features for eth0:
+rx-checksumming: off
+tx-checksumming: on
+tcp-segmentation-offload: on
+generic-segmentation-offload: off
+generic-receive-offload: on
+large-receive-offload: on [fixed]
+rx-vlan-offload: on
+`
+	want := []string{"gro", "lro", "tso", "tx"}
+	if got := enabledMimicOffloads(raw); !reflect.DeepEqual(got, want) {
+		t.Fatalf("enabledMimicOffloads() = %#v, want %#v", got, want)
+	}
+	mutableWant := []string{"gro", "tso", "tx"}
+	if got := mutableMimicOffloads(raw); !reflect.DeepEqual(got, mutableWant) {
+		t.Fatalf("mutableMimicOffloads() = %#v, want %#v", got, mutableWant)
+	}
+}
+
+func TestValidMimicInterfaceNameRejectsStatePathTraversal(t *testing.T) {
+	if !validMimicInterfaceName("eth0.100") {
+		t.Fatal("valid VLAN interface was rejected")
+	}
+	for _, iface := range []string{".", "..", "eth0/../lo"} {
+		if validMimicInterfaceName(iface) {
+			t.Fatalf("unsafe interface %q was accepted", iface)
+		}
+	}
+}
+
+func TestCaptureMimicOffloadStatePreservesFirstSnapshot(t *testing.T) {
+	originalDir := mimicOffloadStateDir
+	mimicOffloadStateDir = t.TempDir()
+	t.Cleanup(func() { mimicOffloadStateDir = originalDir })
+
+	if err := captureMimicOffloadState("eth0", []string{"gro", "tx"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := captureMimicOffloadState("eth0", []string{"rx"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(mimicOffloadStatePath("eth0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != "gro tx\n" {
+		t.Fatalf("state = %q, want first snapshot", got)
+	}
+}

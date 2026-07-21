@@ -2,6 +2,14 @@ import crypto from "crypto";
 import { normalizeForwardXVersion } from "../shared/forwardTypes";
 
 export const AGENT_FORWARDX_WIREGUARD_VERSION = "2.2.154";
+export const FORWARDX_WIREGUARD_DEFAULT_MTU = 1380;
+// Mimic expands every outer UDP packet by 12 bytes. 1340 also leaves room for
+// IPv6 WireGuard overhead on the common 1450-byte MTU used by cloud networks.
+export const FORWARDX_WIREGUARD_MIMIC_MTU = 1340;
+
+export function forwardXWireGuardMTU(mimicEnabled: boolean) {
+  return mimicEnabled ? FORWARDX_WIREGUARD_MIMIC_MTU : FORWARDX_WIREGUARD_DEFAULT_MTU;
+}
 
 export type ForwardXWireGuardNode = {
   hostId: number;
@@ -162,7 +170,7 @@ export function buildForwardXWireGuardPlans(input: {
       publicKey: identity.publicKey,
       address: identity.address,
       listenPort: Number.isInteger(node.listenPort) && node.listenPort > 0 ? node.listenPort : 0,
-      mtu: Math.min(1420, Math.max(1200, Number(input.mtu || 1380))),
+      mtu: Math.min(1420, Math.max(1200, Number(input.mtu || FORWARDX_WIREGUARD_DEFAULT_MTU))),
       peers: Array.from(peerMaps.get(node.hostId)?.values() || []).sort((a, b) => a.hostId - b.hostId),
     });
   }

@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.163"
+var Version = "2.2.164"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -611,7 +611,9 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 			HasWork: hasWork,
 		})
 	}
-	for _, service := range managedMimicServicesFromLocalConfig() {
+	mimicServices := managedMimicServicesFromLocalConfig()
+	restoreUnusedMimicNetworkCompatibility(mimicServices)
+	for _, service := range mimicServices {
 		report := mimicRuntimeServiceReportFor(service)
 		active := report.Active
 		readiness.serviceActiveCache[service] = active
@@ -4124,7 +4126,13 @@ func mimicRuntimeServiceHealth(name string) (bool, string) {
 	if output == "" {
 		output = "mimic-show-ok"
 	}
-	return true, output
+	network := ensureMimicNetworkCompatibility(iface)
+	if strings.Contains(network, "ethtool-missing") || strings.Contains(network, "still-on:") || strings.Contains(network, "inspect-failed") || strings.Contains(network, "state-failed:") {
+		if shouldLogAgentReport("mimic-network:"+iface, agentReportLogInterval) {
+			logf("mimic network compatibility warning interface=%s %s", iface, network)
+		}
+	}
+	return true, strings.TrimSpace(output + " network=" + network)
 }
 
 func validNetworkInterfaceName(name string) bool {

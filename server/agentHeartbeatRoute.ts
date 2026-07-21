@@ -64,6 +64,7 @@ import {
 import {
   AGENT_FORWARDX_WIREGUARD_VERSION,
   buildForwardXWireGuardPlans,
+  forwardXWireGuardMTU,
   isForwardXWireGuardV2,
   type ForwardXWireGuardNodePlan,
 } from "./forwardXWireGuard";
@@ -1154,7 +1155,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           "link_type = eth",
           "xdp_mode = skb",
           "use_libxdp = false",
-          "keepalive = 30:5:3:600",
+          "keepalive = 300:10:3:600",
           "max_window = false",
           ...filters.map((filter) => `filter = ${filter}`),
         ].join("\n");
@@ -1965,6 +1966,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           tunnelId,
           seed: tunnelSecretSeed(tunnel),
           generation: tunnelDnsGeneration(tunnel),
+          mtu: forwardXWireGuardMTU(tunnelNeedsMimic(tunnel)),
           nodes: Array.from(nodes.values()),
           links: Array.from(links.values()),
         });

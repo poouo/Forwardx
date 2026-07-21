@@ -115,6 +115,16 @@ test("forward group switches after its configured heartbeat failure window", () 
       assert.deepEqual(requests.map((request) => request.value), ["198.51.100.10", "198.51.100.20"]);
       assert.deepEqual(requests.map((request) => request.values), [["198.51.100.10"], ["198.51.100.20"]]);
 
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 1', [now]);
+      await runtime.executeRaw('UPDATE "forward_group_members" SET "healthySince" = ? WHERE "id" = 101', [now - 130]);
+      await forwardGroups.runForwardGroupFailover(10);
+      state = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
+      ))[0];
+      assert.equal(Number(state.activeMemberId), 101);
+      assert.equal(state.lastDdnsValue, "198.51.100.10");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10"], "failover groups must keep exactly one DDNS record");
+
       await insert(
         "forward_groups",
         ["id", "name", "groupType", "groupMode", "domain", "recordType", "targetIp", "userId", "isEnabled", "failoverSeconds"],
@@ -131,16 +141,38 @@ test("forward group switches after its configured heartbeat failure window", () 
         [202, 20, "host", 2, 1, 1],
       );
 
-      await forwardGroups.runForwardGroupFailover(20, { forceSync: true });
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ?', [now]);
+      await forwardGroups.runForwardGroupFailover(20);
       let entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10,198.51.100.20");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10", "198.51.100.20"]);
+
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0 WHERE "id" = 1');
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
       ))[0];
       assert.equal(Number(entryState.activeMemberId), 202);
       assert.equal(entryState.lastDdnsValue, "198.51.100.20");
-      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
+      assert.equal(entryState.lastStatus, "healthy");
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"], "entry groups must remove only the offline host record");
 
-      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0 WHERE "id" = 2');
-      await forwardGroups.runForwardGroupFailover(20, { forceSync: true });
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 1', [now]);
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10,198.51.100.20");
+      assert.equal(entryState.lastStatus, "healthy");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10", "198.51.100.20"], "entry groups must restore the recovered host record");
+
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0');
+      await forwardGroups.runForwardGroupFailover(20);
       entryState = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
       ))[0];
@@ -150,7 +182,7 @@ test("forward group switches after its configured heartbeat failure window", () 
       assert.equal(requests.at(-1).action, "delete");
       assert.deepEqual(requests.at(-1).values, []);
 
-      await runtime.executeRaw('UPDATE "hosts" SET "lastHeartbeat" = ? WHERE "id" = 2', [now - 75]);
+      await runtime.executeRaw('UPDATE "hosts" SET "lastHeartbeat" = ?', [now - 75]);
       await forwardGroups.runForwardGroupFailover(10, { forceSync: true });
       state = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 10',

@@ -112,6 +112,25 @@ verify_mimic() {
   return 0
 }
 
+ensure_ethtool() {
+  command -v ethtool >/dev/null 2>&1 && return 0
+  log "installing ethtool for Mimic NIC offload compatibility"
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ethtool >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ethtool >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y ethtool >/dev/null 2>&1 || true
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm --needed ethtool >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache ethtool >/dev/null 2>&1 || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper -n install ethtool >/dev/null 2>&1 || true
+  fi
+  command -v ethtool >/dev/null 2>&1
+}
+
 installed_mimic_version() {
   command -v mimic >/dev/null 2>&1 || return 1
   mimic --version 2>/dev/null \
@@ -170,6 +189,8 @@ main() {
   if ! kernel_ge_61; then
     die "Linux kernel $(uname -r) is lower than 6.1; Mimic requires a newer eBPF/XDP capable kernel"
   fi
+
+  ensure_ethtool || log "ethtool is unavailable; Agent diagnostics will report that NIC offloads could not be managed"
 
   local verify_status=0 current_version=""
   verify_mimic || verify_status="$?"
