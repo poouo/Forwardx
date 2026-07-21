@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import crypto from "node:crypto";
-import { buildTunnelAgentSelfTestPayload } from "./agentRouteUtils";
+import {
+  buildForwardChainAgentSelfTestPayload,
+  buildMetaAgentSelfTestPayload,
+  buildRuleAgentSelfTestPayload,
+  buildTunnelAgentSelfTestPayload,
+} from "./agentRouteUtils";
 import {
   FORWARDX_WIREGUARD_DEFAULT_MTU,
   FORWARDX_WIREGUARD_MIMIC_MTU,
@@ -52,13 +57,13 @@ test("builds bidirectional peers while only the dialing side carries an endpoint
 });
 
 test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests", () => {
-  const payload = buildTunnelAgentSelfTestPayload({ id: 91 }, {
+  const payload = buildTunnelAgentSelfTestPayload({ id: "91" }, {
     kind: "tunnel-hop",
-    tunnelId: 7,
+    tunnelId: "7",
     targetIp: "198.51.100.20",
-    targetPort: 31000,
+    targetPort: "31000",
     wireGuardPeerId: "20",
-  });
+  } as any);
   assert.deepEqual(payload, {
     testId: 91,
     kind: "tunnel-hop",
@@ -70,6 +75,76 @@ test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests"
     targetIp: "198.51.100.20",
     targetPort: 31000,
     wireGuardPeerId: "20",
+  });
+});
+
+test("forward-chain final domain probes bypass unrelated runtime waits", () => {
+  const payload = buildForwardChainAgentSelfTestPayload({ id: "92", ruleId: "18" }, {
+    kind: "forward-chain",
+    groupId: "7",
+    targetIp: "baidu.com",
+    targetPort: "80",
+    method: "tcp",
+    runtimeDependent: false,
+  } as any);
+  assert.deepEqual(payload, {
+    testId: 92,
+    kind: "forward-chain-target",
+    groupId: 7,
+    ruleId: 18,
+    forwardType: "forward-chain",
+    protocol: "tcp",
+    method: "tcp",
+    sourcePort: 0,
+    targetIp: "baidu.com",
+    targetPort: 80,
+  });
+});
+
+test("normalizes PostgreSQL string numbers for every Agent self-test payload", () => {
+  const metaPayload = buildMetaAgentSelfTestPayload({ id: "93", ruleId: "19" }, {
+    kind: "forward-via-tunnel-entry",
+    tunnelId: "8",
+    entryIp: "198.51.100.8",
+    entrySourcePort: "32000",
+    targetIp: "example.com",
+    targetPort: "443",
+    method: "tcp",
+  } as any);
+  assert.deepEqual(metaPayload, {
+    testId: 93,
+    kind: "forward-via-tunnel-entry",
+    tunnelId: 8,
+    ruleId: 19,
+    forwardType: "gost-tunnel",
+    protocol: "tcp",
+    method: "tcp",
+    sourcePort: 32000,
+    targetIp: "198.51.100.8",
+    targetPort: 32000,
+  });
+
+  const rulePayload = buildRuleAgentSelfTestPayload({ id: "94", ruleId: "20" }, {
+    id: "20",
+    forwardType: "iptables",
+    protocol: "tcp",
+    sourcePort: "18080",
+    targetIp: "example.com",
+    targetPort: "80",
+  });
+  assert.equal(typeof rulePayload.testId, "number");
+  assert.equal(typeof rulePayload.ruleId, "number");
+  assert.equal(typeof rulePayload.sourcePort, "number");
+  assert.equal(typeof rulePayload.targetPort, "number");
+  assert.deepEqual(rulePayload, {
+    testId: 94,
+    ruleId: 20,
+    forwardType: "iptables",
+    protocol: "tcp",
+    method: "tcp",
+    sourcePort: 18080,
+    targetIp: "example.com",
+    targetPort: 80,
   });
 });
 

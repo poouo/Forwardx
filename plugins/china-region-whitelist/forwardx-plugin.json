@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "china-region-whitelist",
   "name": "ForwardX 中国区域白名单",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。",
   "detailsMarkdown": "ForwardX 中国区域白名单插件用于把中国大陆全国、省级 CIDR 和 ASN 白名单规则应用到 Agent 主机。\n\n启用后，插件程序和数据会自动同步到所有 Agent。左侧列出全部主机并支持筛选；点击主机后，可在右侧读取、新增、修改、删除和刷新该主机的实际白名单规则。每台 Agent 的配置和状态彼此独立。\n\n支持的能力：\n- 使用内置预制数据，包含全国 CN、省级 CIDR、区域索引和预制 ASN 数据。\n- 支持全国或按省份选择全局入站白名单。\n- 支持额外 ASN 白名单，例如 AS16509。\n- 支持端口优先白名单，格式如 `22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省`。\n- 支持 nftables 优先，也可指定 iptables/ipset。\n- 支持托管本机 INPUT 和 DNAT/FORWARD 入站流量，也可只托管本机入站或指定接口。\n- 自动展示在线、执行、规则挂载、持久化和失败状态。\n\n插件内置脚本参考 `GHUNLIL/china-region-whitelist` 的实现方式，并改成适合 ForwardX 通用 Agent 动态资源管理的非交互入口。",
   "author": "poouo",
@@ -89,7 +89,7 @@
         { "key": "applied", "label": "规则状态", "type": "status", "path": "applied", "trueLabel": "已生效", "falseLabel": "未生效" },
         { "key": "backend", "label": "防火墙", "type": "code", "path": "backend" },
         { "key": "ruleCount", "label": "CIDR 数量", "type": "number", "path": "ruleCount" },
-        { "key": "serviceActive", "label": "持久化", "type": "boolean", "path": "serviceActive", "trueLabel": "已启用", "falseLabel": "未启用" }
+        { "key": "serviceActive", "label": "持久化状态", "type": "status", "path": "serviceActive", "trueLabel": "已启用", "falseLabel": "未启用" }
       ],
       "fields": [
         {

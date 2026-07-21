@@ -1,0 +1,2 @@
+export const SELF_TEST_TIMEOUT_SECONDS = 8;
+export const SELF_TEST_SWEEP_INTERVAL_MS = 2_000;

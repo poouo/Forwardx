@@ -9,13 +9,16 @@ import (
 	"time"
 )
 
-const selfTestWorkerConcurrency = 8
+const selfTestWorkerConcurrency = 16
 const selfTestQueueCapacity = 256
-const selfTestRuntimeReadinessWindow = 20 * time.Second
-const selfTestTCPAttemptTimeout = 3 * time.Second
-const selfTestWireGuardAttemptTimeout = 5 * time.Second
-const selfTestRetryBaseDelay = 500 * time.Millisecond
-const selfTestRetryMaxDelay = 2 * time.Second
+const selfTestRuntimeReadinessWindow = 6 * time.Second
+const selfTestActionWaitWindow = 4 * time.Second
+const selfTestPostActionReadinessWindow = 2 * time.Second
+const selfTestTCPAttemptTimeout = 1500 * time.Millisecond
+const selfTestWireGuardAttemptTimeout = 2500 * time.Millisecond
+const selfTestPingTimeout = 1500 * time.Millisecond
+const selfTestRetryBaseDelay = 250 * time.Millisecond
+const selfTestRetryMaxDelay = 750 * time.Millisecond
 
 type selfTestJob struct {
 	cfg  Config
@@ -72,9 +75,10 @@ func enqueueSelfTestsAfterActions(cfg Config, tests []selfTest, actionDone []<-c
 	actionDone = append([]<-chan struct{}(nil), actionDone...)
 	enqueue := func() {
 		if len(actionDone) > 0 {
-			waitForActionBatch(actionDone, selfTestRuntimeReadinessWindow)
+			waitForActionBatch(actionDone, selfTestActionWaitWindow)
 		}
 		for _, test := range tests {
+			test.runtimeActionsWaited = len(actionDone) > 0
 			enqueueSelfTest(cfg, test)
 		}
 	}
@@ -126,7 +130,7 @@ func handleSelfTest(cfg Config, t selfTest) {
 		method = "ping"
 	}
 	if method == "ping" {
-		latency, reachable, detail := pingLatency(t.TargetIP, 3*time.Second)
+		latency, reachable, detail := pingLatency(t.TargetIP, selfTestPingTimeout)
 		msg := ""
 		if reachable {
 			msg = fmt.Sprintf("目标 %s Ping可达，延迟 %dms", t.TargetIP, latency)
@@ -236,6 +240,9 @@ func selfTestDependsOnRuntime(t selfTest) bool {
 
 func selfTestTCPReadinessWindow(t selfTest) time.Duration {
 	if selfTestDependsOnRuntime(t) {
+		if t.runtimeActionsWaited {
+			return selfTestPostActionReadinessWindow
+		}
 		return selfTestRuntimeReadinessWindow
 	}
 	return 0

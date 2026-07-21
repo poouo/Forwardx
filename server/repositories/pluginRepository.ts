@@ -2118,17 +2118,17 @@ async function upsertQueuedPluginAgentState(input: {
   ];
   if (getDatabaseKind() === "sqlite") {
     await executeRaw(
-      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pluginId, resourceViewId, hostId) DO UPDATE SET pluginVersion=excluded.pluginVersion, actionId=excluded.actionId, groupId=excluded.groupId, taskId=excluded.taskId, status=excluded.status, dataJson=NULL, output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=excluded.createdAt, updatedAt=excluded.updatedAt",
+      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pluginId, resourceViewId, hostId) DO UPDATE SET pluginVersion=excluded.pluginVersion, actionId=excluded.actionId, groupId=excluded.groupId, taskId=excluded.taskId, status=excluded.status, output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=excluded.createdAt, updatedAt=excluded.updatedAt",
       values,
     );
   } else if (getDatabaseKind() === "postgresql") {
     await executeRaw(
-      'INSERT INTO plugin_agent_states ("pluginId", "resourceViewId", "hostId", "pluginVersion", "actionId", "groupId", "taskId", status, "dataJson", output, error, "startedAt", "finishedAt", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ("pluginId", "resourceViewId", "hostId") DO UPDATE SET "pluginVersion"=excluded."pluginVersion", "actionId"=excluded."actionId", "groupId"=excluded."groupId", "taskId"=excluded."taskId", status=excluded.status, "dataJson"=NULL, output=NULL, error=NULL, "startedAt"=NULL, "finishedAt"=NULL, "createdAt"=excluded."createdAt", "updatedAt"=excluded."updatedAt"',
+      'INSERT INTO plugin_agent_states ("pluginId", "resourceViewId", "hostId", "pluginVersion", "actionId", "groupId", "taskId", status, "dataJson", output, error, "startedAt", "finishedAt", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ("pluginId", "resourceViewId", "hostId") DO UPDATE SET "pluginVersion"=excluded."pluginVersion", "actionId"=excluded."actionId", "groupId"=excluded."groupId", "taskId"=excluded."taskId", status=excluded.status, output=NULL, error=NULL, "startedAt"=NULL, "finishedAt"=NULL, "createdAt"=excluded."createdAt", "updatedAt"=excluded."updatedAt"',
       values,
     );
   } else {
     await executeRaw(
-      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE pluginVersion=VALUES(pluginVersion), actionId=VALUES(actionId), groupId=VALUES(groupId), taskId=VALUES(taskId), status=VALUES(status), dataJson=NULL, output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=VALUES(createdAt), updatedAt=VALUES(updatedAt)",
+      "INSERT INTO plugin_agent_states (pluginId, resourceViewId, hostId, pluginVersion, actionId, groupId, taskId, status, dataJson, output, error, startedAt, finishedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE pluginVersion=VALUES(pluginVersion), actionId=VALUES(actionId), groupId=VALUES(groupId), taskId=VALUES(taskId), status=VALUES(status), output=NULL, error=NULL, startedAt=NULL, finishedAt=NULL, createdAt=VALUES(createdAt), updatedAt=VALUES(updatedAt)",
       values,
     );
   }
@@ -2155,11 +2155,10 @@ export async function syncPluginAgentActionState(pluginId: string, groupId: stri
   const db = await getDb();
   if (!db) return group;
   await Promise.all(group.results.map(async (result) => {
-    await db.update(pluginAgentStates).set({
+    const stateUpdate: Record<string, unknown> = {
       pluginVersion: group.pluginVersion || null,
       actionId: group.actionId,
       status: result.status === "success" && pluginAgentResultEffective(result.data) ? "effective" : result.status,
-      dataJson: pluginAgentStateData(result.data),
       output: String(result.output || "").slice(0, 64 * 1024) || null,
       error: [
         result.error || result.errorDetail || result.processError || result.stderr || "",
@@ -2168,7 +2167,11 @@ export async function syncPluginAgentActionState(pluginId: string, groupId: stri
       startedAt: result.startedAt ? new Date(result.startedAt) : null,
       finishedAt: result.finishedAt ? new Date(result.finishedAt) : null,
       updatedAt: nowDate(),
-    } as any).where(and(
+    };
+    if (result.status === "success" && result.data !== undefined) {
+      stateUpdate.dataJson = pluginAgentStateData(result.data);
+    }
+    await db.update(pluginAgentStates).set(stateUpdate as any).where(and(
       eq(pluginAgentStates.pluginId, group.pluginId),
       eq(pluginAgentStates.resourceViewId, group.contextId),
       eq(pluginAgentStates.hostId, result.hostId),

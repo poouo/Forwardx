@@ -56,10 +56,22 @@ func TestTunnelAndMultiEntrySelfTestsWaitForRuntime(t *testing.T) {
 	if selfTestDependsOnRuntime(selfTest{}) {
 		t.Fatal("direct rule test must not wait for unrelated runtime actions")
 	}
+	if selfTestDependsOnRuntime(selfTest{Kind: "forward-chain-target"}) {
+		t.Fatal("forward-chain final target must not wait for runtime actions")
+	}
+	if attempts := selfTestTCPAttempts(selfTest{Kind: "forward-chain-target"}); attempts != 1 {
+		t.Fatalf("forward-chain final target attempts=%d, want 1", attempts)
+	}
+	if window := selfTestTCPReadinessWindow(selfTest{Kind: "tunnel", runtimeActionsWaited: true}); window != selfTestPostActionReadinessWindow {
+		t.Fatalf("post-action readiness window=%s, want %s", window, selfTestPostActionReadinessWindow)
+	}
+	if total := selfTestActionWaitWindow + selfTestPostActionReadinessWindow; total > selfTestRuntimeReadinessWindow {
+		t.Fatalf("action wait plus probe window=%s exceeds manual test budget=%s", total, selfTestRuntimeReadinessWindow)
+	}
 }
 
 func TestSelfTestRetryDelayIsBounded(t *testing.T) {
-	if got := selfTestRetryDelay(1); got != 500*time.Millisecond {
+	if got := selfTestRetryDelay(1); got != 250*time.Millisecond {
 		t.Fatalf("first retry delay=%s", got)
 	}
 	if got := selfTestRetryDelay(100); got != selfTestRetryMaxDelay {

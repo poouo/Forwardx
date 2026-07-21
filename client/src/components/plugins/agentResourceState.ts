@@ -17,6 +17,20 @@ export type PluginTaskFailureInfo = {
   data?: unknown;
 };
 
+export function hydrateCachedResourceSnapshot(
+  current: ResourceSourceSnapshot | undefined,
+  data: unknown,
+  updatedAt?: unknown,
+): ResourceSourceSnapshot | undefined {
+  if (data === undefined || current?.data !== undefined) return current;
+  const parsedUpdatedAt = updatedAt ? new Date(updatedAt as any).getTime() : NaN;
+  return {
+    ...current,
+    data,
+    loadedAt: Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : Date.now(),
+  };
+}
+
 export function failedResourceSnapshot(
   current: ResourceSourceSnapshot | undefined,
   failure: Pick<PluginTaskFailureInfo, "message" | "advice" | "detail">,

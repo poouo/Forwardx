@@ -113,6 +113,7 @@ export type SelfTestMeta =
       groupKey?: string;
       groupLabel?: string;
       latencyMode?: "sum" | "max" | "multi-source";
+      runtimeDependent?: boolean;
     };
 
 export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {

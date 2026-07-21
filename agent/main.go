@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.164"
+var Version = "2.2.165"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -1667,17 +1667,18 @@ func (e migratedPanelError) Error() string {
 }
 
 type selfTest struct {
-	TestID          int    `json:"testId"`
-	Kind            string `json:"kind,omitempty"`
-	RuleID          int    `json:"ruleId"`
-	ForwardType     string `json:"forwardType"`
-	SourcePort      int    `json:"sourcePort"`
-	Protocol        string `json:"protocol"`
-	Method          string `json:"method"`
-	TargetIP        string `json:"targetIp"`
-	TargetPort      int    `json:"targetPort"`
-	TunnelID        int    `json:"tunnelId,omitempty"`
-	WireGuardPeerID string `json:"wireGuardPeerId,omitempty"`
+	TestID               int    `json:"testId"`
+	Kind                 string `json:"kind,omitempty"`
+	RuleID               int    `json:"ruleId"`
+	ForwardType          string `json:"forwardType"`
+	SourcePort           int    `json:"sourcePort"`
+	Protocol             string `json:"protocol"`
+	Method               string `json:"method"`
+	TargetIP             string `json:"targetIp"`
+	TargetPort           int    `json:"targetPort"`
+	TunnelID             int    `json:"tunnelId,omitempty"`
+	WireGuardPeerID      string `json:"wireGuardPeerId,omitempty"`
+	runtimeActionsWaited bool
 }
 
 type fxpSpec struct {

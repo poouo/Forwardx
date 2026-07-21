@@ -352,6 +352,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
       hopLabel: probe.hopLabel,
       routeLabel: probe.routeLabel,
       batchId,
+      runtimeDependent: probe.runtimeDependent,
     });
     const testId = await db.createForwardTest({
       ruleId: 0,

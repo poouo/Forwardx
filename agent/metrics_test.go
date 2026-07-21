@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,6 +103,47 @@ func TestTCPingDueIntervalScalesWithWorkAndServiceRequirements(t *testing.T) {
 	}
 	if got := tcpingRoundsForWindow(5*time.Second, 3*time.Minute); got != 36 {
 		t.Fatalf("five-second collection rounds = %d", got)
+	}
+}
+
+func TestTCPLatencyUsesOneDeadlineAcrossResolvedAddresses(t *testing.T) {
+	originalLookup := lookupNetworkTargetIPs
+	originalDial := dialNetworkTimeout
+	networkTargetDNSMu.Lock()
+	originalCache := networkTargetDNSCache
+	originalCalls := networkTargetDNSCalls
+	networkTargetDNSCache = map[string]networkTargetDNSCacheEntry{}
+	networkTargetDNSCalls = map[string]*networkTargetDNSCall{}
+	networkTargetDNSMu.Unlock()
+	t.Cleanup(func() {
+		lookupNetworkTargetIPs = originalLookup
+		dialNetworkTimeout = originalDial
+		networkTargetDNSMu.Lock()
+		networkTargetDNSCache = originalCache
+		networkTargetDNSCalls = originalCalls
+		networkTargetDNSMu.Unlock()
+	})
+
+	lookupNetworkTargetIPs = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}, {IP: net.ParseIP("192.0.2.2")}}, nil
+	}
+	dialCalls := 0
+	dialNetworkTimeout = func(string, string, time.Duration) (net.Conn, error) {
+		dialCalls++
+		time.Sleep(45 * time.Millisecond)
+		return nil, errors.New("expected timeout")
+	}
+
+	started := time.Now()
+	_, reachable, _ := tcpLatencyResolved("deadline.example.test", 443, 40*time.Millisecond)
+	if reachable {
+		t.Fatal("synthetic timeout unexpectedly became reachable")
+	}
+	if dialCalls != 1 {
+		t.Fatalf("dial attempts=%d, want 1 within the shared deadline", dialCalls)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("resolved addresses exceeded the shared deadline: %s", elapsed)
 	}
 }
 

@@ -14,6 +14,7 @@ import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
+import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS } from "./selfTestTiming";
 
 type TimedOutForwardTest = {
   id: number;
@@ -22,7 +23,6 @@ type TimedOutForwardTest = {
   message: string | null;
 };
 
-const SELF_TEST_TIMEOUT_SECONDS = 30;
 const UPDATE_AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let hostStatusPrimePromise: Promise<void> | null = null;
@@ -554,7 +554,7 @@ export function startScheduler() {
   };
 
   repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
-  repeatAfter(selfTestTimeoutSweep, 30 * 1000, 8_000);
+  repeatAfter(selfTestTimeoutSweep, SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_SWEEP_INTERVAL_MS);
   repeatAfter(forwardingMaintenance, 30 * 1000, 12_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);

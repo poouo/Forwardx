@@ -216,10 +216,11 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.6.2");
+  assert.equal(manifest.version, "0.6.3");
   assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
+  assert.equal(schema.columns?.find((column) => column.key === "serviceActive")?.type, "status");
   assert.equal(schema.operations?.create?.actionId, "save-whitelist-config");
   assert.equal(schema.operations?.update?.actionId, "save-whitelist-config");
   assert.equal(schema.operations?.delete?.actionId, "delete-whitelist-config");
@@ -237,6 +238,8 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   );
   assert.doesNotMatch(agentRunner, /\bpython3\b/);
   assert.match(agentRunner, /command -v jq/);
+  assert.match(agentRunner, /systemctl is-enabled --quiet/);
+  assert.doesNotMatch(agentRunner, /systemctl is-active --quiet/);
 });
 
 test("plugin all-host scope resolves current hosts without persisting selections", () => {

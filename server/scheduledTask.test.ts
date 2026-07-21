@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
+import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS } from "./selfTestTiming";
+
+test("manual self-tests settle within a short interactive deadline", () => {
+  assert.equal(SELF_TEST_TIMEOUT_SECONDS, 8);
+  assert.equal(SELF_TEST_SWEEP_INTERVAL_MS, 2_000);
+});
 
 test("scheduled tasks skip overlapping ticks and resume after completion", async () => {
   let runs = 0;
