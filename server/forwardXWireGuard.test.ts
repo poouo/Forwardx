@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import crypto from "node:crypto";
+import { buildTunnelAgentSelfTestPayload } from "./agentRouteUtils";
 import { buildForwardXWireGuardPlans, deriveForwardXWireGuardKeyPair } from "./forwardXWireGuard";
 
 test("derives stable, valid X25519 WireGuard keys", () => {
@@ -42,4 +43,26 @@ test("builds bidirectional peers while only the dialing side carries an endpoint
   assert.equal(plans.get(20)?.peers.find((peer) => peer.hostId === 30)?.endpointHost, "2001:db8::30");
   assert.equal(plans.get(30)?.listenPort, 32000);
   assert.equal(new Set(Array.from(plans.values()).map((plan) => plan.address)).size, 3);
+});
+
+test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests", () => {
+  const payload = buildTunnelAgentSelfTestPayload({ id: 91 }, {
+    kind: "tunnel-hop",
+    tunnelId: 7,
+    targetIp: "198.51.100.20",
+    targetPort: 31000,
+    wireGuardPeerId: "20",
+  });
+  assert.deepEqual(payload, {
+    testId: 91,
+    kind: "tunnel-hop",
+    tunnelId: 7,
+    ruleId: 0,
+    forwardType: "gost-tunnel",
+    protocol: "tcp",
+    sourcePort: 0,
+    targetIp: "198.51.100.20",
+    targetPort: 31000,
+    wireGuardPeerId: "20",
+  });
 });

@@ -823,10 +823,14 @@ ingressDrained:
 	publicIPv4Cache = "198.51.100.10"
 	publicIPv6Cache = "2001:db8::10"
 	publicIPCheckedAt = time.Now()
+	publicIPRefreshRunning = false
 	publicIPMu.Unlock()
 
+	trafficCollectMu.Lock()
 	lastTrafficCollectAt = time.Now()
 	nextTrafficCollectInterval = time.Hour
+	trafficCollectRunning = false
+	trafficCollectMu.Unlock()
 	lastTCPingAt = time.Now()
 	heartbeatStaticReport = heartbeatStaticSnapshot{ReportedAt: time.Now(), Initialized: true}
 	heartbeatStateMu.Lock()

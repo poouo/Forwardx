@@ -64,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 ```bash
 systemctl status forwardx-agent
-journalctl -u forwardx-agent -n 300 --no-pager
+tail -n 300 /var/log/forwardx-agent/agent-go.log
 ```
 
 查看 Agent 配置：
@@ -79,6 +79,16 @@ Agent 常用文件位置：
 - Agent 日志：`/var/log/forwardx-agent/agent-go.log`
 - Agent 本地状态：`/var/lib/forwardx-agent`
 - GOST/隧道运行时配置：`/etc/forwardx/runtime`
+
+Agent 会限制单个日志文件和 `/var/log/forwardx-agent` 的总占用。发现磁盘异常增长时，可以先定位实际占用来源：
+
+```bash
+du -ak /var/log/forwardx-agent /var/lib/forwardx-agent 2>/dev/null | sort -n | tail -n 30
+journalctl --disk-usage 2>/dev/null || true
+du -sh /var/lib/systemd/coredump /var/crash 2>/dev/null || true
+```
+
+`FORWARDX_FXP_VERBOSE_LOG=1` 会记录每个 TCP/UDP 会话明细，只应在短时间排障时启用，常规运行不建议开启。
 
 新版 Agent 会把自己的配置和运行时配置统一放在 `/etc/forwardx` 下。旧版本留下的 `/etc/forwardx-agent`、`/etc/forwardx-runtime`、`/etc/forwardx-tunnel-runtime`、`/etc/forwardx-gost`、`/etc/forwardx-tunnels` 属于历史路径，升级时会优先迁移到新目录，后续不会再继续新增这些分散目录。
 

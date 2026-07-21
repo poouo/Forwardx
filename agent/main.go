@@ -9,7 +9,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -51,10 +50,16 @@ const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
 const trafficCollectMaxInterval = 30 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
+const countingChainRepairInitialDelay = 30 * time.Second
 const runtimeActionRefreshInterval = 30 * time.Minute
 const agentLogRetention = 72 * time.Hour
 const agentLogMaxBytes int64 = 8 * 1024 * 1024
 const agentLogTailBytes int64 = 4 * 1024 * 1024
+const agentLogMinimumTailBytes int64 = 256 * 1024
+const agentLogDirectoryMaxBytes int64 = 64 * 1024 * 1024
+const agentLogDirectoryTargetBytes int64 = 48 * 1024 * 1024
+const agentLogSizeCheckInterval = 10 * time.Second
+const agentLogRetentionCheckInterval = time.Hour
 const agentMemoryCacheRetention = 24 * time.Hour
 const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
@@ -104,11 +109,7 @@ const actionSlowHandleThreshold = 15 * time.Second
 const actionShellTimeout = 90 * time.Second
 const actionShellSlowThreshold = 5 * time.Second
 const shellInlineMaxBytes = 8 * 1024
-const protocolGuardSampleMinBytes = 96
 const protocolGuardSampleMaxBytes = 512
-const protocolGuardSampleTimeout = 750 * time.Millisecond
-const protocolGuardConfirmations = 3
-const protocolGuardWindowStep = 64
 const protocolGuardTLSMinRecordSize = 64
 const protocolGuardSOCKS5MaxMethods = 16
 const protocolGuardUDPIdleTimeout = 2 * time.Minute
@@ -204,7 +205,9 @@ var failoverMu sync.Mutex
 var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
 var agentLogMu sync.Mutex
-var agentLogPrunedAt time.Time
+var agentLogSizePrunedAt time.Time
+var agentLogRetentionPrunedAt time.Time
+var agentLogMaintenanceOnce sync.Once
 var activeConfigPath string
 var runtimePanelURL atomic.Value
 var actionQueue = make(chan actionJob, actionQueueCapacity)
@@ -224,14 +227,20 @@ var publicIPMu sync.Mutex
 var publicIPv4Cache string
 var publicIPv6Cache string
 var publicIPCheckedAt time.Time
+var publicIPRefreshRunning bool
 var lastTrafficCollectAt time.Time
 var nextTrafficCollectInterval = trafficCollectInterval
+var trafficCollectMu sync.Mutex
+var trafficCollectRunning bool
 var cpuUsageMu sync.Mutex
 var previousCPUTimes cpuTimes
 var previousCPUReady bool
 var countingChainMu sync.Mutex
 var countingChainSignatures = map[string]string{}
 var countingChainCheckedAt = map[string]time.Time{}
+var countingChainRepairPending = map[string]bool{}
+var countingChainRepairQueue = make(chan runningRule, actionQueueCapacity)
+var countingChainRepairWorkersOnce sync.Once
 var runtimeActionMu sync.Mutex
 var runtimeActionCache = map[string]runtimeActionState{}
 var runtimeProxyLogMu sync.Mutex
@@ -882,16 +891,19 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 }
 
 type kernelForwardSnapshot struct {
-	nftLoaded       bool
-	nftTable        string
-	iptablesLoaded  map[string]bool
-	iptablesNatRule map[string]string
+	nftLoaded               bool
+	nftTable                string
+	iptablesLoaded          map[string]bool
+	iptablesNatRule         map[string]string
+	iptablesMangleLoaded    bool
+	iptablesForwardxMarkers map[int]bool
 }
 
 func newKernelForwardSnapshot() *kernelForwardSnapshot {
 	return &kernelForwardSnapshot{
-		iptablesLoaded:  map[string]bool{},
-		iptablesNatRule: map[string]string{},
+		iptablesLoaded:          map[string]bool{},
+		iptablesNatRule:         map[string]string{},
+		iptablesForwardxMarkers: map[int]bool{},
 	}
 }
 
@@ -1017,7 +1029,7 @@ func (s *kernelForwardSnapshot) localResidueStates(existingPorts map[string]bool
 				continue
 			}
 			proto, port, ok := kernelLineDport(line)
-			if !ok || !iptablesForwardxMarkerSeenForPort(port) {
+			if !ok || !s.iptablesForwardxMarkerSeenForPort(port) {
 				continue
 			}
 			targetIP, targetPort, _ := kernelLineDnatTarget(line)
@@ -1086,7 +1098,7 @@ func (s *kernelForwardSnapshot) nftTableText() string {
 	if !commandExists("nft") {
 		return ""
 	}
-	raw, err := exec.Command("nft", "-a", "list", "table", "inet", "forwardx").Output()
+	raw, err := commandOutputWithTimeout(5*time.Second, "nft", "-a", "list", "table", "inet", "forwardx")
 	if err != nil {
 		return ""
 	}
@@ -1111,7 +1123,7 @@ func (s *kernelForwardSnapshot) iptablesNatPreroutingText(binary string) string 
 	if binary == "ip6tables" && !commandExists("ip6tables") {
 		return ""
 	}
-	raw, err := exec.Command(binary, "-t", "nat", "-S", "PREROUTING").Output()
+	raw, err := commandOutputWithTimeout(5*time.Second, binary, "-t", "nat", "-S", "PREROUTING")
 	if err != nil {
 		return ""
 	}
@@ -1321,21 +1333,33 @@ func kernelLineDnatTarget(line string) (string, int, bool) {
 	return strings.Trim(token[:idx], "[]"), port, true
 }
 
-func iptablesForwardxMarkerSeenForPort(port int) bool {
-	if port <= 0 {
+func (s *kernelForwardSnapshot) iptablesForwardxMarkerSeenForPort(port int) bool {
+	if s == nil || port <= 0 {
 		return false
 	}
-	marker := "fwx-stat-" + strconv.Itoa(port) + ":"
-	for _, binary := range iptablesAgentBinaries() {
-		if binary == "ip6tables" && !commandExists("ip6tables") {
-			continue
-		}
-		raw, err := exec.Command(binary, "-t", "mangle", "-S").Output()
-		if err == nil && strings.Contains(string(raw), marker) {
-			return true
+	if !s.iptablesMangleLoaded {
+		s.iptablesMangleLoaded = true
+		markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):`)
+		for _, binary := range iptablesAgentBinaries() {
+			if binary == "ip6tables" && !commandExists("ip6tables") {
+				continue
+			}
+			raw, err := commandOutputWithTimeout(5*time.Second, binary, "-t", "mangle", "-S")
+			if err != nil {
+				continue
+			}
+			for _, match := range markerPattern.FindAllStringSubmatch(string(raw), -1) {
+				if len(match) < 2 {
+					continue
+				}
+				markerPort, err := strconv.Atoi(match[1])
+				if err == nil && markerPort > 0 {
+					s.iptablesForwardxMarkers[markerPort] = true
+				}
+			}
 		}
 	}
-	return false
+	return s.iptablesForwardxMarkers[port]
 }
 
 func readLocalRuntimeStatePayload() localRuntimeStatePayload {
@@ -1721,77 +1745,6 @@ func (p protocolPolicy) enabled() bool {
 	return p.BlockHTTP || p.BlockSocks || p.BlockTLS
 }
 
-func readProtocolGuardSample(conn net.Conn, initial []byte, minBytes int) []byte {
-	sample := append([]byte(nil), initial...)
-	if len(sample) >= minBytes {
-		return sample
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(protocolGuardSampleTimeout))
-	defer conn.SetReadDeadline(time.Time{})
-	for len(sample) < protocolGuardSampleMaxBytes {
-		limit := protocolGuardSampleMaxBytes - len(sample)
-		if limit > protocolGuardWindowStep {
-			limit = protocolGuardWindowStep
-		}
-		if limit <= 0 {
-			break
-		}
-		tmp := make([]byte, limit)
-		n, err := conn.Read(tmp)
-		if n > 0 {
-			sample = append(sample, tmp[:n]...)
-		}
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				break
-			}
-			break
-		}
-		if n == 0 {
-			break
-		}
-		if len(sample) >= minBytes {
-			break
-		}
-	}
-	return sample
-}
-
-func detectBlockedProtocolWithConfirmations(conn net.Conn, first []byte, policy protocolPolicy) ([]byte, string, bool) {
-	if len(first) == 0 || !policy.enabled() {
-		return first, "", false
-	}
-	sample := append([]byte(nil), first...)
-	candidate := ""
-	confirmed := 0
-	nextTarget := protocolGuardSampleMinBytes
-	for i := 0; i < protocolGuardConfirmations && len(sample) < protocolGuardSampleMaxBytes; i++ {
-		sample = readProtocolGuardSample(conn, sample, nextTarget)
-		if nextTarget < protocolGuardSampleMaxBytes {
-			nextTarget = len(sample) + protocolGuardWindowStep
-			if nextTarget > protocolGuardSampleMaxBytes {
-				nextTarget = protocolGuardSampleMaxBytes
-			}
-		}
-		proto := detectBlockedProtocol(sample, policy)
-		if proto == "" {
-			candidate = ""
-			confirmed = 0
-			continue
-		}
-		if candidate != proto {
-			candidate = proto
-			confirmed = 1
-			continue
-		}
-		confirmed++
-		if confirmed >= 2 {
-			return sample, candidate, true
-		}
-	}
-	return sample, "", false
-}
-
 type guardRule struct {
 	RuleID               int            `json:"ruleId"`
 	TunnelID             int            `json:"tunnelId"`
@@ -1831,6 +1784,7 @@ func main() {
 		return
 	}
 
+	startAgentLogMaintenance()
 	_ = register(cfg)
 	resetDesiredActionRecordsAfterAgentUpgrade()
 	startDesiredActionRecordsFlusher()
@@ -2462,18 +2416,13 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 	}
 	dependentSelfTests := make([]selfTest, 0, len(resp.SelfTests))
 	for _, t := range resp.SelfTests {
-		if t.WireGuardPeerID == "" {
+		if !selfTestDependsOnRuntime(t) {
 			enqueueSelfTest(cfg, t)
 			continue
 		}
 		dependentSelfTests = append(dependentSelfTests, t)
 	}
-	if len(dependentSelfTests) > 0 && len(actionDone) > 0 {
-		waitForActionBatch(actionDone, 8*time.Second)
-	}
-	for _, t := range dependentSelfTests {
-		enqueueSelfTest(cfg, t)
-	}
+	enqueueSelfTestsAfterActions(cfg, dependentSelfTests, actionDone)
 	for port := range snapshotProtectedActionPorts() {
 		pendingActionPorts[port] = true
 	}
@@ -2483,10 +2432,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		ensureCountingChainsIfNeeded(r)
 	}
 	syncProtocolGuards(cfg, state.GuardRules)
-	if lastTrafficCollectAt.IsZero() || time.Since(lastTrafficCollectAt) >= nextTrafficCollectInterval {
-		nextTrafficCollectInterval = collectTraffic(cfg)
-		lastTrafficCollectAt = time.Now()
-	}
+	scheduleTrafficCollection(cfg)
 	tcpingInterval := tcpingDueInterval(
 		state.HostProbeServices,
 		len(state.RunningRules)+len(state.RuleLatencyProbes),
@@ -3141,15 +3087,7 @@ func runAgentEventStream(cfg Config) error {
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
-	client := &http.Client{
-		Timeout: 0,
-		Transport: &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
-			ForceAttemptHTTP2: false,
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := agentEventHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -4118,13 +4056,13 @@ func mimicHooksReady(iface string) (bool, string) {
 	}
 	parts := []string{}
 	if commandExists("ip") {
-		if out, err := exec.Command("ip", "-details", "link", "show", "dev", iface).CombinedOutput(); err == nil && strings.Contains(strings.ToLower(string(out)), "xdp") {
+		if out, err := commandCombinedOutputWithTimeout(3*time.Second, "ip", "-details", "link", "show", "dev", iface); err == nil && strings.Contains(strings.ToLower(string(out)), "xdp") {
 			parts = append(parts, "xdp")
 		}
 	}
 	if commandExists("tc") {
 		for _, direction := range []string{"ingress", "egress"} {
-			if out, err := exec.Command("tc", "filter", "show", "dev", iface, direction).CombinedOutput(); err == nil && strings.TrimSpace(string(out)) != "" {
+			if out, err := commandCombinedOutputWithTimeout(3*time.Second, "tc", "filter", "show", "dev", iface, direction); err == nil && strings.TrimSpace(string(out)) != "" {
 				parts = append(parts, "tc-"+direction)
 			}
 		}
@@ -4480,7 +4418,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 				writeState(a)
 				return true
 			}
-			if actionUsesManagedListener(a) {
+			if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
 				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 				if !sharedNginxRuntimePort {
 					waitForActionListenPortFree(a, 2*time.Second)
@@ -4534,7 +4472,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			writeState(a)
 			return true
 		}
-		if actionUsesManagedListener(a) {
+		if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
 			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 			if !sharedNginxRuntimePort {
 				waitForActionListenPortFree(a, 2*time.Second)
@@ -4562,7 +4500,9 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		// The legacy marker stores only one rule per numeric port. A valid UDP
 		// marker can therefore hide a leaked TCP Realm/Socat service (and vice
 		// versa). Clean only the lane needed by this apply; keep the disjoint rule.
-		cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+		if unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
+			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+		}
 		cleanupGostRuntimeIfPortBusy(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 		if !sharedNginxRuntimePort {
 			waitForActionListenPortFree(a, 2*time.Second)
@@ -5002,7 +4942,7 @@ func listenPortOwnerPIDsForProtocol(port int, protocol string) []int {
 	if normalizeRuntimeProtocol(protocol) == "udp" {
 		args = []string{"-H", "-lunp"}
 	}
-	out, _ := exec.Command("ss", args...).CombinedOutput()
+	out, _ := commandCombinedOutputWithTimeout(3*time.Second, "ss", args...)
 	text := filterListenPortLines(string(out), portText)
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -5034,7 +4974,7 @@ func newRuntimeListenSnapshot() *runtimeListenSnapshot {
 		udpPorts: map[int][]string{},
 	}
 	if _, err := exec.LookPath("ss"); err == nil {
-		if out, err := exec.Command("ss", "-H", "-ltnup").CombinedOutput(); err == nil {
+		if out, err := commandCombinedOutputWithTimeout(3*time.Second, "ss", "-H", "-ltnup"); err == nil {
 			snapshot.parseSSListenOutput(string(out))
 		}
 	}
@@ -5266,6 +5206,7 @@ func writeUnitAndRestart(name, unit string, signature string) bool {
 		logf("write service: empty service name")
 		return false
 	}
+	unit = hardenManagedSystemdUnit(unit)
 	execStart := systemdUnitExecStart(unit)
 	if execStart == "" {
 		logf("write service %s: missing ExecStart", name)
@@ -5278,17 +5219,9 @@ func writeUnitAndRestart(name, unit string, signature string) bool {
 			logf("write systemd unit %s: %v", name, err)
 			return false
 		}
-		q := shellQuote(name)
-		if changed && !runShell("systemctl daemon-reload") {
-			return false
-		}
-		_ = runShell("systemctl reset-failed " + q + ".service 2>/dev/null || true")
-		if !changed && managedServiceSignatureMatches(name, signature) && managedServiceActive(name) {
-			logVerbosef("service %s unchanged and active; skip restart", name)
-			return true
-		}
-		ok := runShell("systemctl enable "+q+".service") &&
-			runShell("systemctl restart "+q+".service")
+		signatureMatches := !changed && managedServiceSignatureMatches(name, signature)
+		ok := systemdManagedServiceBatcher.submit(name, changed, signatureMatches)
+		cacheManagedServiceActivity(name, ok)
 		if ok {
 			writeManagedServiceSignature(name, signature)
 		}
@@ -5305,8 +5238,9 @@ func writeUnitAndRestart(name, unit string, signature string) bool {
 			logVerbosef("service %s unchanged and active; skip restart", name)
 			return true
 		}
-		ok := runShell("rc-update add "+shellQuote(name)+" default >/dev/null 2>&1 || true") &&
-			runShell("rc-service "+shellQuote(name)+" restart")
+		_ = runManagedServiceCommand("rc-update", "add", name, "default")
+		ok := runManagedServiceCommand("rc-service", name, "restart")
+		cacheManagedServiceActivity(name, ok)
 		if ok {
 			writeManagedServiceSignature(name, signature)
 		}
@@ -5323,9 +5257,14 @@ func writeUnitAndRestart(name, unit string, signature string) bool {
 			logVerbosef("service %s unchanged and active; skip restart", name)
 			return true
 		}
-		ok := runShell("command -v update-rc.d >/dev/null 2>&1 && update-rc.d "+shellQuote(name)+" defaults >/dev/null 2>&1 || true") &&
-			runShell("command -v chkconfig >/dev/null 2>&1 && chkconfig "+shellQuote(name)+" on >/dev/null 2>&1 || true") &&
-			runShell("/etc/init.d/"+shellQuote(name)+" restart")
+		if commandExists("update-rc.d") {
+			_ = runManagedServiceCommand("update-rc.d", name, "defaults")
+		}
+		if commandExists("chkconfig") {
+			_ = runManagedServiceCommand("chkconfig", name, "on")
+		}
+		ok := runManagedServiceCommand("/etc/init.d/"+name, "restart")
+		cacheManagedServiceActivity(name, ok)
 		if ok {
 			writeManagedServiceSignature(name, signature)
 		}
@@ -5407,17 +5346,22 @@ func managedServiceActive(name string) bool {
 	if name == "" {
 		return false
 	}
-	q := shellQuote(name)
+	if active, ok := cachedManagedServiceActivity(name); ok {
+		return active
+	}
+	active := false
 	if isSystemdHost() {
-		return runShellQuiet("systemctl is-active --quiet " + q + ".service")
+		_, err := commandCombinedOutputWithTimeout(10*time.Second, "systemctl", "is-active", "--quiet", name+".service")
+		active = err == nil
+	} else if commandExists("rc-service") {
+		_, err := commandCombinedOutputWithTimeout(10*time.Second, "rc-service", name, "status")
+		active = err == nil
+	} else if _, err := os.Stat("/etc/init.d/" + name); err == nil {
+		_, err = commandCombinedOutputWithTimeout(10*time.Second, "/etc/init.d/"+name, "status")
+		active = err == nil
 	}
-	if commandExists("rc-service") {
-		return runShellQuiet("rc-service " + q + " status >/dev/null 2>&1")
-	}
-	if _, err := os.Stat("/etc/init.d/" + name); err == nil {
-		return runShellQuiet("/etc/init.d/" + q + " status >/dev/null 2>&1")
-	}
-	return false
+	cacheManagedServiceActivity(name, active)
+	return active
 }
 
 func managedServiceNamesForAction(a action) []string {
@@ -5505,6 +5449,33 @@ func cleanupManagedService(name string) {
 		return
 	}
 	_ = runShell(managedServiceCleanupShell(name))
+	cacheManagedServiceActivity(name, false)
+}
+
+func unknownManagedListenerCleanupNeeded(port int, protocol string) bool {
+	if !validActionPort(port) {
+		return false
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if listenPortBusy(proto, port) {
+			return true
+		}
+	}
+	for _, name := range managedListenerServiceNamesForProtocol(port, protocol) {
+		paths := []string{
+			"/etc/systemd/system/" + name + ".service",
+			"/etc/init.d/" + name,
+			managedServiceSignaturePath(name),
+			"/etc/forwardx/realm/" + name + ".toml",
+		}
+		for _, path := range paths {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+		}
+	}
+	configs, _ := filepath.Glob(fmt.Sprintf("/run/forwardx-agent/fxp-*-%d.json", port))
+	return len(configs) > 0
 }
 
 func restartManagedService(name string) {
@@ -5513,7 +5484,8 @@ func restartManagedService(name string) {
 		return
 	}
 	q := shellQuote(name)
-	_ = runShell("if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl reset-failed " + q + ".service 2>/dev/null || true; systemctl restart " + q + ".service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " restart 2>/dev/null || true; elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " restart 2>/dev/null || true; fi")
+	ok := runShell("if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl reset-failed " + q + ".service 2>/dev/null || true; systemctl restart " + q + ".service; elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " restart; elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " restart; else exit 1; fi")
+	cacheManagedServiceActivity(name, ok)
 }
 
 func sanitizeServiceName(name string) string {
@@ -5555,13 +5527,58 @@ func systemdUnitExecStart(unit string) string {
 	return ""
 }
 
+func hardenManagedSystemdUnit(unit string) string {
+	lines := strings.Split(strings.ReplaceAll(unit, "\r\n", "\n"), "\n")
+	serviceIndex := -1
+	existing := map[string]bool{}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.EqualFold(trimmed, "[Service]") {
+			serviceIndex = i
+			continue
+		}
+		if serviceIndex < 0 || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			if serviceIndex >= 0 && i > serviceIndex {
+				break
+			}
+			continue
+		}
+		if key, _, ok := strings.Cut(trimmed, "="); ok {
+			existing[strings.ToLower(strings.TrimSpace(key))] = true
+		}
+	}
+	if serviceIndex < 0 {
+		return unit
+	}
+	directives := []string{
+		"LimitCORE=0",
+		"LogRateLimitIntervalSec=30s",
+		"LogRateLimitBurst=200",
+	}
+	insert := make([]string, 0, len(directives))
+	for _, directive := range directives {
+		key, _, _ := strings.Cut(directive, "=")
+		if !existing[strings.ToLower(key)] {
+			insert = append(insert, directive)
+		}
+	}
+	if len(insert) == 0 {
+		return strings.Join(lines, "\n")
+	}
+	result := make([]string, 0, len(lines)+len(insert))
+	result = append(result, lines[:serviceIndex+1]...)
+	result = append(result, insert...)
+	result = append(result, lines[serviceIndex+1:]...)
+	return strings.Join(result, "\n")
+}
+
 func openRCServiceScript(name, execStart string) string {
 	return strings.Join([]string{
 		"#!/sbin/openrc-run",
 		"name=\"" + name + "\"",
 		"description=\"ForwardX managed service " + name + "\"",
 		"command=\"/bin/sh\"",
-		"command_args=\"-lc " + shellQuote("exec "+execStart) + "\"",
+		"command_args=\"-lc " + shellQuote("ulimit -c 0 2>/dev/null || true; exec "+execStart) + "\"",
 		"command_background=true",
 		"pidfile=\"/run/${RC_SVCNAME}.pid\"",
 		"output_log=\"/var/log/forwardx-agent/${RC_SVCNAME}.log\"",
@@ -5574,7 +5591,7 @@ func openRCServiceScript(name, execStart string) string {
 }
 
 func sysVServiceScript(name, execStart string) string {
-	quotedCmd := shellQuote("exec " + execStart)
+	quotedCmd := shellQuote("ulimit -c 0 2>/dev/null || true; exec " + execStart)
 	return strings.Join([]string{
 		"#!/bin/sh",
 		"### BEGIN INIT INFO",
@@ -5616,7 +5633,7 @@ func managedServiceCleanupShell(name string) string {
 		"if [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " stop 2>/dev/null || true; fi; " +
 		"if command -v update-rc.d >/dev/null 2>&1; then update-rc.d -f " + q + " remove >/dev/null 2>&1 || true; fi; " +
 		"if command -v chkconfig >/dev/null 2>&1; then chkconfig " + q + " off >/dev/null 2>&1 || true; fi; " +
-		"rm -f /etc/init.d/" + name + " /var/lib/forwardx-agent/service_" + name + ".signature"
+		"rm -f /etc/init.d/" + name + " /var/lib/forwardx-agent/service_" + name + ".signature /var/log/forwardx-agent/" + name + ".log"
 }
 
 func writeState(a action) {
@@ -5722,6 +5739,7 @@ func resetTrafficStateIfRuleChanged(port string, nextRuleID int) {
 	currentRuleID := readRuleIDByPort(port)
 	if currentRuleID > 0 && currentRuleID != nextRuleID {
 		_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+		invalidateTrafficPrev(port)
 		logf("traffic baseline reset port=%s oldRule=%d newRule=%d", port, currentRuleID, nextRuleID)
 	}
 }
@@ -6081,6 +6099,7 @@ func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".tunnel")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+	invalidateTrafficPrev(port)
 	removeTunnelStateByPort(port)
 }
 
@@ -6094,9 +6113,9 @@ func atoi(s string) int {
 	return v
 }
 
-func ensureCountingChains(port int, targetIP string, targetPort int, protocol string) {
+func ensureCountingChains(port int, targetIP string, targetPort int, protocol string) bool {
 	if port <= 0 {
-		return
+		return true
 	}
 	p := strconv.Itoa(port)
 	inMarker := "fwx-stat-" + p + ":in"
@@ -6173,31 +6192,80 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+p),
 		)
 	}
-	for _, cmd := range commands {
-		if ok := runShell(cmd); !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
-			logf("traffic counting repair failed port=%s target=%s:%d protocol=%s cmd=%s", p, targetIP, targetPort, protocol, cmd)
-		}
+	ok := runShellBatch(commands)
+	if !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
+		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s commands=%d", p, targetIP, targetPort, protocol, len(commands))
 	}
+	return ok
 }
 
 func ensureCountingChainsIfNeeded(r runningRule) {
 	if r.ForwardType == "nftables" || r.SourcePort <= 0 {
 		return
 	}
-	signature := fmt.Sprintf("%d|%s|%d|%s", r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)
+	signature := countingChainRuleSignature(r)
 	key := strconv.Itoa(r.SourcePort)
 	now := time.Now()
 	countingChainMu.Lock()
 	lastSig := countingChainSignatures[key]
 	lastChecked := countingChainCheckedAt[key]
-	if lastSig == signature && !lastChecked.IsZero() && now.Sub(lastChecked) < countingChainRefreshInterval {
+	if (lastSig == signature && !lastChecked.IsZero() && now.Sub(lastChecked) < countingChainRefreshInterval) || countingChainRepairPending[key] {
 		countingChainMu.Unlock()
 		return
 	}
 	countingChainSignatures[key] = signature
 	countingChainCheckedAt[key] = now
+	countingChainRepairPending[key] = true
 	countingChainMu.Unlock()
-	ensureCountingChains(r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)
+	countingChainRepairWorkersOnce.Do(startCountingChainRepairWorkers)
+	select {
+	case countingChainRepairQueue <- r:
+	default:
+		countingChainMu.Lock()
+		delete(countingChainRepairPending, key)
+		countingChainCheckedAt[key] = time.Time{}
+		countingChainMu.Unlock()
+		if shouldLogAgentReport("traffic-counting-queue-full", agentReportLogInterval) {
+			logf("traffic counting repair queue full pending=%d", len(countingChainRepairQueue))
+		}
+	}
+}
+
+func startCountingChainRepairWorkers() {
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 2 {
+		workers = 2
+	}
+	for worker := 0; worker < workers; worker++ {
+		go countingChainRepairWorker()
+	}
+}
+
+func countingChainRepairWorker() {
+	for rule := range countingChainRepairQueue {
+		for atomic.LoadInt64(&actionPendingCount) > 0 || time.Since(agentProcessStartedAt) < countingChainRepairInitialDelay {
+			time.Sleep(250 * time.Millisecond)
+		}
+		ok := true
+		current, exists := desiredRunningRuleForStatePort(rule.RuleID, rule.SourcePort)
+		if exists && countingChainRuleSignature(current) == countingChainRuleSignature(rule) {
+			ok = ensureCountingChains(rule.SourcePort, rule.TargetIP, rule.TargetPort, rule.Protocol)
+		}
+		key := strconv.Itoa(rule.SourcePort)
+		countingChainMu.Lock()
+		delete(countingChainRepairPending, key)
+		if !ok {
+			countingChainCheckedAt[key] = time.Time{}
+		}
+		countingChainMu.Unlock()
+	}
+}
+
+func countingChainRuleSignature(rule runningRule) string {
+	return fmt.Sprintf("%d|%s|%d|%s", rule.SourcePort, rule.TargetIP, rule.TargetPort, rule.Protocol)
 }
 
 func removeState(port int) {
@@ -6207,6 +6275,7 @@ func removeState(port int) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".tunnel")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + p + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
+	invalidateTrafficPrev(p)
 	removeTunnelStateByPort(p)
 }
 
@@ -6388,7 +6457,7 @@ func fxpRuntimePIDs(configPath string) []int {
 	seen := map[int]bool{}
 	pids := []int{}
 	for _, pattern := range patterns {
-		out, err := exec.Command("pgrep", "-f", pattern).Output()
+		out, err := commandOutputWithTimeout(3*time.Second, "pgrep", "-f", pattern)
 		if err != nil {
 			continue
 		}
@@ -6957,6 +7026,117 @@ type protocolGuardServer struct {
 	udpConn  net.PacketConn
 	done     chan struct{}
 	doneOnce sync.Once
+}
+
+type protocolGuardInspection struct {
+	mu                   sync.Mutex
+	policy               protocolPolicy
+	clientSample         []byte
+	serverSample         []byte
+	socksVersion         byte
+	socks5Methods        map[byte]bool
+	socksCandidate       atomic.Bool
+	clientInspectionDone bool
+	blocked              bool
+}
+
+func newProtocolGuardInspection(policy protocolPolicy) *protocolGuardInspection {
+	return &protocolGuardInspection{policy: policy}
+}
+
+func (i *protocolGuardInspection) inspectClient(chunk []byte) (string, bool) {
+	if i == nil || len(chunk) == 0 || !i.policy.enabled() {
+		return "", false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.blocked || i.clientInspectionDone {
+		return "", false
+	}
+	if len(i.clientSample) < protocolGuardSampleMaxBytes {
+		remaining := protocolGuardSampleMaxBytes - len(i.clientSample)
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		i.clientSample = append(i.clientSample, chunk[:remaining]...)
+	}
+	if i.policy.BlockHTTP && detectHTTPProtocol(i.clientSample) {
+		i.blocked = true
+		i.clientInspectionDone = true
+		i.socksCandidate.Store(false)
+		return "http", true
+	}
+	if i.policy.BlockTLS && detectTLSProtocol(i.clientSample) {
+		i.blocked = true
+		i.clientInspectionDone = true
+		i.socksCandidate.Store(false)
+		return "tls", true
+	}
+	if !i.policy.BlockSocks {
+		i.clientInspectionDone = len(i.clientSample) >= protocolGuardSampleMaxBytes
+		return "", false
+	}
+	version, methods, ok := detectSocksClientHandshake(i.clientSample)
+	if !ok {
+		i.socksVersion = 0
+		i.socks5Methods = nil
+		i.serverSample = nil
+		i.socksCandidate.Store(false)
+		i.clientInspectionDone = len(i.clientSample) >= protocolGuardSampleMaxBytes
+		return "", false
+	}
+	i.socksVersion = version
+	i.socks5Methods = methods
+	i.serverSample = nil
+	i.socksCandidate.Store(true)
+	return "", false
+}
+
+func (i *protocolGuardInspection) inspectServer(chunk []byte) (string, bool) {
+	if i == nil || len(chunk) == 0 || !i.socksCandidate.Load() {
+		return "", false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.blocked || i.socksVersion == 0 {
+		return "", false
+	}
+	if len(i.serverSample) < 16 {
+		remaining := 16 - len(i.serverSample)
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		i.serverSample = append(i.serverSample, chunk[:remaining]...)
+	}
+	switch i.socksVersion {
+	case 0x05:
+		if len(i.serverSample) < 2 {
+			return "", false
+		}
+		method := i.serverSample[1]
+		if i.serverSample[0] == 0x05 && (method == 0xff || i.socks5Methods[method]) {
+			i.blocked = true
+			i.clientInspectionDone = true
+			i.socksCandidate.Store(false)
+			return "socks", true
+		}
+	case 0x04:
+		if len(i.serverSample) < 8 {
+			return "", false
+		}
+		status := i.serverSample[1]
+		if (i.serverSample[0] == 0x00 || i.serverSample[0] == 0x04) && status >= 0x5a && status <= 0x5d {
+			i.blocked = true
+			i.clientInspectionDone = true
+			i.socksCandidate.Store(false)
+			return "socks", true
+		}
+	}
+	i.socksVersion = 0
+	i.socks5Methods = nil
+	i.serverSample = nil
+	i.socksCandidate.Store(false)
+	return "", false
 }
 
 type lookingGlassTask struct {
@@ -7775,43 +7955,19 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 			}
 		}
 	}
+	inspection := newProtocolGuardInspection(s.rule.Policy)
 	errCh := make(chan error, 2)
-	go func() { errCh <- s.copyTCPToTargetWithGuard(cfg, client, target, first) }()
-	go func() { _, err := io.Copy(client, target); errCh <- err }()
+	go func() { errCh <- s.copyTCPToTargetWithGuard(cfg, client, target, first, inspection) }()
+	go func() { errCh <- s.copyTCPToClientWithGuard(cfg, client, target, inspection) }()
 	<-errCh
 }
 
-func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Conn, target net.Conn, initial []byte) error {
-	sample := make([]byte, 0, protocolGuardSampleMaxBytes)
-	firstData := true
-	inspect := func(chunk []byte) (string, bool) {
-		if !s.rule.Policy.enabled() || len(chunk) == 0 || len(sample) >= protocolGuardSampleMaxBytes {
-			return "", false
-		}
-		remaining := protocolGuardSampleMaxBytes - len(sample)
-		if remaining > len(chunk) {
-			remaining = len(chunk)
-		}
-		sample = append(sample, chunk[:remaining]...)
-		proto := detectBlockedProtocol(sample, s.rule.Policy)
-		return proto, proto != ""
-	}
+func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Conn, target net.Conn, initial []byte, inspection *protocolGuardInspection) error {
 	writeChunk := func(chunk []byte) error {
 		if len(chunk) == 0 {
 			return nil
 		}
-		if firstData {
-			firstData = false
-			if _, err := target.Write(chunk); err != nil {
-				return err
-			}
-			if proto, blocked := inspect(chunk); blocked {
-				go reportProtocolBlock(cfg, s.rule, proto)
-				return fmt.Errorf("protocol blocked: %s", proto)
-			}
-			return nil
-		}
-		if proto, blocked := inspect(chunk); blocked {
+		if proto, blocked := inspection.inspectClient(chunk); blocked {
 			go reportProtocolBlock(cfg, s.rule, proto)
 			return fmt.Errorf("protocol blocked: %s", proto)
 		}
@@ -7826,6 +7982,30 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Co
 		n, err := client.Read(buf)
 		if n > 0 {
 			if writeErr := writeChunk(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (s *protocolGuardServer) copyTCPToClientWithGuard(cfg Config, client net.Conn, target net.Conn, inspection *protocolGuardInspection) error {
+	if !s.rule.Policy.enabled() {
+		_, err := io.Copy(client, target)
+		return err
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := target.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if proto, blocked := inspection.inspectServer(chunk); blocked {
+				go reportProtocolBlock(cfg, s.rule, proto)
+				return fmt.Errorf("protocol blocked: %s", proto)
+			}
+			if _, writeErr := client.Write(chunk); writeErr != nil {
 				return writeErr
 			}
 		}
@@ -8283,22 +8463,6 @@ func buildProxyProtocolV1(info proxyProtocolInfo, fallbackSource net.Addr, targe
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
 }
 
-func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
-	if len(data) == 0 {
-		return ""
-	}
-	if policy.BlockHTTP && detectHTTPProtocol(data) {
-		return "http"
-	}
-	if policy.BlockTLS && detectTLSProtocol(data) {
-		return "tls"
-	}
-	if policy.BlockSocks && detectSocksProtocol(data) {
-		return "socks"
-	}
-	return ""
-}
-
 func detectHTTPProtocol(data []byte) bool {
 	if bytes.HasPrefix(data, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
 		return true
@@ -8346,31 +8510,52 @@ func detectTLSProtocol(data []byte) bool {
 }
 
 func detectSocksProtocol(data []byte) bool {
+	_, _, ok := detectSocksClientHandshake(data)
+	return ok
+}
+
+func detectSocksClientHandshake(data []byte) (byte, map[byte]bool, bool) {
 	if len(data) < 2 {
-		return false
+		return 0, nil, false
 	}
 	if data[0] == 0x04 {
-		if len(data) < 9 || (data[1] != 0x01 && data[1] != 0x02) {
-			return false
-		}
-		return bytes.IndexByte(data[8:], 0x00) >= 0
+		return 0x04, nil, detectSocks4Request(data)
 	}
 	if data[0] != 0x05 {
-		return false
-	}
-	if len(data) < 4 {
-		return false
+		return 0, nil, false
 	}
 	nMethods := int(data[1])
-	if nMethods <= 0 || nMethods > protocolGuardSOCKS5MaxMethods || len(data) < 2+nMethods {
+	if nMethods <= 0 || nMethods > protocolGuardSOCKS5MaxMethods || len(data) != 2+nMethods {
+		return 0, nil, false
+	}
+	methods := make(map[byte]bool, nMethods)
+	for _, method := range data[2:] {
+		if method == 0xff || methods[method] {
+			return 0, nil, false
+		}
+		methods[method] = true
+	}
+	return 0x05, methods, true
+}
+
+func detectSocks4Request(data []byte) bool {
+	if len(data) < 9 || data[0] != 0x04 || (data[1] != 0x01 && data[1] != 0x02) {
 		return false
 	}
-	for _, method := range data[2 : 2+nMethods] {
-		if method == 0x00 || method == 0x02 {
-			return true
-		}
+	userEnd := bytes.IndexByte(data[8:], 0x00)
+	if userEnd < 0 {
+		return false
 	}
-	return false
+	end := 8 + userEnd + 1
+	isSocks4A := data[4] == 0x00 && data[5] == 0x00 && data[6] == 0x00 && data[7] != 0x00
+	if isSocks4A {
+		domainEnd := bytes.IndexByte(data[end:], 0x00)
+		if domainEnd <= 0 {
+			return false
+		}
+		end += domainEnd + 1
+	}
+	return end == len(data)
 }
 
 func reportProtocolBlock(cfg Config, rule guardRule, proto string) {
@@ -8404,7 +8589,7 @@ type fxpLogWriter struct {
 }
 
 func (w fxpLogWriter) Write(p []byte) (int, error) {
-	msg := strings.TrimSpace(string(p))
+	msg := compactLogOutput(string(p))
 	if msg != "" {
 		logf("fxp runtime: %s", msg)
 		recordFXPEndpointLog(w.spec, msg)
@@ -8443,8 +8628,7 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 60 * time.Second}
-	res, err := client.Do(req)
+	res, err := agentSyncHTTPClient.Do(req)
 	if err != nil {
 		if isTransientAgentCommError(err) {
 			logAgentCommError("post:"+path, err)
@@ -8647,8 +8831,7 @@ func syncSystemTime(reason string) bool {
 }
 
 func runClockSyncCommand(cmd string) bool {
-	c := exec.Command("sh", "-lc", cmd)
-	out, err := c.CombinedOutput()
+	out, err := commandCombinedOutputWithTimeout(30*time.Second, "sh", "-lc", cmd)
 	if len(out) > 0 {
 		logf("time sync: %s", strings.TrimSpace(string(out)))
 	}
@@ -8884,7 +9067,7 @@ func listenPortOwnerSummary(port int) string {
 		if _, err := exec.LookPath(p.name); err != nil {
 			continue
 		}
-		out, _ := exec.Command(p.name, p.args...).CombinedOutput()
+		out, _ := commandCombinedOutputWithTimeout(3*time.Second, p.name, p.args...)
 		text := strings.TrimSpace(string(out))
 		if p.filterPort {
 			text = filterListenPortLines(text, portText)
@@ -8957,48 +9140,89 @@ func osInfo() string {
 
 func publicIPs() (string, string) {
 	publicIPMu.Lock()
-	if !publicIPCheckedAt.IsZero() && time.Since(publicIPCheckedAt) < publicIPRefreshInterval {
-		ipv4, ipv6 := publicIPv4Cache, publicIPv6Cache
-		publicIPMu.Unlock()
-		return ipv4, ipv6
+	ipv4, ipv6 := publicIPv4Cache, publicIPv6Cache
+	stale := publicIPCheckedAt.IsZero() || time.Since(publicIPCheckedAt) >= publicIPRefreshInterval
+	if stale && !publicIPRefreshRunning {
+		publicIPRefreshRunning = true
+		go refreshPublicIPs()
 	}
-	publicIPMu.Unlock()
-
-	ipv4 := fetchPublicIP([]string{
-		"https://api.ipify.org",
-		"https://ipv4.icanhazip.com",
-		"https://v4.ident.me",
-	})
-	ipv6 := localPublicIPv6()
-	if ipv6 == "" {
-		ipv6 = fetchPublicIP([]string{
-			"https://api6.ipify.org",
-			"https://ipv6.icanhazip.com",
-			"https://v6.ident.me",
-		})
-	}
-	publicIPMu.Lock()
-	if ipv4 != "" || ipv6 != "" {
-		publicIPv4Cache = ipv4
-		publicIPv6Cache = ipv6
-	} else {
-		ipv4, ipv6 = publicIPv4Cache, publicIPv6Cache
-	}
-	publicIPCheckedAt = time.Now()
 	publicIPMu.Unlock()
 	return ipv4, ipv6
 }
 
+func refreshPublicIPs() {
+	ipv4Ch := make(chan string, 1)
+	ipv6Ch := make(chan string, 1)
+	go func() {
+		ipv4Ch <- fetchPublicIP([]string{
+			"https://api.ipify.org",
+			"https://ipv4.icanhazip.com",
+			"https://v4.ident.me",
+		})
+	}()
+	go func() {
+		ipv6 := localPublicIPv6()
+		if ipv6 == "" {
+			ipv6 = fetchPublicIP([]string{
+				"https://api6.ipify.org",
+				"https://ipv6.icanhazip.com",
+				"https://v6.ident.me",
+			})
+		}
+		ipv6Ch <- ipv6
+	}()
+	ipv4 := <-ipv4Ch
+	ipv6 := <-ipv6Ch
+	publicIPMu.Lock()
+	if ipv4 != "" {
+		publicIPv4Cache = ipv4
+	}
+	if ipv6 != "" {
+		publicIPv6Cache = ipv6
+	}
+	publicIPCheckedAt = time.Now()
+	publicIPRefreshRunning = false
+	publicIPMu.Unlock()
+}
+
 func fetchPublicIP(urls []string) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	results := make(chan string, len(urls))
 	for _, u := range urls {
-		c := &http.Client{Timeout: 5 * time.Second}
-		if res, err := c.Get(u); err == nil {
-			b, _ := io.ReadAll(res.Body)
-			res.Body.Close()
-			ip := strings.TrimSpace(string(b))
-			if net.ParseIP(ip) != nil {
+		u := u
+		go func() {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				results <- ""
+				return
+			}
+			res, err := agentPublicHTTPClient.Do(req)
+			if err != nil {
+				results <- ""
+				return
+			}
+			body, _ := io.ReadAll(io.LimitReader(res.Body, 128))
+			_ = res.Body.Close()
+			ip := strings.TrimSpace(string(body))
+			if res.StatusCode >= 300 || net.ParseIP(ip) == nil {
+				ip = ""
+			}
+			results <- ip
+		}()
+	}
+	for range urls {
+		select {
+		case ip := <-results:
+			if ip != "" {
+				cancel()
 				return ip
 			}
+		case <-ctx.Done():
+			return ""
 		}
 	}
 	return ""
@@ -9012,7 +9236,7 @@ func localPublicIPv6() string {
 }
 
 func localPublicIPv6FromIPCommand() string {
-	out, err := exec.Command("ip", "-o", "-6", "addr", "show", "scope", "global").Output()
+	out, err := commandOutputWithTimeout(3*time.Second, "ip", "-o", "-6", "addr", "show", "scope", "global")
 	if err != nil {
 		return ""
 	}
@@ -9323,7 +9547,7 @@ func netBytes(idx int) uint64 {
 }
 
 func diskStats() (usage int, used uint64, total uint64) {
-	out, err := exec.Command("sh", "-lc", `df -P -B1 / | awk 'NR==2 {gsub("%","",$5); print $5, $3, $2}'`).Output()
+	out, err := commandOutputWithTimeout(3*time.Second, "sh", "-lc", `df -P -B1 / | awk 'NR==2 {gsub("%","",$5); print $5, $3, $2}'`)
 	if err != nil {
 		return 0, 0, 0
 	}
@@ -9383,9 +9607,26 @@ func logf(format string, args ...any) {
 	f, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err == nil {
 		_, _ = f.WriteString(line)
+		info, _ := f.Stat()
 		_ = f.Close()
+		if info != nil && info.Size() > agentLogMaxBytes {
+			trimLogFileTail(agentLogPath, agentLogTailBytes)
+		}
 	}
 	pruneAgentLocalLogsLocked()
+}
+
+func startAgentLogMaintenance() {
+	agentLogMaintenanceOnce.Do(func() {
+		pruneAgentLocalLogs()
+		go func() {
+			ticker := time.NewTicker(agentLogSizeCheckInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				pruneAgentLocalLogs()
+			}
+		}()
+	})
 }
 
 func pruneAgentRuntimeData() {
@@ -9400,32 +9641,78 @@ func pruneAgentLocalLogs() {
 }
 
 func pruneAgentLocalLogsLocked() {
-	if time.Since(agentLogPrunedAt) < time.Hour {
+	now := time.Now()
+	checkSizes := agentLogSizePrunedAt.IsZero() || now.Sub(agentLogSizePrunedAt) >= agentLogSizeCheckInterval
+	checkRetention := agentLogRetentionPrunedAt.IsZero() || now.Sub(agentLogRetentionPrunedAt) >= agentLogRetentionCheckInterval
+	if !checkSizes && !checkRetention {
 		return
 	}
-	agentLogPrunedAt = time.Now()
-	paths, err := filepath.Glob(filepath.Join(agentLogDir, "*.log"))
-	if err != nil || len(paths) == 0 {
-		paths = []string{agentLogPath}
+	if checkSizes {
+		agentLogSizePrunedAt = now
 	}
-	for _, path := range paths {
-		pruneAgentLocalLogFile(path)
+	if checkRetention {
+		agentLogRetentionPrunedAt = now
 	}
+	pruneLogDirectory(agentLogDir, agentLogPath, now, checkRetention, logPruneLimits{
+		fileMaxBytes:    agentLogMaxBytes,
+		fileTailBytes:   agentLogTailBytes,
+		minimumTail:     agentLogMinimumTailBytes,
+		directoryMax:    agentLogDirectoryMaxBytes,
+		directoryTarget: agentLogDirectoryTargetBytes,
+		retention:       agentLogRetention,
+	})
 }
 
-func pruneAgentLocalLogFile(path string) {
+type logPruneLimits struct {
+	fileMaxBytes    int64
+	fileTailBytes   int64
+	minimumTail     int64
+	directoryMax    int64
+	directoryTarget int64
+	retention       time.Duration
+}
+
+type logFileUsage struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+func pruneLogDirectory(dir string, primaryPath string, now time.Time, checkRetention bool, limits logPruneLimits) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.log"))
+	if err != nil || len(paths) == 0 {
+		paths = []string{primaryPath}
+	}
+	for _, path := range paths {
+		pruneAgentLocalLogFile(path, now, checkRetention, limits)
+	}
+	enforceLogDirectoryLimit(paths, primaryPath, limits)
+}
+
+func pruneAgentLocalLogFile(path string, now time.Time, checkRetention bool, limits logPruneLimits) {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if err != nil || !info.Mode().IsRegular() {
 		return
 	}
-	if info.Size() > agentLogMaxBytes {
-		trimLogFileTail(path, agentLogTailBytes)
+	if info.Size() > limits.fileMaxBytes {
+		trimLogFileTail(path, limits.fileTailBytes)
+	}
+	if !checkRetention || limits.retention <= 0 {
+		return
+	}
+	info, err = os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	cutoff := now.Add(-limits.retention)
+	if info.ModTime().Before(cutoff) {
+		_ = os.Truncate(path, 0)
+		return
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-agentLogRetention)
 	lines := strings.Split(string(raw), "\n")
 	retained := make([]string, 0, len(lines))
 	changed := false
@@ -9433,9 +9720,8 @@ func pruneAgentLocalLogFile(path string) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
-		t, err := time.Parse(time.RFC3339, parts[0])
-		if err != nil {
+		t, ok := parseLogLineTime(line)
+		if !ok {
 			retained = append(retained, line)
 			continue
 		}
@@ -9452,8 +9738,106 @@ func pruneAgentLocalLogFile(path string) {
 			_ = os.WriteFile(path, []byte(strings.Join(retained, "\n")+"\n"), 0644)
 		}
 	}
-	if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > agentLogMaxBytes {
-		trimLogFileTail(path, agentLogTailBytes)
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() > limits.fileMaxBytes {
+		trimLogFileTail(path, limits.fileTailBytes)
+	}
+}
+
+func parseLogLineTime(line string) (time.Time, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339, fields[0]); err == nil {
+		return parsed, true
+	}
+	if len(fields) >= 2 {
+		for _, layout := range []string{"2006/01/02 15:04:05.000000", "2006/01/02 15:04:05"} {
+			if parsed, err := time.ParseInLocation(layout, fields[0]+" "+fields[1], time.Local); err == nil {
+				return parsed, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func enforceLogDirectoryLimit(paths []string, primaryPath string, limits logPruneLimits) {
+	if limits.directoryMax <= 0 || limits.directoryTarget <= 0 {
+		return
+	}
+	files := make([]logFileUsage, 0, len(paths))
+	var total int64
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		files = append(files, logFileUsage{path: path, size: info.Size(), modTime: info.ModTime()})
+		total += info.Size()
+	}
+	if total <= limits.directoryMax {
+		return
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].size == files[j].size {
+			return files[i].modTime.Before(files[j].modTime)
+		}
+		return files[i].size > files[j].size
+	})
+	for i := range files {
+		if total <= limits.directoryTarget {
+			return
+		}
+		keep := limits.minimumTail
+		if filepath.Clean(files[i].path) == filepath.Clean(primaryPath) && limits.fileTailBytes > keep {
+			keep = limits.fileTailBytes
+		}
+		if keep < 0 || files[i].size <= keep {
+			continue
+		}
+		before := files[i].size
+		trimLogFileTail(files[i].path, keep)
+		if info, err := os.Stat(files[i].path); err == nil {
+			files[i].size = info.Size()
+			total -= before - info.Size()
+		}
+	}
+	if total <= limits.directoryTarget {
+		return
+	}
+
+	// A host with hundreds of noisy per-rule logs can exceed the directory cap
+	// even after every file keeps a small tail. Drop the oldest runtime logs first.
+	sort.Slice(files, func(i, j int) bool {
+		iPrimary := filepath.Clean(files[i].path) == filepath.Clean(primaryPath)
+		jPrimary := filepath.Clean(files[j].path) == filepath.Clean(primaryPath)
+		if iPrimary != jPrimary {
+			return !iPrimary
+		}
+		return files[i].modTime.Before(files[j].modTime)
+	})
+	for i := range files {
+		if total <= limits.directoryTarget {
+			return
+		}
+		if files[i].size <= 0 {
+			continue
+		}
+		keep := int64(0)
+		if filepath.Clean(files[i].path) == filepath.Clean(primaryPath) {
+			keep = limits.minimumTail
+		}
+		before := files[i].size
+		if keep > 0 {
+			trimLogFileTail(files[i].path, keep)
+		} else {
+			_ = os.Truncate(files[i].path, 0)
+		}
+		if info, err := os.Stat(files[i].path); err == nil {
+			files[i].size = info.Size()
+			total -= before - info.Size()
+		}
 	}
 }
 

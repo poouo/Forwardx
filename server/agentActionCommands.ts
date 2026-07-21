@@ -432,13 +432,34 @@ function unitExecStart(unit: string) {
   return line ? line.slice("ExecStart=".length).trim() : "";
 }
 
+export function hardenManagedServiceUnit(unit: string) {
+  const lines = String(unit || "").replace(/\r\n/g, "\n").split("\n");
+  const serviceIndex = lines.findIndex((line) => line.trim().toLowerCase() === "[service]");
+  if (serviceIndex < 0) return unit;
+  const existing = new Set<string>();
+  for (let index = serviceIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (line.startsWith("[") && line.endsWith("]")) break;
+    const separator = line.indexOf("=");
+    if (separator > 0) existing.add(line.slice(0, separator).trim().toLowerCase());
+  }
+  const directives = [
+    "LimitCORE=0",
+    "LogRateLimitIntervalSec=30s",
+    "LogRateLimitBurst=200",
+  ].filter((directive) => !existing.has(directive.slice(0, directive.indexOf("=")).toLowerCase()));
+  if (directives.length === 0) return lines.join("\n");
+  lines.splice(serviceIndex + 1, 0, ...directives);
+  return lines.join("\n");
+}
+
 function openRcScript(svcName: string, execStart: string) {
   return [
     "#!/sbin/openrc-run",
     `name="${svcName}"`,
     `description="ForwardX managed service ${svcName}"`,
     'command="/bin/sh"',
-    `command_args="-lc ${shQuote(`exec ${execStart}`)}"`,
+    `command_args="-lc ${shQuote(`ulimit -c 0 2>/dev/null || true; exec ${execStart}`)}"`,
     "command_background=true",
     'pidfile="/run/${RC_SVCNAME}.pid"',
     'output_log="/var/log/forwardx-agent/${RC_SVCNAME}.log"',
@@ -463,7 +484,7 @@ function sysVScript(svcName: string, execStart: string) {
     "### END INIT INFO",
     `PIDFILE=/run/${svcName}.pid`,
     `LOGFILE=/var/log/forwardx-agent/${svcName}.log`,
-    `CMD=${shQuote(`exec ${execStart}`)}`,
+    `CMD=${shQuote(`ulimit -c 0 2>/dev/null || true; exec ${execStart}`)}`,
     'start() { mkdir -p /run /var/log/forwardx-agent; if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then return 0; fi; nohup sh -lc "$CMD" >> "$LOGFILE" 2>&1 & echo $! > "$PIDFILE"; }',
     'stop() { if [ -s "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; rm -f "$PIDFILE"; fi; }',
     'case "$1" in',
@@ -479,10 +500,11 @@ function sysVScript(svcName: string, execStart: string) {
 
 export function writeManagedServiceCmd(svcNameRaw: string, unit: string) {
   const svcName = serviceName(svcNameRaw);
-  const execStart = unitExecStart(unit);
+  const boundedUnit = hardenManagedServiceUnit(unit);
+  const execStart = unitExecStart(boundedUnit);
   if (!execStart) return `echo "[service] ${svcName} missing ExecStart"; exit 1`;
   const q = shQuote(svcName);
-  const unitB64 = Buffer.from(unit, "utf8").toString("base64");
+  const unitB64 = Buffer.from(boundedUnit, "utf8").toString("base64");
   const openRcB64 = Buffer.from(openRcScript(svcName, execStart), "utf8").toString("base64");
   const sysVB64 = Buffer.from(sysVScript(svcName, execStart), "utf8").toString("base64");
   return `mkdir -p /var/log/forwardx-agent; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then mkdir -p /etc/systemd/system; unit_path=/etc/systemd/system/${svcName}.service; unit_tmp="$unit_path.forwardx-new.$$"; printf '%s' '${unitB64}' | base64 -d > "$unit_tmp" || { rm -f "$unit_tmp"; exit 1; }; if [ ! -f "$unit_path" ] || ! cmp -s "$unit_tmp" "$unit_path"; then mv -f "$unit_tmp" "$unit_path"; chmod 644 "$unit_path"; systemctl daemon-reload; else rm -f "$unit_tmp"; fi; systemctl reset-failed ${q}.service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then script_path=/etc/init.d/${svcName}; script_tmp="$script_path.forwardx-new.$$"; printf '%s' '${openRcB64}' | base64 -d > "$script_tmp" || { rm -f "$script_tmp"; exit 1; }; if [ ! -f "$script_path" ] || ! cmp -s "$script_tmp" "$script_path"; then mv -f "$script_tmp" "$script_path"; chmod 755 "$script_path"; else rm -f "$script_tmp"; fi; elif [ -d /etc/init.d ]; then script_path=/etc/init.d/${svcName}; script_tmp="$script_path.forwardx-new.$$"; printf '%s' '${sysVB64}' | base64 -d > "$script_tmp" || { rm -f "$script_tmp"; exit 1; }; if [ ! -f "$script_path" ] || ! cmp -s "$script_tmp" "$script_path"; then mv -f "$script_tmp" "$script_path"; chmod 755 "$script_path"; else rm -f "$script_tmp"; fi; else echo "[service] unsupported init system for ${svcName}"; exit 1; fi`;
@@ -513,5 +535,5 @@ export function stopManagedServiceCmd(svcNameRaw: string) {
 export function removeManagedServiceCmd(svcNameRaw: string) {
   const svcName = serviceName(svcNameRaw);
   const q = shQuote(svcName);
-  return `${stopManagedServiceCmd(svcName)}; systemd_unit=/etc/systemd/system/${svcName}.service; systemd_removed=0; if [ -e "$systemd_unit" ]; then rm -f "$systemd_unit"; systemd_removed=1; fi; rm -f /etc/init.d/${svcName} /var/lib/forwardx-agent/service_${svcName}.signature 2>/dev/null || true; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then if [ "$systemd_removed" = "1" ]; then systemctl daemon-reload 2>/dev/null || true; fi; systemctl reset-failed ${q}.service 2>/dev/null || true; fi; command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f ${q} remove >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} off >/dev/null 2>&1 || true`;
+  return `${stopManagedServiceCmd(svcName)}; systemd_unit=/etc/systemd/system/${svcName}.service; systemd_removed=0; if [ -e "$systemd_unit" ]; then rm -f "$systemd_unit"; systemd_removed=1; fi; rm -f /etc/init.d/${svcName} /var/lib/forwardx-agent/service_${svcName}.signature /var/log/forwardx-agent/${svcName}.log 2>/dev/null || true; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then if [ "$systemd_removed" = "1" ]; then systemctl daemon-reload 2>/dev/null || true; fi; systemctl reset-failed ${q}.service 2>/dev/null || true; fi; command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f ${q} remove >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} off >/dev/null 2>&1 || true`;
 }

@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
-import { AGENT_PLUGIN_TASK_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
+import { AGENT_PLUGIN_TASK_VERSION, buildTunnelAgentSelfTestPayload, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import { getAgentMigrationSwitchTarget, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 import * as hopRepo from "./repositories/tunnelRepository";
@@ -4926,34 +4926,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const claimed = await db.markForwardTestRunning(t.id);
       if (!claimed) continue;
       const meta = parseSelfTestMeta((t as any).message);
-      if (meta?.kind === "tunnel") {
-        selfTests.push({
-          testId: t.id,
-          kind: "tunnel",
-          tunnelId: meta.tunnelId,
-          ruleId: 0,
-          forwardType: "gost-tunnel",
-          protocol: "tcp",
-          sourcePort: 0,
-          targetIp: meta.targetIp,
-          targetPort: meta.targetPort,
-          wireGuardPeerId: (meta as any).wireGuardPeerId,
-        });
-        continue;
-      }
-      if (meta?.kind === "tunnel-hop") {
-        selfTests.push({
-          testId: t.id,
-          kind: "tunnel-hop",
-          tunnelId: meta.tunnelId,
-          ruleId: 0,
-          forwardType: "gost-tunnel",
-          protocol: "tcp",
-          sourcePort: 0,
-          targetIp: meta.targetIp,
-          targetPort: meta.targetPort,
-          wireGuardPeerId: (meta as any).wireGuardPeerId,
-        });
+      const tunnelSelfTest = buildTunnelAgentSelfTestPayload(t, meta);
+      if (tunnelSelfTest) {
+        selfTests.push(tunnelSelfTest);
         continue;
       }
       if (meta?.kind === "forward-via-tunnel") {

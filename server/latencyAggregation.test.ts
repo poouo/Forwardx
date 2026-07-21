@@ -127,6 +127,30 @@ test("tunnel relay probe validation accepts every entry and its matching relay p
   }, context), false);
 });
 
+test("standard multi-hop probe validation accepts every configured entry for the first hop", async () => {
+  const tunnel = { id: 91004, isEnabled: true, mode: "forwardx" };
+  const hops = [
+    { hostId: 10, listenPort: 10010 },
+    { hostId: 20, listenPort: 10020 },
+    { hostId: 30, listenPort: 10030 },
+  ];
+  const context = { hops, exitNodes: [], entryHostIds: new Set([10, 11]), topologyKey: "multi-entry-hop" };
+  assert.equal(await validateTunnelProbeSource(11, tunnel, {
+    tunnelId: tunnel.id,
+    hopIndex: 0,
+    hopCount: 2,
+    targetPort: 10020,
+    topologyKey: "multi-entry-hop",
+  }, context), true);
+  assert.equal(await validateTunnelProbeSource(12, tunnel, {
+    tunnelId: tunnel.id,
+    hopIndex: 0,
+    hopCount: 2,
+    targetPort: 10020,
+    topologyKey: "multi-entry-hop",
+  }, context), false);
+});
+
 test("forward-chain hop aggregation never mixes topology generations", () => {
   assert.equal(recordForwardGroupAutoHopLatency({
     groupId: 92001,
