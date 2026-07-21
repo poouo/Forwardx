@@ -11,6 +11,11 @@ import (
 
 const selfTestWorkerConcurrency = 8
 const selfTestQueueCapacity = 256
+const selfTestRuntimeReadinessWindow = 20 * time.Second
+const selfTestTCPAttemptTimeout = 3 * time.Second
+const selfTestWireGuardAttemptTimeout = 5 * time.Second
+const selfTestRetryBaseDelay = 500 * time.Millisecond
+const selfTestRetryMaxDelay = 2 * time.Second
 
 type selfTestJob struct {
 	cfg  Config
@@ -57,6 +62,27 @@ func enqueueSelfTest(cfg Config, t selfTest) {
 			logf("selftest queue full; dropping test=%d target=%s", t.TestID, t.TargetIP)
 		}
 	}
+}
+
+func enqueueSelfTestsAfterActions(cfg Config, tests []selfTest, actionDone []<-chan struct{}) {
+	if len(tests) == 0 {
+		return
+	}
+	tests = append([]selfTest(nil), tests...)
+	actionDone = append([]<-chan struct{}(nil), actionDone...)
+	enqueue := func() {
+		if len(actionDone) > 0 {
+			waitForActionBatch(actionDone, selfTestRuntimeReadinessWindow)
+		}
+		for _, test := range tests {
+			enqueueSelfTest(cfg, test)
+		}
+	}
+	if len(actionDone) == 0 {
+		enqueue()
+		return
+	}
+	go enqueue()
 }
 
 func startSelfTestWorkers() {
@@ -120,16 +146,45 @@ func handleSelfTest(cfg Config, t selfTest) {
 	}
 
 	latency, reachable, resolvedTarget := 0, false, ""
-	for attempt := 0; attempt < selfTestTCPAttempts(t); attempt++ {
+	minimumAttempts := selfTestTCPAttempts(t)
+	readinessWindow := selfTestTCPReadinessWindow(t)
+	startedAt := time.Now()
+	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			delay := selfTestRetryDelay(attempt)
+			if readinessWindow > 0 {
+				remaining := readinessWindow - time.Since(startedAt)
+				if remaining <= 0 {
+					break
+				}
+				if delay > remaining {
+					delay = remaining
+				}
+			}
+			time.Sleep(delay)
+		}
+		attemptTimeout := selfTestTCPAttemptTimeout
+		if t.WireGuardPeerID != "" && t.TunnelID > 0 {
+			attemptTimeout = selfTestWireGuardAttemptTimeout
+		}
+		if readinessWindow > 0 {
+			remaining := readinessWindow - time.Since(startedAt)
+			if remaining <= 0 {
+				break
+			}
+			if attemptTimeout > remaining {
+				attemptTimeout = remaining
+			}
 		}
 		if t.WireGuardPeerID != "" && t.TunnelID > 0 {
-			latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, 3*time.Second)
+			latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, attemptTimeout)
 		} else {
-			latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, 3*time.Second)
+			latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, attemptTimeout)
 		}
 		if reachable {
+			break
+		}
+		if attempt+1 >= minimumAttempts && (readinessWindow <= 0 || time.Since(startedAt) >= readinessWindow) {
 			break
 		}
 	}
@@ -160,11 +215,41 @@ func handleSelfTest(cfg Config, t selfTest) {
 
 func selfTestTCPAttempts(t selfTest) int {
 	switch strings.ToLower(strings.TrimSpace(t.Kind)) {
-	case "tunnel", "tunnel-hop", "forward-via-tunnel", "forward-via-tunnel-entry":
+	case "tunnel", "tunnel-hop", "forward-via-tunnel", "forward-via-tunnel-entry", "forward-chain":
 		return 4
 	default:
 		return 1
 	}
+}
+
+func selfTestDependsOnRuntime(t selfTest) bool {
+	if strings.TrimSpace(t.WireGuardPeerID) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(t.Kind)) {
+	case "tunnel", "tunnel-hop", "forward-via-tunnel", "forward-via-tunnel-entry", "forward-chain":
+		return true
+	default:
+		return false
+	}
+}
+
+func selfTestTCPReadinessWindow(t selfTest) time.Duration {
+	if selfTestDependsOnRuntime(t) {
+		return selfTestRuntimeReadinessWindow
+	}
+	return 0
+}
+
+func selfTestRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		return 0
+	}
+	delay := time.Duration(attempt) * selfTestRetryBaseDelay
+	if delay > selfTestRetryMaxDelay {
+		return selfTestRetryMaxDelay
+	}
+	return delay
 }
 
 func logSelfTestReportError(testID int, target string, err error) {

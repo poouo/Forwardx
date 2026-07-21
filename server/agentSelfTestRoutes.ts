@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
-import { parseSelfTestMeta } from "./agentRouteUtils";
+import { buildTunnelAgentSelfTestPayload, parseSelfTestMeta } from "./agentRouteUtils";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
 import { appendPanelLog } from "./_core/panelLogger";
@@ -430,32 +430,9 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
       const claimed = await db.markForwardTestRunning(t.id);
       if (!claimed) continue;
       const meta = parseSelfTestMeta((t as any).message);
-      if (meta?.kind === "tunnel") {
-        selfTests.push({
-          testId: t.id,
-          kind: "tunnel",
-          tunnelId: meta.tunnelId,
-          ruleId: 0,
-          forwardType: "gost-tunnel",
-          protocol: "tcp",
-          sourcePort: 0,
-          targetIp: meta.targetIp,
-          targetPort: meta.targetPort,
-        });
-        continue;
-      }
-      if (meta?.kind === "tunnel-hop") {
-        selfTests.push({
-          testId: t.id,
-          kind: "tunnel-hop",
-          tunnelId: meta.tunnelId,
-          ruleId: 0,
-          forwardType: "gost-tunnel",
-          protocol: "tcp",
-          sourcePort: 0,
-          targetIp: meta.targetIp,
-          targetPort: meta.targetPort,
-        });
+      const tunnelSelfTest = buildTunnelAgentSelfTestPayload(t, meta);
+      if (tunnelSelfTest) {
+        selfTests.push(tunnelSelfTest);
         continue;
       }
       if (meta?.kind === "forward-via-tunnel") {

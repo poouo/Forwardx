@@ -48,6 +48,25 @@ func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	}
 }
 
+func TestScheduleTCPingCollectionDefersTopologyProbeWhileActionsPending(t *testing.T) {
+	atomic.StoreInt64(&actionPendingCount, 1)
+	atomic.StoreInt32(&tcpingCollectRunning, 0)
+	defer atomic.StoreInt64(&actionPendingCount, 0)
+
+	started := time.Now()
+	if scheduleTCPingCollection(Config{}, nil, []tunnelProbe{{
+		TunnelID: 1, TargetIP: "127.0.0.1", TargetPort: 1,
+	}}, nil, nil, true) {
+		t.Fatal("topology probe must remain due while runtime actions are pending")
+	}
+	if atomic.LoadInt32(&tcpingCollectRunning) != 0 {
+		t.Fatal("deferred topology probe unexpectedly started a collector")
+	}
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("deferred topology probe blocked for %s", elapsed)
+	}
+}
+
 func TestTCPingDynamicBatchLimitScalesWithoutUnboundedRuns(t *testing.T) {
 	tests := []struct {
 		total  int
@@ -139,5 +158,27 @@ func TestTunnelRuleLatencySkipsLocalEntryAndUsesExplicitExitProbe(t *testing.T) 
 	}
 	if task.SourcePort != 0 || task.Method != "tcping" || task.ProbeKey != "rule-latency" || task.TopologyKey != "topology-v1" {
 		t.Fatalf("unexpected explicit tunnel rule probe: %+v", task)
+	}
+}
+
+func TestMultiEntryWireGuardProbesKeepTheirOwnPeers(t *testing.T) {
+	tasks := buildTunnelProbeTasks([]tunnelProbe{
+		{
+			TunnelID: 7, TargetIP: "entry-a.example.test", TargetPort: 31001,
+			WireGuardPeerID: "exit-for-entry-a", ProbeKey: "entry-a",
+		},
+		{
+			TunnelID: 7, TargetIP: "entry-b.example.test", TargetPort: 31001,
+			WireGuardPeerID: "exit-for-entry-b", ProbeKey: "entry-b",
+		},
+	})
+	if len(tasks) != 2 {
+		t.Fatalf("multi-entry probe tasks=%d, want 2", len(tasks))
+	}
+	if tasks[0].WireGuardPeerID != "exit-for-entry-a" || tasks[0].ProbeKey != "entry-a" {
+		t.Fatalf("first entry probe was overwritten: %+v", tasks[0])
+	}
+	if tasks[1].WireGuardPeerID != "exit-for-entry-b" || tasks[1].ProbeKey != "entry-b" {
+		t.Fatalf("second entry probe was overwritten: %+v", tasks[1])
 	}
 }

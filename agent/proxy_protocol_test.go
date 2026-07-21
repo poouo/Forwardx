@@ -26,11 +26,43 @@ func TestDetectTLSProtocolRequiresHandshakeShape(t *testing.T) {
 }
 
 func TestDetectSocksProtocolRequiresFullGreeting(t *testing.T) {
-	if detectSocksProtocol([]byte{0x05, 0x01, 0x00}) {
-		t.Fatal("expected short socks greeting to be rejected")
+	if detectSocksProtocol([]byte{0x05, 0x02, 0x00}) {
+		t.Fatal("expected incomplete socks greeting to be rejected")
+	}
+	if !detectSocksProtocol([]byte{0x05, 0x01, 0x00}) {
+		t.Fatal("expected one-method socks greeting to be detected")
 	}
 	if !detectSocksProtocol([]byte{0x05, 0x02, 0x00, 0x02}) {
 		t.Fatal("expected socks greeting to be detected")
+	}
+	if detectSocksProtocol([]byte{0x05, 0x02, 0x00, 0x02, 0x91, 0x7c, 0x36, 0xa4}) {
+		t.Fatal("encrypted payload sharing a socks prefix must be rejected")
+	}
+}
+
+func TestProtocolGuardRequiresSocksServerConfirmation(t *testing.T) {
+	inspection := newProtocolGuardInspection(protocolPolicy{BlockSocks: true})
+	if proto, blocked := inspection.inspectClient([]byte{0x05, 0x02}); blocked || proto != "" {
+		t.Fatalf("fragmented greeting prefix blocked proto=%q", proto)
+	}
+	if proto, blocked := inspection.inspectClient([]byte{0x00, 0x02}); blocked || proto != "" {
+		t.Fatalf("client greeting must remain a candidate proto=%q", proto)
+	}
+	if proto, blocked := inspection.inspectServer([]byte{0x05, 0x00}); !blocked || proto != "socks" {
+		t.Fatalf("matching server response not blocked proto=%q blocked=%v", proto, blocked)
+	}
+}
+
+func TestProtocolGuardDoesNotBlockSS2022CollisionPrefix(t *testing.T) {
+	inspection := newProtocolGuardInspection(protocolPolicy{BlockSocks: true})
+	if proto, blocked := inspection.inspectClient([]byte{0x05, 0x02, 0x00, 0x02}); blocked || proto != "" {
+		t.Fatalf("collision prefix blocked before confirmation proto=%q", proto)
+	}
+	if proto, blocked := inspection.inspectClient([]byte{0x91, 0x7c, 0x36, 0xa4, 0xe8, 0x19}); blocked || proto != "" {
+		t.Fatalf("continued encrypted payload blocked proto=%q", proto)
+	}
+	if proto, blocked := inspection.inspectServer([]byte{0x05, 0x00}); blocked || proto != "" {
+		t.Fatalf("cleared collision candidate was revived proto=%q", proto)
 	}
 }
 

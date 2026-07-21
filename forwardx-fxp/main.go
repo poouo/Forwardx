@@ -416,6 +416,7 @@ func (g *connGate) stats() (int64, int) {
 }
 
 func main() {
+	configureFXPLogging()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	configPath := flag.String("config", "", "config file")
 	flag.Parse()
@@ -702,7 +703,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		first = remaining
 	}
 	if cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend {
-		log.Printf(
+		fxpVerbosef(
 			"entry proxy protocol tunnel=%d rule=%d receive=%v send=%v client=%s parsed=%v proxySource=%s:%d proxyDest=%s:%d",
 			cfg.TunnelID,
 			cfg.RuleID,
@@ -743,7 +744,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 	if err := sec.writeFrame(hello); err != nil {
 		return err
 	}
-	log.Printf("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
+	fxpVerbosef("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
 	policy := protocolPolicy{BlockHTTP: cfg.BlockHTTP, BlockSocks: cfg.BlockSocks, BlockTLS: cfg.BlockTLS}
 	reportBlock := func(proto string) {
 		reportProtocolBlock(cfg, proto)
@@ -1208,7 +1209,7 @@ func (s *udpEntrySession) start() {
 	go s.writeLoop()
 	go s.readLoop()
 	go s.idleLoop()
-	log.Printf("entry udp session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort)
+	fxpVerbosef("entry udp session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort)
 }
 
 func (s *udpEntrySession) enqueue(payload []byte) {
@@ -1278,7 +1279,7 @@ func (s *udpEntrySession) idleLoop() {
 		case <-ticker.C:
 			last := time.Unix(0, s.lastActivity.Load())
 			if time.Since(last) >= fxpUDPIdleTimeout {
-				log.Printf("entry udp session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
+				fxpVerbosef("entry udp session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
 				s.close()
 				return
 			}
@@ -1422,7 +1423,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 	}
 	defer target.Close()
 	if hello.ProxyProtocolExitSend && hello.ProxySourceIP != "" && hello.ProxySourcePort > 0 {
-		log.Printf(
+		fxpVerbosef(
 			"exit proxy protocol send tunnel=%d rule=%d source=%s:%d dest=%s:%d target=%s:%d",
 			hello.TunnelID,
 			hello.RuleID,
@@ -1437,9 +1438,9 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 			return fmt.Errorf("write proxy protocol: %w", err)
 		}
 	} else if hello.ProxyProtocolExitSend {
-		log.Printf("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
+		fxpVerbosef("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
 	}
-	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
+	fxpVerbosef("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	return proxyPlainSecure(target, sec, nil, nil, nil)
 }
 
@@ -1454,7 +1455,7 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 	}
 	tuneUDPConn(target, "exit target", fxpUDPSessionBufferBytes)
 	defer target.Close()
-	log.Printf("exit udp session routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
+	fxpVerbosef("exit udp session routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 	touch := func() { lastActivity.Store(time.Now().UnixNano()) }
@@ -1625,7 +1626,7 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 		probeDelay()
 		return err
 	}
-	log.Printf(
+	fxpVerbosef(
 		"relay proxy protocol tunnel=%d rule=%d upstream=%s downstream=%s:%d hasProxy=%v source=%s:%d dest=%s:%d",
 		cfg.TunnelID,
 		hello.RuleID,
@@ -1659,7 +1660,7 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 	if err := downSec.writeFrame(helloBytes); err != nil {
 		return err
 	}
-	log.Printf("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), endpoint.Host, endpoint.Port, hello.TargetIP, hello.TargetPort)
+	fxpVerbosef("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), endpoint.Host, endpoint.Port, hello.TargetIP, hello.TargetPort)
 	// Bidirectional relay: upstream ↔ downstream
 	return relayBidir(upSec, downSec)
 }

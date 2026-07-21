@@ -276,7 +276,7 @@ func (s *udpDirectEntrySession) start() {
 	go s.writeLoop()
 	go s.clientWriteLoop()
 	go s.idleLoop()
-	log.Printf("entry udp direct session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d session=%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort, s.sessionID)
+	fxpVerbosef("entry udp direct session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d session=%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort, s.sessionID)
 }
 
 func (s *udpDirectEntrySession) enqueue(payload []byte) {
@@ -369,7 +369,7 @@ func (s *udpDirectEntrySession) idleLoop() {
 		case <-ticker.C:
 			last := time.Unix(0, s.lastActivity.Load())
 			if time.Since(last) >= fxpUDPIdleTimeout {
-				log.Printf("entry udp direct session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
+				fxpVerbosef("entry udp direct session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
 				s.close()
 				return
 			}
@@ -500,7 +500,7 @@ func (s *udpDirectExitSession) start() {
 	go s.writeTargetLoop()
 	go s.readTargetLoop()
 	go s.idleLoop()
-	log.Printf("exit udp direct session routed tunnel=%d rule=%d peer=%s target=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort, s.sessionID)
+	fxpVerbosef("exit udp direct session routed tunnel=%d rule=%d peer=%s target=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort, s.sessionID)
 }
 
 func (s *udpDirectExitSession) forwardToTarget(payload []byte) {
@@ -589,7 +589,7 @@ func (s *udpDirectExitSession) idleLoop() {
 		case <-ticker.C:
 			last := time.Unix(0, s.lastActivity.Load())
 			if time.Since(last) >= fxpUDPIdleTimeout {
-				log.Printf("exit udp direct session idle timeout tunnel=%d rule=%d peer=%s idle=%s", s.cfg.TunnelID, s.ruleID, s.peerAddr, time.Since(last).Round(time.Second))
+				fxpVerbosef("exit udp direct session idle timeout tunnel=%d rule=%d peer=%s idle=%s", s.cfg.TunnelID, s.ruleID, s.peerAddr, time.Since(last).Round(time.Second))
 				s.close()
 				return
 			}
@@ -722,7 +722,7 @@ func (s *udpDirectRelaySession) start() {
 	go s.downstreamWriteLoop()
 	go s.upstreamWriteLoop()
 	go s.idleLoop()
-	log.Printf("relay udp direct session routed tunnel=%d rule=%d upstream=%s downstream=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.endpoint.Host, s.endpoint.Port, s.sessionID)
+	fxpVerbosef("relay udp direct session routed tunnel=%d rule=%d upstream=%s downstream=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.endpoint.Host, s.endpoint.Port, s.sessionID)
 }
 
 func (s *udpDirectRelaySession) forwardToDownstream(packet fxpUDPPacket) {
@@ -831,7 +831,7 @@ func (s *udpDirectRelaySession) idleLoop() {
 		case <-ticker.C:
 			last := time.Unix(0, s.lastActivity.Load())
 			if time.Since(last) >= fxpUDPIdleTimeout {
-				log.Printf("relay udp direct session idle timeout tunnel=%d rule=%d upstream=%s idle=%s", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, time.Since(last).Round(time.Second))
+				fxpVerbosef("relay udp direct session idle timeout tunnel=%d rule=%d upstream=%s idle=%s", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, time.Since(last).Round(time.Second))
 				s.close()
 				return
 			}

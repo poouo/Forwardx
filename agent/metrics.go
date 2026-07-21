@@ -18,12 +18,16 @@ import (
 )
 
 const (
-	agentStateDir        = "/var/lib/forwardx-agent"
-	tcpingRuleBatchSize  = 24
-	tcpingProbeBatchSize = 12
-	tcpingMaxConcurrency = 32
-	tcpingProbeTimeout   = 2 * time.Second
-	tcpingPingProbeCount = 5
+	agentStateDir              = "/var/lib/forwardx-agent"
+	tcpingRuleBatchSize        = 24
+	tcpingProbeBatchSize       = 12
+	tcpingMaxConcurrency       = 32
+	tcpingProbeTimeout         = 2 * time.Second
+	tcpingWireGuardTimeout     = 8 * time.Second
+	tcpingPingProbeCount       = 5
+	systemPingConcurrency      = 8
+	networkTargetDNSTTL        = 30 * time.Second
+	networkTargetDNSFailureTTL = 5 * time.Second
 )
 
 var (
@@ -33,7 +37,24 @@ var (
 	tcpingForwardGroupCursor int
 	tcpingServiceCursor      int
 	tcpingCollectRunning     int32
+	systemPingSlots          = make(chan struct{}, systemPingConcurrency)
+	networkTargetDNSMu       sync.Mutex
+	networkTargetDNSCache    = map[string]networkTargetDNSCacheEntry{}
+	networkTargetDNSCalls    = map[string]*networkTargetDNSCall{}
+	lookupNetworkTargetIPs   = net.DefaultResolver.LookupIPAddr
+	trafficPrevMu            sync.Mutex
+	trafficPrevCache         = map[string]trafficPrevState{}
 )
+
+type networkTargetDNSCacheEntry struct {
+	addresses []string
+	expiresAt time.Time
+}
+
+type networkTargetDNSCall struct {
+	done      chan struct{}
+	addresses []string
+}
 
 type localRuleState struct {
 	Port        string
@@ -48,6 +69,19 @@ type localRuleState struct {
 type trafficCounters struct {
 	In  uint64
 	Out uint64
+}
+
+type trafficDiagnosticsSnapshot struct {
+	iptablesMarkers  map[string]bool
+	ip6tablesMarkers map[string]bool
+	nftMarkers       map[int]bool
+}
+
+type trafficPrevState struct {
+	ruleID int
+	in     uint64
+	out    uint64
+	conns  uint64
 }
 
 type tcpingTask struct {
@@ -92,6 +126,31 @@ func hostTrafficSnapshot() map[string]any {
 	}
 }
 
+func scheduleTrafficCollection(cfg Config) bool {
+	now := time.Now()
+	trafficCollectMu.Lock()
+	if trafficCollectRunning || (!lastTrafficCollectAt.IsZero() && now.Sub(lastTrafficCollectAt) < nextTrafficCollectInterval) {
+		trafficCollectMu.Unlock()
+		return false
+	}
+	if atomic.LoadInt64(&actionPendingCount) > 0 {
+		trafficCollectMu.Unlock()
+		return false
+	}
+	trafficCollectRunning = true
+	lastTrafficCollectAt = now
+	trafficCollectMu.Unlock()
+	go func() {
+		next := collectTraffic(cfg)
+		trafficCollectMu.Lock()
+		nextTrafficCollectInterval = next
+		lastTrafficCollectAt = time.Now()
+		trafficCollectRunning = false
+		trafficCollectMu.Unlock()
+	}()
+	return true
+}
+
 func collectTraffic(cfg Config) time.Duration {
 	started := time.Now()
 	states := readLocalRuleStates()
@@ -104,8 +163,9 @@ func collectTraffic(cfg Config) time.Duration {
 			}
 		}
 	}()
-	iptablesCounters := iptablesCounterSnapshot()
-	nftCounters := nftablesCounterSnapshot()
+	iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
+	nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
+	diagnostics.nftMarkers = nftMarkers
 	connCounts := conntrackConnectionsSnapshot(states)
 	stats := []map[string]any{}
 	watched := len(states)
@@ -130,7 +190,7 @@ func collectTraffic(cfg Config) time.Duration {
 		if din > 0 || dout > 0 || dconns > 0 {
 			stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 		}
-		logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters)
+		logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
 	}
 	hostTraffic := hostTrafficSnapshot()
 	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
@@ -202,26 +262,7 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 		}
 	}
 
-	tunnelTasks := []tcpingTask{}
-	for _, probe := range probes {
-		if probe.TunnelID <= 0 || probe.TargetIP == "" || probe.TargetPort <= 0 {
-			continue
-		}
-		tunnelTasks = append(tunnelTasks, tcpingTask{
-			Kind:            "tunnel",
-			TunnelID:        probe.TunnelID,
-			TargetIP:        probe.TargetIP,
-			TargetPort:      probe.TargetPort,
-			Method:          "tcp",
-			HopIndex:        probe.HopIndex,
-			HopCount:        probe.HopCount,
-			SeriesKey:       probe.SeriesKey,
-			SeriesLabel:     probe.SeriesLabel,
-			WireGuardPeerID: probe.WireGuardPeerID,
-			ProbeKey:        probe.ProbeKey,
-			TopologyKey:     probe.TopologyKey,
-		})
-	}
+	tunnelTasks := buildTunnelProbeTasks(probes)
 
 	serviceTasks := []tcpingTask{}
 	for _, probe := range serviceProbes {
@@ -318,6 +359,30 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	}
 }
 
+func buildTunnelProbeTasks(probes []tunnelProbe) []tcpingTask {
+	tasks := make([]tcpingTask, 0, len(probes))
+	for _, probe := range probes {
+		if probe.TunnelID <= 0 || strings.TrimSpace(probe.TargetIP) == "" || probe.TargetPort <= 0 {
+			continue
+		}
+		tasks = append(tasks, tcpingTask{
+			Kind:            "tunnel",
+			TunnelID:        probe.TunnelID,
+			TargetIP:        probe.TargetIP,
+			TargetPort:      probe.TargetPort,
+			Method:          "tcp",
+			HopIndex:        probe.HopIndex,
+			HopCount:        probe.HopCount,
+			SeriesKey:       probe.SeriesKey,
+			SeriesLabel:     probe.SeriesLabel,
+			WireGuardPeerID: probe.WireGuardPeerID,
+			ProbeKey:        probe.ProbeKey,
+			TopologyKey:     probe.TopologyKey,
+		})
+	}
+	return tasks
+}
+
 func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
 	port := parseStatePort(state.Port)
 	if desired, ok := desiredRunningRuleForStatePort(state.RuleID, port); ok {
@@ -376,6 +441,10 @@ func buildExplicitRuleLatencyProbeTask(probe ruleLatencyProbe) (tcpingTask, bool
 }
 
 func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
+	if atomic.LoadInt64(&actionPendingCount) > 0 && (len(ruleProbes) > 0 || len(probes) > 0 || len(groupProbes) > 0) {
+		logVerbosef("tcping collect deferred while runtime actions are pending=%d", atomic.LoadInt64(&actionPendingCount))
+		return false
+	}
 	if !atomic.CompareAndSwapInt32(&tcpingCollectRunning, 0, 1) {
 		logVerbosef("tcping collect skip because previous run is still active")
 		return false
@@ -476,6 +545,18 @@ func readLocalRuleStates() []localRuleState {
 			continue
 		}
 		ruleID, _ := strconv.Atoi(strings.TrimSpace(string(ridBytes)))
+		if desired, ok := desiredRunningRuleForStatePort(ruleID, parseStatePort(port)); ok {
+			states = append(states, localRuleState{
+				Port:        port,
+				RuleID:      ruleID,
+				TunnelID:    desired.TunnelID,
+				ForwardType: desired.ForwardType,
+				TargetIP:    desired.TargetIP,
+				TargetPort:  desired.TargetPort,
+				Protocol:    desired.Protocol,
+			})
+			continue
+		}
 		targetIP, targetPort, protocol, _ := readTargetInfo(port)
 		states = append(states, localRuleState{
 			Port:        port,
@@ -522,19 +603,23 @@ func rotateTCPingTasks(tasks []tcpingTask, cursor *int, limit int) []tcpingTask 
 }
 
 func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
-	sem := make(chan struct{}, tcpingMaxConcurrency)
+	workerCount := tcpingTaskConcurrency(len(tasks))
 	out := make(chan tcpingTaskResult, len(tasks))
+	jobs := make(chan tcpingTask, workerCount)
 	var wg sync.WaitGroup
-	for _, task := range tasks {
-		task := task
+	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			out <- executeTCPingTask(task)
+			for task := range jobs {
+				out <- executeTCPingTask(task)
+			}
 		}()
 	}
+	for _, task := range tasks {
+		jobs <- task
+	}
+	close(jobs)
 	wg.Wait()
 	close(out)
 	results := []map[string]any{}
@@ -559,13 +644,33 @@ func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []m
 	return results, tunnels, forwardGroups, services
 }
 
+func tcpingTaskConcurrency(taskCount int) int {
+	if taskCount <= 0 {
+		return 0
+	}
+	limit := runtime.NumCPU() * 8
+	if limit < 16 {
+		limit = 16
+	}
+	if limit > tcpingMaxConcurrency {
+		limit = tcpingMaxConcurrency
+	}
+	if atomic.LoadInt64(&actionPendingCount) > 0 && limit > 4 {
+		limit = 4
+	}
+	if limit > taskCount {
+		limit = taskCount
+	}
+	return limit
+}
+
 func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	var latency int
 	var reachable bool
 	if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
-		latency, reachable = wireGuardTCPLatency(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingProbeTimeout)
+		latency, reachable = wireGuardTCPLatency(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingWireGuardTimeout)
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
 	}
@@ -684,11 +789,36 @@ func tcpLatencyResolved(host string, port int, timeout time.Duration) (int, bool
 }
 
 func resolveNetworkTargetIPs(host string, timeout time.Duration) []string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	now := time.Now()
+	networkTargetDNSMu.Lock()
+	if cached, ok := networkTargetDNSCache[host]; ok && now.Before(cached.expiresAt) {
+		addresses := append([]string(nil), cached.addresses...)
+		networkTargetDNSMu.Unlock()
+		return addresses
+	}
+	if call := networkTargetDNSCalls[host]; call != nil {
+		done := call.done
+		networkTargetDNSMu.Unlock()
+		select {
+		case <-done:
+			return append([]string(nil), call.addresses...)
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	call := &networkTargetDNSCall{done: make(chan struct{})}
+	networkTargetDNSCalls[host] = call
+	networkTargetDNSMu.Unlock()
+
+	addrs, err := lookupNetworkTargetIPs(ctx, host)
 	if err != nil {
-		return nil
+		addrs = nil
 	}
 	seen := map[string]bool{}
 	targets := make([]string, 0, len(addrs))
@@ -700,6 +830,19 @@ func resolveNetworkTargetIPs(host string, timeout time.Duration) []string {
 		seen[value] = true
 		targets = append(targets, value)
 	}
+	ttl := networkTargetDNSTTL
+	if len(targets) == 0 {
+		ttl = networkTargetDNSFailureTTL
+	}
+	networkTargetDNSMu.Lock()
+	call.addresses = append([]string(nil), targets...)
+	networkTargetDNSCache[host] = networkTargetDNSCacheEntry{
+		addresses: append([]string(nil), targets...),
+		expiresAt: time.Now().Add(ttl),
+	}
+	delete(networkTargetDNSCalls, host)
+	close(call.done)
+	networkTargetDNSMu.Unlock()
 	return targets
 }
 
@@ -762,6 +905,12 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 	defer cancel()
+	select {
+	case systemPingSlots <- struct{}{}:
+		defer func() { <-systemPingSlots }()
+	case <-ctx.Done():
+		return 0, false, "system ping queue timeout"
+	}
 	timeoutSeconds := int(timeout.Seconds())
 	if timeoutSeconds < 1 {
 		timeoutSeconds = 1
@@ -998,9 +1147,19 @@ func roundPositiveLatency(value string) int {
 }
 
 func iptablesCounterSnapshot() map[string]trafficCounters {
+	counters, _ := iptablesCounterSnapshotWithDiagnostics()
+	return counters
+}
+
+func iptablesCounterSnapshotWithDiagnostics() (map[string]trafficCounters, trafficDiagnosticsSnapshot) {
 	chainCounters := map[string]map[string]uint64{}
-	parseIptablesCounterSnapshot("iptables", chainCounters)
-	parseIptablesCounterSnapshot("ip6tables", chainCounters)
+	diagnostics := trafficDiagnosticsSnapshot{
+		iptablesMarkers:  map[string]bool{},
+		ip6tablesMarkers: map[string]bool{},
+		nftMarkers:       map[int]bool{},
+	}
+	parseIptablesCounterSnapshot("iptables", chainCounters, diagnostics.iptablesMarkers)
+	parseIptablesCounterSnapshot("ip6tables", chainCounters, diagnostics.ip6tablesMarkers)
 
 	out := map[string]trafficCounters{}
 	for marker, byChain := range chainCounters {
@@ -1023,11 +1182,11 @@ func iptablesCounterSnapshot() map[string]trafficCounters {
 		}
 		out[port] = counters
 	}
-	return out
+	return out, diagnostics
 }
 
-func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[string]uint64) {
-	raw, err := exec.Command(binary, "-t", "mangle", "-nvxL").Output()
+func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[string]uint64, markers map[string]bool) {
+	raw, err := commandOutputWithTimeout(5*time.Second, binary, "-t", "mangle", "-nvxL")
 	if err != nil {
 		return
 	}
@@ -1049,6 +1208,7 @@ func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[st
 		if len(match) < 3 || currentChain == "" {
 			continue
 		}
+		markers[match[1]] = true
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -1066,10 +1226,16 @@ func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[st
 }
 
 func nftablesCounterSnapshot() map[int]trafficCounters {
+	counters, _ := nftablesCounterSnapshotWithDiagnostics()
+	return counters
+}
+
+func nftablesCounterSnapshotWithDiagnostics() (map[int]trafficCounters, map[int]bool) {
 	out := map[int]trafficCounters{}
-	raw, err := exec.Command("nft", "-a", "list", "table", "inet", "forwardx").Output()
+	markers := map[int]bool{}
+	raw, err := commandOutputWithTimeout(5*time.Second, "nft", "-a", "list", "table", "inet", "forwardx")
 	if err != nil {
-		return out
+		return out, markers
 	}
 	commentPattern := regexp.MustCompile(`fwx-rule-([0-9]+)(?::|-)(in|out)`)
 	chainPattern := regexp.MustCompile(`^chain\s+(in|out)_([0-9]+)\s+\{`)
@@ -1083,20 +1249,30 @@ func nftablesCounterSnapshot() map[int]trafficCounters {
 		if match := chainPattern.FindStringSubmatch(line); len(match) >= 3 {
 			currentLegacyDirection = match[1]
 			currentLegacyRuleID, _ = strconv.Atoi(match[2])
+			if currentLegacyRuleID > 0 {
+				markers[currentLegacyRuleID] = true
+			}
 			continue
 		}
 		if strings.HasPrefix(line, "chain ") {
 			currentLegacyDirection = ""
 			currentLegacyRuleID = 0
 		}
+		commentMatch := commentPattern.FindStringSubmatch(line)
+		if len(commentMatch) >= 3 {
+			ruleID, _ := strconv.Atoi(commentMatch[1])
+			if ruleID > 0 {
+				markers[ruleID] = true
+			}
+		}
 		bytesValue, ok := nftCounterBytes(line)
 		if !ok {
 			continue
 		}
-		if match := commentPattern.FindStringSubmatch(line); len(match) >= 3 {
-			ruleID, _ := strconv.Atoi(match[1])
+		if len(commentMatch) >= 3 {
+			ruleID, _ := strconv.Atoi(commentMatch[1])
 			counters := out[ruleID]
-			if match[2] == "in" {
+			if commentMatch[2] == "in" {
 				counters.In += bytesValue
 			} else {
 				counters.Out += bytesValue
@@ -1114,7 +1290,7 @@ func nftablesCounterSnapshot() map[int]trafficCounters {
 			out[currentLegacyRuleID] = counters
 		}
 	}
-	return out
+	return out, markers
 }
 
 func nftCounterBytes(line string) (uint64, bool) {
@@ -1131,7 +1307,7 @@ func nftCounterBytes(line string) (uint64, bool) {
 	return 0, false
 }
 
-func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters, din uint64, dout uint64, connections uint64, nftCounters map[int]trafficCounters) {
+func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters, din uint64, dout uint64, connections uint64, nftCounters map[int]trafficCounters, diagnostics trafficDiagnosticsSnapshot) {
 	if state.RuleID <= 0 || state.Port == "" {
 		return
 	}
@@ -1141,11 +1317,11 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	}
 	target := strings.Trim(strings.TrimSpace(state.TargetIP), "[]")
 	targetIPv6 := strings.Contains(target, ":")
-	iptablesMarker := iptablesMarkerSeen("iptables", state.Port)
-	ip6tablesMarker := iptablesMarkerSeen("ip6tables", state.Port)
+	iptablesMarker := diagnostics.iptablesMarkers[state.Port]
+	ip6tablesMarker := diagnostics.ip6tablesMarkers[state.Port]
 	nftMarker := false
 	if state.ForwardType == "nftables" {
-		nftMarker = nftRuleMarkerSeen(state.RuleID)
+		nftMarker = diagnostics.nftMarkers[state.RuleID]
 	}
 	_, nftCounter := nftCounters[state.RuleID]
 	if counters.In == 0 && counters.Out == 0 && connections > 0 {
@@ -1159,33 +1335,6 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	if agentVerboseLogs && (din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables") {
 		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 	}
-}
-
-func nftRuleMarkerSeen(ruleID int) bool {
-	if ruleID <= 0 || !commandExists("nft") {
-		return false
-	}
-	raw, err := exec.Command("nft", "-a", "list", "table", "inet", "forwardx").Output()
-	if err != nil {
-		return false
-	}
-	marker := "fwx-rule-" + strconv.Itoa(ruleID)
-	return strings.Contains(string(raw), marker)
-}
-
-func iptablesMarkerSeen(binary string, port string) bool {
-	if port == "" {
-		return false
-	}
-	if binary == "ip6tables" && !commandExists("ip6tables") {
-		return false
-	}
-	raw, err := exec.Command(binary, "-t", "mangle", "-S").Output()
-	if err != nil {
-		return false
-	}
-	marker := "fwx-stat-" + port + ":"
-	return strings.Contains(string(raw), marker)
 }
 
 func conntrackConnectionsSnapshot(states []localRuleState) map[string]uint64 {
@@ -1225,7 +1374,7 @@ func conntrackConnectionsSnapshot(states []localRuleState) map[string]uint64 {
 
 func conntrackConnections(port string) uint64 {
 	cmd := fmt.Sprintf(`awk -v p="dport=%s" 'index($0,p" ")>0 {c++} END{print c+0}' /proc/net/nf_conntrack 2>/dev/null`, port)
-	out, err := exec.Command("sh", "-lc", cmd).Output()
+	out, err := commandOutputWithTimeout(5*time.Second, "sh", "-lc", cmd)
 	if err != nil {
 		return 0
 	}
@@ -1254,7 +1403,7 @@ func iptablesLegacyBytes(chain string) uint64 {
 	byChain := map[string]uint64{}
 	for _, binary := range []string{"iptables", "ip6tables"} {
 		for _, parent := range parentChains {
-			raw, err := exec.Command(binary, "-t", "mangle", "-nvxL", parent).Output()
+			raw, err := commandOutputWithTimeout(5*time.Second, binary, "-t", "mangle", "-nvxL", parent)
 			if err != nil {
 				continue
 			}
@@ -1306,7 +1455,7 @@ func nftablesRuleBytes(chain string, ruleID int, direction string) uint64 {
 	colonMarker := fmt.Sprintf("fwx-rule-%d:%s", ruleID, direction)
 	dashMarker := fmt.Sprintf("fwx-rule-%d-%s", ruleID, direction)
 	cmd := fmt.Sprintf(`nft -a list chain inet forwardx %s 2>/dev/null | awk -v colon=%s -v dash=%s '(index($0, colon) || index($0, dash)) && /counter packets/ {for(i=1;i<=NF;i++) if($i=="bytes") {s+=$(i+1)}} END{print s+0}'`, shellQuote(chain), shellQuote(colonMarker), shellQuote(dashMarker))
-	out, err := exec.Command("sh", "-lc", cmd).Output()
+	out, err := commandOutputWithTimeout(5*time.Second, "sh", "-lc", cmd)
 	if err != nil {
 		return 0
 	}
@@ -1316,7 +1465,7 @@ func nftablesRuleBytes(chain string, ruleID int, direction string) uint64 {
 
 func nftablesChainBytes(chain string) uint64 {
 	cmd := fmt.Sprintf(`nft -a list chain inet forwardx %s 2>/dev/null | awk '/counter packets/ {for(i=1;i<=NF;i++) if($i=="bytes") {s+=$(i+1)}} END{print s+0}'`, shellQuote(chain))
-	out, err := exec.Command("sh", "-lc", cmd).Output()
+	out, err := commandOutputWithTimeout(5*time.Second, "sh", "-lc", cmd)
 	if err != nil {
 		return 0
 	}
@@ -1325,8 +1474,15 @@ func nftablesChainBytes(chain string) uint64 {
 }
 
 func readPrev(port string) (int, uint64, uint64, uint64) {
+	trafficPrevMu.Lock()
+	if cached, ok := trafficPrevCache[port]; ok {
+		trafficPrevMu.Unlock()
+		return cached.ruleID, cached.in, cached.out, cached.conns
+	}
+	trafficPrevMu.Unlock()
 	raw, err := os.ReadFile("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	if err != nil {
+		cacheTrafficPrev(port, trafficPrevState{})
 		return 0, 0, 0, 0
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
@@ -1339,6 +1495,7 @@ func readPrev(port string) (int, uint64, uint64, uint64) {
 		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
 		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
 		prevConns, _ := strconv.ParseUint(strings.TrimSpace(lines[3]), 10, 64)
+		cacheTrafficPrev(port, trafficPrevState{ruleID: rid, in: prevIn, out: prevOut, conns: prevConns})
 		return rid, prevIn, prevOut, prevConns
 	}
 	// 3-line legacy format: ruleID, in, out (no conns)
@@ -1346,16 +1503,38 @@ func readPrev(port string) (int, uint64, uint64, uint64) {
 		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
 		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
 		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
+		cacheTrafficPrev(port, trafficPrevState{ruleID: rid, in: prevIn, out: prevOut})
 		return rid, prevIn, prevOut, 0
 	}
 	// 2-line legacy format: in, out (no ruleID, no conns)
 	prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
 	prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
+	cacheTrafficPrev(port, trafficPrevState{in: prevIn, out: prevOut})
 	return 0, prevIn, prevOut, 0
 }
 
 func writePrev(port string, ruleID int, in, out, conns uint64) {
+	next := trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns}
+	trafficPrevMu.Lock()
+	previous, exists := trafficPrevCache[port]
+	trafficPrevCache[port] = next
+	trafficPrevMu.Unlock()
+	if exists && previous == next {
+		return
+	}
 	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", ruleID, in, out, conns)), 0644)
+}
+
+func cacheTrafficPrev(port string, state trafficPrevState) {
+	trafficPrevMu.Lock()
+	trafficPrevCache[port] = state
+	trafficPrevMu.Unlock()
+}
+
+func invalidateTrafficPrev(port string) {
+	trafficPrevMu.Lock()
+	delete(trafficPrevCache, port)
+	trafficPrevMu.Unlock()
 }
 
 func delta(cur, prev uint64) uint64 {

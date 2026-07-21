@@ -1,15 +1,38 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"testing"
 	"time"
 )
+
+func setTestWireGuardRuntime(t *testing.T, tunnelID int, runtime *wireGuardRuntime) {
+	t.Helper()
+	wireGuardRuntimesMu.Lock()
+	previous := wireGuardRuntimes[tunnelID]
+	if runtime == nil {
+		delete(wireGuardRuntimes, tunnelID)
+	} else {
+		wireGuardRuntimes[tunnelID] = runtime
+	}
+	wireGuardRuntimesMu.Unlock()
+	t.Cleanup(func() {
+		wireGuardRuntimesMu.Lock()
+		if previous == nil {
+			delete(wireGuardRuntimes, tunnelID)
+		} else {
+			wireGuardRuntimes[tunnelID] = previous
+		}
+		wireGuardRuntimesMu.Unlock()
+	})
+}
 
 func testWireGuardKeyPair(t *testing.T) (string, string) {
 	t.Helper()
@@ -99,6 +122,157 @@ func TestWireGuardUDPProxySessionsWriteIndependently(t *testing.T) {
 	}
 }
 
+func TestWaitForWireGuardProbePeerWaitsForExactPeer(t *testing.T) {
+	const tunnelID = 99001
+	setTestWireGuardRuntime(t, tunnelID, nil)
+	runtime := &wireGuardRuntime{peers: map[string]wireGuardPeerSpec{}}
+	updated := make(chan struct{})
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		wireGuardRuntimesMu.Lock()
+		wireGuardRuntimes[tunnelID] = runtime
+		wireGuardRuntimesMu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		runtime.mu.Lock()
+		runtime.peers["entry-b"] = wireGuardPeerSpec{ID: "entry-b", Address: "100.100.0.2"}
+		runtime.mu.Unlock()
+		close(updated)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	got, err := waitForWireGuardProbePeer(ctx, tunnelID, "entry-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-updated
+	if got != runtime {
+		t.Fatal("probe returned a different WireGuard runtime")
+	}
+	if elapsed := time.Since(started); elapsed < 70*time.Millisecond {
+		t.Fatalf("probe did not wait for the requested peer: %s", elapsed)
+	}
+}
+
+func TestWaitForWireGuardProbePeerHonorsTimeout(t *testing.T) {
+	const tunnelID = 99002
+	setTestWireGuardRuntime(t, tunnelID, &wireGuardRuntime{peers: map[string]wireGuardPeerSpec{}})
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := waitForWireGuardProbePeer(ctx, tunnelID, "missing-entry"); err == nil {
+		t.Fatal("missing WireGuard peer unexpectedly became ready")
+	}
+	if elapsed := time.Since(started); elapsed < 60*time.Millisecond || elapsed > 300*time.Millisecond {
+		t.Fatalf("unexpected peer wait duration: %s", elapsed)
+	}
+}
+
+func TestWireGuardRuntimeSupportsTwoIndependentEntries(t *testing.T) {
+	entryAPrivate, entryAPublic := testWireGuardKeyPair(t)
+	entryBPrivate, entryBPublic := testWireGuardKeyPair(t)
+	exitPrivate, exitPublic := testWireGuardKeyPair(t)
+	exitWirePort := testUDPPort(t)
+
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	servicePort := backend.Addr().(*net.TCPAddr).Port
+	go func() {
+		for {
+			connection, err := backend.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				_, _ = io.Copy(connection, connection)
+			}()
+		}
+	}()
+
+	exit, err := newWireGuardRuntime(wireGuardSpec{
+		TunnelID:   902,
+		PrivateKey: exitPrivate,
+		PublicKey:  exitPublic,
+		Address:    "100.101.0.3",
+		ListenPort: exitWirePort,
+		MTU:        1380,
+		Peers: []wireGuardPeerSpec{
+			{ID: "1", HostID: 1, PublicKey: entryAPublic, Address: "100.101.0.1"},
+			{ID: "2", HostID: 2, PublicKey: entryBPublic, Address: "100.101.0.2"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exit.close()
+	if err := exit.ensureInboundProxy(servicePort, servicePort); err != nil {
+		t.Fatal(err)
+	}
+
+	newEntry := func(privateKey, publicKey, address string) *wireGuardRuntime {
+		runtime, err := newWireGuardRuntime(wireGuardSpec{
+			TunnelID:   902,
+			PrivateKey: privateKey,
+			PublicKey:  publicKey,
+			Address:    address,
+			MTU:        1380,
+			Peers: []wireGuardPeerSpec{{
+				ID: "3", HostID: 3, PublicKey: exitPublic, Address: "100.101.0.3",
+				EndpointHost: "127.0.0.1", EndpointPort: exitWirePort, PersistentKeepalive: 25,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	entryA := newEntry(entryAPrivate, entryAPublic, "100.101.0.1")
+	entryB := newEntry(entryBPrivate, entryBPublic, "100.101.0.2")
+	defer entryA.close()
+	defer entryB.close()
+
+	results := make(chan error, 2)
+	for label, runtime := range map[string]*wireGuardRuntime{"entry-a": entryA, "entry-b": entryB} {
+		label, runtime := label, runtime
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			connection, err := runtime.dialPeerTCP(ctx, "3", servicePort)
+			if err != nil {
+				results <- fmt.Errorf("%s dial: %w", label, err)
+				return
+			}
+			defer connection.Close()
+			_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+			payload := []byte(label)
+			if _, err := connection.Write(payload); err != nil {
+				results <- fmt.Errorf("%s write: %w", label, err)
+				return
+			}
+			reply := make([]byte, len(payload))
+			if _, err := io.ReadFull(connection, reply); err != nil {
+				results <- fmt.Errorf("%s read: %w", label, err)
+				return
+			}
+			if string(reply) != label {
+				results <- fmt.Errorf("%s unexpected reply %q", label, reply)
+				return
+			}
+			results <- nil
+		}()
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 	leftPrivate, leftPublic := testWireGuardKeyPair(t)
 	rightPrivate, rightPublic := testWireGuardKeyPair(t)
@@ -173,6 +347,10 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer left.close()
+	setTestWireGuardRuntime(t, 901, left)
+	if latency, reachable := wireGuardTCPLatency(901, "2", servicePort, 8*time.Second); !reachable || latency <= 0 {
+		t.Fatalf("WireGuard TCP latency probe failed: reachable=%v latency=%d", reachable, latency)
+	}
 
 	_, localTCPPort, localUDPPort, err := left.ensureOutboundProxy("2", servicePort, servicePort)
 	if err != nil {

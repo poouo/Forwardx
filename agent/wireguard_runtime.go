@@ -32,6 +32,8 @@ const (
 	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
 	wireGuardUDPSessionBufferBytes = 512 * 1024
 	wireGuardRuntimeReleaseDelay   = time.Minute
+	wireGuardProbeReadyPoll        = 100 * time.Millisecond
+	wireGuardProbeRetryDelay       = 250 * time.Millisecond
 )
 
 type wireGuardPeerSpec struct {
@@ -895,10 +897,8 @@ func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
 }
 
 func wireGuardTCPLatency(tunnelID int, peerID string, port int, timeout time.Duration) (int, bool) {
-	wireGuardRuntimesMu.RLock()
-	runtime := wireGuardRuntimes[tunnelID]
-	wireGuardRuntimesMu.RUnlock()
-	if runtime == nil || port <= 0 {
+	peerID = strings.TrimSpace(peerID)
+	if tunnelID <= 0 || peerID == "" || port <= 0 || port > 65535 {
 		return 0, false
 	}
 	if timeout <= 0 {
@@ -906,15 +906,58 @@ func wireGuardTCPLatency(tunnelID int, peerID string, port int, timeout time.Dur
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	started := time.Now()
-	connection, err := runtime.dialPeerTCP(ctx, peerID, port)
-	if err != nil {
-		return 0, false
+	for {
+		runtime, err := waitForWireGuardProbePeer(ctx, tunnelID, peerID)
+		if err != nil {
+			return 0, false
+		}
+		started := time.Now()
+		connection, err := runtime.dialPeerTCP(ctx, peerID, port)
+		if err == nil {
+			_ = connection.Close()
+			latency := int(time.Since(started).Milliseconds())
+			if latency < 1 {
+				latency = 1
+			}
+			return latency, true
+		}
+		if !waitForWireGuardProbeRetry(ctx) {
+			return 0, false
+		}
 	}
-	_ = connection.Close()
-	latency := int(time.Since(started).Milliseconds())
-	if latency < 1 {
-		latency = 1
+}
+
+func waitForWireGuardProbePeer(ctx context.Context, tunnelID int, peerID string) (*wireGuardRuntime, error) {
+	peerID = strings.TrimSpace(peerID)
+	if tunnelID <= 0 || peerID == "" {
+		return nil, errors.New("wireguard probe peer is invalid")
 	}
-	return latency, true
+	for {
+		wireGuardRuntimesMu.RLock()
+		runtime := wireGuardRuntimes[tunnelID]
+		wireGuardRuntimesMu.RUnlock()
+		if runtime != nil {
+			runtime.mu.RLock()
+			_, peerReady := runtime.peers[peerID]
+			ready := !runtime.closed && peerReady
+			runtime.mu.RUnlock()
+			if ready {
+				return runtime, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wireGuardProbeReadyPoll):
+		}
+	}
+}
+
+func waitForWireGuardProbeRetry(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(wireGuardProbeRetryDelay):
+		return true
+	}
 }

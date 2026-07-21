@@ -61,3 +61,19 @@ export function parseSelfTestMeta(message: unknown): SelfTestMeta | null {
     return null;
   }
 }
+
+export function buildTunnelAgentSelfTestPayload(test: { id?: unknown }, meta: SelfTestMeta | null) {
+  if (meta?.kind !== "tunnel" && meta?.kind !== "tunnel-hop") return null;
+  return {
+    testId: Number(test?.id),
+    kind: meta.kind,
+    tunnelId: meta.tunnelId,
+    ruleId: 0,
+    forwardType: "gost-tunnel",
+    protocol: "tcp",
+    sourcePort: 0,
+    targetIp: meta.targetIp,
+    targetPort: meta.targetPort,
+    wireGuardPeerId: meta.wireGuardPeerId,
+  };
+}
