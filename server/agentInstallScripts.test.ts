@@ -77,3 +77,10 @@ test("Mimic installer provisions the NIC offload management dependency", () => {
   assert.match(script, /apt-get install -y ethtool/);
   assert.match(script, /ensure_ethtool \|\| log/);
 });
+
+test("Agent release builds isolate host artifacts between cross images", () => {
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/build-agent-release.sh"), "utf8");
+
+  assert.match(script, /if \[ "\$builder" = "cross" \]; then/);
+  assert.match(script, /rm -rf target\/release "target\/\$target"/);
+});

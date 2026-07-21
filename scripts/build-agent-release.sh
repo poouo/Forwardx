@@ -109,6 +109,10 @@ build_fxp_rust() {
   (
     if [ -n "$RUST_HOME_ROOT" ]; then export HOME="$RUST_HOME_ROOT"; fi
     cd "$ROOT_DIR/forwardx-fxp-rust"
+    if [ "$builder" = "cross" ]; then
+      # Build scripts from another cross image may require a newer glibc.
+      rm -rf target/release "target/$target"
+    fi
     "${build_cmd[@]}" --release --locked --target "$target"
     install -m 0755 "target/$target/release/forwardx-fxp" "$OUT_DIR/$out"
   )
