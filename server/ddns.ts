@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { domainToASCII } from "node:url";
 import * as db from "./db";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 
 export type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
 
@@ -665,6 +666,42 @@ function uniqueDdnsValues(values: string[]) {
   return out;
 }
 
+function planDdnsValueChanges<T>(records: T[], desiredValues: string[], valueOf: (record: T) => unknown) {
+  const desired = uniqueDdnsValues(desiredValues);
+  const desiredSet = new Set(desired);
+  const covered = new Set<string>();
+  const reusable: T[] = [];
+
+  for (const record of records) {
+    const value = String(valueOf(record) || "").trim();
+    if (desiredSet.has(value) && !covered.has(value)) {
+      covered.add(value);
+    } else {
+      reusable.push(record);
+    }
+  }
+
+  const missing = desired.filter((value) => !covered.has(value));
+  const updates: Array<{ record: T; value: string }> = [];
+  while (missing.length > 0 && reusable.length > 0) {
+    updates.push({ record: reusable.shift()!, value: missing.shift()! });
+  }
+  return {
+    updates,
+    creates: missing,
+    removals: reusable,
+  };
+}
+
+function ddnsRecordLockKey(settings: DdnsSettings, input: Pick<DdnsRecordInput, "domain" | "recordType">) {
+  return [
+    "ddns-record",
+    settings.provider,
+    normalizeDnsName(input.domain),
+    String(input.recordType || "A").trim().toUpperCase(),
+  ].join(":");
+}
+
 async function updateCloudflareValues(input: {
   zoneId?: string;
   apiToken: string;
@@ -691,27 +728,44 @@ async function updateCloudflareValues(input: {
     String(item?.type || "").toUpperCase() === recordType
   ));
   const desired = uniqueDdnsValues(input.values);
-  const template = records[0] || null;
-
-  for (const record of records) {
-    const id = String(record?.id || "");
-    if (!id) continue;
-    const resp = await fetch(base + "/" + encodeURIComponent(id), { method: "DELETE", headers });
-    const body = await readJson(resp, "Cloudflare 删除记录失败");
-    if (body?.success === false) throw new Error(extractJsonError(body, "Cloudflare 删除记录失败"));
-  }
-
-  for (const value of desired) {
+  const managedRecords = records.filter((record: any) => String(record?.id || ""));
+  const template = managedRecords[0] || records[0] || null;
+  const plan = planDdnsValueChanges(managedRecords, desired, (record: any) => record?.content);
+  const payloadFor = (value: string, record: any = template) => {
     const payload: Record<string, unknown> = {
       type: recordType,
       name: recordName,
       content: value,
       ttl: parseTtl(input.ttl, 60),
-      proxied: !!template?.proxied,
+      proxied: !!record?.proxied,
     };
+    if (typeof record?.comment === "string" && record.comment) payload.comment = record.comment;
+    return payload;
+  };
+
+  for (const change of plan.updates) {
+    const id = String((change.record as any)?.id || "");
+    const resp = await fetch(base + "/" + encodeURIComponent(id), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(payloadFor(change.value, change.record)),
+    });
+    const body = await readJson(resp, "Cloudflare 更新记录失败");
+    if (body?.success === false) throw new Error(extractJsonError(body, "Cloudflare 更新记录失败"));
+  }
+
+  for (const value of plan.creates) {
+    const payload = payloadFor(value);
     const resp = await fetch(base, { method: "POST", headers, body: JSON.stringify(payload) });
     const body = await readJson(resp, "Cloudflare 创建记录失败");
     if (body?.success === false) throw new Error(extractJsonError(body, "Cloudflare 创建记录失败"));
+  }
+
+  for (const record of plan.removals) {
+    const id = String((record as any)?.id || "");
+    const resp = await fetch(base + "/" + encodeURIComponent(id), { method: "DELETE", headers });
+    const body = await readJson(resp, "Cloudflare 删除记录失败");
+    if (body?.success === false) throw new Error(extractJsonError(body, "Cloudflare 删除记录失败"));
   }
 }
 
@@ -801,12 +855,20 @@ async function updateAliyunValues(settings: DdnsSettings, input: DdnsRecordValue
     String(item?.Type || "").toUpperCase() === recordType &&
     (!line || String(item?.Line || "") === line)
   ));
-  for (const record of candidates) {
-    const id = String(record?.RecordId || "");
-    if (id) await aliyunRequest(settings, "DeleteDomainRecord", { RecordId: id });
+  const managedRecords = candidates.filter((record: any) => String(record?.RecordId || ""));
+  const plan = planDdnsValueChanges(managedRecords, values, (record: any) => record?.Value);
+  const payloadFor = (value: string) => ({ RR: rr, Type: recordType, Value: value, Line: line, TTL: ttl });
+  for (const change of plan.updates) {
+    await aliyunRequest(settings, "UpdateDomainRecord", {
+      RecordId: String((change.record as any).RecordId),
+      ...payloadFor(change.value),
+    });
   }
-  for (const value of values) {
-    await aliyunRequest(settings, "AddDomainRecord", { DomainName: root, RR: rr, Type: recordType, Value: value, Line: line, TTL: ttl });
+  for (const value of plan.creates) {
+    await aliyunRequest(settings, "AddDomainRecord", { DomainName: root, ...payloadFor(value) });
+  }
+  for (const record of plan.removals) {
+    await aliyunRequest(settings, "DeleteDomainRecord", { RecordId: String((record as any).RecordId) });
   }
 }
 
@@ -834,11 +896,9 @@ async function updateTencentCloudValues(settings: DdnsSettings, input: DdnsRecor
     String(item?.Type || "").toUpperCase() === recordType &&
     (recordLineId ? String(item?.LineId || "") === recordLineId : String(item?.Line || "") === recordLine)
   ));
-  for (const record of candidates) {
-    const id = String(record?.RecordId || "");
-    if (id) await tencentCloudRequest(settings, "DeleteRecord", { Domain: root, RecordId: Number(id) });
-  }
-  for (const value of values) {
+  const managedRecords = candidates.filter((record: any) => String(record?.RecordId || ""));
+  const plan = planDdnsValueChanges(managedRecords, values, (record: any) => record?.Value);
+  const payloadFor = (value: string) => {
     const payload: Record<string, any> = {
       Domain: root,
       SubDomain: subDomain,
@@ -848,7 +908,22 @@ async function updateTencentCloudValues(settings: DdnsSettings, input: DdnsRecor
       TTL: ttl,
     };
     if (recordLineId) payload.RecordLineId = recordLineId;
-    await tencentCloudRequest(settings, "CreateRecord", payload);
+    return payload;
+  };
+  for (const change of plan.updates) {
+    await tencentCloudRequest(settings, "ModifyRecord", {
+      ...payloadFor(change.value),
+      RecordId: Number((change.record as any).RecordId),
+    });
+  }
+  for (const value of plan.creates) {
+    await tencentCloudRequest(settings, "CreateRecord", payloadFor(value));
+  }
+  for (const record of plan.removals) {
+    await tencentCloudRequest(settings, "DeleteRecord", {
+      Domain: root,
+      RecordId: Number((record as any).RecordId),
+    });
   }
 }
 
@@ -868,37 +943,39 @@ export async function updateDdnsRecordValues(input: DdnsRecordValuesInput) {
   const values = uniqueDdnsValues(input.values);
   if (normalizedInput.recordType === "CNAME" && values.length > 1) throw new Error("CNAME 记录只能指向一个值");
 
-  if (settings.provider === "cloudflare") {
-    if (!settings.cloudflareApiToken) throw new Error("Cloudflare DDNS 未配置 API Token");
-    await updateCloudflareValues({
-      zoneId: settings.cloudflareZoneId,
-      apiToken: settings.cloudflareApiToken,
-      domain: normalizedInput.domain,
-      recordType: normalizedInput.recordType,
-      values,
-      ttl: normalizedInput.ttl ?? settings.ttl,
-    });
-    return;
-  }
+  return withKeyedTaskLock(ddnsRecordLockKey(settings, normalizedInput), async () => {
+    if (settings.provider === "cloudflare") {
+      if (!settings.cloudflareApiToken) throw new Error("Cloudflare DDNS 未配置 API Token");
+      await updateCloudflareValues({
+        zoneId: settings.cloudflareZoneId,
+        apiToken: settings.cloudflareApiToken,
+        domain: normalizedInput.domain,
+        recordType: normalizedInput.recordType,
+        values,
+        ttl: normalizedInput.ttl ?? settings.ttl,
+      });
+      return;
+    }
 
-  if (settings.provider === "webhook") {
-    await updateWebhookValues(settings, { ...normalizedInput, ttl: normalizedInput.ttl ?? settings.ttl }, values);
-    return;
-  }
+    if (settings.provider === "webhook") {
+      await updateWebhookValues(settings, { ...normalizedInput, ttl: normalizedInput.ttl ?? settings.ttl }, values);
+      return;
+    }
 
-  if (settings.provider === "huaweicloud") {
-    await updateHuaweiCloudValues(settings, normalizedInput, values);
-    return;
-  }
+    if (settings.provider === "huaweicloud") {
+      await updateHuaweiCloudValues(settings, normalizedInput, values);
+      return;
+    }
 
-  if (settings.provider === "aliyun") {
-    await updateAliyunValues(settings, normalizedInput, values);
-    return;
-  }
+    if (settings.provider === "aliyun") {
+      await updateAliyunValues(settings, normalizedInput, values);
+      return;
+    }
 
-  if (settings.provider === "tencentcloud") {
-    await updateTencentCloudValues(settings, normalizedInput, values);
-  }
+    if (settings.provider === "tencentcloud") {
+      await updateTencentCloudValues(settings, normalizedInput, values);
+    }
+  });
 }
 export async function updateDdnsRecord(input: DdnsRecordInput) {
   const settings = await getDdnsSettings();
@@ -917,49 +994,51 @@ export async function updateDdnsRecord(input: DdnsRecordInput) {
     lineName: input.lineName?.trim() || undefined,
   };
 
-  if (settings.provider === "cloudflare") {
-    if (!settings.cloudflareApiToken) {
-      throw new Error("Cloudflare DDNS 未配置 API Token");
+  return withKeyedTaskLock(ddnsRecordLockKey(settings, normalizedInput), async () => {
+    if (settings.provider === "cloudflare") {
+      if (!settings.cloudflareApiToken) {
+        throw new Error("Cloudflare DDNS 未配置 API Token");
+      }
+      await updateCloudflare({
+        zoneId: settings.cloudflareZoneId,
+        apiToken: settings.cloudflareApiToken,
+        domain: normalizedInput.domain,
+        recordType: normalizedInput.recordType,
+        value: normalizedInput.value,
+        ttl: normalizedInput.ttl ?? settings.ttl,
+      });
+      return;
     }
-    await updateCloudflare({
-      zoneId: settings.cloudflareZoneId,
-      apiToken: settings.cloudflareApiToken,
-      domain: normalizedInput.domain,
-      recordType: normalizedInput.recordType,
-      value: normalizedInput.value,
-      ttl: normalizedInput.ttl ?? settings.ttl,
-    });
-    return;
-  }
 
-  if (settings.provider === "webhook") {
-    if (!settings.webhookUrl) throw new Error("Webhook DDNS 地址未配置");
-    await updateWebhook({
-      url: settings.webhookUrl,
-      method: settings.webhookMethod,
-      headers: settings.webhookHeaders,
-      domain: normalizedInput.domain,
-      recordType: normalizedInput.recordType,
-      value: normalizedInput.value,
-      groupId: normalizedInput.groupId,
-      ttl: normalizedInput.ttl ?? settings.ttl,
-      lineId: normalizedInput.lineId,
-      lineName: normalizedInput.lineName,
-    });
-    return;
-  }
+    if (settings.provider === "webhook") {
+      if (!settings.webhookUrl) throw new Error("Webhook DDNS 地址未配置");
+      await updateWebhook({
+        url: settings.webhookUrl,
+        method: settings.webhookMethod,
+        headers: settings.webhookHeaders,
+        domain: normalizedInput.domain,
+        recordType: normalizedInput.recordType,
+        value: normalizedInput.value,
+        groupId: normalizedInput.groupId,
+        ttl: normalizedInput.ttl ?? settings.ttl,
+        lineId: normalizedInput.lineId,
+        lineName: normalizedInput.lineName,
+      });
+      return;
+    }
 
-  if (settings.provider === "huaweicloud") {
-    await updateHuaweiCloud(settings, normalizedInput);
-    return;
-  }
+    if (settings.provider === "huaweicloud") {
+      await updateHuaweiCloud(settings, normalizedInput);
+      return;
+    }
 
-  if (settings.provider === "aliyun") {
-    await updateAliyun(settings, normalizedInput);
-    return;
-  }
+    if (settings.provider === "aliyun") {
+      await updateAliyun(settings, normalizedInput);
+      return;
+    }
 
-  if (settings.provider === "tencentcloud") {
-    await updateTencentCloud(settings, normalizedInput);
-  }
+    if (settings.provider === "tencentcloud") {
+      await updateTencentCloud(settings, normalizedInput);
+    }
+  });
 }

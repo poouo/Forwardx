@@ -78,9 +78,11 @@ test("Mimic installer provisions the NIC offload management dependency", () => {
   assert.match(script, /ensure_ethtool \|\| log/);
 });
 
-test("Agent release builds isolate host artifacts between cross images", () => {
+test("Agent release always builds the published FXP assets from Go", () => {
   const script = fs.readFileSync(path.join(process.cwd(), "scripts/build-agent-release.sh"), "utf8");
 
-  assert.match(script, /if \[ "\$builder" = "cross" \]; then/);
-  assert.match(script, /rm -rf target\/release "target\/\$target"/);
+  assert.match(script, /build_fxp amd64 forwardx-fxp-linux-amd64/);
+  assert.match(script, /build_fxp arm64 forwardx-fxp-linux-arm64/);
+  assert.match(script, /CGO_ENABLED=0 GOOS=linux GOARCH="\$goarch"/);
+  assert.doesNotMatch(script, /FXP_IMPLEMENTATION|forwardx-fxp-rust|cargo|cross build/);
 });

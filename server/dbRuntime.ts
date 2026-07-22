@@ -9,7 +9,7 @@ import pg from "pg";
 import Database from "better-sqlite3";
 import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
-import { assertSafeDatabaseHost } from "./ssrf";
+import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -49,6 +49,8 @@ let _pool: Pool | null = null;
 let _pgPool: pg.Pool | null = null;
 let _sqlite: Database.Database | null = null;
 let _db: Db | null = null;
+let _databasePoolHostCount = 0;
+let _databasePoolSettings = databasePoolSettingsForHostCount(0);
 
 type DatabaseTransactionContext = {
   db: Db;
@@ -165,19 +167,41 @@ function normalizeSqlite(config: SqliteConfig): SqliteConfig {
 }
 
 export function getDatabasePoolSettings() {
-  const maxOpen = ENV.databaseMaxOpenConns;
-  const maxIdle = Math.min(ENV.databaseMaxIdleConns, maxOpen);
-  const idleTimeoutMillis = ENV.databaseConnMaxIdleTimeMinutes * 60_000;
-  const maxLifetimeSeconds = ENV.databaseConnMaxLifetimeMinutes > 0
-    ? ENV.databaseConnMaxLifetimeMinutes * 60
-    : undefined;
-  return {
-    maxOpen,
-    maxIdle,
-    idleTimeoutMillis,
-    maxLifetimeSeconds,
-    connectTimeoutMillis: ENV.databaseConnectTimeoutMs,
-  };
+  return { ..._databasePoolSettings };
+}
+
+export function setDatabasePoolHostCount(value: unknown) {
+  const hostCount = Math.max(0, Math.floor(Number(value) || 0));
+  const previous = _databasePoolSettings;
+  const next = databasePoolSettingsForHostCount(hostCount);
+  _databasePoolHostCount = hostCount;
+  _databasePoolSettings = next;
+
+  // Both drivers read these limits when checking out a connection, so active transactions stay intact.
+  const mysqlConfig = (_pool as any)?.pool?.config;
+  if (mysqlConfig) {
+    mysqlConfig.connectionLimit = next.maxOpen;
+    mysqlConfig.maxIdle = next.maxIdle;
+    mysqlConfig.idleTimeout = next.idleTimeoutMillis;
+    mysqlConfig.queueLimit = next.queueLimit;
+  }
+  if (_pgPool) {
+    _pgPool.options.max = next.maxOpen;
+    _pgPool.options.min = next.maxIdle;
+    _pgPool.options.idleTimeoutMillis = next.idleTimeoutMillis;
+    _pgPool.options.maxLifetimeSeconds = next.maxLifetimeSeconds;
+  }
+
+  if ((_pool || _pgPool) && (previous.maxOpen !== next.maxOpen || previous.maxIdle !== next.maxIdle)) {
+    console.info(`[Database] Pool capacity adjusted hosts=${hostCount} maxOpen=${next.maxOpen} maxIdle=${next.maxIdle} queueLimit=${next.queueLimit}`);
+  }
+  return getDatabasePoolSettings();
+}
+
+export async function refreshDatabasePoolSettings() {
+  if (_kind !== "mysql" && _kind !== "postgresql") return getDatabasePoolSettings();
+  const rows = await queryRaw<{ count: number | string }>("SELECT COUNT(*) AS count FROM hosts");
+  return setDatabasePoolHostCount(rows[0]?.count ?? _databasePoolHostCount);
 }
 
 function readMysqlFromEnv(): MysqlConfig | null {
@@ -361,13 +385,14 @@ export function writeMysqlConfig(config: MysqlConfig) {
 }
 
 function mysqlConnectionOptions(config: MysqlConfig): ConnectionOptions {
+  const pool = getDatabasePoolSettings();
   return {
     host: config.host,
     port: config.port,
     user: config.user,
     password: config.password,
     database: config.database,
-    connectTimeout: ENV.databaseConnectTimeoutMs,
+    connectTimeout: pool.connectTimeoutMillis,
     timezone: "+00:00",
     dateStrings: false,
     ssl: config.ssl ? {} : undefined,
@@ -382,19 +407,20 @@ function poolOptions(config: MysqlConfig): PoolOptions {
     connectionLimit: pool.maxOpen,
     maxIdle: pool.maxIdle,
     idleTimeout: pool.idleTimeoutMillis,
-    queueLimit: 0,
+    queueLimit: pool.queueLimit,
   };
 }
 
 function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
   const pool = getDatabasePoolSettings();
-  const options: pg.PoolConfig & { maxLifetimeSeconds?: number } = {
+  const options: pg.PoolConfig & { min?: number; maxLifetimeSeconds?: number } = {
     host: config.host,
     port: config.port,
     user: config.user,
     password: config.password,
     database: config.database,
     max: pool.maxOpen,
+    min: pool.maxIdle,
     idleTimeoutMillis: pool.idleTimeoutMillis,
     connectionTimeoutMillis: pool.connectTimeoutMillis,
     maxLifetimeSeconds: pool.maxLifetimeSeconds,
@@ -405,7 +431,6 @@ function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
 
 export async function testMysqlConnection(config: MysqlConfig) {
   const normalized = normalizeMysql(config);
-  await assertSafeDatabaseHost(normalized.host);
   const conn = await mysql.createConnection(mysqlConnectionOptions(normalized));
   try {
     await conn.ping();
@@ -417,7 +442,6 @@ export async function testMysqlConnection(config: MysqlConfig) {
 
 export async function testPostgresqlConnection(config: PostgresqlConfig) {
   const normalized = normalizePostgresql(config);
-  await assertSafeDatabaseHost(normalized.host);
   const pool = new pg.Pool(pgPoolOptions(normalized));
   try {
     await pool.query("SELECT 1");

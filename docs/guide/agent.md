@@ -78,7 +78,7 @@ Agent 常用文件位置：
 - Agent 通讯配置：`/etc/forwardx/agent/config.json`
 - Agent 日志：`/var/log/forwardx-agent/agent-go.log`
 - Agent 本地状态：`/var/lib/forwardx-agent`
-- ForwardX FXP 运行时：`/usr/local/bin/forwardx-fxp`（默认 Rust 实现，配置与传输协议兼容旧 Go 实现）
+- ForwardX FXP 运行时：`/usr/local/bin/forwardx-fxp`（Go 实现）
 - GOST/隧道运行时配置：`/etc/forwardx/runtime`
 
 Agent 会限制单个日志文件和 `/var/log/forwardx-agent` 的总占用。发现磁盘异常增长时，可以先定位实际占用来源：

@@ -1,7 +1,6 @@
 node_modules
 dist
 client/dist
-forwardx-fxp-rust/target
 docs
 udp2raw/doc
 udp2raw/images

@@ -212,6 +212,16 @@ function forwardGroupFailoverDelayMs(group: any) {
   return Math.max(10, Number.isFinite(seconds) ? seconds : 60) * 1000;
 }
 
+const forwardGroupRuleProbeFreshMs = 5 * 60 * 1000;
+
+function freshForwardGroupRuleProbe(stat: any, now: Date) {
+  const recordedAt = toDate(stat?.recordedAt);
+  if (!recordedAt) return null;
+  const age = now.getTime() - recordedAt.getTime();
+  if (age < -60_000 || age > forwardGroupRuleProbeFreshMs) return null;
+  return stat;
+}
+
 function agentFailureSince(host: any, group: any, now: Date) {
   if (!host) return now;
   const heartbeatAt = toDate(host.lastHeartbeat);
@@ -2785,19 +2795,22 @@ export async function runForwardGroupsForHostAddressChange(hostId: number, reaso
   ].filter((value) => Number.isInteger(value) && value > 0)));
   if (groupIds.length === 0) return 0;
 
-  const groups = await Promise.all(groupIds.map((groupId) => getForwardGroupById(groupId)));
-  const activeGroups = (groups as any[]).filter((group: any) => {
+  const groupRows = await db
+    .select({ id: forwardGroups.id, groupMode: forwardGroups.groupMode, isEnabled: forwardGroups.isEnabled })
+    .from(forwardGroups)
+    .where(inArray(forwardGroups.id, groupIds));
+  const activeGroupIds = (groupRows as any[]).filter((group: any) => {
     const mode = groupModeOf(group);
-    return group?.isEnabled !== false && (mode === "failover" || mode === "entry");
-  });
-  if (activeGroups.length === 0) return 0;
+    return dbBool(group?.isEnabled) && (mode === "failover" || mode === "entry");
+  }).map((group: any) => Number(group.id || 0));
+  if (activeGroupIds.length === 0) return 0;
 
-  appendPanelLog("info", `[HostAddress] host=${id} refreshing ${activeGroups.length} DDNS group(s) reason=${reason}`);
-  await runForwardGroupFailoverForGroups(activeGroups, {
+  appendPanelLog("info", `[HostAddress] host=${id} refreshing ${activeGroupIds.length} DDNS group(s) reason=${reason}`);
+  await runForwardGroupFailoverByIds(activeGroupIds, {
     forceSync: true,
     suppressSwitchNotify: true,
   });
-  return activeGroups.length;
+  return activeGroupIds.length;
 }
 
 async function latestTcping(ruleId: number) {
@@ -2849,7 +2862,12 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
       healthy = true;
       const latencies: number[] = [];
       for (const rule of activeChildRules as any[]) {
-        const ruleHost = hostById.get(Number(rule.hostId || 0));
+        const ruleHostId = Number(rule.hostId || 0);
+        let ruleHost = hostById.get(ruleHostId);
+        if (!hostById.has(ruleHostId)) {
+          ruleHost = await getHostById(ruleHostId).catch(() => null);
+          hostById.set(ruleHostId, ruleHost);
+        }
         const hostFailureSince = agentFailureSince(ruleHost, group, now);
         if (hostFailureSince) {
           healthy = false;
@@ -2867,8 +2885,8 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
           message = "Member rule not running yet";
           break;
         }
-        const stat = await latestTcping(Number(rule.id));
-        if (stat?.isTimeout) {
+        const stat = freshForwardGroupRuleProbe(await latestTcping(Number(rule.id)), now);
+        if (stat && dbBool(stat.isTimeout)) {
           healthy = false;
           message = "Latency probe timeout";
           break;
@@ -3250,10 +3268,19 @@ async function syncSingleForwardGroupDdns(
   }
 }
 
-async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardGroupFailoverOptions = {}) {
+type ForwardGroupFailoverContext = {
+  ddnsSettings: any;
+  hostById: Map<number, any>;
+};
+
+async function runForwardGroupFailoverForGroups(
+  groups: any[],
+  options: ForwardGroupFailoverOptions = {},
+  context?: ForwardGroupFailoverContext,
+) {
   const db = await getDb();
-  const ddnsSettings = await getDdnsSettings();
-  const hostById = new Map((await getHosts() as any[]).map((host: any) => [Number(host.id), host]));
+  const ddnsSettings = context?.ddnsSettings ?? await getDdnsSettings();
+  const hostById = context?.hostById ?? new Map((await getHosts() as any[]).map((host: any) => [Number(host.id), host]));
   for (const group of groups as any[]) {
     if (!group.isEnabled) continue;
     const mode = groupModeOf(group);
@@ -3380,13 +3407,37 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
   }
 }
 
+async function runForwardGroupFailoverByIds(groupIds: number[], options: ForwardGroupFailoverOptions = {}) {
+  const ids = Array.from(new Set(groupIds
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+  if (ids.length === 0) return;
+
+  const ddnsSettings = await getDdnsSettings();
+  for (const groupId of ids) {
+    await withKeyedTaskLock(`forward-group-failover:${groupId}`, async () => {
+      const group = await getForwardGroupById(groupId);
+      if (!group) return;
+      const context: ForwardGroupFailoverContext = {
+        ddnsSettings,
+        hostById: new Map(),
+      };
+      await runForwardGroupFailoverForGroups([group], options, context);
+    });
+  }
+}
+
 export async function runForwardGroupFailover(groupId: number, options: ForwardGroupFailoverOptions = {}) {
-  const group = await getForwardGroupById(groupId);
-  if (!group) return;
-  await runForwardGroupFailoverForGroups([group], options);
+  await runForwardGroupFailoverByIds([groupId], options);
 }
 
 export async function runForwardGroupFailoverSweep(options: ForwardGroupFailoverOptions = {}) {
-  const groups = await getForwardGroups();
-  await runForwardGroupFailoverForGroups(groups as any[], options);
+  const db = await getDb();
+  if (!db) return;
+  const groups = await db
+    .select({ id: forwardGroups.id })
+    .from(forwardGroups)
+    .where(eq(forwardGroups.isEnabled, true))
+    .orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
+  await runForwardGroupFailoverByIds((groups as any[]).map((group: any) => Number(group.id || 0)), options);
 }

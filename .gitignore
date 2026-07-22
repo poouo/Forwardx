@@ -47,7 +47,6 @@ temp/
 .cache/
 .gocache/
 .tmp-*/
-.tmp/forwardx-fxp-go*
 
 # Local Docker deployment bundle generated for manual upload
 docker/Forwardx/
@@ -58,7 +57,6 @@ agent/forwardx-agent-*
 agent/*.exe
 forwardx-fxp/dist/
 forwardx-fxp/forwardx-fxp*
-forwardx-fxp-rust/target/
 
 # Android local build output
 android/.gradle/

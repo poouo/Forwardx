@@ -1,9 +1,129 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import mysql from "mysql2/promise";
+import pg from "pg";
+import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
+import { testMysqlConnection, testPostgresqlConnection } from "./dbRuntime";
+
+test("database pool capacity scales automatically with the host count", () => {
+  assert.deepEqual(databasePoolSettingsForHostCount(30), {
+    maxOpen: 16,
+    maxIdle: 16,
+    queueLimit: 256,
+    idleTimeoutMillis: 300_000,
+    maxLifetimeSeconds: 0,
+    connectTimeoutMillis: 6000,
+  });
+  assert.deepEqual(
+    { maxOpen: databasePoolSettingsForHostCount(31).maxOpen, queueLimit: databasePoolSettingsForHostCount(31).queueLimit },
+    { maxOpen: 24, queueLimit: 384 },
+  );
+  assert.equal(databasePoolSettingsForHostCount(101).maxOpen, 32);
+  assert.equal(databasePoolSettingsForHostCount(10_000).maxOpen, 32);
+});
+
+test("MySQL pool tiers retain opened connections and bound queued work", () => {
+  for (const hostCount of [0, 30, 31, 100, 101, 10_000]) {
+    const settings = databasePoolSettingsForHostCount(hostCount);
+    assert.equal(settings.maxIdle, settings.maxOpen, `hostCount=${hostCount}`);
+    assert.ok(settings.queueLimit >= settings.maxOpen, `hostCount=${hostCount}`);
+    assert.ok(settings.queueLimit <= 512, `hostCount=${hostCount}`);
+  }
+});
+
+test("MySQL pool does not start the rapid excess-idle connection reaper", async () => {
+  const settings = databasePoolSettingsForHostCount(30);
+  const pool = mysql.createPool({
+    host: "127.0.0.1",
+    user: "forwardx",
+    database: "forwardx",
+    connectionLimit: settings.maxOpen,
+    maxIdle: settings.maxIdle,
+    idleTimeout: settings.idleTimeoutMillis,
+    queueLimit: settings.queueLimit,
+  });
+  try {
+    const basePool = (pool as any).pool;
+    assert.equal(basePool.config.connectionLimit, 16);
+    assert.equal(basePool.config.maxIdle, 16);
+    assert.equal(basePool.config.queueLimit, 256);
+    assert.equal(basePool._removeIdleTimeoutConnectionsTimer, undefined);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("PostgreSQL pool retains opened clients without synchronized lifetime rotation", async () => {
+  const settings = databasePoolSettingsForHostCount(30);
+  const pool = new pg.Pool({
+    host: "127.0.0.1",
+    user: "forwardx",
+    database: "forwardx",
+    max: settings.maxOpen,
+    min: settings.maxIdle,
+    idleTimeoutMillis: settings.idleTimeoutMillis,
+    connectionTimeoutMillis: settings.connectTimeoutMillis,
+    maxLifetimeSeconds: settings.maxLifetimeSeconds,
+  } as pg.PoolConfig);
+  try {
+    assert.equal(pool.options.max, 16);
+    assert.equal(pool.options.min, 16);
+    assert.equal(pool.options.connectionTimeoutMillis, 6000);
+    assert.equal(pool.options.maxLifetimeSeconds, 0);
+    assert.equal(pool.totalCount, 0, "the stable minimum must not eagerly open PostgreSQL connections");
+  } finally {
+    await pool.end();
+  }
+});
+
+async function verifyLoopbackDatabaseConnection(connect: (port: number) => Promise<void>) {
+  let acceptedConnections = 0;
+  const server = net.createServer((socket) => {
+    acceptedConnections += 1;
+    socket.destroy();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    let connectionError: unknown;
+    try {
+      await connect(address.port);
+    } catch (error) {
+      connectionError = error;
+    }
+    assert.ok(connectionError instanceof Error);
+    assert.doesNotMatch(connectionError.message, /(?:不允许访问|受限地址)/);
+    assert.ok(acceptedConnections > 0, "database driver should attempt a real loopback connection");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+test("database checks allow user-provided loopback MySQL and PostgreSQL hosts", async () => {
+  await verifyLoopbackDatabaseConnection((port) => testMysqlConnection({
+    host: "127.0.0.1",
+    port,
+    user: "forwardx",
+    password: "test",
+    database: "forwardx",
+  }));
+  await verifyLoopbackDatabaseConnection((port) => testPostgresqlConnection({
+    host: "127.0.0.1",
+    port,
+    user: "forwardx",
+    password: "test",
+    database: "forwardx",
+  }));
+});
 
 test("SQLite billing transactions roll back and serialize concurrent updates", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-transaction-"));

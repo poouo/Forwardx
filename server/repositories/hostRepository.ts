@@ -20,7 +20,7 @@ import {
   tunnels,
   userHostPermissions,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, refreshDatabasePoolSettings } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
@@ -346,6 +346,7 @@ export async function createHost(host: InsertHost) {
   const id = await insertAndGetId("hosts", host as any);
   const created = await getHostById(id).catch(() => undefined);
   await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "create", after: created });
+  await refreshDatabasePoolSettings().catch(() => undefined);
   return id;
 }
 
@@ -409,6 +410,7 @@ export async function deleteHost(id: number) {
   ));
   await db.delete(hosts).where(eq(hosts.id, id));
   if (before) await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "delete", before });
+  await refreshDatabasePoolSettings().catch(() => undefined);
 }
 
 async function hostHasLiveReferences(hostId: number) {

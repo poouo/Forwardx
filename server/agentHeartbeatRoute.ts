@@ -23,7 +23,8 @@ import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
-import { normalizeAgentAddress, normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
+import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
+import { mergeAgentReportedAddress } from "./agentAddressState";
 import {
   planGostTunnelProbeListeners,
   shouldReconcileGostRuntime,
@@ -720,23 +721,6 @@ function isHostnameAddress(value: string) {
   return !!text && !isIP(text) && /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$/.test(text);
 }
 
-function agentReportedAddress(body: any, existingHost: any) {
-  const hasIp = Object.prototype.hasOwnProperty.call(body || {}, "ip");
-  const hasIpv4 = Object.prototype.hasOwnProperty.call(body || {}, "ipv4");
-  const hasIpv6 = Object.prototype.hasOwnProperty.call(body || {}, "ipv6");
-  const safeIpv4 = normalizeAgentAddress(body?.ipv4);
-  const safeIpv6 = normalizeAgentAddress(body?.ipv6);
-  const safeIp = normalizeAgentAddress(body?.ip);
-  const nextIpv4 = hasIpv4 ? (safeIpv4 || null) : (existingHost?.ipv4 || null);
-  const nextIpv6 = hasIpv6 ? (safeIpv6 || null) : (existingHost?.ipv6 || null);
-  const primaryIp = safeIpv4 || safeIp || safeIpv6 || (!hasIp ? String(existingHost?.ip || "") : "");
-  return {
-    ip: primaryIp || "unknown",
-    ipv4: nextIpv4,
-    ipv6: nextIpv6,
-  };
-}
-
 function addDnsWatch(watches: Map<string, AgentDnsWatch>, host: string, scope: string, refId?: number) {
   const value = String(host || "").trim();
   if (!isHostnameAddress(value)) return;
@@ -840,7 +824,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           success: true,
           actions: [],
           selfTests: [],
-          nextInterval: 1,
+          nextInterval: 5,
           compactReports: true,
           reconciliationCoalesced: true,
           panelMigration,
@@ -876,7 +860,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const reportedDefaultNetworkInterface = normalizeNetworkInterface(req.body?.defaultNetworkInterface);
     const previousHost = { ...(host as any) };
     const wasOnline = isHostStatusOnline(host);
-    const reportedAddress = agentReportedAddress(req.body, host);
+    const reportedAddress = mergeAgentReportedAddress(req.body, host);
     const dnsChangedReports = Array.isArray(req.body?.dnsChanged) ? req.body.dnsChanged : [];
     const agentStateSignatures = normalizeAgentStateSignatures(req.body?.stateSignatures);
     const localRuntimeStateSignature = normalizeRuntimeStateSignature(req.body?.localStateSignature);

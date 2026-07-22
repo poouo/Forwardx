@@ -11,7 +11,8 @@ import { AGENT_PANEL_MIGRATION_VERSION, isAgentUpgradeTargetSatisfied, isAgentVe
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
-import { normalizeAgentAddress, normalizeAgentText } from "./agentInputValidation";
+import { normalizeAgentText } from "./agentInputValidation";
+import { mergeAgentReportedAddress } from "./agentAddressState";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
@@ -262,7 +263,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
 // Agent 注册接口
 agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) => {
   try {
-    const { token, ip, ipv4, ipv6, osInfo, cpuInfo, memoryTotal, agentVersion } = req.body;
+    const { token, osInfo, cpuInfo, memoryTotal, agentVersion } = req.body;
     if (!token) {
       res.status(400).json({ error: "Token is required" });
       return;
@@ -281,10 +282,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     }
 
     // 检查是否已有主机使用此 token
-    const safeIpv4 = normalizeAgentAddress(ipv4);
-    const safeIpv6 = normalizeAgentAddress(ipv6);
-    const safeIp = normalizeAgentAddress(ip);
-    const primaryIp = safeIpv4 || safeIp || safeIpv6 || "unknown";
+    const initialReportedAddress = mergeAgentReportedAddress(req.body);
     const nextOsInfo = normalizeAgentText(osInfo, 256);
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
@@ -292,19 +290,16 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
       const wasOnline = isHostStatusOnline(existingHost);
-      const hasIpv4Report = Object.prototype.hasOwnProperty.call(req.body, "ipv4");
-      const hasIpv6Report = Object.prototype.hasOwnProperty.call(req.body, "ipv6");
-      const nextIpv4 = hasIpv4Report ? (safeIpv4 || null) : ((existingHost as any).ipv4 || null);
-      const nextIpv6 = hasIpv6Report ? (safeIpv6 || null) : ((existingHost as any).ipv6 || null);
+      const reportedAddress = mergeAgentReportedAddress(req.body, existingHost);
       const entryChanged = [
-        ["ip", primaryIp !== "unknown" ? primaryIp : existingHost.ip],
-        ["ipv4", nextIpv4],
-        ["ipv6", nextIpv6],
+        ["ip", reportedAddress.ip],
+        ["ipv4", reportedAddress.ipv4],
+        ["ipv6", reportedAddress.ipv6],
       ].some(([key, value]) => String(value || "") !== String((existingHost as any)[key as string] || ""));
       await db.updateHost(existingHost.id, {
-        ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip,
-        ipv4: nextIpv4,
-        ipv6: nextIpv6,
+        ip: reportedAddress.ip,
+        ipv4: reportedAddress.ipv4,
+        ipv6: reportedAddress.ipv6,
         ...(entryChanged ? {
           geoCountryCode: null,
           geoCountryName: null,
@@ -324,14 +319,14 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
       if (entryChanged) {
         await handleHostAddressChanged(
           existingHost.id,
-          { ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 },
+          { ...existingHost, ...reportedAddress },
           existingHost,
           "agent-address-changed",
         );
       }
       if (!wasOnline) {
         await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-reconnected");
-        void notifyHostOnlineIfNeeded({ ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 }).catch((error) => {
+        void notifyHostOnlineIfNeeded({ ...existingHost, ...reportedAddress }).catch((error) => {
           console.warn(`[HostStatus] Online notify failed host=${existingHost.id}: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
@@ -345,9 +340,9 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     // 创建新主机
     const hostId = await db.createHost({
       name: tokenDescription || `Agent-${token.substring(0, 8)}`,
-      ip: primaryIp,
-      ipv4: safeIpv4 || null,
-      ipv6: safeIpv6 || null,
+      ip: initialReportedAddress.ip,
+      ipv4: initialReportedAddress.ipv4,
+      ipv6: initialReportedAddress.ipv6,
       hostType: "slave",
       agentToken: token,
       osInfo: nextOsInfo || null,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mergeAgentReportedAddress } from "./agentAddressState";
 import { AgentHeartbeatGate, buildBusyAgentHeartbeatResponse } from "./agentHeartbeatGate";
 
 test("coalesces overlapping and recent heartbeats for one host without blocking", () => {
@@ -25,6 +26,22 @@ test("coalesces overlapping and recent heartbeats for one host without blocking"
   nextRelease();
 });
 
+test("limits concurrent full heartbeats across different hosts", () => {
+  const gate = new AgentHeartbeatGate(1000, () => 10_000, 2);
+  const first = gate.tryAcquire(1);
+  const second = gate.tryAcquire(2);
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(gate.tryAcquire(3), null, "excess reconciliation must be rejected without entering the database queue");
+  assert.equal(gate.tryAcquire(3, { force: true }), null, "forced refresh must still respect global backpressure");
+
+  first();
+  const third = gate.tryAcquire(3);
+  assert.ok(third, "capacity must be available immediately after a reconciliation completes");
+  third();
+  second();
+});
+
 test("busy heartbeat responses preserve cached state sections on the Agent", () => {
   const response = buildBusyAgentHeartbeatResponse({
     panelUrl: "https://panel.example.test",
@@ -45,4 +62,17 @@ test("busy heartbeat responses preserve cached state sections on the Agent", () 
   }
   assert.equal(response.nextInterval, 5);
   assert.equal(response.panelUrl, "https://panel.example.test");
+});
+
+test("empty address reports during Agent restart preserve the last valid addresses", () => {
+  const existing = {
+    ip: "198.51.100.8",
+    ipv4: "198.51.100.8",
+    ipv6: "2001:db8::8",
+  };
+  assert.deepEqual(mergeAgentReportedAddress({ ip: "unknown", ipv4: "", ipv6: "" }, existing), existing);
+  assert.deepEqual(mergeAgentReportedAddress({ ipv6: "2001:db8::9" }, existing), {
+    ...existing,
+    ipv6: "2001:db8::9",
+  });
 });

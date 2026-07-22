@@ -43,12 +43,6 @@ function readIntEnv(names: string[], fallback: number, min: number, max: number)
   return fallback;
 }
 
-const databaseMaxOpenConns = readIntEnv(["DATABASE_MAX_OPEN_CONNS", "DB_MAX_OPEN_CONNS"], 50, 1, 500);
-const databaseMaxIdleConns = Math.min(
-  readIntEnv(["DATABASE_MAX_IDLE_CONNS", "DB_MAX_IDLE_CONNS"], 10, 0, 500),
-  databaseMaxOpenConns,
-);
-
 export const ENV = {
   cookieSecret: readOrCreateCookieSecret(),
   mysqlUrl: process.env.MYSQL_URL ?? "",
@@ -68,11 +62,6 @@ export const ENV = {
   postgresSsl: process.env.POSTGRES_SSL === "true" || process.env.POSTGRESQL_SSL === "true" || process.env.PGSSL === "true",
   databaseType: process.env.DATABASE_TYPE ?? process.env.DB_TYPE ?? "",
   databaseConfigPath: process.env.DATABASE_CONFIG_PATH ?? process.env.DB_CONFIG_PATH ?? "/data/database.json",
-  databaseMaxOpenConns,
-  databaseMaxIdleConns,
-  databaseConnMaxLifetimeMinutes: readIntEnv(["DATABASE_CONN_MAX_LIFETIME_MINUTES", "DB_CONN_MAX_LIFETIME_MINUTES"], 30, 0, 1440),
-  databaseConnMaxIdleTimeMinutes: readIntEnv(["DATABASE_CONN_MAX_IDLE_TIME_MINUTES", "DB_CONN_MAX_IDLE_TIME_MINUTES"], 5, 1, 1440),
-  databaseConnectTimeoutMs: readIntEnv(["DATABASE_CONNECT_TIMEOUT_MS", "DB_CONNECT_TIMEOUT_MS"], 6000, 1000, 120000),
   sqlitePath: process.env.SQLITE_PATH ?? "/data/forwardx.db",
   port: Number.parseInt(process.env.PORT || "9810", 10),
   publicPort: readIntEnv(["FORWARDX_PUBLIC_PORT", "FORWARDX_EXTERNAL_PORT"], 0, 1, 65535),

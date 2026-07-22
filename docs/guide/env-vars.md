@@ -56,24 +56,7 @@ Docker 场景下数据库地址可以按下面判断：
 
 ## 数据库连接池
 
-MySQL 和 PostgreSQL 会使用连接池。默认值适合约 30 台 Agent 主机的常规生产使用。
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `DATABASE_MAX_OPEN_CONNS` / `DB_MAX_OPEN_CONNS` | `50` | 最大连接数。 |
-| `DATABASE_MAX_IDLE_CONNS` / `DB_MAX_IDLE_CONNS` | `10` | 最大空闲连接数，不能超过最大连接数。 |
-| `DATABASE_CONN_MAX_LIFETIME_MINUTES` / `DB_CONN_MAX_LIFETIME_MINUTES` | `30` | 单个连接最长生命周期，`0` 表示不按生命周期主动回收。 |
-| `DATABASE_CONN_MAX_IDLE_TIME_MINUTES` / `DB_CONN_MAX_IDLE_TIME_MINUTES` | `5` | 空闲连接回收时间。 |
-| `DATABASE_CONNECT_TIMEOUT_MS` / `DB_CONNECT_TIMEOUT_MS` | `6000` | 建立数据库连接超时时间，单位毫秒。 |
-
-小规模部署可以使用：
-
-```ini
-DATABASE_MAX_OPEN_CONNS=20
-DATABASE_MAX_IDLE_CONNS=5
-```
-
-如果主机数量很多、管理员多人频繁查看图表和日志，可以逐步提高到 `80-100` 最大连接和 `20-40` 空闲连接。调整时也要确认数据库服务端的 `max_connections` 足够。
+MySQL 和 PostgreSQL 连接池由面板自动管理，不需要配置连接数。面板会按主机数量在 `16/24/32` 的最大连接档位间自动调整。连接按实际并发按需创建，并保留已经建立的池内连接供下一轮心跳复用，避免并发突发后反复建连产生大量 `TIME-WAIT`；MySQL 使用有限等待队列，PostgreSQL 的连接与排队等待最多为 6 秒。
 
 ## Telegram 和通知
 

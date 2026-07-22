@@ -3,8 +3,9 @@ export class AgentHeartbeatGate {
   private readonly completedAt = new Map<number, number>();
 
   constructor(
-    private readonly coalesceMs = 1000,
+    private readonly coalesceMs = 5000,
     private readonly now: () => number = Date.now,
+    private readonly maxConcurrent = 8,
   ) {}
 
   tryAcquire(hostIdValue: unknown, options: { force?: boolean } = {}) {
@@ -12,7 +13,11 @@ export class AgentHeartbeatGate {
     if (!Number.isInteger(hostId) || hostId <= 0) return null;
     const currentTime = this.now();
     const recentlyCompleted = currentTime - (this.completedAt.get(hostId) || 0) < this.coalesceMs;
-    if (this.active.has(hostId) || (!options.force && recentlyCompleted)) return null;
+    if (
+      this.active.has(hostId)
+      || (!options.force && recentlyCompleted)
+      || this.active.size >= Math.max(1, this.maxConcurrent)
+    ) return null;
 
     this.active.add(hostId);
     let released = false;

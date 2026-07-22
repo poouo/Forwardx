@@ -2,15 +2,6 @@ name: Release Agent
 
 on:
   workflow_dispatch:
-    inputs:
-      fxp_implementation:
-        description: FXP implementation published under the standard asset name
-        required: true
-        type: choice
-        default: rust
-        options:
-          - rust
-          - go
   push:
     tags:
       - "v*.*.*"
@@ -39,16 +30,6 @@ jobs:
             forwardx-fxp/go.mod
             forwardx-fxp/go.sum
 
-      - name: Setup Rust
-        if: github.event_name != 'workflow_dispatch' || inputs.fxp_implementation != 'go'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Install Rust cross compiler
-        if: github.event_name != 'workflow_dispatch' || inputs.fxp_implementation != 'go'
-        uses: taiki-e/install-action@cross
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -70,24 +51,11 @@ jobs:
 
       - name: Run Agent tests and vet
         shell: bash
-        env:
-          FXP_IMPLEMENTATION: ${{ inputs.fxp_implementation || 'rust' }}
         run: |
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
-          if [ "$FXP_IMPLEMENTATION" = "rust" ]; then
-            cargo fmt --manifest-path forwardx-fxp-rust/Cargo.toml -- --check
-            cargo test --manifest-path forwardx-fxp-rust/Cargo.toml --locked
-            cargo clippy --manifest-path forwardx-fxp-rust/Cargo.toml --all-targets --locked
-            mkdir -p .tmp
-            (cd forwardx-fxp && go build -o ../.tmp/forwardx-fxp-go .)
-            cargo build --manifest-path forwardx-fxp-rust/Cargo.toml --locked
-            node scripts/test-fxp-interop.mjs
-          fi
 
       - name: Build Linux Agent binaries
-        env:
-          FXP_IMPLEMENTATION: ${{ inputs.fxp_implementation || 'rust' }}
         run: bash scripts/build-agent-release.sh
 
       - name: Upload Agent binaries to GitHub Release

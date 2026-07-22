@@ -15,28 +15,11 @@ RUN pnpm build
 # ---------- 1b. Agent/runtime assets ----------
 FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent-assets
 WORKDIR /app
-ARG ZIG_VERSION=0.13.0
-ARG CARGO_ZIGBUILD_VERSION=0.23.0
-ARG BUILDARCH
-ARG FXP_IMPLEMENTATION=rust
-ENV PATH="/root/.cargo/bin:/opt/zig:${PATH}"
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git g++ g++-aarch64-linux-gnu xz-utils \
+  && apt-get install -y --no-install-recommends ca-certificates curl git g++ g++-aarch64-linux-gnu \
   && rm -rf /var/lib/apt/lists/*
-RUN if [ "$FXP_IMPLEMENTATION" = "rust" ]; then \
-    curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
-    && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl; \
-  fi
-RUN if [ "$FXP_IMPLEMENTATION" = "rust" ]; then \
-    case "$BUILDARCH" in amd64) ZIG_ARCH=x86_64 ;; arm64) ZIG_ARCH=aarch64 ;; *) echo "Unsupported build architecture: $BUILDARCH" >&2; exit 1 ;; esac \
-    && curl -fsSL --retry 3 -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" \
-    && tar -xJf /tmp/zig.tar.xz -C /opt \
-    && mv "/opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}" /opt/zig \
-    && rm -f /tmp/zig.tar.xz \
-    && cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked; \
-  fi
 COPY . .
-RUN FXP_IMPLEMENTATION="$FXP_IMPLEMENTATION" bash scripts/build-agent-release.sh
+RUN bash scripts/build-agent-release.sh
 
 # ---------- 2. Production dependencies ----------
 FROM node:22-alpine AS prod-deps

@@ -86,11 +86,6 @@ export async function assertSafeOutboundUrl(rawUrl: string, options: SafeOutboun
   return url;
 }
 
-export async function assertSafeDatabaseHost(host: string) {
-  const allowPrivate = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_ALLOW_PRIVATE_DATABASE || ""));
-  await assertSafeOutboundHost(host, { allowPrivate, purpose: "数据库连接检测" });
-}
-
 export async function assertSafePluginHttpUrl(rawUrl: string) {
   const allowPrivate = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_ALLOW_PRIVATE_PLUGIN_HTTP || ""));
   return assertSafeOutboundUrl(rawUrl, { allowPrivate, purpose: "插件 HTTP 请求" });

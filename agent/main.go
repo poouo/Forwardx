@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.165"
+var Version = "2.2.166"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 

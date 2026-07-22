@@ -170,7 +170,7 @@ function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptio
     connectionLimit: pool.maxOpen,
     maxIdle: pool.maxIdle,
     idleTimeout: pool.idleTimeoutMillis,
-    queueLimit: 0,
+    queueLimit: pool.queueLimit,
     connectTimeout: pool.connectTimeoutMillis,
     timezone: "+00:00",
     dateStrings: false,
@@ -181,13 +181,14 @@ function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptio
 function postgresqlPoolOptions(config: DatabaseConfig & { type: "postgresql" }): pg.PoolConfig {
   const postgresqlConfig = normalizePostgresqlConfig(config);
   const pool = getDatabasePoolSettings();
-  const options: pg.PoolConfig & { maxLifetimeSeconds?: number } = {
+  const options: pg.PoolConfig & { min?: number; maxLifetimeSeconds?: number } = {
     host: postgresqlConfig.host,
     port: postgresqlConfig.port,
     user: postgresqlConfig.user,
     password: postgresqlConfig.password,
     database: postgresqlConfig.database,
     max: pool.maxOpen,
+    min: pool.maxIdle,
     idleTimeoutMillis: pool.idleTimeoutMillis,
     connectionTimeoutMillis: pool.connectTimeoutMillis,
     maxLifetimeSeconds: pool.maxLifetimeSeconds,

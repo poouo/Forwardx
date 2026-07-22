@@ -40,11 +40,6 @@ jobs:
             forwardx-fxp/go.mod
             forwardx-fxp/go.sum
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -60,10 +55,3 @@ jobs:
         run: |
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
-          cargo fmt --manifest-path forwardx-fxp-rust/Cargo.toml -- --check
-          cargo test --manifest-path forwardx-fxp-rust/Cargo.toml --locked
-          cargo clippy --manifest-path forwardx-fxp-rust/Cargo.toml --all-targets --locked
-          mkdir -p .tmp
-          (cd forwardx-fxp && go build -o ../.tmp/forwardx-fxp-go .)
-          cargo build --manifest-path forwardx-fxp-rust/Cargo.toml --locked
-          node scripts/test-fxp-interop.mjs

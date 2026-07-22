@@ -543,6 +543,9 @@ export function startScheduler() {
   const updateCheck = createNonOverlappingScheduledTask("panel update check", async () => {
     await runUpdateAutoCheck();
   }, { slowTaskMs: 15_000 });
+  const databasePoolSizing = createNonOverlappingScheduledTask("database pool sizing", async () => {
+    await db.refreshDatabasePoolSettings();
+  });
 
   const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {
     const startTimer = setTimeout(() => {
@@ -558,6 +561,7 @@ export function startScheduler() {
   repeatAfter(forwardingMaintenance, 30 * 1000, 12_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
+  repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
   repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
   repeatAfter(historyCleanup, 60 * 60 * 1000, 2 * 60_000);

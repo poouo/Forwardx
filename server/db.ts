@@ -8,7 +8,7 @@
 import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
-import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate, queryRaw, rawAffectedRows, refreshDatabasePoolSettings } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
 import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
@@ -27,7 +27,7 @@ import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 
-export { getDb, withDatabaseTransaction } from "./dbRuntime";
+export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
 export * from "./repositories/hostRepository";
 export * from "./repositories/forwardRuleRepository";
@@ -232,6 +232,9 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await refreshDatabasePoolSettings().catch((error) => {
+      console.warn("[Database] Automatic pool sizing skipped:", error instanceof Error ? error.message : String(error));
+    });
     await clearLegacyTunnelRuleLatencyHistoryOnce().then((count) => {
       if (count > 0) console.log(`[Database] Cleared legacy tunnel rule latency samples count=${count}`);
     }).catch((error) => {
