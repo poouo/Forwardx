@@ -47,6 +47,7 @@ jobs:
         run: |
           pnpm check:versions
           pnpm exec tsc --noEmit
+          node --import tsx --test server/agentCrypto.test.ts
           pnpm test:server
           pnpm build
           pnpm docs:build

@@ -1631,7 +1631,11 @@ export const tunnelsRouter = router({
           appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group TCPing entries=${entryTestHostIds.length} segments=${queued}`);
           return { success: false, latencyMs: null, message, pending: true };
         }
-        const extraExitEndpoints = (tunnel.loadBalanceEnabled ? (tunnelExtraExitNodes || []) : [])
+        const extraExitEndpoints = (
+          tunnel.loadBalanceEnabled && normalizeExitGroupStrategy(tunnel.loadBalanceStrategy) !== "none"
+            ? (tunnelExtraExitNodes || [])
+            : []
+        )
           .map((node: any) => ({
             seq: Number(node.seq) || 0,
             hostId: Number(node.hostId) || 0,

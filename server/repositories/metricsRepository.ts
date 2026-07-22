@@ -2437,9 +2437,9 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
   const staleTests = await queryRaw<TimedOutForwardTest>(
     `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
      FROM ${quoteIdentifier("forward_tests")}
-     WHERE ${quoteIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteIdentifier("createdAt")} < ?`,
-    [cutoffSec],
+     WHERE (${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
+        OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?)`,
+    [cutoffSec, cutoffSec],
   );
   if (staleTests.length === 0) return [];
   const kind = getDatabaseKind();
@@ -2455,9 +2455,9 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
          ${quoteIdentifier("message")} = COALESCE(NULLIF(${quoteIdentifier("message")}, ''), ${messageExpr}),
          ${quoteIdentifier("updatedAt")} = ?
      WHERE ${quoteIdentifier("id")} IN (${placeholders})
-       AND ${quoteIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteIdentifier("createdAt")} < ?`,
-    [ttlSeconds, nowSec, ...ids, cutoffSec],
+       AND ((${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
+         OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?))`,
+    [ttlSeconds, nowSec, ...ids, cutoffSec, cutoffSec],
   );
   const changed = rawAffectedRows(info);
   if (changed <= 0) return [];

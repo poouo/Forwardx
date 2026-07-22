@@ -35,13 +35,13 @@ import (
 	"time"
 )
 
-var Version = "2.2.166"
+var Version = "2.2.167"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
-const selfTestIdlePollInterval = 10 * time.Second
+const selfTestIdlePollInterval = 5 * time.Second
 const selfTestActivePollInterval = 2 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
@@ -3087,8 +3087,13 @@ func runAgentEventStream(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	authProof, err := newAgentAuthProof(cfg.Token, req.Method, req.URL.Path, nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Authorization", "Bearer "+authProof)
 
 	resp, err := agentEventHTTPClient.Do(req)
 	if err != nil {
@@ -8636,7 +8641,12 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	if err != nil {
 		return err
 	}
+	authProof, err := newAgentAuthProof(cfg.Token, req.Method, req.URL.Path, body)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authProof)
 	res, err := agentSyncHTTPClient.Do(req)
 	if err != nil {
 		if isTransientAgentCommError(err) {

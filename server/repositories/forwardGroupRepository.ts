@@ -107,7 +107,7 @@ function isMainBackupGostTunnelMode(mode: unknown) {
 }
 
 function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncForwardGroupRulesOptions) {
-  if (!options.preserveRuntime || !existing?.isEnabled || existing?.pendingDelete) return false;
+  if (!options.preserveRuntime || !existing?.isEnabled || !existing?.isRunning || existing?.pendingDelete) return false;
   const numberKeys = [
     "hostId",
     "sourcePort",
@@ -496,7 +496,7 @@ async function refreshControlledTunnelRuntime(
     const hostId = Number(node?.hostId || 0);
     if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
   }
-  for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`);
+  for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`, { urgent: true });
 }
 
 async function refreshTunnelsUsingForwardGroup(
@@ -1765,12 +1765,12 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
 
 async function refreshRuleEndpoints(rule: any, reason: string) {
   if (!rule) return;
-  pushAgentRefresh(Number(rule.hostId), reason);
+  pushAgentRefresh(Number(rule.hostId), reason, { urgent: true });
   if ((rule as any).tunnelId) {
     const tunnel = await getTunnelById(Number((rule as any).tunnelId));
     if (tunnel) {
-      pushAgentRefresh(Number(tunnel.entryHostId), `${reason}-entry`);
-      pushAgentRefresh(Number(tunnel.exitHostId), `${reason}-exit`);
+      pushAgentRefresh(Number(tunnel.entryHostId), `${reason}-entry`, { urgent: true });
+      pushAgentRefresh(Number(tunnel.exitHostId), `${reason}-exit`, { urgent: true });
     }
   }
 }
@@ -1792,7 +1792,7 @@ async function refreshForwardChainRuntime(groupId: number, reason: string) {
     const hostId = Number(rule?.hostId || 0);
     if (hostId > 0) hostIds.add(hostId);
   }
-  for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-chain-${groupId}`);
+  for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-chain-${groupId}`, { urgent: true });
   if (hostIds.size > 0) {
     appendPanelLog("info", `[ForwardChain] refresh group=${groupId} reason=${reason} hosts=${Array.from(hostIds).join(",")}`);
   }
@@ -1827,7 +1827,7 @@ async function refreshControlledForwardRules(rules: any[], reason: string) {
     const tunnelId = Number(rule?.tunnelId || 0);
     if (tunnelId > 0) tunnelIds.add(tunnelId);
   }
-  for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
+  for (const hostId of hostIds) pushAgentRefresh(hostId, reason, { urgent: true });
   for (const tunnelId of tunnelIds) {
     const tunnel = await getTunnelById(tunnelId);
     if (tunnel) await refreshControlledTunnelRuntime(tunnel, reason);
@@ -2423,6 +2423,14 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
       if (activeChainMembers.length < minChainMembers || activeChainMembers.length > 5) {
         throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
       }
+      for (let index = activeChainMembers.length - 1; index >= 0; index--) {
+        const member = activeChainMembers[index];
+        const nextMember = activeChainMembers[index + 1] || null;
+        const ruleId = await ensureChainRuleForTemplate(group, template, member, nextMember, index, activeChainMembers.length, options);
+        if (ruleId && !preserveRuntime) {
+          await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, ruleId));
+        }
+      }
       if (entryMembers.length > 0) {
         const firstMember = activeChainMembers[0];
         const firstHost = await getHostById(Number(firstMember.hostId));
@@ -2444,13 +2452,6 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
           if (ruleId && !preserveRuntime) {
             await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, ruleId));
           }
-        }
-      }
-      for (const [index, member] of activeChainMembers.entries()) {
-        const nextMember = activeChainMembers[index + 1] || null;
-        const ruleId = await ensureChainRuleForTemplate(group, template, member, nextMember, index, activeChainMembers.length, options);
-        if (ruleId && !preserveRuntime) {
-          await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, ruleId));
         }
       }
     } else {

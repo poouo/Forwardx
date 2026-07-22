@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getTunnelExitNames, getTunnelRouteText } from "./tunnelDisplay";
+import { getTunnelExitNames, getTunnelRouteText, tunnelTestIndicatesTimeout } from "./tunnelDisplay";
 
 const hosts = [
   { id: 1, name: "广州 01" },
@@ -70,4 +70,15 @@ test("renders relay failover candidates as alternatives instead of a serial chai
   };
 
   assert.equal(getTunnelRouteText(tunnel, hosts), "广州 01 -> 中转：香港 07 / 香港 23 -> 东京 09");
+});
+
+test("uses the aggregate result when one multi-exit branch fails", () => {
+  const details = [
+    { success: false, latencyMs: null, message: "primary timeout" },
+    { success: true, latencyMs: 105, message: null },
+  ];
+
+  assert.equal(tunnelTestIndicatesTimeout({ status: "success", details }), false);
+  assert.equal(tunnelTestIndicatesTimeout({ status: "failed", details }), true);
+  assert.equal(tunnelTestIndicatesTimeout({ details }), false);
 });

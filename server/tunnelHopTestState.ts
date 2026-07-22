@@ -31,6 +31,11 @@ export function recordTunnelHopTestResult(
     failurePrefix: options?.failurePrefix || "多级隧道逐跳测试失败",
     totalLabel: options?.totalLabel,
     latencyMode: options?.latencyMode,
+    successMode: options?.latencyMode === "max"
+      ? "any"
+      : options?.latencyMode === "multi-source"
+        ? "multi-source"
+        : "all",
   });
   if (!aggregate) return null;
   return {

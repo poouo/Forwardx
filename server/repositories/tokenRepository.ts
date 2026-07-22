@@ -6,6 +6,9 @@ import { inList, quoteIdentifier } from "../dbCompat";
 // ==================== Agent Token Queries ====================
 
 const HOST_ONLINE_TTL_MS = 150 * 1000;
+const AGENT_AUTH_TOKEN_CACHE_TTL_MS = 5_000;
+let agentAuthTokenCache: { expiresAt: number; tokens: string[] } | null = null;
+let agentAuthTokenLoad: Promise<string[]> | null = null;
 
 function isFreshHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;
@@ -20,7 +23,9 @@ function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unkn
 export async function createAgentToken(data: InsertAgentToken) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return insertAndGetId("agent_tokens", data as any);
+  const id = await insertAndGetId("agent_tokens", data as any);
+  invalidateAgentAuthTokenCandidates();
+  return id;
 }
 
 export async function getAgentTokenByToken(token: string) {
@@ -30,7 +35,11 @@ export async function getAgentTokenByToken(token: string) {
   return r[0];
 }
 
-export async function getAgentAuthTokenCandidates() {
+export function invalidateAgentAuthTokenCandidates() {
+  agentAuthTokenCache = null;
+}
+
+async function loadAgentAuthTokenCandidates() {
   const db = await getDb();
   if (!db) return [];
   const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
@@ -39,6 +48,24 @@ export async function getAgentAuthTokenCandidates() {
     ...tokenRows.map((row: any) => row.token),
     ...hostRows.map((row: any) => row.token),
   ].map((token) => String(token || "").trim()).filter(Boolean)));
+}
+
+export async function getAgentAuthTokenCandidates(options: { force?: boolean } = {}) {
+  const now = Date.now();
+  if (!options.force && agentAuthTokenCache && agentAuthTokenCache.expiresAt > now) {
+    return agentAuthTokenCache.tokens;
+  }
+  if (agentAuthTokenLoad) return agentAuthTokenLoad;
+  const load = loadAgentAuthTokenCandidates().then((tokens) => {
+    agentAuthTokenCache = { expiresAt: Date.now() + AGENT_AUTH_TOKEN_CACHE_TTL_MS, tokens };
+    return tokens;
+  });
+  agentAuthTokenLoad = load;
+  try {
+    return await load;
+  } finally {
+    if (agentAuthTokenLoad === load) agentAuthTokenLoad = null;
+  }
 }
 
 export async function getAgentTokenById(id: number) {
@@ -125,5 +152,6 @@ export async function deleteAgentToken(id: number) {
     }).where(eq(hosts.agentToken, token.token));
   }
   await db.delete(agentTokens).where(eq(agentTokens.id, id));
+  invalidateAgentAuthTokenCandidates();
 }
 

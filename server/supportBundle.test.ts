@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AGENT_TUNNEL_PATHS } from "./agentEncryptionMiddleware";
 import { createSupportBundleTask, getSupportBundleTask, redactSupportValue } from "./supportBundle";
+
+test("Agent support and migration reports are accepted through the encrypted sync tunnel", () => {
+  assert.equal(AGENT_TUNNEL_PATHS.has("/api/agent/support-bundle-result"), true);
+  assert.equal(AGENT_TUNNEL_PATHS.has("/api/agent/migration-rollback"), true);
+});
 
 test("support bundle redaction removes nested credentials", () => {
   const value = redactSupportValue({ token: "abc", nested: { password: "def", message: "token=ghi" } });

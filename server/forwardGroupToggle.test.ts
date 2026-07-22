@@ -287,3 +287,103 @@ test("managed forward children recover stale automatic-disable state from enable
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("forward chain rules deploy downstream first and external entries last", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-chain-deployment-"));
+  const databasePath = path.join(directory, "deployment.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+
+    await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+    await schema.ensureDatabaseSchema();
+
+    const forwardGroups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+    const q = (name) => '"' + name + '"';
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO " + q(table) + " (" + columns.map(q).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+
+    try {
+      for (const [id, publicIp, privateIp] of [
+        [1, "198.51.100.1", "10.0.0.1"],
+        [2, "198.51.100.2", "10.0.0.2"],
+        [3, "198.51.100.3", "10.0.0.3"],
+        [4, "198.51.100.4", "10.0.0.4"],
+      ]) {
+        await insert(
+          "hosts",
+          ["id", "name", "ip", "ipv4", "entryIp", "tunnelEntryIp", "userId"],
+          [id, "host-" + id, publicIp, publicIp, publicIp, privateIp, 1],
+        );
+      }
+
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "domain", "targetIp", "userId", "isEnabled"],
+        [60, "external entries", "host", "entry", "entry.example.test", "0.0.0.0", 1, 1],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [601, 60, "host", 4, 0, 1],
+      );
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "entryGroupId", "forwardType", "protocol", "targetIp", "userId", "isEnabled"],
+        [61, "three hop chain", "host", "chain", 60, "iptables", "both", "0.0.0.0", 1, 1],
+      );
+      for (const [id, hostId, connectHost, priority] of [
+        [611, 1, null, 0],
+        [612, 2, "10.0.0.2", 1],
+        [613, 3, "10.0.0.3", 2],
+      ]) {
+        await insert(
+          "forward_group_members",
+          ["id", "groupId", "memberType", "hostId", "connectHost", "priority", "isEnabled"],
+          [id, 61, "host", hostId, connectHost, priority, 1],
+        );
+      }
+      await insert(
+        "forward_rules",
+        ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
+        [610, 4, "chain template", "iptables", "both", 61, 1, 18080, "203.0.113.80", 443, 1, 1, 0],
+      );
+
+      await forwardGroups.syncForwardGroupRules(61, { validatePorts: false });
+      const children = await runtime.queryRaw(
+        'SELECT "hostId", "name" FROM "forward_rules" WHERE "forwardGroupRuleId" = ? ORDER BY "id" ASC',
+        [610],
+      );
+      assert.deepEqual(children.map((child) => Number(child.hostId)), [3, 2, 1, 4]);
+      assert.match(String(children[0].name), /3\/3/);
+      assert.match(String(children[3].name), /entry 1\/1/);
+    } finally {
+      await runtime.closeDatabase().catch(() => undefined);
+    }
+  `;
+
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: databasePath,
+        FORWARDX_LOG_DIR: path.join(directory, "logs"),
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

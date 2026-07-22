@@ -128,10 +128,34 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
   const settleTunnel = async (tunnelId: number, message: string, logSuffix: string) => {
     if (!Number.isFinite(tunnelId) || tunnelId <= 0 || settledTunnelIds.has(tunnelId)) return;
     settledTunnelIds.add(tunnelId);
-    await db.updateTunnelRunningStatus(tunnelId, false);
     await db.updateTunnelTestResult(tunnelId, { status: "failed", latencyMs: null, message });
     await db.insertTunnelLatencyStat({ tunnelId, latencyMs: null, isTimeout: true }, { message });
     appendPanelLog("warn", `[TunnelTest] tunnel=${tunnelId} timeout after ${ttlSeconds}s ${logSuffix}`);
+  };
+
+  const settleTunnelAggregate = async (
+    aggregate: NonNullable<ReturnType<typeof recordTunnelHopTestResult>>,
+    message: string,
+    logSuffix: string,
+  ) => {
+    const tunnelId = Number(aggregate.tunnelId);
+    if (!Number.isFinite(tunnelId) || tunnelId <= 0 || settledTunnelIds.has(tunnelId)) return;
+    settledTunnelIds.add(tunnelId);
+    if (aggregate.success) await db.updateTunnelRunningStatus(tunnelId, true);
+    await db.updateTunnelTestResult(tunnelId, {
+      status: aggregate.success ? "success" : "failed",
+      latencyMs: aggregate.success ? aggregate.latencyMs : null,
+      message,
+    });
+    await db.insertTunnelLatencyStat({
+      tunnelId,
+      latencyMs: aggregate.success ? aggregate.latencyMs : null,
+      isTimeout: !aggregate.success,
+    }, { message });
+    appendPanelLog(
+      aggregate.success ? "info" : "warn",
+      `[TunnelTest] tunnel=${tunnelId} timeout aggregation success=${aggregate.success} ${logSuffix}`,
+    );
   };
 
   for (const test of timedOutTests) {
@@ -177,9 +201,9 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
           details: aggregate.details,
           totalLatencyMs: aggregate.latencyMs,
         });
-        await settleTunnel(aggregate.tunnelId, aggregateMessage, `test=${test.id} aggregate=true`);
+        await settleTunnelAggregate(aggregate, aggregateMessage, `test=${test.id} aggregate=true`);
       } else {
-        await settleTunnel(meta.tunnelId, message, `test=${test.id} host=${test.hostId} hop=${hopLabel}`);
+        appendPanelLog("warn", `[TunnelTest] tunnel=${meta.tunnelId} branch timeout test=${test.id} host=${test.hostId} hop=${hopLabel}`);
       }
     }
 

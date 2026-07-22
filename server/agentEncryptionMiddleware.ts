@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import * as db from "./db";
 import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { getCandidateAgentTokens, resolveAgentTokenFromAuthorization } from "./agentAuth";
 
@@ -11,6 +12,8 @@ export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/looking-glass-progress",
   "/api/agent/iperf3-result",
   "/api/agent/plugin-action-result",
+  "/api/agent/support-bundle-result",
+  "/api/agent/migration-rollback",
   "/api/agent/traffic",
   "/api/agent/tcping",
   "/api/agent/protocol-block",
@@ -49,7 +52,12 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
     if (token) {
       payload = decryptPayload(req.body, token);
     } else {
-      const resolved = decryptPayloadWithCandidates(req.body, await getCandidateAgentTokens());
+      let resolved;
+      try {
+        resolved = decryptPayloadWithCandidates(req.body, await getCandidateAgentTokens());
+      } catch {
+        resolved = decryptPayloadWithCandidates(req.body, await db.getAgentAuthTokenCandidates({ force: true }));
+      }
       token = resolved.token;
       payload = resolved.payload;
       rememberEncryptedEnvelope(req.body);

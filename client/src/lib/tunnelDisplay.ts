@@ -78,3 +78,24 @@ export function getTunnelRouteText(
   }
   return routeText;
 }
+
+export function tunnelTestIndicatesTimeout(input: {
+  status?: unknown;
+  details?: Array<{ success?: unknown; pending?: unknown; message?: unknown; latencyMs?: unknown }>;
+  latestLatencyIsTimeout?: unknown;
+}) {
+  const status = String(input.status || "").toLowerCase();
+  if (status === "success") return false;
+  if (status === "failed") return true;
+  if (status === "pending" || status === "running") return false;
+
+  const details = (input.details || []).filter((detail) => (
+    detail.pending
+    || detail.success
+    || detail.message
+    || (typeof detail.latencyMs === "number" && Number.isFinite(detail.latencyMs))
+  ));
+  if (details.some((detail) => detail.pending)) return false;
+  if (details.length > 0) return !details.some((detail) => detail.success === true);
+  return input.latestLatencyIsTimeout === true;
+}

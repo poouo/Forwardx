@@ -83,7 +83,7 @@ function parseRouteEndpoints(detail: HopTestResult, index: number) {
   return { from: index === 0 ? "入口" : `节点 ${index + 1}`, to: `节点 ${index + 2}` };
 }
 
-function multiSourceAdjustedLatency(details: HopTestResult[], latencies: number[]) {
+function multiSourceInitialIndexes(details: HopTestResult[]) {
   if (details.length < 2) return null;
   const firstTarget = parseRouteEndpoints(details[0], 0).to;
   if (!firstTarget) return null;
@@ -96,6 +96,20 @@ function multiSourceAdjustedLatency(details: HopTestResult[], latencies: number[
   }
   const uniqueSources = new Set(initialIndexes.map((index) => parseRouteEndpoints(details[index], index).from).filter(Boolean));
   if (initialIndexes.length < 2 || uniqueSources.size < 2) return null;
+  return initialIndexes;
+}
+
+function multiSourceAggregateSuccess(details: HopTestResult[]) {
+  const initialIndexes = multiSourceInitialIndexes(details);
+  if (!initialIndexes) return details.every((detail) => detail.success);
+  const initialSuccess = initialIndexes.some((index) => details[index].success);
+  const sharedSuccess = details.slice(initialIndexes.length).every((detail) => detail.success);
+  return initialSuccess && sharedSuccess;
+}
+
+function multiSourceAdjustedLatency(details: HopTestResult[], latencies: number[]) {
+  const initialIndexes = multiSourceInitialIndexes(details);
+  if (!initialIndexes) return null;
   const initialLatency = Math.max(...initialIndexes.map((index) => latencies[index] || 0));
   const restLatency = latencies.slice(initialIndexes.length).reduce((sum, value) => sum + value, 0);
   return initialLatency + restLatency;
@@ -109,6 +123,7 @@ export function recordHopTestResult(
     failurePrefix: string;
     totalLabel?: string;
     latencyMode?: "sum" | "max" | "multi-source";
+    successMode?: "all" | "any" | "multi-source";
   },
 ): HopTestAggregate | null {
   const batchId = testToBatch.get(testId);
@@ -127,13 +142,19 @@ export function recordHopTestResult(
   if (!completed) return null;
 
   const details = values.filter((value): value is HopTestResult => value !== null);
-  const allSuccess = details.every((value) => value.success);
-  const successfulLatencies = details.map((value) => Number(value.latencyMs) || 0);
-  const totalLatency = allSuccess
+  const successfulDetails = details.filter((value) => value.success);
+  const aggregateSuccess = options.successMode === "any"
+    ? successfulDetails.length > 0
+    : options.successMode === "multi-source"
+      ? multiSourceAggregateSuccess(details)
+      : successfulDetails.length === details.length;
+  const latencyDetails = options.successMode === "any" ? successfulDetails : details;
+  const successfulLatencies = latencyDetails.map((value) => Number(value.latencyMs) || 0);
+  const totalLatency = aggregateSuccess
     ? options.latencyMode === "max"
       ? successfulLatencies.reduce((max, value) => Math.max(max, value), 0)
       : options.latencyMode === "multi-source"
-        ? multiSourceAdjustedLatency(details, successfulLatencies) ?? successfulLatencies.reduce((sum, value) => sum + value, 0)
+        ? multiSourceAdjustedLatency(latencyDetails, successfulLatencies) ?? successfulLatencies.reduce((sum, value) => sum + value, 0)
         : successfulLatencies.reduce((sum, value) => sum + value, 0)
     : null;
   const detailLines = details.map((value) => {
@@ -143,15 +164,21 @@ export function recordHopTestResult(
     return `${route} ${value.success ? "成功" : "失败"}${latency}${suffix}`;
   });
   const totalLabel = options.totalLabel || "总延迟";
-  const message = allSuccess
-    ? `${options.successPrefix}，${totalLabel} ${totalLatency}ms（${details.length} 跳）`
+  const multiSourceEntries = options.successMode === "multi-source" ? multiSourceInitialIndexes(details) : null;
+  const availability = multiSourceEntries
+    ? `${multiSourceEntries.filter((index) => details[index].success).length}/${multiSourceEntries.length} 个入口可用`
+    : successfulDetails.length === details.length
+      ? `${details.length} 跳`
+      : `${successfulDetails.length}/${details.length} 路可用`;
+  const message = aggregateSuccess
+    ? `${options.successPrefix}，${totalLabel} ${totalLatency}ms（${availability}）`
     : `${options.failurePrefix}：${detailLines.join("；")}`;
 
   batches.delete(batchId);
 
   return {
     ownerId: batch.ownerId,
-    success: allSuccess,
+    success: aggregateSuccess,
     latencyMs: totalLatency,
     message,
     details,

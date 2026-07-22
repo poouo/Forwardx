@@ -134,7 +134,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       return;
     }
     if (meta?.kind === "tunnel" && typeof meta.tunnelId === "number") {
-      await db.updateTunnelRunningStatus(meta.tunnelId, success);
+      if (success) await db.updateTunnelRunningStatus(meta.tunnelId, true);
       await db.updateTunnelTestResult(meta.tunnelId, {
         status: success ? "success" : "failed",
         latencyMs: success ? cleanLatency : null,
@@ -184,7 +184,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           details: aggregate.details,
           totalLatencyMs: aggregate.latencyMs,
         });
-        await db.updateTunnelRunningStatus(aggregate.tunnelId, aggregate.success);
+        if (aggregate.success) await db.updateTunnelRunningStatus(aggregate.tunnelId, true);
         await db.updateTunnelTestResult(aggregate.tunnelId, {
           status: aggregate.success ? "success" : "failed",
           latencyMs: aggregate.success ? aggregate.latencyMs : null,

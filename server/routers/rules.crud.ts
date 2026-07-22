@@ -457,19 +457,37 @@ async function settleTrafficBillingForDeletedRule(rule: any) {
   return billed;
 }
 
-async function markTemplateChildrenPendingDelete(templateRuleId: number, reason: string) {
+async function refreshPendingTemplateChildren(childRules: any[], reason: string) {
+  const refreshedTunnelIds = new Set<number>();
+  for (const child of childRules) {
+    const tunnelId = Number((child as any).tunnelId || 0);
+    if (tunnelId > 0 && !refreshedTunnelIds.has(tunnelId)) {
+      refreshedTunnelIds.add(tunnelId);
+      const tunnel = await db.getTunnelById(tunnelId);
+      if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
+    }
+  }
+  const hostIds = Array.from(new Set(childRules
+    .map((child: any) => Number(child.hostId || 0))
+    .filter((hostId: number) => hostId > 0)));
+  for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
+}
+
+async function markTemplateChildrenPendingDelete(
+  templateRuleId: number,
+  reason: string,
+  options: { deferRefresh?: boolean } = {},
+) {
   const childRules = await db.getForwardGroupChildRulesForTemplate(templateRuleId);
   for (const child of childRules as any[]) {
     await settleTrafficBillingForDeletedRule(child);
     const tunnelId = Number((child as any).tunnelId || 0);
     if (tunnelId) {
-      const tunnel = await db.getTunnelById(tunnelId);
       await db.updateTunnel(tunnelId, { isRunning: false } as any);
-      if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
     }
     await db.markForwardRulePendingDelete(Number(child.id));
-    if (Number(child.hostId || 0) > 0) pushAgentRefresh(Number(child.hostId), reason);
   }
+  if (!options.deferRefresh) await refreshPendingTemplateChildren(childRules as any[], reason);
   return childRules;
 }
 
@@ -1208,12 +1226,20 @@ export const crudRulesRouter = router({
           if (nextTunnelId && selectedTunnelForRule) {
             await db.reconcileForwardRuleTunnelExits({ ...rule, ...data, id: input.id, tunnelId: nextTunnelId, tunnelExitPort }, selectedTunnelForRule);
             await db.updateTunnel(nextTunnelId, { isRunning: false } as any);
-            await pushTunnelEndpointRefresh(selectedTunnelForRule, "forward-group-rule-converted");
           } else {
             await db.clearForwardRuleTunnelExits(input.id);
+          }
+          const retiredChildren = await markTemplateChildrenPendingDelete(
+            input.id,
+            "forward-group-rule-converted",
+            { deferRefresh: true },
+          );
+          await refreshPendingTemplateChildren(retiredChildren as any[], "forward-group-rule-converted");
+          if (nextTunnelId && selectedTunnelForRule) {
+            await pushTunnelEndpointRefresh(selectedTunnelForRule, "forward-group-rule-converted");
+          } else {
             pushAgentRefresh(nextHostId, "forward-group-rule-converted");
           }
-          await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-converted");
           await db.runForwardGroupFailover(groupId);
           return { success: true, reset: true };
         }

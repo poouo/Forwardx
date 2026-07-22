@@ -9,7 +9,7 @@ import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEve
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
 import { AGENT_PANEL_MIGRATION_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
-import { decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
+import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
 import { normalizeAgentText } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
@@ -219,13 +219,28 @@ agentRouter.get("/api/stream", async (req: Request, res: Response) => {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    const resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates());
-    rememberEncryptedEnvelope(envelope);
+    const proofToken = await resolveAgentTokenFromAuthorization(req);
+    let token: string;
+    let payload: any;
+    if (proofToken) {
+      token = proofToken;
+      payload = decryptPayload(envelope, token);
+    } else {
+      let resolved;
+      try {
+        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates());
+      } catch {
+        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates({ force: true }));
+      }
+      token = resolved.token;
+      payload = resolved.payload;
+      rememberEncryptedEnvelope(envelope);
+    }
     await openAgentEventStream({
       req,
       res,
-      token: resolved.token,
-      agentVersion: resolved.payload?.agentVersion,
+      token,
+      agentVersion: payload?.agentVersion,
     });
   } catch (error) {
     const message = agentErrorMessage(error);

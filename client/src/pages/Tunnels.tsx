@@ -57,7 +57,7 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
 import { pollingInterval } from "@/lib/polling";
-import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
@@ -593,19 +593,11 @@ function tunnelLatencyIsTimeout(tunnel: any) {
   const hasLatency = typeof value === "number" && Number.isFinite(value) && value >= 0;
   if (hasLatency) return false;
   const parsed = parseLinkTestMessage(tunnel?.lastTestMessage);
-  const visibleDetails = (parsed.details || []).filter((detail) => (
-    detail.pending
-    || detail.success
-    || detail.message
-    || (typeof detail.latencyMs === "number" && Number.isFinite(detail.latencyMs))
-  ));
-  if (visibleDetails.some((detail) => detail.pending)) return false;
-  if (visibleDetails.length > 0) {
-    return String(tunnel?.lastTestStatus || "") === "failed" || visibleDetails.some((detail) => !detail.success);
-  }
-  if (String(tunnel?.lastTestStatus || "") === "failed") return true;
-  if (hasLatestTunnelLatency(tunnel)) return !!tunnel?.latestLatencyIsTimeout;
-  return !!tunnel?.latestLatencyIsTimeout;
+  return tunnelTestIndicatesTimeout({
+    status: tunnel?.lastTestStatus,
+    details: parsed.details,
+    latestLatencyIsTimeout: hasLatestTunnelLatency(tunnel) ? tunnel?.latestLatencyIsTimeout : false,
+  });
 }
 function normalizeLongitude(lng: number) {
   if (lng < -180) return lng + 360;
