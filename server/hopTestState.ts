@@ -24,6 +24,8 @@ export type HopTestAggregate = {
   details: HopTestResult[];
 };
 
+export type HopTestLatencyMode = "sum" | "max" | "multi-source" | "remaining-path" | "multi-source-remaining-path";
+
 const batches = new Map<string, HopTestBatch>();
 const testToBatch = new Map<number, string>();
 
@@ -115,6 +117,38 @@ function multiSourceAdjustedLatency(details: HopTestResult[], latencies: number[
   return initialLatency + restLatency;
 }
 
+function remainingPathSegmentDetails(details: HopTestResult[], multiSource: boolean) {
+  const initialIndexes = multiSource ? multiSourceInitialIndexes(details) : null;
+  if (details.length < 2 || (multiSource && !initialIndexes)) return details;
+  const sharedStart = initialIndexes?.length || 0;
+  const measurable = multiSource
+    ? initialIndexes!.some((index) => details[index].success && Number.isFinite(Number(details[index].latencyMs)))
+      && details.slice(sharedStart).every((detail) => detail.success && Number.isFinite(Number(detail.latencyMs)))
+    : details.every((detail) => detail.success && Number.isFinite(Number(detail.latencyMs)));
+  if (!measurable) return details;
+
+  const cumulative = details.map((detail) => Math.max(0, Number(detail.latencyMs) || 0));
+  const firstSharedLatency = sharedStart < cumulative.length ? cumulative[sharedStart] : 0;
+  return details.map((detail, index) => ({
+    ...detail,
+    latencyMs: !detail.success
+      ? null
+      : initialIndexes?.includes(index)
+        ? Math.max(0, cumulative[index] - firstSharedLatency)
+        : index === details.length - 1
+          ? cumulative[index]
+          : Math.max(0, cumulative[index] - cumulative[index + 1]),
+  }));
+}
+
+function remainingPathTotal(details: HopTestResult[], multiSource: boolean) {
+  const initialIndexes = multiSource ? multiSourceInitialIndexes(details) : null;
+  const candidates = initialIndexes
+    ? initialIndexes.map((index) => details[index]).filter((detail) => detail?.success)
+    : details.slice(0, 1);
+  return candidates.reduce((max, detail) => Math.max(max, Number(detail?.latencyMs) || 0), 0);
+}
+
 export function recordHopTestResult(
   testId: number,
   result: HopTestResult,
@@ -122,7 +156,7 @@ export function recordHopTestResult(
     successPrefix: string;
     failurePrefix: string;
     totalLabel?: string;
-    latencyMode?: "sum" | "max" | "multi-source";
+    latencyMode?: HopTestLatencyMode;
     successMode?: "all" | "any" | "multi-source";
   },
 ): HopTestAggregate | null {
@@ -141,20 +175,33 @@ export function recordHopTestResult(
   const completed = values.every((value) => value !== null);
   if (!completed) return null;
 
-  const details = values.filter((value): value is HopTestResult => value !== null);
+  const rawDetails = values.filter((value): value is HopTestResult => value !== null);
+  const multiSourceRemainingPath = options.latencyMode === "multi-source-remaining-path";
+  const effectiveSuccessMode = multiSourceRemainingPath ? "multi-source" : options.successMode;
+  const rawSuccessfulDetails = rawDetails.filter((value) => value.success);
+  const aggregateSuccess = effectiveSuccessMode === "any"
+    ? rawSuccessfulDetails.length > 0
+    : effectiveSuccessMode === "multi-source"
+      ? multiSourceAggregateSuccess(rawDetails)
+      : rawSuccessfulDetails.length === rawDetails.length;
+  const details = aggregateSuccess && (options.latencyMode === "remaining-path" || multiSourceRemainingPath)
+    ? remainingPathSegmentDetails(rawDetails, multiSourceRemainingPath)
+    : rawDetails;
   const successfulDetails = details.filter((value) => value.success);
-  const aggregateSuccess = options.successMode === "any"
+  const verifiedAggregateSuccess = effectiveSuccessMode === "any"
     ? successfulDetails.length > 0
-    : options.successMode === "multi-source"
+    : effectiveSuccessMode === "multi-source"
       ? multiSourceAggregateSuccess(details)
       : successfulDetails.length === details.length;
-  const latencyDetails = options.successMode === "any" ? successfulDetails : details;
+  const latencyDetails = effectiveSuccessMode === "any" ? successfulDetails : details;
   const successfulLatencies = latencyDetails.map((value) => Number(value.latencyMs) || 0);
-  const totalLatency = aggregateSuccess
+  const totalLatency = verifiedAggregateSuccess
     ? options.latencyMode === "max"
       ? successfulLatencies.reduce((max, value) => Math.max(max, value), 0)
       : options.latencyMode === "multi-source"
         ? multiSourceAdjustedLatency(latencyDetails, successfulLatencies) ?? successfulLatencies.reduce((sum, value) => sum + value, 0)
+        : options.latencyMode === "remaining-path" || multiSourceRemainingPath
+          ? remainingPathTotal(rawDetails, multiSourceRemainingPath)
         : successfulLatencies.reduce((sum, value) => sum + value, 0)
     : null;
   const detailLines = details.map((value) => {
@@ -164,13 +211,13 @@ export function recordHopTestResult(
     return `${route} ${value.success ? "成功" : "失败"}${latency}${suffix}`;
   });
   const totalLabel = options.totalLabel || "总延迟";
-  const multiSourceEntries = options.successMode === "multi-source" ? multiSourceInitialIndexes(details) : null;
+  const multiSourceEntries = effectiveSuccessMode === "multi-source" ? multiSourceInitialIndexes(details) : null;
   const availability = multiSourceEntries
     ? `${multiSourceEntries.filter((index) => details[index].success).length}/${multiSourceEntries.length} 个入口可用`
     : successfulDetails.length === details.length
       ? `${details.length} 跳`
       : `${successfulDetails.length}/${details.length} 路可用`;
-  const message = aggregateSuccess
+  const message = verifiedAggregateSuccess
     ? `${options.successPrefix}，${totalLabel} ${totalLatency}ms（${availability}）`
     : `${options.failurePrefix}：${detailLines.join("；")}`;
 
@@ -178,7 +225,7 @@ export function recordHopTestResult(
 
   return {
     ownerId: batch.ownerId,
-    success: aggregateSuccess,
+    success: verifiedAggregateSuccess,
     latencyMs: totalLatency,
     message,
     details,

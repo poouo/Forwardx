@@ -9,6 +9,46 @@ import {
   tunnelRuleRuntimeForwardType,
   tunnelRuntimeFamily,
 } from "./tunnelRuntimePlan";
+import {
+  selectEntryGroupTunnelTestAddress,
+  selectTunnelDialAddress,
+} from "./tunnelAddressSelection";
+
+test("keeps a configured IPv6 endpoint after runtime restart", () => {
+  const exit = {
+    entryIp: "209.33.172.59",
+    ipv4: "209.33.172.59",
+    ipv6: "2001:db8:43::1",
+  };
+  assert.equal(
+    selectTunnelDialAddress({ connectHost: "2001:db8:43::1" }, exit),
+    "2001:db8:43::1",
+  );
+});
+
+test("entry-group direct tunnel test uses configured IPv6 instead of exit IPv4", () => {
+  const exit = {
+    entryIp: "209.33.172.59",
+    ipv4: "209.33.172.59",
+    ipv6: "2001:db8:43::1",
+  };
+  assert.equal(
+    selectEntryGroupTunnelTestAddress({ connectHost: "2001:db8:43::1" }, null, exit),
+    "2001:db8:43::1",
+  );
+});
+
+test("entry-group multi-hop tunnel test uses the next hop configured address", () => {
+  const nextHost = { entryIp: "203.0.113.20", ipv6: "2001:db8:20::1" };
+  assert.equal(
+    selectEntryGroupTunnelTestAddress(
+      { connectHost: "2001:db8:43::1" },
+      { connectHost: "2001:db8:20::1" },
+      nextHost,
+    ),
+    "2001:db8:20::1",
+  );
+});
 
 test("keeps an idle GOST tunnel listening for latency probes", () => {
   const listeners = planGostTunnelProbeListeners(7, [{

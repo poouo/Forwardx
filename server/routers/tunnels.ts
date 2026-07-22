@@ -31,6 +31,11 @@ import {
 } from "../../shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
 import { assertMimicEnvironment } from "../mimicEnvironment";
+import {
+  defaultTunnelHostAddress,
+  selectEntryGroupTunnelTestAddress,
+  selectTunnelDialAddress,
+} from "../tunnelAddressSelection";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
@@ -201,14 +206,9 @@ const normalizeHopConnectHostsForCompare = (hops: Array<any>) =>
     return text || null;
   });
 
-const getTunnelDialHost = (tunnel: any, exit: any) => {
-  const connectHost = String(tunnel?.connectHost || "").trim();
-  if (connectHost) return connectHost;
-  return getHostPublicAddress(exit);
-};
+const getTunnelDialHost = (tunnel: any, exit: any) => selectTunnelDialAddress(tunnel, exit);
 
-const getHostPublicAddress = (host: any) =>
-  String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
+const getHostPublicAddress = (host: any) => defaultTunnelHostAddress(host);
 
 const getHostIpv6Address = (host: any) =>
   String((host as any)?.ipv6 || "").trim();
@@ -1519,7 +1519,7 @@ export const tunnelsRouter = router({
           const nextHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? tunnelHops[1] as any : null;
           const nextHostId = Number(nextHop?.hostId || tunnel.exitHostId || 0);
           const nextHost = await db.getHostById(nextHostId);
-          const firstTarget = String(nextHop?.connectHost || "").trim() || getHostPublicAddress(nextHost) || target;
+          const firstTarget = selectEntryGroupTunnelTestAddress(tunnel, nextHop, nextHost) || target;
           const firstTargetPort = Number(nextHop?.listenPort || targetPort) || 0;
           if (!nextHostId || !firstTarget || !firstTargetPort) {
             const message = `TUNNEL_ENTRY_GROUP_TEST_TARGET_INVALID target=${firstTarget || "-"} port=${firstTargetPort || "-"}`;

@@ -132,3 +132,23 @@ func TestProbeWorkYieldsToPendingActions(t *testing.T) {
 		t.Fatal("traffic collection must not start while forwarding actions are pending")
 	}
 }
+
+func TestIdleHostTrafficReportsAreCoalesced(t *testing.T) {
+	previous := lastHostTrafficReportAt
+	t.Cleanup(func() { lastHostTrafficReportAt = previous })
+	now := time.Now()
+	lastHostTrafficReportAt = time.Time{}
+	if !shouldIncludeHostTraffic(0, now) {
+		t.Fatal("first idle host traffic sample must be reported")
+	}
+	lastHostTrafficReportAt = now
+	if shouldIncludeHostTraffic(0, now.Add(idleHostTrafficReportEvery-time.Second)) {
+		t.Fatal("idle host traffic samples must be coalesced")
+	}
+	if !shouldIncludeHostTraffic(0, now.Add(idleHostTrafficReportEvery)) {
+		t.Fatal("idle host traffic sample must be reported after the coalescing interval")
+	}
+	if !shouldIncludeHostTraffic(1, now.Add(time.Second)) {
+		t.Fatal("active rule traffic must always include the host counter")
+	}
+}

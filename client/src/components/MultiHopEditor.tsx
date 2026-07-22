@@ -14,6 +14,10 @@ import {
 } from "@/components/ui/select";
 import { ArrowDown, GripVertical, Trash2 } from "lucide-react";
 import { segmentedControlClassName, segmentedOptionClassName } from "@/components/ui/segmented";
+import {
+  multiHopAddressSelection,
+  selectedMultiHopConnectHost,
+} from "@/lib/multiHopAddress";
 import type { TunnelRelayMode } from "@shared/tunnelRelay";
 
 interface Host {
@@ -68,18 +72,6 @@ const ROLE_LABELS: Record<HopRole, string> = {
   exit: "出口",
 };
 
-function addressKey(value: unknown) {
-  const text = String(value || "").trim();
-  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
-  return unwrapped.toLowerCase();
-}
-
-function sameAddress(a: unknown, b: unknown) {
-  const left = addressKey(a);
-  const right = addressKey(b);
-  return !!left && !!right && left === right;
-}
-
 function reorder<T>(arr: T[], fromIdx: number, toIdx: number): T[] {
   if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= arr.length || toIdx >= arr.length) {
     return arr;
@@ -126,16 +118,13 @@ export default function MultiHopEditor({
 
   const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
   const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
-    list.map((hop, idx) => {
-      if (idx === 0 && !externalEntry) return null;
-      const host = hostById.get(hop.hostId);
-      const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      const ipv6Addr = String(host?.ipv6 || "").trim();
-      if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
-      if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
-      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
-      return publicAddr || null;
-    }),
+    list.map((hop, idx) => selectedMultiHopConnectHost({
+      host: hostById.get(hop.hostId),
+      index: idx,
+      externalEntry,
+      useTunnelEntryIp: hop.useTunnelEntryIp,
+      useIpv6: hop.useIpv6,
+    })),
   );
 
   const buildHopsFromProps = () => {
@@ -144,22 +133,16 @@ export default function MultiHopEditor({
       .map((id, idx) => {
         const host = hostById.get(id);
         if (!host) return null;
+        const selection = multiHopAddressSelection({
+          host,
+          connectHost: initialHopConnectHosts?.[idx],
+          index: idx,
+          externalEntry,
+        });
         return {
           hostId: host.id,
           hostName: host.name,
-          useTunnelEntryIp: (() => {
-            if (idx === 0 && !externalEntry) return false;
-            const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
-            const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
-            return !!initialConnectHost && !!tunnelEntryIp && sameAddress(initialConnectHost, tunnelEntryIp);
-          })(),
-          useIpv6: (() => {
-            if (idx === 0 && !externalEntry) return false;
-            const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
-            const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
-            const ipv6Addr = String(host.ipv6 || "").trim();
-            return !!initialConnectHost && !!ipv6Addr && sameAddress(initialConnectHost, ipv6Addr) && !sameAddress(initialConnectHost, tunnelEntryIp);
-          })(),
+          ...selection,
         };
       })
       .filter(Boolean) as HopEntry[];
@@ -199,16 +182,13 @@ export default function MultiHopEditor({
       onChangeRef.current?.(ids);
     }
 
-    const connectHosts = hops.map((hop, idx) => {
-      if (idx === 0 && !externalEntry) return null;
-      const host = hostById.get(hop.hostId);
-      const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      const ipv6Addr = String(host?.ipv6 || "").trim();
-      if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
-      if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
-      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
-      return publicAddr || null;
-    });
+    const connectHosts = hops.map((hop, idx) => selectedMultiHopConnectHost({
+      host: hostById.get(hop.hostId),
+      index: idx,
+      externalEntry,
+      useTunnelEntryIp: hop.useTunnelEntryIp,
+      useIpv6: hop.useIpv6,
+    }));
     const connectText = JSON.stringify(connectHosts);
     if (connectText !== prevConnectRef.current) {
       prevConnectRef.current = connectText;

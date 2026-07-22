@@ -38,6 +38,44 @@ func TestCPUUsageFromTimes(t *testing.T) {
 	}
 }
 
+func TestTrafficBaselinesCommitOnlyAfterSuccessfulReport(t *testing.T) {
+	previousDir := trafficStateDir
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+
+	update := trafficBaselineUpdate{
+		port:  "22022",
+		state: trafficPrevState{ruleID: 42, in: 1200, out: 800, conns: 3},
+	}
+	initial := trafficBaselineUpdate{
+		port:  update.port,
+		state: trafficPrevState{ruleID: 42, in: 1000, out: 500, conns: 2},
+	}
+	commitTrafficBaselines(true, []trafficBaselineUpdate{initial})
+	commitTrafficBaselines(false, []trafficBaselineUpdate{update})
+	if ruleID, in, out, conns := readPrev(update.port); ruleID != 42 || in != 1000 || out != 500 || conns != 2 {
+		t.Fatalf("failed report advanced baseline: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
+	} else if delta(update.state.in, in) != 200 || delta(update.state.out, out) != 300 || delta(update.state.conns, conns) != 1 {
+		t.Fatal("failed report delta was not retained for retry")
+	}
+
+	commitTrafficBaselines(true, []trafficBaselineUpdate{update})
+	if ruleID, in, out, conns := readPrev(update.port); ruleID != 42 || in != 1200 || out != 800 || conns != 3 {
+		t.Fatalf("successful report did not advance baseline: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
+	} else if delta(1250, in) != 50 || delta(825, out) != 25 || delta(4, conns) != 1 {
+		t.Fatal("successful retry did not establish the next delta baseline")
+	}
+}
+
 func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	atomic.StoreInt32(&tcpingCollectRunning, 1)
 	defer atomic.StoreInt32(&tcpingCollectRunning, 0)

@@ -518,6 +518,58 @@ assert_target_image_ready() {
   fi
 }
 
+image_repository_from_ref() {
+  local image_ref="${1%%@*}"
+  local last_component="${image_ref##*/}"
+  if [[ "$last_component" == *:* ]]; then
+    printf "%s\n" "${image_ref%:*}"
+  else
+    printf "%s\n" "$image_ref"
+  fi
+}
+
+cleanup_old_panel_images() {
+  local image="$1"
+  local repository=""
+  local current_image_id=""
+  local running=""
+  local rows=""
+  local listed_repository=""
+  local tag=""
+  local image_id=""
+  local image_ref=""
+
+  running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  if [ "$running" != "true" ]; then
+    echo "[WARN] ForwardX container is not running; old image cleanup skipped."
+    return
+  fi
+
+  current_image_id="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  repository="$(image_repository_from_ref "$image")"
+  if [ -z "$current_image_id" ] || [ -z "$repository" ]; then
+    echo "[WARN] Unable to identify the active ForwardX image; old image cleanup skipped."
+    return
+  fi
+
+  rows="$(docker image ls --no-trunc --format '{{.Repository}}|{{.Tag}}|{{.ID}}' "$repository" 2>/dev/null || true)"
+  while IFS='|' read -r listed_repository tag image_id; do
+    if [ "$listed_repository" != "$repository" ] || [ -z "$tag" ] || [ "$tag" = "<none>" ]; then
+      continue
+    fi
+    if [ "$image_id" = "$current_image_id" ]; then
+      continue
+    fi
+
+    image_ref="${listed_repository}:${tag}"
+    if docker image rm "$image_ref" >/dev/null 2>&1; then
+      echo "[INFO] Removed old ForwardX image: $image_ref"
+    else
+      echo "[WARN] Could not remove old ForwardX image (it may still be in use): $image_ref"
+    fi
+  done <<< "$rows"
+}
+
 start_panel() {
   local image="$1"
   cd "$APP_DIR"
@@ -531,6 +583,7 @@ start_panel() {
   remove_existing_panel_containers
   ensure_data_volume
   compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" up -d --remove-orphans forwardx
+  cleanup_old_panel_images "$image"
 }
 
 install_panel() {

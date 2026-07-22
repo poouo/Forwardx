@@ -70,10 +70,6 @@ rx-vlan-offload: on
 	if got := enabledMimicOffloads(raw); !reflect.DeepEqual(got, want) {
 		t.Fatalf("enabledMimicOffloads() = %#v, want %#v", got, want)
 	}
-	mutableWant := []string{"gro", "tso", "tx"}
-	if got := mutableMimicOffloads(raw); !reflect.DeepEqual(got, mutableWant) {
-		t.Fatalf("mutableMimicOffloads() = %#v, want %#v", got, mutableWant)
-	}
 }
 
 func TestValidMimicInterfaceNameRejectsStatePathTraversal(t *testing.T) {
@@ -87,22 +83,16 @@ func TestValidMimicInterfaceNameRejectsStatePathTraversal(t *testing.T) {
 	}
 }
 
-func TestCaptureMimicOffloadStatePreservesFirstSnapshot(t *testing.T) {
-	originalDir := mimicOffloadStateDir
-	mimicOffloadStateDir = t.TempDir()
-	t.Cleanup(func() { mimicOffloadStateDir = originalDir })
-
-	if err := captureMimicOffloadState("eth0", []string{"gro", "tx"}); err != nil {
-		t.Fatal(err)
+func TestMimicOffloadRestoreArgsOnlyEnableKnownFeatures(t *testing.T) {
+	args, ok := mimicOffloadRestoreArgs("eth0", []string{"gro", "tx", "gro"})
+	if !ok {
+		t.Fatal("valid saved offload state was rejected")
 	}
-	if err := captureMimicOffloadState("eth0", []string{"rx"}); err != nil {
-		t.Fatal(err)
+	want := []string{"-K", "eth0", "gro", "on", "tx", "on"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("restore args = %#v, want %#v", args, want)
 	}
-	raw, err := os.ReadFile(mimicOffloadStatePath("eth0"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(raw); got != "gro tx\n" {
-		t.Fatalf("state = %q, want first snapshot", got)
+	if _, ok := mimicOffloadRestoreArgs("eth0", []string{"unsafe"}); ok {
+		t.Fatal("unknown saved offload feature was accepted")
 	}
 }

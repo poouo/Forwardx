@@ -24,19 +24,43 @@ const KEY_SALT_AUTH = "forwardx-agent-auth";
 const KEY_SALT_AUTH_ID = "forwardx-agent-auth-id";
 const IV_LEN = 16;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const REPLAY_CACHE_CLEANUP_INTERVAL_MS = 10 * 1000;
+const DERIVED_KEY_CACHE_LIMIT = 4096;
 const seenEnvelopeMacs = new Map<string, number>();
 const seenAuthProofs = new Map<string, number>();
+const replayCacheCleanupAt = new WeakMap<Map<string, number>, number>();
+const derivedKeyCache = new Map<string, {
+  enc: Buffer;
+  mac: Buffer;
+  auth: Buffer;
+  fingerprint: string;
+}>();
+let replayCacheCleanupSweeps = 0;
+
+function derivedKeys(token: string) {
+  const cached = derivedKeyCache.get(token);
+  if (cached) return cached;
+  if (derivedKeyCache.size >= DERIVED_KEY_CACHE_LIMIT) derivedKeyCache.clear();
+  const keys = {
+    enc: crypto.createHash("sha256").update(`${token}|${KEY_SALT_ENC}`).digest(),
+    mac: crypto.createHash("sha256").update(`${token}|${KEY_SALT_MAC}`).digest(),
+    auth: crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH}`).digest(),
+    fingerprint: crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH_ID}`).digest("hex").slice(0, 32),
+  };
+  derivedKeyCache.set(token, keys);
+  return keys;
+}
 
 function deriveEncKey(token: string): Buffer {
-  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_ENC}`).digest();
+  return derivedKeys(token).enc;
 }
 
 function deriveMacKey(token: string): Buffer {
-  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_MAC}`).digest();
+  return derivedKeys(token).mac;
 }
 
 function deriveAuthKey(token: string): Buffer {
-  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH}`).digest();
+  return derivedKeys(token).auth;
 }
 
 export interface EncryptedEnvelope {
@@ -59,20 +83,43 @@ export function isEncryptedEnvelope(body: any): body is EncryptedEnvelope {
 }
 
 export function agentTokenFingerprint(token: string): string {
-  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH_ID}`).digest("hex").slice(0, 32);
+  return derivedKeys(token).fingerprint;
 }
 
-function cleanupReplayCache(cache: Map<string, number>) {
-  const now = Date.now();
+function cleanupReplayCache(cache: Map<string, number>, now: number) {
+  if (now < (replayCacheCleanupAt.get(cache) || 0)) return;
+  replayCacheCleanupAt.set(cache, now + REPLAY_CACHE_CLEANUP_INTERVAL_MS);
+  replayCacheCleanupSweeps += 1;
   for (const [key, expiresAt] of cache) {
     if (expiresAt <= now) cache.delete(key);
   }
 }
 
 function rememberOnce(cache: Map<string, number>, key: string, errorMessage: string) {
-  cleanupReplayCache(cache);
-  if (cache.has(key)) throw new Error(errorMessage);
-  cache.set(key, Date.now() + REPLAY_WINDOW_MS);
+  const now = Date.now();
+  const existingExpiry = cache.get(key) || 0;
+  if (existingExpiry > now) throw new Error(errorMessage);
+  if (existingExpiry > 0) cache.delete(key);
+  cleanupReplayCache(cache, now);
+  cache.set(key, now + REPLAY_WINDOW_MS);
+}
+
+export function getAgentCryptoCacheStats() {
+  return {
+    envelopeReplayEntries: seenEnvelopeMacs.size,
+    authReplayEntries: seenAuthProofs.size,
+    derivedKeyEntries: derivedKeyCache.size,
+    replayCleanupSweeps: replayCacheCleanupSweeps,
+  };
+}
+
+export function resetAgentCryptoCaches() {
+  seenEnvelopeMacs.clear();
+  seenAuthProofs.clear();
+  derivedKeyCache.clear();
+  replayCacheCleanupAt.set(seenEnvelopeMacs, 0);
+  replayCacheCleanupAt.set(seenAuthProofs, 0);
+  replayCacheCleanupSweeps = 0;
 }
 
 function timingSafeEqualHex(a: string, b: string): boolean {

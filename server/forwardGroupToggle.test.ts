@@ -360,10 +360,16 @@ test("forward chain rules deploy downstream first and external entries last", ()
 
       await forwardGroups.syncForwardGroupRules(61, { validatePorts: false });
       const children = await runtime.queryRaw(
-        'SELECT "hostId", "name" FROM "forward_rules" WHERE "forwardGroupRuleId" = ? ORDER BY "id" ASC',
+        'SELECT "hostId", "name", "targetIp" FROM "forward_rules" WHERE "forwardGroupRuleId" = ? ORDER BY "id" ASC',
         [610],
       );
       assert.deepEqual(children.map((child) => Number(child.hostId)), [3, 2, 1, 4]);
+      assert.deepEqual(children.map((child) => String(child.targetIp)), [
+        "203.0.113.80",
+        "10.0.0.3",
+        "10.0.0.2",
+        "198.51.100.1",
+      ]);
       assert.match(String(children[0].name), /3\/3/);
       assert.match(String(children[3].name), /entry 1\/1/);
     } finally {

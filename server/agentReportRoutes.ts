@@ -478,6 +478,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     }
 
     const quotaTrafficByUser = new Map<number, number>();
+    const trafficBatch: db.TrafficStatBatchItem[] = [];
+    const runningRuleIds = new Set<number>();
+    const billingEntries: Array<{
+      rule: any;
+      ruleBytes: number;
+      billingResource: NonNullable<Awaited<ReturnType<typeof db.findTrafficBillingResourceForRule>>>;
+    }> = [];
     const trafficBillingEnabled = await db.isTrafficBillingEnabled();
     const ruleRows = await db.getForwardRulesByIds(stats.map((stat) => Number(stat.ruleId)));
     const rulesById = new Map((ruleRows as any[]).map((rule) => [Number(rule.id), rule]));
@@ -487,20 +494,20 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     ]);
     const tunnelsById = new Map((tunnelRows as any[]).map((tunnel) => [Number(tunnel.id), tunnel]));
     const groupsById = new Map((groupRows as any[]).map((group) => [Number(group.id), group]));
-    await mapWithConcurrency(stats, 16, async (stat) => {
+    for (const stat of stats) {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
       const rule = rulesById.get(Number(stat.ruleId));
       if (!rule) {
-        return;
+        continue;
       }
       if ((rule as any).pendingDelete || !(rule as any).isEnabled) {
-        return;
+        continue;
       }
       const groupId = Number((rule as any).forwardGroupId || 0);
       const group = groupId > 0 ? groupsById.get(groupId) || null : null;
       if (!shouldAccountForwardRuleTraffic(rule, group)) {
-        return;
+        continue;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
       const tunnel = tunnelId > 0 ? tunnelsById.get(tunnelId) || null : null;
@@ -516,20 +523,21 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             stat.connections || 0,
           );
         }
-        return;
+        continue;
       }
-      await db.insertTrafficStat({
-        ruleId: stat.ruleId,
-        hostId: host.id,
-        bytesIn,
-        bytesOut,
-        connections: stat.connections || 0,
-      }, {
+      trafficBatch.push({
+        stat: {
+          ruleId: stat.ruleId,
+          hostId: host.id,
+          bytesIn,
+          bytesOut,
+          connections: stat.connections || 0,
+        },
         userId: Number(rule.userId),
       });
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
-        if (!(rule as any).isRunning) await db.updateRuleRunningStatus(Number(rule.id), true);
+        if (!(rule as any).isRunning) runningRuleIds.add(Number(rule.id));
         logTrafficReportSample(
           `rule:${host.id}:${rule.id}`,
           `[Traffic] host=${host.id} rule=${rule.id}`,
@@ -541,33 +549,40 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           ? await db.findTrafficBillingResourceForRule(rule)
           : null;
         if (billingResource?.config) {
-          await withKeyedTaskLock(`traffic-billing-user:${Number(rule.userId)}`, async () => {
-            const user = await db.getUserById(Number(rule.userId));
-            if (user && Number((user as any).balanceCents || 0) <= 0) {
-              console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
-              await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-              await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
-              return;
-            }
-            const billed = await db.billTrafficUsage({
-              userId: Number(rule.userId),
-              ruleId: Number(rule.id),
-              bytes: ruleBytes,
-              resourceType: billingResource.resourceType,
-              resourceId: billingResource.resourceId,
-            });
-            if (billed && billed.balanceAfterCents < 0) {
-              console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
-              await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-              await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
-            }
-          });
+          billingEntries.push({ rule, ruleBytes, billingResource });
         } else {
           const quotaBytes = applyTrafficMultiplier(ruleBytes, quotaTrafficMultiplierForRule(rule, tunnel, group));
           quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + quotaBytes);
         }
       }
-    });
+    }
+
+    await db.insertTrafficStatsBatch(trafficBatch);
+    await db.markForwardRulesRunning(Array.from(runningRuleIds));
+
+    for (const { rule, ruleBytes, billingResource } of billingEntries) {
+      await withKeyedTaskLock(`traffic-billing-user:${Number(rule.userId)}`, async () => {
+        const user = await db.getUserById(Number(rule.userId));
+        if (user && Number((user as any).balanceCents || 0) <= 0) {
+          console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
+          await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+          await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
+          return;
+        }
+        const billed = await db.billTrafficUsage({
+          userId: Number(rule.userId),
+          ruleId: Number(rule.id),
+          bytes: ruleBytes,
+          resourceType: billingResource.resourceType,
+          resourceId: billingResource.resourceId,
+        });
+        if (billed && billed.balanceAfterCents < 0) {
+          console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
+          await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+          await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
+        }
+      });
+    }
 
     // 累加用户已用流量
     await mapWithConcurrency(Array.from(quotaTrafficByUser.entries()), 8, async ([userId, totalBytes]) => {

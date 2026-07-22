@@ -338,6 +338,9 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       const finalTarget = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
       const hopLabel = String((meta as any).hopLabel || "");
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
+      const latencyMode = (meta as any).latencyMode === "multi-source-remaining-path"
+        ? "multi-source-remaining-path"
+        : (meta as any).latencyMode === "remaining-path" ? "remaining-path" : "sum";
       if (hopLabel) {
         const aggregate = recordHopTestResult(testId, {
           success,
@@ -349,6 +352,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         }, {
           successPrefix: "转发链逐跳测试成功",
           failurePrefix: "转发链逐跳测试失败",
+          latencyMode,
         });
         if (aggregate) {
           const aggregateMessage = structuredLinkTestMessage({

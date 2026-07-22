@@ -112,7 +112,7 @@ export type SelfTestMeta =
       batchId?: string;
       groupKey?: string;
       groupLabel?: string;
-      latencyMode?: "sum" | "max" | "multi-source";
+      latencyMode?: "sum" | "max" | "multi-source" | "remaining-path" | "multi-source-remaining-path";
       runtimeDependent?: boolean;
     };
 

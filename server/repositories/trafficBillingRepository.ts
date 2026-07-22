@@ -22,6 +22,8 @@ const GB_BYTES = 1024 ** 3;
 const MILLI_CENTS_PER_CENT = 1000;
 const BILLING_DENOMINATOR = 100n * BigInt(MILLI_CENTS_PER_CENT);
 const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER = "traffic-billing-rule-usage-v1";
+const TRAFFIC_BILLING_ENABLED_CACHE_MS = 5_000;
+let trafficBillingEnabledCache: { value: boolean; expiresAt: number } | null = null;
 
 export type TrafficBillingResourceType = "host" | "tunnel" | "forward_group";
 
@@ -203,7 +205,18 @@ export async function backfillTrafficBillingRuleUsageFromStats() {
   return { skipped: false, inserted };
 }
 export async function isTrafficBillingEnabled() {
-  return (await getSetting("trafficBillingEnabled")) === "true";
+  const now = Date.now();
+  if (trafficBillingEnabledCache && trafficBillingEnabledCache.expiresAt > now) {
+    return trafficBillingEnabledCache.value;
+  }
+  const value = (await getSetting("trafficBillingEnabled")) === "true";
+  trafficBillingEnabledCache = { value, expiresAt: now + TRAFFIC_BILLING_ENABLED_CACHE_MS };
+  return value;
+}
+
+export async function setTrafficBillingEnabled(enabled: boolean) {
+  await setSetting("trafficBillingEnabled", enabled ? "true" : "false");
+  trafficBillingEnabledCache = { value: enabled, expiresAt: Date.now() + TRAFFIC_BILLING_ENABLED_CACHE_MS };
 }
 
 export async function listTrafficBillingConfigs() {

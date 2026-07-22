@@ -9,9 +9,55 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestWireGuardDeviceUpdateConfigPreservesExistingPeers(t *testing.T) {
+	previous := wireGuardSpec{Peers: []wireGuardPeerSpec{
+		{ID: "keep", PublicKey: strings.Repeat("1", 64), Address: "100.64.0.2", EndpointHost: "old.example", EndpointPort: 30001, PersistentKeepalive: 25},
+		{ID: "remove", PublicKey: strings.Repeat("2", 64), Address: "100.64.0.3"},
+	}}
+	next := wireGuardSpec{Peers: []wireGuardPeerSpec{
+		{ID: "keep", PublicKey: strings.Repeat("1", 64), Address: "100.64.0.2", EndpointHost: "new.example", EndpointPort: 30001, PersistentKeepalive: 25},
+		{ID: "add", PublicKey: strings.Repeat("3", 64), Address: "100.64.0.4"},
+	}}
+	added, removed, updated, removedKeys := wireGuardPeerUpdateSummary(previous, next)
+	if added != 1 || removed != 1 || updated != 1 {
+		t.Fatalf("unexpected update summary added=%d removed=%d updated=%d", added, removed, updated)
+	}
+	config := wireGuardDeviceConfig(next, false, removedKeys)
+	if strings.Contains(config, "replace_peers=true") {
+		t.Fatal("incremental update still replaces every WireGuard peer")
+	}
+	if strings.Contains(config, "private_key=") || strings.Contains(config, "listen_port=") {
+		t.Fatal("incremental update still reconfigures the WireGuard device socket")
+	}
+	if !strings.Contains(config, "public_key="+strings.Repeat("2", 64)+"\nremove=true") {
+		t.Fatal("removed peer was not explicitly deleted")
+	}
+	if !strings.Contains(config, "replace_allowed_ips=true") {
+		t.Fatal("incremental update does not replace stale allowed IPs")
+	}
+	if !strings.Contains(config, "persistent_keepalive_interval=0") {
+		t.Fatal("incremental update cannot clear stale keepalive settings")
+	}
+}
+
+func TestWireGuardDNSRefreshDoesNotRemovePeers(t *testing.T) {
+	peer := wireGuardPeerSpec{ID: "peer", PublicKey: strings.Repeat("4", 64), Address: "100.64.0.2", EndpointHost: "ddns.example", EndpointPort: 30001, PersistentKeepalive: 25}
+	previous := wireGuardSpec{Generation: 1, Peers: []wireGuardPeerSpec{peer}}
+	next := wireGuardSpec{Generation: 2, Peers: []wireGuardPeerSpec{peer}}
+	added, removed, updated, removedKeys := wireGuardPeerUpdateSummary(previous, next)
+	if added != 0 || removed != 0 || updated != 0 || len(removedKeys) != 0 {
+		t.Fatalf("DNS refresh changed peer topology added=%d removed=%d updated=%d keys=%v", added, removed, updated, removedKeys)
+	}
+	config := wireGuardDeviceConfig(next, false, removedKeys)
+	if strings.Contains(config, "remove=true") || strings.Contains(config, "replace_peers=true") {
+		t.Fatal("DNS refresh resets an existing WireGuard peer")
+	}
+}
 
 func setTestWireGuardRuntime(t *testing.T, tunnelID int, runtime *wireGuardRuntime) {
 	t.Helper()

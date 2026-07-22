@@ -78,6 +78,8 @@ import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
 import { hashConfig, latestConfigRevision, recordConfigAuditEvent } from "./configAudit";
 import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
+import { selectTunnelDialAddress } from "./tunnelAddressSelection";
+import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -88,7 +90,7 @@ const resolvedIpInflight = new Map<string, Promise<string>>();
 const tunnelRouteLogCache = new Map<string, string>();
 const nginxRuntimeLogCache = new Map<number, string>();
 const mimicRuntimeLogCache = new Map<number, { signature: string; loggedAt: number }>();
-const dnsRuntimeGenerationByKey = new Map<string, number>();
+const dnsRuntimeGenerations = new DnsRuntimeGenerationTracker();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentDesiredDispatchAuditHash = new Map<number, string>();
@@ -910,14 +912,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .join(" | ") || null;
     const dnsChangedIpByHost = new Map<string, string>();
     const dnsChangedScopes = new Set<string>();
+    const dnsChangedTokenByScope = new Map<string, string>();
     for (const report of dnsChangedReports) {
       const name = String(report?.host || "").trim().toLowerCase();
       const scope = String(report?.scope || "").trim();
       const refId = Number(report?.refId || 0);
-      const nextIps = Array.isArray(report?.new) ? report.new : [];
-      const nextIp = nextIps.map((value: unknown) => String(value || "").trim()).find((value: string) => !!value && isIP(value));
+      const nextIps = (Array.isArray(report?.new) ? report.new : [])
+        .map((value: unknown) => String(value || "").trim())
+        .filter((value: string) => !!value && isIP(value))
+        .sort();
+      const nextIp = nextIps[0];
       if (name && nextIp) dnsChangedIpByHost.set(name, nextIp);
-      if (scope) dnsChangedScopes.add(`${scope}:${Number.isFinite(refId) && refId > 0 ? refId : 0}`);
+      if (scope) {
+        const key = `${scope}:${Number.isFinite(refId) && refId > 0 ? refId : 0}`;
+        dnsChangedScopes.add(key);
+        dnsChangedTokenByScope.set(key, `${name}:${nextIps.join(",")}`);
+      }
     }
     const addressChanged = [
       ["ip", reportedAddress.ip],
@@ -1086,11 +1096,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const dnsChangedKey = (scope: string, refId: unknown) => `${scope}:${Number(refId) || 0}`;
     const dnsChangedFor = (scope: string, refId: unknown) => dnsChangedScopes.has(dnsChangedKey(scope, refId));
     const dnsRuntimeGeneration = (scope: string, refId: unknown) => {
-      const key = dnsChangedKey(scope, refId);
-      if (!dnsChangedScopes.has(key)) return 0;
-      const next = (dnsRuntimeGenerationByKey.get(key) || 0) + 1;
-      dnsRuntimeGenerationByKey.set(key, next);
-      return next;
+      return dnsRuntimeGenerations.generation(scope, refId, dnsChangedTokenByScope.get(dnsChangedKey(scope, refId)));
     };
     const buildMimicRuntimeSyncCmds = (dnsRefreshToken = "", approvedRemovals = new Map<string, string>()) => {
       if (mimicRequestedWithoutInterface && !hostInterface) {
@@ -1432,22 +1438,42 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     });
     const tunnelDnsRefreshByTunnelId = new Map<number, number>();
-    const markTunnelDnsRefresh = (tunnelId: unknown, generation: number) => {
+    const changedTunnelDnsRefreshIds = new Set<number>();
+    const markTunnelDnsRefresh = (tunnelId: unknown, generation: number, changed: boolean) => {
       const id = Number(tunnelId) || 0;
-      if (id <= 0 || generation <= 0) return;
-      tunnelDnsRefreshByTunnelId.set(id, Math.max(tunnelDnsRefreshByTunnelId.get(id) || 0, generation));
+      if (id <= 0) return;
+      if (generation > 0) {
+        tunnelDnsRefreshByTunnelId.set(id, Math.max(tunnelDnsRefreshByTunnelId.get(id) || 0, generation));
+      }
+      if (changed) changedTunnelDnsRefreshIds.add(id);
     };
     for (const tunnel of hostTunnels as any[]) {
-      markTunnelDnsRefresh(Number(tunnel?.id || 0), dnsRuntimeGeneration("tunnel-connect", Number(tunnel?.id || 0)));
+      const tunnelId = Number(tunnel?.id || 0);
+      const recordTunnelDnsRefresh = (scope: string, refId: unknown) => {
+        markTunnelDnsRefresh(tunnelId, dnsRuntimeGeneration(scope, refId), dnsChangedFor(scope, refId));
+      };
+      if (String(tunnel?.connectHost || "").trim()) {
+        recordTunnelDnsRefresh("tunnel-connect", tunnelId);
+      } else {
+        recordTunnelDnsRefresh("host-entry", Number(tunnel?.exitHostId || 0));
+      }
       for (const hop of tunnelHopsByTunnelId.get(Number(tunnel?.id || 0)) || []) {
-        markTunnelDnsRefresh(Number(tunnel?.id || 0), dnsRuntimeGeneration("tunnel-hop-connect", Number((hop as any)?.id || 0)));
+        if (String((hop as any)?.connectHost || "").trim()) {
+          recordTunnelDnsRefresh("tunnel-hop-connect", Number((hop as any)?.id || 0));
+        } else {
+          recordTunnelDnsRefresh("host-entry", Number((hop as any)?.hostId || 0));
+        }
       }
       for (const node of tunnelExitNodesByTunnelId.get(Number(tunnel?.id || 0)) || []) {
-        markTunnelDnsRefresh(Number(tunnel?.id || 0), dnsRuntimeGeneration("tunnel-exit-connect", Number((node as any)?.id || 0)));
+        if (String((node as any)?.connectHost || "").trim()) {
+          recordTunnelDnsRefresh("tunnel-exit-connect", Number((node as any)?.id || 0));
+        } else {
+          recordTunnelDnsRefresh("host-entry", Number((node as any)?.hostId || 0));
+        }
       }
     }
     const tunnelDnsGeneration = (tunnel: any) => tunnelDnsRefreshByTunnelId.get(Number(tunnel?.id || 0)) || 0;
-    const anyTunnelDnsRefresh = (tunnels: any[]) => tunnels.some((tunnel) => tunnelDnsGeneration(tunnel) > 0);
+    const anyTunnelDnsRefresh = (tunnels: any[]) => tunnels.some((tunnel) => changedTunnelDnsRefreshIds.has(Number(tunnel?.id || 0)));
     const dnsRuntimeRefreshToken = dnsChangedReports.length > 0
       ? `${responseIssuedAt}:${Array.from(dnsChangedScopes).sort().join(",") || Array.from(dnsChangedIpByHost.keys()).sort().join(",")}`
       : "";
@@ -1822,12 +1848,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const tunnelExitHostAddress = async (tunnel: any) => {
       const connectHost = String(tunnel?.connectHost || "").trim();
       if (connectHost) {
-        addDnsWatch(dnsWatches, connectHost, "tunnel-connect", Number(tunnel?.id || 0));
-        return connectHost;
+        const address = selectTunnelDialAddress(tunnel, null);
+        addDnsWatch(dnsWatches, address, "tunnel-connect", Number(tunnel?.id || 0));
+        return address;
       }
       const exit = await db.getHostById(tunnel.exitHostId);
-      if (!exit) return "";
-      return hostPublicAddress(exit);
+      const address = selectTunnelDialAddress(tunnel, exit);
+      if (!address) return "";
+      addDnsWatch(dnsWatches, address, "host-entry", Number((exit as any)?.id || tunnel?.exitHostId || 0));
+      return address;
     };
     const tunnelExitEndpointById = new Map<number, { host: string; port: number; udpPort?: number }>();
     const hostIngressAddressById = new Map<number, string>();

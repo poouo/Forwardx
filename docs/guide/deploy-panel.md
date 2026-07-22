@@ -181,10 +181,13 @@ http://服务器IP:9810
 cd /opt/forwardx-docker
 docker compose --env-file .env -p forwardx pull forwardx
 docker compose --env-file .env -p forwardx up -d --remove-orphans forwardx
-docker image prune -f
+CURRENT_IMAGE_ID="$(docker inspect --format '{{.Image}}' forwardx-panel)"
+docker image ls --no-trunc --format '{{.Repository}} {{.Tag}} {{.ID}}' ghcr.io/poouo/forwardx \
+  | awk -v current="$CURRENT_IMAGE_ID" '$1 == "ghcr.io/poouo/forwardx" && $2 != "<none>" && $3 != current { print $1 ":" $2 }' \
+  | xargs -r docker image rm
 ```
 
-升级不会删除 `forwardx-data` 数据卷，也不会改动 `.env`。如果你手动执行 `docker volume rm`，数据才会被删除。
+一键升级脚本会在新容器成功运行后自动删除同一仓库内不再使用的旧版 ForwardX 镜像；上面的手动命令也只清理 ForwardX 镜像，不会影响其他项目。升级不会删除 `forwardx-data` 数据卷，也不会改动 `.env`。如果你手动执行 `docker volume rm`，数据才会被删除。
 
 ### 7. Docker 外部数据库地址怎么填
 

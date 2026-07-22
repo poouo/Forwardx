@@ -40,7 +40,7 @@ export const trafficBillingRouter = router({
   setEnabled: adminProcedure
     .input(z.object({ enabled: z.boolean() }))
     .mutation(async ({ input }) => {
-      await db.setSetting("trafficBillingEnabled", input.enabled ? "true" : "false");
+      await db.setTrafficBillingEnabled(input.enabled);
       appendPanelLog("info", `[TrafficBilling] feature ${input.enabled ? "enabled" : "disabled"}`);
       return { enabled: input.enabled };
     }),

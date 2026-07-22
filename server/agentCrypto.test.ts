@@ -3,6 +3,9 @@ import test from "node:test";
 import {
   agentTokenFingerprint,
   encryptPayload,
+  getAgentCryptoCacheStats,
+  rememberEncryptedEnvelope,
+  resetAgentCryptoCaches,
   signAgentAuthProof,
   verifyAgentAuthProof,
 } from "./agentCrypto";
@@ -30,4 +33,22 @@ test("signed auth selects one token before decrypting a large envelope", () => {
   const raw = `v1.${agentTokenFingerprint(token)}.${ts}.${nonce}.${signature}`;
 
   assert.equal(verifyAgentAuthProof({ raw, candidateTokens: tokens, method: "POST", path: "/api/sync", bodyText }), token);
+});
+
+test("replay protection cleanup is amortized under sustained Agent reports", () => {
+  resetAgentCryptoCaches();
+  const now = Date.now();
+  for (let index = 0; index < 10_000; index += 1) {
+    rememberEncryptedEnvelope({
+      v: 1,
+      iv: "00".repeat(16),
+      ct: "",
+      mac: index.toString(16).padStart(64, "0"),
+      ts: now,
+    });
+  }
+  const stats = getAgentCryptoCacheStats();
+  assert.equal(stats.envelopeReplayEntries, 10_000);
+  assert.ok(stats.replayCleanupSweeps <= 2, `expected amortized cleanup, got ${stats.replayCleanupSweeps} full sweeps`);
+  resetAgentCryptoCaches();
 });

@@ -28,6 +28,7 @@ const (
 	systemPingConcurrency      = 8
 	networkTargetDNSTTL        = 30 * time.Second
 	networkTargetDNSFailureTTL = 5 * time.Second
+	idleHostTrafficReportEvery = 30 * time.Second
 )
 
 var (
@@ -45,6 +46,8 @@ var (
 	dialNetworkTimeout       = net.DialTimeout
 	trafficPrevMu            sync.Mutex
 	trafficPrevCache         = map[string]trafficPrevState{}
+	trafficStateDir          = agentStateDir
+	lastHostTrafficReportAt  time.Time
 )
 
 type networkTargetDNSCacheEntry struct {
@@ -83,6 +86,11 @@ type trafficPrevState struct {
 	in     uint64
 	out    uint64
 	conns  uint64
+}
+
+type trafficBaselineUpdate struct {
+	port  string
+	state trafficPrevState
 }
 
 type tcpingTask struct {
@@ -127,6 +135,10 @@ func hostTrafficSnapshot() map[string]any {
 	}
 }
 
+func shouldIncludeHostTraffic(statCount int, now time.Time) bool {
+	return statCount > 0 || lastHostTrafficReportAt.IsZero() || now.Sub(lastHostTrafficReportAt) >= idleHostTrafficReportEvery
+}
+
 func scheduleTrafficCollection(cfg Config) bool {
 	now := time.Now()
 	trafficCollectMu.Lock()
@@ -169,6 +181,7 @@ func collectTraffic(cfg Config) time.Duration {
 	diagnostics.nftMarkers = nftMarkers
 	connCounts := conntrackConnectionsSnapshot(states)
 	stats := []map[string]any{}
+	pendingBaselines := make([]trafficBaselineUpdate, 0, len(states))
 	watched := len(states)
 	for _, state := range states {
 		if state.RuleID <= 0 {
@@ -182,27 +195,37 @@ func collectTraffic(cfg Config) time.Duration {
 		}
 		curConns := connCounts[state.Port]
 		prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
-		if prevRuleID <= 0 || prevRuleID != state.RuleID {
+		initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
+		if initialBaseline {
 			prevIn, prevOut = counters.In, counters.Out
 			prevConns = curConns
 		}
 		din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(curConns, prevConns)
-		writePrev(state.Port, state.RuleID, counters.In, counters.Out, curConns)
+		nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: curConns}
 		if din > 0 || dout > 0 || dconns > 0 {
 			stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
+			pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
+		} else {
+			writePrevState(state.Port, nextBaseline)
 		}
 		logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
 	}
-	hostTraffic := hostTrafficSnapshot()
-	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
+	var hostTraffic map[string]any
+	if shouldIncludeHostTraffic(len(stats), time.Now()) {
+		hostTraffic = hostTrafficSnapshot()
+	}
+	payload := map[string]any{"stats": stats}
+	if hostTraffic != nil {
+		payload["hostTraffic"] = hostTraffic
+	}
 	if compactAgentReports.Load() {
 		compactStats := make([][]any, 0, len(stats))
 		for _, stat := range stats {
 			compactStats = append(compactStats, compactTrafficStat(stat))
 		}
-		payload = map[string]any{
-			"s": compactStats,
-			"h": []any{hostTraffic["bytesIn"], hostTraffic["bytesOut"]},
+		payload = map[string]any{"s": compactStats}
+		if hostTraffic != nil {
+			payload["h"] = []any{hostTraffic["bytesIn"], hostTraffic["bytesOut"]}
 		}
 	}
 	if len(stats) > 0 || hostTraffic != nil {
@@ -212,8 +235,14 @@ func collectTraffic(cfg Config) time.Duration {
 			} else if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
 				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 			}
-		} else if agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
-			logf("traffic report ok watched=%d stats=%d", watched, len(stats))
+		} else {
+			commitTrafficBaselines(true, pendingBaselines)
+			if hostTraffic != nil {
+				lastHostTrafficReportAt = time.Now()
+			}
+			if agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+				logf("traffic report ok watched=%d stats=%d", watched, len(stats))
+			}
 		}
 	}
 	return trafficCollectBackoffInterval(nextInterval, time.Since(started))
@@ -1486,7 +1515,7 @@ func readPrev(port string) (int, uint64, uint64, uint64) {
 		return cached.ruleID, cached.in, cached.out, cached.conns
 	}
 	trafficPrevMu.Unlock()
-	raw, err := os.ReadFile("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+	raw, err := os.ReadFile(trafficStateDir + "/traffic_" + port + ".prev")
 	if err != nil {
 		cacheTrafficPrev(port, trafficPrevState{})
 		return 0, 0, 0, 0
@@ -1520,7 +1549,10 @@ func readPrev(port string) (int, uint64, uint64, uint64) {
 }
 
 func writePrev(port string, ruleID int, in, out, conns uint64) {
-	next := trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns}
+	writePrevState(port, trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns})
+}
+
+func writePrevState(port string, next trafficPrevState) {
 	trafficPrevMu.Lock()
 	previous, exists := trafficPrevCache[port]
 	trafficPrevCache[port] = next
@@ -1528,7 +1560,16 @@ func writePrev(port string, ruleID int, in, out, conns uint64) {
 	if exists && previous == next {
 		return
 	}
-	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", ruleID, in, out, conns)), 0644)
+	_ = os.WriteFile(trafficStateDir+"/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", next.ruleID, next.in, next.out, next.conns)), 0644)
+}
+
+func commitTrafficBaselines(reportSucceeded bool, updates []trafficBaselineUpdate) {
+	if !reportSucceeded {
+		return
+	}
+	for _, update := range updates {
+		writePrevState(update.port, update.state)
+	}
 }
 
 func cacheTrafficPrev(port string, state trafficPrevState) {

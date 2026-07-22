@@ -45,6 +45,12 @@ export const selfTestRulesRouter = router({
         if (String(group?.groupMode || "failover") === "chain") {
           await db.syncForwardGroupRules(Number(group.id));
           const probes = await db.getForwardGroupChainProbes(Number(group.id), { includeFinalTarget: true, templateRule: rule });
+          const chainLatencyMode = probes.some((probe) => probe.method === "tcp")
+            && ["iptables", "nftables"].includes(String(group.forwardType || "").trim().toLowerCase())
+            ? Number(group.entryGroupId || 0) > 0
+              ? "multi-source-remaining-path"
+              : "remaining-path"
+            : "sum";
           if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
           const batchId = createHopTestBatch("fgr", Number(group.id));
           const testHostIds = new Set<number>();
@@ -63,6 +69,7 @@ export const selfTestRulesRouter = router({
               hopLabel: probe.hopLabel,
               routeLabel: probe.routeLabel,
               batchId,
+              latencyMode: chainLatencyMode,
               runtimeDependent: probe.runtimeDependent,
             });
             const testId = await db.createForwardTest({

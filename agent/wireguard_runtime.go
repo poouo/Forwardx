@@ -189,19 +189,64 @@ func wireGuardSpecSignature(spec wireGuardSpec) string {
 	return string(raw)
 }
 
-func wireGuardDeviceConfig(spec wireGuardSpec) string {
+func wireGuardPeerMapByPublicKey(spec wireGuardSpec) map[string]wireGuardPeerSpec {
+	peers := make(map[string]wireGuardPeerSpec, len(spec.Peers))
+	for _, peer := range spec.Peers {
+		peers[peer.PublicKey] = peer
+	}
+	return peers
+}
+
+func wireGuardPeerRequiresRecreate(previous, next wireGuardPeerSpec) bool {
+	return previous.EndpointHost != "" && next.EndpointHost == ""
+}
+
+func wireGuardPeerUpdateSummary(previous, next wireGuardSpec) (added, removed, updated int, removedKeys []string) {
+	previousPeers := wireGuardPeerMapByPublicKey(previous)
+	nextPeers := wireGuardPeerMapByPublicKey(next)
+	for publicKey, previousPeer := range previousPeers {
+		nextPeer, exists := nextPeers[publicKey]
+		if !exists || wireGuardPeerRequiresRecreate(previousPeer, nextPeer) {
+			removed++
+			removedKeys = append(removedKeys, publicKey)
+		}
+	}
+	for publicKey, nextPeer := range nextPeers {
+		previousPeer, exists := previousPeers[publicKey]
+		if !exists || wireGuardPeerRequiresRecreate(previousPeer, nextPeer) {
+			added++
+			continue
+		}
+		if previousPeer != nextPeer {
+			updated++
+		}
+	}
+	sort.Strings(removedKeys)
+	return added, removed, updated, removedKeys
+}
+
+func wireGuardDeviceConfig(spec wireGuardSpec, replacePeers bool, removedKeys []string) string {
 	var builder strings.Builder
-	builder.WriteString("private_key=")
-	builder.WriteString(spec.PrivateKey)
-	builder.WriteByte('\n')
-	builder.WriteString("listen_port=")
-	builder.WriteString(strconv.Itoa(spec.ListenPort))
-	builder.WriteByte('\n')
-	builder.WriteString("replace_peers=true\n")
+	if replacePeers {
+		builder.WriteString("private_key=")
+		builder.WriteString(spec.PrivateKey)
+		builder.WriteByte('\n')
+		builder.WriteString("listen_port=")
+		builder.WriteString(strconv.Itoa(spec.ListenPort))
+		builder.WriteByte('\n')
+		builder.WriteString("replace_peers=true\n")
+	} else {
+		for _, publicKey := range removedKeys {
+			builder.WriteString("public_key=")
+			builder.WriteString(publicKey)
+			builder.WriteString("\nremove=true\n")
+		}
+	}
 	for _, peer := range spec.Peers {
 		builder.WriteString("public_key=")
 		builder.WriteString(peer.PublicKey)
 		builder.WriteByte('\n')
+		builder.WriteString("replace_allowed_ips=true\n")
 		builder.WriteString("allowed_ip=")
 		builder.WriteString(peer.Address)
 		builder.WriteString("/32\n")
@@ -210,11 +255,9 @@ func wireGuardDeviceConfig(spec wireGuardSpec) string {
 			builder.WriteString(net.JoinHostPort(peer.EndpointHost, strconv.Itoa(peer.EndpointPort)))
 			builder.WriteByte('\n')
 		}
-		if peer.PersistentKeepalive > 0 {
-			builder.WriteString("persistent_keepalive_interval=")
-			builder.WriteString(strconv.Itoa(peer.PersistentKeepalive))
-			builder.WriteByte('\n')
-		}
+		builder.WriteString("persistent_keepalive_interval=")
+		builder.WriteString(strconv.Itoa(peer.PersistentKeepalive))
+		builder.WriteByte('\n')
 	}
 	return builder.String()
 }
@@ -236,7 +279,7 @@ func newWireGuardRuntime(spec wireGuardSpec) (*wireGuardRuntime, error) {
 		},
 	}
 	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), logger)
-	if err := dev.IpcSet(wireGuardDeviceConfig(normalized)); err != nil {
+	if err := dev.IpcSet(wireGuardDeviceConfig(normalized, true, nil)); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("configure wireguard: %w", err)
 	}
@@ -279,7 +322,9 @@ func (runtime *wireGuardRuntime) update(spec wireGuardSpec) error {
 	if runtime.signature == signature {
 		return nil
 	}
-	if err := runtime.device.IpcSet(wireGuardDeviceConfig(normalized)); err != nil {
+	added, removed, updated, removedKeys := wireGuardPeerUpdateSummary(runtime.spec, normalized)
+	dnsRefresh := runtime.spec.Generation != normalized.Generation
+	if err := runtime.device.IpcSet(wireGuardDeviceConfig(normalized, false, removedKeys)); err != nil {
 		return fmt.Errorf("update wireguard: %w", err)
 	}
 	runtime.spec = normalized
@@ -288,7 +333,7 @@ func (runtime *wireGuardRuntime) update(spec wireGuardSpec) error {
 	for _, peer := range normalized.Peers {
 		runtime.peers[peer.ID] = peer
 	}
-	logf("wireguard runtime updated tunnel=%d listen=:%d peers=%d generation=%d", normalized.TunnelID, normalized.ListenPort, len(normalized.Peers), normalized.Generation)
+	logf("wireguard runtime updated tunnel=%d listen=:%d peers=%d generation=%d peerAdded=%d peerRemoved=%d peerUpdated=%d dnsRefresh=%v", normalized.TunnelID, normalized.ListenPort, len(normalized.Peers), normalized.Generation, added, removed, updated, dnsRefresh)
 	return nil
 }
 
