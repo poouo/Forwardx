@@ -299,6 +299,7 @@ export function buildLinkAvailabilityIndex(input: {
       if (node) memberNodes.set(Number(member.id), node);
     }
     let eligibleMemberIds = new Set<number>(members.map((member: any) => Number(member.id)));
+    let healthSelectedMemberIds: Set<number> | null = null;
     let state: LinkAvailabilityResult;
 
     if (mode === "chain") {
@@ -370,6 +371,9 @@ export function buildLinkAvailabilityIndex(input: {
         const pending = candidates.some((member: any) => !["healthy", "unhealthy"].includes(String(member?.chinaHealthStatus || "unknown").toLowerCase()));
         if (healthy.length > 0) {
           candidates = healthy;
+          if (mode === "entry") {
+            healthSelectedMemberIds = new Set(healthy.map((member: any) => Number(member.id)));
+          }
         } else if (pending && configurationValid && group?.isEnabled !== false) {
           state = result("pending", "probe", "等待入口健康度检测结果");
           groupAvailabilityById.set(Number(group.id), state);
@@ -382,7 +386,18 @@ export function buildLinkAvailabilityIndex(input: {
       eligibleMemberIds = new Set<number>(candidates.map((member: any) => Number(member.id)));
       const candidateNodes = candidates
         .map((member: any) => ({ member, node: memberNodes.get(Number(member.id)) }))
-        .filter((item: any) => !!item.node);
+        .filter((item: any) => !!item.node)
+        .map((item: any) => ({
+          ...item,
+          node: {
+            ...item.node,
+            // When China health checking is enabled, a healthy probe is the
+            // source of truth even if the cached host flag is stale/offline.
+            available: healthSelectedMemberIds
+              ? healthSelectedMemberIds.has(Number(item.member.id))
+              : !!item.node.available,
+          },
+        }));
       state = resolveLinkAvailability({
         label: mode === "entry" ? "入口组" : mode === "exit" ? "出口组" : "转发组",
         enabled: group?.isEnabled !== false,
@@ -398,6 +413,8 @@ export function buildLinkAvailabilityIndex(input: {
 
     if (state.source === "probe" && state.available) {
       eligibleMemberIds.forEach((memberId) => state.usableMemberIds.add(memberId));
+    } else if (healthSelectedMemberIds && state.available) {
+      healthSelectedMemberIds.forEach((memberId) => state.usableMemberIds.add(memberId));
     } else {
       members.forEach((member: any) => {
         if (!eligibleMemberIds.has(Number(member.id))) return;

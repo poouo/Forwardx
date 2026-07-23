@@ -76,9 +76,10 @@ type trafficCounters struct {
 }
 
 type trafficDiagnosticsSnapshot struct {
-	iptablesMarkers  map[string]bool
-	ip6tablesMarkers map[string]bool
-	nftMarkers       map[int]bool
+	iptablesMarkers   map[string]bool
+	ip6tablesMarkers  map[string]bool
+	nftMarkers        map[int]bool
+	nftProcessMarkers map[string]bool
 }
 
 type trafficPrevState struct {
@@ -179,6 +180,8 @@ func collectTraffic(cfg Config) time.Duration {
 	iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
 	nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
 	diagnostics.nftMarkers = nftMarkers
+	nftProcessCounters, nftProcessMarkers := nftProcessCounterSnapshotWithDiagnostics()
+	diagnostics.nftProcessMarkers = nftProcessMarkers
 	connCounts := conntrackConnectionsSnapshot(states)
 	stats := []map[string]any{}
 	pendingBaselines := make([]trafficBaselineUpdate, 0, len(states))
@@ -192,6 +195,8 @@ func collectTraffic(cfg Config) time.Duration {
 			if nft, ok := nftCounters[state.RuleID]; ok {
 				counters = nft
 			}
+		} else if diagnostics.nftProcessMarkers[state.Port] {
+			counters = nftProcessCounters[state.Port]
 		}
 		curConns := connCounts[state.Port]
 		prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
@@ -1328,6 +1333,42 @@ func nftablesCounterSnapshotWithDiagnostics() (map[int]trafficCounters, map[int]
 	return out, markers
 }
 
+func nftProcessCounterSnapshotWithDiagnostics() (map[string]trafficCounters, map[string]bool) {
+	out := map[string]trafficCounters{}
+	markers := map[string]bool{}
+	raw, err := commandOutputWithTimeout(5*time.Second, "nft", "-a", "list", "table", "inet", nftProcessTrafficTable)
+	if err != nil {
+		return out, markers
+	}
+	return parseNftProcessCounterSnapshot(string(raw))
+}
+
+func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map[string]bool) {
+	out := map[string]trafficCounters{}
+	markers := map[string]bool{}
+	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out)`)
+	for _, line := range strings.Split(raw, "\n") {
+		match := markerPattern.FindStringSubmatch(line)
+		if len(match) < 3 {
+			continue
+		}
+		port, direction := match[1], match[2]
+		markers[port] = true
+		bytesValue, ok := nftCounterBytes(line)
+		if !ok {
+			continue
+		}
+		counters := out[port]
+		if direction == "in" {
+			counters.In += bytesValue
+		} else {
+			counters.Out += bytesValue
+		}
+		out[port] = counters
+	}
+	return out, markers
+}
+
 func nftCounterBytes(line string) (uint64, bool) {
 	fields := strings.Fields(line)
 	for i := 0; i+1 < len(fields); i++ {
@@ -1358,17 +1399,18 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	if state.ForwardType == "nftables" {
 		nftMarker = diagnostics.nftMarkers[state.RuleID]
 	}
+	nftProcessMarker := diagnostics.nftProcessMarkers[state.Port]
 	_, nftCounter := nftCounters[state.RuleID]
 	if counters.In == 0 && counters.Out == 0 && connections > 0 {
-		logf("traffic diag missing counters rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v hint=traffic-is-flowing-but-counter-rule-did-not-match", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
+		logf("traffic diag missing counters rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftProcessMarker=%v nftCounter=%v hint=traffic-is-flowing-but-counter-rule-did-not-match", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftProcessMarker, nftCounter)
 		return
 	}
 	if agentVerboseLogs && counters.In == 0 && counters.Out == 0 && connections == 0 {
-		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftProcessMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftMarker, nftProcessMarker, nftCounter)
 		return
 	}
 	if agentVerboseLogs && (din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables") {
-		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftProcessMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftProcessMarker, nftCounter)
 	}
 }
 

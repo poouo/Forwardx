@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
+import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
 
 test("serializes GOST PROXY Protocol versions as metadata strings", () => {
   assert.deepEqual(gostProxyProtocolMetadata(1), { proxyProtocol: "1" });
@@ -43,5 +43,33 @@ test("maps tunnel switches only to the end-to-end entry and exit layers", () => 
     entryHandler: { proxyProtocol: "1" },
     exitBridgeReceive: { proxyProtocol: "1" },
     exitBridgeSend: undefined,
+  });
+});
+
+test("preserves the entry source across the local exit bridge", () => {
+  assert.deepEqual(effectiveTunnelProxyProtocolOptions({
+    entryReceive: false,
+    entrySend: true,
+    exitReceive: false,
+    exitSend: true,
+    version: 2,
+  }), {
+    entryReceive: false,
+    entrySend: true,
+    exitReceive: true,
+    exitSend: true,
+    version: 2,
+  });
+  assert.deepEqual(gostTunnelProxyProtocolPlan({
+    entryReceive: false,
+    entrySend: true,
+    exitReceive: false,
+    exitSend: true,
+    version: 1,
+  }), {
+    entryListener: undefined,
+    entryHandler: { proxyProtocol: "1" },
+    exitBridgeReceive: { proxyProtocol: "1" },
+    exitBridgeSend: { proxyProtocol: "1" },
   });
 });

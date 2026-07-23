@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeAgentReportedAddress } from "./agentAddressState";
-import { AgentHeartbeatGate, buildBusyAgentHeartbeatResponse } from "./agentHeartbeatGate";
+import { HOST_ONLINE_TTL_MS } from "./repositories/hostRepository";
+import {
+  AgentHeartbeatGate,
+  AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS,
+  buildBusyAgentHeartbeatResponse,
+  selectAgentHeartbeatInterval,
+  shouldDeferAgentWorkForLocalState,
+} from "./agentHeartbeatGate";
 
 test("coalesces overlapping and recent heartbeats for one host without blocking", () => {
   let now = 10_000;
@@ -62,6 +69,29 @@ test("busy heartbeat responses preserve cached state sections on the Agent", () 
   }
   assert.equal(response.nextInterval, 5);
   assert.equal(response.panelUrl, "https://panel.example.test");
+});
+
+test("self-tests wait until a desired-state Agent uploads its requested local state", () => {
+  assert.equal(shouldDeferAgentWorkForLocalState({ supportsDesiredState: true, requestLocalState: true }), true);
+  assert.equal(shouldDeferAgentWorkForLocalState({ supportsDesiredState: true, requestLocalState: false }), false);
+  assert.equal(shouldDeferAgentWorkForLocalState({ supportsDesiredState: false, requestLocalState: true }), false);
+});
+
+test("heartbeat intervals slow down only when the Agent has no interactive work", () => {
+  const idle = {
+    requestLocalState: false,
+    hasInteractiveTasks: false,
+    metricsWatching: false,
+    serviceProbeIntervals: [],
+  };
+  assert.equal(selectAgentHeartbeatInterval(idle), AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, metricsWatching: true }), 3);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, hasInteractiveTasks: true }), 2);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, requestLocalState: true }), 2);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, serviceProbeIntervals: [20, 120] }), 20);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, serviceProbeIntervals: [1] }), 5);
+  assert.equal(selectAgentHeartbeatInterval({ ...idle, serviceProbeIntervals: [0] }), 30);
+  assert.ok(HOST_ONLINE_TTL_MS > AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS * 2 * 1000);
 });
 
 test("empty address reports during Agent restart preserve the last valid addresses", () => {

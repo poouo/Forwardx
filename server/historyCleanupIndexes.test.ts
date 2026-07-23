@@ -25,3 +25,21 @@ test("history cleanup predicates use time-leading SQLite indexes", async () => {
     sqlite.close();
   }
 });
+
+test("host status sweeps use the online-heartbeat SQLite index", async () => {
+  const sqlite = new Database(":memory:");
+  try {
+    await ensureDatabaseSchema(sqlite);
+    const plan = sqlite.prepare(
+      `EXPLAIN QUERY PLAN SELECT * FROM "hosts"
+       WHERE "isOnline" = 1
+         AND "lastHeartbeat" IS NOT NULL
+         AND "lastHeartbeat" < ?`,
+    ).all(1) as Array<{ detail?: string }>;
+    const detail = plan.map((row) => String(row.detail || "")).join(" | ");
+    assert.match(detail, /USING INDEX/i, detail);
+    assert.match(detail, /isOnline.*lastHeartbeat/i, detail);
+  } finally {
+    sqlite.close();
+  }
+});

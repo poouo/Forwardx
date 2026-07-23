@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+func TestSelfTestPollingOnlyFallsBackWithoutEventStream(t *testing.T) {
+	if shouldPollSelfTests(true) {
+		t.Fatal("connected event streams already wake the heartbeat and must suppress idle self-test polling")
+	}
+	if !shouldPollSelfTests(false) {
+		t.Fatal("self-test polling must remain available while the event stream is disconnected")
+	}
+}
+
 func TestSelfTestInFlightDeduplicatesRetries(t *testing.T) {
 	selfTestInFlightMu.Lock()
 	selfTestInFlight = map[int]bool{}

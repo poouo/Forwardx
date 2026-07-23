@@ -36,6 +36,7 @@ import {
   selectEntryGroupTunnelTestAddress,
   selectTunnelDialAddress,
 } from "../tunnelAddressSelection";
+import { planManualTunnelTestRefresh } from "../tunnelRuntimePlan";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
@@ -186,14 +187,20 @@ const normalizeTunnelConnect = (connectHost?: string | null) => {
 };
 
 function normalizeTunnelConnectForEndpoint(connectHost: string | null | undefined, networkType: "public" | "private" | undefined, host: any) {
-  const normalized = normalizeTunnelConnect(connectHost);
-  if (normalized) return normalized;
   if (networkType === "private") {
     const privateAddr = getHostPrivateAddress(host);
     if (!privateAddr) throw new Error("出口 Agent 未配置内网IP，无法使用内网 IP 连接");
     return privateAddr;
   }
-  return null;
+  const normalized = normalizeTunnelConnect(connectHost);
+  if (!normalized) return null;
+  // Public mode is the explicit opt-out from the private address selector.
+  // Do not retain a stale private/public host string, especially when both
+  // configured addresses happen to be identical.
+  const privateAddr = getHostPrivateAddress(host);
+  const publicAddr = getHostPublicAddress(host);
+  if ((privateAddr && normalized === privateAddr) || (publicAddr && normalized === publicAddr)) return null;
+  return normalized;
 }
 
 const normalizeHopConnectHostsForCompare = (hops: Array<any>) =>
@@ -276,15 +283,15 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
 }
 function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, host: any) {
   const raw = String(rawConnectHost || "").trim();
+  if (!raw) return null;
   const publicAddr = getHostPublicAddress(host);
   const privateAddr = getHostPrivateAddress(host);
   const ipv6Addr = getHostIpv6Address(host);
-  if (!raw) return publicAddr || null;
   const normalized = normalizeTunnelConnect(raw);
   if (privateAddr && normalized === privateAddr) return privateAddr;
   if (ipv6Addr && normalized === ipv6Addr) return ipv6Addr;
-  if (publicAddr && normalized === publicAddr) return publicAddr;
-  if (!privateAddr && !ipv6Addr) return publicAddr || null;
+  if (publicAddr && normalized === publicAddr) return null;
+  if (!privateAddr && !ipv6Addr) return null;
   throw new Error(`主机 ${host?.name || host?.id || ""} 的连接地址只能使用入口地址、已配置的内网IP或IPv6地址`);
 }
 
@@ -1384,11 +1391,17 @@ export const tunnelsRouter = router({
           .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
         const entryTestHostIds = await getTunnelEntryTestHostIds(tunnel);
         const hasEntryGroupTest = entryTestHostIds.length > 1;
-        if (tunnelHopHostIds.length >= 3) {
+        const runtimeRefreshMode = planManualTunnelTestRefresh({
+          isRunning: tunnel.isRunning,
+          hopHostCount: tunnelHopHostIds.length,
+          loadBalanceEnabled: tunnel.loadBalanceEnabled,
+          extraExitCount: tunnelExtraExitHostIds.length,
+        });
+        if (runtimeRefreshMode === "coordinated" && tunnelHopHostIds.length >= 3) {
           await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, ...tunnelHopHostIds, ...tunnelExtraExitHostIds], "tunnel-test-refresh", { urgent: true });
-        } else if (tunnel.loadBalanceEnabled && tunnelExtraExitHostIds.length > 0) {
+        } else if (runtimeRefreshMode === "coordinated") {
           await refreshTunnelRuntimeHosts(Number(tunnel.id), [...entryTestHostIds, Number(tunnel.exitHostId), ...tunnelExtraExitHostIds], "tunnel-load-balance-test-refresh", { urgent: true });
-        } else if (!tunnel.isRunning) {
+        } else if (runtimeRefreshMode === "endpoint") {
           const testRefreshHostIds = Array.from(new Set([Number(tunnel.exitHostId), ...entryTestHostIds, ...tunnelExtraExitHostIds].filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
           const pushedResults = testRefreshHostIds.map((hostId) => pushAgentRefresh(hostId, "tunnel-test-refresh", { urgent: true }));
           const pushed = pushedResults.every(Boolean);

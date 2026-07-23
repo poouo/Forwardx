@@ -249,3 +249,57 @@ test("china health filtering never marks an unhealthy online member as usable", 
   assert.equal(state?.status, "available");
   assert.deepEqual([...state!.usableMemberIds], [601]);
 });
+
+test("an entry group without China health checks follows isOnline and ignores stale health fields", () => {
+  const { groupAvailabilityById } = buildLinkAvailabilityIndex({
+    hosts: [
+      { id: 1, isOnline: false, ipv4: "192.0.2.1" },
+      { id: 2, isOnline: true, ipv4: "192.0.2.2" },
+    ],
+    groups: [{
+      id: 61,
+      groupMode: "entry",
+      domain: "entry.example.com",
+      recordType: "A",
+      chinaHealthCheckEnabled: false,
+      isEnabled: true,
+      members: [
+        { id: 611, hostId: 1, isEnabled: true, chinaHealthStatus: "healthy" },
+        { id: 612, hostId: 2, isEnabled: true, chinaHealthStatus: "unknown" },
+      ],
+    }],
+    tunnels: [],
+    now,
+  });
+
+  const state = groupAvailabilityById.get(61);
+  assert.equal(state?.status, "degraded");
+  assert.deepEqual([...state!.usableMemberIds], [612]);
+});
+
+test("an entry group's healthy probe result wins over a stale offline host flag", () => {
+  const { groupAvailabilityById } = buildLinkAvailabilityIndex({
+    hosts: [
+      { id: 1, isOnline: false, ipv4: "192.0.2.1" },
+      { id: 2, isOnline: true, ipv4: "192.0.2.2" },
+    ],
+    groups: [{
+      id: 62,
+      groupMode: "entry",
+      domain: "entry.example.com",
+      recordType: "A",
+      chinaHealthCheckEnabled: true,
+      isEnabled: true,
+      members: [
+        { id: 621, hostId: 1, isEnabled: true, chinaHealthStatus: "healthy" },
+        { id: 622, hostId: 2, isEnabled: true, chinaHealthStatus: "unhealthy" },
+      ],
+    }],
+    tunnels: [],
+    now,
+  });
+
+  const state = groupAvailabilityById.get(62);
+  assert.equal(state?.status, "available");
+  assert.deepEqual([...state!.usableMemberIds], [621]);
+});

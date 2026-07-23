@@ -76,6 +76,26 @@ func TestTrafficBaselinesCommitOnlyAfterSuccessfulReport(t *testing.T) {
 	}
 }
 
+func TestParseNftProcessCounterSnapshot(t *testing.T) {
+	raw := `table inet forwardx_traffic {
+	chain input {
+		type filter hook input priority mangle; policy accept;
+		tcp dport 22022 counter packets 3 bytes 1200 comment "fwx-stat-22022:in" # handle 4
+		udp dport 22022 comment "fwx-stat-22022:in" counter packets 2 bytes 300 # handle 5
+	}
+	chain output {
+		tcp sport 22022 counter packets 4 bytes 2400 comment "fwx-stat-22022:out" # handle 6
+	}
+}`
+	counters, markers := parseNftProcessCounterSnapshot(raw)
+	if !markers["22022"] {
+		t.Fatal("nft process traffic marker was not detected")
+	}
+	if got := counters["22022"]; got.In != 1500 || got.Out != 2400 {
+		t.Fatalf("unexpected nft process counters: %+v", got)
+	}
+}
+
 func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	atomic.StoreInt32(&tcpingCollectRunning, 1)
 	defer atomic.StoreInt32(&tcpingCollectRunning, 0)

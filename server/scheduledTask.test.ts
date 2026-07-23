@@ -1,11 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
-import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS } from "./selfTestTiming";
+import {
+  SELF_TEST_SWEEP_ACTIVE_WINDOW_MS,
+  SELF_TEST_SWEEP_INTERVAL_MS,
+  SELF_TEST_TIMEOUT_SECONDS,
+  SelfTestSweepActivity,
+} from "./selfTestTiming";
 
 test("manual self-tests settle within a short interactive deadline", () => {
   assert.equal(SELF_TEST_TIMEOUT_SECONDS, 8);
   assert.equal(SELF_TEST_SWEEP_INTERVAL_MS, 2_000);
+});
+
+test("self-test timeout sweeps stay idle until work is created or claimed", () => {
+  let now = 10_000;
+  const activity = new SelfTestSweepActivity(() => now, false);
+
+  assert.equal(activity.shouldSweep(), false);
+  activity.markActive();
+  assert.equal(activity.shouldSweep(), true);
+
+  now += SELF_TEST_SWEEP_ACTIVE_WINDOW_MS - 1;
+  assert.equal(activity.shouldSweep(), true);
+  now += 1;
+  assert.equal(activity.shouldSweep(), false);
+});
+
+test("self-test timeout sweeps start active to recover work left by a restart", () => {
+  let now = 20_000;
+  const activity = new SelfTestSweepActivity(() => now);
+
+  assert.equal(activity.shouldSweep(), true);
+  now += SELF_TEST_SWEEP_ACTIVE_WINDOW_MS;
+  assert.equal(activity.shouldSweep(), false);
 });
 
 test("scheduled tasks skip overlapping ticks and resume after completion", async () => {

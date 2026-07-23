@@ -441,8 +441,9 @@ function normalizeHopConnectHostsForHosts(
   return base.map((value, idx) => {
     if (idx === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hopHostIds[idx] || 0));
-    const publicAddr = hostPublicAddress(host);
-    return normalizeConnectHostForHost(value, host, publicAddr || null);
+    // null is meaningful here: it keeps the address selector disabled and
+    // lets the runtime resolve the host's current public/entry address.
+    return normalizeConnectHostForHost(value, host, null);
   });
 }
 

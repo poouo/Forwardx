@@ -29,5 +29,8 @@ test("all process forwarding modes use the shared bidirectional counters", () =>
   assert.match(commands, /POSTROUTING -p tcp --sport 22022/);
   assert.match(commands, /PREROUTING -p udp --dport 22022/);
   assert.match(commands, /OUTPUT -p udp --sport 22022/);
+  assert.match(commands, /table inet forwardx_traffic/);
+  assert.match(commands, /forwardx_traffic input meta l4proto tcp tcp dport 22022/);
+  assert.match(commands, /forwardx_traffic output meta l4proto tcp tcp sport 22022/);
   assert.doesNotMatch(commands, /target\.example/);
 });

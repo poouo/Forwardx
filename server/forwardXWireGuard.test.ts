@@ -56,6 +56,16 @@ test("builds bidirectional peers while only the dialing side carries an endpoint
   assert.equal(new Set(Array.from(plans.values()).map((plan) => plan.address)).size, 3);
 });
 
+test("keeps a private endpoint in the WireGuard peer plan", () => {
+  const plans = buildForwardXWireGuardPlans({
+    tunnelId: 9,
+    seed: "private-endpoint",
+    nodes: [{ hostId: 3 }, { hostId: 2, listenPort: 61561 }],
+    links: [{ fromHostId: 3, toHostId: 2, endpointHost: "10.23.0.8", endpointPort: 61561 }],
+  });
+  assert.equal(plans.get(3)?.peers.find((peer) => peer.hostId === 2)?.endpointHost, "10.23.0.8");
+});
+
 test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests", () => {
   const payload = buildTunnelAgentSelfTestPayload({ id: "91" }, {
     kind: "tunnel-hop",

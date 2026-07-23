@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.168"
+var Version = "2.2.169"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -253,6 +253,7 @@ var actionPendingCount int64
 var heartbeatWakeCh = make(chan struct{}, 1)
 var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
 var heartbeatUrgentWakeFromSSE atomic.Bool
+var agentEventStreamConnected atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
@@ -3104,8 +3105,16 @@ func runAgentEventStream(cfg Config) error {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
+	agentEventStreamConnected.Store(true)
 	recordPanelMigrationStreamConnection(true)
-	defer recordPanelMigrationStreamConnection(false)
+	defer func() {
+		agentEventStreamConnected.Store(false)
+		recordPanelMigrationStreamConnection(false)
+	}()
+	// A reconnect may have happened after a self-test was queued while the
+	// stream was unavailable. Reconcile once so SSE-connected Agents do not
+	// wait for the fallback self-test poller.
+	wakeHeartbeatFromSSE(true)
 
 	scanner := newAgentEventStreamScanner(resp.Body)
 	var data strings.Builder
@@ -6012,7 +6021,7 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 	if cleanupNginx {
 		cmds = append(cmds, managedNginxCleanupShell(port))
 	}
-	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
+	cmds = append(cmds, nftPortCleanupCmd(port, "both"), nftProcessCountingCleanupCmd(port))
 	for _, binary := range iptablesAgentBinaries() {
 		cmds = append(cmds,
 			iptablesAgentDeleteByComment(binary, "mangle", inMarker),
@@ -6127,6 +6136,33 @@ func atoi(s string) int {
 	return v
 }
 
+const nftProcessTrafficTable = "forwardx_traffic"
+
+func nftProcessCountingCleanupCmd(port string) string {
+	marker := "fwx-stat-" + port + ":"
+	return fmt.Sprintf(`if command -v nft >/dev/null 2>&1 && nft list table inet %s >/dev/null 2>&1; then for c in input output; do while h=$(nft -a list chain inet %s "$c" 2>/dev/null | awk -v marker=%s 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet %s "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`, nftProcessTrafficTable, nftProcessTrafficTable, shellQuote(marker), nftProcessTrafficTable)
+}
+
+func nftProcessCountingCmds(port int, protocol string) []string {
+	p := strconv.Itoa(port)
+	commands := []string{
+		"command -v nft >/dev/null 2>&1",
+		nftProcessCountingCleanupCmd(p),
+		"nft add table inet " + nftProcessTrafficTable + " 2>/dev/null || true",
+		"nft add chain inet " + nftProcessTrafficTable + " input '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true",
+		"nft add chain inet " + nftProcessTrafficTable + " output '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true",
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		inComment := shellQuote(`"fwx-stat-` + p + `:in"`)
+		outComment := shellQuote(`"fwx-stat-` + p + `:out"`)
+		commands = append(commands,
+			fmt.Sprintf(`nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, inComment, nftProcessTrafficTable, proto, proto, p, inComment),
+			fmt.Sprintf(`nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, outComment, nftProcessTrafficTable, proto, proto, p, outComment),
+		)
+	}
+	return commands
+}
+
 func ensureCountingChains(port int, targetIP string, targetPort int, protocol string) bool {
 	if port <= 0 {
 		return true
@@ -6206,9 +6242,11 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+p),
 		)
 	}
-	ok := runShellBatch(commands)
+	iptablesOK := runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(commands)
+	nftOK := runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingCmds(port, protocol))
+	ok := iptablesOK || nftOK
 	if !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
-		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s commands=%d", p, targetIP, targetPort, protocol, len(commands))
+		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s iptables=%v nft=%v", p, targetIP, targetPort, protocol, iptablesOK, nftOK)
 	}
 	return ok
 }
