@@ -12,7 +12,12 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
-import { agentHeartbeatGate, buildBusyAgentHeartbeatResponse } from "./agentHeartbeatGate";
+import {
+  agentHeartbeatGate,
+  buildBusyAgentHeartbeatResponse,
+  selectAgentHeartbeatInterval,
+  shouldDeferAgentWorkForLocalState,
+} from "./agentHeartbeatGate";
 import { mapWithConcurrency } from "./asyncPool";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
@@ -34,7 +39,7 @@ import {
   tunnelRuleRuntimeForwardType,
   tunnelRuntimeFamily,
 } from "./tunnelRuntimePlan";
-import { gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
+import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
 import { planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
 import {
   buildCountingChainCmds,
@@ -4422,6 +4427,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
             const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
             const wireGuardV2 = isForwardXWireGuardV2(tunnel);
+            const effectiveProxyProtocol = effectiveTunnelProxyProtocolOptions({
+              entryReceive: proxyProtocolEnabled(rule, "entryReceive"),
+              entrySend: proxyProtocolEnabled(rule, "entrySend"),
+              exitReceive: proxyProtocolEnabled(rule, "exitReceive"),
+              exitSend: proxyProtocolEnabled(rule, "exitSend"),
+              version: proxyProtocolVersion(rule),
+            });
             if (useUdpOverTcp && entryRoutes.some((route) => Number((route as any).udpPort || 0) <= 0)) {
               appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP exit port tunnel=${tunnel.id} rule=${rule.id}`);
               continue;
@@ -4454,11 +4466,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...accessLimits,
               accessScope: accessScopeForRule(rule),
               ...await tunnelProtocolPolicy(tunnel),
-              proxyProtocolReceive: proxyProtocolEnabled(rule, "entryReceive"),
-              proxyProtocolSend: proxyProtocolEnabled(rule, "entrySend"),
-              proxyProtocolExitReceive: proxyProtocolEnabled(rule, "exitReceive"),
-              proxyProtocolExitSend: proxyProtocolEnabled(rule, "exitSend"),
-              proxyProtocolVersion: proxyProtocolVersion(rule),
+              proxyProtocolReceive: effectiveProxyProtocol.entryReceive,
+              proxyProtocolSend: effectiveProxyProtocol.entrySend,
+              proxyProtocolExitReceive: effectiveProxyProtocol.exitReceive,
+              proxyProtocolExitSend: effectiveProxyProtocol.exitSend,
+              proxyProtocolVersion: effectiveProxyProtocol.version,
               tcpFastOpen: !!(rule as any).tcpFastOpen,
               dnsGeneration: tunnelDnsGeneration(tunnel),
             }, tunnel);
@@ -4664,8 +4676,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: target.targetPort,
           protocol: normalizeForwardRuleProtocol(rule.protocol),
           policy,
-          proxyProtocolReceive: proxyProtocolEnabled(rule, "exitReceive"),
-          proxyProtocolSend: proxyProtocolEnabled(rule, "exitSend"),
+          proxyProtocolReceive: !!tunnelProxyPlan.exitBridgeReceive,
+          proxyProtocolSend: !!tunnelProxyPlan.exitBridgeSend,
           proxyProtocolVersion: proxyProtocolVersion(rule),
         });
       }
@@ -4935,22 +4947,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
-    const pendingTests = await db.getPendingForwardTestsByHost(host.id);
-    const selfTests: any[] = [];
-    for (const t of pendingTests) {
-      const claimed = await db.markForwardTestRunning(t.id);
-      if (!claimed) continue;
-      const meta = parseSelfTestMeta((t as any).message);
-      const metaSelfTest = buildMetaAgentSelfTestPayload(t, meta);
-      if (metaSelfTest) {
-        selfTests.push(metaSelfTest);
-        continue;
-      }
-      const rule = await db.getForwardRuleById(t.ruleId);
-      if (!rule) continue;
-      selfTests.push(buildRuleAgentSelfTestPayload(t, rule));
-    }
-
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
     const agentUpgradeCompleted = (host as any).agentUpgradeRequested
       && agentVersion
@@ -4975,7 +4971,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // local runtime snapshot. Desired state is intentionally withheld for that
     // response, so caching the plugin action here would otherwise lose it until
     // the five-minute plugin retry window expires.
-    const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
+    const deferActionsForLocalState = shouldDeferAgentWorkForLocalState({
+      supportsDesiredState,
+      requestLocalState: localRuntimeState.requestLocalState,
+    });
+    const selfTests: any[] = [];
+    if (!deferActionsForLocalState) {
+      const pendingTests = await db.getPendingForwardTestsByHost(host.id);
+      for (const t of pendingTests) {
+        const claimed = await db.markForwardTestRunning(t.id);
+        if (!claimed) continue;
+        const meta = parseSelfTestMeta((t as any).message);
+        const metaSelfTest = buildMetaAgentSelfTestPayload(t, meta);
+        if (metaSelfTest) {
+          selfTests.push(metaSelfTest);
+          continue;
+        }
+        const rule = await db.getForwardRuleById(t.ruleId);
+        if (!rule) continue;
+        selfTests.push(buildRuleAgentSelfTestPayload(t, rule));
+      }
+    }
     const pluginSyncTasks = supportsPluginTasks
       ? await buildPluginHostAssetSyncActions(Number(host.id))
       : [];
@@ -5387,13 +5403,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || pluginSyncActionQueued
       || forceTcping
       || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
-    const serviceProbeInterval = hostProbeServices.reduce((min: number, service: any) => {
-      const seconds = Number(service?.intervalSeconds || 30);
-      return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
-    }, 30);
-    const nextInterval = localRuntimeState.requestLocalState
-      ? 2
-      : (hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval));
+    const nextInterval = selectAgentHeartbeatInterval({
+      requestLocalState: localRuntimeState.requestLocalState,
+      hasInteractiveTasks,
+      metricsWatching: isHostMetricsWatching(host.id),
+      serviceProbeIntervals: hostProbeServices.map((service: any) => service?.intervalSeconds),
+    });
     const sendDesiredState = supportsDesiredState
       && !deferActionsForLocalState
       && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt);

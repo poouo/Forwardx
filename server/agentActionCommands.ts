@@ -138,6 +138,7 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
       for (const [chain, rule, marker] of targetRules) cmds.push(addStatRule(targetBinary, chain, rule, marker));
     }
   }
+  cmds.push(...buildNftProcessCountingCmds(port, protocol));
   return cmds;
 }
 
@@ -192,10 +193,14 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
     }
   }
+  cmds.push(nftProcessCountingCleanupCmd(port));
   return cmds;
 }
 
 const nftTable = "forwardx";
+const nftProcessTrafficTable = "forwardx_traffic";
+const nftProcessTrafficInputChain = "input";
+const nftProcessTrafficOutputChain = "output";
 const nftChain = (prefix: string, id: number) => `${prefix}_${id}`;
 const nftComment = (rule: any) => `fwx-rule-${Number(rule.id) || 0}`;
 const nftTrafficPreroutingChain = "traffic_prerouting";
@@ -205,6 +210,26 @@ const nftDirectionComment = (comment: string, direction: "in" | "out") => `${com
 const nftDnatMasqueradeComment = "fwx-dnat-masquerade";
 const nftIpv6RoutefixChain = "ipv6_routefix";
 const nftIpv6RoutefixComment = "fwx-ipv6-dnat-routefix";
+
+function nftProcessCountingCleanupCmd(port: number) {
+  const marker = `fwx-stat-${port}:`;
+  return `if command -v nft >/dev/null 2>&1 && nft list table inet ${nftProcessTrafficTable} >/dev/null 2>&1; then for c in ${nftProcessTrafficInputChain} ${nftProcessTrafficOutputChain}; do while h=$(nft -a list chain inet ${nftProcessTrafficTable} "$c" 2>/dev/null | awk -v marker=${shellQuote(marker)} 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet ${nftProcessTrafficTable} "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`;
+}
+
+function buildNftProcessCountingCmds(port: number, protocol?: string) {
+  const commands = [
+    `if command -v nft >/dev/null 2>&1; then nft add table inet ${nftProcessTrafficTable} 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true; fi; true`,
+  ];
+  for (const proto of forwardRuleProtocols(protocol, "both")) {
+    const inMarker = `fwx-stat-${port}:in`;
+    const outMarker = `fwx-stat-${port}:out`;
+    commands.push(
+      `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} meta l4proto ${proto} ${proto} dport ${port} counter comment ${nftCommentLiteral(inMarker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} meta l4proto ${proto} ${proto} dport ${port} comment ${nftCommentLiteral(inMarker)} counter 2>/dev/null || true; fi; true`,
+      `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} meta l4proto ${proto} ${proto} sport ${port} counter comment ${nftCommentLiteral(outMarker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} meta l4proto ${proto} ${proto} sport ${port} comment ${nftCommentLiteral(outMarker)} counter 2>/dev/null || true; fi; true`,
+    );
+  }
+  return commands;
+}
 
 function nftOptional(command: string) {
   return `${command} 2>/dev/null; true`;

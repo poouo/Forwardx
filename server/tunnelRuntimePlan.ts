@@ -116,6 +116,24 @@ export type SharedRuntimeReconcileInput = {
   reportedHasWork: boolean;
 };
 
+export type ManualTunnelTestRefreshMode = "none" | "coordinated" | "endpoint";
+
+export function planManualTunnelTestRefresh(input: {
+  isRunning?: unknown;
+  hopHostCount?: unknown;
+  loadBalanceEnabled?: unknown;
+  extraExitCount?: unknown;
+}): ManualTunnelTestRefreshMode {
+  const isRunning = input.isRunning === true || Number(input.isRunning) === 1;
+  if (isRunning) return "none";
+  const hopHostCount = Math.max(0, Math.floor(Number(input.hopHostCount) || 0));
+  const extraExitCount = Math.max(0, Math.floor(Number(input.extraExitCount) || 0));
+  const loadBalanceEnabled = input.loadBalanceEnabled === true || Number(input.loadBalanceEnabled) === 1;
+  return hopHostCount >= 3 || (loadBalanceEnabled && extraExitCount > 0)
+    ? "coordinated"
+    : "endpoint";
+}
+
 function shouldReconcileSharedRuntime(input: SharedRuntimeReconcileInput) {
   return input.configChanged
     || input.serviceUnhealthy

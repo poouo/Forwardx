@@ -801,6 +801,97 @@ func TestForwardXProxyProtocolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardXProxyProtocolSurvivesBackupExitSelection(t *testing.T) {
+	headerCh := make(chan string, 1)
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	go func() {
+		conn, err := targetLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		buf := make([]byte, 256)
+		var got []byte
+		wantLen := len("PROXY TCP4 203.0.113.31 198.51.100.40 55123 443\r\nbackup-payload")
+		for len(got) < wantLen {
+			n, readErr := conn.Read(buf)
+			if n > 0 {
+				got = append(got, buf[:n]...)
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		headerCh <- string(got)
+	}()
+
+	key := "proxy-protocol-exit-group-key"
+	targetPort := targetLn.Addr().(*net.TCPAddr).Port
+	primaryUnavailablePort := freeTCPPort(t)
+	backupExitPort := freeTCPPort(t)
+	entryPort := freeTCPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   21,
+			ListenPort: backupExitPort,
+			Protocol:   "tcp",
+			Key:        key,
+		})
+	}()
+	waitForTCP(t, backupExitPort)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:                     "entry",
+			TunnelID:                 21,
+			RuleID:                   22,
+			ListenPort:               entryPort,
+			Protocol:                 "tcp",
+			ExitHost:                 "127.0.0.1",
+			ExitPort:                 primaryUnavailablePort,
+			Exits:                    []exitEndpoint{{Host: "127.0.0.1", Port: backupExitPort, Key: key}},
+			ExitStrategy:             "fallback",
+			TargetIP:                 "127.0.0.1",
+			TargetPort:               targetPort,
+			Key:                      key,
+			ProxyProtocolReceive:     true,
+			ProxyProtocolSend:        true,
+			ProxyProtocolExitReceive: true,
+			ProxyProtocolExitSend:    true,
+		})
+	}()
+	waitForTCP(t, entryPort)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("PROXY TCP4 203.0.113.31 198.51.100.40 55123 443\r\nbackup-payload")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-headerCh:
+		want := "PROXY TCP4 203.0.113.31 198.51.100.40 55123 443\r\nbackup-payload"
+		if got != want {
+			t.Fatalf("unexpected target payload %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for backup exit payload")
+	}
+}
+
 func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

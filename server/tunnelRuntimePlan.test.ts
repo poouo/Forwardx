@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   planGostTunnelProbeListeners,
+  planManualTunnelTestRefresh,
   shouldReconcileGostRuntime,
   shouldReconcileNginxRuntime,
   tunnelExitRuntimeForwardType,
@@ -47,6 +48,22 @@ test("entry-group multi-hop tunnel test uses the next hop configured address", (
       nextHost,
     ),
     "2001:db8:20::1",
+  );
+});
+
+test("entry-group WireGuard test keeps the next hop private address", () => {
+  const nextHost = {
+    entryIp: "103.177.163.138",
+    ipv4: "103.177.163.138",
+    tunnelEntryIp: "10.23.0.8",
+  };
+  assert.equal(
+    selectEntryGroupTunnelTestAddress(
+      { connectHost: "10.99.0.9" },
+      { connectHost: "10.23.0.8" },
+      nextHost,
+    ),
+    "10.23.0.8",
   );
 });
 
@@ -114,6 +131,31 @@ test("does not plan probes for disabled protocols or non-GOST tunnels", () => {
     { id: 5, mode: "unsupported", isEnabled: true, protocolEnabled: true, exitHostId: 7, listenPort: 23005 },
   ], new Map(), new Set());
   assert.deepEqual(listeners, []);
+});
+
+test("manual tests do not restart an already running multi-exit tunnel", () => {
+  assert.equal(planManualTunnelTestRefresh({
+    isRunning: true,
+    loadBalanceEnabled: true,
+    extraExitCount: 2,
+  }), "none");
+  assert.equal(planManualTunnelTestRefresh({
+    isRunning: true,
+    hopHostCount: 4,
+  }), "none");
+});
+
+test("manual tests coordinate refresh only while tunnel runtime is stopped", () => {
+  assert.equal(planManualTunnelTestRefresh({
+    isRunning: false,
+    loadBalanceEnabled: true,
+    extraExitCount: 2,
+  }), "coordinated");
+  assert.equal(planManualTunnelTestRefresh({
+    isRunning: false,
+    hopHostCount: 4,
+  }), "coordinated");
+  assert.equal(planManualTunnelTestRefresh({ isRunning: false }), "endpoint");
 });
 
 test("keeps nginx tunnels out of the GOST runtime family", () => {

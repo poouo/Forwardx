@@ -2,13 +2,16 @@ import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
 import { quoteIdentifier } from "../dbCompat";
+import { selfTestSweepActivity } from "../selfTestTiming";
 
 // ==================== Forward Tests ====================
 
 export async function createForwardTest(data: InsertForwardTest) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  return insertAndGetId("forward_tests", data as any);
+  const id = await insertAndGetId("forward_tests", data as any);
+  selfTestSweepActivity.markActive();
+  return id;
 }
 
 const FORWARD_TEST_LEASE_SECONDS = 8;
@@ -40,7 +43,9 @@ export async function markForwardTestRunning(id: number, leaseSeconds = FORWARD_
          OR (${q("status")} = 'running' AND ${q("updatedAt")} < ?))`,
     [nowDate(), id, cutoff],
   );
-  return rawAffectedRows(result) > 0;
+  const claimed = rawAffectedRows(result) > 0;
+  if (claimed) selfTestSweepActivity.markActive();
+  return claimed;
 }
 
 export async function updateForwardTestResult(

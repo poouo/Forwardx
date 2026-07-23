@@ -152,7 +152,13 @@ const tables: TableDef[] = [
       c("lastHeartbeat", "epoch"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
       c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
-    indexes: [["userId"], ["userId", "sortOrder"], ["userId", "createdAt"], ["agentToken"]],
+    indexes: [
+      ["userId"],
+      ["userId", "sortOrder"],
+      ["userId", "createdAt"],
+      ["agentToken"],
+      ["isOnline", "lastHeartbeat"],
+    ],
   },
   {
     name: "host_groups",

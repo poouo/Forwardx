@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   forwardGroupEvents,
   forwardGroupMembers,
@@ -1176,7 +1176,7 @@ export async function getForwardGroupChinaHealthProbesForHost(hostId: number) {
   const groups = await getForwardGroups() as any[];
   const probes: ForwardGroupChinaHealthProbe[] = [];
   for (const group of groups) {
-    if (!group?.isEnabled || !supportsChinaHealthMode(groupModeOf(group)) || !group.chinaHealthCheckEnabled) continue;
+    if (!dbBool(group?.isEnabled) || !supportsChinaHealthMode(groupModeOf(group)) || !dbBool(group?.chinaHealthCheckEnabled)) continue;
     let target;
     try {
       target = normalizeChinaHealthTarget(group.chinaHealthCheckTarget);
@@ -1209,7 +1209,7 @@ export async function updateForwardGroupMemberChinaHealth(input: {
   isTimeout: boolean;
 }) {
   const group = await getForwardGroupById(Number(input.groupId)) as any;
-  if (!group || !group.chinaHealthCheckEnabled || !supportsChinaHealthMode(groupModeOf(group))) return false;
+  if (!group || !dbBool(group.chinaHealthCheckEnabled) || !supportsChinaHealthMode(groupModeOf(group))) return false;
   const member = (group.members || []).find((item: any) => Number(item.id) === Number(input.memberId));
   if (!member) return false;
   const entryHostId = await memberEntryHostId(member);
@@ -1332,6 +1332,25 @@ async function memberAgentAvailable(member: any, group: any) {
   if (!hostId) return false;
   const host = await getHostById(hostId).catch(() => null);
   return agentFailureSince(host, group, nowDate()) === null;
+}
+
+/**
+ * Entry-group DNS uses one, explicit availability source at a time:
+ * - with the China probe enabled, the probe result owns the member list;
+ * - otherwise the host's current isOnline flag owns it.
+ *
+ * Do not use agentFailureSince here.  That helper intentionally applies the
+ * failover heartbeat window, while an entry group's DNS setting is documented
+ * to follow the host isOnline state when China health checks are disabled.
+ */
+async function memberEntryDnsAvailable(member: any, group: any) {
+  const hostId = await memberEntryHostId(member).catch(() => 0);
+  if (!hostId) return false;
+  const host = await getHostById(hostId).catch(() => null);
+  if (dbBool(group?.chinaHealthCheckEnabled)) {
+    return String(member?.chinaHealthStatus || "unknown").trim().toLowerCase() === "healthy";
+  }
+  return dbBool(host?.isOnline);
 }
 
 async function firstAvailableResolvableMember(members: any[], group: any, recordType: ForwardGroupRecordType) {
@@ -1727,7 +1746,7 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     trafficMultiplier: group.trafficMultiplier,
     failoverSeconds: group.failoverSeconds,
     recoverSeconds: group.recoverSeconds,
-    chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+    chinaHealthCheckEnabled: dbBool(group.chinaHealthCheckEnabled),
     chinaHealthCheckTarget: group.chinaHealthCheckTarget || null,
     telegramSwitchNotifyEnabled: !!group.telegramSwitchNotifyEnabled,
     ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
@@ -2896,7 +2915,7 @@ async function evaluateMemberHealth(member: any, group: any, hostById: Map<numbe
           latencies.push(Number(stat.latencyMs));
         }
       }
-      if (healthy && group.chinaHealthCheckEnabled) {
+      if (healthy && dbBool(group.chinaHealthCheckEnabled)) {
         const chinaStatus = String(member.chinaHealthStatus || "unknown");
         if (chinaStatus === "unhealthy") {
           healthy = false;
@@ -3027,16 +3046,23 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   const values: string[] = [];
   const excluded: string[] = [];
   let activeMemberId: number | null = null;
-  const chinaHealthEnabled = !!group.chinaHealthCheckEnabled;
+  const chinaHealthEnabled = dbBool(group.chinaHealthCheckEnabled);
+  let pendingChinaHealth = false;
   for (const member of members) {
     if (member.memberType !== "host") continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
-    if (!(await memberAgentAvailable(member, group))) {
-      if (!excluded.includes(value)) excluded.push(value);
-      continue;
-    }
-    if (chinaHealthEnabled && String(member.chinaHealthStatus || "unknown") === "unhealthy") {
+    if (chinaHealthEnabled) {
+      const status = String(member.chinaHealthStatus || "unknown").trim().toLowerCase();
+      if (status === "unknown") {
+        pendingChinaHealth = true;
+        continue;
+      }
+      if (status !== "healthy") {
+        if (!excluded.includes(value)) excluded.push(value);
+        continue;
+      }
+    } else if (!(await memberEntryDnsAvailable(member, group))) {
       if (!excluded.includes(value)) excluded.push(value);
       continue;
     }
@@ -3048,6 +3074,18 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   }
   const joined = values.join(",");
   const excludedSuffix = excluded.length > 0 ? `；已临时剔除 ${excluded.length} 个不健康入口` : "";
+
+  // A newly enabled health check starts with unknown member states.  Keep the
+  // current provider record intact until at least one probe result arrives;
+  // once results exist, only healthy members are emitted above.
+  if (chinaHealthEnabled && values.length === 0 && pendingChinaHealth) {
+    await db.update(forwardGroups).set({
+      lastStatus: "unknown",
+      lastMessage: "等待国内健康度检测结果；暂不变更现有 DDNS 解析",
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, group.id));
+    return;
+  }
 
   if (!String(group.domain || "").trim()) {
     await db.update(forwardGroups).set({
@@ -3287,7 +3325,7 @@ async function runForwardGroupFailoverForGroups(
     const mode = groupModeOf(group);
     if (mode === "chain" || mode === "port") continue;
     if (mode === "entry") {
-      if (group.chinaHealthCheckEnabled) {
+      if (dbBool(group.chinaHealthCheckEnabled)) {
         for (const member of sortedMembers(group, true) as any[]) {
           const entryHostId = await memberEntryHostId(member).catch(() => 0);
           if (entryHostId > 0) {
@@ -3336,7 +3374,7 @@ async function runForwardGroupFailoverForGroups(
     }
 
     await syncForwardGroupRules(Number(group.id), { preserveRuntime: true });
-    if (group.chinaHealthCheckEnabled) {
+    if (dbBool(group.chinaHealthCheckEnabled)) {
       for (const member of sortedMembers(group, true) as any[]) {
         const entryHostId = await memberEntryHostId(member).catch(() => 0);
         if (entryHostId > 0) {
@@ -3438,7 +3476,13 @@ export async function runForwardGroupFailoverSweep(options: ForwardGroupFailover
   const groups = await db
     .select({ id: forwardGroups.id })
     .from(forwardGroups)
-    .where(eq(forwardGroups.isEnabled, true))
+    .where(and(
+      eq(forwardGroups.isEnabled, true),
+      or(
+        isNull(forwardGroups.groupMode),
+        notInArray(forwardGroups.groupMode, ["port", "chain"]),
+      ),
+    ))
     .orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
   await runForwardGroupFailoverByIds((groups as any[]).map((group: any) => Number(group.id || 0)), options);
 }

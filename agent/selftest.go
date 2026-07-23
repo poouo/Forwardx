@@ -33,6 +33,10 @@ var selfTestInFlight = map[int]bool{}
 func selfTestPoller(cfg Config) {
 	activeUntil := time.Time{}
 	for {
+		if !shouldPollSelfTests(agentEventStreamConnected.Load()) {
+			time.Sleep(selfTestIdlePollInterval)
+			continue
+		}
 		var resp selfTestResp
 		if err := post(cfg, "/api/agent/selftest-pull", map[string]any{}, &resp); err != nil {
 			logAgentCommError("selftest-pull", err)
@@ -50,6 +54,10 @@ func selfTestPoller(cfg Config) {
 		}
 		time.Sleep(interval)
 	}
+}
+
+func shouldPollSelfTests(eventStreamConnected bool) bool {
+	return !eventStreamConnected
 }
 
 func enqueueSelfTest(cfg Config, t selfTest) {

@@ -61,4 +61,31 @@ export function buildBusyAgentHeartbeatResponse(input: {
   };
 }
 
+export function shouldDeferAgentWorkForLocalState(input: {
+  supportsDesiredState: boolean;
+  requestLocalState: boolean;
+}) {
+  return input.supportsDesiredState && input.requestLocalState;
+}
+
+export const AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS = 60;
+
+export function selectAgentHeartbeatInterval(input: {
+  requestLocalState: boolean;
+  hasInteractiveTasks: boolean;
+  metricsWatching: boolean;
+  serviceProbeIntervals?: unknown[];
+}) {
+  if (input.requestLocalState || input.hasInteractiveTasks) return 2;
+  const serviceProbeInterval = (input.serviceProbeIntervals || []).reduce<number>((minimum, value) => {
+    const seconds = Number(value || 30);
+    const normalized = Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30;
+    return Math.min(minimum, normalized);
+  }, AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS);
+  return Math.min(
+    input.metricsWatching ? 3 : AGENT_IDLE_HEARTBEAT_INTERVAL_SECONDS,
+    serviceProbeInterval,
+  );
+}
+
 export const agentHeartbeatGate = new AgentHeartbeatGate();

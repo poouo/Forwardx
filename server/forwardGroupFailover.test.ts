@@ -253,6 +253,63 @@ test("forward group switches after its configured heartbeat failure window", () 
       assert.equal(entryState.lastDdnsValue, "198.51.100.10,198.51.100.20");
       assert.deepEqual(requests.at(-1).values, ["198.51.100.10", "198.51.100.20"]);
 
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ?', [now - 75]);
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10,198.51.100.20");
+      assert.equal(entryState.lastStatus, "healthy");
+      assert.deepEqual(
+        requests.at(-1).values,
+        ["198.51.100.10", "198.51.100.20"],
+        "entry groups without China health checks must follow isOnline instead of the shorter failover heartbeat window",
+      );
+
+      await runtime.executeRaw('UPDATE "forward_groups" SET "chinaHealthCheckEnabled" = 1 WHERE "id" = 20');
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0 WHERE "id" = 1');
+      await runtime.executeRaw('UPDATE "forward_group_members" SET "chinaHealthStatus" = \'healthy\' WHERE "id" = 201');
+      await runtime.executeRaw('UPDATE "forward_group_members" SET "chinaHealthStatus" = \'unhealthy\' WHERE "id" = 202');
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10");
+      assert.deepEqual(
+        requests.at(-1).values,
+        ["198.51.100.10"],
+        "an enabled China health check must own DNS selection instead of cached isOnline state",
+      );
+
+      const requestCountBeforePendingHealth = requests.length;
+      await runtime.executeRaw('UPDATE "forward_group_members" SET "chinaHealthStatus" = \'unknown\' WHERE "groupId" = 20');
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10");
+      assert.equal(entryState.lastStatus, "unknown");
+      assert.equal(requests.length, requestCountBeforePendingHealth, "pending probes must not clear a working DNS record");
+
+      await runtime.executeRaw('UPDATE "forward_groups" SET "chinaHealthCheckEnabled" = 0 WHERE "id" = 20');
+      await forwardGroups.resetForwardGroupChinaHealth(20);
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 2', [now - 75]);
+      await forwardGroups.runForwardGroupFailover(20);
+      entryState = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
+      ))[0];
+      assert.equal(Number(entryState.activeMemberId), 202);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.20");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
+      assert.deepEqual(
+        (await runtime.queryRaw('SELECT "chinaHealthStatus" FROM "forward_group_members" WHERE "groupId" = 20 ORDER BY "id"')).map((row) => row.chinaHealthStatus),
+        ["unknown", "unknown"],
+        "turning health checks off must ignore the reset health state",
+      );
+
       await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0 WHERE "id" = 1');
       await forwardGroups.runForwardGroupFailover(20);
       entryState = (await runtime.queryRaw(

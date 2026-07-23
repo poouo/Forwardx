@@ -14,7 +14,7 @@ import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
-import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS } from "./selfTestTiming";
+import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS, selfTestSweepActivity } from "./selfTestTiming";
 
 type TimedOutForwardTest = {
   id: number;
@@ -256,6 +256,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
 }
 
 async function runSelfTestTimeoutSweep() {
+  if (!selfTestSweepActivity.shouldSweep()) return;
   try {
     const timedOutTests = await db.timeoutStaleForwardTests(SELF_TEST_TIMEOUT_SECONDS);
     if (timedOutTests.length > 0) {
