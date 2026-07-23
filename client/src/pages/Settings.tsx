@@ -173,6 +173,17 @@ function getUpgradeProgress(job: any) {
   return { percent: 0, label: `等待${actionLabel}`, steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
+function formatDatabaseSwitchDuration(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return remainingSeconds > 0 ? `${minutes} 分 ${remainingSeconds} 秒` : `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours} 小时 ${remainingMinutes} 分` : `${hours} 小时`;
+}
+
 const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh";
 const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh";
 const panelLocalUpgradeCommand = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s -- upgrade`;
@@ -1060,6 +1071,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   });
   const [databaseSwitchSqlitePath, setDatabaseSwitchSqlitePath] = useState(defaultSqlitePath);
   const [testedDatabaseSwitchKey, setTestedDatabaseSwitchKey] = useState("");
+  const [databaseSwitchValidationError, setDatabaseSwitchValidationError] = useState("");
   const [databaseSwitchJobId, setDatabaseSwitchJobId] = useState<string | null>(null);
   const [reportedDatabaseSwitchJobId, setReportedDatabaseSwitchJobId] = useState<string | null>(null);
   const [showDatabaseSwitchConfirm, setShowDatabaseSwitchConfirm] = useState(false);
@@ -1113,6 +1125,14 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const databaseSwitchExternalDefaultPort = databaseSwitchType === "postgresql" ? 5432 : 3306;
   const isDatabaseSwitchTested = testedDatabaseSwitchKey === databaseSwitchConfigKey;
   const databaseSwitchRunning = databaseSwitchJob?.status === "pending" || databaseSwitchJob?.status === "running";
+  const databaseSwitchFailed = databaseSwitchJob?.status === "failed";
+  const databaseSwitchSucceeded = databaseSwitchJob?.status === "success";
+  const databaseSwitchElapsed = databaseSwitchJob
+    ? formatDatabaseSwitchDuration((databaseSwitchJob.finishedAt || Date.now()) - databaseSwitchJob.startedAt)
+    : "0 秒";
+  const databaseSwitchUpdatedAgo = databaseSwitchJob
+    ? formatDatabaseSwitchDuration(Date.now() - (databaseSwitchJob.updatedAt || databaseSwitchJob.startedAt))
+    : "0 秒";
 
   useEffect(() => {
     setMigrationCode(currentMigrationCode || null);
@@ -1347,15 +1367,22 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   });
 
   const testDatabaseSwitchMutation = trpc.system.testDatabaseSwitchTarget.useMutation({
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables) => {
       setTestedDatabaseSwitchKey(JSON.stringify(variables));
-      toast.success("目标数据库连接测试通过");
+      setDatabaseSwitchValidationError("");
+      toast.success(data.message || "目标数据库连接及写入权限测试通过");
     },
     onError: (err) => {
       setTestedDatabaseSwitchKey("");
-      toast.error(err.message || "目标数据库连接测试失败");
+      const message = err.message || "目标数据库连接或迁移写入权限验证失败";
+      setDatabaseSwitchValidationError(message);
+      toast.error(message);
     },
   });
+
+  useEffect(() => {
+    setDatabaseSwitchValidationError("");
+  }, [databaseSwitchConfigKey]);
 
   const startDatabaseSwitchMutation = trpc.system.startDatabaseSwitch.useMutation({
     onSuccess: (job) => {
@@ -1490,6 +1517,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
 
   const handleTestDatabaseSwitch = () => {
     setTestedDatabaseSwitchKey("");
+    setDatabaseSwitchValidationError("");
     testDatabaseSwitchMutation.mutate(databaseSwitchConfig);
   };
 
@@ -1503,7 +1531,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       return;
     }
     if (!isDatabaseSwitchTested) {
-      toast.error("请先测试目标数据库连接，测试通过后才能开始切换");
+      toast.error("请先验证目标数据库连接和写入权限，通过后才能开始切换");
       return;
     }
     if (databaseSwitchRunning || startDatabaseSwitchMutation.isPending) {
@@ -1712,7 +1740,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             数据库在线切换
           </CardTitle>
           <CardDescription>
-            在 SQLite、MySQL、PostgreSQL 之间迁移当前面板数据，连接测试通过后才能开始。
+            在 SQLite、MySQL、PostgreSQL 之间迁移当前面板数据，连接和写入权限验证通过后才能开始。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -1769,7 +1797,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
                 </p>
               </div>
               <Badge variant={isDatabaseSwitchTested ? "default" : "outline"} className="w-fit">
-                {isDatabaseSwitchTested ? "连接已测试" : "等待测试"}
+                {isDatabaseSwitchTested ? "连接与写入已验证" : "等待测试"}
               </Badge>
             </div>
 
@@ -1873,16 +1901,105 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               </div>
             )}
 
+            {databaseSwitchValidationError && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>目标数据库验证失败，迁移未启动</AlertTitle>
+                <AlertDescription className="space-y-2">
+                  <p className="whitespace-pre-wrap break-words">{databaseSwitchValidationError}</p>
+                  <p>请修正目标账号或数据库权限并重新验证。验证通过前不会读取、写入或切换业务数据。</p>
+                </AlertDescription>
+              </Alert>
+            )}
+
             {databaseSwitchJob && (
-              <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">{databaseSwitchJob.step}</span>
-                  <span>{databaseSwitchJob.progress}%</span>
+              <div className={cn(
+                "rounded-lg border p-4",
+                databaseSwitchFailed
+                  ? "border-destructive/35 bg-destructive/5"
+                  : databaseSwitchSucceeded
+                    ? "border-emerald-500/30 bg-emerald-500/5"
+                    : "border-primary/15 bg-primary/5",
+              )}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    {databaseSwitchFailed ? (
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                    ) : databaseSwitchSucceeded ? (
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    ) : databaseSwitchRunning ? (
+                      <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+                    ) : (
+                      <Database className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{databaseSwitchJob.step}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {databaseSwitchJob.stageIndex && databaseSwitchJob.stageTotal
+                          ? `第 ${databaseSwitchJob.stageIndex}/${databaseSwitchJob.stageTotal} 步 · `
+                          : ""}
+                        {databaseSwitchJob.sourceType || "未识别"} → {databaseSwitchJob.targetType || databaseSwitchConfig.type}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Badge
+                      variant={databaseSwitchFailed ? "destructive" : databaseSwitchSucceeded ? "default" : databaseSwitchRunning ? "secondary" : "outline"}
+                    >
+                      {databaseSwitchFailed ? "已失败" : databaseSwitchSucceeded ? "已完成" : databaseSwitchRunning ? "执行中" : "等待中"}
+                    </Badge>
+                    <span className="text-sm tabular-nums">{databaseSwitchJob.progress}%</span>
+                  </div>
                 </div>
-                <Progress value={databaseSwitchJob.progress} className="mt-3" />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {databaseSwitchJob.error || databaseSwitchJob.message || "数据库迁移切换正在执行，请不要重复提交。"}
-                </p>
+                <Progress
+                  value={databaseSwitchJob.progress}
+                  className={cn(
+                    "mt-3 h-2",
+                    databaseSwitchFailed && "[&>div]:bg-destructive",
+                    databaseSwitchSucceeded && "[&>div]:bg-emerald-500",
+                  )}
+                />
+                <div className="mt-2 space-y-1.5 text-xs text-muted-foreground">
+                  <p>{databaseSwitchJob.detail || databaseSwitchJob.error || databaseSwitchJob.message || "数据库迁移切换正在执行，请不要重复提交。"}</p>
+                  {(databaseSwitchJob.currentTable
+                    || typeof databaseSwitchJob.totalRows === "number"
+                    || typeof databaseSwitchJob.totalTables === "number") && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 tabular-nums">
+                      {databaseSwitchJob.currentTable && <span>当前表：<code>{databaseSwitchJob.currentTable}</code></span>}
+                      {typeof databaseSwitchJob.totalRows === "number" && (
+                        <span>数据行：{databaseSwitchJob.processedRows || 0}/{databaseSwitchJob.totalRows}</span>
+                      )}
+                      {typeof databaseSwitchJob.totalTables === "number" && (
+                        <span>数据表：{databaseSwitchJob.processedTables || 0}/{databaseSwitchJob.totalTables}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 tabular-nums">
+                    <span>耗时：{databaseSwitchElapsed}</span>
+                    {databaseSwitchRunning && <span>最后进度更新：{databaseSwitchUpdatedAgo}前</span>}
+                    {databaseSwitchJob.finishedAt && <span>任务已结束，不会继续在后台执行</span>}
+                  </div>
+                  {databaseSwitchJob.message && databaseSwitchJob.message !== databaseSwitchJob.detail && !databaseSwitchFailed && (
+                    <p>{databaseSwitchJob.message}</p>
+                  )}
+                  {databaseSwitchFailed
+                    && databaseSwitchJob.errorDetail
+                    && databaseSwitchJob.errorDetail !== databaseSwitchJob.error && (
+                      <p className="text-destructive">
+                        数据库原始错误：<code className="break-all">{databaseSwitchJob.errorDetail}</code>
+                      </p>
+                    )}
+                  {databaseSwitchJob.suggestion && (
+                    <div className="border-l-2 border-amber-500/60 pl-3 text-amber-700 dark:text-amber-300">
+                      <p>{databaseSwitchJob.suggestion}</p>
+                      {databaseSwitchJob.suggestionCommand && (
+                        <code className="mt-1 block select-all break-all font-mono text-[11px] text-foreground">
+                          {databaseSwitchJob.suggestionCommand}
+                        </code>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1892,7 +2009,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
                 onClick={handleTestDatabaseSwitch}
                 disabled={testDatabaseSwitchMutation.isPending || databaseSwitchRunning || !!databaseSwitchStatus?.blockedReason}
               >
-                {testDatabaseSwitchMutation.isPending ? "测试中..." : "测试连接"}
+                {testDatabaseSwitchMutation.isPending ? "验证中..." : "验证连接与权限"}
               </Button>
               <Button
                 className="gap-2"

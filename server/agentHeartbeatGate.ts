@@ -1,23 +1,66 @@
 export class AgentHeartbeatGate {
   private readonly active = new Set<number>();
   private readonly completedAt = new Map<number, number>();
+  private readonly waiting: number[] = [];
+  private readonly waitingSince = new Map<number, number>();
 
   constructor(
     private readonly coalesceMs = 5000,
     private readonly now: () => number = Date.now,
     private readonly maxConcurrent = 8,
+    private readonly waitingTimeoutMs = 30_000,
   ) {}
+
+  private pruneWaiting(currentTime: number) {
+    while (this.waiting.length > 0) {
+      const hostId = this.waiting[0];
+      const queuedAt = this.waitingSince.get(hostId);
+      if (queuedAt !== undefined && currentTime - queuedAt <= this.waitingTimeoutMs) break;
+      this.waiting.shift();
+      this.waitingSince.delete(hostId);
+    }
+  }
+
+  private enqueue(hostId: number, currentTime: number) {
+    if (this.waitingSince.has(hostId)) {
+      this.waitingSince.set(hostId, currentTime);
+      return;
+    }
+    this.waiting.push(hostId);
+    this.waitingSince.set(hostId, currentTime);
+  }
+
+  private removeWaiting(hostId: number) {
+    if (!this.waitingSince.delete(hostId)) return;
+    const index = this.waiting.indexOf(hostId);
+    if (index >= 0) this.waiting.splice(index, 1);
+  }
 
   tryAcquire(hostIdValue: unknown, options: { force?: boolean } = {}) {
     const hostId = Number(hostIdValue);
     if (!Number.isInteger(hostId) || hostId <= 0) return null;
     const currentTime = this.now();
+    this.pruneWaiting(currentTime);
     const recentlyCompleted = currentTime - (this.completedAt.get(hostId) || 0) < this.coalesceMs;
-    if (
-      this.active.has(hostId)
-      || (!options.force && recentlyCompleted)
-      || this.active.size >= Math.max(1, this.maxConcurrent)
-    ) return null;
+    if (this.active.has(hostId) || (!options.force && recentlyCompleted)) return null;
+
+    const atCapacity = this.active.size >= Math.max(1, this.maxConcurrent);
+    if (atCapacity) {
+      this.enqueue(hostId, currentTime);
+      return null;
+    }
+    if (this.waiting.length > 0) {
+      if (!this.waitingSince.has(hostId)) {
+        this.enqueue(hostId, currentTime);
+        return null;
+      }
+      if (this.waiting[0] !== hostId) {
+        this.waitingSince.set(hostId, currentTime);
+        return null;
+      }
+      this.waiting.shift();
+      this.waitingSince.delete(hostId);
+    }
 
     this.active.add(hostId);
     let released = false;
@@ -33,11 +76,14 @@ export class AgentHeartbeatGate {
     if (hostIdValue === undefined) {
       this.active.clear();
       this.completedAt.clear();
+      this.waiting.length = 0;
+      this.waitingSince.clear();
       return;
     }
     const hostId = Number(hostIdValue);
     this.active.delete(hostId);
     this.completedAt.delete(hostId);
+    this.removeWaiting(hostId);
   }
 }
 

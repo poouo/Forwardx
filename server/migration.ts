@@ -213,17 +213,41 @@ export const ESSENTIAL_MIGRATION_OMITTED_TABLES = new Set<(typeof MIGRATION_TABL
   "config_audit_events",
 ]);
 
+export type MigrationSnapshotExportProgress = {
+  table: (typeof MIGRATION_TABLES)[number];
+  tableIndex: number;
+  tableTotal: number;
+  status: "reading" | "complete";
+  rowCount?: number;
+};
+
 export async function exportMigrationSnapshot(
   sourcePanelUrl?: string,
-  options: { dataScope?: PanelMigrationScope } = {},
+  options: {
+    dataScope?: PanelMigrationScope;
+    onProgress?: (progress: MigrationSnapshotExportProgress) => void;
+  } = {},
 ): Promise<MigrationSnapshot> {
   await connectDatabase();
   await ensureDatabaseSchema();
   const dataScope = normalizePanelMigrationScope(options.dataScope);
   const tables: MigrationSnapshot["tables"] = {};
-  for (const table of MIGRATION_TABLES) {
-    if (dataScope === "essential" && ESSENTIAL_MIGRATION_OMITTED_TABLES.has(table)) continue;
-    tables[table] = await queryRaw(`SELECT * FROM ${quote(table)}`);
+  const includedTables = MIGRATION_TABLES.filter((table) => (
+    dataScope !== "essential" || !ESSENTIAL_MIGRATION_OMITTED_TABLES.has(table)
+  ));
+  for (let index = 0; index < includedTables.length; index += 1) {
+    const table = includedTables[index];
+    const tableIndex = index + 1;
+    options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "reading" });
+    const rows = await queryRaw(`SELECT * FROM ${quote(table)}`);
+    tables[table] = rows;
+    options.onProgress?.({
+      table,
+      tableIndex,
+      tableTotal: includedTables.length,
+      status: "complete",
+      rowCount: rows.length,
+    });
   }
   return { version: 1, exportedAt: Date.now(), appVersion: APP_VERSION, sourcePanelUrl, dataScope, tables };
 }

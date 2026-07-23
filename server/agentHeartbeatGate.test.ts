@@ -39,13 +39,36 @@ test("limits concurrent full heartbeats across different hosts", () => {
   const second = gate.tryAcquire(2);
   assert.ok(first);
   assert.ok(second);
-  assert.equal(gate.tryAcquire(3), null, "excess reconciliation must be rejected without entering the database queue");
+  assert.equal(gate.tryAcquire(3), null, "excess reconciliation must wait outside the database queue");
   assert.equal(gate.tryAcquire(3, { force: true }), null, "forced refresh must still respect global backpressure");
 
   first();
   const third = gate.tryAcquire(3);
   assert.ok(third, "capacity must be available immediately after a reconciliation completes");
   third();
+  second();
+});
+
+test("serves saturated heartbeat reconciliation in FIFO order", () => {
+  const gate = new AgentHeartbeatGate(1000, () => 10_000, 2);
+  const first = gate.tryAcquire(1);
+  const second = gate.tryAcquire(2);
+  assert.ok(first);
+  assert.ok(second);
+
+  for (const hostId of [3, 4, 5, 6]) {
+    assert.equal(gate.tryAcquire(hostId), null);
+  }
+  first();
+  assert.equal(gate.tryAcquire(6, { force: true }), null, "forced work must not bypass older recovery work");
+
+  const releases: Array<() => void> = [];
+  for (const hostId of [3, 4, 5, 6]) {
+    const release = gate.tryAcquire(hostId);
+    assert.ok(release, `host ${hostId} should receive the next available slot`);
+    releases.push(release);
+    release();
+  }
   second();
 });
 

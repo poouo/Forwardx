@@ -2560,8 +2560,7 @@ export const systemRouter = router({
   testDatabaseSwitchTarget: adminProcedure
     .input(databaseConfigInput)
     .mutation(async ({ input }) => {
-      await testDatabaseSwitchTarget(input as DatabaseConfig);
-      return { success: true };
+      return testDatabaseSwitchTarget(input as DatabaseConfig);
     }),
 
   startDatabaseSwitch: adminProcedure

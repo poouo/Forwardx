@@ -25,6 +25,33 @@ export type EffectiveTunnelProxyProtocolOptions = {
   version: 1 | 2;
 };
 
+export type ResolvedRuleProxyProtocolOptions = {
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
+  proxyProtocolExitReceive: boolean;
+  proxyProtocolExitSend: boolean;
+  proxyProtocolVersion: 1 | 2;
+};
+
+const PROXY_PROTOCOL_TUNNEL_MODES = new Set(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+export function resolveRuleProxyProtocolOptions(rule: any, tunnel?: any | null): ResolvedRuleProxyProtocolOptions {
+  const protocol = String(rule?.protocol || "").trim().toLowerCase();
+  const tcpSupported = protocol === "tcp" || protocol === "both";
+  const tunnelSupported = !tunnel || PROXY_PROTOCOL_TUNNEL_MODES.has(String(tunnel?.mode || "").trim().toLowerCase());
+  const enabled = tcpSupported && tunnelSupported;
+  // Tunnel switches are the source of truth. Rule columns are only a
+  // synchronized snapshot and may be stale after upgrading older panels.
+  const source = tunnel || rule || {};
+  return {
+    proxyProtocolReceive: enabled && !!source.proxyProtocolReceive,
+    proxyProtocolSend: enabled && !!source.proxyProtocolSend,
+    proxyProtocolExitReceive: enabled && !!tunnel && !!source.proxyProtocolExitReceive,
+    proxyProtocolExitSend: enabled && !!tunnel && !!source.proxyProtocolExitSend,
+    proxyProtocolVersion: enabled && Number(source.proxyProtocolVersion) === 2 ? 2 : 1,
+  };
+}
+
 export function gostProxyProtocolMetadata(version: unknown): GostProxyProtocolMetadata {
   // GOST v3.2.6 ignores JSON numbers here because metadata values decode as float64.
   return { proxyProtocol: Number(version) === 2 ? "2" : "1" };

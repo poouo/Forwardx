@@ -1676,7 +1676,8 @@ function HostsContent() {
       setBulkUpgradeDialogOpen(false);
       const skippedLatest = (data as any)?.skippedLatest || 0;
       const skippedOffline = (data as any)?.skippedOffline || 0;
-      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}${skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""}`);
+      const scheduled = (data as any)?.scheduled || 0;
+      toast.success(`已安排 ${data?.requested || 0} 台 Agent 滚动升级，首批推送 ${data?.pushed || 0} 台${scheduled ? `，等待后续批次 ${scheduled} 台` : ""}${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}${skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""}`);
     },
     onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
   });

@@ -496,14 +496,19 @@ export async function markHostOffline(hostId: number) {
   return markHostsOffline([hostId]);
 }
 
-export async function requestHostAgentUpgrade(hostId: number, targetVersion: string | null, releaseVersion?: string | null) {
+export async function requestHostAgentUpgrade(
+  hostId: number,
+  targetVersion: string | null,
+  releaseVersion?: string | null,
+  requestedAt?: Date | null,
+) {
   const db = await getDb();
   if (!db) return;
   await db.update(hosts).set({
     agentUpgradeRequested: true,
     agentUpgradeTargetVersion: targetVersion,
     agentUpgradeReleaseVersion: releaseVersion || null,
-    agentUpgradeRequestedAt: nowDate(),
+    agentUpgradeRequestedAt: requestedAt || nowDate(),
     updatedAt: nowDate(),
   }).where(eq(hosts.id, hostId));
 }

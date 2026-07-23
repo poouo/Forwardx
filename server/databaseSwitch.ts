@@ -23,20 +23,53 @@ import { exportMigrationSnapshot, summarizeMigrationSnapshot, type MigrationSnap
 import { maintainPostgresqlDatabase } from "./postgresqlMaintenance";
 
 export type DatabaseSwitchJobStatus = "pending" | "running" | "success" | "failed";
+export type DatabaseSwitchStage =
+  | "connection"
+  | "permissions"
+  | "schema"
+  | "target-check"
+  | "export"
+  | "transfer"
+  | "optimize"
+  | "switch";
+
+export type DatabaseSwitchFailure = {
+  code: string;
+  message: string;
+  detail: string;
+  suggestion?: string;
+  suggestionCommand?: string;
+};
 
 export interface DatabaseSwitchJob {
   id: string;
   status: DatabaseSwitchJobStatus;
   progress: number;
   step: string;
+  stage?: DatabaseSwitchStage;
+  stageIndex?: number;
+  stageTotal?: number;
+  detail?: string;
   message?: string;
   error?: string;
+  errorCode?: string;
+  errorDetail?: string;
+  suggestion?: string;
+  suggestionCommand?: string;
+  failedStep?: string;
+  currentTable?: string;
+  processedRows?: number;
+  totalRows?: number;
+  processedTables?: number;
+  totalTables?: number;
   sourceType?: DatabaseKind | null;
   targetType?: DatabaseKind;
   restartRequired?: boolean;
   summary?: MigrationSnapshotSummary;
   inserted?: Record<string, number>;
   startedAt: number;
+  stageStartedAt?: number;
+  updatedAt: number;
   finishedAt?: number;
 }
 
@@ -55,12 +88,132 @@ const tableDefs = new Map(getDatabaseTableDefs().map((table) => [table.name, tab
 let activeJobId: string | null = null;
 let restartScheduled = false;
 
+const databaseSwitchStages: Record<DatabaseSwitchStage, { label: string; detail: string }> = {
+  connection: { label: "检查目标数据库连接", detail: "验证地址、账号、密码和数据库版本" },
+  permissions: { label: "验证目标数据库权限", detail: "验证建表、写入、修改结构、创建索引和清理权限" },
+  schema: { label: "初始化目标数据库结构", detail: `创建或校验 ${MIGRATION_TABLES.length} 张数据表及索引` },
+  "target-check": { label: "检查目标数据库内容", detail: "确认目标数据库没有需要保留的业务数据" },
+  export: { label: "读取当前面板数据", detail: "正在逐表读取源数据库" },
+  transfer: { label: "写入目标数据库", detail: "正在按表写入并保留原始数据 ID" },
+  optimize: { label: "优化 PostgreSQL 查询性能", detail: "同步序列并更新查询统计信息" },
+  switch: { label: "保存数据库切换配置", detail: "写入新连接配置并准备重启或刷新连接" },
+};
+
+export function getDatabaseSwitchStagePlan(targetType: DatabaseKind): DatabaseSwitchStage[] {
+  const stages: DatabaseSwitchStage[] = [
+    "connection",
+    "permissions",
+    "schema",
+    "target-check",
+    "export",
+    "transfer",
+  ];
+  if (targetType === "postgresql") stages.push("optimize");
+  stages.push("switch");
+  return stages;
+}
+
 function setJob(job: DatabaseSwitchJob, patch: Partial<DatabaseSwitchJob>) {
   Object.assign(job, {
     ...patch,
     progress: patch.progress === undefined ? job.progress : Math.max(0, Math.min(100, Math.round(patch.progress))),
+    updatedAt: Date.now(),
   });
   jobs.set(job.id, job);
+}
+
+function setJobStage(job: DatabaseSwitchJob, stage: DatabaseSwitchStage, patch: Partial<DatabaseSwitchJob> = {}) {
+  const plan = getDatabaseSwitchStagePlan(job.targetType || "sqlite");
+  const definition = databaseSwitchStages[stage];
+  const stageChanged = job.stage !== stage;
+  setJob(job, {
+    stage,
+    stageIndex: Math.max(1, plan.indexOf(stage) + 1),
+    stageTotal: plan.length,
+    step: definition.label,
+    detail: definition.detail,
+    ...(stageChanged ? { stageStartedAt: Date.now() } : {}),
+    ...patch,
+  });
+}
+
+function databaseErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "未知数据库错误");
+}
+
+function databaseErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") return "";
+  return String((error as { code?: unknown }).code || "").trim();
+}
+
+function postgresIdentifier(value: string) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+export function describeDatabaseSwitchFailure(error: unknown, target: DatabaseConfig): DatabaseSwitchFailure {
+  const detail = databaseErrorMessage(error);
+  const nativeCode = databaseErrorCode(error);
+  if (target.type === "postgresql" && (/permission denied for schema/i.test(detail) || /no schema has been selected/i.test(detail))) {
+    const schema = detail.match(/schema\s+([^\s]+)/i)?.[1]?.replace(/["']/g, "") || "public";
+    const user = target.postgresql.user.trim() || "forwardx";
+    return {
+      code: "POSTGRESQL_SCHEMA_PERMISSION_DENIED",
+      message: `PostgreSQL 账号 ${user} 没有在 ${schema} Schema 中创建和维护数据表的权限。`,
+      detail,
+      suggestion: "请使用数据库管理员授予该账号 Schema 的 USAGE、CREATE 权限，或将目标数据库及 Schema 的所有者改为该账号，然后重新测试连接。",
+      suggestionCommand: `GRANT USAGE, CREATE ON SCHEMA ${postgresIdentifier(schema)} TO ${postgresIdentifier(user)};`,
+    };
+  }
+  if (target.type === "postgresql" && (nativeCode === "42501" || /permission denied/i.test(detail))) {
+    const user = target.postgresql.user.trim() || "forwardx";
+    return {
+      code: "POSTGRESQL_WRITE_PERMISSION_DENIED",
+      message: `PostgreSQL 账号 ${user} 缺少迁移所需的数据库对象操作权限。`,
+      detail,
+      suggestion: "请将目标数据库及其 Schema 的所有者设为该账号，或授予建表、写入、修改结构、创建索引和删除对象的权限后重新测试。",
+    };
+  }
+  if (target.type === "mysql" && (
+    ["ER_DBACCESS_DENIED_ERROR", "ER_TABLEACCESS_DENIED_ERROR", "ER_SPECIFIC_ACCESS_DENIED_ERROR"].includes(nativeCode)
+    || /access denied|command denied/i.test(detail)
+  )) {
+    return {
+      code: "MYSQL_WRITE_PERMISSION_DENIED",
+      message: `MySQL 账号 ${target.mysql.user.trim() || "forwardx"} 缺少迁移所需的建表或写入权限。`,
+      detail,
+      suggestion: "请授予目标数据库的 CREATE、ALTER、INDEX、SELECT、INSERT、UPDATE、DELETE、DROP 权限后重新测试连接。",
+    };
+  }
+  if (target.type === "sqlite" && (
+    /readonly|read-only|unable to open database file/i.test(detail)
+    || nativeCode.startsWith("SQLITE_READONLY")
+  )) {
+    return {
+      code: "SQLITE_NOT_WRITABLE",
+      message: "SQLite 数据文件或所在目录不可写。",
+      detail,
+      suggestion: "请检查面板进程对 SQLite 文件及其所在目录的读写权限和剩余磁盘空间。",
+    };
+  }
+  return {
+    code: nativeCode || "DATABASE_SWITCH_FAILED",
+    message: detail,
+    detail,
+  };
+}
+
+class DatabaseSwitchValidationError extends Error {
+  readonly failure: DatabaseSwitchFailure;
+
+  constructor(failure: DatabaseSwitchFailure) {
+    super([
+      failure.message,
+      failure.suggestion ? `处理建议：${failure.suggestion}` : undefined,
+      failure.suggestionCommand ? `授权命令：${failure.suggestionCommand}` : undefined,
+    ].filter(Boolean).join("\n"));
+    this.name = "DatabaseSwitchValidationError";
+    this.failure = failure;
+  }
 }
 
 export function getDatabaseSwitchJob(id: string) {
@@ -153,8 +306,21 @@ function assertSwitchAllowed(target: DatabaseConfig) {
 
 export async function testDatabaseSwitchTarget(target: DatabaseConfig) {
   assertSwitchAllowed(target);
-  await testDatabaseConnection(target);
-  return { success: true };
+  let handle: TargetHandle | null = null;
+  try {
+    await testDatabaseConnection(target);
+    handle = await openTarget(target);
+    const checks = await verifyTargetWriteAccess(handle);
+    return {
+      success: true,
+      message: "目标数据库连接及迁移写入权限验证通过",
+      checks,
+    };
+  } catch (error) {
+    throw new DatabaseSwitchValidationError(describeDatabaseSwitchFailure(error, target));
+  } finally {
+    await closeTarget(handle);
+  }
 }
 
 function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptions {
@@ -278,6 +444,74 @@ async function targetExecute(session: TargetSession, sqlText: string, params: an
   return session.executor.prepare(sqlText).run(...normalized);
 }
 
+async function withTargetSession<T>(handle: TargetHandle, action: (session: TargetSession) => Promise<T>) {
+  if (handle.kind === "mysql") {
+    const connection = await handle.pool.getConnection();
+    try {
+      return await action({ kind: "mysql", executor: connection });
+    } finally {
+      connection.release();
+    }
+  }
+  if (handle.kind === "postgresql") {
+    const client = await handle.pool.connect();
+    try {
+      return await action({ kind: "postgresql", executor: client });
+    } finally {
+      client.release();
+    }
+  }
+  return action({ kind: "sqlite", executor: handle.sqlite });
+}
+
+async function verifyTargetWriteAccess(handle: TargetHandle) {
+  const suffix = crypto.randomBytes(6).toString("hex");
+  const table = `_forwardx_switch_probe_${suffix}`;
+  const index = `_forwardx_switch_probe_idx_${suffix}`;
+  await withTargetSession(handle, async (session) => {
+    const tableName = quote(session.kind, table);
+    let created = false;
+    let operationError: unknown;
+    try {
+      await targetExecute(
+        session,
+        `CREATE TABLE ${tableName} (${quote(session.kind, "id")} INTEGER PRIMARY KEY, ${quote(session.kind, "value")} TEXT NOT NULL)`,
+      );
+      created = true;
+      await targetExecute(
+        session,
+        `INSERT INTO ${tableName} (${quote(session.kind, "id")}, ${quote(session.kind, "value")}) VALUES (?, ?)`,
+        [1, "forwardx-write-check"],
+      );
+      await targetExecute(
+        session,
+        `UPDATE ${tableName} SET ${quote(session.kind, "value")} = ? WHERE ${quote(session.kind, "id")} = ?`,
+        ["forwardx-update-check", 1],
+      );
+      await targetExecute(
+        session,
+        `ALTER TABLE ${tableName} ADD COLUMN ${quote(session.kind, "checked")} INTEGER DEFAULT 0`,
+      );
+      await targetExecute(
+        session,
+        `CREATE INDEX ${quote(session.kind, index)} ON ${tableName} (${quote(session.kind, "value")})`,
+      );
+      await targetExecute(session, `DELETE FROM ${tableName} WHERE ${quote(session.kind, "id")} = ?`, [1]);
+    } catch (error) {
+      operationError = error;
+    }
+    if (created) {
+      try {
+        await targetExecute(session, `DROP TABLE ${tableName}`);
+      } catch (error) {
+        operationError ||= error;
+      }
+    }
+    if (operationError) throw operationError;
+  });
+  return ["连接", "建表", "写入", "修改表结构", "创建索引", "清理"];
+}
+
 function normalizeColumnValue(value: any, kind: DatabaseKind, column: ColumnDef) {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -383,32 +617,80 @@ async function copySnapshotIntoTarget(
   target: DatabaseConfig,
   job: DatabaseSwitchJob,
 ) {
-  setJob(job, { progress: 34, step: "正在导出当前面板数据" });
-  const snapshot = await exportMigrationSnapshot();
+  setJobStage(job, "export", {
+    progress: 34,
+    currentTable: undefined,
+    processedRows: 0,
+    totalRows: undefined,
+    processedTables: 0,
+    totalTables: MIGRATION_TABLES.length,
+  });
+  const snapshot = await exportMigrationSnapshot(undefined, {
+    onProgress: ({ table, tableIndex, tableTotal, status, rowCount }) => {
+      setJobStage(job, "export", {
+        progress: 34 + Math.floor((tableIndex / Math.max(1, tableTotal)) * 10),
+        currentTable: table,
+        processedTables: status === "complete" ? tableIndex : tableIndex - 1,
+        totalTables: tableTotal,
+        detail: status === "complete"
+          ? `已读取源表 ${table}（${tableIndex}/${tableTotal}，${rowCount || 0} 行）`
+          : `正在读取源表 ${table}（${tableIndex}/${tableTotal}）`,
+      });
+    },
+  });
   const summary = summarizeMigrationSnapshot(snapshot);
   const inserted: Record<string, number> = {};
-  const totalRows = Math.max(1, MIGRATION_TABLES.reduce((sum, table) => sum + (snapshot.tables?.[table]?.length || 0), 0));
+  const totalRows = MIGRATION_TABLES.reduce((sum, table) => sum + (snapshot.tables?.[table]?.length || 0), 0);
+  const populatedTables = MIGRATION_TABLES.filter((table) => (snapshot.tables?.[table]?.length || 0) > 0);
   let processed = 0;
+  let processedTables = 0;
 
-  setJob(job, { progress: 35, step: "正在写入目标数据库" });
+  setJobStage(job, "transfer", {
+    progress: 45,
+    detail: `准备写入 ${totalRows} 行数据，涉及 ${populatedTables.length} 张表`,
+    currentTable: undefined,
+    processedRows: 0,
+    totalRows,
+    processedTables: 0,
+    totalTables: populatedTables.length,
+  });
   for (const table of MIGRATION_TABLES) {
     const rows = snapshot.tables?.[table] || [];
     if (rows.length === 0) continue;
-    for (const row of rows) {
+    for (let tableRowIndex = 0; tableRowIndex < rows.length; tableRowIndex += 1) {
+      const row = rows[tableRowIndex];
       if (await insertTargetRow(session, table, row)) {
         inserted[table] = (inserted[table] || 0) + 1;
       }
       processed += 1;
-      if (processed === totalRows || processed % 10 === 0) {
-        setJob(job, {
-          progress: 35 + Math.floor((processed / totalRows) * 55),
-          step: `正在迁移 ${table}`,
+      if (processed === totalRows || processed % 10 === 0 || tableRowIndex === rows.length - 1) {
+        setJobStage(job, "transfer", {
+          progress: 45 + Math.floor((processed / Math.max(1, totalRows)) * 46),
+          detail: `正在写入 ${table}（本表 ${tableRowIndex + 1}/${rows.length}，总计 ${processed}/${totalRows} 行）`,
+          currentTable: table,
+          processedRows: processed,
+          totalRows,
+          processedTables,
+          totalTables: populatedTables.length,
         });
       }
     }
+    processedTables += 1;
+    setJobStage(job, "transfer", {
+      processedTables,
+      detail: `已完成 ${table}（${processedTables}/${populatedTables.length} 张表，总计 ${processed}/${totalRows} 行）`,
+    });
   }
 
-  setJob(job, { progress: 92, step: "正在同步数据库切换标记" });
+  setJobStage(job, "transfer", {
+    progress: 92,
+    detail: "数据写入完成，正在同步数据库切换标记和序列",
+    currentTable: "system_settings",
+    processedRows: processed,
+    totalRows,
+    processedTables,
+    totalTables: populatedTables.length,
+  });
   for (const [key, value] of Object.entries(databaseSettingsForTarget(target))) {
     await upsertTargetSetting(session, key, value);
   }
@@ -490,6 +772,7 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
   }
   assertSwitchAllowed(target);
 
+  const startedAt = Date.now();
   const job: DatabaseSwitchJob = {
     id: crypto.randomUUID(),
     status: "pending",
@@ -497,7 +780,8 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
     step: "等待数据库切换开始",
     sourceType: readDatabaseConfig()?.type ?? null,
     targetType: target.type,
-    startedAt: Date.now(),
+    startedAt,
+    updatedAt: startedAt,
   };
   jobs.set(job.id, job);
   activeJobId = job.id;
@@ -505,38 +789,42 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
   void (async () => {
     let handle: TargetHandle | null = null;
     try {
-      setJob(job, { status: "running", progress: 5, step: "正在测试目标数据库连接" });
+      setJobStage(job, "connection", { status: "running", progress: 5 });
       await testDatabaseConnection(target);
 
-      setJob(job, { progress: 18, step: "正在连接目标数据库" });
+      setJobStage(job, "connection", { progress: 10, detail: "连接和数据库版本检查通过，正在建立迁移会话" });
       handle = await openTarget(target);
 
-      setJob(job, { progress: 25, step: "正在初始化目标数据库结构" });
+      setJobStage(job, "permissions", { progress: 15 });
+      await verifyTargetWriteAccess(handle);
+
+      setJobStage(job, "schema", { progress: 25 });
       if (handle.kind === "mysql") await ensureDatabaseSchema(handle.pool);
       else if (handle.kind === "postgresql") await ensureDatabaseSchema(handle.pool);
       else await ensureDatabaseSchema(handle.sqlite);
 
       const result = await runTargetTransaction(handle, async (session) => {
-        setJob(job, { progress: 32, step: "正在检查目标数据库是否为空" });
+        setJobStage(job, "target-check", { progress: 32 });
         await assertTargetHasNoBusinessData(session);
         await targetExecute(session, `DELETE FROM ${quote(session.kind, "system_settings")}`);
         return copySnapshotIntoTarget(session, target, job);
       });
 
       if (handle.kind === "postgresql") {
-        setJob(job, { progress: 95, step: "正在优化 PostgreSQL 查询性能" });
+        setJobStage(job, "optimize", { progress: 95 });
         await maintainPostgresqlDatabase(handle.pool, { forceAnalyze: true }).catch((error) => {
           console.warn("[PostgreSQL] Database switch maintenance skipped:", error instanceof Error ? error.message : String(error));
         });
       }
 
-      setJob(job, { progress: 97, step: "正在写入数据库切换配置" });
+      setJobStage(job, "switch", { progress: 97 });
       const restartRequired = await finalizeDatabaseSwitch(target);
 
       setJob(job, {
         status: "success",
         progress: 100,
         step: restartRequired ? "迁移完成，正在重启面板" : "迁移完成，已切换数据库",
+        detail: restartRequired ? "目标数据库已就绪，面板进程正在重启" : "目标数据库已就绪并已启用新连接",
         message: restartRequired
           ? "目标数据库已迁移完成，面板将自动重启以加载新的数据库类型。"
           : "目标数据库已迁移完成，面板已切换到新的数据库连接。",
@@ -546,11 +834,22 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
         finishedAt: Date.now(),
       });
     } catch (error) {
+      const failedStep = job.step;
+      const failure = error instanceof DatabaseSwitchValidationError
+        ? error.failure
+        : describeDatabaseSwitchFailure(error, target);
+      console.warn(`[DatabaseSwitch] failed stage=${job.stage || "unknown"} code=${failure.code}: ${failure.detail}`);
       setJob(job, {
         status: "failed",
         progress: Math.max(job.progress, 1),
-        step: "数据库切换失败",
-        error: error instanceof Error ? error.message : String(error),
+        step: `${failedStep}失败`,
+        detail: failure.message,
+        error: failure.message,
+        errorCode: failure.code,
+        errorDetail: failure.detail,
+        suggestion: failure.suggestion,
+        suggestionCommand: failure.suggestionCommand,
+        failedStep,
         finishedAt: Date.now(),
       });
     } finally {

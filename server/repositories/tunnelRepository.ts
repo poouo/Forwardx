@@ -28,6 +28,7 @@ import {
   planExitGroupTunnelEndpoints,
   type ExitGroupTunnelMember,
 } from "../tunnelExitStrategy";
+import { resolveRuleProxyProtocolOptions } from "../gostProxyProtocol";
 
 // ==================== Tunnel Queries ====================
 
@@ -540,36 +541,66 @@ export async function resetForwardRulesByTunnel(tunnelId: number) {
   await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
 }
 
-export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, _data: Partial<InsertTunnel>) {
+export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, data: Partial<InsertTunnel>) {
   const db = await getDb();
-  if (!db) return;
-  const tunnel = await getTunnelById(tunnelId) as any;
-  if (!tunnel) return;
+  if (!db) return 0;
+  const storedTunnel = await getTunnelById(tunnelId) as any;
+  if (!storedTunnel) return 0;
+  const tunnel = { ...storedTunnel } as any;
+  for (const [key, value] of Object.entries(data || {})) {
+    if (value !== undefined) tunnel[key] = value;
+  }
   const mode = String(tunnel.mode || "").toLowerCase();
-  const proxySupported = mode === "forwardx" || ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"].includes(mode);
   const forwardx = mode === "forwardx";
   const rules = await db
-    .select({ id: forwardRules.id, protocol: forwardRules.protocol })
+    .select({
+      id: forwardRules.id,
+      protocol: forwardRules.protocol,
+      proxyProtocolReceive: forwardRules.proxyProtocolReceive,
+      proxyProtocolSend: forwardRules.proxyProtocolSend,
+      proxyProtocolExitReceive: forwardRules.proxyProtocolExitReceive,
+      proxyProtocolExitSend: forwardRules.proxyProtocolExitSend,
+      proxyProtocolVersion: forwardRules.proxyProtocolVersion,
+      tcpFastOpen: forwardRules.tcpFastOpen,
+      zeroCopy: forwardRules.zeroCopy,
+      udpOverTcp: forwardRules.udpOverTcp,
+      udpOverTcpPort: forwardRules.udpOverTcpPort,
+    })
     .from(forwardRules)
     .where(eq(forwardRules.tunnelId, tunnelId));
+  let changedCount = 0;
   for (const rule of rules as any[]) {
     const protocol = String(rule.protocol || "both");
     const tcpSupported = protocol === "tcp" || protocol === "both";
     const udpSupported = protocol === "udp" || protocol === "both";
-    await db.update(forwardRules).set({
-      proxyProtocolReceive: proxySupported && tcpSupported && !!tunnel.proxyProtocolReceive,
-      proxyProtocolSend: proxySupported && tcpSupported && !!tunnel.proxyProtocolSend,
-      proxyProtocolExitReceive: proxySupported && tcpSupported && !!tunnel.proxyProtocolExitReceive,
-      proxyProtocolExitSend: proxySupported && tcpSupported && !!tunnel.proxyProtocolExitSend,
-      proxyProtocolVersion: proxySupported && tcpSupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1,
+    const proxyOptions = resolveRuleProxyProtocolOptions(rule, tunnel);
+    const desired = {
+      ...proxyOptions,
       tcpFastOpen: forwardx && tcpSupported && !!tunnel.tcpFastOpen,
       zeroCopy: false,
       udpOverTcp: forwardx && udpSupported && !!tunnel.udpOverTcp,
       udpOverTcpPort: null,
+    };
+    const changed = (
+      !!rule.proxyProtocolReceive !== desired.proxyProtocolReceive
+      || !!rule.proxyProtocolSend !== desired.proxyProtocolSend
+      || !!rule.proxyProtocolExitReceive !== desired.proxyProtocolExitReceive
+      || !!rule.proxyProtocolExitSend !== desired.proxyProtocolExitSend
+      || Number(rule.proxyProtocolVersion || 1) !== desired.proxyProtocolVersion
+      || !!rule.tcpFastOpen !== desired.tcpFastOpen
+      || !!rule.zeroCopy !== desired.zeroCopy
+      || !!rule.udpOverTcp !== desired.udpOverTcp
+      || rule.udpOverTcpPort != null
+    );
+    if (!changed) continue;
+    await db.update(forwardRules).set({
+      ...desired,
       isRunning: false,
       updatedAt: nowDate(),
     } as any).where(eq(forwardRules.id, Number(rule.id)));
+    changedCount += 1;
   }
+  return changedCount;
 }
 
 export async function resetAgentRuntimeStateForHost(hostId: number) {

@@ -17,6 +17,7 @@ import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
+import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -1304,6 +1305,7 @@ export const hostsRouter = router({
         let pushed = 0;
         let skippedLatest = 0;
         let skippedOffline = 0;
+        let scheduled = 0;
         const missing: number[] = [];
         const uniqueHostIds = Array.from(new Set(input.hostIds.map((id) => Number(id)).filter((id) => id > 0)));
         const onlineHosts: any[] = [];
@@ -1322,17 +1324,36 @@ export const hostsRouter = router({
         if (onlineHosts.length > 0) {
           await assertAgentReleaseAssetsReady(targetVersion);
         }
-        for (const host of onlineHosts) {
+        const upgradeHosts = onlineHosts.filter((host) => {
           const currentVersion = normalizeVersion((host as any).agentVersion);
           if (currentVersion && isAgentVersionAtLeast(currentVersion, targetVersion)) {
             skippedLatest += 1;
-            continue;
+            return false;
           }
-          appendPanelLog("info", `[AgentUpgrade] request host=${host.id} name=${host.name} current=${currentVersion || "-"} target=${targetVersion} batch=true`);
-          await db.requestHostAgentUpgrade(host.id, targetVersion);
+          return true;
+        });
+        for (const rollout of planAgentUpgradeWaves(upgradeHosts)) {
+          const { host, wave, delayMs, requestedAt } = rollout;
+          const currentVersion = normalizeVersion((host as any).agentVersion);
+          appendPanelLog("info", `[AgentUpgrade] request host=${host.id} name=${host.name} current=${currentVersion || "-"} target=${targetVersion} batch=true wave=${wave + 1} delayMs=${delayMs}`);
+          await db.requestHostAgentUpgrade(host.id, targetVersion, null, requestedAt);
           requested += 1;
-          if (pushAgentUpgrade(host.id, targetVersion, panelUrl)) pushed += 1;
+          if (delayMs === 0) {
+            if (pushAgentUpgrade(host.id, targetVersion, panelUrl)) pushed += 1;
+          } else {
+            scheduled += 1;
+            const timer = setTimeout(() => {
+              void db.getHostById(Number(host.id)).then((currentHost: any) => {
+                if (!currentHost?.agentUpgradeRequested) return;
+                if (normalizeVersion(currentHost.agentUpgradeTargetVersion) !== targetVersion) return;
+                pushAgentUpgrade(host.id, targetVersion, panelUrl);
+              }).catch((error) => {
+                console.warn(`[AgentUpgrade] scheduled push failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+              });
+            }, delayMs);
+            timer.unref?.();
+          }
         }
-        return { success: true, requested, pushed, missing, skippedLatest, skippedOffline };
+        return { success: true, requested, pushed, scheduled, missing, skippedLatest, skippedOffline };
       }),
   });

@@ -1029,7 +1029,6 @@ export const tunnelsRouter = router({
           }
           Object.assign(data as any, normalizeTunnelRuntimeOptions(runtimeSource, nextModeForRuntime));
         }
-        const runtimeOptionsChanged = tunnelRuntimeKeys.some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         const modeChanged = (data as any).mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode);
         const forwardXVersionChanged = nextForwardXVersion !== normalizeForwardXVersion((tunnel as any).forwardxVersion);
         const nextUdpOverTcp = (data as any).udpOverTcp !== undefined ? !!(data as any).udpOverTcp : !!(tunnel as any).udpOverTcp;
@@ -1233,11 +1232,9 @@ export const tunnelsRouter = router({
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
-        if (runtimeOptionsChanged || modeChanged || forwardXVersionChanged) {
-          await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
-          if ((modeChanged || forwardXVersionChanged) && activeReferencedRuleCount > 0) {
-            appendPanelLog("info", `[Tunnel] transport changed tunnel=${id} mode=${nextModeForRuntime} forwardx=${nextForwardXVersion}; synced ${activeReferencedRuleCount} referenced rule(s)`);
-          }
+        const syncedRuntimeRuleCount = await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
+        if (syncedRuntimeRuleCount > 0 || ((modeChanged || forwardXVersionChanged) && activeReferencedRuleCount > 0)) {
+          appendPanelLog("info", `[Tunnel] runtime options synchronized tunnel=${id} mode=${nextModeForRuntime} forwardx=${nextForwardXVersion} rules=${syncedRuntimeRuleCount}`);
         }
         const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
         const hopIdsToWrite = hopHostIds || existingHopHostIds;

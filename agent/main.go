@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.169"
+var Version = "2.2.170"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -1789,6 +1789,10 @@ func main() {
 	}
 
 	startAgentLogMaintenance()
+	// Restore Agent-owned forwarding runtimes before the first panel request.
+	// The panel remains the authority for later reconciliation, but an Agent
+	// restart must not create an avoidable forwarding outage.
+	restorePersistedForwardXRuntimes(cfg)
 	_ = register(cfg)
 	resetDesiredActionRecordsAfterAgentUpgrade()
 	startDesiredActionRecordsFlusher()
@@ -3432,6 +3436,19 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		}
 		requestLocalRuntimeStateUpload()
 	}
+	if ok && !skippedStaleRemove && validActionPort(a.SourcePort) {
+		if a.Op == "apply" && a.Fxp == nil {
+			// A successful non-FXP replacement supersedes any old local FXP
+			// snapshot on the same protocol lane. Keep it while this apply is
+			// failing so a later Agent restart can still restore the last good
+			// runtime.
+			removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+		} else if a.Op == "remove" && a.Fxp == nil {
+			// Older panel actions may omit the FXP payload on remove. Remove the
+			// matching lane by port so such actions cannot resurrect stale FXP.
+			removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+		}
+	}
 
 	if ok && !skippedStaleRemove && a.Op == "remove" && shouldReportActionStatus(a) && actionRequiresKernelForwardConsistency(a) {
 		removeState(a.SourcePort)
@@ -4541,13 +4558,13 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		a.ForwardType,
 	)
 	if localForwardType == "forwardx" && localRuleID > 0 {
-		stopFXP(fxpSpec{Role: "entry", RuleID: localRuleID, ListenPort: a.SourcePort, Protocol: "both"})
+		stopFXPRuntime(fxpSpec{Role: "entry", RuleID: localRuleID, ListenPort: a.SourcePort, Protocol: "both"})
 	}
 	if a.Fxp != nil {
 		stopFXPByListenPort(a.SourcePort)
 	}
 	if localRuleID > 0 {
-		stopFailoverProxy(localRuleID, a.SourcePort)
+		stopFailoverProxyRuntime(localRuleID, a.SourcePort)
 	}
 	if localForwardType == "nftables" && localRuleID > 0 {
 		_ = runShell(nftRuleCleanupCmd(localRuleID))
@@ -4595,7 +4612,7 @@ func actionUsesManagedListener(a action) bool {
 
 func cleanupUnknownManagedListener(port string, listenPort int, forwardType string, protocol string) {
 	logf("runtime cleanup unknown local state port=%s protocol=%s newForwardType=%s", port, normalizeRuntimeProtocol(protocol), forwardType)
-	stopConflictingFXP(fxpSpec{ListenPort: listenPort, UDPListenPort: listenPort, Protocol: protocol})
+	stopConflictingFXPRuntime(fxpSpec{ListenPort: listenPort, UDPListenPort: listenPort, Protocol: protocol})
 	for _, name := range managedListenerServiceNamesForProtocol(listenPort, protocol) {
 		cleanupManagedService(name)
 		if strings.HasPrefix(name, "forwardx-realm-") {
@@ -6621,20 +6638,37 @@ func fxpSpecsListenConflict(left fxpSpec, right fxpSpec) bool {
 }
 
 func stopConflictingFXP(spec fxpSpec) {
+	for _, conflicting := range stopConflictingFXPRuntime(spec) {
+		removePersistedFXPSpec(conflicting)
+	}
+}
+
+// stopConflictingFXPRuntime removes listeners that would block a replacement,
+// but leaves their last-known-good snapshots intact until the replacement has
+// passed its startup check. A failed apply must remain recoverable after an
+// Agent restart.
+func stopConflictingFXPRuntime(spec fxpSpec) []fxpSpec {
 	spec = normalizeFXPSpec(spec)
 	desiredID := fxpServerID(spec)
-	conflictingSpecs := []fxpSpec{}
+	conflictingByID := map[string]fxpSpec{}
+	addConflict := func(candidate fxpSpec) {
+		candidate = normalizeFXPSpec(candidate)
+		if candidate.Role == "" || candidate.TunnelID <= 0 || candidate.ListenPort <= 0 {
+			return
+		}
+		if fxpServerID(candidate) == desiredID || !fxpSpecsListenConflict(candidate, spec) {
+			return
+		}
+		conflictingByID[fxpServerID(candidate)] = candidate
+	}
 	fxpMu.Lock()
 	for id, process := range fxpServers {
 		if id == desiredID || process == nil || !fxpSpecsListenConflict(process.spec, spec) {
 			continue
 		}
-		conflictingSpecs = append(conflictingSpecs, process.spec)
+		addConflict(process.spec)
 	}
 	fxpMu.Unlock()
-	for _, conflicting := range conflictingSpecs {
-		stopFXP(conflicting)
-	}
 
 	paths, _ := filepath.Glob("/run/forwardx-agent/fxp-*.json")
 	for _, path := range paths {
@@ -6643,12 +6677,27 @@ func stopConflictingFXP(spec fxpSpec) {
 			continue
 		}
 		var existing fxpSpec
-		if json.Unmarshal(raw, &existing) != nil || !fxpSpecsListenConflict(existing, spec) {
+		if json.Unmarshal(raw, &existing) != nil {
 			continue
 		}
+		existing = normalizeFXPSpec(existing)
+		if fxpServerID(existing) == desiredID || !fxpSpecsListenConflict(existing, spec) {
+			continue
+		}
+		addConflict(existing)
 		killFXPByConfigPath(path)
 		_ = os.Remove(path)
 	}
+	for _, existing := range loadPersistedFXPSpecs() {
+		addConflict(existing)
+	}
+
+	conflictingSpecs := make([]fxpSpec, 0, len(conflictingByID))
+	for _, conflicting := range conflictingByID {
+		conflictingSpecs = append(conflictingSpecs, conflicting)
+		stopFXPRuntime(conflicting)
+	}
+	return conflictingSpecs
 }
 
 func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
@@ -6680,6 +6729,9 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	existing := fxpServers[id]
 	if existing != nil && existing.signature == signature && fxpProcessActive(existing) {
 		fxpMu.Unlock()
+		if err := persistFXPSpec(originalSpec); err != nil {
+			logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+		}
 		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
 		return true
 	}
@@ -6688,10 +6740,23 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	fxpMu.Unlock()
 	if adoptExistingFXP(spec, signature, configPath) {
+		conflictingSpecs := stopConflictingFXPRuntime(spec)
+		persisted := true
+		if err := persistFXPSpec(originalSpec); err != nil {
+			persisted = false
+			logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+		}
+		if persisted {
+			for _, conflicting := range conflictingSpecs {
+				removePersistedFXPSpec(conflicting)
+			}
+		}
 		return true
 	}
-	stopFXP(spec)
-	stopConflictingFXP(spec)
+	// The persistent snapshot belongs to the desired runtime and must survive
+	// this in-process replacement. Explicit remove paths call stopFXP instead.
+	stopFXPRuntime(spec)
+	conflictingSpecs := stopConflictingFXPRuntime(spec)
 	// When mimic is enabled, UDPListenPort (mimicPort) differs from ListenPort (TCP port).
 	// fxpPortCleanupCmds matches by config filename which always ends in ListenPort, so
 	// using it with mimicPort would never match. Kill the UDP port occupant directly via ss.
@@ -6774,7 +6839,6 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp write config failed: %v", err)
 		return false
 	}
-
 	cmd := exec.Command(runtimePath, "-config", configPath)
 	cmd.Stdout = fxpLogWriter{message: actionMessage, spec: originalSpec}
 	cmd.Stderr = fxpLogWriter{message: actionMessage, spec: originalSpec}
@@ -6805,6 +6869,17 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	case <-time.After(300 * time.Millisecond):
 	}
 
+	persisted := true
+	if err := persistFXPSpec(originalSpec); err != nil {
+		persisted = false
+		logf("fxp persistent snapshot write failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+	}
+	if persisted {
+		for _, conflicting := range conflictingSpecs {
+			removePersistedFXPSpec(conflicting)
+		}
+	}
+
 	fxpMu.Lock()
 	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: originalSpec}
 	fxpMu.Unlock()
@@ -6826,6 +6901,11 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 }
 
 func stopFXP(spec fxpSpec) {
+	stopFXPRuntime(spec)
+	removePersistedFXPSpec(spec)
+}
+
+func stopFXPRuntime(spec fxpSpec) {
 	spec = normalizeFXPSpec(spec)
 	id := fxpServerID(spec)
 	fxpMu.Lock()
@@ -6875,7 +6955,7 @@ func stopFXPByTunnelTransport(tunnelID int, transportVersion string) {
 	}
 	fxpMu.Unlock()
 	for _, spec := range specs {
-		stopFXP(spec)
+		stopFXPRuntime(spec)
 	}
 }
 
@@ -6887,24 +6967,17 @@ func stopFXPByPort(tunnelID int, listenPort int) {
 	suffix := ":" + strconv.Itoa(listenPort)
 	var specs []fxpSpec
 	fxpMu.Lock()
-	for id := range fxpServers {
-		if strings.Contains(id, prefix) && strings.HasSuffix(id, suffix) {
-			parts := strings.Split(id, ":")
-			if len(parts) != 4 {
-				continue
-			}
-			ruleID, _ := strconv.Atoi(parts[2])
-			specs = append(specs, fxpSpec{
-				Role:       parts[0],
-				TunnelID:   tunnelID,
-				RuleID:     ruleID,
-				ListenPort: listenPort,
-			})
+	for id, process := range fxpServers {
+		if !strings.Contains(id, prefix) || !strings.HasSuffix(id, suffix) || process == nil {
+			continue
 		}
+		// Keep the complete original spec so a V2 process releases its
+		// WireGuard reference correctly when it exits.
+		specs = append(specs, process.spec)
 	}
 	fxpMu.Unlock()
 	for _, spec := range specs {
-		stopFXP(spec)
+		stopFXPRuntime(spec)
 	}
 }
 
@@ -6915,26 +6988,17 @@ func stopFXPByListenPort(listenPort int) {
 	suffix := ":" + strconv.Itoa(listenPort)
 	var specs []fxpSpec
 	fxpMu.Lock()
-	for id := range fxpServers {
-		if !strings.HasSuffix(id, suffix) {
+	for id, process := range fxpServers {
+		if !strings.HasSuffix(id, suffix) || process == nil {
 			continue
 		}
-		parts := strings.Split(id, ":")
-		if len(parts) != 4 {
-			continue
-		}
-		tunnelID, _ := strconv.Atoi(parts[1])
-		ruleID, _ := strconv.Atoi(parts[2])
-		specs = append(specs, fxpSpec{
-			Role:       parts[0],
-			TunnelID:   tunnelID,
-			RuleID:     ruleID,
-			ListenPort: listenPort,
-		})
+		// Keep the complete original spec so a V2 process releases its
+		// WireGuard reference correctly when it exits.
+		specs = append(specs, process.spec)
 	}
 	fxpMu.Unlock()
 	for _, spec := range specs {
-		stopFXP(spec)
+		stopFXPRuntime(spec)
 	}
 }
 
@@ -7436,6 +7500,7 @@ func normalizeFailoverSpec(spec failoverSpec) failoverSpec {
 func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMessage *actionMessage) bool {
 	spec = normalizeFailoverSpec(spec)
 	if !spec.Enabled || spec.ListenPort <= 0 || len(spec.Targets) < 2 {
+		removePersistedFailoverSpec(ruleID, sourcePort)
 		return true
 	}
 	id := failoverID(ruleID, sourcePort)
@@ -7444,10 +7509,16 @@ func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMes
 	existing := failoverProxies[id]
 	if existing != nil && existing.signature == signature {
 		failoverMu.Unlock()
+		if err := persistFailoverSpec(ruleID, sourcePort, spec); err != nil {
+			logf("failover persistent snapshot write failed rule=%d port=%d: %v", ruleID, sourcePort, err)
+		}
 		return true
 	}
 	failoverMu.Unlock()
-	stopFailoverProxy(ruleID, sourcePort)
+	// Replacing a proxy must keep the previous snapshot until the new listener
+	// has been created successfully. Explicit remove paths call the deleting
+	// stopFailoverProxy wrapper below.
+	stopFailoverProxyRuntime(ruleID, sourcePort)
 
 	addr := net.JoinHostPort(spec.BindAddress, strconv.Itoa(spec.ListenPort))
 	ln, err := net.Listen("tcp", addr)
@@ -7480,6 +7551,9 @@ func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMes
 	failoverMu.Lock()
 	failoverProxies[id] = p
 	failoverMu.Unlock()
+	if err := persistFailoverSpec(ruleID, sourcePort, spec); err != nil {
+		logf("failover persistent snapshot write failed rule=%d port=%d: %v", ruleID, sourcePort, err)
+	}
 	go p.healthLoop()
 	go p.acceptLoop()
 	logf("failover proxy started rule=%d source=%d listen=%s strategy=%s targets=%d", ruleID, sourcePort, addr, spec.Strategy, len(spec.Targets))
@@ -7487,6 +7561,11 @@ func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMes
 }
 
 func stopFailoverProxy(ruleID int, sourcePort int) {
+	stopFailoverProxyRuntime(ruleID, sourcePort)
+	removePersistedFailoverSpec(ruleID, sourcePort)
+}
+
+func stopFailoverProxyRuntime(ruleID int, sourcePort int) {
 	if ruleID <= 0 || sourcePort <= 0 {
 		return
 	}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
+import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan, resolveRuleProxyProtocolOptions } from "./gostProxyProtocol";
 
 test("serializes GOST PROXY Protocol versions as metadata strings", () => {
   assert.deepEqual(gostProxyProtocolMetadata(1), { proxyProtocol: "1" });
@@ -71,5 +71,64 @@ test("preserves the entry source across the local exit bridge", () => {
     entryHandler: { proxyProtocol: "1" },
     exitBridgeReceive: { proxyProtocol: "1" },
     exitBridgeSend: { proxyProtocol: "1" },
+  });
+});
+
+test("uses tunnel PROXY Protocol settings over a stale tunnel-rule snapshot", () => {
+  const rule = {
+    id: 4,
+    tunnelId: 5,
+    protocol: "both",
+    proxyProtocolReceive: false,
+    proxyProtocolSend: false,
+    proxyProtocolExitReceive: false,
+    proxyProtocolExitSend: false,
+    proxyProtocolVersion: 1,
+  };
+  const tunnel = {
+    id: 5,
+    mode: "tls",
+    proxyProtocolReceive: false,
+    proxyProtocolSend: true,
+    proxyProtocolExitReceive: true,
+    proxyProtocolExitSend: true,
+    proxyProtocolVersion: 2,
+  };
+
+  assert.deepEqual(resolveRuleProxyProtocolOptions(rule, tunnel), {
+    proxyProtocolReceive: false,
+    proxyProtocolSend: true,
+    proxyProtocolExitReceive: true,
+    proxyProtocolExitSend: true,
+    proxyProtocolVersion: 2,
+  });
+});
+
+test("keeps direct rule settings and disables PROXY Protocol for unsupported tunnel paths", () => {
+  assert.deepEqual(resolveRuleProxyProtocolOptions({
+    protocol: "tcp",
+    proxyProtocolReceive: true,
+    proxyProtocolSend: true,
+    proxyProtocolVersion: 2,
+  }), {
+    proxyProtocolReceive: true,
+    proxyProtocolSend: true,
+    proxyProtocolExitReceive: false,
+    proxyProtocolExitSend: false,
+    proxyProtocolVersion: 2,
+  });
+
+  assert.deepEqual(resolveRuleProxyProtocolOptions({ protocol: "udp", tunnelId: 8 }, {
+    id: 8,
+    mode: "tls",
+    proxyProtocolSend: true,
+    proxyProtocolExitSend: true,
+    proxyProtocolVersion: 2,
+  }), {
+    proxyProtocolReceive: false,
+    proxyProtocolSend: false,
+    proxyProtocolExitReceive: false,
+    proxyProtocolExitSend: false,
+    proxyProtocolVersion: 1,
   });
 });

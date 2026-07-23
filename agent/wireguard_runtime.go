@@ -347,6 +347,9 @@ func applyWireGuardRuntime(spec wireGuardSpec) error {
 	if existing != nil {
 		if err := existing.update(normalized); err == nil {
 			wireGuardRuntimesMu.Unlock()
+			if persistErr := persistWireGuardSpec(normalized); persistErr != nil {
+				logf("wireguard persistent snapshot write failed tunnel=%d: %v", normalized.TunnelID, persistErr)
+			}
 			return nil
 		} else if !strings.Contains(err.Error(), "identity changed") {
 			wireGuardRuntimesMu.Unlock()
@@ -367,14 +370,32 @@ func applyWireGuardRuntime(spec wireGuardSpec) error {
 	if current := wireGuardRuntimes[normalized.TunnelID]; current != nil {
 		wireGuardRuntimesMu.Unlock()
 		created.close()
-		return current.update(normalized)
+		err := current.update(normalized)
+		if err == nil {
+			if persistErr := persistWireGuardSpec(normalized); persistErr != nil {
+				logf("wireguard persistent snapshot write failed tunnel=%d: %v", normalized.TunnelID, persistErr)
+			}
+		}
+		return err
 	}
 	wireGuardRuntimes[normalized.TunnelID] = created
 	wireGuardRuntimesMu.Unlock()
+	if persistErr := persistWireGuardSpec(normalized); persistErr != nil {
+		logf("wireguard persistent snapshot write failed tunnel=%d: %v", normalized.TunnelID, persistErr)
+	}
 	return nil
 }
 
 func stopWireGuardRuntime(tunnelID int) {
+	stopWireGuardRuntimeOnly(tunnelID)
+	removePersistedWireGuardSpec(tunnelID)
+}
+
+// stopWireGuardRuntimeOnly tears down sockets and the in-memory runtime while
+// preserving the configuration needed to restore it after an Agent restart.
+// It is used by reference-counted idle cleanup and transport replacement;
+// explicit panel remove actions use stopWireGuardRuntime above.
+func stopWireGuardRuntimeOnly(tunnelID int) {
 	if tunnelID <= 0 {
 		return
 	}
@@ -456,7 +477,7 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 			unused := len(runtime.refs) == 0 && !runtime.closed
 			runtime.mu.RUnlock()
 			if unused {
-				stopWireGuardRuntime(tunnelID)
+				stopWireGuardRuntimeOnly(tunnelID)
 			}
 		})
 	}

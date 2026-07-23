@@ -39,7 +39,7 @@ import {
   tunnelRuleRuntimeForwardType,
   tunnelRuntimeFamily,
 } from "./tunnelRuntimePlan";
-import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan } from "./gostProxyProtocol";
+import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan, resolveRuleProxyProtocolOptions } from "./gostProxyProtocol";
 import { planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
 import {
   buildCountingChainCmds,
@@ -353,12 +353,15 @@ function buildAgentStateResponseSections(sections: Record<AgentStateSectionName,
   return { payload, signatures };
 }
 
-export function invalidateAgentDesiredStateCache(hostId: number) {
+export function invalidateAgentDesiredStateCache(
+  hostId: number,
+  options: { preserveLocalRuntimeState?: boolean } = {},
+) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
   agentActionBatchCache.delete(id);
   agentDesiredStateSendCache.delete(id);
-  agentLocalRuntimeStateCache.delete(id);
+  if (!options.preserveLocalRuntimeState) agentLocalRuntimeStateCache.delete(id);
   for (const key of Array.from(agentRuntimeSyncActionCache.keys())) {
     if (key.startsWith(`${id}:`)) agentRuntimeSyncActionCache.delete(key);
   }
@@ -389,18 +392,30 @@ function heartbeatIndicatesAgentReboot(previousHost: any, uptime: unknown, bootI
   return bootedAtMs > lastHeartbeatMs + AGENT_REBOOT_DETECTION_GRACE_MS;
 }
 
-async function resetAgentRuntimeStateForRecovery(hostId: number, reason: string) {
+async function resetAgentRuntimeStateForRecovery(
+  hostId: number,
+  reason: string,
+  options: { preserveReportedRuntime?: boolean } = {},
+) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
   const now = Date.now();
   const last = agentRuntimeRecoveryByHost.get(id) || 0;
   if (now - last < AGENT_RUNTIME_RECOVERY_COOLDOWN_MS) return;
   agentRuntimeRecoveryByHost.set(id, now);
-  await db.resetAgentRuntimeStateForHost(id);
-  clearTunnelRuntimeStatusForHost(id);
-  invalidateAgentDesiredStateCache(id);
+  if (!options.preserveReportedRuntime) {
+    await db.resetAgentRuntimeStateForHost(id);
+    clearTunnelRuntimeStatusForHost(id);
+  }
+  // resolveAgentLocalRuntimeState() runs before restart detection. Preserve the
+  // snapshot accepted in this heartbeat or the next request would need to
+  // upload it again before reconciliation can continue.
+  invalidateAgentDesiredStateCache(id, { preserveLocalRuntimeState: true });
   await refreshAgentsAffectedByHostAddress(id, reason);
-  appendPanelLog("info", `[AgentRecovery] host=${id} reason=${reason} runtime state marked for reapply`);
+  appendPanelLog(
+    "info",
+    `[AgentRecovery] host=${id} reason=${reason} runtime state ${options.preserveReportedRuntime ? "reconciling from local snapshot" : "marked for reapply"}`,
+  );
 }
 
 
@@ -831,7 +846,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           success: true,
           actions: [],
           selfTests: [],
-          nextInterval: 5,
+          nextInterval: 2,
+          requestLocalState: !!normalizeRuntimeStateSignature(req.body?.localStateSignature),
           compactReports: true,
           reconciliationCoalesced: true,
           panelMigration,
@@ -1030,14 +1046,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     if (recoveryTriggered) {
       const reason = recoveredFromOffline ? "agent-reconnected" : rebootDetected ? "agent-reboot-detected" : "agent-process-restarted";
-      await resetAgentRuntimeStateForRecovery(host.id, reason);
+      await resetAgentRuntimeStateForRecovery(host.id, reason, {
+        preserveReportedRuntime: !!localRuntimeState.state && !localRuntimeState.requestLocalState,
+      });
     }
     if (upgradedFirewallCounterAgent) {
-      await resetAgentRuntimeStateForRecovery(host.id, "agent-firewall-counter-upgrade");
+      await resetAgentRuntimeStateForRecovery(host.id, "agent-firewall-counter-upgrade", {
+        preserveReportedRuntime: !!localRuntimeState.state && !localRuntimeState.requestLocalState,
+      });
       appendPanelLog("info", `[AgentUpgrade] host=${host.id} agent=${nextAgentVersion} runtime state marked for firewall counter refresh`);
     }
     if (upgradedProtocolGuardBackendAgent) {
-      await resetAgentRuntimeStateForRecovery(host.id, "agent-protocol-guard-backend-upgrade");
+      await resetAgentRuntimeStateForRecovery(host.id, "agent-protocol-guard-backend-upgrade", {
+        preserveReportedRuntime: !!localRuntimeState.state && !localRuntimeState.requestLocalState,
+      });
       appendPanelLog("info", `[AgentUpgrade] host=${host.id} agent=${nextAgentVersion} runtime state marked for protocol guard backend refresh`);
     }
     if (dnsChangedReports.length > 0) {
@@ -1822,14 +1844,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : undefined
     );
     const tunnelDialerMetadata = (mode: string) => tunnelProtocolMetadata(mode);
+    const proxyProtocolOptions = (rule: any) => resolveRuleProxyProtocolOptions(
+      rule,
+      Number(rule?.tunnelId || 0) > 0 ? tunnelById.get(Number(rule.tunnelId)) : null,
+    );
     const proxyProtocolEnabled = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => {
-      if (!isForwardRuleProtocolTcpEnabled(rule?.protocol)) return false;
-      if (direction === "receive" || direction === "entryReceive") return !!(rule as any).proxyProtocolReceive;
-      if (direction === "send" || direction === "entrySend") return !!(rule as any).proxyProtocolSend;
-      if (direction === "exitReceive") return !!(rule as any).proxyProtocolExitReceive;
-      return !!(rule as any).proxyProtocolExitSend;
+      const options = proxyProtocolOptions(rule);
+      if (direction === "receive" || direction === "entryReceive") return options.proxyProtocolReceive;
+      if (direction === "send" || direction === "entrySend") return options.proxyProtocolSend;
+      if (direction === "exitReceive") return options.proxyProtocolExitReceive;
+      return options.proxyProtocolExitSend;
     };
-    const proxyProtocolVersion = (rule: any) => Number((rule as any)?.proxyProtocolVersion) === 2 ? 2 : 1;
+    const proxyProtocolVersion = (rule: any) => proxyProtocolOptions(rule).proxyProtocolVersion;
     const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => (
       proxyProtocolEnabled(rule, direction) ? gostProxyProtocolMetadata(proxyProtocolVersion(rule)) : undefined
     );
@@ -4961,7 +4987,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && requestedTargetVersion === "9999.0.0"
       && !agentMigrationTargetPanelUrl;
     if (staleMigrationUpgrade) await db.clearHostAgentUpgradeRequest(host.id);
-    const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted && !staleMigrationUpgrade ? {
+    const agentUpgradeRequestedAt = heartbeatTimestampMs((host as any).agentUpgradeRequestedAt);
+    const agentUpgradeDue = agentUpgradeRequestedAt <= 0 || agentUpgradeRequestedAt <= responseIssuedAt;
+    const agentUpgrade = (host as any).agentUpgradeRequested && agentUpgradeDue && !agentUpgradeCompleted && !staleMigrationUpgrade ? {
       targetVersion: requestedTargetVersion,
       panelUrl: agentMigrationTargetPanelUrl || panelUrl,
       releaseVersion: (host as any).agentUpgradeReleaseVersion || null,

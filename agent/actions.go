@@ -887,22 +887,21 @@ func resetDesiredActionRecordsAfterAgentUpgrade() {
 	raw, err := os.ReadFile(desiredStateVersionPath)
 	previous := strings.TrimSpace(string(raw))
 	if previous == "" {
-		if _, statErr := os.Stat(desiredStateRecordPath); statErr == nil {
-			_ = os.Remove(desiredStateRecordPath)
-			logf("agent desired state version initialized; retry records cleared")
-		}
-		// 同步清空内存缓存，避免 flusher 把旧数据重写回去。
-		desiredActionRecordsMem = map[string]desiredActionRecord{}
-		desiredActionRecordsLoaded = true
-		desiredActionRecordsRevision++
-		desiredActionRecordsDirty.Store(false)
+		logf("agent desired state version initialized; preserving local retry records")
 	} else if previous != Version {
-		_ = os.Remove(desiredStateRecordPath)
-		logf("agent version changed from %s to %s; desired state retry records cleared", previous, Version)
-		desiredActionRecordsMem = map[string]desiredActionRecord{}
-		desiredActionRecordsLoaded = true
-		desiredActionRecordsRevision++
-		desiredActionRecordsDirty.Store(false)
+		ensureDesiredActionRecordsLoadedLocked()
+		removedFailures := 0
+		for key, record := range desiredActionRecordsMem {
+			if record.Success {
+				continue
+			}
+			delete(desiredActionRecordsMem, key)
+			removedFailures++
+		}
+		if removedFailures > 0 {
+			markDesiredActionRecordsDirtyLocked()
+		}
+		logf("agent version changed from %s to %s; preserved successful desired state records and released failed retries=%d", previous, Version, removedFailures)
 	}
 	if err != nil || previous != Version {
 		_ = os.WriteFile(desiredStateVersionPath, []byte(Version+"\n"), 0644)

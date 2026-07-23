@@ -138,7 +138,11 @@ test("essential migration skips rebuildable history while SQLite direct migratio
 
     try {
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: sourcePath } });
-      const essential = await migration.exportMigrationSnapshot("https://old.example.com", { dataScope: "essential" });
+      const exportProgress = [];
+      const essential = await migration.exportMigrationSnapshot("https://old.example.com", {
+        dataScope: "essential",
+        onProgress: (progress) => exportProgress.push(progress),
+      });
       assert.equal(essential.dataScope, "essential");
       assert.equal(essential.tables.users.length, 1);
       assert.equal(essential.tables.host_traffic_counters.length, 1);
@@ -146,6 +150,9 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       assert.equal(essential.tables.tcping_stats, undefined);
       assert.equal(essential.tables.traffic_stat_buckets, undefined);
       assert.equal(essential.tables.config_audit_events, undefined);
+      assert.equal(exportProgress[0].status, "reading");
+      assert.equal(exportProgress.at(-1).status, "complete");
+      assert.equal(exportProgress.at(-1).tableIndex, exportProgress.at(-1).tableTotal);
       const full = await migration.exportMigrationSnapshot("https://old.example.com", { dataScope: "full" });
       assert.equal(full.tables.traffic_stat_buckets.length, 1);
       await runtime.closeDatabase();
