@@ -20,17 +20,20 @@ import {
   tunnels,
   userHostPermissions,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, refreshDatabasePoolSettings } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows, refreshDatabasePoolSettings, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
 import { markOrphanedForwardGroupTemplatesPendingDelete } from "./forwardRuleRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
+import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
+import { invalidateAgentAuthTokenCandidates } from "./tokenRepository";
+import { getSetting, setSetting } from "./settingsRepository";
 
 // ==================== Host Queries ====================
 
-export const HOST_ONLINE_TTL_MS = 150 * 1000;
+export { HOST_ONLINE_TTL_MS };
 
 export function isFreshHostHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;
@@ -56,10 +59,77 @@ export async function getHosts(userId?: number) {
 export type HostListQuery = PageRequest & {
   ownerUserId?: number;
   allowedHostIds?: number[];
+  sortUserId?: number;
   search?: string;
   groupId?: number | null;
   orderByGroups?: boolean;
+  preferredHostIds?: number[];
 };
+
+const USER_HOST_DISPLAY_ORDER_PREFIX = "ui.hostOrder.user.";
+
+function userHostDisplayOrderKey(userId: number) {
+  return `${USER_HOST_DISPLAY_ORDER_PREFIX}${Math.max(0, Math.floor(Number(userId) || 0))}.v1`;
+}
+
+export function parseUserHostDisplayOrder(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return [] as number[];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [] as number[];
+    return normalizeIds(parsed);
+  } catch {
+    return [] as number[];
+  }
+}
+
+async function getUserHostDisplayOrder(userId: number | undefined) {
+  const normalizedUserId = Math.max(0, Math.floor(Number(userId) || 0));
+  if (!normalizedUserId) return [] as number[];
+  return parseUserHostDisplayOrder(await getSetting(userHostDisplayOrderKey(normalizedUserId)));
+}
+
+function compareHostDefaultOrder(a: any, b: any) {
+  const sortA = Math.max(0, Math.floor(Number(a?.sortOrder) || 0));
+  const sortB = Math.max(0, Math.floor(Number(b?.sortOrder) || 0));
+  if (sortA !== sortB) return sortA - sortB;
+  const createdAtA = new Date(a?.createdAt || 0).getTime();
+  const createdAtB = new Date(b?.createdAt || 0).getTime();
+  if (Number.isFinite(createdAtA) && Number.isFinite(createdAtB) && createdAtA !== createdAtB) return createdAtB - createdAtA;
+  return Number(b?.id || 0) - Number(a?.id || 0);
+}
+
+export function orderHostsForUser<T extends { id?: unknown; sortOrder?: unknown; createdAt?: unknown }>(hostRows: T[], preferredHostIds: number[]) {
+  const rank = new Map(normalizeIds(preferredHostIds).map((hostId, index) => [hostId, index]));
+  return [...hostRows].sort((a, b) => {
+    const rankA = rank.get(Number(a?.id));
+    const rankB = rank.get(Number(b?.id));
+    if (rankA !== undefined || rankB !== undefined) {
+      if (rankA === undefined) return 1;
+      if (rankB === undefined) return -1;
+      if (rankA !== rankB) return rankA - rankB;
+    }
+    return compareHostDefaultOrder(a, b);
+  });
+}
+
+function reorderHostWindow(currentIds: number[], orderedIds: number[], startIndex: number) {
+  const requested = new Set(orderedIds);
+  const remaining = currentIds.filter((hostId) => !requested.has(hostId));
+  const insertionIndex = Math.min(remaining.length, Math.max(0, Math.floor(Number(startIndex) || 0)));
+  return [
+    ...remaining.slice(0, insertionIndex),
+    ...orderedIds,
+    ...remaining.slice(insertionIndex),
+  ];
+}
+
+function preferredHostOrderExpression(preferredHostIds: number[]) {
+  const ids = normalizeIds(preferredHostIds);
+  if (ids.length === 0) return null;
+  const cases = ids.map((hostId, index) => sql`WHEN ${hostId} THEN ${index}`);
+  return sql<number>`CASE ${hosts.id} ${sql.join(cases, sql` `)} ELSE ${ids.length} END`;
+}
 
 function normalizeIds(values: unknown[] | undefined) {
   return Array.from(new Set((values || [])
@@ -157,12 +227,18 @@ function hostListOrder(input: Omit<HostListQuery, keyof PageRequest>) {
       desc(hosts.id),
     ];
   }
+  const preferredOrder = preferredHostOrderExpression(input.preferredHostIds || []);
+  if (preferredOrder) {
+    return [asc(preferredOrder), asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id)];
+  }
   return [asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id)];
 }
 
 export async function getHostsPage(input: HostListQuery) {
   const db = await getDb();
   if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, onlineItems: 0, versionCounts: [] };
+  const preferredHostIds = await getUserHostDisplayOrder(input.sortUserId);
+  const orderedInput = { ...input, preferredHostIds };
   const condition = hostListCondition(input);
   const cutoffSeconds = Math.floor((Date.now() - HOST_ONLINE_TTL_MS) / 1000);
   const onlineExpression = sql<number>`CASE
@@ -192,8 +268,8 @@ export async function getHostsPage(input: HostListQuery) {
   const window = pageWindowForTotal(input, totalItems);
   const listQuery = db.select().from(hosts);
   const pageRows = condition
-    ? await listQuery.where(condition).orderBy(...hostListOrder(input)).limit(window.pageSize).offset(window.offset)
-    : await listQuery.orderBy(...hostListOrder(input)).limit(window.pageSize).offset(window.offset);
+    ? await listQuery.where(condition).orderBy(...hostListOrder(orderedInput)).limit(window.pageSize).offset(window.offset)
+    : await listQuery.orderBy(...hostListOrder(orderedInput)).limit(window.pageSize).offset(window.offset);
   const versionQuery = db
     .select({
       agentVersion: hosts.agentVersion,
@@ -292,10 +368,11 @@ export async function getHostUpgradeCandidates(input: Omit<HostListQuery, keyof 
   return rows.map(withComputedOnline);
 }
 
-export async function getHostOptions(ownerUserId?: number, allowedHostIds?: number[]) {
+export async function getHostOptions(ownerUserId?: number, allowedHostIds?: number[], sortUserId?: number) {
   const db = await getDb();
   if (!db) return [];
   const condition = hostListCondition({ ownerUserId, allowedHostIds });
+  const preferredHostIds = await getUserHostDisplayOrder(sortUserId);
   const query = db
     .select({
       id: hosts.id,
@@ -328,9 +405,13 @@ export async function getHostOptions(ownerUserId?: number, allowedHostIds?: numb
     })
     .from(hosts);
   const rows = condition
-    ? await query.where(condition).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id))
-    : await query.orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
+    ? await query.where(condition).orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }))
+    : await query.orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }));
   return rows.map(withComputedOnline);
+}
+
+export async function orderVisibleHostsForUser<T extends { id?: unknown; sortOrder?: unknown; createdAt?: unknown }>(hostRows: T[], userId: number) {
+  return orderHostsForUser(hostRows, await getUserHostDisplayOrder(userId));
 }
 
 export async function getHostById(id: number) {
@@ -344,6 +425,7 @@ export async function createHost(host: InsertHost) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const id = await insertAndGetId("hosts", host as any);
+  invalidateAgentAuthTokenCandidates();
   const created = await getHostById(id).catch(() => undefined);
   await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "create", after: created });
   await refreshDatabasePoolSettings().catch(() => undefined);
@@ -356,6 +438,9 @@ export async function updateHost(id: number, data: Partial<InsertHost>) {
   const audit = shouldAuditConfigPatch(data as any);
   const before = audit ? await getHostById(id).catch(() => undefined) : undefined;
   await db.update(hosts).set({ ...data, updatedAt: nowDate() }).where(eq(hosts.id, id));
+  if (Object.prototype.hasOwnProperty.call(data, "agentToken") || Object.prototype.hasOwnProperty.call(data, "name")) {
+    invalidateAgentAuthTokenCandidates();
+  }
   if (audit && before) {
     const after = await getHostById(id).catch(() => undefined);
     await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "update", before, after });
@@ -363,29 +448,57 @@ export async function updateHost(id: number, data: Partial<InsertHost>) {
 }
 
 export async function reorderHosts(ids: number[], userId?: number, startIndex = 0) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
   const orderedIds = Array.from(ids)
     .map((id) => Math.floor(Number(id)))
     .filter((id) => Number.isInteger(id) && id > 0);
   if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
-  const idList = inList(orderedIds);
   const q = quoteIdentifier;
-  const params: any[] = [...idList.params];
+  const params: any[] = [];
   let userWhere = "";
   if (userId) {
-    userWhere = ` AND ${q("userId")} = ?`;
+    userWhere = ` WHERE ${q("userId")} = ?`;
     params.push(userId);
   }
-  const rows = await queryRaw<{ id: number }>(
-    `SELECT ${q("id")} FROM ${q("hosts")} WHERE ${q("id")} IN ${idList.sql}${userWhere}`,
+  const rows = await queryRaw<{ id: number; sortOrder: number }>(
+    `SELECT ${q("id")}, ${q("sortOrder")} FROM ${q("hosts")}${userWhere}
+      ORDER BY ${q("sortOrder")} ASC, ${q("createdAt")} DESC, ${q("id")} DESC`,
     params,
   );
-  if (rows.length !== orderedIds.length) throw new Error("排序中包含无权操作或不存在的主机");
-  const normalizedStartIndex = Math.max(0, Math.floor(Number(startIndex) || 0));
-  for (const [index, id] of orderedIds.entries()) {
-    await executeRaw(`UPDATE ${q("hosts")} SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [normalizedStartIndex + index, Math.floor(Date.now() / 1000), id]);
-  }
+  const visibleIds = rows.map((row) => Number(row.id));
+  const visibleSet = new Set(visibleIds);
+  if (orderedIds.some((hostId) => !visibleSet.has(hostId))) throw new Error("排序中包含无权操作或不存在的主机");
+  const nextIds = reorderHostWindow(visibleIds, orderedIds, startIndex);
+  const previousOrder = new Map(rows.map((row) => [Number(row.id), Number(row.sortOrder)]));
+  const now = Math.floor(Date.now() / 1000);
+  await withDatabaseTransaction(async () => {
+    for (const [index, id] of nextIds.entries()) {
+      if (previousOrder.get(id) === index) continue;
+      await executeRaw(`UPDATE ${q("hosts")} SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [index, now, id]);
+    }
+  });
+}
+
+export async function reorderVisibleHostsForUser(ids: number[], userId: number, allowedHostIds: number[] = [], startIndex = 0) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const normalizedUserId = Math.max(0, Math.floor(Number(userId) || 0));
+  const orderedIds = normalizeIds(ids);
+  if (!normalizedUserId || orderedIds.length === 0 || orderedIds.length !== ids.length) throw new Error("排序数据无效");
+  const allowedIds = normalizeIds(allowedHostIds);
+  const condition = allowedIds.length > 0
+    ? or(eq(hosts.userId, normalizedUserId), inArray(hosts.id, allowedIds))
+    : eq(hosts.userId, normalizedUserId);
+  const rows = await db.select({
+    id: hosts.id,
+    sortOrder: hosts.sortOrder,
+    createdAt: hosts.createdAt,
+  }).from(hosts).where(condition);
+  const preferredHostIds = await getUserHostDisplayOrder(normalizedUserId);
+  const currentIds = orderHostsForUser(rows, preferredHostIds).map((host) => Number(host.id));
+  const visibleSet = new Set(currentIds);
+  if (orderedIds.some((hostId) => !visibleSet.has(hostId))) throw new Error("排序中包含无权操作或不存在的主机");
+  const nextIds = reorderHostWindow(currentIds, orderedIds, startIndex);
+  await setSetting(userHostDisplayOrderKey(normalizedUserId), JSON.stringify(nextIds));
 }
 
 export async function deleteHost(id: number) {
@@ -409,6 +522,7 @@ export async function deleteHost(id: number) {
     eq(trafficBillingConfigs.resourceId, id),
   ));
   await db.delete(hosts).where(eq(hosts.id, id));
+  invalidateAgentAuthTokenCandidates();
   if (before) await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "delete", before });
   await refreshDatabasePoolSettings().catch(() => undefined);
 }
@@ -463,7 +577,19 @@ export async function purgeOrphanedAgentHosts() {
 export async function updateHostHeartbeat(id: number, metrics?: Partial<InsertHost>) {
   const db = await getDb();
   if (!db) return;
-  await db.update(hosts).set({ isOnline: true, lastHeartbeat: nowDate(), updatedAt: nowDate(), ...(metrics ?? {}) }).where(eq(hosts.id, id));
+  const now = nowDate();
+  await db.update(hosts).set({ isOnline: true, lastHeartbeat: now, updatedAt: now, ...(metrics ?? {}) }).where(eq(hosts.id, id));
+}
+
+/**
+ * Refresh only the liveness columns. Presence requests must not write a
+ * metric row or carry any runtime reconciliation fields.
+ */
+export async function touchHostHeartbeat(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  const now = nowDate();
+  await db.update(hosts).set({ isOnline: true, lastHeartbeat: now, updatedAt: now }).where(eq(hosts.id, id));
 }
 
 export async function getStaleOnlineHosts(timeoutMs = HOST_ONLINE_TTL_MS) {
@@ -490,6 +616,33 @@ export async function markHostsOffline(hostIds: number[]) {
     [boolValue(false), nowSec, ...idList.params],
   );
   return ids.length;
+}
+
+/**
+ * Atomically transition only hosts whose heartbeat is still stale. The
+ * conditional update prevents a presence request racing the sweep from being
+ * overwritten, and the returned IDs let callers notify exactly once.
+ */
+export async function markStaleHostsOffline(hostIds: number[], timeoutMs = HOST_ONLINE_TTL_MS) {
+  const ids = Array.from(new Set(hostIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return [] as number[];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cutoffSec = Math.floor((Date.now() - timeoutMs) / 1000);
+  const transitioned: number[] = [];
+  for (const id of ids) {
+    const result = await executeRaw(
+      `UPDATE ${quoteIdentifier("hosts")}
+       SET ${quoteIdentifier("isOnline")} = ?,
+           ${quoteIdentifier("updatedAt")} = ?
+       WHERE ${quoteIdentifier("id")} = ?
+         AND ${quoteIdentifier("isOnline")} = ?
+         AND ${quoteIdentifier("lastHeartbeat")} IS NOT NULL
+         AND ${quoteIdentifier("lastHeartbeat")} < ?`,
+      [boolValue(false), nowSec, id, boolValue(true), cutoffSec],
+    );
+    if (rawAffectedRows(result) > 0) transitioned.push(id);
+  }
+  return transitioned;
 }
 
 export async function markHostOffline(hostId: number) {
@@ -593,6 +746,34 @@ export async function getHostByAgentToken(token: string) {
   if (!db) return undefined;
   const r = await db.select().from(hosts).where(eq(hosts.agentToken, token)).limit(1);
   return r[0];
+}
+
+export async function getHostAgentIdentityByToken(token: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db.select({ id: hosts.id, name: hosts.name })
+    .from(hosts)
+    .where(eq(hosts.agentToken, token))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getHostAgentPresenceById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db.select({
+    id: hosts.id,
+    name: hosts.name,
+    ip: hosts.ip,
+    ipv4: hosts.ipv4,
+    ipv6: hosts.ipv6,
+    isOnline: hosts.isOnline,
+    lastHeartbeat: hosts.lastHeartbeat,
+  })
+    .from(hosts)
+    .where(eq(hosts.id, id))
+    .limit(1);
+  return rows[0];
 }
 
 export async function getHostRuleDeleteBlockers(hostId: number) {

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  databaseSwitchProbeValueType,
   describeDatabaseSwitchFailure,
   getDatabaseSwitchStagePlan,
 } from "./databaseSwitch";
+
+test("database write probe uses an indexable MySQL value column", () => {
+  assert.equal(databaseSwitchProbeValueType("mysql"), "VARCHAR(191)");
+  assert.equal(databaseSwitchProbeValueType("postgresql"), "TEXT");
+  assert.equal(databaseSwitchProbeValueType("sqlite"), "TEXT");
+});
 
 test("explains PostgreSQL schema permission failures with an actionable grant", () => {
   const error = Object.assign(new Error("permission denied for schema public"), { code: "42501" });

@@ -11,6 +11,7 @@ export type AgentHostTrafficStat = {
 };
 export type AgentTcpingResult = {
   ruleId: number;
+  tunnelId?: number;
   sourcePort?: number;
   targetIp?: string;
   targetPort?: number;
@@ -130,7 +131,8 @@ export function isAgentHostTrafficStat(value: unknown): value is AgentHostTraffi
 }
 export function isAgentTcpingResult(value: unknown): value is AgentTcpingResult {
   const item = value as Partial<AgentTcpingResult>;
-  return validAgentProbeResult(item, "ruleId");
+  return validAgentProbeResult(item, "ruleId")
+    && validOptionalInteger(item.tunnelId, 0);
 }
 
 export function isAgentTunnelTcpingResult(value: unknown): value is AgentTunnelTcpingResult {

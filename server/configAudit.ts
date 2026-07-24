@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { configAuditEvents } from "../drizzle/schema";
 import { getDb, insertAndGetId } from "./dbRuntime";
+import { invalidateAgentStableHeartbeatPlan } from "./agentHeartbeatGate";
 
 export type ConfigAuditContext = {
   actorUserId?: number | null;
@@ -109,7 +110,7 @@ export async function recordConfigAuditEvent(input: {
   if (input.action === "update" && Object.keys(diff).length === 0) return 0;
   const context = currentConfigAuditContext();
   try {
-    return await insertAndGetId("config_audit_events", {
+    const revision = await insertAndGetId("config_audit_events", {
       resourceType: input.resourceType,
       resourceId,
       hostId: Number(input.hostId || 0) > 0 ? Number(input.hostId) : null,
@@ -124,6 +125,11 @@ export async function recordConfigAuditEvent(input: {
       diffJson: stableJson(diff),
       configHash: hashConfig(input.after),
     });
+    if (input.action !== "dispatch") {
+      const hostId = Number(input.hostId || 0);
+      invalidateAgentStableHeartbeatPlan(hostId > 0 ? hostId : undefined);
+    }
+    return revision;
   } catch (error) {
     console.warn(`[ConfigAudit] write failed resource=${input.resourceType}:${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
     return 0;

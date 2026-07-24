@@ -42,6 +42,8 @@ test("database-backed list queries page, search, scope, and hydrate only request
       const groups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
       const rules = await import(moduleUrl("server/repositories/forwardRuleRepository.ts"));
       const billing = await import(moduleUrl("server/repositories/billingRepository.ts"));
+      const { tunnelsRouter } = await import(moduleUrl("server/routers/tunnels.ts"));
+      const { forwardGroupsRouter } = await import(moduleUrl("server/routers/forwardGroups.ts"));
 
       const quote = (name) => '"' + name + '"';
       const insert = async (table, columns, values) => {
@@ -51,6 +53,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
         );
       };
       const now = Math.floor(Date.now() / 1000);
+      const hiddenTunnelTestMessage = "TUNNEL_TEST_TARGET_INVALID target=hidden.example.test port=65432";
 
       await insert("users", ["id", "username", "password", "name", "role", "balanceCents"], [1, "admin", "x", "Admin", "admin", 100]);
       await insert("users", ["id", "username", "password", "name", "role", "balanceCents"], [2, "alice", "x", "Alice Edge", "user", 200]);
@@ -88,6 +91,11 @@ test("database-backed list queries page, search, scope, and hydrate only request
         [11, "Private Chain", "host", "chain", "127.0.0.1", 1, 1, 1],
       );
       await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled", "sortOrder", "exitStrategy"],
+        [12, "Singapore Exits", "host", "exit", "127.0.0.1", 1, 1, 2, "none"],
+      );
+      await insert(
         "forward_group_members",
         ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
         [1001, 10, "host", 1, 0, 1],
@@ -97,16 +105,135 @@ test("database-backed list queries page, search, scope, and hydrate only request
         ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
         [1101, 11, "host", 2, 0, 1],
       );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [1201, 12, "host", 2, 0, 1],
+      );
 
       await insert(
         "tunnels",
-        ["id", "name", "entryHostId", "exitHostId", "mode", "listenPort", "userId", "isEnabled", "sortOrder"],
-        [20, "Singapore Path", 1, 2, "tls", 62000, 1, 1, 0],
+        ["id", "name", "entryHostId", "exitHostId", "exitGroupId", "mode", "listenPort", "userId", "isEnabled", "sortOrder", "lastTestMessage"],
+        [20, "Singapore Path", 1, 2, 12, "tls", 62000, 1, 1, 0, hiddenTunnelTestMessage],
       );
       await insert(
         "tunnels",
         ["id", "name", "entryHostId", "exitHostId", "mode", "listenPort", "userId", "isEnabled", "sortOrder"],
         [21, "Unused Path", 2, 3, "forwardx", 62001, 2, 1, 1],
+      );
+      await insert("user_tunnel_permissions", ["userId", "tunnelId"], [2, 20]);
+      await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 10]);
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "domain", "userId", "isEnabled", "sortOrder"],
+        [13, "Shared Tunnel Failover", "tunnel", "failover", "127.0.0.1", "shared.example.com", 1, 1, 3],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "tunnelId", "priority", "isEnabled"],
+        [1301, 13, "tunnel", 20, 0, 1],
+      );
+      await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 13]);
+
+      const tunnelCaller = tunnelsRouter.createCaller({
+        req: { headers: {} },
+        res: { clearCookie() {} },
+        user: { id: 2, username: "alice", role: "user", accountEnabled: true },
+        authSession: null,
+        authFailureReason: null,
+      });
+
+      const assertSharedTunnelDiagnosticsHidden = (tunnel, endpoint) => {
+        assert.ok(tunnel, endpoint + " should return the shared tunnel");
+        assert.equal("lastTestMessage" in tunnel, false, endpoint + " must hide lastTestMessage");
+        assert.equal("latestLatencySeries" in tunnel, false, endpoint + " must hide latestLatencySeries");
+        assert.equal(JSON.stringify(tunnel).includes(hiddenTunnelTestMessage), false, endpoint + " must hide probe details");
+      };
+
+      const sharedTunnel = (await tunnelCaller.options()).find((item) => Number(item.id) === 20);
+      assertSharedTunnelDiagnosticsHidden(sharedTunnel, "tunnels.options");
+      assert.equal(sharedTunnel.availability.status, "available");
+      assert.equal(sharedTunnel.availability.available, true);
+      assert.equal(sharedTunnel.entryHost, null);
+      assert.equal(sharedTunnel.exitHost, null);
+      assert.equal(sharedTunnel.entryHostId, null);
+      assert.equal(sharedTunnel.exitHostId, null);
+      assert.equal(sharedTunnel.connectHost, null);
+      assert.equal(sharedTunnel.entryGroup, undefined);
+      assert.equal(sharedTunnel.exitGroup, undefined);
+
+      const sharedTunnelFromList = (await tunnelCaller.list()).find((item) => Number(item.id) === 20);
+      assertSharedTunnelDiagnosticsHidden(sharedTunnelFromList, "tunnels.list");
+
+      const sharedTunnelPage = await tunnelCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        search: "Singapore Path",
+      });
+      assertSharedTunnelDiagnosticsHidden(sharedTunnelPage.items.find((item) => Number(item.id) === 20), "tunnels.listPage");
+
+      const sharedTunnelMap = await tunnelCaller.mapItems({
+        cursor: 0,
+        limit: 20,
+        search: "Singapore Path",
+      });
+      assertSharedTunnelDiagnosticsHidden(sharedTunnelMap.items.find((item) => Number(item.id) === 20), "tunnels.mapItems");
+
+      const sharedTunnelById = await tunnelCaller.getById({ id: 20 });
+      assertSharedTunnelDiagnosticsHidden(sharedTunnelById, "tunnels.getById");
+
+      const adminTunnelCaller = tunnelsRouter.createCaller({
+        req: { headers: {} },
+        res: { clearCookie() {} },
+        user: { id: 1, username: "admin", role: "admin", accountEnabled: true },
+        authSession: null,
+        authFailureReason: null,
+      });
+      const adminSharedTunnel = (await adminTunnelCaller.list()).find((item) => Number(item.id) === 20);
+      assert.equal(adminSharedTunnel.lastTestMessage, hiddenTunnelTestMessage);
+      assert.equal("latestLatencySeries" in adminSharedTunnel, true);
+
+      const groupCaller = forwardGroupsRouter.createCaller({
+        req: { headers: {} },
+        res: { clearCookie() {} },
+        user: { id: 2, username: "alice", role: "user", accountEnabled: true },
+        authSession: null,
+        authFailureReason: null,
+      });
+      const sharedGroupPage = await groupCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        groupMode: "port",
+        search: "",
+      });
+      assert.equal(sharedGroupPage.items.length, 1);
+      assert.equal(sharedGroupPage.items[0].availability.status, "available");
+      assert.equal(sharedGroupPage.items[0].availability.available, true);
+      assert.deepEqual(sharedGroupPage.items[0].members, []);
+
+      const tunnelGroupPage = await groupCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        groupMode: "failover",
+        search: "Shared Tunnel Failover",
+      });
+      assert.equal(tunnelGroupPage.items[0].availability.available, true);
+      assert.equal(tunnelGroupPage.items[0].members[0].host, null);
+      assert.equal(tunnelGroupPage.items[0].members[0].entryAddress, null);
+      await runtime.executeRaw(
+        'UPDATE "hosts" SET "isOnline" = ?, "lastHeartbeat" = ? WHERE "id" = ?',
+        [0, now - 3600, 2],
+      );
+      const offlineTunnelGroupPage = await groupCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        groupMode: "failover",
+        search: "Shared Tunnel Failover",
+      });
+      assert.equal(offlineTunnelGroupPage.items[0].availability.available, false);
+      await runtime.executeRaw(
+        'UPDATE "hosts" SET "isOnline" = ?, "lastHeartbeat" = ? WHERE "id" = ?',
+        [1, now, 2],
       );
 
       const ruleColumns = [
@@ -196,11 +323,15 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assert.equal(groupPage.totalItems, 1);
       assert.equal(groupPage.items[0].id, 10);
       assert.equal(groupPage.items[0].members.length, 1);
+      assert.equal(groupPage.items[0].members[0].host.isOnline, true);
       const groupOptions = await groups.getForwardGroupOptions([10]);
       assert.equal(groupOptions.length, 1);
       assert.equal(groupOptions[0].members[0].entryAddress, "192.0.2.10");
       const userSafeGroupOptions = groups.filterForwardGroupFieldsForUse(groupOptions);
       assert.equal(userSafeGroupOptions[0].members[0].entryAddress, "192.0.2.10");
+      assert.equal(userSafeGroupOptions[0].members[0].host.isOnline, true);
+      assert.equal(userSafeGroupOptions[0].members[0].host.name, "Tokyo Entry");
+      assert.equal(userSafeGroupOptions[0].members[0].host.agentToken, undefined);
 
       const visibleRuleInput = {
         ownerUserId: 2,

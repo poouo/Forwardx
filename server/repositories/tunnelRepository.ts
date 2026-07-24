@@ -12,6 +12,7 @@ import {
   InsertForwardRuleTunnelExit,
   forwardGroupMembers,
   forwardGroups,
+  tunnelLatencyStats,
 } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
@@ -29,6 +30,8 @@ import {
   type ExitGroupTunnelMember,
 } from "../tunnelExitStrategy";
 import { resolveRuleProxyProtocolOptions } from "../gostProxyProtocol";
+import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
+import { LINK_PROBE_FRESH_MS, LINK_PROBE_MAX_FUTURE_SKEW_MS } from "../../shared/linkProbePolicy";
 
 // ==================== Tunnel Queries ====================
 
@@ -130,9 +133,9 @@ export async function getTunnelsPage(input: TunnelListQuery) {
   const db = await getDb();
   if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, enabledItems: 0, availableItems: 0 };
   const condition = tunnelListCondition(input);
-  const cutoffSeconds = Math.floor((Date.now() - 150_000) / 1000);
-  const probeCutoffSeconds = Math.floor((Date.now() - 3 * 60_000) / 1000);
-  const probeFutureSeconds = Math.floor((Date.now() + 60_000) / 1000);
+  const cutoffSeconds = Math.floor((Date.now() - HOST_ONLINE_TTL_MS) / 1000);
+  const probeCutoffSeconds = Math.floor((Date.now() - LINK_PROBE_FRESH_MS) / 1000);
+  const probeFutureSeconds = Math.floor((Date.now() + LINK_PROBE_MAX_FUTURE_SKEW_MS) / 1000);
   const freshProbe = sql`
     ${tunnels.lastTestAt} IS NOT NULL
     AND ${tunnels.lastTestAt} >= ${probeCutoffSeconds}
@@ -508,9 +511,14 @@ export async function syncTunnelsForHostAddress(hostId: number, previousHost?: a
   }
 }
 
-export async function clearTunnelTestSnapshot(id: number) {
+export async function clearTunnelTestSnapshot(id: number, options: { clearHistory?: boolean } = {}) {
   const db = await getDb();
   if (!db) return;
+  if (options.clearHistory) {
+    // Measurements from a previous topology have different labels and are no
+    // longer comparable (for example, an exit group changed to a direct exit).
+    await db.delete(tunnelLatencyStats).where(eq(tunnelLatencyStats.tunnelId, id));
+  }
   await db.update(tunnels).set({
     lastLatencyMs: null,
     lastTestStatus: null,
@@ -1174,6 +1182,13 @@ export async function getTunnelHops(tunnelId: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(tunnelHops).where(eq(tunnelHops.tunnelId, tunnelId)).orderBy(asc(tunnelHops.seq));
+}
+
+export async function getTunnelHopsByTunnelIds(tunnelIds: number[]) {
+  const ids = Array.from(new Set(tunnelIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  const db = await getDb();
+  if (!db || ids.length === 0) return [];
+  return db.select().from(tunnelHops).where(inArray(tunnelHops.tunnelId, ids)).orderBy(asc(tunnelHops.tunnelId), asc(tunnelHops.seq));
 }
 
 export async function getTunnelExitNodes(tunnelId: number) {

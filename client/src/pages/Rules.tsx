@@ -2643,20 +2643,6 @@ function RulesContent() {
     setShowDialog(true);
   };
 
-  // 端口占用检测
-  const checkPortMutation = trpc.rules.checkPort.useQuery(
-    {
-      hostId: form.hostId || 0,
-      tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
-      sourcePort: form.sourcePort,
-      excludeRuleId: editingId || undefined,
-      protocol: form.protocol,
-    },
-    {
-      enabled: false,
-    }
-  );
-
   const isLegacyLocalRuleEdit = editingId !== null && legacyLocalRuleEditId === editingId;
 
   // 获取当前选中主机的端口区间
@@ -3004,20 +2990,17 @@ function RulesContent() {
     latestPortCheckRef.current = checkId;
     const routeMode = form.routeMode;
     const hostId = form.hostId;
+    const forwardGroupId = form.forwardGroupId;
     const tunnelId = form.tunnelId;
     const sourcePort = form.sourcePort;
-    if (isForwardGroupRouteMode) {
-      setPortStatus("idle");
-      setPortRangeError(null);
-      return;
-    }
-    if (!hostId || !sourcePort || sourcePort < 1) return;
+    if (!sourcePort || sourcePort < 1) return;
+    if (isForwardGroupRouteMode ? !forwardGroupId : !hostId) return;
     if (!isValidPort(sourcePort)) {
       setPortRangeError("端口必须在 1-65535 之间");
       setPortStatus("used");
       return;
     }
-    if (!isPortAllowedByPolicy(sourcePort, selectedEntryPortPolicy)) {
+    if (!isForwardGroupRouteMode && !isPortAllowedByPolicy(sourcePort, selectedEntryPortPolicy)) {
       setPortRangeError(`端口必须在允许范围 ${describePortPolicy(selectedEntryPortPolicy)} 内`);
       setPortStatus("used");
       return;
@@ -3026,39 +3009,38 @@ function RulesContent() {
     setPortStatus("checking");
     try {
       const result = await utils.rules.checkPort.fetch({
-        hostId,
-        tunnelId: routeMode === "tunnel" ? tunnelId : null,
+        ...(isForwardGroupRouteMode
+          ? { forwardGroupId: Number(forwardGroupId) }
+          : { hostId: Number(hostId), tunnelId: routeMode === "tunnel" ? tunnelId : null }),
         sourcePort,
         excludeRuleId: editingId || undefined,
         protocol: form.protocol,
       });
       if (latestPortCheckRef.current !== checkId) return;
+      setPortRangeError(result.used ? result.reason ?? null : null);
       setPortStatus(result.used ? "used" : "available");
     } catch {
       if (latestPortCheckRef.current !== checkId) return;
       setPortStatus("idle");
     }
-  }, [form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy, isForwardGroupRouteMode]);
+  }, [form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy, isForwardGroupRouteMode]);
 
   // A response started for the previous route must not mark the new route occupied.
   useEffect(() => {
     latestPortCheckRef.current += 1;
     setPortStatus("idle");
-  }, [editingId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, isForwardGroupRouteMode]);
+  }, [editingId, form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, isForwardGroupRouteMode]);
 
   // 源端口变化时自动检测
   useEffect(() => {
-    if (isForwardGroupRouteMode) {
-      setPortStatus("idle");
-      return;
-    }
-    if (form.sourcePort > 0 && form.hostId) {
+    const hasTarget = isForwardGroupRouteMode ? !!form.forwardGroupId : !!form.hostId;
+    if (form.sourcePort > 0 && hasTarget) {
       const timer = setTimeout(checkPort, 500);
       return () => clearTimeout(timer);
     } else {
       setPortStatus("idle");
     }
-  }, [form.sourcePort, form.hostId, form.protocol, form.routeMode, form.tunnelId, checkPort, isForwardGroupRouteMode]);
+  }, [form.sourcePort, form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.tunnelId, checkPort, isForwardGroupRouteMode]);
 
   useEffect(() => {
     if (form.routeMode !== "local") return;
@@ -3518,7 +3500,7 @@ function RulesContent() {
       return;
     }
     if (!isValidPort(form.sourcePort, !isForwardGroupRouteMode && !editingId)) {
-      toast.error(isForwardGroupRouteMode || editingId ? "入口端口必须在 1-65535 之间" : "入口端口必须为 0 或 1-65535，0 表示随机分配");
+      toast.error(isForwardGroupRouteMode || editingId ? "源端口必须在 1-65535 之间" : "源端口必须为 0 或 1-65535，0 表示随机分配");
       return;
     }
     if (!isValidPort(form.targetPort)) {
@@ -7025,7 +7007,7 @@ function RulesContent() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <Label>{form.routeMode === "local" ? "源端口" : "入口端口"}</Label>
+                <Label>源端口</Label>
                   <span className="truncate text-xs text-muted-foreground" title={`允许端口范围: ${sourcePortRangeText}`}>
                     {sourcePortRangeText}
                   </span>
@@ -7076,7 +7058,7 @@ function RulesContent() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label>{form.routeMode === "local" ? "目标地址" : "最终目标地址"}</Label>
+                <Label>目标地址</Label>
                 <Input
                   placeholder="例如: 10.0.0.1 或 example.com"
                   value={form.targetIp}
@@ -7086,7 +7068,7 @@ function RulesContent() {
               <div className="space-y-2 sm:col-span-2">
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)] sm:items-end">
                   <div className="space-y-2">
-                    <Label>{form.routeMode === "local" ? "目标端口" : "最终目标端口"} <span className="text-destructive">*</span></Label>
+                    <Label>目标端口 <span className="text-destructive">*</span></Label>
                     <Input
                       type="number"
                       min={1}
@@ -7209,7 +7191,7 @@ function RulesContent() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
+              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || portStatus === "used" || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
             </Button>

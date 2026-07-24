@@ -11,6 +11,12 @@ import {
 } from "../services/forwardGroupService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { EXIT_GROUP_STRATEGIES } from "../../shared/exitStrategy";
+import { getLinkAccessScope, visibleForwardGroupMemberIds, type LinkAccessScope } from "../linkAccessView";
+import {
+  buildForwardGroupAvailabilitySummaryIndex,
+  publicLinkAvailabilitySummary,
+  type LinkAvailabilitySummaryIndex,
+} from "../linkAvailabilitySummary";
 
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
 const exitGroupStrategySchema = z.enum(EXIT_GROUP_STRATEGIES);
@@ -83,24 +89,55 @@ async function assertForwardGroupAccess(
   return group;
 }
 
+function attachForwardGroupAvailability(
+  groups: any[],
+  availabilityIndex: LinkAvailabilitySummaryIndex,
+  accessScope: LinkAccessScope | null,
+) {
+  return groups.map((group) => ({
+    ...group,
+    availability: publicLinkAvailabilitySummary(
+      availabilityIndex.groupAvailabilityById.get(Number(group.id)),
+      visibleForwardGroupMemberIds(group, accessScope),
+    ),
+  }));
+}
+
+function availabilityIndexForGroups(groups: any[], supportingGroups: any[] = []) {
+  return buildForwardGroupAvailabilitySummaryIndex(groups, supportingGroups);
+}
+
 export const forwardGroupsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.user.role === "admin") return db.getForwardGroups(undefined, { includeRuntime: true });
-    const groupIds = await db.getUserAllowedForwardGroupIds(ctx.user.id);
-    if (groupIds.length === 0) return [];
-    const groups = await db.getForwardGroups(undefined, { includeRuntime: true });
-    const allowed = new Set(groupIds);
-    return db.filterForwardGroupFieldsForUse((groups as any[]).filter((group: any) => allowed.has(Number(group.id))));
+    const [groups, accessScope] = await Promise.all([
+      db.getForwardGroups(undefined, { includeRuntime: true }) as Promise<any[]>,
+      getLinkAccessScope(ctx.user),
+    ]);
+    const availabilityIndex = await availabilityIndexForGroups(groups);
+    if (!accessScope) return attachForwardGroupAvailability(groups, availabilityIndex, null);
+    const visible = groups.filter((group: any) => accessScope.groupIds.has(Number(group.id)));
+    return db.filterForwardGroupFieldsForUse(
+      attachForwardGroupAvailability(visible, availabilityIndex, accessScope),
+      accessScope,
+    );
   }),
 
   options: protectedProcedure.query(async ({ ctx }) => {
-    const allowedGroupIds = ctx.user.role === "admin"
-      ? undefined
-      : await db.getUserAllowedForwardGroupIds(ctx.user.id);
+    const accessScope = await getLinkAccessScope(ctx.user);
+    const allowedGroupIds = accessScope ? Array.from(accessScope.groupIds) : undefined;
     const groups = await db.getForwardGroupOptions(allowedGroupIds);
-    return ctx.user.role === "admin"
-      ? groups
-      : db.filterForwardGroupFieldsForUse(groups as any[]);
+    const itemIds = new Set((groups as any[]).map((group) => Number(group.id)));
+    const relatedIds = Array.from(new Set((groups as any[])
+      .map((group) => Number(group.entryGroupId || 0))
+      .filter((id) => id > 0 && !itemIds.has(id))));
+    const supportingGroups = relatedIds.length > 0
+      ? await db.getForwardGroups(undefined, { includeRuntime: false, ids: relatedIds }) as any[]
+      : [];
+    const availabilityIndex = await availabilityIndexForGroups(groups as any[], supportingGroups);
+    const withAvailability = attachForwardGroupAvailability(groups as any[], availabilityIndex, accessScope);
+    return accessScope
+      ? db.filterForwardGroupFieldsForUse(withAvailability, accessScope)
+      : withAvailability;
   }),
 
   listPage: protectedProcedure
@@ -111,32 +148,35 @@ export const forwardGroupsRouter = router({
       search: z.string().trim().max(200).optional().default(""),
     }))
     .query(async ({ input, ctx }) => {
-      const allowedGroupIds = ctx.user.role === "admin"
-        ? undefined
-        : await db.getUserAllowedForwardGroupIds(ctx.user.id);
+      const accessScope = await getLinkAccessScope(ctx.user);
+      const allowedGroupIds = accessScope ? Array.from(accessScope.groupIds) : undefined;
       const result = await db.getForwardGroupsPage({
         ...input,
         allowedGroupIds,
       });
-      const items = ctx.user.role === "admin"
-        ? result.items
-        : db.filterForwardGroupFieldsForUse(result.items as any[]);
-      const itemIds = new Set((items as any[]).map((group: any) => Number(group.id)));
-      const allowedGroupSet = allowedGroupIds ? new Set(allowedGroupIds.map(Number)) : null;
-      const relatedGroupIds = Array.from(new Set((items as any[])
+      const itemIds = new Set((result.items as any[]).map((group: any) => Number(group.id)));
+      const relatedGroupIds = Array.from(new Set((result.items as any[])
         .map((group: any) => Number(group.entryGroupId || 0))
         .filter((id: number) => id > 0
-          && !itemIds.has(id)
-          && (!allowedGroupSet || allowedGroupSet.has(id)))));
+          && !itemIds.has(id))));
       const relatedRows = relatedGroupIds.length > 0
         ? await db.getForwardGroups(undefined, {
           includeRuntime: false,
           ids: relatedGroupIds,
         })
         : [];
-      const relatedGroups = ctx.user.role === "admin"
-        ? relatedRows
-        : db.filterForwardGroupFieldsForUse(relatedRows as any[]);
+      const availabilityIndex = await availabilityIndexForGroups(result.items as any[], relatedRows as any[]);
+      const hydratedItems = attachForwardGroupAvailability(result.items as any[], availabilityIndex, accessScope);
+      const items = accessScope
+        ? db.filterForwardGroupFieldsForUse(hydratedItems, accessScope)
+        : hydratedItems;
+      const visibleRelatedRows = accessScope
+        ? (relatedRows as any[]).filter((group) => accessScope.groupIds.has(Number(group.id)))
+        : relatedRows as any[];
+      const hydratedRelated = attachForwardGroupAvailability(visibleRelatedRows, availabilityIndex, accessScope);
+      const relatedGroups = accessScope
+        ? db.filterForwardGroupFieldsForUse(hydratedRelated, accessScope)
+        : hydratedRelated;
       return {
         ...result,
         items,

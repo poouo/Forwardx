@@ -41,7 +41,8 @@ export function updateAgentPluginInventory(
     && typeof syncSignaturesValue === "object"
     && !Array.isArray(syncSignaturesValue);
   if (!hasVersions || !hasSyncSignatures) {
-    inventories.delete(hostId);
+    // Metrics-only heartbeats intentionally omit plugin inventory. Keep the
+    // last complete snapshot until its normal TTL expires.
     return false;
   }
   inventories.set(hostId, {

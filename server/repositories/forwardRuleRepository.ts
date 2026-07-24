@@ -387,6 +387,100 @@ export async function getForwardRulesByIds(ruleIds: number[]) {
   return rows;
 }
 
+export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = Array.from(new Set(ruleIds
+    .map(Number)
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (ids.length === 0) return [];
+
+  const rows: any[] = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    rows.push(...await db
+      .select({
+        id: forwardRules.id,
+        hostId: forwardRules.hostId,
+        tunnelId: forwardRules.tunnelId,
+        forwardGroupId: forwardRules.forwardGroupId,
+        forwardGroupRuleId: forwardRules.forwardGroupRuleId,
+        forwardGroupMemberId: forwardRules.forwardGroupMemberId,
+        userId: forwardRules.userId,
+        isEnabled: forwardRules.isEnabled,
+        isRunning: forwardRules.isRunning,
+        pendingDelete: forwardRules.pendingDelete,
+        trafficTunnelId: tunnels.id,
+        trafficTunnelEntryHostId: tunnels.entryHostId,
+        trafficTunnelExitHostId: tunnels.exitHostId,
+        trafficTunnelMode: tunnels.mode,
+        trafficTunnelMultiplier: tunnels.trafficMultiplier,
+        trafficGroupId: forwardGroups.id,
+        trafficGroupMode: forwardGroups.groupMode,
+        trafficGroupMultiplier: forwardGroups.trafficMultiplier,
+      })
+      .from(forwardRules)
+      .leftJoin(tunnels, eq(tunnels.id, forwardRules.tunnelId))
+      .leftJoin(forwardGroups, eq(forwardGroups.id, forwardRules.forwardGroupId))
+      .where(inArray(forwardRules.id, ids.slice(index, index + 400))));
+  }
+
+  const groupIds = Array.from(new Set(rows
+    .map((row) => Number(row.trafficGroupId || 0))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const membersByGroupId = new Map<number, any[]>();
+  for (let index = 0; index < groupIds.length; index += 400) {
+    const members = await db
+      .select({
+        id: forwardGroupMembers.id,
+        groupId: forwardGroupMembers.groupId,
+        isEnabled: forwardGroupMembers.isEnabled,
+        priority: forwardGroupMembers.priority,
+      })
+      .from(forwardGroupMembers)
+      .where(and(
+        inArray(forwardGroupMembers.groupId, groupIds.slice(index, index + 400)),
+        eq(forwardGroupMembers.isEnabled, true),
+      ));
+    for (const member of members as any[]) {
+      const groupId = Number(member.groupId || 0);
+      const groupMembers = membersByGroupId.get(groupId) || [];
+      groupMembers.push(member);
+      membersByGroupId.set(groupId, groupMembers);
+    }
+  }
+  for (const members of membersByGroupId.values()) {
+    members.sort((a, b) => Number(a.priority) - Number(b.priority));
+  }
+
+  return rows.map((row) => ({
+    rule: {
+      id: row.id,
+      hostId: row.hostId,
+      tunnelId: row.tunnelId,
+      forwardGroupId: row.forwardGroupId,
+      forwardGroupRuleId: row.forwardGroupRuleId,
+      forwardGroupMemberId: row.forwardGroupMemberId,
+      userId: row.userId,
+      isEnabled: row.isEnabled,
+      isRunning: row.isRunning,
+      pendingDelete: row.pendingDelete,
+    },
+    tunnel: Number(row.trafficTunnelId || 0) > 0 ? {
+      id: row.trafficTunnelId,
+      entryHostId: row.trafficTunnelEntryHostId,
+      exitHostId: row.trafficTunnelExitHostId,
+      mode: row.trafficTunnelMode,
+      trafficMultiplier: row.trafficTunnelMultiplier,
+    } : null,
+    group: Number(row.trafficGroupId || 0) > 0 ? {
+      id: row.trafficGroupId,
+      groupMode: row.trafficGroupMode,
+      trafficMultiplier: row.trafficGroupMultiplier,
+      members: membersByGroupId.get(Number(row.trafficGroupId)) || [],
+    } : null,
+  }));
+}
+
 async function hydrateForwardRuleListIds(ids: number[]) {
   if (ids.length === 0) return [];
   const rows = await getForwardRulesByIds(ids);

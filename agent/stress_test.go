@@ -271,6 +271,125 @@ func TestUrgentRefreshBypassesBusyHeartbeat(t *testing.T) {
 	}
 }
 
+func TestMetricsWatcherUsesKeepaliveUntilFullAudit(t *testing.T) {
+	now := time.Now()
+	lastFull := now.Add(-time.Minute)
+	if !shouldUseMetricsOnlyHeartbeat(true, false, false, false, 0, lastFull, now) {
+		t.Fatal("stable metrics watcher should use a metrics-only keepalive")
+	}
+	if shouldUseMetricsOnlyHeartbeat(true, true, false, false, 0, lastFull, now) {
+		t.Fatal("SSE refresh must force a full heartbeat")
+	}
+	if shouldUseMetricsOnlyHeartbeat(true, false, false, false, 1, lastFull, now) {
+		t.Fatal("pending actions must force a full heartbeat")
+	}
+	if shouldUseMetricsOnlyHeartbeat(true, false, false, false, 0, now.Add(-agentFullHeartbeatInterval), now) {
+		t.Fatal("the five-minute audit boundary must force a full heartbeat")
+	}
+	if shouldUseMetricsOnlyHeartbeat(true, false, false, true, 0, lastFull, now) {
+		t.Fatal("an explicit local wake, including pending DNS, must force a full heartbeat")
+	}
+}
+
+func TestExplicitWakeForcesReconcileWithoutChangingSSEBacklogSemantics(t *testing.T) {
+	heartbeatForceReconcileWake.Store(false)
+	heartbeatWakeFromSSE.Store(false)
+	heartbeatUrgentWakeFromSSE.Store(false)
+	select {
+	case <-heartbeatWakeCh:
+	default:
+	}
+	t.Cleanup(func() {
+		heartbeatForceReconcileWake.Store(false)
+		heartbeatWakeFromSSE.Store(false)
+		heartbeatUrgentWakeFromSSE.Store(false)
+		select {
+		case <-heartbeatWakeCh:
+		default:
+		}
+	})
+
+	// DNS confirmations, completed actions, presence failures and migration
+	// fallbacks all use this local wake and must leave metrics-only mode.
+	wakeHeartbeat()
+	if !heartbeatForceReconcileWake.Swap(false) {
+		t.Fatal("explicit local wake did not request a full reconciliation")
+	}
+	select {
+	case <-heartbeatWakeCh:
+	default:
+		t.Fatal("explicit local wake did not signal the heartbeat loop")
+	}
+
+	wakeHeartbeatFromSSE(false)
+	if heartbeatForceReconcileWake.Load() {
+		t.Fatal("ordinary SSE wake must retain action-backlog keepalive behavior")
+	}
+	if !heartbeatWakeFromSSE.Swap(false) {
+		t.Fatal("SSE source marker was not set")
+	}
+}
+
+func TestCoalescedHeartbeatDoesNotCommitStaticSnapshot(t *testing.T) {
+	if shouldCommitHeartbeatStaticReport(true, true, true) {
+		t.Fatal("coalesced response must not acknowledge static fields the panel did not process")
+	}
+	if !shouldCommitHeartbeatStaticReport(true, true, false) {
+		t.Fatal("successful full heartbeat should commit a requested static snapshot")
+	}
+	if shouldCommitHeartbeatStaticReport(true, false, false) {
+		t.Fatal("unchanged compact static state should remain uncommitted")
+	}
+}
+
+func TestEmptyDesiredStateRecordsAggregateAppliedHash(t *testing.T) {
+	desiredRevisionMu.Lock()
+	previousReceivedRevision := desiredLastReceivedRevision
+	previousAppliedRevision := desiredLastAppliedRevision
+	previousReceivedHash := desiredLastReceivedHash
+	previousAppliedHash := desiredLastAppliedHash
+	previousAppliedAggregate := desiredLastAppliedAggregate
+	desiredLastReceivedRevision = 0
+	desiredLastAppliedRevision = 0
+	desiredLastReceivedHash = ""
+	desiredLastAppliedHash = ""
+	desiredLastAppliedAggregate = false
+	desiredRevisionMu.Unlock()
+
+	desiredActionRecordMu.Lock()
+	previousRecords := desiredActionRecordsMem
+	previousLoaded := desiredActionRecordsLoaded
+	desiredActionRecordsMem = map[string]desiredActionRecord{}
+	desiredActionRecordsLoaded = true
+	desiredActionRecordMu.Unlock()
+	t.Cleanup(func() {
+		desiredRevisionMu.Lock()
+		desiredLastReceivedRevision = previousReceivedRevision
+		desiredLastAppliedRevision = previousAppliedRevision
+		desiredLastReceivedHash = previousReceivedHash
+		desiredLastAppliedHash = previousAppliedHash
+		desiredLastAppliedAggregate = previousAppliedAggregate
+		desiredRevisionMu.Unlock()
+		desiredActionRecordMu.Lock()
+		desiredActionRecordsMem = previousRecords
+		desiredActionRecordsLoaded = previousLoaded
+		desiredActionRecordMu.Unlock()
+	})
+
+	state := &desiredState{ConfigRevision: 19, ConfigHash: "aggregate-plan", Actions: []action{}}
+	rememberDesiredStateReceived(state)
+	rememberDesiredStateAppliedAfterActions(state, nil)
+	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
+	if receivedRevision != 19 || appliedRevision != 19 || receivedHash != "aggregate-plan" || appliedHash != "aggregate-plan" {
+		t.Fatalf("aggregate acknowledgement mismatch received=%d/%q applied=%d/%q", receivedRevision, receivedHash, appliedRevision, appliedHash)
+	}
+	rememberDesiredActionApplied(action{ConfigRevision: 19, ConfigHash: "individual-action"})
+	_, _, _, appliedHash = desiredRevisionSnapshot()
+	if appliedHash != "aggregate-plan" {
+		t.Fatalf("individual completion overwrote aggregate applied hash: %q", appliedHash)
+	}
+}
+
 func TestActionIngressCoalescesPendingUpdatesWithoutBlocking(t *testing.T) {
 	buffer := actionIngressBuffer{byKey: map[string]*actionIngressItem{}}
 	base := action{
@@ -540,15 +659,15 @@ func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 	// producers hand the overflow to the coalescing ingress without blocking.
 	sharedGostRuntimeSyncGate.Lock()
 	heartbeatStarted := time.Now()
-	nextInterval, err := heartbeat(Config{PanelURL: panel.URL, Token: token, Interval: 30})
+	heartbeatResult, err := heartbeat(Config{PanelURL: panel.URL, Token: token, Interval: 30})
 	heartbeatElapsed := time.Since(heartbeatStarted)
 	blockedBacklog := len(actionQueue) + actionIngress.len()
 	sharedGostRuntimeSyncGate.Unlock()
 	if err != nil {
 		t.Fatalf("heartbeat failed: %v", err)
 	}
-	if nextInterval != 30 {
-		t.Fatalf("nextInterval = %d, want 30", nextInterval)
+	if heartbeatResult.NextInterval != 30 {
+		t.Fatalf("nextInterval = %d, want 30", heartbeatResult.NextInterval)
 	}
 	if ruleCount > actionQueueCapacity && blockedBacklog < actionQueueCapacity {
 		t.Fatalf("worker queue did not saturate during blocked-worker test: backlog=%d capacity=%d", blockedBacklog, actionQueueCapacity)

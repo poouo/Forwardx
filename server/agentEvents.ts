@@ -1,6 +1,7 @@
 import type { Response } from "express";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { encryptPayload } from "./agentCrypto";
+import { invalidateAgentStableHeartbeatPlan } from "./agentHeartbeatGate";
 
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 
@@ -52,6 +53,7 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
 
 export function pushAgentRefresh(hostId: number, reason: string, options: AgentRefreshOptions = {}) {
   const id = Number(hostId);
+  invalidateAgentStableHeartbeatPlan(id);
   const now = Date.now();
   const urgent = options.urgent === true;
   const last = hostRefreshPushedAt.get(id) || 0;
@@ -71,6 +73,7 @@ export function pushAgentRefresh(hostId: number, reason: string, options: AgentR
 }
 
 export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string, releaseVersion?: string | null) {
+  invalidateAgentStableHeartbeatPlan(hostId);
   return sendAgentEvent(hostId, "agent-upgrade", {
     targetVersion: targetVersion || AGENT_VERSION,
     panelUrl,
@@ -88,6 +91,7 @@ export function pushAgentPanelMigration(
     startedAt?: number;
   },
 ) {
+  invalidateAgentStableHeartbeatPlan(hostId);
   return sendAgentEvent(hostId, "agent-panel-migration", data);
 }
 
@@ -95,10 +99,9 @@ export function pushAgentSupportBundle(hostId: number, taskId: string) {
   return sendAgentEvent(hostId, "agent-support-bundle", { taskId, requestedAt: new Date().toISOString() });
 }
 
-export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {
+export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000, now = Date.now()) {
   const newlyWatched: number[] = [];
-  const now = Date.now();
-  const until = Date.now() + ttlMs;
+  const until = now + ttlMs;
   for (const id of hostIds) {
     if (Number.isFinite(id) && id > 0) {
       if ((hostMetricsWatchUntil.get(id) || 0) <= now) newlyWatched.push(id);
@@ -108,9 +111,9 @@ export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {
   return newlyWatched;
 }
 
-export function isHostMetricsWatching(hostId: number) {
+export function isHostMetricsWatching(hostId: number, now = Date.now()) {
   const until = hostMetricsWatchUntil.get(hostId) || 0;
-  if (until <= Date.now()) {
+  if (until <= now) {
     hostMetricsWatchUntil.delete(hostId);
     return false;
   }

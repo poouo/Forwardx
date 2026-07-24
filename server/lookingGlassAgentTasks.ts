@@ -147,6 +147,10 @@ export function takeLookingGlassAgentTasks(hostId: number, limit = 1) {
   return tasks;
 }
 
+export function hasQueuedLookingGlassAgentTasks(hostId: number) {
+  return (queues.get(Number(hostId))?.length || 0) > 0;
+}
+
 export function updateLookingGlassAgentTaskProgress(
   hostId: number,
   result: Partial<LookingGlassAgentResult> & { taskId: string },

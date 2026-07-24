@@ -6,6 +6,7 @@ import { getCandidateAgentTokens, resolveAgentTokenFromAuthorization } from "./a
 export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/register",
   "/api/agent/heartbeat",
+  "/api/agent/presence",
   "/api/agent/selftest-pull",
   "/api/agent/selftest-result",
   "/api/agent/looking-glass-result",

@@ -653,12 +653,6 @@ const defaultFormData: HostFormData = {
   blockTls: false,
 };
 
-function normalizeHostSortOrder(value: unknown) {
-  const parsed = Math.floor(Number(value ?? 0));
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.min(200, Math.max(0, parsed));
-}
-
 function clampMonthlyResetDay(value: number) {
   return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
 }
@@ -1383,20 +1377,9 @@ function HostsContent() {
     : needsFullHostList
       ? fullHostQuery.refetch()
       : hostPageQuery.refetch();
-  const baseDisplayHosts = useMemo<any[]>(() => {
-    const source = (hosts || []) as any[];
-    return [...source].sort((a: any, b: any) => {
-      const sortA = normalizeHostSortOrder(a?.sortOrder);
-      const sortB = normalizeHostSortOrder(b?.sortOrder);
-      if (sortA !== sortB) return sortA - sortB;
-      const createdAtA = new Date(a?.createdAt || 0).getTime();
-      const createdAtB = new Date(b?.createdAt || 0).getTime();
-      if (Number.isFinite(createdAtA) && Number.isFinite(createdAtB) && createdAtA !== createdAtB) {
-        return createdAtB - createdAtA;
-      }
-      return Number(b?.id || 0) - Number(a?.id || 0);
-    });
-  }, [hosts]);
+  // Shared hosts can have a per-user API order which intentionally differs
+  // from the global host sortOrder.
+  const baseDisplayHosts = useMemo<any[]>(() => [...((hosts || []) as any[])], [hosts]);
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -1930,12 +1913,12 @@ function HostsContent() {
     : selectedHostGroupId === "all" && enabledHostGroups.length === 0 && !(user?.role === "admin" && isHostGroupsLoading)
       ? "hosts"
       : null;
-  const canDragFilteredHosts = user?.role === "admin" || filteredDisplayHosts.every((host: any) => Number(host.userId) === Number(user?.id));
   const hostSortingEnabled = !!hostSortMode
-    && canDragFilteredHosts
     && !isHostTextFiltered
     && viewMode !== "map"
     && viewMode !== "flat-map"
+    && !reorderHostsMutation.isPending
+    && !reorderHostGroupMembersMutation.isPending
     && filteredDisplayHosts.length > 1;
   const hostSortable = useSortableReorder({
     items: filteredDisplayHosts,
@@ -2545,7 +2528,7 @@ function HostsContent() {
                       <TableRow
                         {...itemProps}
                         className={cn(
-                          "host-table-row align-middle hover:bg-transparent",
+                          "group/sortable host-table-row align-middle hover:bg-transparent",
                           isDragging && "opacity-55 ring-1 ring-primary/35",
                           isDropTarget && "ring-1 ring-primary/45",
                         )}

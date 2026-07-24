@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,7 +15,12 @@ const (
 	dnsChangeConfirmations      = 3
 	dnsChangeConfirmationWindow = 10 * time.Second
 	dnsRollbackHoldDown         = 5 * time.Minute
+	dnsWatchIdlePollInterval    = 30 * time.Second
+	dnsWatchConfirmPollInterval = 2 * time.Second
 )
+
+var dnsWatchScanMu sync.Mutex
+var agentDNSWatchWakeCh = make(chan struct{}, 1)
 
 type dnsWatchCandidate struct {
 	IPs           []string
@@ -47,6 +53,59 @@ func queuePendingDNSChanges(changes []dnsChangeReport) {
 	dnsWatchMu.Unlock()
 }
 
+func preserveDNSChangesAfterHeartbeat(changes []dnsChangeReport, reconciliationCoalesced bool) {
+	if !reconciliationCoalesced {
+		return
+	}
+	queuePendingDNSChanges(changes)
+}
+
+func hasPendingDNSChanges() bool {
+	dnsWatchMu.Lock()
+	defer dnsWatchMu.Unlock()
+	return len(pendingDNSChanges) > 0
+}
+
+func wakeAgentDNSWatchScheduler() {
+	select {
+	case agentDNSWatchWakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func agentDNSWatchScheduler() {
+	delay := dnsWatchIdlePollInterval
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-agentDNSWatchWakeCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		state := heartbeatStateSnapshotCopy()
+		needsConfirmation := updateDNSWatch(state.DNSWatch)
+		wakeHeartbeatForPendingDNS()
+		if needsConfirmation {
+			delay = dnsWatchConfirmPollInterval
+		} else {
+			delay = dnsWatchIdlePollInterval
+		}
+	}
+}
+
+func wakeHeartbeatForPendingDNS() bool {
+	if !hasPendingDNSChanges() {
+		return false
+	}
+	wakeHeartbeat()
+	return true
+}
+
 func updateDNSWatch(items []dnsWatchItem) bool {
 	return updateDNSWatchWithLookupAt(items, lookupDNSWatchIPs, time.Now())
 }
@@ -56,6 +115,9 @@ func updateDNSWatchWithLookup(items []dnsWatchItem, lookup func(string) []string
 }
 
 func updateDNSWatchWithLookupAt(items []dnsWatchItem, lookup func(string) []string, now time.Time) bool {
+	dnsWatchScanMu.Lock()
+	defer dnsWatchScanMu.Unlock()
+
 	watched := map[string]string{}
 	watchedItems := map[string][]dnsWatchItem{}
 	for _, item := range items {

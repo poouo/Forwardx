@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
-import { AGENT_PLUGIN_TASK_VERSION, buildMetaAgentSelfTestPayload, buildRuleAgentSelfTestPayload, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
+import { AGENT_PLUGIN_TASK_VERSION, buildMetaAgentSelfTestPayload, buildRuleAgentSelfTestPayload, hasAgentVersionChanged, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import { getAgentMigrationSwitchTarget, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 import * as hopRepo from "./repositories/tunnelRepository";
@@ -14,20 +14,24 @@ import {
 } from "./forwardProtocolSettings";
 import {
   agentHeartbeatGate,
+  agentStableHeartbeatPlanCache,
   buildBusyAgentHeartbeatResponse,
+  buildPresenceAgentHeartbeatResponse,
+  buildReportedRuntimeHeartbeatPatch,
   selectAgentHeartbeatInterval,
   shouldDeferAgentWorkForLocalState,
+  shouldPersistAgentPresence,
 } from "./agentHeartbeatGate";
 import { mapWithConcurrency } from "./asyncPool";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4, resolve6 } from "dns/promises";
-import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
-import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
+import { hasQueuedLookingGlassAgentTasks, takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
+import { hasQueuedIperf3AgentTasks, takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
-import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
+import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
 import {
@@ -257,6 +261,21 @@ function stableStateSignature(value: any) {
     .digest("hex");
 }
 
+export function stableDesiredStateHash(actions: any[]) {
+  return hashConfig(actions.map((action: any) => {
+    const { issuedAt: _issuedAt, configHash: _configHash, ...stableAction } = action || {};
+    return stableAction;
+  }));
+}
+
+function agentPluginInventorySignature(inventory: ReturnType<typeof getAgentPluginInventory>) {
+  if (!inventory) return "";
+  return stableStateSignature({
+    versions: Object.fromEntries(Array.from(inventory.versions.entries()).sort(([left], [right]) => left.localeCompare(right))),
+    syncSignatures: Object.fromEntries(Array.from(inventory.syncSignatures.entries()).sort(([left], [right]) => left.localeCompare(right))),
+  });
+}
+
 function normalizeAgentStateSignatures(input: any): AgentStateSignatures {
   if (!input || typeof input !== "object") return {};
   const output: AgentStateSignatures = {};
@@ -359,6 +378,7 @@ export function invalidateAgentDesiredStateCache(
 ) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
+  agentStableHeartbeatPlanCache.invalidate(id);
   agentActionBatchCache.delete(id);
   agentDesiredStateSendCache.delete(id);
   if (!options.preserveLocalRuntimeState) agentLocalRuntimeStateCache.delete(id);
@@ -483,14 +503,10 @@ function shouldLogAgentRuntimeDrift(hostId: number, ruleId: number) {
   return true;
 }
 
-function shouldSendDesiredState(hostId: number, actions: any[], activeWorkActions: any[], now: number) {
+function shouldSendDesiredState(hostId: number, actions: any[], activeWorkActions: any[], now: number, configRevision = 0) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return actions.length > 0;
-  if (actions.length === 0) {
-    agentDesiredStateSendCache.delete(id);
-    return false;
-  }
-  const signature = stableActionSignature(actions);
+  const signature = `${Math.max(0, Math.floor(Number(configRevision) || 0))}\n${stableActionSignature(actions)}`;
   const cached = agentDesiredStateSendCache.get(id);
   const hasActiveWork = activeWorkActions.length > 0;
   const changed = !cached || cached.signature !== signature;
@@ -811,6 +827,31 @@ function ensureNginxBinaryCmd() {
 }
 
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
+agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentPresenceHostFromRequest(req);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const wasOnline = isHostStatusOnline(host);
+    if (shouldPersistAgentPresence({ wasOnline, lastHeartbeat: (host as any).lastHeartbeat })) {
+      await db.touchHostHeartbeat(host.id);
+    }
+    if (!wasOnline) {
+      await resetAgentRuntimeStateForRecovery(host.id, "agent-reconnected-presence");
+      void notifyHostOnlineIfNeeded({ ...host, isOnline: true, lastHeartbeat: new Date() }).catch((error) => {
+        console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+    const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
+    res.json(buildPresenceAgentHeartbeatResponse({ panelMigration }));
+  } catch (error) {
+    console.error("[Agent Presence] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => {
   let logHostId = 0;
   let logHostName = "";
@@ -841,14 +882,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (!busyHeartbeat) {
       releaseHeartbeatReconciliation = agentHeartbeatGate.tryAcquire(logHostId, { force: forceReconcile });
       if (!releaseHeartbeatReconciliation) {
+        await db.touchHostHeartbeat(logHostId);
         const panelMigration = await getPanelMigrationAgentDirective(logHostId);
         res.json({
           success: true,
           actions: [],
           selfTests: [],
-          nextInterval: 2,
+          nextInterval: 5,
           requestLocalState: !!normalizeRuntimeStateSignature(req.body?.localStateSignature),
           compactReports: true,
+          presenceSupported: true,
           reconciliationCoalesced: true,
           panelMigration,
         });
@@ -872,6 +915,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const { cpuInfo, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
+    const agentVersionChanged = hasAgentVersionChanged((host as any).agentVersion, nextAgentVersion);
     const agentBootId = normalizeAgentText(req.body?.agentBootId, 128);
     const agentBootedAtSeconds = Number(req.body?.agentBootedAt || 0);
     const agentProcessId = Math.max(0, Math.floor(Number(req.body?.agentProcessId || 0)));
@@ -975,7 +1019,32 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const supportsStateSignatures = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_STATE_SIGNATURE_VERSION);
     const supportsPluginTasks = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_PLUGIN_TASK_VERSION);
 
-    await db.updateHostHeartbeat(host.id, {
+    const busyHeartbeatHostStateChanged = !wasOnline
+      || recoveryTriggered
+      || upgradedFirewallCounterAgent
+      || upgradedProtocolGuardBackendAgent
+      || addressChanged
+      || agentVersionChanged
+      || (!!nextCpuInfo && nextCpuInfo !== String(previousHost.cpuInfo || ""))
+      || (Number(memoryTotal || 0) > 0 && Number(memoryTotal) !== Number(previousHost.memoryTotal || 0))
+      || (!!agentBootId && agentBootId !== normalizeAgentText(previousHost.agentBootId, 128))
+      || (agentProcessId > 0 && agentProcessId !== Number(previousHost.agentProcessId || 0))
+      || (agentProcessStartedAtSeconds > 0 && Math.abs(agentProcessStartedAtSeconds * 1000 - previousProcessStartedAt) > 5_000)
+      || (agentLastReceivedRevision > 0 && agentLastReceivedRevision !== Number(previousHost.agentLastReceivedRevision || 0))
+      || (agentLastAppliedRevision > 0 && agentLastAppliedRevision !== Number(previousHost.agentLastAppliedRevision || 0))
+      || (!!agentLastReceivedHash && agentLastReceivedHash !== String(previousHost.agentLastReceivedHash || ""))
+      || (!!agentLastAppliedHash && agentLastAppliedHash !== String(previousHost.agentLastAppliedHash || ""))
+      || (!!mimicEnvironment && (
+        previousHost.mimicAvailable !== mimicEnvironment.available
+        || String(previousHost.mimicStatus || "") !== mimicEnvironment.status
+        || String(previousHost.mimicVersion || "") !== String(mimicEnvironment.version || "")
+        || String(previousHost.mimicMessage || "") !== String(mimicEnvironment.message || "")
+      ));
+    if (busyHeartbeat && !busyHeartbeatHostStateChanged) {
+      if (shouldPersistAgentPresence({ wasOnline, lastHeartbeat: previousHost.lastHeartbeat })) {
+        await db.touchHostHeartbeat(host.id);
+      }
+    } else await db.updateHostHeartbeat(host.id, {
       ip: reportedAddress.ip,
       ipv4: reportedAddress.ipv4,
       ipv6: reportedAddress.ipv6,
@@ -990,9 +1059,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...(agentLastAppliedRevision > 0 ? { agentLastAppliedRevision } : {}),
       ...(agentLastReceivedHash ? { agentLastReceivedHash } : {}),
       ...(agentLastAppliedHash ? { agentLastAppliedHash } : {}),
-      mimicRuntimeStatus,
-      mimicRuntimeMessage,
-      mimicRuntimeCheckedAt: new Date(),
+      ...buildReportedRuntimeHeartbeatPatch({
+        hasLocalRuntimeState: !!localRuntimeState.state,
+        mimicRuntimeStatus,
+        mimicRuntimeMessage,
+      }),
       ...(recoveryTriggered ? {
         agentRecoveryStartedAt: new Date(),
         agentRecoveryCompletedAt: null,
@@ -1017,6 +1088,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
+    if (agentVersionChanged) {
+      invalidateAgentDesiredStateCache(host.id, { preserveLocalRuntimeState: !!localRuntimeState.state });
+      appendPanelLog(
+        "info",
+        `[AgentUpgrade] host=${host.id} version=${String(previousHost.agentVersion || "-")} -> ${nextAgentVersion}; desired state marked for resync`,
+      );
+    }
     if (mimicEnvironment) {
       Object.assign(host as any, {
         mimicAvailable: mimicEnvironment.available,
@@ -1084,10 +1162,65 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     if (busyHeartbeat) {
       const panelUrl = await resolveAgentAdvertisedPanelUrl();
+      const metricsWatching = isHostMetricsWatching(host.id);
       res.json(buildBusyAgentHeartbeatResponse({
         panelUrl,
         requestLocalState: localRuntimeState.requestLocalState,
+        metricsWatching,
+        trafficReportInterval: metricsWatching ? 10 : undefined,
       }));
+      return;
+    }
+
+    const reportedPluginInventoryForFastPath = getAgentPluginInventory(host.id);
+    const pluginInventorySignature = agentPluginInventorySignature(reportedPluginInventoryForFastPath);
+    const mimicEnvironmentSignature = stableStateSignature(mimicEnvironment || null);
+    const panelMigrationForFastPath = await getPanelMigrationAgentDirective(Number(host.id));
+    const stablePlan = agentStableHeartbeatPlanCache.match(host.id, {
+      forceReconcile,
+      hasBlockingWork: !!(host as any).agentUpgradeRequested
+        || !!panelMigrationForFastPath
+        || hasHostTcpingRequest(host.id)
+        || hasQueuedLookingGlassAgentTasks(host.id)
+        || hasQueuedIperf3AgentTasks(host.id)
+        || hasQueuedPluginAgentTasks(host.id),
+      recoveryTriggered,
+      addressChanged,
+      hasDnsChanges: dnsChangedReports.length > 0,
+      hasLocalStateUpload: !!req.body?.localState || localRuntimeState.requestLocalState,
+      hasEndpointEvents: fxpEndpointEvents.length > 0,
+      localStateSignature: localRuntimeStateSignature,
+      stateSignatures: agentStateSignatures as Record<string, string>,
+      agentVersion: effectiveAgentVersion,
+      agentBootId,
+      agentProcessStartedAt: agentProcessStartedAtSeconds,
+      defaultNetworkInterface: reportedDefaultNetworkInterface,
+      pluginInventorySignature,
+      mimicEnvironmentSignature,
+      agentLastReceivedRevision,
+      agentLastAppliedRevision,
+      agentLastReceivedHash,
+      agentLastAppliedHash,
+    });
+    if (stablePlan) {
+      const metricsWatching = isHostMetricsWatching(host.id);
+      res.json({
+        success: true,
+        actions: [],
+        selfTests: [],
+        lookingGlassTests: [],
+        iperf3Tasks: [],
+        pluginTasks: [],
+        agentUpgrade: null,
+        panelUrl: stablePlan.panelUrl,
+        forceTcping: false,
+        nextInterval: metricsWatching ? 3 : stablePlan.idleNextInterval,
+        requestLocalState: false,
+        compactReports: true,
+        presenceSupported: true,
+        metricsOnly: metricsWatching,
+        ...(metricsWatching ? { trafficReportInterval: 10 } : {}),
+      });
       return;
     }
 
@@ -1452,18 +1585,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     await mapWithConcurrency(agentAllRules as any[], 32, (rule: any) => hydrateRuntimeTarget(rule));
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
-    const tunnelHopsByTunnelId = new Map<number, any[]>();
-    const tunnelExitNodesByTunnelId = new Map<number, any[]>();
-    await mapWithConcurrency(hostTunnels as any[], 24, async (tunnel: any) => {
-      const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
-      if (Array.isArray(hops) && hops.length >= 2) {
-        tunnelHopsByTunnelId.set(Number(tunnel.id), hops);
-      }
-      const exits = await hopRepo.getTunnelExitNodes(Number(tunnel.id));
-      if (Array.isArray(exits) && exits.length > 0) {
-        tunnelExitNodesByTunnelId.set(Number(tunnel.id), exits);
-      }
-    });
+    const tunnelIds = Array.from(new Set((hostTunnels as any[])
+      .map((tunnel: any) => Number(tunnel?.id || 0))
+      .filter((id: number) => id > 0)));
+    const tunnelHopsByTunnelId = new Map<number, any[]>(tunnelIds.map((id) => [id, []]));
+    const tunnelExitNodesByTunnelId = new Map<number, any[]>(tunnelIds.map((id) => [id, []]));
+    const [tunnelHopRows, tunnelExitNodeRows] = await Promise.all([
+      hopRepo.getTunnelHopsByTunnelIds(tunnelIds),
+      hopRepo.getTunnelExitNodesByTunnelIds(tunnelIds),
+    ]);
+    for (const hop of tunnelHopRows as any[]) {
+      const id = Number(hop?.tunnelId || 0);
+      if (!tunnelHopsByTunnelId.has(id)) continue;
+      tunnelHopsByTunnelId.get(id)!.push(hop);
+    }
+    for (const id of tunnelIds) {
+      if ((tunnelHopsByTunnelId.get(id) || []).length < 2) tunnelHopsByTunnelId.set(id, []);
+    }
+    for (const node of tunnelExitNodeRows as any[]) {
+      const id = Number(node?.tunnelId || 0);
+      if (!tunnelExitNodesByTunnelId.has(id)) continue;
+      tunnelExitNodesByTunnelId.get(id)!.push(node);
+    }
     const tunnelDnsRefreshByTunnelId = new Map<number, number>();
     const changedTunnelDnsRefreshIds = new Set<number>();
     const markTunnelDnsRefresh = (tunnelId: unknown, generation: number, changed: boolean) => {
@@ -3800,7 +3943,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // Find multi-hop tunnels involving this host
     if (hostTunnels && hostTunnels.length > 0) {
       for (const tunnel of hostTunnels as any[]) {
-        const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id)) || [];
         if (!hops || hops.length < 2) continue; // Not a multi-hop tunnel
 
         const hostIdx = hops.findIndex((h: any) => Number(h.hostId) === host.id);
@@ -4891,11 +5034,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     const forwardGroupProbeMap = new Map<string, any>();
-    const chainGroupsForHost = (await db.getForwardGroups() as any[])
-      .filter((group: any) => group && group.isEnabled && String(group.groupMode || "failover") === "chain");
-    for (const group of chainGroupsForHost as any[]) {
-      const probes = await db.getForwardGroupChainProbes(Number(group.id));
-      const topologyKey = forwardGroupProbeTopologyKey(Number(group.id), probes);
+    const forwardGroupProbeTopology = await db.getForwardGroupProbeTopologyForHost(Number(host.id));
+    for (const group of forwardGroupProbeTopology.chainGroups as any[]) {
+      const probes = group.probes as any[];
+      const topologyKey = forwardGroupProbeTopologyKey(Number(group.groupId), probes);
       for (const probe of probes) {
         if (Number(probe.fromHostId) !== Number(host.id)) continue;
         const key = `${probe.groupId}:${probe.hopIndex}:${probe.targetIp}:${probe.targetPort}:${probe.method}`;
@@ -4911,8 +5053,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
       }
     }
-    const chinaHealthProbes = await db.getForwardGroupChinaHealthProbesForHost(Number(host.id));
-    for (const probe of chinaHealthProbes as any[]) {
+    for (const probe of forwardGroupProbeTopology.chinaHealthProbes as any[]) {
       const key = `china:${probe.groupId}:${probe.memberId}:${probe.targetIp}:${probe.targetPort}`;
       forwardGroupProbeMap.set(key, {
         groupId: probe.groupId,
@@ -5023,7 +5164,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const pluginSyncTasks = supportsPluginTasks
       ? await buildPluginHostAssetSyncActions(Number(host.id))
       : [];
-    const reportedPluginInventory = getAgentPluginInventory(host.id);
+    const reportedPluginInventory = reportedPluginInventoryForFastPath;
     let pluginSyncActionQueued = false;
     for (const pluginSyncTask of pluginSyncTasks) {
       const reportedPluginVersion = reportedPluginInventory?.versions.get(pluginSyncTask.pluginId) || "";
@@ -5439,7 +5580,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     });
     const sendDesiredState = supportsDesiredState
       && !deferActionsForLocalState
-      && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt);
+      && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt, configRevision);
     if (sendDesiredState) {
       for (const action of orderedActions) {
         agentStatusOrderGuard.expect(
@@ -5449,11 +5590,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         );
       }
     }
+    const desiredStateHash = stableDesiredStateHash(orderedActions);
     const desiredState = sendDesiredState ? {
       version: 1,
       issuedAt: actionBatchIssuedAt,
       configRevision,
-      configHash: hashConfig(orderedActions.map((action: any) => ({ ...action, issuedAt: 0 }))),
+      configHash: desiredStateHash,
       actions: orderedActions,
     } : undefined;
     const stateSections = buildAgentStateResponseSections({
@@ -5492,6 +5634,47 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         },
       });
     }
+    const metricsWatching = isHostMetricsWatching(host.id);
+    const stablePlanReady = supportsDesiredState
+      && supportsStateSignatures
+      && !!localRuntimeState.state
+      && !!localRuntimeStateSignature
+      && !localRuntimeState.requestLocalState
+      && activeWorkActions.length === 0
+      && selfTests.length === 0
+      && lookingGlassTests.length === 0
+      && iperf3Tasks.length === 0
+      && pluginTasks.length === 0
+      && !hasPendingPluginTasks
+      && !pluginSyncActionQueued
+      && !agentUpgrade
+      && !panelMigration
+      && !forceTcping
+      && !hasPendingMultiHopRuntime;
+    if (stablePlanReady) {
+      agentStableHeartbeatPlanCache.remember(host.id, {
+        plannedAt: responseIssuedAt,
+        configRevision,
+        desiredStateHash,
+        localStateSignature: localRuntimeStateSignature,
+        stateSignatures: stateSections.signatures,
+        agentVersion: effectiveAgentVersion,
+        agentBootId,
+        agentProcessStartedAt: agentProcessStartedAtSeconds,
+        defaultNetworkInterface: reportedDefaultNetworkInterface,
+        pluginInventorySignature,
+        mimicEnvironmentSignature,
+        idleNextInterval: selectAgentHeartbeatInterval({
+          requestLocalState: false,
+          hasInteractiveTasks: false,
+          metricsWatching: false,
+          serviceProbeIntervals: hostProbeServices.map((service: any) => service?.intervalSeconds),
+        }),
+        panelUrl,
+      });
+    } else {
+      agentStableHeartbeatPlanCache.invalidate(host.id);
+    }
     res.json({
       success: true,
       actions: supportsDesiredState ? [] : orderedActions,
@@ -5509,6 +5692,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       nextInterval,
       requestLocalState: localRuntimeState.requestLocalState,
       compactReports: true,
+      presenceSupported: true,
+      metricsOnly: metricsWatching
+        && !hasInteractiveTasks
+        && !localRuntimeState.requestLocalState
+        && activeWorkActions.length === 0,
+      ...(metricsWatching ? { trafficReportInterval: 10 } : {}),
     });
   } catch (error) {
     console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);

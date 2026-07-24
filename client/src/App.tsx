@@ -10,6 +10,7 @@ import { Redirect, Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import PersonalizationLayer from "./components/PersonalizationLayer";
+import Live2DWidgetHost from "./components/plugins/Live2DWidgetHost";
 import Setup from "./pages/Setup";
 import AnnouncementsPage from "@/pages/Announcements";
 import BillingPage from "@/pages/Billing";
@@ -163,6 +164,7 @@ function App() {
         <TooltipProvider>
           <ConfirmDialogProvider>
             <PersonalizationLayer />
+            <Live2DWidgetHost />
             <Toaster />
             <SetupGate />
           </ConfirmDialogProvider>

@@ -1,6 +1,7 @@
 import type { Request } from "express";
 import * as db from "./db";
 import { agentTokenFingerprint, parseAgentAuthProof, verifyAgentAuthProof } from "./agentCrypto";
+import { recordAuthenticatedAgentActivity } from "./agentActivity";
 
 let indexedTokens: string[] | null = null;
 let tokenByFingerprint = new Map<string, string>();
@@ -22,7 +23,23 @@ export function getResolvedAgentToken(req: Request): string | undefined {
 export async function getAgentHostFromRequest(req: Request) {
   const token = getResolvedAgentToken(req);
   if (!token) return null;
-  return db.getHostByAgentToken(token);
+  const host = await db.getHostByAgentToken(token);
+  if (host) recordAuthenticatedAgentActivity((host as any).id);
+  return host;
+}
+
+export async function getAgentHostIdentityFromRequest(req: Request) {
+  const token = getResolvedAgentToken(req);
+  if (!token) return null;
+  const host = await db.getAgentAuthHostIdentity(token);
+  if (host) recordAuthenticatedAgentActivity((host as any).id);
+  return host;
+}
+
+export async function getAgentPresenceHostFromRequest(req: Request) {
+  const identity = await getAgentHostIdentityFromRequest(req);
+  if (!identity) return null;
+  return db.getHostAgentPresenceById(identity.id);
 }
 
 export async function getCandidateAgentTokens() {

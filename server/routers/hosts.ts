@@ -332,7 +332,7 @@ async function getHostsWithUpgradeStateCleanup(userId?: number) {
 }
 
 async function visibleHostQueryScope(user: { id: number; role: string }) {
-  if (user.role === "admin") return {} as { ownerUserId?: number; allowedHostIds?: number[] };
+  if (user.role === "admin") return {} as { ownerUserId?: number; allowedHostIds?: number[]; sortUserId?: number };
   const [allowedHostIds, billingResourceIds] = await Promise.all([
     db.getUserEffectiveAllowedHostIds(user.id),
     db.getUserUsableTrafficBillingResourceIds(user.id),
@@ -340,6 +340,7 @@ async function visibleHostQueryScope(user: { id: number; role: string }) {
   return {
     ownerUserId: user.id,
     allowedHostIds: Array.from(new Set([...allowedHostIds, ...billingResourceIds.hostIds])),
+    sortUserId: user.id,
   };
 }
 
@@ -360,7 +361,7 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
   const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
   const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === user.id);
   if (shouldScheduleGeoRefresh) scheduleHostGeoRefresh(visibleHosts);
-  return visibleHosts;
+  return db.orderVisibleHostsForUser(visibleHosts, user.id);
 }
 
 function compactHostForList(host: any) {
@@ -668,7 +669,7 @@ export const hostsRouter = router({
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const scope = await visibleHostQueryScope(ctx.user);
-      const hosts = await db.getHostOptions(scope.ownerUserId, scope.allowedHostIds);
+      const hosts = await db.getHostOptions(scope.ownerUserId, scope.allowedHostIds, scope.sortUserId);
       scheduleHostGeoRefresh(hosts);
       return hosts;
     }),
@@ -1021,7 +1022,12 @@ export const hostsRouter = router({
         startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
       }))
       .mutation(async ({ input, ctx }) => {
-        await db.reorderHosts(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id, input.startIndex);
+        if (ctx.user.role === "admin") {
+          await db.reorderHosts(input.ids, undefined, input.startIndex);
+        } else {
+          const scope = await visibleHostQueryScope(ctx.user);
+          await db.reorderVisibleHostsForUser(input.ids, ctx.user.id, scope.allowedHostIds, input.startIndex);
+        }
         return { success: true };
       }),
     update: protectedProcedure
@@ -1157,7 +1163,7 @@ export const hostsRouter = router({
         }
         await db.updateHost(id, data as any);
         if (ddnsConfigChanged) {
-          scheduleHostDdnsUpdate({ ...host, ...(data as any), id }, "host-ddns-config-updated");
+          scheduleHostDdnsUpdate({ ...host, ...(data as any), id }, "host-ddns-config-updated", { force: true });
         }
         if (entryChanged) {
           await refreshHostAddressRuntime(id, host, "host-address-updated");

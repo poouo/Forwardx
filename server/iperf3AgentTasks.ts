@@ -128,6 +128,10 @@ export function takeIperf3AgentTasks(hostId: number, limit = 2) {
   return tasks;
 }
 
+export function hasQueuedIperf3AgentTasks(hostId: number) {
+  return (queues.get(Number(hostId))?.length || 0) > 0;
+}
+
 export function completeIperf3AgentTask(hostId: number, result: Iperf3AgentResult) {
   const previous = states.get(hostId);
   if (previous?.timer) clearTimeout(previous.timer);

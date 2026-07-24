@@ -305,7 +305,7 @@ export function SortableDragHandle({
       {...props}
       className={cn(
         "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-all duration-200",
-        "opacity-0 hover:opacity-100 focus-visible:opacity-100",
+        "opacity-40 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover/sortable:opacity-100",
         visible && "pointer-events-auto opacity-100",
         disabled ? "pointer-events-none cursor-default opacity-0" : "cursor-grab hover:bg-muted/70 hover:text-foreground active:scale-95 active:cursor-grabbing",
         className,

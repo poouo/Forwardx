@@ -29,7 +29,7 @@ export type TunnelMultiEntryLatencyAggregate = {
 };
 
 const states = new Map<string, MultiEntryPathState>();
-const MULTI_ENTRY_PROBE_TTL_MS = 5 * 60 * 1000;
+const MULTI_ENTRY_PROBE_TTL_MS = 6 * 60 * 1000;
 
 function normalizeHostIds(values: number[]) {
   return Array.from(new Set((values || [])

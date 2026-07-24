@@ -405,6 +405,12 @@ function quote(kind: DatabaseKind, id: string) {
   return `"${id.replace(/"/g, "\"\"")}"`;
 }
 
+export function databaseSwitchProbeValueType(kind: DatabaseKind) {
+  // MySQL cannot index TEXT without a prefix length. The probe only stores a
+  // short marker, so use the same utf8mb4-safe indexed width as the schema.
+  return kind === "mysql" ? "VARCHAR(191)" : "TEXT";
+}
+
 function postgresSql(sqlText: string, params: any[] = []) {
   let index = 0;
   return {
@@ -475,7 +481,7 @@ async function verifyTargetWriteAccess(handle: TargetHandle) {
     try {
       await targetExecute(
         session,
-        `CREATE TABLE ${tableName} (${quote(session.kind, "id")} INTEGER PRIMARY KEY, ${quote(session.kind, "value")} TEXT NOT NULL)`,
+        `CREATE TABLE ${tableName} (${quote(session.kind, "id")} INTEGER PRIMARY KEY, ${quote(session.kind, "value")} ${databaseSwitchProbeValueType(session.kind)} NOT NULL)`,
       );
       created = true;
       await targetExecute(

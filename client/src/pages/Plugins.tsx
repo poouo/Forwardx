@@ -46,11 +46,11 @@ type PluginRow = any;
 type PluginSettingField = {
   key: string;
   label: string;
-  type: "text" | "textarea" | "password" | "number" | "boolean" | "select" | "url";
+  type: "text" | "textarea" | "password" | "number" | "boolean" | "select" | "multi-select" | "url";
   description?: string;
   placeholder?: string;
   required?: boolean;
-  defaultValue?: string | number | boolean;
+  defaultValue?: string | number | boolean | string[];
   min?: number;
   max?: number;
   options?: Array<{ label: string; value: string }>;
@@ -166,12 +166,14 @@ function getPluginSettings(plugin?: PluginRow): Record<string, unknown> {
 function settingDefaultValue(field: PluginSettingField) {
   if (field.defaultValue !== undefined) return field.defaultValue;
   if (field.type === "boolean") return false;
+  if (field.type === "multi-select") return [];
   if (field.type === "number") return "";
   return "";
 }
 
 function normalizeSettingDraftValue(field: PluginSettingField, value: unknown) {
   if (field.type === "boolean") return value === true;
+  if (field.type === "multi-select") return Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
   if (field.type === "number") return value === undefined || value === null ? "" : String(value);
   return value === undefined || value === null ? "" : String(value);
 }
@@ -391,6 +393,41 @@ function PluginSettingInput({
           </SelectContent>
         </Select>
         {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+      </div>
+    );
+  }
+
+  if (field.type === "multi-select") {
+    const selected = Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <Label>{field.label}</Label>
+            {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
+          </div>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">已选 {selected.length}</span>
+        </div>
+        <div className="grid max-h-56 gap-2 overflow-auto rounded-lg border border-border/40 bg-background/60 p-2 sm:grid-cols-2">
+          {(field.options || []).map((option) => {
+            const active = selected.includes(option.value);
+            return (
+              <button
+                key={option.value}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(toggleStringItem(selected, option.value))}
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-sm transition-colors",
+                  active ? "border-primary/40 bg-primary/5 text-primary" : "border-border/40 hover:bg-muted/50",
+                )}
+              >
+                <span className="truncate">{option.label}</span>
+                {active && <CheckCircle2 className="h-4 w-4 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -1039,7 +1076,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     },
   });
 
-  const saveSettingMutation = trpc.plugins.saveSetting.useMutation({
+  const saveSettingMutation = trpc.plugins.saveSettings.useMutation({
     onError: (error) => toast.error(error.message || "保存失败"),
   });
 
@@ -1295,11 +1332,13 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     if (!selectedPlugin) return;
     if (!settingFields.length) return;
     try {
-      await Promise.all(settingFields.map((field) => saveSettingMutation.mutateAsync({
-        pluginId: selectedPlugin.pluginId,
-        key: field.key,
-        value: field.type === "number" && settingDraft[field.key] !== "" ? Number(settingDraft[field.key]) : settingDraft[field.key],
-      })));
+      const values: Record<string, unknown> = {};
+      for (const field of settingFields) {
+        values[field.key] = field.type === "number" && settingDraft[field.key] !== ""
+          ? Number(settingDraft[field.key])
+          : settingDraft[field.key];
+      }
+      await saveSettingMutation.mutateAsync({ pluginId: selectedPlugin.pluginId, values });
       toast.success("插件设置已保存");
       await invalidatePluginQueries();
     } catch {

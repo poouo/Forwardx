@@ -28,7 +28,9 @@ const (
 	systemPingConcurrency      = 8
 	networkTargetDNSTTL        = 30 * time.Second
 	networkTargetDNSFailureTTL = 5 * time.Second
-	idleHostTrafficReportEvery = 30 * time.Second
+	activeTrafficReportEvery   = 10 * time.Second
+	steadyTrafficReportEvery   = 30 * time.Second
+	idleHostTrafficReportEvery = 5 * time.Minute
 )
 
 var (
@@ -47,7 +49,9 @@ var (
 	trafficPrevMu            sync.Mutex
 	trafficPrevCache         = map[string]trafficPrevState{}
 	trafficStateDir          = agentStateDir
+	lastRuleTrafficReportAt  time.Time
 	lastHostTrafficReportAt  time.Time
+	activeTrafficReportNanos atomic.Int64
 )
 
 type networkTargetDNSCacheEntry struct {
@@ -136,8 +140,50 @@ func hostTrafficSnapshot() map[string]any {
 	}
 }
 
-func shouldIncludeHostTraffic(statCount int, now time.Time) bool {
-	return statCount > 0 || lastHostTrafficReportAt.IsZero() || now.Sub(lastHostTrafficReportAt) >= idleHostTrafficReportEvery
+func shouldReportRuleTraffic(statCount int, now time.Time) bool {
+	return statCount > 0 && (lastRuleTrafficReportAt.IsZero() || now.Sub(lastRuleTrafficReportAt) >= currentActiveTrafficReportInterval())
+}
+
+func currentActiveTrafficReportInterval() time.Duration {
+	return agentPeriodicInterval(configuredActiveTrafficReportInterval(), "traffic")
+}
+
+func configuredActiveTrafficReportInterval() time.Duration {
+	interval := time.Duration(activeTrafficReportNanos.Load())
+	if interval < activeTrafficReportEvery || interval > steadyTrafficReportEvery {
+		return activeTrafficReportEvery
+	}
+	return interval
+}
+
+// The panel may relax ordinary traffic accounting to a larger batch window.
+// Zero is intentionally ignored so an older panel keeps the conservative
+// ten-second default.
+func setActiveTrafficReportIntervalSeconds(seconds int) {
+	if seconds <= 0 {
+		return
+	}
+	interval := time.Duration(seconds) * time.Second
+	if interval < activeTrafficReportEvery {
+		interval = activeTrafficReportEvery
+	}
+	if interval > steadyTrafficReportEvery {
+		interval = steadyTrafficReportEvery
+	}
+	previous := configuredActiveTrafficReportInterval()
+	activeTrafficReportNanos.Store(int64(interval))
+	if interval < previous {
+		trafficCollectMu.Lock()
+		if nextTrafficCollectInterval > interval {
+			nextTrafficCollectInterval = interval
+		}
+		trafficCollectMu.Unlock()
+		wakeAgentMetricsScheduler()
+	}
+}
+
+func shouldIncludeHostTraffic(reportingRuleTraffic bool, now time.Time) bool {
+	return reportingRuleTraffic || lastHostTrafficReportAt.IsZero() || now.Sub(lastHostTrafficReportAt) >= idleHostTrafficReportEvery
 }
 
 func scheduleTrafficCollection(cfg Config) bool {
@@ -165,10 +211,22 @@ func scheduleTrafficCollection(cfg Config) bool {
 	return true
 }
 
+func prioritizeTrafficCollectionForRules(ruleCount int) {
+	if ruleCount <= 0 {
+		return
+	}
+	trafficCollectMu.Lock()
+	if nextTrafficCollectInterval >= idleHostTrafficReportEvery {
+		lastTrafficCollectAt = time.Time{}
+		nextTrafficCollectInterval = trafficCollectInterval
+	}
+	trafficCollectMu.Unlock()
+}
+
 func collectTraffic(cfg Config) time.Duration {
 	started := time.Now()
 	states := readLocalRuleStates()
-	nextInterval := trafficCollectIntervalForRuleCount(len(states))
+	nextInterval := trafficCollectionIntervalForRuleCount(len(states))
 	defer func() {
 		elapsed := time.Since(started)
 		if elapsed >= nextInterval/2 {
@@ -177,46 +235,50 @@ func collectTraffic(cfg Config) time.Duration {
 			}
 		}
 	}()
-	iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
-	nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
-	diagnostics.nftMarkers = nftMarkers
-	nftProcessCounters, nftProcessMarkers := nftProcessCounterSnapshotWithDiagnostics()
-	diagnostics.nftProcessMarkers = nftProcessMarkers
-	connCounts := conntrackConnectionsSnapshot(states)
 	stats := []map[string]any{}
 	pendingBaselines := make([]trafficBaselineUpdate, 0, len(states))
 	watched := len(states)
-	for _, state := range states {
-		if state.RuleID <= 0 {
-			continue
-		}
-		counters := iptablesCounters[state.Port]
-		if state.ForwardType == "nftables" {
-			if nft, ok := nftCounters[state.RuleID]; ok {
-				counters = nft
+	if len(states) > 0 {
+		iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
+		nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
+		diagnostics.nftMarkers = nftMarkers
+		nftProcessCounters, nftProcessMarkers := nftProcessCounterSnapshotWithDiagnostics()
+		diagnostics.nftProcessMarkers = nftProcessMarkers
+		connCounts := conntrackConnectionsSnapshot(states)
+		for _, state := range states {
+			if state.RuleID <= 0 {
+				continue
 			}
-		} else if diagnostics.nftProcessMarkers[state.Port] {
-			counters = nftProcessCounters[state.Port]
+			counters := iptablesCounters[state.Port]
+			if state.ForwardType == "nftables" {
+				if nft, ok := nftCounters[state.RuleID]; ok {
+					counters = nft
+				}
+			} else if diagnostics.nftProcessMarkers[state.Port] {
+				counters = nftProcessCounters[state.Port]
+			}
+			curConns := connCounts[state.Port]
+			prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
+			initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
+			if initialBaseline {
+				prevIn, prevOut = counters.In, counters.Out
+				prevConns = curConns
+			}
+			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(curConns, prevConns)
+			nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: curConns}
+			if din > 0 || dout > 0 || dconns > 0 {
+				stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
+				pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
+			} else {
+				writePrevState(state.Port, nextBaseline)
+			}
+			logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
 		}
-		curConns := connCounts[state.Port]
-		prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
-		initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
-		if initialBaseline {
-			prevIn, prevOut = counters.In, counters.Out
-			prevConns = curConns
-		}
-		din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(curConns, prevConns)
-		nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: curConns}
-		if din > 0 || dout > 0 || dconns > 0 {
-			stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
-			pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
-		} else {
-			writePrevState(state.Port, nextBaseline)
-		}
-		logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
 	}
+	now := time.Now()
+	reportRuleTraffic := shouldReportRuleTraffic(len(stats), now)
 	var hostTraffic map[string]any
-	if shouldIncludeHostTraffic(len(stats), time.Now()) {
+	if shouldIncludeHostTraffic(reportRuleTraffic, now) {
 		hostTraffic = hostTrafficSnapshot()
 	}
 	payload := map[string]any{"stats": stats}
@@ -233,15 +295,22 @@ func collectTraffic(cfg Config) time.Duration {
 			payload["h"] = []any{hostTraffic["bytesIn"], hostTraffic["bytesOut"]}
 		}
 	}
-	if len(stats) > 0 || hostTraffic != nil {
-		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
+	if reportRuleTraffic || hostTraffic != nil {
+		response := map[string]any{}
+		if err := post(cfg, "/api/agent/traffic", payload, &response); err != nil {
 			if isTransientAgentCommError(err) {
 				logAgentCommError("traffic-report", err)
 			} else if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
 				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 			}
 		} else {
+			if seconds, ok := response["trafficReportInterval"].(float64); ok {
+				setActiveTrafficReportIntervalSeconds(int(seconds))
+			}
 			commitTrafficBaselines(true, pendingBaselines)
+			if len(stats) > 0 {
+				lastRuleTrafficReportAt = time.Now()
+			}
 			if hostTraffic != nil {
 				lastHostTrafficReportAt = time.Now()
 			}
@@ -250,11 +319,24 @@ func collectTraffic(cfg Config) time.Duration {
 			}
 		}
 	}
+	nextInterval = trafficCollectionIntervalForRuleCount(len(states))
 	return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+}
+
+func trafficCollectionIntervalForRuleCount(count int) time.Duration {
+	interval := trafficCollectIntervalForRuleCount(count)
+	if count > 0 {
+		if reportInterval := currentActiveTrafficReportInterval(); reportInterval > interval {
+			interval = reportInterval
+		}
+	}
+	return interval
 }
 
 func trafficCollectIntervalForRuleCount(count int) time.Duration {
 	switch {
+	case count <= 0:
+		return idleHostTrafficReportEvery
 	case count >= 500:
 		return 15 * time.Second
 	case count >= 300:
@@ -269,6 +351,9 @@ func trafficCollectIntervalForRuleCount(count int) time.Duration {
 }
 
 func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) time.Duration {
+	if base >= idleHostTrafficReportEvery {
+		return base
+	}
 	next := base
 	if elapsed >= 5*time.Second {
 		next = base * 3
@@ -361,8 +446,8 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	probeLimit := len(forwardGroupTasks)
 	serviceLimit := tcpingDynamicBatchLimit(len(serviceTasks), tcpingProbeBatchSize, 1, 96)
 	if force {
-		ruleLimit = minInt(len(ruleTasks), ruleLimit*2)
-		serviceLimit = minInt(len(serviceTasks), serviceLimit*2)
+		ruleLimit = len(ruleTasks)
+		serviceLimit = len(serviceTasks)
 	}
 	tunnelProbeLimit := len(tunnelTasks)
 	tcpingCursorMu.Lock()
@@ -377,18 +462,26 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	}
 
 	results, tunnels, forwardGroups, services := runTCPingTasks(selected)
+	reportPlan := agentTCPingReportGate.plan(results, tunnels, forwardGroups, services, force, time.Now())
+	results = reportPlan.results
+	tunnels = reportPlan.tunnels
+	forwardGroups = reportPlan.forwardGroups
+	services = reportPlan.services
 	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
-		payload := map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services}
+		payload := map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services, "force": force}
 		if err := post(cfg, "/api/agent/tcping", payload, &map[string]any{}); err != nil {
 			if isTransientAgentCommError(err) {
 				logAgentCommError("tcping-report", err)
 			} else if shouldLogAgentReport("tcping-report-failed", agentReportLogInterval) {
 				logf("tcping report failed rules=%d tunnels=%d groups=%d services=%d: %v", len(results), len(tunnels), len(forwardGroups), len(services), err)
 			}
-		} else if agentVerboseLogs && (len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0) {
-			total, timeouts, avgLatency := summarizeTCPingReport(results, tunnels, forwardGroups, services)
-			if shouldLogAgentReport("tcping-report-ok", agentReportLogInterval) {
-				logf("tcping report ok rules=%d tunnels=%d groups=%d services=%d timeouts=%d/%d avg=%s", len(results), len(tunnels), len(forwardGroups), len(services), timeouts, total, avgLatency)
+		} else {
+			agentTCPingReportGate.commit(reportPlan)
+			if agentVerboseLogs && (len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0) {
+				total, timeouts, avgLatency := summarizeTCPingReport(results, tunnels, forwardGroups, services)
+				if shouldLogAgentReport("tcping-report-ok", agentReportLogInterval) {
+					logf("tcping report ok rules=%d tunnels=%d groups=%d services=%d timeouts=%d/%d avg=%s", len(results), len(tunnels), len(forwardGroups), len(services), timeouts, total, avgLatency)
+				}
 			}
 		}
 	}
@@ -713,6 +806,7 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	switch task.Kind {
 	case "rule":
 		payload["ruleId"] = task.RuleID
+		payload["tunnelId"] = task.TunnelID
 		payload["sourcePort"] = task.SourcePort
 	case "tunnel":
 		payload["tunnelId"] = task.TunnelID

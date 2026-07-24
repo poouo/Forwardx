@@ -59,6 +59,23 @@ test("a stale probe falls back to current host state", () => {
   assert.equal(state.source, "hosts");
 });
 
+test("a five minute failure snapshot remains authoritative until the next stable report", () => {
+  const state = resolveLinkAvailability({
+    label: "隧道",
+    enabled: true,
+    hostsLoaded: true,
+    probe: {
+      latestLatencyMs: null,
+      latestLatencyIsTimeout: true,
+      latestLatencyAt: now - 5 * 60_000,
+    },
+    requiredNodes: [{ id: 1, available: true }, { id: 2, available: true }],
+  }, now);
+
+  assert.equal(state.status, "unavailable");
+  assert.equal(state.source, "probe");
+});
+
 test("a multi-exit tunnel remains usable when one exit is online", () => {
   const { tunnelAvailabilityById } = buildLinkAvailabilityIndex({
     now,
@@ -81,6 +98,29 @@ test("a multi-exit tunnel remains usable when one exit is online", () => {
 
   assert.equal(tunnelAvailabilityById.get(10)?.status, "degraded");
   assert.equal(tunnelAvailabilityById.get(10)?.available, true);
+});
+
+test("a shared tunnel uses the server summary without exposing endpoint hosts", () => {
+  const { tunnelAvailabilityById } = buildLinkAvailabilityIndex({
+    now,
+    hosts: [],
+    groups: [],
+    tunnels: [{
+      id: 12,
+      isEnabled: true,
+      entryHostId: 1,
+      exitHostId: 2,
+      availability: {
+        status: "available",
+        available: true,
+        source: "hosts",
+        message: "隧道包含的主机均在线",
+      },
+    }],
+  });
+
+  assert.equal(tunnelAvailabilityById.get(12)?.status, "available");
+  assert.equal(tunnelAvailabilityById.get(12)?.source, "hosts");
 });
 
 test("an exit group using no strategy follows only its first enabled member", () => {
@@ -154,6 +194,28 @@ test("a port forward without an independent probe follows its host", () => {
 
   assert.equal(offline.groupAvailabilityById.get(20)?.status, "unavailable");
   assert.equal(online.groupAvailabilityById.get(20)?.status, "available");
+});
+
+test("a shared group uses the server summary without exposing hidden members", () => {
+  const { groupAvailabilityById } = buildLinkAvailabilityIndex({
+    hosts: [],
+    groups: [{
+      id: 22,
+      groupMode: "port",
+      isEnabled: true,
+      members: [],
+      availability: {
+        status: "available",
+        available: true,
+        source: "hosts",
+        message: "端口转发包含的主机均在线",
+      },
+    }],
+    tunnels: [],
+    now,
+  });
+
+  assert.equal(groupAvailabilityById.get(22)?.status, "available");
 });
 
 test("forward-chain availability is independent from referenced rule runtime fields", () => {

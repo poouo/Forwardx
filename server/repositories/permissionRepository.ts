@@ -12,6 +12,7 @@ import { getDb } from "../dbRuntime";
 import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
 import { getActiveUserSubscriptions } from "./billingRepository";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
+import { clearLinkAccessScopeCache } from "../linkAccessView";
 
 // ==================== User-Host Permissions ====================
 
@@ -85,9 +86,10 @@ export async function setUserHostPermissions(userId: number, hostIds: number[]) 
   // 先删除旧权限
   await db.delete(userHostPermissions).where(eq(userHostPermissions.userId, userId));
   // 插入新权限
-    if (hostIds.length > 0) {
-      await db.insert(userHostPermissions).values(hostIds.map(hostId => ({ userId, hostId })));
-    }
+  if (hostIds.length > 0) {
+    await db.insert(userHostPermissions).values(hostIds.map(hostId => ({ userId, hostId })));
+  }
+  clearLinkAccessScopeCache();
 }
 
 /** 获取某主机被授权的用户ID列表 */
@@ -124,6 +126,7 @@ export async function deleteUserPermissions(userId: number) {
   await db.delete(userHostPermissions).where(eq(userHostPermissions.userId, userId));
   await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
   await db.delete(userSubscriptions).where(eq(userSubscriptions.userId, userId));
+  clearLinkAccessScopeCache();
 }
 
 // ==================== User Rule/Port Count ====================
@@ -210,6 +213,7 @@ export async function setUserForwardGroupPermissions(userId: number, forwardGrou
   if (uniqueIds.length > 0) {
     await db.insert(userForwardGroupPermissions).values(uniqueIds.map((forwardGroupId) => ({ userId, forwardGroupId })));
   }
+  clearLinkAccessScopeCache();
 }
 
 export async function checkUserForwardGroupPermission(userId: number, forwardGroupId: number): Promise<boolean> {
@@ -258,6 +262,7 @@ export async function setUserTunnelPermissions(userId: number, tunnelIds: number
   if (tunnelIds.length > 0) {
     await db.insert(userTunnelPermissions).values(tunnelIds.map(tunnelId => ({ userId, tunnelId })));
   }
+  clearLinkAccessScopeCache();
 }
 
 export async function checkUserTunnelPermission(userId: number, tunnelId: number): Promise<boolean> {

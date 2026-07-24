@@ -439,6 +439,40 @@ async function assertRulePortWithinEntryPolicy(options: {
   }
 }
 
+async function assertRulePortWithinUserPlanRange(options: {
+  userId: number;
+  hostId: number;
+  sourcePort: number;
+  tunnelId?: number | null;
+}) {
+  const port = Number(options.sourcePort || 0);
+  if (!port) return;
+  const planRange = await db.getUserPlanPortRange(
+    Number(options.userId),
+    Number(options.hostId),
+    Number(options.tunnelId || 0) || undefined,
+  );
+  if (planRange && (port < planRange.start || port > planRange.end)) {
+    throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+  }
+}
+
+async function assertForwardGroupPortWithinUserPlanRange(options: {
+  userId: number;
+  forwardGroupId: number;
+  sourcePort: number;
+}) {
+  const port = Number(options.sourcePort || 0);
+  if (!port) return;
+  const planRange = await db.getUserForwardGroupPlanPortRange(
+    Number(options.userId),
+    Number(options.forwardGroupId),
+  );
+  if (planRange && (port < planRange.start || port > planRange.end)) {
+    throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+  }
+}
+
 async function settleTrafficBillingForDeletedRule(rule: any) {
   const billingResource = await db.findTrafficBillingResourceForRule(rule);
   const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
@@ -570,6 +604,11 @@ export async function toggleForwardRuleForActor(
             if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
               throw new Error("套餐已到期，请续费后再启用规则");
             }
+            await assertForwardGroupPortWithinUserPlanRange({
+              userId: actor.id,
+              forwardGroupId: groupId,
+              sourcePort: Number(rule.sourcePort),
+            });
           }
         }
         if (isEnabled) {
@@ -623,6 +662,12 @@ export async function toggleForwardRuleForActor(
           tunnelId: Number((rule as any).tunnelId || 0) || null,
         });
         if (actor.role !== "admin") {
+          await assertRulePortWithinUserPlanRange({
+            userId: actor.id,
+            hostId: Number(rule.hostId),
+            sourcePort: Number(rule.sourcePort),
+            tunnelId: Number((rule as any).tunnelId || 0) || null,
+          });
           const activeTunnelId = Number((rule as any).tunnelId || 0);
           const actorContext = { user: actor };
           const resourceAccess = activeTunnelId
@@ -1723,6 +1768,14 @@ export const crudRulesRouter = router({
           tunnelId: nextTunnelIdForRule,
           tunnel: selectedTunnelForRule,
         });
+        if (ctx.user.role !== "admin") {
+          await assertRulePortWithinUserPlanRange({
+            userId: ctx.user.id,
+            hostId: nextHostIdForRule,
+            sourcePort,
+            tunnelId: nextTunnelIdForRule,
+          });
+        }
         const sourceReservation = await reserveRulePort(nextHostIdForRule, sourcePort, nextProtocolForRule, rule.id);
         if (!sourceReservation) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;

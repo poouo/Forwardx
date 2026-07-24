@@ -15,18 +15,52 @@ const randomPortInputSchema = z.object({
 export const portsRulesRouter = router({
   checkPort: protectedProcedure
     .input(z.object({
-      hostId: z.number(),
+      hostId: z.number().int().positive().optional(),
+      forwardGroupId: z.number().int().positive().optional(),
       tunnelId: z.number().nullable().optional(),
       sourcePort: z.number().min(1).max(65535),
       excludeRuleId: z.number().optional(),
       protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
-    }))
+    }).refine(
+      (input) => !!input.hostId !== !!input.forwardGroupId,
+      { message: "请选择一个主机、隧道或转发组" },
+    ))
     .query(async ({ input, ctx }) => {
+      if (input.excludeRuleId) {
+        await requireRuleAccess(ctx, input.excludeRuleId);
+      }
+      if (input.forwardGroupId) {
+        if (ctx.user.role !== "admin") {
+          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, input.forwardGroupId);
+          if (!hasPermission) throw new Error("无权使用该转发组");
+          const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
+          if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
+            return { used: true, reason: `套餐端口必须在 ${planRange.start}-${planRange.end} 范围内` };
+          }
+        }
+        try {
+          await db.validateForwardGroupRuleConfig(input.forwardGroupId, {
+            sourcePort: input.sourcePort,
+            protocol: input.protocol,
+            excludeTemplateRuleId: input.excludeRuleId,
+          });
+          return { used: false };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "";
+          const isRangeError = /必须在.*(?:范围|区间)|must be.*range/i.test(reason);
+          return {
+            used: true,
+            ...(isRangeError ? { reason } : {}),
+          };
+        }
+      }
+
+      const hostId = Number(input.hostId);
       let policy = portPolicyFrom(null);
       if (input.tunnelId) {
         const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
-        if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
-        const host = await db.getHostById(input.hostId);
+        if (tunnel.entryHostId !== hostId) throw new Error("隧道入口主机与规则主机不一致");
+        const host = await db.getHostById(hostId);
         policy = combinePortPolicies(
           portPolicyFrom(host as any),
           portPolicyFrom({
@@ -35,14 +69,14 @@ export const portsRulesRouter = router({
           }),
         );
       } else {
-        const { host } = await requireHostUseAccess(ctx, input.hostId);
+        const { host } = await requireHostUseAccess(ctx, hostId);
         policy = portPolicyFrom(host as any);
       }
       if (!isPortAllowedByPolicy(input.sourcePort, policy)) {
         return { used: true, reason: portPolicyErrorMessage(policy) };
       }
       if (ctx.user.role !== "admin") {
-        const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
+        const planRange = await db.getUserPlanPortRange(ctx.user.id, hostId, input.tunnelId ?? undefined);
         if (planRange) {
           policy = combinePortPolicies(policy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
         }
@@ -50,16 +84,13 @@ export const portsRulesRouter = router({
           return { used: true, reason: portPolicyErrorMessage(policy, "套餐端口") };
         }
       }
-      if (input.excludeRuleId) {
-        await requireRuleAccess(ctx, input.excludeRuleId);
-      }
       const excludeRuleIds = input.excludeRuleId
         ? [
             input.excludeRuleId,
             ...((await db.getForwardGroupChildRulesForTemplate(input.excludeRuleId)) as any[]).map((rule: any) => Number(rule.id)),
           ]
         : [];
-      const used = await db.isPortUsedOnHost(input.hostId, input.sourcePort, excludeRuleIds, input.protocol);
+      const used = await db.isPortUsedOnHost(hostId, input.sourcePort, excludeRuleIds, input.protocol);
       return { used };
     }),
   randomPort: protectedProcedure

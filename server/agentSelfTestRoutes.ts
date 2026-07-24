@@ -4,26 +4,15 @@ import { buildMetaAgentSelfTestPayload, buildRuleAgentSelfTestPayload, parseSelf
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
 import { appendPanelLog } from "./_core/panelLogger";
-import { getAgentHostFromRequest } from "./agentAuth";
+import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { combineTunnelRuleLatencySample } from "./ruleLatency";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
+import { waitForTunnelLatencyRefresh } from "./tunnelLatencyRefresh";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
-}
-
-async function waitForTunnelLatencyRefresh(tunnelId: number, baselineId: number, waitMs = 4500) {
-  const deadline = Date.now() + Math.max(0, waitMs);
-  let latest = await db.getLatestTunnelLatency(tunnelId);
-  while (Date.now() < deadline) {
-    const latestId = Number((latest as any)?.id || 0);
-    if (latestId > 0 && (baselineId <= 0 || latestId !== baselineId)) return latest;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    latest = await db.getLatestTunnelLatency(tunnelId);
-  }
-  return latest;
 }
 
 function tunnelSeriesKey(value: unknown, fallback: string) {
@@ -98,7 +87,7 @@ async function isTunnelDetailsCurrent(tunnel: any, details: any[]) {
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -119,7 +108,11 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
     const refreshedTunnelLatency = meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number"
-      ? await waitForTunnelLatencyRefresh(meta.tunnelId, Number((meta as any).tunnelLatencyBaselineId || 0))
+      ? await waitForTunnelLatencyRefresh({
+        tunnelId: meta.tunnelId,
+        baselineId: Number((meta as any).tunnelLatencyBaselineId || 0),
+        loadLatest: db.getLatestTunnelLatency,
+      })
       : null;
     const accepted = await db.completeForwardTestIfActive(testId, {
       status: success ? "success" : "failed",
@@ -423,7 +416,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
 });
 agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;

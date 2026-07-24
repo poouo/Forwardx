@@ -1174,8 +1174,12 @@ export function ForwardGroupsContent({
         utils.tunnels.list.invalidate(),
         utils.tunnels.options.invalidate(),
         utils.tunnels.listPage.invalidate(),
+        utils.tunnels.mapItems.invalidate(),
         utils.tunnels.listAll.invalidate(),
         utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
         utils.trafficBilling.configs.invalidate(),
         utils.trafficBilling.storeResources.invalidate(),
       ]);

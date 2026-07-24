@@ -72,6 +72,7 @@ import { enqueuePluginAgentTaskGroup, getPluginAgentTaskGroup, type PluginAgentT
 import { isFreshHostHeartbeat } from "./hostRepository";
 import { assertSafePluginHttpUrl } from "../ssrf";
 import { executePluginPanelRequest, getPluginPanelOperationCapabilities } from "../pluginPanelApi";
+import { getSetting } from "./settingsRepository";
 
 const GITHUB_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i;
 const FORWARDX_REPO_URL = "https://github.com/poouo/Forwardx";
@@ -113,6 +114,130 @@ const PLUGIN_SYNC_ENCODED_CHUNK_BYTES = 48 * 1024;
 const OFFICIAL_STORE_CACHE_TTL_MS = 10 * 60 * 1000;
 const PLUGIN_WARN_THROTTLE_MS = 5 * 60 * 1000;
 const PLUGIN_SIDEBAR_ENABLED_SETTING_KEY = "__forwardxSidebarEnabled";
+const LIVE2D_WIDGET_PLUGIN_ID = "live2d-widget";
+const LIVE2D_WIDGET_RUNTIME_VERSION = "1.0.1";
+const LIVE2D_WIDGET_TOOL_IDS = [
+  "hitokoto",
+  "asteroids",
+  "switch-model",
+  "switch-texture",
+  "photo",
+  "info",
+  "quit",
+] as const;
+const LIVE2D_WIDGET_DEFAULT_TOOLS = ["hitokoto", "switch-model", "switch-texture", "photo", "info", "quit"];
+const LIVE2D_WIDGET_RUNTIME = {
+  scriptUrl: `https://fastly.jsdelivr.net/npm/live2d-widgets@${LIVE2D_WIDGET_RUNTIME_VERSION}/dist/waifu-tips.js`,
+  styleUrl: `https://fastly.jsdelivr.net/npm/live2d-widgets@${LIVE2D_WIDGET_RUNTIME_VERSION}/dist/waifu.css`,
+  cubism2Path: `https://fastly.jsdelivr.net/npm/live2d-widgets@${LIVE2D_WIDGET_RUNTIME_VERSION}/dist/live2d.min.js`,
+  cubism5Path: "https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js",
+} as const;
+const LIVE2D_WIDGET_SETTINGS_SCHEMA: PluginSettingField[] = [
+  {
+    key: "displayScope",
+    label: "显示范围",
+    type: "select",
+    defaultValue: "authenticated",
+    options: [
+      { value: "authenticated", label: "已登录用户" },
+      { value: "all", label: "所有访问者（含登录页）" },
+      { value: "admin", label: "仅管理员" },
+    ],
+    description: "仅在允许的页面加载看板娘；未满足范围时不会请求上游资源。",
+  },
+  {
+    key: "showOnMobile",
+    label: "移动端显示",
+    type: "boolean",
+    defaultValue: false,
+    description: "移动设备默认关闭，避免小屏遮挡操作区域。",
+  },
+  {
+    key: "waifuPath",
+    label: "提示配置路径",
+    type: "url",
+    required: true,
+    defaultValue: "/plugins/live2d-widget/waifu-tips.json",
+    description: "JSON 提示配置；可使用面板内置文件或自托管文件。",
+  },
+  {
+    key: "cdnPath",
+    label: "模型 CDN 路径",
+    type: "url",
+    required: true,
+    defaultValue: "https://fastly.jsdelivr.net/gh/fghrsh/live2d_api/",
+    description: "目录中需要包含 model_list.json 和模型资源；模型仓库的许可由其维护者决定。",
+  },
+  {
+    key: "modelId",
+    label: "默认模型编号",
+    type: "number",
+    defaultValue: 0,
+    min: 0,
+    max: 999,
+    description: "只对浏览器首次选择模型时生效；上游会把用户选择保存在本地。",
+  },
+  {
+    key: "tools",
+    label: "工具按钮",
+    type: "multi-select",
+    defaultValue: [...LIVE2D_WIDGET_DEFAULT_TOOLS],
+    options: [
+      { value: "hitokoto", label: "一言" },
+      { value: "asteroids", label: "飞机大战" },
+      { value: "switch-model", label: "切换模型" },
+      { value: "switch-texture", label: "切换纹理" },
+      { value: "photo", label: "拍照" },
+      { value: "info", label: "项目说明" },
+      { value: "quit", label: "关闭" },
+    ],
+    description: "一言、飞机大战和模型资源可能访问各自的第三方服务。",
+  },
+  {
+    key: "drag",
+    label: "允许拖动",
+    type: "boolean",
+    defaultValue: false,
+  },
+  {
+    key: "showToggleAfterQuit",
+    label: "关闭后显示唤起按钮",
+    type: "boolean",
+    defaultValue: true,
+    description: "关闭后保留左下角唤起按钮；关闭此项会按上游行为永久隐藏，直到清除浏览器本地存储。",
+  },
+  {
+    key: "logLevel",
+    label: "日志等级",
+    type: "select",
+    defaultValue: "warn",
+    options: [
+      { value: "error", label: "错误" },
+      { value: "warn", label: "警告" },
+      { value: "info", label: "信息" },
+      { value: "trace", label: "详细" },
+    ],
+  },
+  {
+    key: "dock",
+    label: "停靠位置",
+    type: "select",
+    defaultValue: "right",
+    options: [
+      { value: "left", label: "左侧" },
+      { value: "right", label: "右侧" },
+    ],
+  },
+  {
+    key: "size",
+    label: "模型尺寸",
+    type: "number",
+    defaultValue: 280,
+    min: 200,
+    max: 420,
+    description: "画布边长，单位为 CSS 像素。",
+  },
+];
 const PACKAGE_ASSET_EXTENSIONS = new Set([
   ...DATA_ASSET_EXTENSIONS,
   ".html",
@@ -493,9 +618,11 @@ function normalizeSettingFields(value: unknown): PluginSettingField[] {
       description: String(item?.description || "").trim().slice(0, 240) || undefined,
       placeholder: String(item?.placeholder || "").trim().slice(0, 160) || undefined,
       required: item?.required === true,
-      defaultValue: typeof item?.defaultValue === "boolean" || typeof item?.defaultValue === "number" || typeof item?.defaultValue === "string"
-        ? item.defaultValue
-        : undefined,
+      defaultValue: type === "multi-select" && Array.isArray(item?.defaultValue)
+        ? item.defaultValue.map((option: unknown) => String(option || "").trim()).filter(Boolean).slice(0, 40)
+        : typeof item?.defaultValue === "boolean" || typeof item?.defaultValue === "number" || typeof item?.defaultValue === "string"
+          ? item.defaultValue
+          : undefined,
       min: Number.isFinite(Number(item?.min)) ? Number(item.min) : undefined,
       max: Number.isFinite(Number(item?.max)) ? Number(item.max) : undefined,
       options: Array.isArray(item?.options)
@@ -1892,6 +2019,33 @@ async function bundledPathForPlugin(plugin: any) {
 }
 
 function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginManifest {
+  if (storeItem.id === LIVE2D_WIDGET_PLUGIN_ID) {
+    return normalizeManifest({
+      id: LIVE2D_WIDGET_PLUGIN_ID,
+      name: storeItem.name,
+      version: storeItem.version || "1.0.0",
+      description: storeItem.description,
+      detailsMarkdown: storeItem.detailsMarkdown,
+      features: storeItem.features,
+      author: storeItem.author,
+      releaseDate: storeItem.releaseDate,
+      updatedAt: storeItem.updatedAt,
+      changelog: storeItem.changelog,
+      tags: storeItem.tags,
+      license: storeItem.license,
+      homepage: storeItem.homepage,
+      repository: storeItem.packageRepository || storeItem.repository,
+      permissions: ["ui:widget", "ui:settings"],
+      extensionPoints: ["ui.widget", "settings.panel"],
+      settingsSchema: LIVE2D_WIDGET_SETTINGS_SCHEMA,
+      pages: [{
+        id: "overview",
+        title: "许可证与资源说明",
+        contentType: "markdown",
+        content: "本插件适配 stevenjoezhang/live2d-widget；运行时代码按 GPL-3.0-or-later 发布。ForwardX 不内置模型，模型资源请按所选仓库的许可使用。",
+      }],
+    });
+  }
   return normalizeManifest({
     id: storeItem.id,
     name: storeItem.name,
@@ -2475,6 +2629,86 @@ export async function getPlugin(pluginId: string) {
   const id = assertPluginId(pluginId);
   const rows = await db.select().from(plugins).where(eq(plugins.pluginId, id)).limit(1);
   return rows[0] ? normalizePluginRow(rows[0]) : undefined;
+}
+
+export type Live2dWidgetRuntimeConfig = {
+  enabled: boolean;
+  pluginId?: string;
+  scriptUrl?: string;
+  styleUrl?: string;
+  cubism2Path?: string;
+  cubism5Path?: string;
+  waifuPath?: string;
+  cdnPath?: string;
+  modelId?: number;
+  tools?: string[];
+  drag?: boolean;
+  showToggleAfterQuit?: boolean;
+  logLevel?: "error" | "warn" | "info" | "trace";
+  showOnMobile?: boolean;
+  dock?: "left" | "right";
+  size?: number;
+};
+
+function live2dSettingValue(manifest: ForwardxPluginManifest, key: string) {
+  const normalizedKey = key.toLowerCase();
+  const values = pluginSettingsValues(manifest);
+  if (Object.prototype.hasOwnProperty.call(values, normalizedKey)) return values[normalizedKey];
+  return manifest.settingsSchema?.find((field) => field.key === normalizedKey)?.defaultValue;
+}
+
+function live2dPathValue(value: unknown, fallback: string) {
+  const text = String(value ?? "").trim();
+  if (/^\/(?!\/)/.test(text)) return text.slice(0, 1000);
+  if (/^https?:\/\//i.test(text)) return text.slice(0, 1000);
+  return fallback;
+}
+
+export function resolveLive2dWidgetRuntimeConfig(plugin: any, userRole?: string | null): Live2dWidgetRuntimeConfig {
+  if (!plugin || plugin.pluginId !== LIVE2D_WIDGET_PLUGIN_ID || plugin.status !== "enabled") return { enabled: false };
+  const manifest = plugin.manifest as ForwardxPluginManifest | undefined;
+  if (!manifest) return { enabled: false };
+  const permissions = Array.isArray(plugin.permissions) ? plugin.permissions : manifest.permissions || [];
+  const extensionPoints = Array.isArray(plugin.extensionPoints) ? plugin.extensionPoints : manifest.extensionPoints || [];
+  if (!permissions.includes("ui:widget") || !extensionPoints.includes("ui.widget")) return { enabled: false };
+
+  const displayScope = String(live2dSettingValue(manifest, "displayScope") || "authenticated");
+  if (displayScope === "admin" && userRole !== "admin") return { enabled: false };
+  if (displayScope === "authenticated" && !userRole) return { enabled: false };
+
+  const toolsValue = live2dSettingValue(manifest, "tools");
+  const tools = Array.isArray(toolsValue)
+    ? Array.from(new Set(toolsValue.map((item) => String(item || "").trim()).filter((item) => (LIVE2D_WIDGET_TOOL_IDS as readonly string[]).includes(item))))
+    : [...LIVE2D_WIDGET_DEFAULT_TOOLS];
+  const logLevelValue = String(live2dSettingValue(manifest, "logLevel") || "warn");
+  const logLevel = (["error", "warn", "info", "trace"] as const).includes(logLevelValue as any)
+    ? logLevelValue as Live2dWidgetRuntimeConfig["logLevel"]
+    : "warn";
+  const modelId = Number(live2dSettingValue(manifest, "modelId"));
+  const size = Number(live2dSettingValue(manifest, "size"));
+  const dockValue = String(live2dSettingValue(manifest, "dock") || "right");
+
+  return {
+    enabled: true,
+    pluginId: LIVE2D_WIDGET_PLUGIN_ID,
+    ...LIVE2D_WIDGET_RUNTIME,
+    waifuPath: live2dPathValue(live2dSettingValue(manifest, "waifuPath"), "/plugins/live2d-widget/waifu-tips.json"),
+    cdnPath: live2dPathValue(live2dSettingValue(manifest, "cdnPath"), "https://fastly.jsdelivr.net/gh/fghrsh/live2d_api/"),
+    modelId: Number.isFinite(modelId) ? Math.max(0, Math.min(999, Math.floor(modelId))) : 0,
+    tools,
+    drag: live2dSettingValue(manifest, "drag") === true,
+    showToggleAfterQuit: live2dSettingValue(manifest, "showToggleAfterQuit") !== false,
+    logLevel,
+    showOnMobile: live2dSettingValue(manifest, "showOnMobile") === true,
+    dock: dockValue === "left" ? "left" : "right",
+    size: Number.isFinite(size) ? Math.max(200, Math.min(420, Math.floor(size))) : 280,
+  };
+}
+
+export async function getLive2dWidgetRuntimeConfig(userRole?: string | null) {
+  if ((await getSetting("pluginsEnabled").catch(() => null)) !== "true") return { enabled: false } as Live2dWidgetRuntimeConfig;
+  const plugin = await getPlugin(LIVE2D_WIDGET_PLUGIN_ID);
+  return resolveLive2dWidgetRuntimeConfig(plugin, userRole);
 }
 
 export async function listPluginAssets(pluginId: string) {
@@ -3395,42 +3629,68 @@ export async function updatePluginFromGithub(pluginId: string) {
   return finalizePluginUpdate(updated?.pluginId || plugin.pluginId, expectedVersion);
 }
 
-export async function savePluginSetting(pluginId: string, key: string, value: unknown) {
+export function isPluginSettingUrl(value: string) {
+  return /^https?:\/\//i.test(value) || /^\/(?!\/)/.test(value);
+}
+
+export function normalizePluginSettingValue(field: PluginSettingField, value: unknown) {
+  if (field.type === "boolean") return value === true;
+  if (field.type === "number") {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) throw new Error(`${field.label}需要填写数字`);
+    if (field.min !== undefined && numberValue < field.min) throw new Error(`${field.label}不能小于 ${field.min}`);
+    if (field.max !== undefined && numberValue > field.max) throw new Error(`${field.label}不能大于 ${field.max}`);
+    return numberValue;
+  }
+  if (field.type === "multi-select") {
+    if (!Array.isArray(value)) throw new Error(`${field.label}的选项格式不合法`);
+    const allowed = new Set((field.options || []).map((option) => option.value));
+    const selected = Array.from(new Set(value
+      .map((item) => String(item || "").trim())
+      .filter((item) => item && (!allowed.size || allowed.has(item)))))
+      .slice(0, 40);
+    if (field.required && selected.length === 0) throw new Error(`${field.label}至少需要选择一项`);
+    return selected;
+  }
+  const nextValue = String(value ?? "").slice(0, field.type === "textarea" ? 10000 : 1000);
+  if (field.required && !nextValue.trim()) throw new Error(`${field.label}不能为空`);
+  if (field.type === "url" && nextValue.trim() && !isPluginSettingUrl(nextValue.trim())) {
+    throw new Error(`${field.label}必须填写 http://、https:// 或以 / 开头的面板内路径`);
+  }
+  if (field.type === "select" && field.options?.length) {
+    const allowed = new Set(field.options.map((option) => option.value));
+    if (!allowed.has(nextValue)) throw new Error(`${field.label}的选项不合法`);
+  }
+  return nextValue;
+}
+
+export async function savePluginSettings(pluginId: string, values: Record<string, unknown>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const id = assertPluginId(pluginId);
   const plugin = await getPlugin(id);
   if (!plugin) throw new Error("插件不存在");
-  const settingKey = String(key || "").trim();
-  const field = (plugin.manifest.settingsSchema || []).find((item: PluginSettingField) => item.key === settingKey);
-  if (!field) throw new Error("插件没有声明该设置项");
+  const entries = Object.entries(values || {});
+  if (entries.length === 0) throw new Error("没有需要保存的插件设置");
+  if (entries.length > MAX_PLUGIN_FIELDS) throw new Error(`插件设置项不能超过 ${MAX_PLUGIN_FIELDS} 个`);
+  const fields = new Map<string, PluginSettingField>((plugin.manifest.settingsSchema || [])
+    .map((field: PluginSettingField) => [field.key, field] as const));
   const settings = (plugin.manifest as any)?.settingsValues && typeof (plugin.manifest as any).settingsValues === "object"
     ? { ...(plugin.manifest as any).settingsValues }
     : {};
-  let nextValue: unknown = value;
-  if (field.type === "boolean") {
-    nextValue = value === true;
-  } else if (field.type === "number") {
-    const numberValue = Number(value);
-    if (!Number.isFinite(numberValue)) throw new Error("该设置项需要数字");
-    if (field.min !== undefined && numberValue < field.min) throw new Error(`该设置项不能小于 ${field.min}`);
-    if (field.max !== undefined && numberValue > field.max) throw new Error(`该设置项不能大于 ${field.max}`);
-    nextValue = numberValue;
-  } else {
-    nextValue = String(value ?? "").slice(0, field.type === "textarea" ? 10000 : 1000);
-    if (field.required && !String(nextValue).trim()) throw new Error("该设置项不能为空");
-    if (field.type === "url" && String(nextValue).trim() && !/^https?:\/\//i.test(String(nextValue))) {
-      throw new Error("URL 设置项必须以 http:// 或 https:// 开头");
-    }
-    if (field.type === "select" && field.options?.length) {
-      const allowed = new Set(field.options.map((option: { value: string }) => option.value));
-      if (!allowed.has(String(nextValue))) throw new Error("该设置项的选项不合法");
-    }
+  for (const [rawKey, value] of entries) {
+    const settingKey = String(rawKey || "").trim();
+    const field = fields.get(settingKey);
+    if (!field) throw new Error(`插件没有声明设置项 ${settingKey || "<empty>"}`);
+    settings[settingKey] = normalizePluginSettingValue(field, value);
   }
-  settings[settingKey] = nextValue;
   const manifest = { ...(plugin.manifest as any), settingsValues: settings } as ForwardxPluginManifest;
   await db.update(plugins).set({ manifestJson: JSON.stringify(manifest, null, 2), updatedAt: nowDate() } as any).where(eq(plugins.pluginId, id));
   return await getPlugin(id);
+}
+
+export async function savePluginSetting(pluginId: string, key: string, value: unknown) {
+  return savePluginSettings(pluginId, { [String(key || "").trim()]: value });
 }
 
 function defaultActionInputValue(field: PluginSettingField) {
@@ -3461,11 +3721,21 @@ function normalizeActionInputValues(fields: PluginSettingField[] | undefined, va
       result[field.key] = numberValue;
       continue;
     }
+    if (field.type === "multi-select") {
+      const allowed = new Set((field.options || []).map((option) => option.value));
+      const selected = Array.isArray(incoming)
+        ? Array.from(new Set(incoming.map((item) => String(item || "").trim())
+          .filter((item) => item && (!allowed.size || allowed.has(item))))).slice(0, 40)
+        : [];
+      if (field.required && selected.length === 0) throw new Error(`请至少选择一项${field.label}`);
+      result[field.key] = selected;
+      continue;
+    }
     const textLimit = field.type === "textarea" ? 10000 : 1000;
     const text = String(incoming ?? "").slice(0, textLimit);
     if (field.required && !text.trim()) throw new Error(`请填写${field.label}`);
-    if (field.type === "url" && text.trim() && !/^https?:\/\//i.test(text.trim())) {
-      throw new Error(`${field.label}必须以 http:// 或 https:// 开头`);
+    if (field.type === "url" && text.trim() && !isPluginSettingUrl(text.trim())) {
+      throw new Error(`${field.label}必须填写 http://、https:// 或以 / 开头的面板内路径`);
     }
     if (field.type === "select" && field.options?.length) {
       const allowed = new Set(field.options.map((option: { value: string }) => option.value));

@@ -8,7 +8,7 @@ type AutoHopResult = {
 
 const byTunnel = new Map<string, Map<number, AutoHopResult>>();
 
-const AUTO_HOP_TTL_MS = 5 * 60 * 1000;
+const AUTO_HOP_TTL_MS = 6 * 60 * 1000;
 
 function tunnelPathStateKey(tunnelId: number, pathKey?: string | null) {
   return `${tunnelId}:${String(pathKey || "default").trim().toLowerCase() || "default"}`;

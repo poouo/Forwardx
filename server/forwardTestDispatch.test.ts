@@ -33,6 +33,7 @@ test("forward self-test leases recover lost deliveries and give claimed work a f
         [1, 0, 10, 1, "pending", now, now],
       );
 
+      assert.equal(await tests.hasActiveForwardTests(), true);
       assert.deepEqual((await tests.getPendingForwardTestsByHost(10)).map((row) => Number(row.id)), [1]);
       assert.equal(await tests.markForwardTestRunning(1), true);
       assert.deepEqual(await tests.getPendingForwardTestsByHost(10), []);
@@ -43,13 +44,16 @@ test("forward self-test leases recover lost deliveries and give claimed work a f
       assert.equal(await tests.markForwardTestRunning(1), true);
       assert.equal(await tests.completeForwardTestIfActive(1, { status: "success", latencyMs: 12 }), true);
       assert.equal(await tests.completeForwardTestIfActive(1, { status: "failed" }), false);
+      assert.equal(await tests.hasActiveForwardTests(), false);
 
       await runtime.executeRaw(
         'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)',
         [2, 0, 11, 1, "running", now - 60, now],
       );
+      assert.equal(await tests.hasActiveForwardTests(), true);
       assert.deepEqual(await metrics.timeoutStaleForwardTests(30), []);
       assert.equal(await tests.completeForwardTestIfActive(2, { status: "success", latencyMs: 9 }), true);
+      assert.equal(await tests.hasActiveForwardTests(), false);
 
       await runtime.executeRaw(
         'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -57,6 +61,7 @@ test("forward self-test leases recover lost deliveries and give claimed work a f
       );
       const timedOut = await metrics.timeoutStaleForwardTests(30);
       assert.deepEqual(timedOut.map((row) => Number(row.id)), [3]);
+      assert.equal(await tests.hasActiveForwardTests(), false);
       assert.equal(await tests.completeForwardTestIfActive(3, { status: "success", latencyMs: 9 }), false);
       const timeoutRow = (await runtime.queryRaw('SELECT "status" FROM "forward_tests" WHERE "id" = ?', [3]))[0];
       assert.equal(timeoutRow.status, "timeout");

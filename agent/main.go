@@ -35,13 +35,13 @@ import (
 	"time"
 )
 
-var Version = "2.2.170"
+var Version = "2.2.171"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
-const selfTestIdlePollInterval = 5 * time.Second
+const selfTestIdlePollInterval = 60 * time.Second
 const selfTestActivePollInterval = 2 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
@@ -67,8 +67,20 @@ const agentReportLogInterval = 30 * time.Second
 const transientAgentCommLogInterval = 5 * time.Minute
 const agentEventStreamReconnectMinDelay = 3 * time.Second
 const agentEventStreamReconnectMaxDelay = 30 * time.Second
+const agentEventStreamStableResetInterval = 5 * time.Minute
+const agentEventStreamInactivityTimeout = 75 * time.Second
 const agentEventStreamMaxTokenBytes = 8 * 1024 * 1024
 const actionBacklogKeepaliveInterval = 10 * time.Second
+const agentPresenceInterval = 5 * time.Second
+const agentPresenceMinInterval = 2 * time.Second
+const agentPresenceMaxInterval = 5 * time.Second
+const agentFullHeartbeatInterval = 5 * time.Minute
+const agentIdleHeartbeatIntervalSeconds = 60
+const agentInteractiveHeartbeatMaxIntervalSeconds = 3
+const agentHeartbeatRetryMinInterval = 5 * time.Second
+const agentHeartbeatRetryMaxInterval = 30 * time.Second
+const agentMetricsSchedulerResolution = 5 * time.Second
+const agentForwardGroupHealthProbeMaxInterval = 30 * time.Second
 const actionQueueCapacity = 4096
 
 // 动作 worker 从基础并发起步，积压时自动扩容到上限。空闲 worker 只阻塞等待队列，
@@ -204,6 +216,9 @@ var protocolGuards = map[string]*protocolGuardServer{}
 var failoverMu sync.Mutex
 var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
+var tcpingScheduleMu sync.Mutex
+var agentMetricsWakeCh = make(chan struct{}, 1)
+var agentMetricsForceTCPing atomic.Bool
 var agentLogMu sync.Mutex
 var agentLogSizePrunedAt time.Time
 var agentLogRetentionPrunedAt time.Time
@@ -253,6 +268,7 @@ var actionPendingCount int64
 var heartbeatWakeCh = make(chan struct{}, 1)
 var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
 var heartbeatUrgentWakeFromSSE atomic.Bool
+var heartbeatForceReconcileWake atomic.Bool
 var agentEventStreamConnected atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
@@ -260,6 +276,7 @@ var queuedActionKeys = map[string]int64{}
 var protectedActionPortMu sync.Mutex
 var protectedActionPorts = map[string]int{}
 var compactAgentReports atomic.Bool
+var agentPresenceSupported atomic.Bool
 var heartbeatStaticReport heartbeatStaticSnapshot
 var mimicEnvironmentMu sync.Mutex
 var mimicEnvironmentCached mimicEnvironmentReport
@@ -363,28 +380,53 @@ type panelErrorResp struct {
 	Hint    string `json:"hint"`
 }
 
+type agentHTTPStatusError struct {
+	StatusCode int
+	Status     string
+	Detail     string
+}
+
+func (e agentHTTPStatusError) Error() string {
+	if strings.TrimSpace(e.Detail) == "" {
+		return e.Status
+	}
+	return e.Status + ": " + e.Detail
+}
+
 type heartbeatResp struct {
-	Actions            []action                 `json:"actions"`
-	DesiredState       *desiredState            `json:"desiredState,omitempty"`
-	SelfTests          []selfTest               `json:"selfTests"`
-	RunningRules       []runningRule            `json:"runningRules"`
-	RuleLatencyProbes  []ruleLatencyProbe       `json:"ruleLatencyProbes"`
-	TunnelProbes       []tunnelProbe            `json:"tunnelProbes"`
-	ForwardGroupProbes []forwardGroupProbe      `json:"forwardGroupProbes"`
-	HostProbeServices  []hostProbeServiceProbe  `json:"hostProbeServices"`
-	GuardRules         []guardRule              `json:"guardRules"`
-	DNSWatch           []dnsWatchItem           `json:"dnsWatch"`
-	LookingGlassTests  []lookingGlassTask       `json:"lookingGlassTests"`
-	Iperf3Tasks        []iperf3Task             `json:"iperf3Tasks"`
-	PluginTasks        []pluginAgentTask        `json:"pluginTasks"`
-	AgentUpgrade       *agentUpgrade            `json:"agentUpgrade"`
-	StateSignatures    map[string]string        `json:"stateSignatures,omitempty"`
-	RequestLocalState  bool                     `json:"requestLocalState,omitempty"`
-	PanelURL           string                   `json:"panelUrl"`
-	ForceTCPing        bool                     `json:"forceTcping"`
-	NextInterval       int                      `json:"nextInterval"`
-	CompactReports     bool                     `json:"compactReports"`
-	PanelMigration     *panelMigrationDirective `json:"panelMigration,omitempty"`
+	Actions                 []action                 `json:"actions"`
+	DesiredState            *desiredState            `json:"desiredState,omitempty"`
+	SelfTests               []selfTest               `json:"selfTests"`
+	RunningRules            []runningRule            `json:"runningRules"`
+	RuleLatencyProbes       []ruleLatencyProbe       `json:"ruleLatencyProbes"`
+	TunnelProbes            []tunnelProbe            `json:"tunnelProbes"`
+	ForwardGroupProbes      []forwardGroupProbe      `json:"forwardGroupProbes"`
+	HostProbeServices       []hostProbeServiceProbe  `json:"hostProbeServices"`
+	GuardRules              []guardRule              `json:"guardRules"`
+	DNSWatch                []dnsWatchItem           `json:"dnsWatch"`
+	LookingGlassTests       []lookingGlassTask       `json:"lookingGlassTests"`
+	Iperf3Tasks             []iperf3Task             `json:"iperf3Tasks"`
+	PluginTasks             []pluginAgentTask        `json:"pluginTasks"`
+	AgentUpgrade            *agentUpgrade            `json:"agentUpgrade"`
+	StateSignatures         map[string]string        `json:"stateSignatures,omitempty"`
+	RequestLocalState       bool                     `json:"requestLocalState,omitempty"`
+	PanelURL                string                   `json:"panelUrl"`
+	ForceTCPing             bool                     `json:"forceTcping"`
+	NextInterval            int                      `json:"nextInterval"`
+	CompactReports          bool                     `json:"compactReports"`
+	PanelMigration          *panelMigrationDirective `json:"panelMigration,omitempty"`
+	Presence                bool                     `json:"presence,omitempty"`
+	PresenceSupported       bool                     `json:"presenceSupported,omitempty"`
+	ReconciliationCoalesced bool                     `json:"reconciliationCoalesced,omitempty"`
+	NextPresenceInterval    int                      `json:"nextPresenceInterval,omitempty"`
+	MetricsOnly             bool                     `json:"metricsOnly,omitempty"`
+	TrafficReportInterval   int                      `json:"trafficReportInterval,omitempty"`
+}
+
+type heartbeatResult struct {
+	NextInterval            int
+	ReconciliationCoalesced bool
+	MetricsOnly             bool
 }
 
 type panelMigrationDirective struct {
@@ -1542,9 +1584,10 @@ type desiredState struct {
 }
 
 type desiredActionRecord struct {
-	Signature string `json:"signature"`
-	Success   bool   `json:"success"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Signature   string `json:"signature"`
+	Success     bool   `json:"success"`
+	UpdatedAt   int64  `json:"updatedAt"`
+	ApplySchema int    `json:"applySchema,omitempty"`
 }
 
 type runningRule struct {
@@ -1801,11 +1844,18 @@ func main() {
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
+	go agentPresenceLoop(cfg)
+	go agentMetricsScheduler(cfg)
+	go agentDNSWatchScheduler()
 	lastFullHeartbeatAt := time.Time{}
+	heartbeatRetryInterval := time.Duration(0)
+	metricsOnlyMode := false
 	for {
 		pending := atomic.LoadInt64(&actionPendingCount)
 		fromSSE := heartbeatWakeFromSSE.Swap(false)
 		urgentRefresh := heartbeatUrgentWakeFromSSE.Swap(false)
+		forceReconcileWake := heartbeatForceReconcileWake.Swap(false)
+		now := time.Now()
 		if pending > 0 {
 			if shouldLogAgentReport("heartbeat-pending-continue", agentReportLogInterval) {
 				logf("heartbeat continue while actions pending=%d queued=%d workers=%d/%d fromSSE=%v", pending, len(actionQueue), atomic.LoadInt64(&actionWorkerStartedCount), actionWorkerConcurrency, fromSSE)
@@ -1813,23 +1863,19 @@ func main() {
 		}
 		// SSE 唤醒 + 有 actions 正在处理：只发轻量 keepalive（不做 readiness 扫描，
 		// 仅上报指标并告知面板 Agent 正忙）。完整心跳由定时器或下一次 SSE 唤醒触发。
-		if shouldUseBusyHeartbeat(fromSSE, urgentRefresh, pending, lastFullHeartbeatAt, time.Now()) {
-			if err := heartbeatKeepalive(cfg); err != nil {
+		useActionBacklogKeepalive := !forceReconcileWake && shouldUseBusyHeartbeat(fromSSE, urgentRefresh, pending, lastFullHeartbeatAt, now)
+		useMetricsOnlyHeartbeat := shouldUseMetricsOnlyHeartbeat(metricsOnlyMode, fromSSE, urgentRefresh, forceReconcileWake, pending, lastFullHeartbeatAt, now)
+		if useActionBacklogKeepalive || useMetricsOnlyHeartbeat {
+			result, err := heartbeatKeepalive(cfg)
+			if err != nil {
 				recordPanelMigrationHeartbeatFailure(cfg, err)
 				logAgentCommError("heartbeat-keepalive", err)
 			} else {
 				recordPanelMigrationHeartbeatSuccess()
+				metricsOnlyMode = result.MetricsOnly
 			}
-		} else {
-			nextInterval, err := heartbeat(cfg, fromSSE || urgentRefresh)
-			lastFullHeartbeatAt = time.Now()
-			if err != nil {
-				recordPanelMigrationHeartbeatFailure(cfg, err)
-				logAgentCommError("heartbeat", err)
-			} else {
-				recordPanelMigrationHeartbeatSuccess()
-			}
-			if nextInterval <= 0 {
+			nextInterval := result.NextInterval
+			if err != nil || nextInterval < 2 {
 				nextInterval = cfg.Interval
 			}
 			if nextInterval < 2 {
@@ -1840,19 +1886,113 @@ func main() {
 			case <-time.After(time.Duration(nextInterval) * time.Second):
 			}
 			continue
-		}
-		select {
-		case <-heartbeatWakeCh:
-		case <-time.After(time.Duration(cfg.Interval) * time.Second):
+		} else {
+			forceFullAudit := metricsOnlyMode && !lastFullHeartbeatAt.IsZero() && now.Sub(lastFullHeartbeatAt) >= agentFullHeartbeatInterval
+			result, err := heartbeat(cfg, fromSSE || urgentRefresh || forceReconcileWake || forceFullAudit)
+			if err != nil {
+				recordPanelMigrationHeartbeatFailure(cfg, err)
+				logAgentCommError("heartbeat", err)
+				heartbeatRetryInterval = nextHeartbeatRetryInterval(heartbeatRetryInterval)
+			} else {
+				recordPanelMigrationHeartbeatSuccess()
+				heartbeatRetryInterval = 0
+				metricsOnlyMode = result.MetricsOnly
+				if !result.ReconciliationCoalesced {
+					lastFullHeartbeatAt = time.Now()
+				}
+			}
+			nextInterval := result.NextInterval
+			if err != nil {
+				nextInterval = int(heartbeatRetryInterval / time.Second)
+			} else if result.ReconciliationCoalesced {
+				nextInterval = 5
+			} else {
+				nextInterval = successfulHeartbeatDelaySeconds(
+					nextInterval,
+					cfg.Interval,
+					agentPresenceSupported.Load(),
+					agentEventStreamConnected.Load(),
+				)
+				nextInterval = jitterSuccessfulHeartbeatDelaySeconds(nextInterval)
+			}
+			if nextInterval < 2 {
+				nextInterval = 2
+			}
+			select {
+			case <-heartbeatWakeCh:
+			case <-time.After(time.Duration(nextInterval) * time.Second):
+			}
+			continue
 		}
 	}
 }
 
-func wakeHeartbeat() {
+func successfulHeartbeatDelaySeconds(serverInterval int, fallbackInterval int, presenceSupported bool, eventStreamConnected bool) int {
+	interval := serverInterval
+	if interval <= 0 {
+		interval = fallbackInterval
+	}
+	if presenceSupported {
+		// New Agents schedule service and link probes locally. A service probe's
+		// short interval must not force an expensive full panel reconciliation.
+		// Values up to three seconds are reserved for interactive work and live
+		// metrics, while SSE wakes configuration changes immediately.
+		if eventStreamConnected && interval > agentInteractiveHeartbeatMaxIntervalSeconds {
+			interval = int(agentFullHeartbeatInterval / time.Second)
+		} else if !eventStreamConnected && interval > agentIdleHeartbeatIntervalSeconds {
+			interval = agentIdleHeartbeatIntervalSeconds
+		}
+	}
+	if interval < 2 {
+		interval = 2
+	}
+	return interval
+}
+
+func jitterSuccessfulHeartbeatDelaySeconds(seconds int) int {
+	if seconds < 60 {
+		return seconds
+	}
+	base := time.Duration(seconds) * time.Second
+	jittered := stableIntervalJitterBelow(base, agentBootID+":full-heartbeat", agentPeriodicJitterPercent)
+	return max(2, int(jittered/time.Second))
+}
+
+func heartbeatStateSnapshotCopy() heartbeatStateSnapshot {
+	heartbeatStateMu.Lock()
+	defer heartbeatStateMu.Unlock()
+	return heartbeatStateSnapshot{
+		RunningRules:       append([]runningRule(nil), heartbeatStateCache.RunningRules...),
+		RuleLatencyProbes:  append([]ruleLatencyProbe(nil), heartbeatStateCache.RuleLatencyProbes...),
+		TunnelProbes:       append([]tunnelProbe(nil), heartbeatStateCache.TunnelProbes...),
+		ForwardGroupProbes: append([]forwardGroupProbe(nil), heartbeatStateCache.ForwardGroupProbes...),
+		HostProbeServices:  append([]hostProbeServiceProbe(nil), heartbeatStateCache.HostProbeServices...),
+		GuardRules:         append([]guardRule(nil), heartbeatStateCache.GuardRules...),
+		DNSWatch:           append([]dnsWatchItem(nil), heartbeatStateCache.DNSWatch...),
+	}
+}
+
+func nextHeartbeatRetryInterval(previous time.Duration) time.Duration {
+	if previous < agentHeartbeatRetryMinInterval {
+		return agentHeartbeatRetryMinInterval
+	}
+	next := previous * 2
+	if next > agentHeartbeatRetryMaxInterval {
+		return agentHeartbeatRetryMaxInterval
+	}
+	return next
+}
+
+func signalHeartbeatWake() {
 	select {
 	case heartbeatWakeCh <- struct{}{}:
 	default:
 	}
+}
+
+func wakeHeartbeat() {
+	heartbeatForceReconcileWake.Store(true)
+	signalHeartbeatWake()
 }
 
 // wakeHeartbeatFromSSE 由 SSE 推送触发，标记本次唤醒来源为 SSE。
@@ -1862,80 +2002,212 @@ func shouldUseBusyHeartbeat(fromSSE bool, urgentRefresh bool, pending int64, las
 	return fromSSE && !urgentRefresh && pending > 0 && !lastFullHeartbeatAt.IsZero() && now.Sub(lastFullHeartbeatAt) < actionBacklogKeepaliveInterval
 }
 
+func shouldUseMetricsOnlyHeartbeat(metricsOnly bool, fromSSE bool, urgentRefresh bool, forceReconcileWake bool, pending int64, lastFullHeartbeatAt time.Time, now time.Time) bool {
+	return metricsOnly && !fromSSE && !urgentRefresh && !forceReconcileWake && pending == 0 &&
+		!lastFullHeartbeatAt.IsZero() && now.Sub(lastFullHeartbeatAt) < agentFullHeartbeatInterval
+}
+
 func wakeHeartbeatFromSSE(urgent bool) {
 	heartbeatWakeFromSSE.Store(true)
 	if urgent {
 		heartbeatUrgentWakeFromSSE.Store(true)
 	}
-	wakeHeartbeat()
+	signalHeartbeatWake()
+}
+
+func wakeAgentMetricsScheduler() {
+	select {
+	case agentMetricsWakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func agentPresenceLoop(cfg Config) {
+	delay := scheduledAgentPresenceInterval(0)
+	retryDelay := time.Duration(0)
+	for {
+		timer := time.NewTimer(delay)
+		<-timer.C
+		if !agentPresenceSupported.Load() {
+			delay = scheduledAgentPresenceInterval(0)
+			retryDelay = 0
+			continue
+		}
+		nextInterval, err := heartbeatPresence(cfg)
+		if err != nil {
+			logAgentCommError("presence", err)
+			// Presence is the liveness path while full reconciliation is slowed
+			// to five minutes. Any failure must wake the full heartbeat so the
+			// database TTL cannot expire before another authenticated attempt.
+			wakeHeartbeat()
+			retryDelay = nextHeartbeatRetryInterval(retryDelay)
+			delay = retryDelay
+			continue
+		}
+		retryDelay = 0
+		delay = scheduledAgentPresenceInterval(nextInterval)
+	}
+}
+
+func boundedAgentPresenceInterval(serverIntervalSeconds int) time.Duration {
+	interval := agentPresenceInterval
+	if serverIntervalSeconds > 0 {
+		interval = time.Duration(serverIntervalSeconds) * time.Second
+	}
+	if interval < agentPresenceMinInterval {
+		return agentPresenceMinInterval
+	}
+	if interval > agentPresenceMaxInterval {
+		return agentPresenceMaxInterval
+	}
+	return interval
+}
+
+func scheduledAgentPresenceInterval(serverIntervalSeconds int) time.Duration {
+	upperBound := boundedAgentPresenceInterval(serverIntervalSeconds)
+	delay := stableIntervalJitterBelow(
+		upperBound,
+		agentBootID+":presence",
+		agentPeriodicJitterPercent,
+	)
+	if delay < agentPresenceMinInterval {
+		return agentPresenceMinInterval
+	}
+	return delay
+}
+
+func agentMetricsScheduler(cfg Config) {
+	ticker := time.NewTicker(agentMetricsSchedulerResolution)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			scheduleTrafficCollection(cfg)
+			force := agentMetricsForceTCPing.Swap(false)
+			if !scheduleAgentTCPing(cfg, force) && force {
+				agentMetricsForceTCPing.Store(true)
+			}
+		case <-agentMetricsWakeCh:
+			force := agentMetricsForceTCPing.Swap(false)
+			state := heartbeatStateSnapshotCopy()
+			prioritizeTrafficCollectionForRules(len(state.RunningRules))
+			scheduleTrafficCollection(cfg)
+			if force && !scheduleAgentTCPing(cfg, true) {
+				agentMetricsForceTCPing.Store(true)
+			}
+		}
+	}
+}
+
+func scheduleAgentTCPing(cfg Config, force bool) bool {
+	state := heartbeatStateSnapshotCopy()
+	interval := tcpingDueInterval(
+		state.HostProbeServices,
+		len(state.RunningRules)+len(state.RuleLatencyProbes),
+		len(state.TunnelProbes)+len(state.ForwardGroupProbes),
+	)
+	interval = agentPeriodicInterval(interval, "tcping")
+	interval = capForwardGroupHealthProbeInterval(interval, state.ForwardGroupProbes)
+	tcpingScheduleMu.Lock()
+	due := lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= interval
+	tcpingScheduleMu.Unlock()
+	if !force && !due {
+		return false
+	}
+	if scheduleTCPingCollection(cfg, state.RuleLatencyProbes, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, force) {
+		tcpingScheduleMu.Lock()
+		lastTCPingAt = time.Now()
+		tcpingScheduleMu.Unlock()
+		return true
+	}
+	return false
+}
+
+func capForwardGroupHealthProbeInterval(interval time.Duration, probes []forwardGroupProbe) time.Duration {
+	for _, probe := range probes {
+		if strings.EqualFold(strings.TrimSpace(probe.ProbeType), "china") && interval > agentForwardGroupHealthProbeMaxInterval {
+			return agentForwardGroupHealthProbeMaxInterval
+		}
+	}
+	return interval
 }
 
 func loadConfigWithFallback(path string) (string, Config, error) {
+	resolvedPath, cfg, migrated, err := loadConfigWithFallbackPaths(path, defaultConfigPath, legacyConfigPath)
+	if migrated {
+		logf("config migrated from %s to %s", legacyConfigPath, defaultConfigPath)
+	}
+	return resolvedPath, cfg, err
+}
+
+func loadConfigWithFallbackPaths(path string, canonicalPath string, legacyPath string) (string, Config, bool, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		path = defaultConfigPath
+		path = canonicalPath
 	}
 	cfg, err := loadConfig(path)
 	if err == nil {
-		if path == defaultConfigPath {
-			migrateLegacyConfigToDefault(path)
-		}
-		return path, cfg, nil
+		return path, cfg, false, nil
 	}
-	if path == defaultConfigPath {
-		if legacyCfg, legacyErr := loadConfig(legacyConfigPath); legacyErr == nil {
-			if writeConfigFile(defaultConfigPath, legacyCfg) == nil {
-				logf("config migrated from %s to %s", legacyConfigPath, defaultConfigPath)
-				return defaultConfigPath, legacyCfg, nil
-			}
-			return legacyConfigPath, legacyCfg, nil
-		}
+	if path != canonicalPath {
+		return path, Config{}, false, err
 	}
-	return path, Config{}, err
-}
-
-func migrateLegacyConfigToDefault(path string) {
-	if path != defaultConfigPath {
-		return
+	legacyCfg, legacyRaw, legacyErr := readConfigFile(legacyPath)
+	if legacyErr != nil {
+		return path, Config{}, false, err
 	}
-	if _, err := os.Stat(legacyConfigPath); err != nil {
-		return
+	if writeConfigFileAtomic(canonicalPath, legacyRaw) == nil {
+		return canonicalPath, legacyCfg, true, nil
 	}
-	cfg, err := loadConfig(legacyConfigPath)
-	if err != nil {
-		return
-	}
-	_ = writeConfigFile(defaultConfigPath, cfg)
+	return legacyPath, legacyCfg, false, nil
 }
 
 func loadConfig(path string) (Config, error) {
+	cfg, _, err := readConfigFile(path)
+	return cfg, err
+}
+
+func readConfigFile(path string) (Config, []byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
 	var cfg Config
 	if err := json.Unmarshal(b, &cfg); err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
 	if cfg.PanelURL == "" || cfg.Token == "" {
-		return Config{}, fmt.Errorf("panelUrl/token required")
+		return Config{}, nil, fmt.Errorf("panelUrl/token required")
 	}
-	return cfg, nil
+	return cfg, b, nil
 }
 
-func writeConfigFile(path string, cfg Config) error {
+func writeConfigFileAtomic(path string, raw []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".forwardx-agent-config-*")
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
-	if err := os.WriteFile(path, raw, 0600); err != nil {
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return os.Chmod(path, 0600)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func normalizePanelURL(raw string) string {
@@ -2061,6 +2333,10 @@ func heartbeatStaticChanged(a, b heartbeatStaticSnapshot) bool {
 		a.SwapTotal != b.SwapTotal ||
 		a.DiskTotal != b.DiskTotal ||
 		a.Version != b.Version
+}
+
+func shouldCommitHeartbeatStaticReport(compactEnabled bool, shouldReportStatic bool, reconciliationCoalesced bool) bool {
+	return !reconciliationCoalesced && (!compactEnabled || shouldReportStatic)
 }
 
 func defaultNetworkInterface() string {
@@ -2239,7 +2515,7 @@ func defaultIPv6NetworkInterface(raw []byte) string {
 	return ""
 }
 
-func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
+func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
@@ -2358,24 +2634,29 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		var migrated migratedPanelError
 		if errors.As(err, &migrated) {
 			if switchToCommittedPanel(cfg, migrated.PanelURL, "", "old panel redirect") {
-				return cfg.Interval, nil
+				return heartbeatResult{NextInterval: cfg.Interval}, nil
 			}
 		}
-		return cfg.Interval, err
+		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
 	compactAgentReports.Store(resp.CompactReports)
-	if !compactEnabled || shouldReportStatic {
+	agentPresenceSupported.Store(resp.PresenceSupported)
+	if resp.TrafficReportInterval > 0 {
+		setActiveTrafficReportIntervalSeconds(resp.TrafficReportInterval)
+	}
+	preserveDNSChangesAfterHeartbeat(dnsChanges, resp.ReconciliationCoalesced)
+	if shouldCommitHeartbeatStaticReport(compactEnabled, shouldReportStatic, resp.ReconciliationCoalesced) {
 		currentStatic.ReportedAt = time.Now()
 		currentStatic.Initialized = true
 		heartbeatStaticReport = currentStatic
 	}
 	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
-		return cfg.Interval, nil
+		return heartbeatResult{NextInterval: cfg.Interval}, nil
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.AgentUpgrade != nil {
 		if handleLegacyPanelMigrationUpgrade(cfg, resp.AgentUpgrade) {
-			return cfg.Interval, nil
+			return heartbeatResult{NextInterval: cfg.Interval}, nil
 		}
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
@@ -2397,10 +2678,13 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		if next <= 0 || next > 2 {
 			next = 2
 		}
-		return next, nil
+		return heartbeatResult{NextInterval: next, ReconciliationCoalesced: resp.ReconciliationCoalesced, MetricsOnly: false}, nil
+	}
+	if resp.ReconciliationCoalesced {
+		return heartbeatResult{NextInterval: resp.NextInterval, ReconciliationCoalesced: true, MetricsOnly: resp.MetricsOnly}, nil
 	}
 	state := applyHeartbeatState(resp)
-	dnsWatchChanged := updateDNSWatch(state.DNSWatch)
+	wakeAgentDNSWatchScheduler()
 	rememberDesiredRunningRules(state.RunningRules)
 	pendingActionPorts := map[string]bool{}
 	actionDone := make([]<-chan struct{}, 0, len(resp.Actions)+len(desiredStateActions(resp.DesiredState)))
@@ -2440,24 +2724,14 @@ func heartbeat(cfg Config, forceReconcile ...bool) (int, error) {
 		ensureCountingChainsIfNeeded(r)
 	}
 	syncProtocolGuards(cfg, state.GuardRules)
-	scheduleTrafficCollection(cfg)
-	tcpingInterval := tcpingDueInterval(
-		state.HostProbeServices,
-		len(state.RunningRules)+len(state.RuleLatencyProbes),
-		len(state.TunnelProbes)+len(state.ForwardGroupProbes),
-	)
-	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
-		if scheduleTCPingCollection(cfg, state.RuleLatencyProbes, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing) {
-			lastTCPingAt = time.Now()
-		}
+	if resp.ForceTCPing {
+		agentMetricsForceTCPing.Store(true)
 	}
-	if dnsWatchChanged && resp.NextInterval > 2 {
-		return 2, nil
-	}
-	return resp.NextInterval, nil
+	wakeAgentMetricsScheduler()
+	return heartbeatResult{NextInterval: resp.NextInterval, MetricsOnly: resp.MetricsOnly}, nil
 }
 
-func heartbeatKeepalive(cfg Config) error {
+func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
 	if primaryIP == "" {
@@ -2548,22 +2822,72 @@ func heartbeatKeepalive(cfg Config) error {
 	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
-		return err
+		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
 	compactAgentReports.Store(resp.CompactReports)
+	agentPresenceSupported.Store(resp.PresenceSupported)
+	if resp.TrafficReportInterval > 0 {
+		setActiveTrafficReportIntervalSeconds(resp.TrafficReportInterval)
+	}
 	if shouldReportStatic {
 		currentStatic.ReportedAt = time.Now()
 		currentStatic.Initialized = true
 		heartbeatStaticReport = currentStatic
 	}
 	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
-		return nil
+		return heartbeatResult{NextInterval: cfg.Interval}, nil
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.RequestLocalState {
 		requestLocalRuntimeStateUpload()
 	}
-	return nil
+	return heartbeatResult{NextInterval: resp.NextInterval, MetricsOnly: resp.MetricsOnly}, nil
+}
+
+// heartbeatPresence only proves that the authenticated Agent is alive. It is
+// intentionally separate from heartbeatKeepalive: no local readiness probes,
+// metrics collection, plugin inventory or runtime plan is performed here.
+func heartbeatPresence(cfg Config) (int, error) {
+	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
+	payload := map[string]any{
+		"mode":                      "presence",
+		"agentBootId":               agentBootID,
+		"agentProcessId":            os.Getpid(),
+		"agentProcessStartedAt":     agentProcessStartedAt.Unix(),
+		"agentLastReceivedRevision": receivedRevision,
+		"agentLastAppliedRevision":  appliedRevision,
+		"agentLastReceivedHash":     receivedHash,
+		"agentLastAppliedHash":      appliedHash,
+	}
+	var resp heartbeatResp
+	// Use the short-lived presence client, but retain the shared clock recovery
+	// path so an authentication timestamp error cannot leave presence broken
+	// until the next five-minute full heartbeat.
+	if err := postWithClient(agentPresenceHTTPClient, cfg, "/api/agent/presence", payload, &resp); err != nil {
+		var statusErr agentHTTPStatusError
+		if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusBadRequest ||
+			statusErr.StatusCode == http.StatusNotFound ||
+			statusErr.StatusCode == http.StatusMethodNotAllowed) {
+			agentPresenceSupported.Store(false)
+			wakeHeartbeat()
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !resp.Presence || !resp.PresenceSupported {
+		// A panel older than the presence capability may return a normal
+		// heartbeat response. Never discard actions from that response; stop
+		// sending presence and let the legacy full-heartbeat path take over.
+		agentPresenceSupported.Store(false)
+		wakeHeartbeat()
+		return 0, nil
+	}
+	agentPresenceSupported.Store(true)
+	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
+		return resp.NextPresenceInterval, nil
+	}
+	syncPanelURLFromResponse(resp.PanelURL)
+	return resp.NextPresenceInterval, nil
 }
 
 func tcpingDueInterval(serviceProbes []hostProbeServiceProbe, ruleCount int, linkProbeCount int) time.Duration {
@@ -3067,7 +3391,7 @@ func agentEventStream(cfg Config) {
 			logAgentCommError("event-stream", err)
 			syncSystemTimeForCommError(err)
 			time.Sleep(delay)
-			if time.Since(startedAt) >= agentEventStreamReconnectMaxDelay {
+			if time.Since(startedAt) >= agentEventStreamStableResetInterval {
 				delay = agentEventStreamReconnectMinDelay
 			} else {
 				delay *= 2
@@ -3121,8 +3445,15 @@ func runAgentEventStream(cfg Config) error {
 	wakeHeartbeatFromSSE(true)
 
 	scanner := newAgentEventStreamScanner(resp.Body)
+	var inactivityExpired atomic.Bool
+	inactivityTimer := time.AfterFunc(agentEventStreamInactivityTimeout, func() {
+		inactivityExpired.Store(true)
+		_ = resp.Body.Close()
+	})
+	defer inactivityTimer.Stop()
 	var data strings.Builder
 	for scanner.Scan() {
+		inactivityTimer.Reset(agentEventStreamInactivityTimeout)
 		line := scanner.Text()
 		if line == "" {
 			if data.Len() > 0 {
@@ -3179,6 +3510,9 @@ func runAgentEventStream(cfg Config) error {
 			}
 			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
+	}
+	if inactivityExpired.Load() {
+		return fmt.Errorf("event stream inactive for %s", agentEventStreamInactivityTimeout)
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -8732,18 +9066,26 @@ func (w fxpLogWriter) Write(p []byte) (int, error) {
 }
 
 func post(cfg Config, path string, payload any, out any) error {
-	err := postOnce(cfg, path, payload, out)
+	return postWithClient(agentSyncHTTPClient, cfg, path, payload, out)
+}
+
+func postWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
+	err := postOnceWithClient(client, cfg, path, payload, out)
 	if err == nil {
 		return nil
 	}
 	if syncSystemTimeForCommError(err) {
 		logf("retrying agent request after time sync path=%s", path)
-		return postOnce(cfg, path, payload, out)
+		return postOnceWithClient(client, cfg, path, payload, out)
 	}
 	return err
 }
 
 func postOnce(cfg Config, path string, payload any, out any) error {
+	return postOnceWithClient(agentSyncHTTPClient, cfg, path, payload, out)
+}
+
+func postOnceWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
 	startedAt := time.Now()
 	env, err := encrypt(map[string]any{
 		"path":    path,
@@ -8764,7 +9106,7 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authProof)
-	res, err := agentSyncHTTPClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		if isTransientAgentCommError(err) {
 			logAgentCommError("post:"+path, err)
@@ -8800,9 +9142,9 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 			}
 		}
 		if decryptErr != nil {
-			return fmt.Errorf("%s: %v", res.Status, decryptErr)
+			return agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: decryptErr.Error()}
 		}
-		return fmt.Errorf("%s: %s", res.Status, formatPanelErrorBody(decodedBody))
+		return agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: formatPanelErrorBody(decodedBody)}
 	}
 	if decryptErr != nil {
 		return decryptErr

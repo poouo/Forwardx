@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   balanceTransactions,
   forwardGroups,
@@ -126,7 +126,63 @@ export function trafficBillingResourceCandidatesForRule(rule: any) {
   return candidates;
 }
 
+export async function findTrafficBillingResourcesForRules(rules: any[]) {
+  const result = new Map<number, {
+    resourceType: TrafficBillingResourceType;
+    resourceId: number;
+    config: any;
+  }>();
+  const candidatesByRuleId = new Map<number, ReturnType<typeof trafficBillingResourceCandidatesForRule>>();
+  const resourceIds = new Map<TrafficBillingResourceType, Set<number>>([
+    ["host", new Set<number>()],
+    ["tunnel", new Set<number>()],
+    ["forward_group", new Set<number>()],
+  ]);
+  for (const rule of rules) {
+    const ruleId = Number(rule?.id || 0);
+    if (!Number.isInteger(ruleId) || ruleId <= 0) continue;
+    const candidates = trafficBillingResourceCandidatesForRule(rule);
+    candidatesByRuleId.set(ruleId, candidates);
+    for (const candidate of candidates) resourceIds.get(candidate.resourceType)?.add(candidate.resourceId);
+  }
+  if (candidatesByRuleId.size === 0) return result;
+
+  const db = await getDb();
+  if (!db) return result;
+  const resourceConditions = Array.from(resourceIds.entries())
+    .filter((entry): entry is [TrafficBillingResourceType, Set<number>] => entry[1].size > 0)
+    .map(([resourceType, ids]) => and(
+      eq(trafficBillingConfigs.resourceType, resourceType),
+      inArray(trafficBillingConfigs.resourceId, Array.from(ids)),
+    ));
+  if (resourceConditions.length === 0) return result;
+  const configs = await db
+    .select()
+    .from(trafficBillingConfigs)
+    .where(and(
+      eq(trafficBillingConfigs.enabled, true),
+      or(...resourceConditions),
+    ));
+  const configsByResource = new Map((configs as any[]).map((config) => [
+    `${String(config.resourceType)}:${Number(config.resourceId)}`,
+    config,
+  ]));
+  for (const [ruleId, candidates] of candidatesByRuleId) {
+    for (const candidate of candidates) {
+      const config = configsByResource.get(`${candidate.resourceType}:${candidate.resourceId}`);
+      if (!config) continue;
+      result.set(ruleId, { ...candidate, config });
+      break;
+    }
+  }
+  return result;
+}
+
 export async function findTrafficBillingResourceForRule(rule: any) {
+  const ruleId = Number(rule?.id || 0);
+  if (Number.isInteger(ruleId) && ruleId > 0) {
+    return (await findTrafficBillingResourcesForRules([rule])).get(ruleId) || null;
+  }
   for (const candidate of trafficBillingResourceCandidatesForRule(rule)) {
     const config = await findTrafficBillingConfig(candidate.resourceType, candidate.resourceId);
     if (config) return { ...candidate, config };

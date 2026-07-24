@@ -78,6 +78,33 @@ func TestDNSWatchConfirmsStableChangeBeforeReporting(t *testing.T) {
 	}
 }
 
+func TestPendingDNSChangeForcesFullHeartbeat(t *testing.T) {
+	resetDNSWatchTestState()
+	heartbeatForceReconcileWake.Store(false)
+	select {
+	case <-heartbeatWakeCh:
+	default:
+	}
+	t.Cleanup(func() {
+		resetDNSWatchTestState()
+		heartbeatForceReconcileWake.Store(false)
+		select {
+		case <-heartbeatWakeCh:
+		default:
+		}
+	})
+	if wakeHeartbeatForPendingDNS() {
+		t.Fatal("empty DNS queue should not wake the heartbeat")
+	}
+	queuePendingDNSChanges([]dnsChangeReport{{Host: "dns.example.com", New: []string{"192.0.2.2"}}})
+	if !wakeHeartbeatForPendingDNS() {
+		t.Fatal("pending DNS change did not wake the heartbeat")
+	}
+	if !heartbeatForceReconcileWake.Load() {
+		t.Fatal("pending DNS change did not force full reconciliation")
+	}
+}
+
 func TestDNSWatchIgnoresOldAndNewAddressOscillation(t *testing.T) {
 	resetDNSWatchTestState()
 	defer resetDNSWatchTestState()
@@ -174,5 +201,41 @@ func TestDNSWatchResolutionFailureResetsCandidate(t *testing.T) {
 	}
 	if changes := takePendingDNSChanges(); len(changes) != 0 {
 		t.Fatalf("change should require three consecutive successful answers: %#v", changes)
+	}
+}
+
+func TestDNSWatchSchedulerKeepsNormalAndConfirmationCadenceSeparate(t *testing.T) {
+	if dnsWatchIdlePollInterval != 30*time.Second {
+		t.Fatalf("idle DNS watch interval=%s, want 30s", dnsWatchIdlePollInterval)
+	}
+	if dnsWatchConfirmPollInterval != 2*time.Second {
+		t.Fatalf("DNS confirmation interval=%s, want 2s", dnsWatchConfirmPollInterval)
+	}
+	if dnsWatchConfirmPollInterval >= dnsWatchIdlePollInterval {
+		t.Fatalf("DNS confirmation interval=%s must be shorter than idle=%s", dnsWatchConfirmPollInterval, dnsWatchIdlePollInterval)
+	}
+}
+
+func TestSuccessfulCoalescedHeartbeatPreservesDNSChanges(t *testing.T) {
+	resetDNSWatchTestState()
+	defer resetDNSWatchTestState()
+
+	changes := []dnsChangeReport{{
+		Host:  "ddns.example.com",
+		Scope: "forward-rule-target",
+		RefID: 42,
+		Old:   []string{"192.0.2.10"},
+		New:   []string{"192.0.2.20"},
+	}}
+	preserveDNSChangesAfterHeartbeat(changes, false)
+	if got := takePendingDNSChanges(); len(got) != 0 {
+		t.Fatalf("completed heartbeat unexpectedly preserved DNS changes: %#v", got)
+	}
+
+	preserveDNSChangesAfterHeartbeat(changes, true)
+	preserveDNSChangesAfterHeartbeat(changes, true)
+
+	if got := takePendingDNSChanges(); !reflect.DeepEqual(got, changes) {
+		t.Fatalf("coalesced heartbeat pending DNS changes = %#v, want %#v", got, changes)
 	}
 }

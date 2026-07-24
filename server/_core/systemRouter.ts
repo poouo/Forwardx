@@ -23,12 +23,14 @@ import {
   startPanelMigration as beginPanelMigration,
 } from "../migration";
 import { sendMail } from "../email";
+import { SMTP_SECURITY_MODES, effectiveSmtpSecurityMode, resolveSmtpSecurityMode } from "../smtpTransport";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
 import { pushAgentRefresh, pushAgentSupportBundle, pushAgentUpgrade, requestHostTcping } from "../agentEvents";
 import { createSupportBundleTask, failSupportBundleHost, getSupportBundleTask } from "../supportBundle";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { AGENT_ASSET_NAMES } from "../agentAssets";
 import { maskSecret } from "../ddns";
+import { reconcileHostDdnsRecords } from "../hostDdns";
 import type { DatabaseConfig } from "../dbRuntime";
 import { defaultSqlitePath } from "../dbRuntime";
 import {
@@ -1685,6 +1687,8 @@ export const systemRouter = router({
     const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const safeSettings = publicSystemSettings(all, activeProtocol);
     if (!ctx.user || ctx.user.role !== "admin") return safeSettings;
+    const emailPort = Number(all.emailPort || 587);
+    const emailSecurity = resolveSmtpSecurityMode(all.emailSecurity, emailPort, all.emailSecure === "true");
     return {
       ...safeSettings,
       panelSsl: {
@@ -1731,8 +1735,9 @@ export const systemRouter = router({
       email: {
         enabled: all.emailEnabled === "true",
         host: all.emailHost ?? "",
-        port: Number(all.emailPort || 587),
-        secure: all.emailSecure === "true",
+        port: emailPort,
+        security: emailSecurity,
+        secure: effectiveSmtpSecurityMode(emailSecurity, emailPort) === "implicit-tls",
         user: all.emailUser ?? "",
         from: all.emailFrom ?? "",
         verifyRegistration: all.emailVerifyRegistration === "true",
@@ -1940,6 +1945,7 @@ export const systemRouter = router({
           enabled: z.boolean().optional(),
           host: z.string().max(256).optional(),
           port: z.number().int().min(1).max(65535).optional(),
+          security: z.enum(SMTP_SECURITY_MODES).optional(),
           secure: z.boolean().optional(),
           user: z.string().max(256).optional(),
           password: z.string().max(512).optional(),
@@ -2145,7 +2151,14 @@ export const systemRouter = router({
         if (email.enabled !== undefined) next.emailEnabled = email.enabled ? "true" : "false";
         if (email.host !== undefined) next.emailHost = email.host.trim() || null;
         if (email.port !== undefined) next.emailPort = String(email.port);
-        if (email.secure !== undefined) next.emailSecure = email.secure ? "true" : "false";
+        if (email.security !== undefined) {
+          const port = email.port ?? Number((await db.getSetting("emailPort")) || 587);
+          next.emailSecurity = email.security;
+          next.emailSecure = effectiveSmtpSecurityMode(email.security, port) === "implicit-tls" ? "true" : "false";
+        } else if (email.secure !== undefined) {
+          next.emailSecurity = email.secure ? "implicit-tls" : "auto";
+          next.emailSecure = email.secure ? "true" : "false";
+        }
         if (email.user !== undefined) next.emailUser = email.user.trim() || null;
         if (email.password !== undefined && email.password.trim()) next.emailPassword = email.password;
         if (email.from !== undefined) next.emailFrom = email.from.trim() || null;
@@ -2313,6 +2326,9 @@ export const systemRouter = router({
         await db.setSettings(next);
         db.runForwardGroupFailoverSweep({ manual: true }).catch((error) => {
           console.warn(`[Settings] forward group DDNS refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        reconcileHostDdnsRecords("ddns-settings-updated", { force: true }).catch((error) => {
+          console.warn(`[Settings] host DDNS refresh failed: ${error instanceof Error ? error.message : String(error)}`);
         });
         console.info("[Settings] ddns settings updated");
       }
@@ -2579,11 +2595,14 @@ export const systemRouter = router({
   sendTestEmail: adminProcedure
     .input(z.object({ to: z.string().email("请输入有效邮箱地址") }))
     .mutation(async ({ input }) => {
-      await sendMail({
+      const result = await sendMail({
         to: input.to,
         subject: "ForwardX 邮箱测试",
         text: "这是一封 ForwardX 邮箱对接测试邮件。如果你收到此邮件，说明 SMTP 配置已生效。",
       });
+      if (result.skipped) {
+        throw new Error("邮箱服务尚未启用，请先保存邮箱设置");
+      }
       return { success: true };
     }),
 

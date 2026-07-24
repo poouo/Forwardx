@@ -14,7 +14,7 @@ import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
-import { SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_TIMEOUT_SECONDS, selfTestSweepActivity } from "./selfTestTiming";
+import { SELF_TEST_TIMEOUT_SECONDS, selfTestSweepActivity, startSelfTestSweepTimer } from "./selfTestTiming";
 
 type TimedOutForwardTest = {
   id: number;
@@ -287,6 +287,15 @@ async function runSelfTestTimeoutSweep() {
   }
 }
 
+async function recoverPendingSelfTestSweep() {
+  try {
+    if (await db.hasActiveForwardTests()) selfTestSweepActivity.markActive();
+  } catch (error) {
+    console.error("[Scheduler] Self-test recovery check error:", error);
+    selfTestSweepActivity.markActive();
+  }
+}
+
 async function runTcpingCleanup() {
   try {
     await Promise.all([
@@ -544,6 +553,9 @@ export function startScheduler() {
   hostStatusPrimePromise = primeHostStatusNotifier().finally(() => {
     hostStatusPrimePromise = null;
   });
+  void db.primeForwardGroupHostLivenessDeadlines().catch((error) => {
+    console.warn(`[ForwardGroup] Liveness deadline prime failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   const monthlyTrafficReset = createNonOverlappingScheduledTask("monthly traffic reset", async () => {
     await runMonthlyTrafficReset();
@@ -586,8 +598,13 @@ export function startScheduler() {
   };
 
   repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
-  repeatAfter(selfTestTimeoutSweep, SELF_TEST_SWEEP_INTERVAL_MS, SELF_TEST_SWEEP_INTERVAL_MS);
-  repeatAfter(forwardingMaintenance, 30 * 1000, 12_000);
+  startSelfTestSweepTimer(async () => { await selfTestTimeoutSweep(); });
+  void recoverPendingSelfTestSweep();
+  // Agent probe reports and host state transitions trigger failover work.
+  // This sweep is only a recovery path for missed events or a panel restart.
+  // Let the liveness prime's startup grace accept a live Agent presence before
+  // the broad recovery sweep evaluates persisted heartbeat timestamps.
+  repeatAfter(forwardingMaintenance, 5 * 60 * 1000, 20_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
   repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);

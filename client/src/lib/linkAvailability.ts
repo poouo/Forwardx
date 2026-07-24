@@ -1,4 +1,10 @@
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+import {
+  LINK_PROBE_FRESH_MS,
+  LINK_PROBE_MAX_FUTURE_SKEW_MS,
+} from "@shared/linkProbePolicy";
+
+export { LINK_PROBE_FRESH_MS } from "@shared/linkProbePolicy";
 
 export type LinkAvailabilityStatus = "disabled" | "available" | "degraded" | "pending" | "unavailable";
 
@@ -29,8 +35,13 @@ type ProbeInput = {
   latestLatencyAt?: Date | string | number | null;
 };
 
-export const LINK_PROBE_FRESH_MS = 3 * 60 * 1000;
-const MAX_FUTURE_PROBE_SKEW_MS = 60 * 1000;
+type AvailabilitySummaryInput = {
+  status?: LinkAvailabilityStatus;
+  available?: boolean;
+  source?: LinkAvailabilitySource;
+  message?: string;
+  usableMemberIds?: unknown[];
+};
 
 function timestampMillis(value: unknown) {
   if (value instanceof Date) return value.getTime();
@@ -48,7 +59,7 @@ export function resolveFreshLinkProbe(
   if (!probe) return null;
   const recordedAt = timestampMillis(probe.latestLatencyAt);
   const fresh = recordedAt > 0
-    && recordedAt <= now + MAX_FUTURE_PROBE_SKEW_MS
+    && recordedAt <= now + LINK_PROBE_MAX_FUTURE_SKEW_MS
     && now - recordedAt <= LINK_PROBE_FRESH_MS;
   if (!fresh) return null;
   if (probe.latestLatencyIsTimeout) return "unavailable";
@@ -75,6 +86,28 @@ function result(
     usableHostIds: new Set(Array.from(usableHostIds).filter((id) => Number.isFinite(id) && id > 0)),
     usableMemberIds: new Set<number>(),
   };
+}
+
+function resultFromSummary(summary: AvailabilitySummaryInput | null | undefined) {
+  if (!summary) return null;
+  const statuses: LinkAvailabilityStatus[] = ["disabled", "available", "degraded", "pending", "unavailable"];
+  const sources: LinkAvailabilitySource[] = ["probe", "hosts", "config"];
+  if (!statuses.includes(summary.status as LinkAvailabilityStatus)) return null;
+  if (!sources.includes(summary.source as LinkAvailabilitySource)) return null;
+  const status = summary.status as LinkAvailabilityStatus;
+  const state = result(
+    status,
+    summary.source as LinkAvailabilitySource,
+    String(summary.message || ""),
+  );
+  state.available = summary.available === undefined
+    ? status === "available" || status === "degraded"
+    : summary.available === true;
+  for (const rawId of summary.usableMemberIds || []) {
+    const id = Number(rawId);
+    if (Number.isInteger(id) && id > 0) state.usableMemberIds.add(id);
+  }
+  return state;
 }
 
 export function resolveLinkAvailability(input: {
@@ -185,7 +218,12 @@ function memberNode(
   const tunnelId = Number(member?.tunnelId || 0);
   if (tunnelId > 0) {
     const tunnelState = tunnelAvailabilityById.get(tunnelId);
-    return { id: tunnelId, available: !!tunnelState?.available };
+    if (tunnelState) return { id: tunnelId, available: tunnelState.available };
+    const memberHostId = Number(member?.host?.id || 0);
+    if (memberHostId > 0) {
+      return { id: tunnelId, available: member?.host?.isOnline === true };
+    }
+    return { id: tunnelId, available: false };
   }
   const hostId = Number(member?.hostId || 0);
   if (hostId <= 0) return null;
@@ -210,11 +248,39 @@ export function buildLinkAvailabilityIndex(input: {
   now?: number;
 }) {
   const hostsLoaded = Array.isArray(input.hosts);
-  const hostById = new Map<number, any>((input.hosts || []).map((host: any) => [Number(host.id), host]));
   const tunnels = input.tunnels || [];
-  const groups = input.groups || [];
+  const hostById = new Map<number, any>();
+  const addHost = (host: any, preferExisting = true) => {
+    const id = Number(host?.id || 0);
+    if (id <= 0) return;
+    const existing = hostById.get(id);
+    hostById.set(id, preferExisting && existing ? { ...host, ...existing } : { ...existing, ...host });
+  };
+  for (const host of input.hosts || []) addHost(host, false);
+  for (const tunnel of tunnels) {
+    for (const host of [
+      ...(Array.isArray(tunnel?.hopHosts) ? tunnel.hopHosts : []),
+      tunnel?.entryHost,
+      tunnel?.exitHost,
+      ...(Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits.map((exit: any) => exit?.host) : []),
+    ]) addHost(host);
+    for (const group of [tunnel?.entryGroup, tunnel?.exitGroup]) {
+      for (const member of Array.isArray(group?.members) ? group.members : []) addHost(member?.host);
+    }
+  }
+  for (const group of input.groups || []) {
+    for (const member of Array.isArray(group?.members) ? group.members : []) addHost(member?.host);
+  }
+  const groupById = new Map<number, any>();
+  for (const tunnel of tunnels) {
+    for (const group of [tunnel?.entryGroup, tunnel?.exitGroup]) {
+      const id = Number(group?.id || 0);
+      if (id > 0) groupById.set(id, group);
+    }
+  }
+  for (const group of input.groups || []) groupById.set(Number(group.id), group);
+  const groups = Array.from(groupById.values());
   const tunnelById = new Map<number, any>(tunnels.map((tunnel: any) => [Number(tunnel.id), tunnel]));
-  const groupById = new Map<number, any>(groups.map((group: any) => [Number(group.id), group]));
   const now = input.now ?? Date.now();
   const tunnelAvailabilityById = new Map<number, LinkAvailabilityResult>();
   const groupAvailabilityById = new Map<number, LinkAvailabilityResult>();
@@ -423,6 +489,19 @@ export function buildLinkAvailabilityIndex(input: {
       });
     }
     groupAvailabilityById.set(Number(group.id), state);
+  }
+
+  // The panel calculates this summary with complete topology data before
+  // applying user ACLs. It keeps shared resources accurate without exposing
+  // the underlying hosts or hidden group members to the browser.
+  for (const tunnel of tunnels) {
+    if (input.isTunnelSupported?.(tunnel) === false) continue;
+    const summary = resultFromSummary(tunnel?.availability);
+    if (summary) tunnelAvailabilityById.set(Number(tunnel.id), summary);
+  }
+  for (const group of groups) {
+    const summary = resultFromSummary(group?.availability);
+    if (summary) groupAvailabilityById.set(Number(group.id), summary);
   }
 
   return { tunnelAvailabilityById, groupAvailabilityById };

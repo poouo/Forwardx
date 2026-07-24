@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "id": "live2d-widget",
+  "name": "ForwardX Live2D 看板娘",
+  "version": "1.0.0",
+  "description": "在面板中按需启用并配置 stevenjoezhang/live2d-widget 看板娘。",
+  "detailsMarkdown": "ForwardX Live2D 看板娘是 stevenjoezhang/live2d-widget 的官方适配插件。\n\n插件默认关闭；安装并启用后，浏览器才会按设置加载固定版本的上游运行时和模型资源。面板端不执行插件包内的任意 JavaScript。\n\nForwardX 不打包 Live2D 模型。默认模型 CDN 仅作为上游示例，模型、贴图、动作和纹理的版权与许可由所配置的模型仓库单独决定。",
+  "author": "stevenjoezhang / ForwardX",
+  "releaseDate": "2026-07-24",
+  "updatedAt": "2026-07-24",
+  "changelog": "首个版本：提供声明式配置、按需加载、桌面与移动端显示控制及许可证说明。",
+  "tags": ["live2d", "widget", "ui", "waifu"],
+  "license": "AGPL-3.0-only + GPL-3.0-or-later",
+  "homepage": "https://github.com/stevenjoezhang/live2d-widget",
+  "repository": "https://github.com/poouo/Forwardx",
+  "permissions": ["ui:widget", "ui:settings"],
+  "extensionPoints": ["ui.widget", "settings.panel"],
+  "settingsSchema": [
+    {
+      "key": "displayScope",
+      "label": "显示范围",
+      "type": "select",
+      "defaultValue": "authenticated",
+      "options": [
+        { "value": "authenticated", "label": "已登录用户" },
+        { "value": "all", "label": "所有访问者（含登录页）" },
+        { "value": "admin", "label": "仅管理员" }
+      ],
+      "description": "仅在允许的页面加载看板娘；未满足范围时不会请求上游资源。"
+    },
+    {
+      "key": "showOnMobile",
+      "label": "移动端显示",
+      "type": "boolean",
+      "defaultValue": false,
+      "description": "移动设备默认关闭，避免小屏遮挡操作区域。"
+    },
+    {
+      "key": "waifuPath",
+      "label": "提示配置路径",
+      "type": "url",
+      "required": true,
+      "defaultValue": "/plugins/live2d-widget/waifu-tips.json",
+      "description": "JSON 提示配置；可使用面板内置文件或自托管文件。"
+    },
+    {
+      "key": "cdnPath",
+      "label": "模型 CDN 路径",
+      "type": "url",
+      "required": true,
+      "defaultValue": "https://fastly.jsdelivr.net/gh/fghrsh/live2d_api/",
+      "description": "目录中需要包含 model_list.json 和模型资源；模型仓库的许可由其维护者决定。"
+    },
+    {
+      "key": "modelId",
+      "label": "默认模型编号",
+      "type": "number",
+      "defaultValue": 0,
+      "min": 0,
+      "max": 999,
+      "description": "只对浏览器首次选择模型时生效；上游会把用户选择保存在本地。"
+    },
+    {
+      "key": "tools",
+      "label": "工具按钮",
+      "type": "multi-select",
+      "defaultValue": ["hitokoto", "switch-model", "switch-texture", "photo", "info", "quit"],
+      "options": [
+        { "value": "hitokoto", "label": "一言" },
+        { "value": "asteroids", "label": "飞机大战" },
+        { "value": "switch-model", "label": "切换模型" },
+        { "value": "switch-texture", "label": "切换纹理" },
+        { "value": "photo", "label": "拍照" },
+        { "value": "info", "label": "项目说明" },
+        { "value": "quit", "label": "关闭" }
+      ],
+      "description": "一言、飞机大战和模型资源可能访问各自的第三方服务。"
+    },
+    {
+      "key": "drag",
+      "label": "允许拖动",
+      "type": "boolean",
+      "defaultValue": false
+    },
+    {
+      "key": "showToggleAfterQuit",
+      "label": "关闭后显示唤起按钮",
+      "type": "boolean",
+      "defaultValue": true,
+      "description": "关闭后保留左下角唤起按钮；关闭此项会按上游行为永久隐藏，直到清除浏览器本地存储。"
+    },
+    {
+      "key": "logLevel",
+      "label": "日志等级",
+      "type": "select",
+      "defaultValue": "warn",
+      "options": [
+        { "value": "error", "label": "错误" },
+        { "value": "warn", "label": "警告" },
+        { "value": "info", "label": "信息" },
+        { "value": "trace", "label": "详细" }
+      ]
+    },
+    {
+      "key": "dock",
+      "label": "停靠位置",
+      "type": "select",
+      "defaultValue": "right",
+      "options": [
+        { "value": "left", "label": "左侧" },
+        { "value": "right", "label": "右侧" }
+      ]
+    },
+    {
+      "key": "size",
+      "label": "模型尺寸",
+      "type": "number",
+      "defaultValue": 280,
+      "min": 200,
+      "max": 420,
+      "description": "画布边长，单位为 CSS 像素。"
+    }
+  ],
+  "pages": [
+    {
+      "id": "overview",
+      "title": "许可证与资源说明",
+      "contentType": "markdown",
+      "assetPath": "README.md"
+    },
+    {
+      "id": "third-party",
+      "title": "第三方声明",
+      "contentType": "markdown",
+      "assetPath": "THIRD_PARTY_NOTICES.md"
+    }
+  ]
+}

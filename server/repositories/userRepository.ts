@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules, userSubscriptions } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
@@ -685,11 +685,17 @@ export async function resetUserTraffic(userId: number) {
 /** 累加用户已用流量 */
 export async function addUserTraffic(userId: number, bytes: number) {
   const db = await getDb();
-  if (!db) return;
-  await db.update(users).set({
+  if (!db) return undefined;
+  const update = db.update(users).set({
     trafficUsed: sql`${users.trafficUsed} + ${bytes}`,
     updatedAt: nowDate(),
   }).where(eq(users.id, userId));
+  if (getDatabaseKind() === "mysql") {
+    await update;
+    return getUserById(userId);
+  }
+  const rows = await update.returning();
+  return rows[0];
 }
 
 /** 获取所有需要月度自动重置的用户 */

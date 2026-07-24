@@ -2432,22 +2432,6 @@ function TunnelsContent() {
       hopConnectHosts: normalizeHopConnectHostsForHosts(rawConnectHosts, fallbackIds, hosts),
     };
   };
-  const inferExitGroupIdForTunnel = (tunnel: any, hopIds: number[]) => {
-    const persistedGroupId = Number(tunnel?.exitGroupId || 0);
-    if (persistedGroupId > 0 && exitGroupById.has(persistedGroupId)) return persistedGroupId;
-    const activeExitIds = [
-      Number(hopIds[hopIds.length - 1] || tunnel?.exitHostId || 0),
-      ...((Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits : [])
-        .map((exit: any) => Number(exit?.hostId || 0))
-        .filter((id: number) => id > 0)),
-    ];
-    if (activeExitIds.length === 0) return null;
-    for (const group of exitGroups) {
-      const groupIds = enabledHostGroupMembers(group).map((member: any) => Number(member.hostId || 0));
-      if (groupIds.length === activeExitIds.length && groupIds.every((id: number, index: number) => id === activeExitIds[index])) return Number(group.id);
-    }
-    return null;
-  };
   const applyExitGroupToForm = (prev: TunnelForm, exitGroupId: number | null): TunnelForm => {
     if (!exitGroupId) return { ...prev, exitGroupId: null, loadBalanceEnabled: false, loadBalanceExits: [] };
     const members = exitMembersForGroup(exitGroupId);
@@ -2622,7 +2606,9 @@ function TunnelsContent() {
       }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
       : [];
     const entryGroupId = tunnel.entryGroupId ? Number(tunnel.entryGroupId) : null;
-    const exitGroupId = inferExitGroupIdForTunnel(tunnel, hopHostIds);
+    // A direct exit can intentionally use the same hosts as an exit group.
+    // Only the persisted reference determines whether this tunnel uses a group.
+    const exitGroupId = Number(tunnel?.exitGroupId || 0) > 0 ? Number(tunnel.exitGroupId) : null;
     const displayRoute = stripExternalTunnelHosts(hopHostIds, hopConnectHosts, entryGroupId, exitGroupId);
     const mode = normalizeTunnelModeForForm(tunnel.mode || "tls");
     const proxySupported = isTunnelProxyProtocolSupported(mode);
@@ -2751,7 +2737,11 @@ function TunnelsContent() {
         utils.tunnels.mapItems.invalidate(),
         utils.tunnels.listAll.invalidate(),
         utils.forwardGroups.options.invalidate(),
+        utils.forwardGroups.listPage.invalidate(),
         utils.rules.list.invalidate(),
+        utils.rules.listPage.invalidate(),
+        utils.rules.mapItems.invalidate(),
+        utils.rules.listSummary.invalidate(),
         utils.trafficBilling.configs.invalidate(),
         utils.trafficBilling.storeResources.invalidate(),
       ]);

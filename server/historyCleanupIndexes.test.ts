@@ -39,6 +39,15 @@ test("host status sweeps use the online-heartbeat SQLite index", async () => {
     const detail = plan.map((row) => String(row.detail || "")).join(" | ");
     assert.match(detail, /USING INDEX/i, detail);
     assert.match(detail, /isOnline.*lastHeartbeat/i, detail);
+
+    const updatePlan = sqlite.prepare(
+      `EXPLAIN QUERY PLAN UPDATE "hosts" SET "isOnline" = 0, "updatedAt" = ?
+       WHERE "id" = ?
+         AND "isOnline" = 1
+         AND "lastHeartbeat" IS NOT NULL
+         AND "lastHeartbeat" < ?`,
+    ).all(2, 1, 1) as Array<{ detail?: string }>;
+    assert.match(updatePlan.map((row) => String(row.detail || "")).join(" | "), /PRIMARY KEY|INTEGER PRIMARY KEY/i);
   } finally {
     sqlite.close();
   }

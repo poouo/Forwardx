@@ -28,6 +28,7 @@ import {
   forwardxQueryIntentResponseSchema,
 } from "./ai/skills/forwardxCore";
 import { KeyedTaskDispatcher } from "./keyedTaskDispatcher";
+import { getLinkAccessScope } from "./linkAccessView";
 import {
   adjustUserBalanceCommand,
   renewUserCommand,
@@ -3738,9 +3739,15 @@ async function visibleTunnelsForTelegramUser(user: any) {
 
 async function visibleForwardGroupsForTelegramUser(user: any) {
   if (user.role === "admin") return db.getForwardGroups() as Promise<any[]>;
-  const allowed = new Set((await db.getUserAllowedForwardGroupIds(user.id)).map(Number));
-  const groups = (await db.getForwardGroups()) as any[];
-  return db.filterForwardGroupFieldsForUse(groups.filter((group: any) => allowed.has(Number(group.id)))) as any[];
+  const [scope, groups] = await Promise.all([
+    getLinkAccessScope(user),
+    db.getForwardGroups() as Promise<any[]>,
+  ]);
+  if (!scope) return groups;
+  return db.filterForwardGroupFieldsForUse(
+    groups.filter((group: any) => scope.groupIds.has(Number(group.id))),
+    scope,
+  ) as any[];
 }
 
 function searchMatches(keyword: string | undefined, values: unknown[]) {
