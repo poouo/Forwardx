@@ -6,6 +6,7 @@ import {
   SELF_TEST_SWEEP_INTERVAL_MS,
   SELF_TEST_TIMEOUT_SECONDS,
   SelfTestSweepActivity,
+  startSelfTestSweepTimer,
 } from "./selfTestTiming";
 
 test("manual self-tests settle within a short interactive deadline", () => {
@@ -27,13 +28,71 @@ test("self-test timeout sweeps stay idle until work is created or claimed", () =
   assert.equal(activity.shouldSweep(), false);
 });
 
-test("self-test timeout sweeps start active to recover work left by a restart", () => {
+test("self-test timeout sweeps support an explicit restart recovery window", () => {
   let now = 20_000;
-  const activity = new SelfTestSweepActivity(() => now);
+  const activity = new SelfTestSweepActivity(() => now, true);
 
   assert.equal(activity.shouldSweep(), true);
   now += SELF_TEST_SWEEP_ACTIVE_WINDOW_MS;
   assert.equal(activity.shouldSweep(), false);
+});
+
+test("self-test timeout sweep timers exist only during active windows", async () => {
+  let now = 30_000;
+  let nextTimerId = 0;
+  const pendingTimers = new Map<number, {
+    callback: () => void | Promise<void>;
+    delayMs: number;
+    unrefed: boolean;
+  }>();
+  const activity = new SelfTestSweepActivity(() => now, false);
+  const timers = {
+    setTimeout(callback: () => void | Promise<void>, delayMs: number) {
+      const id = ++nextTimerId;
+      const pending = { callback, delayMs, unrefed: false };
+      pendingTimers.set(id, pending);
+      return {
+        id,
+        unref: () => { pending.unrefed = true; },
+      };
+    },
+    clearTimeout(handle: { id: number }) {
+      pendingTimers.delete(handle.id);
+    },
+  };
+  const takeTimer = () => {
+    const next = pendingTimers.entries().next().value;
+    assert.ok(next);
+    const [id, timer] = next;
+    pendingTimers.delete(id);
+    return timer;
+  };
+  let sweeps = 0;
+  const stop = startSelfTestSweepTimer(() => { sweeps += 1; }, {
+    activity,
+    timers,
+  });
+
+  assert.equal(pendingTimers.size, 0);
+  activity.markActive();
+  assert.equal(pendingTimers.size, 1);
+  const first = takeTimer();
+  assert.equal(first.delayMs, SELF_TEST_SWEEP_INTERVAL_MS);
+  assert.equal(first.unrefed, true);
+  now += SELF_TEST_SWEEP_INTERVAL_MS;
+  await first.callback();
+  assert.equal(sweeps, 1);
+  assert.equal(pendingTimers.size, 1);
+
+  now += SELF_TEST_SWEEP_ACTIVE_WINDOW_MS;
+  await takeTimer().callback();
+  assert.equal(sweeps, 1);
+  assert.equal(pendingTimers.size, 0);
+
+  activity.markActive();
+  assert.equal(pendingTimers.size, 1);
+  stop();
+  assert.equal(pendingTimers.size, 0);
 });
 
 test("scheduled tasks skip overlapping ticks and resume after completion", async () => {

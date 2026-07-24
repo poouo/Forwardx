@@ -6,6 +6,9 @@ import (
 )
 
 func TestSelfTestPollingOnlyFallsBackWithoutEventStream(t *testing.T) {
+	if selfTestIdlePollInterval < agentPresenceInterval {
+		t.Fatalf("idle self-test fallback polls too often: got=%s minimum=%s", selfTestIdlePollInterval, agentPresenceInterval)
+	}
 	if shouldPollSelfTests(true) {
 		t.Fatal("connected event streams already wake the heartbeat and must suppress idle self-test polling")
 	}

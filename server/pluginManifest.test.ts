@@ -12,6 +12,8 @@ import {
   pluginVersionHasUpdate,
   resolvePluginSidebarEntry,
   resolvePluginUsageHostIds,
+  resolveLive2dWidgetRuntimeConfig,
+  normalizePluginSettingValue,
   shouldPreservePluginTrust,
 } from "./repositories/pluginRepository";
 
@@ -240,6 +242,63 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   assert.match(agentRunner, /command -v jq/);
   assert.match(agentRunner, /systemctl is-enabled --quiet/);
   assert.doesNotMatch(agentRunner, /systemctl is-active --quiet/);
+});
+
+test("official Live2D widget exposes safe declarative settings and runtime defaults", () => {
+  const source = JSON.parse(fs.readFileSync(
+    path.resolve(process.cwd(), "plugins/live2d-widget/forwardx-plugin.json"),
+    "utf8",
+  ));
+  const manifest = normalizePluginManifest(source);
+  assert.equal(manifest.id, "live2d-widget");
+  assert.deepEqual(manifest.permissions, ["ui:widget", "ui:settings"]);
+  assert.deepEqual(manifest.extensionPoints, ["ui.widget", "settings.panel"]);
+  assert.equal(manifest.settingsSchema?.find((field) => field.key === "tools")?.type, "multi-select");
+  assert.equal(manifest.settingsSchema?.find((field) => field.key === "waifupath")?.defaultValue, "/plugins/live2d-widget/waifu-tips.json");
+  assert.equal(manifest.pages?.some((page) => page.assetPath === "THIRD_PARTY_NOTICES.md"), true);
+
+  const runtime = resolveLive2dWidgetRuntimeConfig({
+    pluginId: manifest.id,
+    status: "enabled",
+    permissions: manifest.permissions,
+    extensionPoints: manifest.extensionPoints,
+    manifest,
+  }, "admin");
+  assert.equal(runtime.enabled, true);
+  assert.match(String(runtime.scriptUrl), /live2d-widgets@1\.0\.1\/dist\/waifu-tips\.js/);
+  assert.equal(runtime.waifuPath, "/plugins/live2d-widget/waifu-tips.json");
+  assert.equal(runtime.dock, "right");
+  assert.equal(runtime.size, 280);
+  assert.equal(runtime.tools?.includes("quit"), true);
+
+  const authenticatedOnly = resolveLive2dWidgetRuntimeConfig({
+    pluginId: manifest.id,
+    status: "enabled",
+    permissions: manifest.permissions,
+    extensionPoints: manifest.extensionPoints,
+    manifest,
+  }, null);
+  assert.equal(authenticatedOnly.enabled, false);
+});
+
+test("plugin setting values enforce multi-select and URL boundaries", () => {
+  const toolsField = {
+    key: "tools",
+    label: "Tools",
+    type: "multi-select" as const,
+    required: true,
+    options: [{ value: "photo", label: "Photo" }, { value: "info", label: "Info" }],
+  };
+  assert.deepEqual(normalizePluginSettingValue(toolsField, ["photo", "photo", "unknown", "info"]), ["photo", "info"]);
+  assert.throws(() => normalizePluginSettingValue(toolsField, "photo"), /格式不合法/);
+  assert.throws(() => normalizePluginSettingValue(toolsField, []), /至少需要选择一项/);
+
+  const urlField = { key: "source", label: "Source", type: "url" as const };
+  assert.equal(normalizePluginSettingValue(urlField, "https://example.com/model"), "https://example.com/model");
+  assert.equal(normalizePluginSettingValue(urlField, "http://127.0.0.1/model"), "http://127.0.0.1/model");
+  assert.equal(normalizePluginSettingValue(urlField, "/plugins/live2d-widget/waifu-tips.json"), "/plugins/live2d-widget/waifu-tips.json");
+  assert.throws(() => normalizePluginSettingValue(urlField, "//example.com/model"), /必须填写/);
+  assert.throws(() => normalizePluginSettingValue(urlField, "ftp://example.com/model"), /必须填写/);
 });
 
 test("plugin all-host scope resolves current hosts without persisting selections", () => {

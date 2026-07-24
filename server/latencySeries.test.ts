@@ -17,6 +17,7 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     const runtime = await import(moduleUrl("server/dbRuntime.ts"));
     const schema = await import(moduleUrl("server/dbSchema.ts"));
     const metrics = await import(moduleUrl("server/repositories/metricsRepository.ts"));
+    const tunnels = await import(moduleUrl("server/repositories/tunnelRepository.ts"));
     const forwardTests = await import(moduleUrl("server/repositories/forwardTestRepository.ts"));
     const database = await import(moduleUrl("server/db.ts"));
     const probes = await import(moduleUrl("server/repositories/hostProbeServiceRepository.ts"));
@@ -72,6 +73,9 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     const latestTunnelTotal = await forwardTests.getLatestTunnelLatency(31);
     assert.equal(latestTunnelTotal?.seriesKey, "total");
     assert.equal(latestTunnelTotal?.latencyMs, 15);
+    await tunnels.clearTunnelTestSnapshot(31, { clearHistory: true });
+    assert.deepEqual(await metrics.getLatestTunnelLatencySeries([31]), new Map());
+    assert.equal(await forwardTests.getLatestTunnelLatency(31), undefined);
     const chainSeries = await metrics.getForwardGroupLatencySeries(20, { since });
     assert.deepEqual(chainSeries.map((item) => item.latencyMs), [66]);
     const serviceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [40], hostId: 1, hours: 1 });

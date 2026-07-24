@@ -1,16 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, BellRing, KeyRound, Loader2, Mail, Send, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Redirect } from "wouter";
+
+type SmtpSecurityMode = "auto" | "implicit-tls" | "starttls" | "none";
+
+const EMAIL_TEST_UI_TIMEOUT_MS = 30_000;
+
+function normalizeSmtpSecurityMode(value: unknown, port: number, secure: boolean): SmtpSecurityMode {
+  if (value === "auto" || value === "implicit-tls" || value === "starttls" || value === "none") return value;
+  if (port === 465) return "implicit-tls";
+  if (port === 587) return "starttls";
+  return secure ? "implicit-tls" : "auto";
+}
 
 export default function EmailSettings() {
   return <Redirect to="/settings?tab=email" />;
@@ -24,7 +36,7 @@ export function EmailSettingsContent() {
     enabled: false,
     host: "",
     port: 587,
-    secure: false,
+    security: "auto" as SmtpSecurityMode,
     user: "",
     password: "",
     from: "",
@@ -36,6 +48,9 @@ export function EmailSettingsContent() {
     trafficReminderThreshold: 20,
   });
   const [testTo, setTestTo] = useState("");
+  const [testError, setTestError] = useState("");
+  const testAttemptRef = useRef(0);
+  const testTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!email) return;
@@ -43,7 +58,7 @@ export function EmailSettingsContent() {
       enabled: !!email.enabled,
       host: email.host || "",
       port: Number(email.port || 587),
-      secure: !!email.secure,
+      security: normalizeSmtpSecurityMode("security" in email ? email.security : undefined, Number(email.port || 587), !!email.secure),
       user: email.user || "",
       password: "",
       from: email.from || "",
@@ -56,6 +71,11 @@ export function EmailSettingsContent() {
     });
   }, [email]);
 
+  useEffect(() => () => {
+    testAttemptRef.current += 1;
+    if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
+  }, []);
+
   const updateSettings = trpc.system.updateSettings.useMutation({
     onSuccess: async () => {
       await utils.system.getSettings.invalidate();
@@ -65,10 +85,7 @@ export function EmailSettingsContent() {
     onError: (error) => toast.error(error.message || "保存邮箱设置失败"),
   });
 
-  const sendTestEmail = trpc.system.sendTestEmail.useMutation({
-    onSuccess: () => toast.success("测试邮件已发送"),
-    onError: (error) => toast.error(error.message || "测试邮件发送失败"),
-  });
+  const sendTestEmail = trpc.system.sendTestEmail.useMutation();
 
   const saveEmailSettings = () => {
     if (form.enabled && !form.host.trim()) {
@@ -84,7 +101,7 @@ export function EmailSettingsContent() {
         enabled: form.enabled,
         host: form.host,
         port: Number(form.port || 587),
-        secure: form.secure,
+        security: form.security,
         user: form.user,
         password: form.password,
         from: form.from,
@@ -99,12 +116,51 @@ export function EmailSettingsContent() {
   };
 
   const handleTestEmail = () => {
-    if (!testTo.trim()) {
+    const to = testTo.trim();
+    if (!to) {
       toast.error("请输入测试收件邮箱");
       return;
     }
-    sendTestEmail.mutate({ to: testTo.trim() });
+    const attempt = testAttemptRef.current + 1;
+    testAttemptRef.current = attempt;
+    setTestError("");
+    if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
+    testTimeoutRef.current = setTimeout(() => {
+      if (testAttemptRef.current !== attempt) return;
+      testAttemptRef.current += 1;
+      testTimeoutRef.current = null;
+      sendTestEmail.reset();
+      const message = "SMTP 测试请求超时，请检查面板网络和 SMTP 端口";
+      setTestError(message);
+      toast.error(message);
+    }, EMAIL_TEST_UI_TIMEOUT_MS);
+    sendTestEmail.mutate({ to }, {
+      onSuccess: () => {
+        if (testAttemptRef.current !== attempt) return;
+        if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
+        testTimeoutRef.current = null;
+        setTestError("");
+        toast.success("测试邮件已发送");
+      },
+      onError: (error) => {
+        if (testAttemptRef.current !== attempt) return;
+        if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
+        testTimeoutRef.current = null;
+        const message = error.message || "测试邮件发送失败";
+        setTestError(message);
+        toast.error(message);
+      },
+    });
   };
+
+  const effectiveSecurity = form.security === "auto"
+    ? (Number(form.port) === 465 ? "implicit-tls" : "starttls")
+    : form.security;
+  const securityDescription = effectiveSecurity === "implicit-tls"
+    ? "连接建立时立即启用 TLS，通常使用 465 端口。"
+    : effectiveSecurity === "starttls"
+      ? "先建立 SMTP 连接，再升级到 TLS，通常使用 587 端口。"
+      : "不使用 TLS，仅适用于可信内网 SMTP。";
 
   if (isLoading) {
     return (
@@ -170,17 +226,25 @@ export function EmailSettingsContent() {
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+          <div className="grid gap-4 md:grid-cols-[1fr_260px]">
             <div className="space-y-2">
               <Label>发件邮箱</Label>
               <Input value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} placeholder="ForwardX <noreply@example.com>" />
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div>
-                <p className="text-sm font-medium">SSL / SMTPS</p>
-                <p className="text-xs text-muted-foreground">通常用于 465 端口。</p>
-              </div>
-              <Switch checked={form.secure} onCheckedChange={(secure) => setForm({ ...form, secure })} />
+            <div className="space-y-2">
+              <Label>连接加密</Label>
+              <Select value={form.security} onValueChange={(security: SmtpSecurityMode) => setForm({ ...form, security })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">自动（推荐）</SelectItem>
+                  <SelectItem value="implicit-tls">隐式 TLS / SMTPS</SelectItem>
+                  <SelectItem value="starttls">STARTTLS</SelectItem>
+                  <SelectItem value="none">无加密</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{securityDescription}</p>
             </div>
           </div>
         </CardContent>
@@ -263,6 +327,13 @@ export function EmailSettingsContent() {
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>邮箱配置尚未完整</AlertTitle>
               <AlertDescription>启用邮箱服务时至少需要 SMTP 服务器和发件邮箱或用户名。</AlertDescription>
+            </Alert>
+          )}
+          {testError && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>SMTP 测试失败</AlertTitle>
+              <AlertDescription>{testError}</AlertDescription>
             </Alert>
           )}
           <div className="flex flex-col gap-3 sm:flex-row">

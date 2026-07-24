@@ -37,6 +37,17 @@ import {
   selectTunnelDialAddress,
 } from "../tunnelAddressSelection";
 import { planManualTunnelTestRefresh } from "../tunnelRuntimePlan";
+import {
+  filterTunnelFieldsForUser,
+  getLinkAccessScope,
+  visibleForwardGroupMemberIds,
+  type LinkAccessScope,
+} from "../linkAccessView";
+import {
+  buildLinkAvailabilitySummaryIndex,
+  publicLinkAvailabilitySummary,
+  type LinkAvailabilitySummaryIndex,
+} from "../linkAvailabilitySummary";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
@@ -413,15 +424,21 @@ async function buildExtraExitNodes(ctx: any, options: {
 
 async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLatencySeries?: boolean } = {}) {
   const hostMap = new Map<number, any>();
+  const endpointGroupById = new Map<number, any>();
   const hopHostIdsByTunnel = new Map<number, number[]>();
   const hopConnectHostsByTunnel = new Map<number, Array<string | null>>();
   const extraExitNodesByTunnel = new Map<number, any[]>();
   const hostIds = new Set<number>();
+  const endpointGroupIds = new Set<number>();
   for (const tunnel of tunnels) {
     const entryHostId = Number(tunnel.entryHostId || 0);
     const exitHostId = Number(tunnel.exitHostId || 0);
     if (entryHostId > 0) hostIds.add(entryHostId);
     if (exitHostId > 0) hostIds.add(exitHostId);
+    const entryGroupId = Number(tunnel.entryGroupId || 0);
+    const exitGroupId = Number(tunnel.exitGroupId || 0);
+    if (entryGroupId > 0) endpointGroupIds.add(entryGroupId);
+    if (exitGroupId > 0) endpointGroupIds.add(exitGroupId);
   }
   await Promise.all(tunnels.map(async (tunnel) => {
     const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
@@ -451,6 +468,19 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
       for (const node of normalizedExtraExitNodes) hostIds.add(Number(node.hostId));
     }
   }));
+  if (endpointGroupIds.size > 0) {
+    const endpointGroups = await db.getForwardGroups(undefined, {
+      includeRuntime: false,
+      ids: Array.from(endpointGroupIds),
+    });
+    for (const group of endpointGroups as any[]) {
+      endpointGroupById.set(Number(group.id), group);
+      for (const member of group.members || []) {
+        const hostId = Number(member?.hostId || 0);
+        if (hostId > 0) hostIds.add(hostId);
+      }
+    }
+  }
   const latestLatencyByTunnel = await db.getLatestTunnelLatencies(tunnels.map((tunnel) => Number(tunnel.id)));
   const latestLatencySeriesByTunnel: Map<number, any[]> = options.includeLatencySeries === false
     ? new Map()
@@ -470,9 +500,34 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
     ddnsEnabled: (host as any).ddnsEnabled,
     ddnsDomain: (host as any).ddnsDomain,
     lastDdnsValue: (host as any).lastDdnsValue,
+    isOnline: !!(host as any).isOnline,
+    lastHeartbeat: (host as any).lastHeartbeat ?? null,
     portRangeStart: (host as any).portRangeStart,
     portRangeEnd: (host as any).portRangeEnd,
     portAllowlist: (host as any).portAllowlist,
+  } : null;
+  const groupSummary = (group: any) => group ? {
+    id: Number(group.id),
+    name: String(group.name || ""),
+    groupMode: String(group.groupMode || ""),
+    exitStrategy: normalizeExitGroupStrategy(group.exitStrategy),
+    domain: group.domain ?? null,
+    recordType: group.recordType ?? "A",
+    isEnabled: group.isEnabled !== false,
+    lastStatus: group.lastStatus ?? null,
+    lastMessage: group.lastMessage ?? null,
+    chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+    members: (group.members || []).map((member: any) => ({
+      id: Number(member.id),
+      groupId: Number(member.groupId),
+      memberType: member.memberType,
+      hostId: member.hostId ?? null,
+      tunnelId: member.tunnelId ?? null,
+      priority: Number(member.priority || 0),
+      isEnabled: member.isEnabled !== false,
+      chinaHealthStatus: member.chinaHealthStatus ?? null,
+      host: hostSummary(hostMap.get(Number(member.hostId || 0))),
+    })),
   } : null;
   return tunnels.map((tunnel) => {
     const latestLatency = latestLatencyByTunnel.get(Number(tunnel.id));
@@ -501,6 +556,8 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
         })),
       entryHost: hostSummary(hostMap.get(Number(tunnel.entryHostId || 0))),
       exitHost: hostSummary(hostMap.get(Number(tunnel.exitHostId || 0))),
+      entryGroup: groupSummary(endpointGroupById.get(Number(tunnel.entryGroupId || 0))),
+      exitGroup: groupSummary(endpointGroupById.get(Number(tunnel.exitGroupId || 0))),
     };
   });
 }
@@ -520,39 +577,83 @@ async function getTunnelDeleteImpact(tunnelId: number) {
   };
 }
 
-async function visibleTunnelQueryScope(user: { id: number; role: string }) {
+function visibleTunnelQueryScope(user: { id: number; role: string }, accessScope: LinkAccessScope | null) {
   if (user.role === "admin") return {} as { ownerUserId?: number; allowedTunnelIds?: number[] };
-  const [allowedTunnelIds, billingResourceIds] = await Promise.all([
-    db.getUserEffectiveAllowedTunnelIds(user.id),
-    db.getUserUsableTrafficBillingResourceIds(user.id),
-  ]);
   return {
     ownerUserId: user.id,
-    allowedTunnelIds: Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds])),
+    allowedTunnelIds: Array.from(accessScope?.tunnelIds || []),
   };
 }
 
 async function canAccessTunnelRecord(tunnel: any, user: { id: number; role: string }) {
   if (user.role === "admin" || Number(tunnel?.userId) === Number(user.id)) return true;
-  const scope = await visibleTunnelQueryScope(user);
-  return (scope.allowedTunnelIds || []).includes(Number(tunnel?.id));
+  const accessScope = await getLinkAccessScope(user);
+  return !!accessScope?.tunnelIds.has(Number(tunnel?.id));
 }
 function compactTunnelForUse(tunnel: any) {
   const { certPem, certKeyPem, secret, ...rest } = tunnel || {};
   return rest;
 }
 
+function attachTunnelAvailability(tunnels: any[], availabilityIndex: LinkAvailabilitySummaryIndex) {
+  return tunnels.map((tunnel) => ({
+    ...tunnel,
+    availability: publicLinkAvailabilitySummary(
+      availabilityIndex.tunnelAvailabilityById.get(Number(tunnel.id)),
+    ),
+  }));
+}
+
+function availabilityIndexForHydratedTunnels(tunnels: any[]) {
+  const groups = Array.from(new Map(tunnels.flatMap((tunnel) => [tunnel.entryGroup, tunnel.exitGroup])
+    .filter(Boolean)
+    .map((group) => [Number(group.id), group])).values());
+  return buildLinkAvailabilitySummaryIndex({ tunnels, groups });
+}
+
+function tunnelForUser(tunnel: any, accessScope: LinkAccessScope | null, compact = false) {
+  if (accessScope) return filterTunnelFieldsForUser(tunnel, accessScope);
+  return compact ? compactTunnelForUse(tunnel) : tunnel;
+}
+
+function relatedGroupsForUser(
+  groups: any[],
+  accessScope: LinkAccessScope | null,
+  availabilityIndex: LinkAvailabilitySummaryIndex,
+) {
+  const visible = accessScope
+    ? groups.filter((group) => accessScope.groupIds.has(Number(group.id)))
+    : groups;
+  const withAvailability = visible.map((group) => ({
+    ...group,
+    availability: publicLinkAvailabilitySummary(
+      availabilityIndex.groupAvailabilityById.get(Number(group.id)),
+      visibleForwardGroupMemberIds(group, accessScope),
+    ),
+  }));
+  return accessScope
+    ? db.filterForwardGroupFieldsForUse(withAvailability, accessScope)
+    : withAvailability;
+}
+
 export const tunnelsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-      const isAdmin = ctx.user.role === "admin";
-      const tunnels = isAdmin ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
+      const accessScope = await getLinkAccessScope(ctx.user);
+      const scope = visibleTunnelQueryScope(ctx.user, accessScope);
+      const tunnels = await db.getTunnelOptionRows(scope.ownerUserId, scope.allowedTunnelIds);
       const hydrated = await attachTunnelEndpointHosts(tunnels as any[]);
-      return isAdmin ? hydrated : hydrated.map(compactTunnelForUse);
+      const availabilityIndex = availabilityIndexForHydratedTunnels(hydrated);
+      return attachTunnelAvailability(hydrated, availabilityIndex)
+        .map((tunnel) => tunnelForUser(tunnel, accessScope));
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
-      const scope = await visibleTunnelQueryScope(ctx.user);
+      const accessScope = await getLinkAccessScope(ctx.user);
+      const scope = visibleTunnelQueryScope(ctx.user, accessScope);
       const tunnels = await db.getTunnelOptionRows(scope.ownerUserId, scope.allowedTunnelIds);
-      return (await attachTunnelEndpointHosts(tunnels as any[], { includeLatencySeries: false })).map(compactTunnelForUse);
+      const hydrated = await attachTunnelEndpointHosts(tunnels as any[], { includeLatencySeries: false });
+      const availabilityIndex = availabilityIndexForHydratedTunnels(hydrated);
+      return attachTunnelAvailability(hydrated, availabilityIndex)
+        .map((tunnel) => tunnelForUser(tunnel, accessScope, true));
     }),
     listPage: protectedProcedure
       .input(z.object({
@@ -561,17 +662,21 @@ export const tunnelsRouter = router({
         search: z.string().trim().max(200).optional().default(""),
       }))
       .query(async ({ input, ctx }) => {
-        const scope = await visibleTunnelQueryScope(ctx.user);
+        const accessScope = await getLinkAccessScope(ctx.user);
+        const scope = visibleTunnelQueryScope(ctx.user, accessScope);
         const pageData = await db.getTunnelsPage({ ...input, ...scope });
         const hydratedItems = await attachTunnelEndpointHosts(pageData.items as any[]);
-        const items = ctx.user.role === "admin" ? hydratedItems : hydratedItems.map(compactTunnelForUse);
+        const availabilityIndex = availabilityIndexForHydratedTunnels(hydratedItems);
+        const items = attachTunnelAvailability(hydratedItems, availabilityIndex)
+          .map((tunnel) => tunnelForUser(tunnel, accessScope));
         const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),
         ]).filter((id: number) => id > 0)));
-        const relatedGroups = relatedGroupIds.length > 0
+        const relatedRows = relatedGroupIds.length > 0
           ? await db.getForwardGroups(undefined, { includeRuntime: false, ids: relatedGroupIds })
           : [];
+        const relatedGroups = relatedGroupsForUser(relatedRows as any[], accessScope, availabilityIndex);
         return {
           ...pageData,
           items,
@@ -586,23 +691,28 @@ export const tunnelsRouter = router({
       }))
       .query(async ({ input, ctx }) => {
         const cursor = Math.max(0, Number(input.cursor || 0));
-        const scope = await visibleTunnelQueryScope(ctx.user);
+        const accessScope = await getLinkAccessScope(ctx.user);
+        const scope = visibleTunnelQueryScope(ctx.user, accessScope);
         const pageData = await db.getTunnelsPage({
           ...scope,
           search: input.search,
           page: Math.floor(cursor / input.limit) + 1,
           pageSize: input.limit,
         });
-        const items = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const hydratedItems = await attachTunnelEndpointHosts(pageData.items as any[]);
+        const availabilityIndex = availabilityIndexForHydratedTunnels(hydratedItems);
+        const items = attachTunnelAvailability(hydratedItems, availabilityIndex)
+          .map((tunnel) => tunnelForUser(tunnel, accessScope, true));
         const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),
         ]).filter((id: number) => id > 0)));
-        const relatedGroups = relatedGroupIds.length > 0
+        const relatedRows = relatedGroupIds.length > 0
           ? await db.getForwardGroups(undefined, { includeRuntime: false, ids: relatedGroupIds })
           : [];
+        const relatedGroups = relatedGroupsForUser(relatedRows as any[], accessScope, availabilityIndex);
         return {
-          items: items.map(compactTunnelForUse),
+          items,
           nextCursor: cursor + items.length < pageData.totalItems ? cursor + items.length : undefined,
           totalItems: pageData.totalItems,
           availableItems: pageData.availableItems,
@@ -614,10 +724,17 @@ export const tunnelsRouter = router({
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel || !(await canAccessTunnelRecord(tunnel, ctx.user))) return null;
-        const hydrated = (await attachTunnelEndpointHosts([tunnel]))[0] || null;
-        return ctx.user.role === "admin" ? hydrated : compactTunnelForUse(hydrated);
+        const [hydratedRows, accessScope] = await Promise.all([
+          attachTunnelEndpointHosts([tunnel]),
+          getLinkAccessScope(ctx.user),
+        ]);
+        const availabilityIndex = availabilityIndexForHydratedTunnels(hydratedRows);
+        const hydrated = attachTunnelAvailability(hydratedRows, availabilityIndex)[0] || null;
+        return hydrated ? tunnelForUser(hydrated, accessScope) : null;
       }),    listAll: adminProcedure.query(async () => {
-      return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
+      const hydrated = await attachTunnelEndpointHosts(await db.getTunnels() as any[]);
+      const availabilityIndex = availabilityIndexForHydratedTunnels(hydrated);
+      return attachTunnelAvailability(hydrated, availabilityIndex);
     }),
     reorder: adminProcedure
       .input(z.object({
@@ -1228,6 +1345,10 @@ export const tunnelsRouter = router({
             ...extraExitNodes.map((node) => node.hostId),
           ]);
         }
+        const topologyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "relayMode", "networkType", "connectHost"]
+          .some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key])
+          || hopChanged
+          || loadBalanceChanged;
         let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
@@ -1304,7 +1425,7 @@ export const tunnelsRouter = router({
         }
         if (keyChanged) {
           await db.resetForwardRulesByTunnel(id);
-          await hopRepo.clearTunnelTestSnapshot(id);
+          await hopRepo.clearTunnelTestSnapshot(id, { clearHistory: topologyChanged });
         }
         if (keyChanged) {
           const existingExtraHostIds = (existingExtraExitNodes || []).map((node: any) => Number(node.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
@@ -1333,11 +1454,18 @@ export const tunnelsRouter = router({
         }
         const updatedTunnel = await db.getTunnelById(id);
         const hydratedTunnel = updatedTunnel ? (await attachTunnelEndpointHosts([updatedTunnel as any]))[0] : null;
+        const accessScope = await getLinkAccessScope(ctx.user);
+        const tunnelWithAvailability = hydratedTunnel
+          ? attachTunnelAvailability(
+            [hydratedTunnel],
+            availabilityIndexForHydratedTunnels([hydratedTunnel]),
+          )[0]
+          : null;
         return {
           success: true,
           reset: keyChanged,
           syncedRuleCount: (modeChanged || forwardXVersionChanged) ? activeReferencedRuleCount : 0,
-          tunnel: ctx.user.role === "admin" ? hydratedTunnel : compactTunnelForUse(hydratedTunnel),
+          tunnel: tunnelWithAvailability ? tunnelForUser(tunnelWithAvailability, accessScope) : null,
         };
         } finally {
           releaseHostPortReservations(heldReservations);

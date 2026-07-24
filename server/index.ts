@@ -81,7 +81,7 @@ function installSecurityHeaders(app: express.Express) {
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' data: https: http:; media-src 'self' data: blob: https: http:",
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net; script-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net https://cdn.jsdelivr.net https://cubism.live2d.com; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' data: https: http:; media-src 'self' data: blob: https: http:",
     );
     if (req.secure) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     next();

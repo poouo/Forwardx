@@ -17,6 +17,7 @@ import { boolLiteral, bucketExpression, limitOffset, quoteIdentifier } from "../
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 import { getSetting, setSetting } from "./settingsRepository";
 import { appendPanelLog } from "../_core/panelLogger";
+import { notifyTunnelLatencyRefresh } from "../tunnelLatencyRefresh";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -2126,6 +2127,8 @@ export async function insertTunnelLatencyStat(
   const db = await getDb();
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
+  const seriesKey = String((stat as any).seriesKey || "").trim().toLowerCase();
+  if (!seriesKey || seriesKey === "total") notifyTunnelLatencyRefresh(stat.tunnelId);
   if (options.updateTunnel === false) return;
   const status = stat.isTimeout ? "failed" : "success";
   const now = nowDate();

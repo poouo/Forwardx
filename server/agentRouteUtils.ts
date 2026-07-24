@@ -45,6 +45,15 @@ export function isAgentVersionBehind(version: string | null | undefined, target:
   return compareVersions(version, target) < 0;
 }
 
+export function hasAgentVersionChanged(
+  previousVersion: string | null | undefined,
+  reportedVersion: string | null | undefined,
+) {
+  const reported = normalizeVersion(reportedVersion);
+  if (!reported) return false;
+  return reported !== normalizeVersion(previousVersion);
+}
+
 export function tunnelSecretSeed(tunnel: any) {
   if (tunnel?.secret) return String(tunnel.secret);
   return crypto

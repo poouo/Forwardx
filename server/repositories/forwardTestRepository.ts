@@ -14,6 +14,19 @@ export async function createForwardTest(data: InsertForwardTest) {
   return id;
 }
 
+export async function hasActiveForwardTests() {
+  const db = await getDb();
+  if (!db) return false;
+  const q = quoteIdentifier;
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")}
+       FROM ${q("forward_tests")}
+      WHERE ${q("status")} IN ('pending', 'running')
+      LIMIT 1`,
+  );
+  return rows.length > 0;
+}
+
 const FORWARD_TEST_LEASE_SECONDS = 8;
 
 export async function getPendingForwardTestsByHost(hostId: number, leaseSeconds = FORWARD_TEST_LEASE_SECONDS) {

@@ -2,13 +2,20 @@
 import { agentTokens, hosts, InsertAgentToken } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { inList, quoteIdentifier } from "../dbCompat";
+import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 
 // ==================== Agent Token Queries ====================
 
-const HOST_ONLINE_TTL_MS = 150 * 1000;
-const AGENT_AUTH_TOKEN_CACHE_TTL_MS = 5_000;
-let agentAuthTokenCache: { expiresAt: number; tokens: string[] } | null = null;
-let agentAuthTokenLoad: Promise<string[]> | null = null;
+export const AGENT_AUTH_TOKEN_CACHE_TTL_MS = 60_000;
+type AgentAuthHostIdentity = { id: number; name: string };
+type AgentAuthTokenSnapshot = {
+  tokens: string[];
+  hostIdentityByToken: Map<string, AgentAuthHostIdentity>;
+};
+
+let agentAuthTokenCache: (AgentAuthTokenSnapshot & { expiresAt: number }) | null = null;
+let agentAuthTokenLoad: Promise<AgentAuthTokenSnapshot> | null = null;
+let agentAuthTokenGeneration = 0;
 
 function isFreshHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;
@@ -36,29 +43,42 @@ export async function getAgentTokenByToken(token: string) {
 }
 
 export function invalidateAgentAuthTokenCandidates() {
+  agentAuthTokenGeneration += 1;
   agentAuthTokenCache = null;
+  agentAuthTokenLoad = null;
 }
 
 async function loadAgentAuthTokenCandidates() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return { tokens: [], hostIdentityByToken: new Map<string, AgentAuthHostIdentity>() };
   const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
-  const hostRows = await db.select({ token: hosts.agentToken }).from(hosts);
-  return Array.from(new Set([
+  const hostRows = await db.select({ id: hosts.id, name: hosts.name, token: hosts.agentToken }).from(hosts);
+  const tokens = Array.from(new Set([
     ...tokenRows.map((row: any) => row.token),
     ...hostRows.map((row: any) => row.token),
   ].map((token) => String(token || "").trim()).filter(Boolean)));
+  const hostIdentityByToken = new Map<string, AgentAuthHostIdentity>();
+  for (const row of hostRows as any[]) {
+    const token = String(row?.token || "").trim();
+    const id = Number(row?.id || 0);
+    if (!token || !Number.isInteger(id) || id <= 0) continue;
+    hostIdentityByToken.set(token, { id, name: String(row?.name || "") });
+  }
+  return { tokens, hostIdentityByToken };
 }
 
-export async function getAgentAuthTokenCandidates(options: { force?: boolean } = {}) {
+async function getAgentAuthTokenSnapshot(options: { force?: boolean } = {}) {
   const now = Date.now();
   if (!options.force && agentAuthTokenCache && agentAuthTokenCache.expiresAt > now) {
-    return agentAuthTokenCache.tokens;
+    return agentAuthTokenCache;
   }
   if (agentAuthTokenLoad) return agentAuthTokenLoad;
-  const load = loadAgentAuthTokenCandidates().then((tokens) => {
-    agentAuthTokenCache = { expiresAt: Date.now() + AGENT_AUTH_TOKEN_CACHE_TTL_MS, tokens };
-    return tokens;
+  const loadGeneration = agentAuthTokenGeneration;
+  const load = loadAgentAuthTokenCandidates().then((snapshot) => {
+    if (loadGeneration === agentAuthTokenGeneration) {
+      agentAuthTokenCache = { expiresAt: Date.now() + AGENT_AUTH_TOKEN_CACHE_TTL_MS, ...snapshot };
+    }
+    return snapshot;
   });
   agentAuthTokenLoad = load;
   try {
@@ -66,6 +86,16 @@ export async function getAgentAuthTokenCandidates(options: { force?: boolean } =
   } finally {
     if (agentAuthTokenLoad === load) agentAuthTokenLoad = null;
   }
+}
+
+export async function getAgentAuthTokenCandidates(options: { force?: boolean } = {}) {
+  return (await getAgentAuthTokenSnapshot(options)).tokens;
+}
+
+export async function getAgentAuthHostIdentity(tokenValue: unknown, options: { force?: boolean } = {}) {
+  const token = String(tokenValue || "").trim();
+  if (!token) return undefined;
+  return (await getAgentAuthTokenSnapshot(options)).hostIdentityByToken.get(token);
 }
 
 export async function getAgentTokenById(id: number) {

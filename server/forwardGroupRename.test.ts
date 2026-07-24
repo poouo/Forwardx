@@ -127,18 +127,31 @@ test("forward resource renames propagate without restarting unchanged runtimes",
       const exitInput = baseInput({
         name: "exit-old",
         groupMode: "exit",
-        members: [{ memberType: "host", hostId: 2, connectHost: "10.0.0.2", priority: 0, isEnabled: true }],
+        members: [
+          { memberType: "host", hostId: 2, connectHost: "10.0.0.2", priority: 0, isEnabled: true },
+          { memberType: "host", hostId: 3, connectHost: "10.0.0.3", priority: 1, isEnabled: true },
+        ],
       });
       const exitGroupId = await service.createForwardGroupFromInput(exitInput, 1);
       await insert(
         "tunnels",
-        ["id", "name", "exitGroupId", "entryHostId", "exitHostId", "mode", "listenPort", "userId", "isEnabled", "isRunning"],
-        [300, "controlled-tunnel", exitGroupId, 1, 2, "forwardx", 25000, 1, 1, 1],
+        ["id", "name", "exitGroupId", "entryHostId", "exitHostId", "mode", "listenPort", "loadBalanceEnabled", "loadBalanceStrategy", "userId", "isEnabled", "isRunning"],
+        [300, "controlled-tunnel", exitGroupId, 1, 2, "tls", 25000, 1, "round_robin", 1, 1, 1],
+      );
+      await insert(
+        "tunnel_exit_nodes",
+        ["id", "tunnelId", "seq", "hostId", "listenPort", "connectHost", "isEnabled"],
+        [301, 300, 1, 3, 25010, "10.0.0.3", 1],
       );
       await insert(
         "forward_rules",
         ["id", "hostId", "name", "forwardType", "protocol", "tunnelId", "tunnelExitPort", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
         [310, 1, "tunnel-rule", "gost", "tcp", 300, 25001, 17000, "203.0.113.20", 443, 1, 1, 1],
+      );
+      await insert(
+        "forward_rule_tunnel_exits",
+        ["ruleId", "tunnelId", "exitNodeId", "exitSeq", "exitHostId", "tunnelExitPort"],
+        [310, 300, 301, 1, 3, 25011],
       );
 
       const renamedExit = await service.updateForwardGroupFromInput(exitGroupId, {
@@ -157,9 +170,17 @@ test("forward resource renames propagate without restarting unchanged runtimes",
         members: [{ memberType: "host", hostId: 3, connectHost: "10.0.0.3", priority: 0, isEnabled: true }],
       });
       tunnelState = (await runtime.queryRaw('SELECT "isRunning" FROM "tunnels" WHERE "id" = 300'))[0];
-      tunnelRuleState = (await runtime.queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "id" = 310'))[0];
+      tunnelRuleState = (await runtime.queryRaw('SELECT "isRunning", "tunnelExitPort" FROM "forward_rules" WHERE "id" = 310'))[0];
       assert.equal(Number(tunnelState.isRunning), 0, "exit topology changes must refresh referenced tunnels");
       assert.equal(Number(tunnelRuleState.isRunning), 0, "exit topology changes must reset referenced rules");
+      const refreshedTunnel = (await runtime.queryRaw(
+        'SELECT "exitHostId", "loadBalanceEnabled" FROM "tunnels" WHERE "id" = 300',
+      ))[0];
+      assert.equal(Number(refreshedTunnel.exitHostId), 3, "the remaining exit must become the tunnel primary");
+      assert.equal(Number(refreshedTunnel.loadBalanceEnabled), 0, "a single exit must disable load balancing");
+      assert.equal(Number(tunnelRuleState.tunnelExitPort), 25011, "the remaining exit must retain its rule port");
+      assert.equal((await runtime.queryRaw('SELECT "id" FROM "tunnel_exit_nodes" WHERE "tunnelId" = 300')).length, 0);
+      assert.equal((await runtime.queryRaw('SELECT "id" FROM "forward_rule_tunnel_exits" WHERE "ruleId" = 310')).length, 0);
 
       const listedExit = (await groups.getForwardGroups()).find((group) => Number(group.id) === Number(exitGroupId));
       assert.equal(listedExit.name, "exit-new");

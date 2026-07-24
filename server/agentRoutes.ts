@@ -7,7 +7,7 @@ import { generateInstallScript } from "./agentInstallScripts";
 import { isNginxForwardProtocolEnabled } from "../shared/forwardTypes";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
-import { AGENT_PANEL_MIGRATION_VERSION, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
+import { AGENT_PANEL_MIGRATION_VERSION, hasAgentVersionChanged, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
@@ -20,7 +20,8 @@ import { invalidateAgentDesiredStateCache, registerAgentHeartbeatRoute } from ".
 import { handleHostAddressChanged, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
-import { getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
+import { getMigratedToPanelUrl, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
+import { recordAuthenticatedAgentActivity } from "./agentActivity";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -70,7 +71,7 @@ function migratedAgentPayload(panelUrl: string) {
 }
 
 async function rejectAgentWhenPanelMigrated(_req: Request, res: Response, next: NextFunction) {
-  const migratedTo = await db.getSetting("migratedToPanelUrl");
+  const migratedTo = await getMigratedToPanelUrl();
   if (migratedTo) {
     res.status(410).json(migratedAgentPayload(migratedTo));
     return;
@@ -141,7 +142,9 @@ async function openAgentEventStream(input: {
     res.status(401).json({ error: "Invalid token" });
     return;
   }
+  recordAuthenticatedAgentActivity(host.id);
   const agentVersion = normalizeAgentText(input.agentVersion, 64);
+  const agentVersionChanged = hasAgentVersionChanged((host as any).agentVersion, agentVersion);
   const wasOnline = isHostStatusOnline(host);
   if (agentVersion) {
     const upgradedFirewallCounterAgent = isAgentVersionAtLeast(agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
@@ -149,6 +152,13 @@ async function openAgentEventStream(input: {
     const upgradedProtocolGuardBackendAgent = isAgentVersionAtLeast(agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)
       && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION);
     await db.updateHostHeartbeat(host.id, { agentVersion } as any);
+    if (agentVersionChanged) {
+      prepareAgentDesiredStateResync(host.id);
+      appendPanelLog(
+        "info",
+        `[AgentUpgrade] host=${host.id} version=${String((host as any).agentVersion || "-")} -> ${agentVersion}; desired state marked for resync`,
+      );
+    }
     if (upgradedFirewallCounterAgent) {
       await resetAgentRuntimeStateAfterReconnect(host.id, "agent-firewall-counter-upgrade");
     }
@@ -183,7 +193,9 @@ async function openAgentEventStream(input: {
   writeEncryptedEvent("ready", { success: true });
 
   const heartbeat = setInterval(() => {
-    writeEncryptedEvent("ping", {});
+    // SSE comments keep proxies awake without an encryption + JSON allocation
+    // on every connection. Agents ignore comment lines by design.
+    res.write(": ping\n\n");
   }, 25000);
 
   req.on("close", () => {

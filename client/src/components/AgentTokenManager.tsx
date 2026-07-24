@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { isTokenHostOnline } from "@/lib/agentTokenStatus";
 
 type AgentTokenManagerProps = {
   createSignal?: number;
@@ -66,8 +67,6 @@ type InstallAddressOption = {
 };
 
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
-const HOST_ONLINE_TTL_MS = 90 * 1000;
-
 function usePageVisible() {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   useEffect(() => {
@@ -121,12 +120,6 @@ function panelUrlKey(value: string) {
 function tokenHostAddress(host: any) {
   if (!host) return "";
   return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
-}
-
-function isTokenHostOnline(host: any) {
-  if (!host?.isOnline || !host.lastHeartbeat) return false;
-  const heartbeatAt = new Date(host.lastHeartbeat).getTime();
-  return Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt <= HOST_ONLINE_TTL_MS;
 }
 
 function tokenMatchesSearchQuery(tokenItem: any, query: string) {

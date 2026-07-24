@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adminProcedure, router } from "../_core/trpc";
+import { adminProcedure, publicProcedure, router } from "../_core/trpc";
 import * as pluginRepo from "../repositories/pluginRepository";
 
 const githubInstallSchema = z.object({
@@ -10,6 +10,10 @@ const githubInstallSchema = z.object({
 });
 
 export const pluginsRouter = router({
+  live2dWidget: publicProcedure.query(async ({ ctx }) => {
+    return pluginRepo.getLive2dWidgetRuntimeConfig(ctx.user?.role || null);
+  }),
+
   capabilities: adminProcedure.query(async () => {
     return pluginRepo.getPluginDeveloperCapabilities();
   }),
@@ -139,6 +143,15 @@ export const pluginsRouter = router({
     }))
     .mutation(async ({ input }) => {
       return pluginRepo.savePluginSetting(input.pluginId, input.key, input.value);
+    }),
+
+  saveSettings: adminProcedure
+    .input(z.object({
+      pluginId: z.string().trim().min(1).max(128),
+      values: z.record(z.unknown()).refine((values) => Object.keys(values).length <= 50, "插件设置项不能超过 50 个"),
+    }))
+    .mutation(async ({ input }) => {
+      return pluginRepo.savePluginSettings(input.pluginId, input.values);
     }),
 
   runAction: adminProcedure

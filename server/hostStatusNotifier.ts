@@ -2,6 +2,7 @@ import * as db from "./db";
 import { ENV } from "./env";
 import { sendTelegramMessage } from "./telegramBot";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
+import { partitionHostsByRecentAgentActivity } from "./agentActivity";
 
 type HostStatus = "online" | "offline";
 
@@ -119,28 +120,56 @@ export async function primeHostStatusNotifier() {
     }
     const staleIds = (staleOnlineHosts as any[]).map((host) => Number(host.id)).filter((id) => Number.isFinite(id) && id > 0);
     if (staleIds.length > 0) {
-      await db.markHostsOffline(staleIds);
-      for (const hostId of staleIds) clearTunnelRuntimeStatusForHost(hostId);
-      console.info(`[HostStatus] Primed ${staleIds.length} stale online host(s) silently`);
+      const transitionedIds = await db.markStaleHostsOffline(staleIds);
+      for (const hostId of transitionedIds) {
+        lastKnownStatus.set(hostId, "offline");
+        clearTunnelRuntimeStatusForHost(hostId);
+      }
+      if (transitionedIds.length > 0) {
+        console.info(`[HostStatus] Primed ${transitionedIds.length} stale online host(s) silently`);
+      }
     }
-  } catch (error) {
-    console.warn(`[HostStatus] Prime failed: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
     hostStatusNotifierPrimed = true;
+  } catch (error) {
+    hostStatusNotifierPrimed = false;
+    console.warn(`[HostStatus] Prime failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 export async function notifyHostOnlineIfNeeded(host: any) {
   await notifyHostStatusChange(host, "online");
+  void db.scheduleForwardGroupsForHostHealthChange(Number(host?.id || 0)).catch((error) => {
+    console.warn(`[HostStatus] Online forward-group evaluation failed host=${host?.id}: ${error instanceof Error ? error.message : String(error)}`);
+  });
 }
 
 export async function sweepOfflineHostsAndNotify() {
-  const staleHosts = await db.getStaleOnlineHosts();
+  if (!hostStatusNotifierPrimed) {
+    await primeHostStatusNotifier();
+    if (!hostStatusNotifierPrimed) return 0;
+  }
+  const candidates = await db.getStaleOnlineHosts();
+  const { active, stale: staleHosts } = partitionHostsByRecentAgentActivity(candidates as any[]);
+  if (active.length > 0) {
+    await Promise.all(active.map(async (host: any) => {
+      try {
+        await db.touchHostHeartbeat(Number(host.id));
+      } catch (error) {
+        console.warn(`[HostStatus] Recent Agent activity heartbeat refresh failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }));
+  }
   if (staleHosts.length === 0) return 0;
-  await db.markHostsOffline((staleHosts as any[]).map((host) => Number(host.id)));
-  for (const host of staleHosts as any[]) {
+  const transitionedIds = await db.markStaleHostsOffline((staleHosts as any[]).map((host) => Number(host.id)));
+  if (transitionedIds.length === 0) return 0;
+  const transitionedIdSet = new Set(transitionedIds);
+  const transitionedHosts = (staleHosts as any[]).filter((host) => transitionedIdSet.has(Number(host.id)));
+  for (const host of transitionedHosts) {
     clearTunnelRuntimeStatusForHost(Number(host.id));
+    void db.scheduleForwardGroupsForHostHealthChange(Number(host.id)).catch((error) => {
+      console.warn(`[HostStatus] Offline forward-group evaluation failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
     await notifyHostStatusChange(host, "offline");
   }
-  return staleHosts.length;
+  return transitionedHosts.length;
 }

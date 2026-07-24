@@ -76,6 +76,37 @@ func TestTrafficBaselinesCommitOnlyAfterSuccessfulReport(t *testing.T) {
 	}
 }
 
+func TestIdleTrafficCollectionYieldsUntilHostSnapshotIsDue(t *testing.T) {
+	if got := trafficCollectIntervalForRuleCount(0); got != idleHostTrafficReportEvery {
+		t.Fatalf("idle interval=%s want=%s", got, idleHostTrafficReportEvery)
+	}
+	if got := trafficCollectBackoffInterval(idleHostTrafficReportEvery, 10*time.Second); got != idleHostTrafficReportEvery {
+		t.Fatalf("idle backoff=%s want=%s", got, idleHostTrafficReportEvery)
+	}
+}
+
+func TestNewRuleMakesIdleTrafficCollectionImmediatelyDue(t *testing.T) {
+	trafficCollectMu.Lock()
+	previousLast := lastTrafficCollectAt
+	previousNext := nextTrafficCollectInterval
+	lastTrafficCollectAt = time.Now()
+	nextTrafficCollectInterval = idleHostTrafficReportEvery
+	trafficCollectMu.Unlock()
+	t.Cleanup(func() {
+		trafficCollectMu.Lock()
+		lastTrafficCollectAt = previousLast
+		nextTrafficCollectInterval = previousNext
+		trafficCollectMu.Unlock()
+	})
+
+	prioritizeTrafficCollectionForRules(1)
+	trafficCollectMu.Lock()
+	defer trafficCollectMu.Unlock()
+	if !lastTrafficCollectAt.IsZero() || nextTrafficCollectInterval != trafficCollectInterval {
+		t.Fatalf("new rule did not reset idle schedule: last=%s next=%s", lastTrafficCollectAt, nextTrafficCollectInterval)
+	}
+}
+
 func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	raw := `table inet forwardx_traffic {
 	chain input {
@@ -161,6 +192,12 @@ func TestTCPingDueIntervalScalesWithWorkAndServiceRequirements(t *testing.T) {
 	}
 	if got := tcpingRoundsForWindow(5*time.Second, 3*time.Minute); got != 36 {
 		t.Fatalf("five-second collection rounds = %d", got)
+	}
+	if got := capForwardGroupHealthProbeInterval(time.Minute, []forwardGroupProbe{{ProbeType: "china"}}); got != 30*time.Second {
+		t.Fatalf("forward-group health probe interval = %s", got)
+	}
+	if got := capForwardGroupHealthProbeInterval(time.Minute, []forwardGroupProbe{{ProbeType: "chain"}}); got != time.Minute {
+		t.Fatalf("display-only chain probe interval should stay unchanged, got %s", got)
 	}
 }
 

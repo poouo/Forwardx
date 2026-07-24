@@ -15,6 +15,11 @@ import (
 const desiredActionFailureRetryInterval = 30 * time.Second
 const desiredRuntimeReadyCacheTTL = 2 * time.Second
 
+// Bump this only when an Agent release must rebuild otherwise unchanged local
+// runtime configuration. It is intentionally independent from Version so
+// ordinary binary upgrades keep their idempotent restart behavior.
+const currentDesiredActionApplySchema = 1
+
 // desiredActionRecords 的内存缓存。所有读写直接操作此 map，
 // 避免在 rememberDesiredActionResult（每个 worker 完成时调用）的关键路径上
 // 做全量磁盘读写。后台 flusher 异步落盘。
@@ -48,6 +53,7 @@ var desiredLastReceivedRevision int64
 var desiredLastAppliedRevision int64
 var desiredLastReceivedHash string
 var desiredLastAppliedHash string
+var desiredLastAppliedAggregate bool
 
 func rememberDesiredStateReceived(state *desiredState) {
 	if state == nil {
@@ -66,9 +72,23 @@ func rememberDesiredActionApplied(a action) {
 		return
 	}
 	desiredRevisionMu.Lock()
-	if a.ConfigRevision >= desiredLastAppliedRevision {
+	if a.ConfigRevision > desiredLastAppliedRevision || (a.ConfigRevision == desiredLastAppliedRevision && !desiredLastAppliedAggregate) {
 		desiredLastAppliedRevision = a.ConfigRevision
 		desiredLastAppliedHash = strings.TrimSpace(a.ConfigHash)
+		desiredLastAppliedAggregate = false
+	}
+	desiredRevisionMu.Unlock()
+}
+
+func rememberDesiredStateApplied(state *desiredState) {
+	if state == nil || state.ConfigRevision < 0 || strings.TrimSpace(state.ConfigHash) == "" {
+		return
+	}
+	desiredRevisionMu.Lock()
+	if state.ConfigRevision >= desiredLastAppliedRevision {
+		desiredLastAppliedRevision = state.ConfigRevision
+		desiredLastAppliedHash = strings.TrimSpace(state.ConfigHash)
+		desiredLastAppliedAggregate = true
 	}
 	desiredRevisionMu.Unlock()
 }
@@ -106,6 +126,7 @@ type actionIngressBuffer struct {
 
 var actionIngress = actionIngressBuffer{byKey: map[string]*actionIngressItem{}}
 var actionIngressWakeCh = make(chan struct{}, 1)
+var actionWorkerScaleCh = make(chan struct{}, 1)
 
 func (b *actionIngressBuffer) push(job actionJob) (int, *actionJob) {
 	key := actionQueueKey(job.action)
@@ -266,7 +287,9 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		}
 		signature := desiredActionSignature(a)
 		seen[key] = true
-		if record, ok := records[key]; ok && record.Signature == signature {
+		record, hasRecord := records[key]
+		forceSchemaApply := desiredActionRecordForcesApply(record, hasRecord)
+		if desiredActionRecordMatches(record, hasRecord, signature) {
 			if record.Success {
 				if desiredActionRecordConsistent(a, kernelSnapshot) {
 					continue
@@ -279,8 +302,8 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 				continue
 			}
 		}
-		if canAdoptDesiredAction(a) {
-			records[key] = desiredActionRecord{Signature: signature, Success: true, UpdatedAt: time.Now().Unix()}
+		if !forceSchemaApply && canAdoptDesiredAction(a) {
+			records[key] = newDesiredActionRecord(signature, true)
 			rememberDesiredActionApplied(a)
 			if shouldReportDesiredAdoptionStatus(a) {
 				writeState(a)
@@ -336,7 +359,53 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		atomic.AddInt64(&actionPendingCount, 1)
 		enqueueActionJob(job)
 	}
+	rememberDesiredStateAppliedAfterActions(state, done)
 	return done
+}
+
+func desiredStateActionRecordsApplied(state *desiredState) bool {
+	if state == nil {
+		return false
+	}
+	desiredActionRecordMu.Lock()
+	defer desiredActionRecordMu.Unlock()
+	records := readDesiredActionRecordsLocked()
+	for _, a := range state.Actions {
+		key := desiredActionKey(a)
+		if key == "" {
+			return false
+		}
+		record, ok := records[key]
+		if !record.Success || !desiredActionRecordMatches(record, ok, desiredActionSignature(a)) {
+			return false
+		}
+	}
+	return true
+}
+
+func rememberDesiredStateAppliedAfterActions(state *desiredState, done []<-chan struct{}) {
+	if state == nil {
+		return
+	}
+	snapshot := *state
+	snapshot.Actions = append([]action(nil), state.Actions...)
+	markApplied := func() {
+		if desiredStateActionRecordsApplied(&snapshot) {
+			rememberDesiredStateApplied(&snapshot)
+		}
+	}
+	if len(done) == 0 {
+		markApplied()
+		return
+	}
+	go func() {
+		for _, completed := range done {
+			if completed != nil {
+				<-completed
+			}
+		}
+		markApplied()
+	}()
 }
 
 func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapshot) bool {
@@ -397,6 +466,25 @@ func desiredActionKey(a action) string {
 
 func desiredActionSignature(a action) string {
 	return actionCommandSignature(a)
+}
+
+func desiredActionRecordForcesApply(record desiredActionRecord, exists bool) bool {
+	return exists && record.ApplySchema != currentDesiredActionApplySchema
+}
+
+func desiredActionRecordMatches(record desiredActionRecord, exists bool, signature string) bool {
+	return exists &&
+		record.ApplySchema == currentDesiredActionApplySchema &&
+		record.Signature == signature
+}
+
+func newDesiredActionRecord(signature string, success bool) desiredActionRecord {
+	return desiredActionRecord{
+		Signature:   signature,
+		Success:     success,
+		UpdatedAt:   time.Now().Unix(),
+		ApplySchema: currentDesiredActionApplySchema,
+	}
 }
 
 func canAdoptDesiredAction(a action) bool {
@@ -875,7 +963,7 @@ func startDesiredActionRecordsFlusher() {
 func rememberDesiredActionResult(key string, signature string, ok bool) {
 	desiredActionRecordMu.Lock()
 	ensureDesiredActionRecordsLoadedLocked()
-	desiredActionRecordsMem[key] = desiredActionRecord{Signature: signature, Success: ok, UpdatedAt: time.Now().Unix()}
+	desiredActionRecordsMem[key] = newDesiredActionRecord(signature, ok)
 	markDesiredActionRecordsDirtyLocked()
 	desiredActionRecordMu.Unlock()
 }
@@ -925,6 +1013,10 @@ func enqueueActionJob(job actionJob) {
 	}
 	select {
 	case actionIngressWakeCh <- struct{}{}:
+	default:
+	}
+	select {
+	case actionWorkerScaleCh <- struct{}{}:
 	default:
 	}
 	if depth >= actionQueueCapacity && shouldLogAgentReport("action-ingress-backlog", agentReportLogInterval) {
@@ -979,9 +1071,7 @@ func startActionWorkerLoops(count int) {
 }
 
 func actionWorkerScaler() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for range ticker.C {
+	for range actionWorkerScaleCh {
 		pending := atomic.LoadInt64(&actionPendingCount)
 		started := atomic.LoadInt64(&actionWorkerStartedCount)
 		if pending <= started || started >= int64(actionWorkerConcurrency) {

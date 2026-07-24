@@ -25,6 +25,7 @@ export const PLUGIN_PERMISSION_KEYS = [
   "data:whitelist",
   "ui:page",
   "ui:settings",
+  "ui:widget",
   "event:subscribe",
 ] as const;
 
@@ -38,6 +39,7 @@ export const PLUGIN_EXTENSION_POINTS = [
   "host.action",
   "event.handler",
   "data.whitelist",
+  "ui.widget",
 ] as const;
 
 export type PluginExtensionPoint = typeof PLUGIN_EXTENSION_POINTS[number];
@@ -49,6 +51,7 @@ export const PLUGIN_SETTING_FIELD_TYPES = [
   "number",
   "boolean",
   "select",
+  "multi-select",
   "url",
 ] as const;
 
@@ -235,7 +238,7 @@ export type PluginSettingField = {
   description?: string;
   placeholder?: string;
   required?: boolean;
-  defaultValue?: string | number | boolean;
+  defaultValue?: string | number | boolean | string[];
   min?: number;
   max?: number;
   options?: PluginSettingOption[];
@@ -618,6 +621,47 @@ export const BUILTIN_PLUGIN_STORE_ITEMS: PluginStoreItem[] = [
     category: "data",
     permissions: ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive", "ui:page"],
     extensionPoints: ["data.whitelist", "sidebar.page"],
+    official: true,
+    builtIn: true,
+  },
+  {
+    id: "live2d-widget",
+    name: "ForwardX Live2D 看板娘",
+    description: "在面板中按需启用并配置 stevenjoezhang/live2d-widget 看板娘。",
+    detailsMarkdown: [
+      "ForwardX Live2D 看板娘是 `stevenjoezhang/live2d-widget` 的官方适配插件。",
+      "",
+      "插件默认关闭；安装并启用后，浏览器才会按设置加载固定版本的上游运行时和模型资源。面板端不执行插件包内的任意 JavaScript。",
+      "",
+      "- 可设置显示范围、移动端显示、模型 CDN、默认模型和停靠位置。",
+      "- 可选择一言、切换模型、换装、拍照、项目说明和关闭等工具。",
+      "- 可设置拖动、关闭后的重新唤起方式和日志等级。",
+      "- ForwardX 不打包 Live2D 模型；模型资源的许可由所配置的模型仓库单独决定。",
+    ].join("\n"),
+    version: "1.0.0",
+    releaseDate: "2026-07-24",
+    updatedAt: "2026-07-24",
+    changelog: "首个版本：提供声明式配置、按需加载、桌面与移动端显示控制及许可证说明。",
+    features: [
+      { title: "按需加载", description: "插件关闭时不加载 Live2D 脚本、模型或周期任务。" },
+      { title: "完整配置", description: "管理模型来源、默认模型、工具、拖动和关闭行为。" },
+      { title: "显示控制", description: "支持访问范围、移动端开关、左右停靠和模型尺寸。" },
+      { title: "合规声明", description: "明确区分上游运行时代码、Cubism 运行时和模型资源许可。" },
+    ],
+    tags: ["live2d", "widget", "ui", "waifu"],
+    license: "AGPL-3.0-only + GPL-3.0-or-later",
+    repository: "https://github.com/poouo/Forwardx",
+    branch: "main",
+    manifestPath: "plugins/live2d-widget/forwardx-plugin.json",
+    homepage: "https://github.com/stevenjoezhang/live2d-widget",
+    author: "stevenjoezhang / ForwardX",
+    packageRepository: "https://github.com/poouo/Forwardx",
+    packageBranch: "main",
+    packagePath: "plugins/packages/live2d-widget.tar.gz",
+    bundledPath: "plugins/live2d-widget",
+    category: "ui",
+    permissions: ["ui:widget", "ui:settings"],
+    extensionPoints: ["ui.widget", "settings.panel"],
     official: true,
     builtIn: true,
   },

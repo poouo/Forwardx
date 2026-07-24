@@ -8,7 +8,7 @@ type AutoHopResult = {
 
 const byGroup = new Map<number, Map<number, AutoHopResult>>();
 
-const AUTO_HOP_TTL_MS = 2 * 60 * 1000;
+const AUTO_HOP_TTL_MS = 6 * 60 * 1000;
 
 export function recordForwardGroupAutoHopLatency(input: {
   groupId: number;

@@ -11,6 +11,13 @@ var agentSyncHTTPClient = &http.Client{
 	Transport: newAgentHTTPTransport(true),
 }
 
+// Presence must fail fast enough to retry before the panel's online TTL even
+// when a full reconciliation request is still stuck behind a slow proxy.
+var agentPresenceHTTPClient = &http.Client{
+	Timeout:   8 * time.Second,
+	Transport: newAgentHTTPTransport(true),
+}
+
 var agentEventHTTPClient = &http.Client{
 	Transport: newAgentEventHTTPTransport(),
 }

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
-import { pushAgentRefresh } from "./agentEvents";
+import { isHostMetricsWatching, pushAgentRefresh } from "./agentEvents";
 import {
   isAgentForwardGroupLatencyResult,
   isAgentHostProbeServiceResult,
@@ -21,7 +21,7 @@ import { getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tun
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
-import { getAgentHostFromRequest } from "./agentAuth";
+import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
 import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
@@ -34,6 +34,8 @@ import {
   validateTunnelRuleLatencyReport,
 } from "./ruleLatency";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
+import { agentTcpingReportGate } from "./agentTcpingReportGate";
+import { selectAgentTrafficReportInterval } from "./agentHeartbeatGate";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -276,7 +278,7 @@ function compactHostTraffic(value: unknown): AgentHostTrafficStat | null {
 export function registerAgentReportRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/support-bundle-result", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -299,7 +301,7 @@ agentRouter.post("/api/agent/support-bundle-result", async (req: Request, res: R
 
 agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -334,7 +336,7 @@ agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Re
 
 agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -361,7 +363,7 @@ agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: 
 
 agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -392,7 +394,7 @@ agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response)
 
 agentRouter.post("/api/agent/plugin-action-result", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -446,8 +448,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
   let logHostId = 0;
   let logHostName = "";
   let reportedStatCount = 0;
+  let strictTrafficAccounting = false;
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -469,6 +472,26 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
+    // An idle Agent may only report the host-wide network counters. Avoid
+    // opening the full traffic transaction and querying billing/rule/tunnel
+    // context when there are no rule deltas to account.
+    if (stats.length === 0) {
+      if (hostTraffic) {
+        await db.recordHostTrafficSample(host.id, {
+          bytesIn: Number(hostTraffic.bytesIn) || 0,
+          bytesOut: Number(hostTraffic.bytesOut) || 0,
+        });
+      }
+      const durationMs = Date.now() - requestStartedAt;
+      if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {
+        console.warn(`[Agent Traffic] slow host=${logHostId} name=${logHostName || "-"} stats=0 duration=${durationMs}ms`);
+      }
+      // No rule delta means the panel cannot infer whether this host is on a
+      // strict quota/billing path. Preserve the Agent's last confirmed policy.
+      res.json({ success: true });
+      return;
+    }
+
     await db.withDatabaseTransaction(async () => {
     if (hostTraffic) {
       await db.recordHostTrafficSample(host.id, {
@@ -486,31 +509,31 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       billingResource: NonNullable<Awaited<ReturnType<typeof db.findTrafficBillingResourceForRule>>>;
     }> = [];
     const trafficBillingEnabled = await db.isTrafficBillingEnabled();
-    const ruleRows = await db.getForwardRulesByIds(stats.map((stat) => Number(stat.ruleId)));
-    const rulesById = new Map((ruleRows as any[]).map((rule) => [Number(rule.id), rule]));
-    const [tunnelRows, groupRows] = await Promise.all([
-      db.getTunnelsByIds((ruleRows as any[]).map((rule) => Number(rule.tunnelId || 0))),
-      db.getForwardGroupTrafficContextsByIds((ruleRows as any[]).map((rule) => Number(rule.forwardGroupId || 0))),
-    ]);
-    const tunnelsById = new Map((tunnelRows as any[]).map((tunnel) => [Number(tunnel.id), tunnel]));
-    const groupsById = new Map((groupRows as any[]).map((group) => [Number(group.id), group]));
+    const trafficContexts = await db.getForwardRuleTrafficContextsByIds(stats.map((stat) => Number(stat.ruleId)));
+    const contextsByRuleId = new Map((trafficContexts as any[]).map((context) => [Number(context.rule.id), context]));
+    const rulesWithBytes = new Set(stats
+      .filter((stat) => (Number(stat.bytesIn) || 0) + (Number(stat.bytesOut) || 0) > 0)
+      .map((stat) => Number(stat.ruleId)));
+    const billingResourcesByRuleId = trafficBillingEnabled
+      ? await db.findTrafficBillingResourcesForRules((trafficContexts as any[])
+        .map((context) => context.rule)
+        .filter((rule) => rulesWithBytes.has(Number(rule.id))))
+      : new Map();
     for (const stat of stats) {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
-      const rule = rulesById.get(Number(stat.ruleId));
-      if (!rule) {
+      const context = contextsByRuleId.get(Number(stat.ruleId)) as any;
+      if (!context) {
         continue;
       }
+      const { rule, tunnel, group } = context;
       if ((rule as any).pendingDelete || !(rule as any).isEnabled) {
         continue;
       }
-      const groupId = Number((rule as any).forwardGroupId || 0);
-      const group = groupId > 0 ? groupsById.get(groupId) || null : null;
       if (!shouldAccountForwardRuleTraffic(rule, group)) {
         continue;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
-      const tunnel = tunnelId > 0 ? tunnelsById.get(tunnelId) || null : null;
       const accountingHostId = trafficAccountingHostId(rule, tunnel);
       if (accountingHostId !== Number(host.id)) {
         const ruleBytes = bytesIn + bytesOut;
@@ -545,9 +568,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           bytesOut,
           stat.connections || 0,
         );
-        const billingResource = trafficBillingEnabled
-          ? await db.findTrafficBillingResourceForRule(rule)
-          : null;
+        const billingResource = billingResourcesByRuleId.get(Number(rule.id));
         if (billingResource?.config) {
           billingEntries.push({ rule, ruleBytes, billingResource });
         } else {
@@ -561,6 +582,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     await db.markForwardRulesRunning(Array.from(runningRuleIds));
 
     for (const { rule, ruleBytes, billingResource } of billingEntries) {
+
+      strictTrafficAccounting = true;
       await withKeyedTaskLock(`traffic-billing-user:${Number(rule.userId)}`, async () => {
         const user = await db.getUserById(Number(rule.userId));
         if (user && Number((user as any).balanceCents || 0) <= 0) {
@@ -587,11 +610,11 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     // 累加用户已用流量
     await mapWithConcurrency(Array.from(quotaTrafficByUser.entries()), 8, async ([userId, totalBytes]) => {
       if (totalBytes <= 0) return;
-      await db.addUserTraffic(userId, totalBytes);
+      const user = await db.addUserTraffic(userId, totalBytes);
 
       // 检查用户流量配额
-      const user = await db.getUserById(userId);
       if (user) {
+        if (Number(user.trafficLimit || 0) > 0) strictTrafficAccounting = true;
         // 流量超额：自动禁用该用户所有规则
         if (user.trafficLimit > 0 && user.trafficUsed >= user.trafficLimit) {
           console.log(`[Traffic] User ${user.id} traffic exceeded limit, disabling rules`);
@@ -613,7 +636,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       console.warn(`[Agent Traffic] slow host=${logHostId} name=${logHostName || "-"} stats=${reportedStatCount} duration=${durationMs}ms`);
     }
 
-    res.json({ success: true });
+    res.json({
+      success: true,
+      trafficReportInterval: selectAgentTrafficReportInterval({
+        metricsWatching: isHostMetricsWatching(Number(host.id)),
+        strictAccounting: strictTrafficAccounting,
+      }),
+    });
   } catch (error) {
     console.error(`[Agent Traffic] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });
@@ -623,29 +652,49 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 // Agent TCPing 上报接口
 agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
   try {
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
     }
 
-    const results: AgentTcpingResult[] = Array.isArray(req.body?.results)
+    const parsedResults: AgentTcpingResult[] = Array.isArray(req.body?.results)
       ? req.body.results.filter(isAgentTcpingResult)
       : [];
     const rawTunnelResults = Array.isArray(req.body?.tunnels)
       ? req.body.tunnels
       : (Array.isArray(req.body?.tunnelResults) ? req.body.tunnelResults : []);
-    const tunnelResults: AgentTunnelTcpingResult[] = rawTunnelResults.filter(isAgentTunnelTcpingResult);
+    const parsedTunnelResults: AgentTunnelTcpingResult[] = rawTunnelResults.filter(isAgentTunnelTcpingResult);
     const rawForwardGroupResults = Array.isArray(req.body?.forwardGroups)
       ? req.body.forwardGroups
       : (Array.isArray(req.body?.forwardGroupResults) ? req.body.forwardGroupResults : []);
-    const forwardGroupResults: AgentForwardGroupLatencyResult[] = rawForwardGroupResults.filter(isAgentForwardGroupLatencyResult);
+    const parsedForwardGroupResults: AgentForwardGroupLatencyResult[] = rawForwardGroupResults.filter(isAgentForwardGroupLatencyResult);
     const rawServiceResults = Array.isArray(req.body?.services)
       ? req.body.services
       : (Array.isArray(req.body?.serviceResults) ? req.body.serviceResults : []);
-    const serviceResults: AgentHostProbeServiceResult[] = rawServiceResults.filter(isAgentHostProbeServiceResult);
-    if (results.length === 0 && tunnelResults.length === 0 && forwardGroupResults.length === 0 && serviceResults.length === 0) {
+    const parsedServiceResults: AgentHostProbeServiceResult[] = rawServiceResults.filter(isAgentHostProbeServiceResult);
+    if (parsedResults.length === 0 && parsedTunnelResults.length === 0 && parsedForwardGroupResults.length === 0 && parsedServiceResults.length === 0) {
       res.status(400).json({ error: "results, tunnels, forwardGroups or services array is required" });
+      return;
+    }
+    const force = req.body?.force === true;
+    const topologyGatePlan = agentTcpingReportGate.plan({
+      hostId: Number(host.id),
+      force,
+      gateRules: false,
+      results: parsedResults,
+      tunnels: parsedTunnelResults,
+      forwardGroups: parsedForwardGroupResults,
+      services: parsedServiceResults,
+    });
+    const {
+      results,
+      tunnels: tunnelResults,
+      forwardGroups: forwardGroupResults,
+      services: serviceResults,
+    } = topologyGatePlan;
+    if (results.length === 0 && tunnelResults.length === 0 && forwardGroupResults.length === 0 && serviceResults.length === 0) {
+      res.json({ success: true });
       return;
     }
     logTcpingReportSummary(host.id, results, tunnelResults, forwardGroupResults, serviceResults);
@@ -928,7 +977,8 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       await db.insertHostProbeServiceStats(serviceStats);
     }
 
-    const stats: Array<{ ruleId: number; hostId: number; latencyMs: number | null; isTimeout: boolean }> = [];
+    const reportedRuleRows = await db.getForwardRulesByIds(results.map((report) => Number(report.ruleId || 0))) as any[];
+    const reportedRuleById = new Map(reportedRuleRows.map((rule: any) => [Number(rule.id), rule]));
     const tunnelLatencyById = new Map<number, Promise<any>>();
     const tunnelContextById = new Map<number, Promise<{ tunnel: any } | null>>();
     const getTunnelContext = (tunnelId: number) => {
@@ -954,7 +1004,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     const ruleStats = await mapWithConcurrency(results, 16, async (report) => {
       const ruleId = Number(report.ruleId);
       if (ruleId <= 0) return null;
-      const rule = await db.getForwardRuleById(ruleId) as any;
+      const rule = reportedRuleById.get(ruleId) as any;
       if (!rule || rule.pendingDelete || !rule.isEnabled) return null;
       const tunnelId = Number(rule.tunnelId || 0);
       const baseLatency = typeof report.latencyMs === "number" && Number.isFinite(report.latencyMs) && report.latencyMs >= 0
@@ -965,11 +1015,11 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         if (report.sourcePort && Number(report.sourcePort) !== Number(rule.sourcePort || 0)) return null;
         if (report.targetPort && Number(report.targetPort) !== Number(rule.targetPort || 0)) return null;
         if (!isRuleLatencyReportMethodCompatible(rule.protocol, report.method)) return null;
+        const isTimeout = !!report.isTimeout || baseLatency === null;
+        const latencyMs = isTimeout ? null : baseLatency;
         return {
-          ruleId,
-          hostId: host.id,
-          latencyMs: report.isTimeout || baseLatency === null ? null : baseLatency,
-          isTimeout: !!report.isTimeout || baseLatency === null,
+          stat: { ruleId, hostId: host.id, latencyMs, isTimeout },
+          gateReport: { ...report, latencyMs, isTimeout },
         };
       }
 
@@ -990,19 +1040,45 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       });
       if (!combined) return null;
       return {
-        ruleId,
-        hostId: host.id,
-        latencyMs: combined.latencyMs,
-        isTimeout: combined.isTimeout,
+        stat: {
+          ruleId,
+          hostId: host.id,
+          latencyMs: combined.latencyMs,
+          isTimeout: combined.isTimeout,
+        },
+        gateReport: {
+          ...report,
+          tunnelId,
+          latencyMs: combined.latencyMs,
+          isTimeout: combined.isTimeout,
+        },
       };
     });
-    stats.push(...ruleStats.filter((stat): stat is NonNullable<typeof stat> => !!stat));
+    const validRuleStats = ruleStats.filter((entry): entry is NonNullable<typeof entry> => !!entry);
+    const ruleGatePlan = agentTcpingReportGate.plan({
+      hostId: Number(host.id),
+      force,
+      results: validRuleStats.map((entry) => entry.gateReport),
+      tunnels: [],
+      forwardGroups: [],
+      services: [],
+    });
+    const acceptedRuleIds = new Set(ruleGatePlan.results.map((report) => Number(report.ruleId)));
+    const stats = validRuleStats
+      .filter((entry) => acceptedRuleIds.has(Number(entry.stat.ruleId)))
+      .map((entry) => entry.stat);
 
     if (stats.length > 0) {
       await db.insertTcpingStats(stats);
       clearRuleLatencyQueryCaches();
+      db.scheduleForwardGroupFailover(Array.from(new Set(stats
+        .filter((stat) => ruleGatePlan.transitionRuleIds.has(Number(stat.ruleId)))
+        .map((stat) => Number(reportedRuleById.get(stat.ruleId)?.forwardGroupId || 0))
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0))));
     }
 
+    topologyGatePlan.commit();
+    ruleGatePlan.commit();
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent TCPing] Error:", error);
