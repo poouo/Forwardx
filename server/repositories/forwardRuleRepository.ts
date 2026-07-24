@@ -71,8 +71,8 @@ export async function getForwardRules(userId?: number, hostId?: number) {
   const db = await getDb();
   if (!db) return [];
   const conds: any[] = [
-    eq(forwardRules.pendingDelete, false),
-    sql`${forwardRules.forwardGroupRuleId} IS NULL`,
+    sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
+    sql`COALESCE(${forwardRules.forwardGroupRuleId}, 0) = 0`,
     sql`${forwardRules.id} NOT IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)`,
   ];
   if (userId) conds.push(eq(forwardRules.userId, userId));
@@ -178,8 +178,8 @@ function buildForwardRuleSqlFilter(
   const includeSearch = controls.includeSearch !== false;
   const includeCategory = controls.includeCategory !== false;
   const conditions = [
-    ruleColumn("r", "pendingDelete") + " = " + boolLiteral(false),
-    ruleColumn("r", "forwardGroupRuleId") + " IS NULL",
+    "COALESCE(" + ruleColumn("r", "pendingDelete") + ", " + boolLiteral(false) + ") = " + boolLiteral(false),
+    "COALESCE(" + ruleColumn("r", "forwardGroupRuleId") + ", 0) = 0",
     "NOT EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_group_members") + " linked_member"
       + " WHERE " + ruleColumn("linked_member", "ruleId") + " = " + ruleColumn("r", "id") + ")",
   ];
@@ -196,12 +196,12 @@ function buildForwardRuleSqlFilter(
     const allowed = inList(allowedIds);
     const directRule = [
       "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0",
-      ruleColumn("r", "isForwardGroupTemplate") + " = " + boolLiteral(false),
+      "COALESCE(" + ruleColumn("r", "isForwardGroupTemplate") + ", " + boolLiteral(false) + ") = " + boolLiteral(false),
       "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
     ].join(" AND ");
     const groupTemplate = allowedIds.length > 0
       ? [
-        ruleColumn("r", "isForwardGroupTemplate") + " = " + boolLiteral(true),
+        "COALESCE(" + ruleColumn("r", "isForwardGroupTemplate") + ", " + boolLiteral(false) + ") = " + boolLiteral(true),
         ruleColumn("r", "forwardGroupId") + " IN " + allowed.sql,
         "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
       ].join(" AND ")
@@ -626,8 +626,9 @@ export async function getForwardRulesForUserSync(userId: number) {
   if (!db) return [];
   return db.select().from(forwardRules).where(and(
     eq(forwardRules.userId, userId),
-    eq(forwardRules.pendingDelete, false),
-    eq(forwardRules.isForwardGroupTemplate, false),
+    sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
+    sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(false)}`,
+    sql`COALESCE(${forwardRules.forwardGroupRuleId}, 0) = 0`,
   )).orderBy(sql`${forwardRules.sortOrder} ASC`, desc(forwardRules.createdAt), desc(forwardRules.id));
 }
 
@@ -635,8 +636,8 @@ export async function getForwardRulesForAgent(hostId?: number) {
   const db = await getDb();
   if (!db) return [];
   const conds: any[] = [
-    eq(forwardRules.isForwardGroupTemplate, false),
-    sql`(${forwardRules.pendingDelete} = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
+    sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(false)}`,
+    sql`(COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
   ];
   if (hostId) {
     conds.push(sql`(
@@ -669,8 +670,8 @@ export async function getForwardRulesForAgentScope(hostId: number, tunnelIds: nu
     ? sql`(${forwardRules.hostId} = ${hostId} OR ${forwardRules.tunnelId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}))`
     : eq(forwardRules.hostId, hostId);
   return db.select().from(forwardRules).where(and(
-    eq(forwardRules.isForwardGroupTemplate, false),
-    sql`(${forwardRules.pendingDelete} = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
+    sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(false)}`,
+    sql`(COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
     scope,
   )).orderBy(desc(forwardRules.createdAt));
 }
@@ -679,9 +680,9 @@ export async function repairConflictingProtocolPortRules() {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select().from(forwardRules).where(and(
-    eq(forwardRules.isForwardGroupTemplate, false),
+    sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(false)}`,
     eq(forwardRules.isEnabled, true),
-    eq(forwardRules.pendingDelete, false),
+    sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
   )).orderBy(forwardRules.hostId, forwardRules.sourcePort, forwardRules.id);
   const byPort = new Map<string, any[]>();
   for (const row of rows as any[]) {
@@ -733,8 +734,8 @@ export async function getForwardGroupTemplateRules(groupId: number) {
     .from(forwardRules)
     .where(and(
       eq(forwardRules.forwardGroupId, groupId),
-      eq(forwardRules.isForwardGroupTemplate, true),
-      eq(forwardRules.pendingDelete, false),
+      sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(true)}`,
+      sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
     ))
     .orderBy(desc(forwardRules.createdAt));
 }
@@ -770,7 +771,7 @@ export async function getForwardGroupChildRulesForMember(memberId: number) {
     .from(forwardRules)
     .where(and(
       eq(forwardRules.forwardGroupMemberId, memberId),
-      eq(forwardRules.pendingDelete, false),
+      sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
     ))
     .orderBy(desc(forwardRules.createdAt));
 }

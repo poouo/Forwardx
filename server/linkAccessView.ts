@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import {
+  forwardGroups,
   hosts,
   tunnels,
   userForwardGroupPermissions,
@@ -18,18 +19,31 @@ export type LinkAccessScope = {
 };
 
 const linkAccessQueryCache = createQueryCache(500);
+let lastLinkAccessWarningAt = 0;
+
+function warnLinkAccessLookupFailure(error: unknown) {
+  const now = Date.now();
+  if (now - lastLinkAccessWarningAt < 60_000) return;
+  lastLinkAccessWarningAt = now;
+  console.warn("[LinkAccess] optional access lookup failed; direct user-owned resources remain available:", error instanceof Error ? error.message : String(error));
+}
 
 async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
   const db = await getDb();
   if (!db) return { hostIds: new Set(), tunnelIds: new Set(), groupIds: new Set() };
-  const [ownedHosts, ownedTunnels, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingResourceIds] = await Promise.all([
-    db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)),
-    db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)),
-    db.select({ id: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId)),
-    db.select({ id: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId)),
-    db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)),
-    getActiveUserSubscriptions(userId),
-    getUserUsableTrafficBillingResourceIds(userId),
+  const safe = <T>(task: Promise<T>, fallback: T) => task.catch((error) => {
+    warnLinkAccessLookupFailure(error);
+    return fallback;
+  });
+  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingResourceIds] = await Promise.all([
+    safe(db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)), []),
+    safe(db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)), []),
+    safe(db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)), []),
+    safe(db.select({ id: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId)), []),
+    safe(db.select({ id: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId)), []),
+    safe(db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)), []),
+    safe(getActiveUserSubscriptions(userId), []),
+    safe(getUserUsableTrafficBillingResourceIds(userId), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
   ]);
   const subscriptionHostIds = (subscriptions as any[]).flatMap((subscription) => subscription.hostIds || []).map(Number);
   const subscriptionTunnelIds = (subscriptions as any[]).flatMap((subscription) => subscription.tunnelIds || []).map(Number);
@@ -48,6 +62,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
       ...billingResourceIds.tunnelIds.map(Number),
     ]),
     groupIds: new Set([
+      ...(ownedForwardGroups as any[]).map((group) => Number(group.id)),
       ...groupPermissions.map((row: any) => Number(row.id)),
       ...subscriptionGroupIds,
       ...billingResourceIds.forwardGroupIds.map(Number),

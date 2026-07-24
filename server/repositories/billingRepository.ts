@@ -37,6 +37,15 @@ import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingReposito
 import { getSetting, setSetting } from "./settingsRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 
+let lastActiveSubscriptionWarningAt = 0;
+
+function warnActiveSubscriptionLookupFailure(error: unknown) {
+  const now = Date.now();
+  if (now - lastActiveSubscriptionWarningAt < 60_000) return;
+  lastActiveSubscriptionWarningAt = now;
+  console.warn("[Billing] optional subscription lookup failed; self-owned resources remain available:", error instanceof Error ? error.message : String(error));
+}
+
 // ==================== Payment Orders ====================
 
 export async function createPaymentOrder(order: InsertPaymentOrder) {
@@ -774,41 +783,46 @@ export async function getActiveUserTrafficAddonBytes(userId: number) {
 }
 
 export async function getActiveUserSubscriptions(userId?: number) {
-  const db = await getDb();
-  if (!db) return [];
-  const nowSec = Math.floor(Date.now() / 1000);
-  const conds: any[] = [
-    eq(userSubscriptions.status, "active"),
-    sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
-  ];
-  if (userId !== undefined) conds.push(eq(userSubscriptions.userId, userId));
-  const rows = await db
-    .select({
-      id: userSubscriptions.id,
-      userId: userSubscriptions.userId,
-      planId: userSubscriptions.planId,
-      status: userSubscriptions.status,
-      source: userSubscriptions.source,
-      paymentOrderNo: userSubscriptions.paymentOrderNo,
-      planSnapshot: userSubscriptions.planSnapshot,
-      portRangeStart: userSubscriptions.portRangeStart,
-      portRangeEnd: userSubscriptions.portRangeEnd,
-      nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
-      startedAt: userSubscriptions.startedAt,
-      expiresAt: userSubscriptions.expiresAt,
-      planName: subscriptionPlans.name,
-      portCount: subscriptionPlans.portCount,
-      trafficLimit: subscriptionPlans.trafficLimit,
-      rateLimitMbps: subscriptionPlans.rateLimitMbps,
-      maxRules: subscriptionPlans.maxRules,
-      maxConnections: subscriptionPlans.maxConnections,
-      maxIPs: subscriptionPlans.maxIPs,
-    })
-    .from(userSubscriptions)
-    .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
-    .where(and(...conds))
-    .orderBy(desc(userSubscriptions.createdAt));
-  return attachSubscriptionSnapshots(rows as any);
+  try {
+    const db = await getDb();
+    if (!db) return [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const conds: any[] = [
+      eq(userSubscriptions.status, "active"),
+      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+    ];
+    if (userId !== undefined) conds.push(eq(userSubscriptions.userId, userId));
+    const rows = await db
+      .select({
+        id: userSubscriptions.id,
+        userId: userSubscriptions.userId,
+        planId: userSubscriptions.planId,
+        status: userSubscriptions.status,
+        source: userSubscriptions.source,
+        paymentOrderNo: userSubscriptions.paymentOrderNo,
+        planSnapshot: userSubscriptions.planSnapshot,
+        portRangeStart: userSubscriptions.portRangeStart,
+        portRangeEnd: userSubscriptions.portRangeEnd,
+        nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
+        startedAt: userSubscriptions.startedAt,
+        expiresAt: userSubscriptions.expiresAt,
+        planName: subscriptionPlans.name,
+        portCount: subscriptionPlans.portCount,
+        trafficLimit: subscriptionPlans.trafficLimit,
+        rateLimitMbps: subscriptionPlans.rateLimitMbps,
+        maxRules: subscriptionPlans.maxRules,
+        maxConnections: subscriptionPlans.maxConnections,
+        maxIPs: subscriptionPlans.maxIPs,
+      })
+      .from(userSubscriptions)
+      .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
+      .where(and(...conds))
+      .orderBy(desc(userSubscriptions.createdAt));
+    return attachSubscriptionSnapshots(rows as any);
+  } catch (error) {
+    warnActiveSubscriptionLookupFailure(error);
+    return [];
+  }
 }
 
 export async function createUserSubscription(data: InsertUserSubscription) {

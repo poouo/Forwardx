@@ -10,6 +10,7 @@ import {
 import {
   FORWARDX_WIREGUARD_DEFAULT_MTU,
   FORWARDX_WIREGUARD_MIMIC_MTU,
+  buildForwardXWireGuardMimicFilters,
   buildForwardXWireGuardPlans,
   deriveForwardXWireGuardKeyPair,
   forwardXWireGuardMTU,
@@ -64,6 +65,23 @@ test("keeps a private endpoint in the WireGuard peer plan", () => {
     links: [{ fromHostId: 3, toHostId: 2, endpointHost: "10.23.0.8", endpointPort: 61561 }],
   });
   assert.equal(plans.get(3)?.peers.find((peer) => peer.hostId === 2)?.endpointHost, "10.23.0.8");
+});
+
+test("builds Mimic filters from the WireGuard peer plan", () => {
+  const plans = buildForwardXWireGuardPlans({
+    tunnelId: 10,
+    seed: "mimic-filters",
+    nodes: [{ hostId: 1 }, { hostId: 2, listenPort: 31002 }],
+    links: [{ fromHostId: 1, toHostId: 2, endpointHost: "2001:db8::2", endpointPort: 31002 }],
+  });
+
+  assert.deepEqual(buildForwardXWireGuardMimicFilters(plans.get(1)!), [
+    "remote=[2001:db8::2]:31002",
+  ]);
+  assert.deepEqual(buildForwardXWireGuardMimicFilters(plans.get(2)!), [
+    "local=0.0.0.0:31002",
+    "local=[::]:31002",
+  ]);
 });
 
 test("both Agent delivery paths retain the WireGuard peer for tunnel self-tests", () => {
@@ -161,6 +179,7 @@ test("normalizes PostgreSQL string numbers for every Agent self-test payload", (
 test("reserves outer packet headroom only when Mimic is active", () => {
   assert.equal(forwardXWireGuardMTU(false), FORWARDX_WIREGUARD_DEFAULT_MTU);
   assert.equal(forwardXWireGuardMTU(true), FORWARDX_WIREGUARD_MIMIC_MTU);
+  assert.equal(FORWARDX_WIREGUARD_MIMIC_MTU, 1350);
   assert.ok(FORWARDX_WIREGUARD_DEFAULT_MTU - FORWARDX_WIREGUARD_MIMIC_MTU >= 12);
 
   const plans = buildForwardXWireGuardPlans({

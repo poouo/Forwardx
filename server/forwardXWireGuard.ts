@@ -1,11 +1,13 @@
 import crypto from "crypto";
+import { isIP } from "node:net";
 import { normalizeForwardXVersion } from "../shared/forwardTypes";
 
 export const AGENT_FORWARDX_WIREGUARD_VERSION = "2.2.154";
 export const FORWARDX_WIREGUARD_DEFAULT_MTU = 1380;
-// Mimic expands every outer UDP packet by 12 bytes. 1340 also leaves room for
-// IPv6 WireGuard overhead on the common 1450-byte MTU used by cloud networks.
-export const FORWARDX_WIREGUARD_MIMIC_MTU = 1340;
+// Mimic adds 12 bytes to the outer UDP packet. 1350 keeps the V2 userspace
+// WireGuard path below the common 1450-byte IPv6 cloud MTU while avoiding the
+// unnecessary fragmentation overhead of the former 1340-byte setting.
+export const FORWARDX_WIREGUARD_MIMIC_MTU = 1350;
 
 export function forwardXWireGuardMTU(mimicEnabled: boolean) {
   return mimicEnabled ? FORWARDX_WIREGUARD_MIMIC_MTU : FORWARDX_WIREGUARD_DEFAULT_MTU;
@@ -47,6 +49,25 @@ export type ForwardXWireGuardNodePlan = {
 export function isForwardXWireGuardV2(tunnel: any) {
   return String(tunnel?.mode || "").trim().toLowerCase() === "forwardx"
     && normalizeForwardXVersion(tunnel?.forwardxVersion) === "v2";
+}
+
+export function buildForwardXWireGuardMimicFilters(plan: Pick<ForwardXWireGuardNodePlan, "listenPort" | "peers">) {
+  const filters = new Set<string>();
+  const listenPort = Number(plan?.listenPort || 0);
+  if (Number.isInteger(listenPort) && listenPort > 0 && listenPort <= 65535) {
+    // Mimic supports wildcard local filters and keeps them synchronized with
+    // interface address changes, including public/private/IPv6 addresses.
+    filters.add(`local=0.0.0.0:${listenPort}`);
+    filters.add(`local=[::]:${listenPort}`);
+  }
+  for (const peer of plan?.peers || []) {
+    const endpointHost = String(peer?.endpointHost || "").trim().replace(/^\[([^\]]+)\]$/, "$1");
+    const endpointPort = Number(peer?.endpointPort || 0);
+    if (!endpointHost || !Number.isInteger(endpointPort) || endpointPort <= 0 || endpointPort > 65535) continue;
+    const endpoint = isIP(endpointHost) === 6 ? `[${endpointHost}]:${endpointPort}` : `${endpointHost}:${endpointPort}`;
+    filters.add(`remote=${endpoint}`);
+  }
+  return Array.from(filters).sort();
 }
 
 function wireGuardPrivateKey(seed: string, tunnelId: number, hostId: number) {

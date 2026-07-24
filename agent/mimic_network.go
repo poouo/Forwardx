@@ -180,6 +180,9 @@ func restoreMimicNetworkOffloads(iface string) (bool, string) {
 }
 
 func mimicInterfaceNetworkSummary(iface string) string {
+	// ForwardX V1 FXP and V2 wireguard-go both use userspace UDP sockets. Mimic
+	// documents checksum hacks as unnecessary for this path, so keep checksum,
+	// GRO/GSO/TSO and LRO offloads enabled for throughput and CPU efficiency.
 	parts := []string{
 		"mtu=" + readMimicInterfaceValue(iface, "mtu"),
 		"rxDropped=" + readMimicInterfaceValue(iface, "statistics/rx_dropped"),
@@ -190,36 +193,25 @@ func mimicInterfaceNetworkSummary(iface string) string {
 	if !commandExists("ethtool") {
 		return strings.Join(append(parts, "offload=ethtool-missing"), " ")
 	}
-	beforeRaw, err := commandCombinedOutputWithTimeout(3*time.Second, "ethtool", "-k", iface)
-	if err != nil {
-		return strings.Join(append(parts, "offload=inspect-failed"), " ")
-	}
-	mutableEnabled := mutableMimicOffloads(string(beforeRaw))
-	if err := captureMimicOffloadState(iface, mutableEnabled); err != nil {
-		return strings.Join(append(parts, "offload=state-failed:"+compactLogOutput(err.Error())), " ")
-	}
-
-	failed := ""
-	if len(mutableEnabled) > 0 {
-		args := mimicOffloadDisableArgs(iface, mutableEnabled)
-		if output, runErr := commandCombinedOutputWithTimeout(5*time.Second, "ethtool", args...); runErr != nil {
-			failed = compactLogOutput(string(output))
-			if failed == "" {
-				failed = runErr.Error()
-			}
-		}
-	}
-
+	// Older Agents temporarily disabled mutable offloads and recorded the
+	// previous state. Restore that state once before inspecting the interface so
+	// an Agent upgrade does not leave a live Mimic tunnel in compatibility mode.
+	restored, restoreError := restoreMimicNetworkOffloads(iface)
 	raw, err := commandCombinedOutputWithTimeout(3*time.Second, "ethtool", "-k", iface)
 	if err != nil {
 		parts = append(parts, "offload=inspect-failed")
 	} else if enabled := enabledMimicOffloads(string(raw)); len(enabled) > 0 {
-		parts = append(parts, "offload=still-on:"+strings.Join(enabled, ","))
+		parts = append(parts, "offload=enabled:"+strings.Join(enabled, ","))
 	} else {
-		parts = append(parts, "offload=off")
+		parts = append(parts, "offload=disabled")
 	}
-	if failed != "" {
-		parts = append(parts, "offloadTuneError="+failed)
+	if restored {
+		parts = append(parts, "offloadRestore=restored")
+	} else if restoreError != "" {
+		parts = append(parts, "offloadRestore="+restoreError)
+		if shouldLogAgentReport("mimic-offload-restore:"+iface, agentReportLogInterval) {
+			logf("mimic offload restore failed interface=%s error=%s", iface, restoreError)
+		}
 	}
 	return compactLogOutput(strings.Join(parts, " "))
 }
