@@ -44,6 +44,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
       const billing = await import(moduleUrl("server/repositories/billingRepository.ts"));
       const { tunnelsRouter } = await import(moduleUrl("server/routers/tunnels.ts"));
       const { forwardGroupsRouter } = await import(moduleUrl("server/routers/forwardGroups.ts"));
+      const { rulesRouter } = await import(moduleUrl("server/routers/rules.ts"));
 
       const quote = (name) => '"' + name + '"';
       const insert = async (table, columns, values) => {
@@ -134,6 +135,16 @@ test("database-backed list queries page, search, scope, and hydrate only request
         [1301, 13, "tunnel", 20, 0, 1],
       );
       await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 13]);
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled", "sortOrder"],
+        [14, "Alice Owned Port", "host", "port", "127.0.0.1", 2, 1, 4],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [1401, 14, "host", 3, 0, 1],
+      );
 
       const tunnelCaller = tunnelsRouter.createCaller({
         req: { headers: {} },
@@ -200,11 +211,28 @@ test("database-backed list queries page, search, scope, and hydrate only request
         authSession: null,
         authFailureReason: null,
       });
+      const rulesCaller = rulesRouter.createCaller({
+        req: { headers: {} },
+        res: { clearCookie() {} },
+        user: { id: 2, username: "alice", role: "user", accountEnabled: true },
+        authSession: null,
+        authFailureReason: null,
+      });
+
+      const ownedGroupPage = await groupCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        groupMode: "port",
+        search: "Alice Owned Port",
+      });
+      assert.deepEqual(ownedGroupPage.items.map((item) => Number(item.id)), [14]);
+      const ownedGroupOptions = await groupCaller.options();
+      assert.ok(ownedGroupOptions.some((item) => Number(item.id) === 14));
       const sharedGroupPage = await groupCaller.listPage({
         page: 1,
         pageSize: 10,
         groupMode: "port",
-        search: "",
+        search: "Saved Port",
       });
       assert.equal(sharedGroupPage.items.length, 1);
       assert.equal(sharedGroupPage.items[0].availability.status, "available");
@@ -246,6 +274,15 @@ test("database-backed list queries page, search, scope, and hydrate only request
       await insert("forward_rules", ruleColumns, [102, 1, "Port Template", "iptables", "tcp", null, 10, null, null, 1, 10002, "port.example", 80, 2, 1, 0, 2]);
       await insert("forward_rules", ruleColumns, [103, 1, "Managed Child", "iptables", "tcp", null, 10, 102, 1001, 0, 10002, "port.example", 80, 2, 1, 0, 3]);
       await insert("forward_rules", ruleColumns, [104, 2, "Chain Template", "iptables", "tcp", null, 11, null, null, 1, 10003, "chain.example", 80, 2, 1, 0, 3]);
+      await insert("forward_rules", ruleColumns, [105, 3, "Alice Owned Template", "iptables", "tcp", null, 14, null, null, 1, 10004, "owned.example", 80, 2, 1, 0, 4]);
+
+      const ownedRulePage = await rulesCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        category: "all",
+        search: "Alice Owned Template",
+      });
+      assert.deepEqual(ownedRulePage.items.map((item) => Number(item.id)), [105]);
 
       const userPage = await users.getUsersPage({ page: 9, pageSize: 1 });
       assert.equal(userPage.totalItems, 2);

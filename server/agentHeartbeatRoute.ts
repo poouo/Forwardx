@@ -73,6 +73,7 @@ import {
 } from "@shared/forwardTypes";
 import {
   AGENT_FORWARDX_WIREGUARD_VERSION,
+  buildForwardXWireGuardMimicFilters,
   buildForwardXWireGuardPlans,
   forwardXWireGuardMTU,
   isForwardXWireGuardV2,
@@ -89,6 +90,7 @@ import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
 import { selectTunnelDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
+import { buildForwardXMimicConfig } from "./mimicConfig";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -1276,11 +1278,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ]);
       for (const networkInterface of Array.from(knownIfaces).sort()) {
         const desiredFilters = Array.from(mimicFiltersByInterface.get(networkInterface) || []).sort();
-        const localPorts = desiredFilters
-          .filter((filter) => filter.startsWith("local-port="))
-          .map((filter) => Number(filter.slice("local-port=".length)) || 0)
-          .filter((port) => port > 0 && port <= 65535);
-        const filters = desiredFilters.filter((filter) => !filter.startsWith("local-port="));
+        const filters = desiredFilters;
         const configPath = `${MIMIC_CONFIG_DIR}/${networkInterface}.conf`;
         const backupPath = `${configPath}.forwardx-backup`;
         const backupActivePath = `${configPath}.forwardx-backup-active`;
@@ -1293,24 +1291,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const serviceEnabledCheck = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-enabled --quiet ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update show default 2>/dev/null | grep -q -F ${shQuote(serviceName)}; else false; fi`;
         const enableRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update add ${serviceNameQuoted} default; else echo "[mimic] cannot restore enabled state for ${serviceName} on unsupported init system"; exit 1; fi`;
         const restartRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} restart; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} restart; else echo "[mimic] cannot restore service ${serviceName} on unsupported init system"; exit 1; fi`;
-        if (filters.length === 0 && localPorts.length === 0) {
+        if (filters.length === 0) {
           removalCommands.push(
             `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 2>/dev/null || true; fi`,
           );
           continue;
         }
-        const config = [
-          "# Managed by ForwardX",
-          "log.verbosity = info",
-          "link_type = eth",
-          "xdp_mode = skb",
-          "use_libxdp = false",
-          "keepalive = 300:10:3:600",
-          "max_window = false",
-          ...filters.map((filter) => `filter = ${filter}`),
-        ].join("\n");
+        const config = buildForwardXMimicConfig(filters);
         const encodedConfig = Buffer.from(config, "utf8").toString("base64");
-        const localPortList = localPorts.join(" ");
         cmds.push([
           "set -e",
           `if ! command -v mimic >/dev/null 2>&1; then echo "[mimic] mimic is not installed; install mimic and mimic-dkms to use UDP camouflage"; exit 1; fi`,
@@ -1318,9 +1306,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `mkdir -p ${shQuote(MIMIC_CONFIG_DIR)}`,
           `if [ -f ${shQuote(configPath)} ] && ! grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null && [ ! -f ${shQuote(backupPath)} ]; then if { ${serviceActiveCheck}; }; then : > ${shQuote(backupActivePath)}; else rm -f ${shQuote(backupActivePath)}; fi; if { ${serviceEnabledCheck}; }; then : > ${shQuote(backupEnabledPath)}; else rm -f ${shQuote(backupEnabledPath)}; fi; rm -f ${shQuote(`${configPath}.forwardx-last-good`)}; cp -p ${shQuote(configPath)} ${shQuote(backupPath)}; fi`,
           `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(configTempPath)}`,
-          localPorts.length > 0
-            ? `mimic_ipv4=$(ip -o -4 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk 'NR==1 { sub(/\\/.*/, "", $4); print $4 }'); mimic_ipv6=$(ip -o -6 addr show dev ${shQuote(networkInterface)} scope global 2>/dev/null | awk '$4 !~ /^fe80:/ { sub(/\\/.*/, "", $4); print $4; exit }'); if [ -z "$mimic_ipv4$mimic_ipv6" ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] interface ${shQuote(networkInterface)} has no global IPv4 or IPv6 address"; exit 1; fi; for mimic_port in ${localPortList}; do [ -n "$mimic_ipv4" ] && printf '\\nfilter = local=%s:%s' "$mimic_ipv4" "$mimic_port" >> ${shQuote(configTempPath)}; [ -n "$mimic_ipv6" ] && printf '\\nfilter = local=[%s]:%s' "$mimic_ipv6" "$mimic_port" >> ${shQuote(configTempPath)}; done`
-            : "",
           `printf '\\n' >> ${shQuote(configTempPath)}; mimic_filter_count=$(grep -c '^filter = ' ${shQuote(configTempPath)} 2>/dev/null || true); if [ "$mimic_filter_count" -le 0 ] || [ "$mimic_filter_count" -gt 32 ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] invalid filter count: $mimic_filter_count (supported 1-32)"; exit 1; fi; if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then cp -p ${shQuote(configPath)} ${shQuote(`${configPath}.forwardx-last-good`)}; fi; mv -f ${shQuote(configTempPath)} ${shQuote(configPath)}; chmod 644 ${shQuote(configPath)}`,
           `echo "[mimic] sync ${shQuote(networkInterface)} filters=$mimic_filter_count"`,
           `if ! modprobe mimic 2>/dev/null; then echo "[mimic] kernel module could not be loaded"; exit 1; fi`,
@@ -1703,6 +1688,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const isForwardXTunnel = isForwardXTunnelMode;
     const tunnelNeedsMimic = (tunnel: any) => {
       if (!tunnel || !isForwardXTunnel(tunnel) || !tunnel.isEnabled || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
+      // V2 carries every tunnel protocol inside its WireGuard UDP socket. Its
+      // Mimic decision must not depend on a separate UDP rule being present.
+      if (isForwardXWireGuardV2(tunnel)) return !!(tunnel as any).udpOverTcp;
       return (agentAllRules as any[]).some((rule: any) => {
         if (!rule || rule.pendingDelete || !rule.isEnabled || rule.forwardType !== "gost") return false;
         if (Number(rule.tunnelId || 0) !== Number(tunnel.id || 0)) return false;
@@ -2433,7 +2421,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const addMimicLocalFilterForPort = (port: unknown) => {
       const p = Number(port) || 0;
       if (p <= 0 || p > 65535) return;
-      addMimicFilter(`local-port=${p}`);
+      // Mimic natively supports wildcard local filters and tracks interface
+      // address changes itself. Avoid resolving only the first global address
+      // in a shell command, which can miss the actual WireGuard destination.
+      addMimicFilter(`local=0.0.0.0:${p}`);
+      addMimicFilter(`local=[::]:${p}`);
     };
     const collectMimicFiltersForRule = async (rule: any, tunnel: any) => {
       if (!udpOverTcpEnabled(rule, tunnel) || !isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return;
@@ -2479,6 +2471,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       addCurrentHostExtraExitFilters();
     };
+    // WireGuard V2 always transports the tunnel through its own UDP socket.
+    // Build Mimic filters from the actual peer plan so enabling Mimic does not
+    // depend on a separate UDP forwarding rule being present or running.
+    for (const tunnel of hostTunnels as any[]) {
+      if (!isForwardXWireGuardV2(tunnel) || !tunnelNeedsMimic(tunnel)) continue;
+      const plan = await getCurrentHostForwardXWireGuardPlan(tunnel);
+      if (!plan) continue;
+      for (const filter of buildForwardXWireGuardMimicFilters(plan)) addMimicFilter(filter);
+    }
     for (const tunnel of hostTunnels as any[]) {
       if (isCurrentHostTunnelEntry(tunnel) && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
         const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));

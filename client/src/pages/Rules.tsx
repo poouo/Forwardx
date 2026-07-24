@@ -501,6 +501,11 @@ function storeString(key: string, value: string) {
   }
 }
 
+function ruleFilterStorageKey(key: string, user: { id?: number; role?: string } | null | undefined) {
+  const identity = user?.id ? `${String(user.role || "user")}-${Number(user.id)}` : "guest";
+  return `${key}.${identity}`;
+}
+
 function getRuleForwardGroupKind(rule: any, forwardGroupById: Map<number, any>): "local" | "chain" | "group" | null {
   const groupId = Number(rule?.forwardGroupId || 0);
   if (!groupId) return null;
@@ -2152,8 +2157,19 @@ function RulesContent() {
   const [resetTrafficTarget, setResetTrafficTarget] = useState<{ scope: "all" } | { scope: "rule"; rule: any } | null>(null);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [form, setForm] = useState<RuleFormData>(defaultForm);
-  const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
-  const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
+  const filterHostStorageKey = ruleFilterStorageKey(RULE_FILTER_HOST_STORAGE_KEY, user);
+  const filterUserStorageKey = ruleFilterStorageKey(RULE_FILTER_USER_STORAGE_KEY, user);
+  const [filterHost, setFilterHost] = useState<string>(() => getStoredString(filterHostStorageKey, "all"));
+  const [filterUser, setFilterUser] = useState<string>(() => getStoredString(filterUserStorageKey, "self"));
+  const previousFilterIdentity = useRef(filterHostStorageKey);
+  useEffect(() => {
+    if (previousFilterIdentity.current === filterHostStorageKey) return;
+    previousFilterIdentity.current = filterHostStorageKey;
+    const nextHost = getStoredString(filterHostStorageKey, "all");
+    const nextUser = user?.role === "admin" ? getStoredString(filterUserStorageKey, "self") : "self";
+    setFilterHost(nextHost);
+    setFilterUser(nextUser);
+  }, [filterHostStorageKey, filterUserStorageKey, user?.role]);
   const [ruleSearchQuery, setRuleSearchQuery] = useState("");
   const [ruleCategory, setRuleCategory] = useUrlTab<RuleCategory>({
     values: RULE_CATEGORIES,
@@ -2219,7 +2235,12 @@ function RulesContent() {
   const [importingRules, setImportingRules] = useState(false);
   const importingRulesRef = useRef(false);
   const rulePageRequest = usePersistentPageRequest("forwardx.rules.page");
-  const rulePageEntryHostId = /^\d+$/.test(filterHost) ? Number(filterHost) : null;
+  const requestedRulePageEntryHostId = /^\d+$/.test(filterHost) ? Number(filterHost) : null;
+  const knownRulePageEntryHost = requestedRulePageEntryHostId === null
+    || !hostsFetched
+    || !Array.isArray(hosts)
+    || hosts.some((host: any) => Number(host.id) === requestedRulePageEntryHostId);
+  const rulePageEntryHostId = knownRulePageEntryHost ? requestedRulePageEntryHostId : null;
   const rulePageFilterKey = [filterUser, filterHost, ruleCategory, ruleSearchQuery.trim(), rulePageSize].join(":");
   const previousRulePageFilterKey = useRef(rulePageFilterKey);
   useEffect(() => {
@@ -2764,8 +2785,14 @@ function RulesContent() {
   useEffect(() => {
     if (!String(filterHost).startsWith("group:")) return;
     setFilterHost("all");
-    storeString(RULE_FILTER_HOST_STORAGE_KEY, "all");
-  }, [filterHost]);
+    storeString(filterHostStorageKey, "all");
+  }, [filterHost, filterHostStorageKey]);
+  useEffect(() => {
+    if (!hostsFetched || !Array.isArray(hosts) || requestedRulePageEntryHostId === null) return;
+    if (hosts.some((host: any) => Number(host.id) === requestedRulePageEntryHostId)) return;
+    setFilterHost("all");
+    storeString(filterHostStorageKey, "all");
+  }, [filterHostStorageKey, hosts, hostsFetched, requestedRulePageEntryHostId]);
   const getRuleEntryHostIdForSort = useCallback((rule: any) => {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     if (group) {
@@ -5937,12 +5964,12 @@ function RulesContent() {
 
   const handleFilterUserChange = (value: string) => {
     setFilterUser(value);
-    storeString(RULE_FILTER_USER_STORAGE_KEY, value);
+    storeString(filterUserStorageKey, value);
   };
 
   const handleFilterHostChange = (value: string) => {
     setFilterHost(value);
-    storeString(RULE_FILTER_HOST_STORAGE_KEY, value);
+    storeString(filterHostStorageKey, value);
   };
 
   const handleRulePageSizeChange = (value: string) => {

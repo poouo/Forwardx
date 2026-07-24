@@ -24,8 +24,20 @@ const BILLING_DENOMINATOR = 100n * BigInt(MILLI_CENTS_PER_CENT);
 const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER = "traffic-billing-rule-usage-v1";
 const TRAFFIC_BILLING_ENABLED_CACHE_MS = 5_000;
 let trafficBillingEnabledCache: { value: boolean; expiresAt: number } | null = null;
+let lastTrafficBillingAccessWarningAt = 0;
 
 export type TrafficBillingResourceType = "host" | "tunnel" | "forward_group";
+
+function emptyTrafficBillingResourceIds() {
+  return { hostIds: [] as number[], tunnelIds: [] as number[], forwardGroupIds: [] as number[] };
+}
+
+function warnTrafficBillingAccessFailure(error: unknown) {
+  const now = Date.now();
+  if (now - lastTrafficBillingAccessWarningAt < 60_000) return;
+  lastTrafficBillingAccessWarningAt = now;
+  console.warn("[TrafficBilling] optional access lookup failed; self-owned resources remain available:", error instanceof Error ? error.message : String(error));
+}
 
 function normalizeMultiplier(value: number) {
   return normalizeTrafficMultiplier(value);
@@ -265,9 +277,15 @@ export async function isTrafficBillingEnabled() {
   if (trafficBillingEnabledCache && trafficBillingEnabledCache.expiresAt > now) {
     return trafficBillingEnabledCache.value;
   }
-  const value = (await getSetting("trafficBillingEnabled")) === "true";
-  trafficBillingEnabledCache = { value, expiresAt: now + TRAFFIC_BILLING_ENABLED_CACHE_MS };
-  return value;
+  try {
+    const value = (await getSetting("trafficBillingEnabled")) === "true";
+    trafficBillingEnabledCache = { value, expiresAt: now + TRAFFIC_BILLING_ENABLED_CACHE_MS };
+    return value;
+  } catch (error) {
+    warnTrafficBillingAccessFailure(error);
+    trafficBillingEnabledCache = { value: false, expiresAt: now + TRAFFIC_BILLING_ENABLED_CACHE_MS };
+    return false;
+  }
 }
 
 export async function setTrafficBillingEnabled(enabled: boolean) {
@@ -369,38 +387,43 @@ export async function getUserTrafficBillingPermissions(userId: number) {
 }
 
 export async function getUserUsableTrafficBillingResourceIds(userId: number) {
-  if (!(await isTrafficBillingEnabled())) return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
-  const db = await getDb();
-  if (!db) return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
-  const permittedRows = await db
-    .select({
-      resourceType: userTrafficBillingPermissions.resourceType,
-      resourceId: userTrafficBillingPermissions.resourceId,
-    })
-    .from(userTrafficBillingPermissions)
-    .innerJoin(trafficBillingConfigs, and(
-      eq(trafficBillingConfigs.resourceType, userTrafficBillingPermissions.resourceType),
-      eq(trafficBillingConfigs.resourceId, userTrafficBillingPermissions.resourceId),
-      eq(trafficBillingConfigs.enabled, true),
-      eq(trafficBillingConfigs.requiresPermission, true),
-    ))
-    .where(eq(userTrafficBillingPermissions.userId, userId));
-  const publicRows = await db
-    .select({
-      resourceType: trafficBillingConfigs.resourceType,
-      resourceId: trafficBillingConfigs.resourceId,
-    })
-    .from(trafficBillingConfigs)
-    .where(and(
-      eq(trafficBillingConfigs.enabled, true),
-      eq(trafficBillingConfigs.requiresPermission, false),
-    ));
-  const rows = [...permittedRows, ...publicRows];
-  return {
-    hostIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)))),
-    tunnelIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)))),
-    forwardGroupIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "forward_group").map((row: any) => Number(row.resourceId)))),
-  };
+  try {
+    if (!(await isTrafficBillingEnabled())) return emptyTrafficBillingResourceIds();
+    const db = await getDb();
+    if (!db) return emptyTrafficBillingResourceIds();
+    const permittedRows = await db
+      .select({
+        resourceType: userTrafficBillingPermissions.resourceType,
+        resourceId: userTrafficBillingPermissions.resourceId,
+      })
+      .from(userTrafficBillingPermissions)
+      .innerJoin(trafficBillingConfigs, and(
+        eq(trafficBillingConfigs.resourceType, userTrafficBillingPermissions.resourceType),
+        eq(trafficBillingConfigs.resourceId, userTrafficBillingPermissions.resourceId),
+        eq(trafficBillingConfigs.enabled, true),
+        eq(trafficBillingConfigs.requiresPermission, true),
+      ))
+      .where(eq(userTrafficBillingPermissions.userId, userId));
+    const publicRows = await db
+      .select({
+        resourceType: trafficBillingConfigs.resourceType,
+        resourceId: trafficBillingConfigs.resourceId,
+      })
+      .from(trafficBillingConfigs)
+      .where(and(
+        eq(trafficBillingConfigs.enabled, true),
+        eq(trafficBillingConfigs.requiresPermission, false),
+      ));
+    const rows = [...permittedRows, ...publicRows];
+    return {
+      hostIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)))),
+      tunnelIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)))),
+      forwardGroupIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "forward_group").map((row: any) => Number(row.resourceId)))),
+    };
+  } catch (error) {
+    warnTrafficBillingAccessFailure(error);
+    return emptyTrafficBillingResourceIds();
+  }
 }
 
 export async function setUserTrafficBillingPermissions(userId: number, hostIds: number[], tunnelIds: number[], forwardGroupIds: number[] = []) {

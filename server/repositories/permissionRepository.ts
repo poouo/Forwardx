@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import {
   forwardRules,
+  forwardGroups,
   hosts,
   tunnels,
   userForwardGroupPermissions,
@@ -13,6 +14,15 @@ import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
 import { getActiveUserSubscriptions } from "./billingRepository";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { clearLinkAccessScopeCache } from "../linkAccessView";
+
+let lastPermissionLookupWarningAt = 0;
+
+function warnPermissionLookupFailure(error: unknown) {
+  const now = Date.now();
+  if (now - lastPermissionLookupWarningAt < 60_000) return;
+  lastPermissionLookupWarningAt = now;
+  console.warn("[Permissions] optional resource lookup failed; direct user-owned resources remain available:", error instanceof Error ? error.message : String(error));
+}
 
 // ==================== User-Host Permissions ====================
 
@@ -197,12 +207,32 @@ export async function getUserManualAllowedForwardGroupIds(userId: number): Promi
 }
 
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
-  const manualRows = await getUserManualAllowedForwardGroupIds(userId);
-  const [planRows, billingResourceIds] = await Promise.all([
-    _getActiveSubscriptionForwardGroupIds(userId),
-    getUserUsableTrafficBillingResourceIds(userId),
+  const db = await getDb();
+  if (!db) return [];
+  const [ownedRows, manualRows, planRows, billingResourceIds] = await Promise.all([
+    db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)).catch((error: unknown) => {
+      warnPermissionLookupFailure(error);
+      return [];
+    }),
+    getUserManualAllowedForwardGroupIds(userId).catch((error) => {
+      warnPermissionLookupFailure(error);
+      return [];
+    }),
+    _getActiveSubscriptionForwardGroupIds(userId).catch((error) => {
+      warnPermissionLookupFailure(error);
+      return [];
+    }),
+    getUserUsableTrafficBillingResourceIds(userId).catch((error) => {
+      warnPermissionLookupFailure(error);
+      return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
+    }),
   ]);
-  return Array.from(new Set([...manualRows, ...planRows, ...billingResourceIds.forwardGroupIds]));
+  return Array.from(new Set([
+    ...ownedRows.map((row: any) => Number(row.id)),
+    ...manualRows,
+    ...planRows,
+    ...billingResourceIds.forwardGroupIds,
+  ]));
 }
 
 export async function setUserForwardGroupPermissions(userId: number, forwardGroupIds: number[]) {
@@ -219,6 +249,13 @@ export async function setUserForwardGroupPermissions(userId: number, forwardGrou
 export async function checkUserForwardGroupPermission(userId: number, forwardGroupId: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
+  const ownedRows = await db.select({ id: forwardGroups.id }).from(forwardGroups).where(
+    and(eq(forwardGroups.id, forwardGroupId), eq(forwardGroups.userId, userId)),
+  ).limit(1).catch((error: unknown) => {
+    warnPermissionLookupFailure(error);
+    return [];
+  });
+  if (ownedRows.length > 0) return true;
   const rows = await db.select().from(userForwardGroupPermissions).where(
     and(eq(userForwardGroupPermissions.userId, userId), eq(userForwardGroupPermissions.forwardGroupId, forwardGroupId))
   ).limit(1);
