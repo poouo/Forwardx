@@ -3035,7 +3035,7 @@ function buildChinaRegionWhitelistOperationCommands(usage: HostAssetSyncUsageCon
   const run = [
     `mkdir -p ${shellQuote(markerDir)}`,
     `cd ${shellQuote(targetDir)}`,
-    `chmod +x ./install.sh ./bootstrap.sh ./forwardx-agent-run.sh 2>/dev/null || true`,
+    `chmod +x ./forwardx-agent-run.sh 2>/dev/null || true`,
     `CN_CONFIG_FILE=/etc/china-region-whitelist.conf bash ./forwardx-agent-run.sh ${runnerCommand}`,
   ].join(" && ");
   if (operation === "status") return [run];

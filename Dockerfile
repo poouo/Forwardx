@@ -50,6 +50,7 @@ VOLUME ["/data"]
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=agent-assets /app/dist/agent ./dist/agent
+COPY --from=builder /app/THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY --from=builder /app/client/dist ./client/dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/package.json ./

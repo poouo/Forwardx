@@ -1,15 +1,43 @@
-# DDNS 和故障转移
+# DDNS 与故障转移
 
 DDNS 用来把域名自动解析到可用入口。ForwardX 可以在主机 IP 变化、入口组成员变化或转发组故障切换时，自动更新 DNS 记录。
 
-常见用途：
+## 工作原理 {#how-it-works}
 
-- 主机公网 IP 变化后，自动更新主机 DDNS 域名。
-- 入口组把多个入口同步到同一个域名。
-- 转发组故障时，把域名切换到健康入口。
-- CNAME 方式把入口域名指向成员主机自己的 DDNS 域名。
+ForwardX 的 DDNS 功能分两层：
 
-## 快速配置 {#quick-setup}
+**自动更新层**：ForwardX 监听主机 Agent 上报的公网 IP 和入口组成员状态。当检测到变化时，调用你配置的 DNS 服务商 API，将指定域名的记录值改写为当前可用地址。
+
+**故障转移层**：转发组持续对成员入口执行健康检查。当主入口不可用时，ForwardX 将域名切换到备用入口；主入口恢复后，可根据配置决定是否切回。
+
+### 故障转移触发条件
+
+以下情况会触发 DDNS 更新或故障切换：
+
+| 触发场景 | 动作 |
+| --- | --- |
+| Agent 上报的主机公网 IP 发生变化 | 更新主机 DDNS 域名记录 |
+| 入口组成员新增或移除 | 将域名记录同步到当前全部成员 IP |
+| 转发组健康检查判定入口不可用 | 将域名切换到健康备用入口 |
+| 转发组主入口恢复（视配置） | 将域名切回主入口 |
+
+::: tip
+故障切换依赖健康检查的判定周期，建议不要将检查间隔或切换阈值设置过短，避免网络抖动引发频繁切换。
+:::
+
+## 支持的 DNS 服务商
+
+| 服务商 | 官方教程和入口 |
+| --- | --- |
+| Cloudflare | [创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) / [DNS Records API](https://developers.cloudflare.com/api/resources/dns/subresources/records/) / [API Token 控制台](https://dash.cloudflare.com/profile/api-tokens) |
+| 华为云 DNS | [云解析 DNS 文档](https://support.huaweicloud.com/dns/index.html) / [访问密钥 AK/SK](https://support.huaweicloud.com/usermanual-ca/ca_01_0003.html) / [DNS 控制台](https://console.huaweicloud.com/dns/) |
+| 阿里云 DNS | [创建 AccessKey](https://help.aliyun.com/zh/ram/user-guide/create-an-accesskey-pair) / [云解析 OpenAPI](https://api.aliyun.com/product/Alidns) / [云解析控制台](https://dns.console.aliyun.com/) |
+| 腾讯云 DNSPod | [DNSPod API 简介](https://cloud.tencent.com/document/product/1427/56193) / [API 密钥管理](https://cloud.tencent.com/document/product/598/40488) / [DNSPod 控制台](https://console.cloud.tencent.com/dnspod) |
+| 自定义 Webhook | 适用于自有接口或暂未内置的服务商 |
+
+## 配置步骤 {#quick-setup}
+
+### 第一步：配置 DDNS 服务商
 
 配置路径：
 
@@ -24,20 +52,18 @@ DDNS 用来把域名自动解析到可用入口。ForwardX 可以在主机 IP �
 3. 填写服务商要求的密钥、主域名、Zone ID 或线路等信息。
 4. 设置 TTL，建议先使用默认值 `600`。
 5. 保存 DDNS 配置。
-6. 到主机管理、入口组或转发组中填写要自动维护的域名。
 
 ::: warning 权限建议
 DDNS 密钥只建议授予目标域名所需权限，不要使用拥有账号全部权限的长期密钥。
 :::
 
-## 厂商教程入口
+### 第二步：在功能模块中填写域名
 
-| 服务商 | 官方教程和入口 |
-| --- | --- |
-| Cloudflare | [创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) / [DNS Records API](https://developers.cloudflare.com/api/resources/dns/subresources/records/) / [API Token 控制台](https://dash.cloudflare.com/profile/api-tokens) |
-| 华为云 DNS | [云解析 DNS 文档](https://support.huaweicloud.com/dns/index.html) / [访问密钥 AK/SK](https://support.huaweicloud.com/usermanual-ca/ca_01_0003.html) / [DNS 控制台](https://console.huaweicloud.com/dns/) |
-| 阿里云 DNS | [创建 AccessKey](https://help.aliyun.com/zh/ram/user-guide/create-an-accesskey-pair) / [云解析 OpenAPI](https://api.aliyun.com/product/Alidns) / [云解析控制台](https://dns.console.aliyun.com/) |
-| 腾讯云 DNSPod | [DNSPod API 简介](https://cloud.tencent.com/document/product/1427/56193) / [API 密钥管理](https://cloud.tencent.com/document/product/598/40488) / [DNSPod 控制台](https://console.cloud.tencent.com/dnspod) |
+根据你的使用场景，到对应模块填写要自动维护的域名：
+
+- **主机 DDNS**：主机管理 -> 新增/编辑主机 -> DDNS 服务
+- **入口组**：链路管理 -> 入口组 -> 编辑入口组
+- **转发组**：链路管理 -> 转发组 -> 编辑转发组
 
 ## Cloudflare {#cloudflare}
 
@@ -189,7 +215,7 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 {"Authorization":"Bearer your-token"}
 ```
 
-## 主机 DDNS
+## 主机 DDNS {#host-ddns}
 
 配置路径：
 
@@ -208,9 +234,9 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 
 如果服务商配置未启用，主机 DDNS 开关会不可用，需要先回到系统设置配置 DDNS 服务商。
 
-## 入口组和转发组
+## 入口组与转发组 {#group-ddns}
 
-入口组适合多个入口机器共用一个域名。
+**入口组**适合多个入口机器共用一个域名，ForwardX 将全部成员的地址同步到同一条域名记录。
 
 配置路径：
 
@@ -226,29 +252,30 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 | AAAA | 成员机器需要有 IPv6 |
 | CNAME | 成员机器需要配置 DDNS 域名 |
 
-如果选择 CNAME，ForwardX 会把入口域名指向成员机器配置好的 DDNS 域名。这样成员 IP 变化时，通常只需要更新成员自己的 DDNS。
+如果选择 CNAME，ForwardX 会把入口域名指向成员机器配置好的 DDNS 域名。这样成员 IP 变化时，通常只需要更新成员自己的 DDNS，入口域名记录无需重新写入。
 
-## 故障切换建议
+## 故障切换建议 {#failover-tips}
 
-- 不要把故障切换时间设置得太短。
-- 网络偶发抖动时，太短的时间可能导致频繁切换。
-- 重要业务建议开启链路测试和延迟观察。
-- 恢复后是否切回，取决于你是否希望优先使用主入口。
-- 建议先用测试域名验证，再切换生产域名。
+- 不要把故障切换时间设置得太短，网络偶发抖动可能导致频繁切换。
+- 重要业务建议开启链路测试和延迟观察，基于实测延迟判断入口健康状态。
+- 恢复后是否切回，取决于你是否希望优先使用主入口，可在转发组配置中选择。
+- 建议先用测试域名验证切换流程，确认正常后再切换生产域名。
+- TTL 较大时，DNS 切换后客户端缓存未过期，实际生效会有延迟，建议在切换验证阶段临时调低 TTL。
 
-## 域名来源优先级
+## 域名来源优先级 {#domain-priority}
 
-ForwardX 展示入口地址时，一般会优先使用用户在主机或组内填写的域名或 IP。
+ForwardX 展示入口地址时，优先级如下：
 
-如果没有填写，会尝试使用自动检测到的公网地址或 DDNS 地址。
+1. 用户在主机或组内手动填写的域名或 IP。
+2. 自动检测到的公网地址或 DDNS 地址。
 
-建议重要业务手动设置清晰的域名，避免用户直接依赖可能变化的 IP。
+建议重要业务手动设置清晰的域名，避免直接依赖可能变化的 IP。
 
-## 排查 DDNS
+## 排查 DDNS {#troubleshooting}
 
 如果 DDNS 没有更新：
 
-1. 确认系统设置中 DDNS 已启用，且服务商不是“不使用”。
+1. 确认系统设置中 DDNS 已启用，且服务商不是"不使用"。
 2. 确认主域名、Zone ID、线路、密钥填写正确。
 3. 确认 API 密钥有 DNS 记录查询和编辑权限。
 4. 确认主机或入口组填写的域名属于对应主域名。
@@ -263,3 +290,4 @@ ForwardX 展示入口地址时，一般会优先使用用户在主机或组内�
 | 权限不足 | API 密钥权限太小或绑定了错误域名 |
 | AAAA 不更新 | 成员机器没有可用 IPv6 |
 | CNAME 不更新 | 成员机器没有配置 DDNS 域名 |
+| 切换后域名未生效 | DNS 缓存未过期，等待 TTL 时间后重试 |

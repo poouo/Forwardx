@@ -2013,8 +2013,34 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
 
 export function filterForwardGroupFieldsForUse(
   groups: any[],
-  accessScope?: { hostIds: ReadonlySet<number>; tunnelIds: ReadonlySet<number> },
+  accessScope?: {
+    hostIds: ReadonlySet<number>;
+    tunnelIds: ReadonlySet<number>;
+    groupHostIds?: ReadonlyMap<number, ReadonlySet<number>>;
+    groupTunnelIds?: ReadonlyMap<number, ReadonlySet<number>>;
+  },
 ) {
+  const memberVisible = (group: any, member: any) => {
+    if (!accessScope) return true;
+    const groupId = Number(group?.id || 0);
+    const groupHostIds = accessScope.groupHostIds?.get(groupId);
+    const groupTunnelIds = accessScope.groupTunnelIds?.get(groupId);
+    if (groupHostIds || groupTunnelIds) {
+      return member?.memberType === "tunnel"
+        ? !!groupTunnelIds?.has(Number(member.tunnelId || 0))
+        : !!groupHostIds?.has(Number(member.hostId || 0));
+    }
+    return member?.memberType === "tunnel"
+      ? accessScope.tunnelIds.has(Number(member.tunnelId || 0))
+      : accessScope.hostIds.has(Number(member.hostId || 0));
+  };
+  const memberHostVisible = (group: any, member: any) => {
+    if (!accessScope) return true;
+    const hostId = Number(member?.host?.id || member?.hostId || 0);
+    if (accessScope.hostIds.has(hostId)) return true;
+    const groupHostIds = accessScope.groupHostIds?.get(Number(group?.id || 0));
+    return !!groupHostIds?.has(hostId);
+  };
   return groups.map((group: any) => ({
     id: group.id,
     name: group.name,
@@ -2048,11 +2074,9 @@ export function filterForwardGroupFieldsForUse(
     ruleRuntimeStatuses: group.ruleRuntimeStatuses,
     availability: group.availability ?? null,
     members: (group.members || [])
-      .filter((member: any) => !accessScope || (member.memberType === "tunnel"
-        ? accessScope.tunnelIds.has(Number(member.tunnelId || 0))
-        : accessScope.hostIds.has(Number(member.hostId || 0))))
+      .filter((member: any) => memberVisible(group, member))
       .map((member: any) => {
-        const hostVisible = !accessScope || accessScope.hostIds.has(Number(member.host?.id || member.hostId || 0));
+        const hostVisible = memberHostVisible(group, member);
         return {
           id: member.id,
           groupId: member.groupId,

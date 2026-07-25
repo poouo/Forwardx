@@ -1,5 +1,75 @@
 # 升级和备份
 
+## 升级前建议
+
+升级前建议备份数据库，并查看 [GitHub Release](https://github.com/poouo/Forwardx/releases) 或项目更新日志，确认是否包含面板、Agent 或 Android 客户端更新。
+
+### 备份 SQLite（本地部署）
+
+```bash
+cp /opt/forwardx-panel/data/forwardx.db /root/forwardx.db.bak
+```
+
+### 备份 MySQL
+
+```bash
+mysqldump -h 127.0.0.1 -u forwardx -p forwardx > forwardx.sql
+```
+
+### 备份 PostgreSQL
+
+```bash
+pg_dump -h 127.0.0.1 -U forwardx forwardx > forwardx.sql
+```
+
+Docker 部署建议备份 Docker 数据卷，或先导出数据库后再升级。
+
+## 面板升级
+
+::: tip 权限说明
+安装、升级和卸载面板通常需要 root 权限。使用一键脚本时可以用 root 执行，也可以在命令中保留 `sudo`。
+:::
+
+### Docker 部署
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- upgrade
+```
+
+指定版本升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade
+```
+
+升级会保留 `.env`、部署目录数据和 Docker 数据卷。如果 `latest` 镜像尚未构建到目标版本，脚本会提示稍后重试并保留旧容器运行。
+
+### 本地 systemd 部署
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- upgrade
+```
+
+指定版本升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade
+```
+
+本地 systemd 部署升级会保留 `.env`、`data` 目录、数据库配置和已有数据。如果面板程序包尚未上传到 GitHub Release，脚本会提示等待 GitHub Actions 构建完成。
+
+## Agent 升级
+
+可以在面板中选择主机批量升级 Agent，也可以单独选择某台主机升级。
+
+如果 Agent 因面板地址变化而失联，可在 Agent 主机重新执行安装或升级命令，并指定当前正确的面板地址。
+
+查看 Agent 日志：
+
+```bash
+journalctl -u forwardx-agent -n 300 --no-pager
+```
+
 ## 跨兼容边界升级
 
 ForwardX 后续版本只读取当前数据格式，不在面板和 Agent 的日常运行路径中长期保留旧格式分支。跨越兼容边界升级时，先使用一次性迁移工具转换旧数据；迁移不会随面板启动或安装脚本自动执行。
@@ -53,74 +123,6 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/migrate
 
 该脚本不会升级或重启 Agent。迁移后仍需把 Agent 升级到 2.2.151 或更高版本，并在插件管理中重新同步 Agent；损坏或完全缺少版本的清单必须通过重新同步恢复。
 
-## Docker 升级
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- upgrade
-```
-
-指定版本升级：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade
-```
-
-Docker 部署升级会保留 `.env`、部署目录数据和 Docker 数据卷。如果 `latest` 镜像尚未构建到目标版本，脚本会提示稍后重试并保留旧容器运行。
-
-## systemd 升级
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- upgrade
-```
-
-指定版本升级：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade
-```
-
-本地 systemd 部署升级会保留 `.env`、`data` 目录、数据库配置和已有数据。如果面板程序包尚未上传到 GitHub Release，脚本会提示等待 GitHub Actions 构建完成。
-
-::: tip 权限说明
-安装、升级和卸载面板通常需要 root 权限。使用一键脚本时可以用 root 执行，也可以在命令中保留 `sudo`。
-:::
-
-## 升级前建议
-
-升级前建议备份数据库。
-
-SQLite 本地部署常见备份：
-
-```bash
-cp /opt/forwardx-panel/data/forwardx.db /root/forwardx.db.bak
-```
-
-Docker 部署建议备份 Docker 数据卷，或先导出数据库。
-
-MySQL：
-
-```bash
-mysqldump -h 127.0.0.1 -u forwardx -p forwardx > forwardx.sql
-```
-
-PostgreSQL：
-
-```bash
-pg_dump -h 127.0.0.1 -U forwardx forwardx > forwardx.sql
-```
-
-## Agent 升级
-
-可以在面板中选择主机升级 Agent。
-
-如果 Agent 因为面板地址变化失联，可以在 Agent 主机重新执行安装或升级命令，并指定当前正确面板地址。
-
-查看 Agent 日志：
-
-```bash
-journalctl -u forwardx-agent -n 300 --no-pager
-```
-
 ## 在线迁移面板
 
 迁移前先将新旧面板升级到支持安全迁移的同一版本，并确认旧面板中的在线 Agent 可以正常心跳。
@@ -137,7 +139,7 @@ journalctl -u forwardx-agent -n 300 --no-pager
 
 ## 更新日志
 
-升级前建议查看 GitHub Release 或项目更新日志，确认是否包含面板、Agent 或 Android 客户端更新。
+升级前建议查看 [GitHub Release](https://github.com/poouo/Forwardx/releases) 或项目更新日志，确认是否包含面板、Agent 或 Android 客户端更新。
 
 ## 卸载
 

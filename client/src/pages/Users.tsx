@@ -300,11 +300,13 @@ function UsersContent() {
   const [allowGost, setAllowGost] = useState(true);
 
   // Agent 权限
+  const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
   const [allowedForwardGroupIds, setAllowedForwardGroupIds] = useState<number[]>([]);
   const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
   const [trafficBillingHostIds, setTrafficBillingHostIds] = useState<number[]>([]);
   const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
   const [trafficBillingForwardGroupIds, setTrafficBillingForwardGroupIds] = useState<number[]>([]);
+  const [addAllowedHostId, setAddAllowedHostId] = useState("");
   const [addAllowedForwardGroupId, setAddAllowedForwardGroupId] = useState("");
   const [addAllowedTunnelId, setAddAllowedTunnelId] = useState("");
   const [addBillingHostId, setAddBillingHostId] = useState("");
@@ -314,17 +316,27 @@ function UsersContent() {
   const { data: allTunnels } = trpc.tunnels.options.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: allForwardGroups } = trpc.forwardGroups.options.useQuery(undefined, { enabled: showTrafficSettings });
   const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery(undefined, { enabled: showTrafficSettings });
-  const { data: userForwardGroupPerms } = trpc.users.getForwardGroupPermissions.useQuery(
+  const { data: userHostPerms, isLoading: userHostPermsLoading } = trpc.users.getHostPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
-  const { data: userTunnelPerms } = trpc.users.getTunnelPermissions.useQuery(
+  const { data: userForwardGroupPerms, isLoading: userForwardGroupPermsLoading } = trpc.users.getForwardGroupPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
-  const { data: userTrafficBillingPerms } = trpc.users.getTrafficBillingPermissions.useQuery(
+  const { data: userTunnelPerms, isLoading: userTunnelPermsLoading } = trpc.users.getTunnelPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
+  );
+  const { data: userTrafficBillingPerms, isLoading: userTrafficBillingPermsLoading } = trpc.users.getTrafficBillingPermissions.useQuery(
+    { userId: trafficUserId! },
+    { enabled: showTrafficSettings && !!trafficUserId }
+  );
+  const permissionDataLoading = showTrafficSettings && !!trafficUserId && (
+    userHostPermsLoading
+    || userForwardGroupPermsLoading
+    || userTunnelPermsLoading
+    || userTrafficBillingPermsLoading
   );
   const { data: userSummary, isLoading: summaryLoading } = trpc.users.summary.useQuery(undefined, {
     enabled: currentUser?.role === "admin",
@@ -337,14 +349,6 @@ function UsersContent() {
   }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions" });
   const allSubscriptions = subscriptionPageQuery.data?.items || [];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
-  const clearHostPermsMutation = trpc.users.setHostPermissions.useMutation({
-    onSuccess: () => {
-      utils.users.list.invalidate();
-      utils.users.options.invalidate();
-      utils.users.listPage.invalidate();
-    },
-    onError: (err) => toast.error(err.message || "清理旧主机授权失败"),
-  });
   const updateForwardGroupPermsMutation = trpc.users.setForwardGroupPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -352,6 +356,14 @@ function UsersContent() {
       utils.users.listPage.invalidate();
     },
     onError: (err) => toast.error(err.message || "更新转发组授权失败"),
+  });
+  const updateHostPermsMutation = trpc.users.setHostPermissions.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+      utils.users.options.invalidate();
+      utils.users.listPage.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "更新主机授权失败"),
   });
   const updateTunnelPermsMutation = trpc.users.setTunnelPermissions.useMutation({
     onSuccess: () => {
@@ -371,6 +383,12 @@ function UsersContent() {
 
 
   // 当权限数据加载完成后同步到状态
+  useEffect(() => {
+    if (userHostPerms) {
+      setAllowedHostIds([...userHostPerms]);
+    }
+  }, [userHostPerms]);
+
   useEffect(() => {
     if (userForwardGroupPerms) {
       setAllowedForwardGroupIds([...userForwardGroupPerms]);
@@ -867,6 +885,7 @@ function UsersContent() {
       setAllowGost(set.has("gost"));
     }
     setAllowedForwardGroupIds([]);
+    setAllowedHostIds([]);
     setAllowedTunnelIds([]);
     setTrafficBillingHostIds([]);
     setTrafficBillingTunnelIds([]);
@@ -908,10 +927,10 @@ function UsersContent() {
       maxIPs,
       allowedForwardTypes,
     });
-    // 保存转发资源授权，并清理旧的主机授权。
-    clearHostPermsMutation.mutate({
+    // 保留旧版主机授权。新版资源授权与历史主机授权是并行权限，保存流量设置不能清空后者。
+    updateHostPermsMutation.mutate({
       userId: trafficUserId,
-      hostIds: [],
+      hostIds: allowedHostIds,
     });
     updateForwardGroupPermsMutation.mutate({
       userId: trafficUserId,
@@ -934,6 +953,13 @@ function UsersContent() {
     if (!Number.isFinite(forwardGroupId)) return;
     setAllowedForwardGroupIds(prev => (prev.includes(forwardGroupId) ? prev : [...prev, forwardGroupId]));
     setAddAllowedForwardGroupId("");
+  };
+
+  const addHostPermission = (value: string) => {
+    const hostId = Number(value);
+    if (!Number.isFinite(hostId)) return;
+    setAllowedHostIds(prev => (prev.includes(hostId) ? prev : [...prev, hostId]));
+    setAddAllowedHostId("");
   };
 
   const addTunnelPermission = (value: string) => {
@@ -1066,6 +1092,8 @@ function UsersContent() {
   });
   const selectedAllowedForwardGroups = authForwardGroups.filter((group: any) => allowedForwardGroupIds.includes(Number(group.id)));
   const availableAllowedForwardGroups = authForwardGroups.filter((group: any) => !allowedForwardGroupIds.includes(Number(group.id)));
+  const selectedAllowedHosts = (allHosts || []).filter((host: any) => allowedHostIds.includes(Number(host.id)));
+  const availableAllowedHosts = (allHosts || []).filter((host: any) => !allowedHostIds.includes(Number(host.id)));
   const selectedAllowedTunnels = (allTunnels || []).filter((t: any) => allowedTunnelIds.includes(Number(t.id)));
   const availableAllowedTunnels = (allTunnels || []).filter((t: any) => !allowedTunnelIds.includes(Number(t.id)));
   const billableHosts = (allHosts || []).filter((h: any) => billableHostIds.has(Number(h.id)));
@@ -2300,8 +2328,52 @@ function UsersContent() {
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道和计费资源。
+                默认不展开全部资源，按需选择要授权给该用户的主机、端口转发、转发链、转发组、隧道和计费资源。
               </p>
+
+              <div className="space-y-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label className="text-sm font-medium">主机授权</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
+                </div>
+                <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权的主机" : "暂无可添加主机"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableAllowedHosts.map((host: any) => (
+                      <SelectItem key={host.id} value={String(host.id)} textValue={String(host.name || host.ip || `主机 #${host.id}`)}>
+                        {String(host.name || host.ip || `主机 #${host.id}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedAllowedHosts.length > 0 ? (
+                  <AutoAnimateContainer className="space-y-2">
+                    {selectedAllowedHosts.map((host: any) => (
+                      <div key={host.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                        <span className="min-w-0 truncate text-sm font-medium">{String(host.name || host.ip || `主机 #${host.id}`)}</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(host.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </AutoAnimateContainer>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权主机，可从上方选择添加。
+                  </p>
+                )}
+              </div>
+
+              <Separator />
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2553,8 +2625,8 @@ function UsersContent() {
             <Button variant="outline" onClick={() => setShowTrafficSettings(false)}>
               取消
             </Button>
-            <Button onClick={handleSaveTrafficSettings} disabled={updateTrafficMutation.isPending}>
-              {updateTrafficMutation.isPending ? "保存中..." : "保存设置"}
+            <Button onClick={handleSaveTrafficSettings} disabled={updateTrafficMutation.isPending || permissionDataLoading}>
+              {updateTrafficMutation.isPending ? "保存中..." : permissionDataLoading ? "权限加载中..." : "保存设置"}
             </Button>
           </DialogFooter>
         </DialogContent>

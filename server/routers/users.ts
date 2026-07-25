@@ -4,6 +4,7 @@ import * as db from "../db";
 import { FORWARD_TYPES } from "../../shared/forwardTypes";
 import { isValidAvatarValue } from "../../shared/avatar";
 import { ensureAdminOrSelf, refreshUserForwardEndpoints } from "./helpers";
+import { clearLinkAccessScopeCache } from "../linkAccessView";
 import { getEmailConfig, sendMail } from "../email";
 import {
   resetUserTrafficCommand,
@@ -162,6 +163,7 @@ export const usersRouter = router({
       .mutation(async ({ input, ctx }) => {
         if (input.userId === ctx.user.id) throw new Error("不能删除当前登录账户");
         await db.deleteUserPermissions(input.userId);
+        clearLinkAccessScopeCache();
         await db.deleteUser(input.userId);
         console.info(`[Users] Deleted user userId=${input.userId} ${actorLabel(ctx)}`);
         return { success: true };
@@ -190,6 +192,7 @@ export const usersRouter = router({
       .input(z.object({ userId: z.number(), hostIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
         await db.setUserHostPermissions(input.userId, input.hostIds);
+        clearLinkAccessScopeCache();
         console.info(`[Users] Updated host permissions userId=${input.userId} count=${input.hostIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
@@ -203,6 +206,7 @@ export const usersRouter = router({
       .input(z.object({ userId: z.number(), forwardGroupIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
         await db.setUserForwardGroupPermissions(input.userId, input.forwardGroupIds);
+        clearLinkAccessScopeCache();
         console.info(`[Users] Updated forward group permissions userId=${input.userId} count=${input.forwardGroupIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
@@ -224,6 +228,7 @@ export const usersRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds, input.forwardGroupIds);
+        clearLinkAccessScopeCache();
         const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
         if (recovery.restored) {
           await refreshUserForwardEndpoints(input.userId, "traffic-billing-permission-forward-restored");
@@ -241,6 +246,7 @@ export const usersRouter = router({
       .input(z.object({ userId: z.number(), tunnelIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
         await db.setUserTunnelPermissions(input.userId, input.tunnelIds);
+        clearLinkAccessScopeCache();
         console.info(`[Users] Updated tunnel permissions userId=${input.userId} count=${input.tunnelIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),

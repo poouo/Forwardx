@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CN_ROOT="${CN_ROOT:-${ROOT}}"
 export CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 
-source "${ROOT}/tools/firewall_lib.sh"
+source "${ROOT}/tools/forwardx_firewall.sh"
 
 load_config_values() {
   local item
@@ -63,9 +63,9 @@ status_rules() {
     echo "nft 未安装"
   fi
   echo
-  echo "== ipset: ${CN_SET_NAME} =="
+  echo "== ipset: ${CN_IPSET_PREFIX} =="
   if command -v ipset >/dev/null 2>&1; then
-    ipset list "${CN_SET_NAME}" 2>/dev/null || true
+    ipset list "${CN_IPSET_PREFIX}" 2>/dev/null || true
   else
     echo "ipset 未安装"
   fi
@@ -145,8 +145,12 @@ status_rules_json() {
   local rule_count="0"
   local nft_state="" ipset_state="" iptables_state=""
 
-  if command -v jq >/dev/null 2>&1 && [[ -r "${ROOT}/manifest.json" ]]; then
-    plugin_version="$(jq -r '.version // .pluginVersion // empty' "${ROOT}/manifest.json" 2>/dev/null || true)"
+  if command -v jq >/dev/null 2>&1; then
+    local manifest_file="${ROOT}/forwardx-plugin.json"
+    [[ -r "${manifest_file}" ]] || manifest_file="${ROOT}/manifest.json"
+    if [[ -r "${manifest_file}" ]]; then
+      plugin_version="$(jq -r '.version // .pluginVersion // empty' "${manifest_file}" 2>/dev/null || true)"
+    fi
   fi
 
   if [[ -r "${CN_CONFIG_FILE}" ]]; then
@@ -193,7 +197,7 @@ status_rules_json() {
     fi
   fi
   if [[ "${applied}" != "true" ]] && command -v ipset >/dev/null 2>&1; then
-    ipset_state="$(ipset list "${CN_SET_NAME}" 2>/dev/null || true)"
+    ipset_state="$(ipset list "${CN_IPSET_PREFIX}" 2>/dev/null || true)"
     if [[ -n "${ipset_state}" ]]; then
       applied="true"
       actual_backend="iptables"
@@ -430,6 +434,27 @@ delete_resource() {
   status_rules_json
 }
 
+update_asn_rules() {
+  cn_require_root
+  cn_source_config
+  load_config_values
+  local -a asns=()
+  local asn
+  for asn in "${SAVED_ASNS[@]}"; do
+    asns+=("${asn}")
+  done
+  while IFS= read -r asn; do
+    [[ -n "${asn}" ]] && asns+=("${asn}")
+  done < <(cn_list_asns_from_port_policies "${SAVED_PORT_POLICIES}")
+  if ((${#asns[@]} == 0)); then
+    echo "配置中没有 ASN 白名单。" >&2
+    return 1
+  fi
+  CN_ASN_FORCE_UPDATE=1 cn_collect_asn_cidrs "${asns[@]}" >/dev/null
+  apply_config >/dev/null
+  echo "ASN 白名单已更新。"
+}
+
 clear_rules() {
   cn_require_root
   cn_disable_systemd_service
@@ -447,7 +472,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     resource-save) save_resource "${2:-}" ;;
     resource-delete) delete_resource ;;
     clear) clear_rules ;;
-    update-asn) bash "${ROOT}/install.sh" update-asn ;;
+    update-asn) update_asn_rules ;;
     *)
       echo "Usage: $0 {apply-config|dry-run-config|status|status-json|resource-list-json|resource-save|resource-delete|clear|update-asn}" >&2
       exit 2

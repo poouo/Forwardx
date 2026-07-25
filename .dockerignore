@@ -11,3 +11,4 @@ udp2raw/third-party
 .tmp
 *.md
 !.dockerignore
+!THIRD_PARTY_NOTICES.md

@@ -2,7 +2,7 @@
 
 ForwardX 插件用于给面板增加可选能力。插件可以声明设置项、说明页、数据资产、扩展点、受控动作、主机使用页和 Agent 动态资源，面板负责安装、更新、权限校验、任务调度、状态保存和通用界面渲染。
 
-插件入口默认隐藏，管理员可在「系统设置 -> 左侧导航栏菜单展示设置 -> 管理菜单开关」中开启“插件”。开启后左侧会显示「插件」菜单。
+插件入口默认隐藏，管理员可在「系统设置 -> 左侧导航栏菜单展示设置 -> 管理菜单开关」中开启"插件"。开启后左侧会显示「插件」菜单。
 
 ## 安装方式
 
@@ -142,7 +142,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 资产会存入数据库，不会写入服务器任意目录。
 
-插件需要左侧菜单入口时，必须同时声明 `ui:page` 权限、`sidebar.page` 扩展点和 `sidebar` 配置，并提供对应的使用界面、设置表单或声明式页面。只有目标界面有效时，插件详情才会出现“菜单入口”开关；插件不能通过清单自行开启入口。`sidebar` 支持以下字段：
+插件需要左侧菜单入口时，必须同时声明 `ui:page` 权限、`sidebar.page` 扩展点和 `sidebar` 配置，并提供对应的使用界面、设置表单或声明式页面。只有目标界面有效时，插件详情才会出现"菜单入口"开关；插件不能通过清单自行开启入口。`sidebar` 支持以下字段：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -151,7 +151,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 | `target` | `usage` 打开插件使用界面，`settings` 打开设置表单，`page` 打开声明式页面 |
 | `pageId` | `target` 为 `page` 时指定 `pages` 中的页面 ID |
 
-入口在管理员打开“菜单入口”开关且目标界面存在时显示。插件停用不会隐藏入口，进入页面后会展示当前停用状态；卸载或声明不完整后入口会自动移除，插件升级会保留管理员的开关选择。
+入口在管理员打开"菜单入口"开关且目标界面存在时显示。插件停用不会隐藏入口，进入页面后会展示当前停用状态；卸载或声明不完整后入口会自动移除，插件升级会保留管理员的开关选择。
 
 压缩包插件需要在包内包含 `forwardx-plugin.json`、`plugin.json` 或 `.forwardx/plugin.json`。压缩包内的文本资产会被读取到数据库。插件不会执行任意面板后端代码；声明 `agent:read`、`agent:write` 或 `agent:execute` 后，可以让 Agent 在独立任务队列中执行插件包内固定脚本入口。
 
@@ -245,7 +245,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 执行一个面板动作必须同时满足：
 
 1. 当前插件已启用。
-2. 插件包含有效的 `panel.request` 高权限动作，详情页才会显示“插件信任”开关，并由管理员手动确认开启。
+2. 插件包含有效的 `panel.request` 高权限动作，详情页才会显示"插件信任"开关，并由管理员手动确认开启。
 3. manifest 声明了该操作要求的细分权限。
 4. `panel.operation` 位于 ForwardX 固定操作白名单中。
 
@@ -385,7 +385,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 ## Agent 动态资源 `resourceSchema`
 
-`resourceSchema` 用于声明通用节点管理界面。插件只负责通过固定 Agent 脚本读取和保存数据，ForwardX 会在当前插件的“插件使用”页下方提供 Agent 列表、资源表格、详情、编辑表单、删除确认、任务状态和刷新流程。主机较多时可直接搜索，移动端会改用紧凑选择器。
+`resourceSchema` 用于声明通用节点管理界面。插件只负责通过固定 Agent 脚本读取和保存数据，ForwardX 会在当前插件的"插件使用"页下方提供 Agent 列表、资源表格、详情、编辑表单、删除确认、任务状态和刷新流程。主机较多时可直接搜索，移动端会改用紧凑选择器。
 
 ```json
 {
@@ -466,7 +466,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 `refreshAfter` 指定动作成功后自动重新加载的数据源。`sources` 还可以声明 `onOpen`、`onHostSelected` 或 `manual` 触发方式；字段的 `optionsSource` 可从任意已加载数据源生成实时选择项。
 
-`multi-select` 的静态选项可以声明 `"exclusive": true`。选中该选项时会清除其他值；选择普通选项时也会自动取消已有的互斥值，适合“全国”与“按省份”这类选择。
+`multi-select` 的静态选项可以声明 `"exclusive": true`。选中该选项时会清除其他值；选择普通选项时也会自动取消已有的互斥值，适合"全国"与"按省份"这类选择。
 
 `visibleWhen` 和 `disabledWhen` 支持 `eq`、`neq`、`in`、`not-in`、`truthy` 和 `falsy`。条件既可以读取其他表单字段，也可以用 `source.<数据源 ID>.<路径>` 读取 Agent 返回能力。
 
@@ -543,47 +543,9 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 ## 官方插件商店
 
-官方插件清单在仓库的 `plugins/official-store.json`：
+官方插件清单在仓库的 `plugins/official-store.json`，面板在线读取后展示在插件商店页。读取失败时会回退到面板内置的最小官方插件列表。
 
-```json
-{
-  "version": 1,
-  "items": [
-    {
-      "id": "china-region-whitelist",
-      "name": "ForwardX 中国区域白名单",
-      "description": "为 ForwardX 面板适配的中国区域白名单插件。",
-      "detailsMarkdown": "为 ForwardX 面板适配的中国区域白名单插件。\n\n- 支持全国 CN、省级 CIDR、ASN 和端口优先白名单。\n- 安装后可在插件使用页选择主机和执行方式。\n- 支持状态查看、规则预演、应用规则和清理规则。",
-      "version": "0.4.0",
-      "releaseDate": "2026-07-12",
-      "updatedAt": "2026-07-12",
-      "changelog": "接入通用 Agent 动态资源管理，支持按主机实时读取、编辑、应用和清理白名单配置。",
-      "features": [
-        {
-          "title": "白名单数据",
-          "description": "维护中国区域 IP/域名数据来源。"
-        }
-      ],
-      "tags": ["whitelist", "china-region", "data"],
-      "author": "poouo",
-      "repository": "https://github.com/poouo/Forwardx",
-      "branch": "main",
-      "manifestPath": "plugins/china-region-whitelist/forwardx-plugin.json",
-      "packageRepository": "https://github.com/poouo/Forwardx",
-      "packageBranch": "main",
-      "packagePath": "plugins/packages/china-region-whitelist.tar.gz",
-      "category": "data",
-      "permissions": ["data:whitelist", "read:hosts", "agent:read", "agent:write", "ui:interactive"],
-      "extensionPoints": ["data.whitelist"],
-      "official": true
-    }
-  ]
-}
-```
-
-管理员打开插件页时，面板会在线读取这个清单；如果读取失败，会回退到面板内置的最小官方插件列表。
-
-官方商店的一键安装优先下载仓库内的 `packagePath` 插件压缩包，例如 `plugins/packages/china-region-whitelist.tar.gz`。这些插件包提交在仓库中，不作为 GitHub Release 资产发布，面板升级包也不会携带插件包。更新插件包时，在本地执行：
+官方商店一键安装优先下载仓库内的 `packagePath` 插件压缩包，如 `plugins/packages/china-region-whitelist.tar.gz`。这些压缩包提交在仓库中，不作为 GitHub Release 资产发布，面板升级包也不会携带插件包。更新插件包时，在本地执行：
 
 ```bash
 pnpm plugins:package
@@ -591,9 +553,41 @@ pnpm plugins:package
 
 执行后把生成的 `plugins/packages/*.tar.gz` 和对应清单一起提交即可。
 
+### ForwardX 中国区域白名单
+
+插件 ID：`china-region-whitelist`，当前版本：`0.7.0`，许可证：AGPL-3.0-only。
+
+按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。插件程序和数据会自动同步到所有已选 Agent 主机，每台主机的配置与状态独立保存。
+
+主要功能：
+
+- 支持全国 CN 或按省份选择入站白名单，以及额外 ASN 和端口优先白名单。
+- 支持 nftables 或 iptables/ipset 防火墙后端，ForwardX 自有适配，不依赖上游 shell 脚本运行时。
+- 在 Agent 节点管理中实时读取、新增、编辑、应用和清理各主机独立配置。
+- 实时展示防火墙后端、规则数量、持久化状态和执行错误。
+
+安装后进入插件详情的"使用"页，开启使用配置并选择生效主机。Agent 心跳会把完整插件目录写入目标主机的 `/var/lib/forwardx-agent/plugins/china-region-whitelist/`。在插件使用页下方的"Agent 节点管理"中选择一台在线主机，面板会自动读取当前配置和规则状态；点击编辑回填表单后保存并应用，只修改当前 Agent；"清理规则"会清理该 Agent 上由插件创建的规则和配置。
+
+插件定义、运行时和白名单数据随本项目维护，数据位于 `plugins/china-region-whitelist/data/`，入口位于 `plugins/china-region-whitelist/forwardx-agent-run.sh`；第三方数据来源和许可证边界见插件目录的 `THIRD_PARTY_NOTICES.md`。
+
+### ForwardX Live2D 看板娘
+
+插件 ID：`live2d-widget`，当前版本：`1.0.0`，许可证：AGPL-3.0-only + GPL-3.0-or-later。
+
+官方对 [stevenjoezhang/live2d-widget](https://github.com/stevenjoezhang/live2d-widget) 的固定适配。面板只为此官方插件 ID 提供 Live2D 宿主，不会执行插件包中的任意前端代码。
+
+插件默认停用。启用后可在插件设置中配置：
+
+- 显示范围、移动端显示开关、左右停靠和模型尺寸。
+- 模型 CDN、默认模型和默认服装。
+- 工具按钮：一言、切换模型、换装、拍照、项目说明和关闭。
+- 拖动行为、关闭后的重新唤起方式和日志等级。
+
+上游 Cubism 运行时版本由 ForwardX 固定，避免普通插件通过设置项加载任意脚本；模型 JSON、纹理和动作仍由所选模型仓库提供。ForwardX 不打包模型资源，默认模型端点和可选工具可能有独立的版权、隐私和商业使用限制，管理员应在启用前确认对应仓库和服务的条款。插件目录中的 `README.md`、`THIRD_PARTY_NOTICES.md` 和 `LICENSE.live2d-widget.txt` 保留了上游运行时、Cubism Core 与模型资源的声明。
+
 ## 第三方插件商店
 
-第三方商店仓库在 `main` 分支根目录提供 `forwardx-store.json`。管理员可在“插件来源”中每行填写一个 GitHub 仓库地址并批量添加。商店页会标注每个插件来自官方商店还是具体第三方来源。
+第三方商店仓库在 `main` 分支根目录提供 `forwardx-store.json`。管理员可在"插件来源"中每行填写一个 GitHub 仓库地址并批量添加。商店页会标注每个插件来自官方商店还是具体第三方来源。
 
 ```json
 {
@@ -623,22 +617,6 @@ pnpm plugins:package
 `items` 也可写为 `plugins`。插件包下载地址使用 `packageUrl`；若压缩包直接保存在商店仓库中，可改用 `packagePath`，面板会从该商店仓库下载。压缩包仍必须是 `.zip`、`.tar.gz` 或 `.tgz`，并包含合法插件 manifest。配置清单中的名称、Logo、版本、说明等只用于商店展示，安装后以压缩包内 manifest 为准。
 
 商店右上角的刷新按钮会同时强制同步官方商店和全部第三方来源。某个来源暂时不可用时，面板保留其上次成功同步的插件清单，并在来源管理中显示错误；第三方插件 ID 与官方插件冲突时，始终保留官方插件。
-
-`china-region-whitelist` 是 ForwardX 内置适配插件。插件定义、脚本和白名单数据都随本项目维护，数据位于 `plugins/china-region-whitelist/data/`，脚本入口位于 `plugins/china-region-whitelist/forwardx-agent-run.sh`。
-
-如果需要把白名单下发到主机，进入插件详情的“使用”页，开启使用配置并选择生效主机。目标主机会在 Agent 心跳时收到插件程序和数据，完整插件目录写入 `/var/lib/forwardx-agent/plugins/china-region-whitelist/`。
-
-在当前插件使用页下方的“Agent 节点管理”中选择某台在线主机后，面板会自动读取该机当前配置和规则状态。点击编辑会读取详情并回填表单；“保存并应用”只修改当前 Agent，“清理规则”会清理当前 Agent 上由插件创建的规则和配置。
-
-各 Agent 的配置和状态独立保存。周期性插件资源同步不会覆盖已经存在的 `/etc/china-region-whitelist.conf`，保存或清理完成后界面会自动重新读取实际状态。
-
-## 官方 Live2D 看板娘
-
-官方商店中的 `live2d-widget` 是 ForwardX 对 [stevenjoezhang/live2d-widget](https://github.com/stevenjoezhang/live2d-widget) 的固定适配。它使用 `ui:widget` 和 `ui.widget` 声明，但面板只为这个官方插件 ID 提供 Live2D 宿主，不会执行插件包中的任意前端代码。
-
-插件默认停用。启用后可在插件设置中配置显示范围、移动端显示、提示 JSON、模型 CDN、默认模型、工具按钮、拖动、关闭行为、日志等级、停靠位置和尺寸。上游的 Cubism 运行时版本由 ForwardX 固定，避免普通插件借设置项加载任意脚本；模型 JSON、纹理和动作仍由所选模型仓库提供。
-
-ForwardX 不打包模型资源。默认模型端点和可选工具可能有独立的版权、隐私和商业使用限制，管理员应在启用前确认对应仓库和服务的条款。插件目录中的 `README.md`、`THIRD_PARTY_NOTICES.md` 和 `LICENSE.live2d-widget.txt` 保留了上游运行时、Cubism Core 与模型资源的声明。
 
 ## 当前边界
 

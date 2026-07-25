@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { filterTunnelFieldsForUser, type LinkAccessScope } from "./linkAccessView";
+import { expandLinkAccessScope, filterTunnelFieldsForUser, type LinkAccessScope } from "./linkAccessView";
 import { publicLinkAvailabilitySummary } from "./linkAvailabilitySummary";
 import { filterForwardGroupFieldsForUse } from "./repositories/forwardGroupRepository";
 
@@ -10,6 +10,61 @@ const scope: LinkAccessScope = {
   tunnelIds: new Set([10]),
   groupIds: new Set([20]),
 };
+
+test("shared resource permissions expand to enabled topology members", () => {
+  const expanded = expandLinkAccessScope({
+    hostIds: [1, "bad", 0],
+    tunnelIds: [],
+    groupIds: [100],
+    groups: [
+      { id: 100, entryGroupId: 90 },
+      // A cycle must terminate and keep both explicitly reachable groups.
+      { id: 90, entryGroupId: 100 },
+      { id: 70 },
+      { id: 80 },
+    ],
+    members: [
+      { groupId: 100, memberType: "host", hostId: 2, isEnabled: true },
+      { groupId: 100, memberType: "host", hostId: 3, isEnabled: "0" },
+      { groupId: 100, memberType: "tunnel", tunnelId: 10, isEnabled: 1 },
+      { groupId: 100, memberType: "tunnel", tunnelId: 999, isEnabled: 1 },
+      { groupId: 90, memberType: "host", hostId: 4 },
+    ],
+    tunnels: [
+      { id: 10, entryHostId: 5, exitHostId: 6, entryGroupId: 70, exitGroupId: 80 },
+    ],
+    tunnelHops: [
+      { tunnelId: 10, hostId: 7 },
+    ],
+    tunnelExitNodes: [
+      { tunnelId: 10, hostId: 8 },
+    ],
+  });
+
+  assert.deepEqual(Array.from(expanded.groupIds).sort((a, b) => a - b), [70, 80, 90, 100]);
+  assert.deepEqual(Array.from(expanded.tunnelIds).sort((a, b) => a - b), []);
+  assert.deepEqual(Array.from(expanded.hostIds).sort((a, b) => a - b), [1]);
+  assert.deepEqual(Array.from(expanded.groupHostIds?.get(100) || []).sort((a, b) => a - b), [2, 5, 6, 7, 8]);
+  assert.deepEqual(Array.from(expanded.groupHostIds?.get(90) || []).sort((a, b) => a - b), [4]);
+  assert.deepEqual(Array.from(expanded.groupTunnelIds?.get(100) || []).sort((a, b) => a - b), [10]);
+});
+
+test("direct tunnel permissions include tunnel topology hosts", () => {
+  const expanded = expandLinkAccessScope({
+    tunnelIds: [11],
+    tunnels: [{ id: 11, entryHostId: 21, exitHostId: 22, entryGroupId: 31, exitGroupId: 32 }],
+    tunnelHops: [{ tunnelId: 11, hostId: 23 }],
+    tunnelExitNodes: [
+      { tunnelId: 11, hostId: 24, isEnabled: true },
+      { tunnelId: 11, hostId: 25, isEnabled: false },
+    ],
+    groups: [{ id: 31 }, { id: 32 }],
+  });
+
+  assert.deepEqual(Array.from(expanded.tunnelIds), [11]);
+  assert.deepEqual(Array.from(expanded.hostIds).sort((a, b) => a - b), [21, 22, 23, 24]);
+  assert.deepEqual(Array.from(expanded.groupIds).sort((a, b) => a - b), [31, 32]);
+});
 
 test("shared tunnel status does not expose hosts outside the user's host scope", () => {
   const filtered = filterTunnelFieldsForUser({

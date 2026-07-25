@@ -113,6 +113,12 @@ download_gost_runtime() {
 download_gost_runtime amd64 forwardx-runtime-linux-amd64
 download_gost_runtime arm64 forwardx-runtime-linux-arm64
 
+NOTICE_FILE="$ROOT_DIR/THIRD_PARTY_NOTICES.md"
+if [ ! -f "$NOTICE_FILE" ]; then
+  echo "[agent] missing third-party notices: $NOTICE_FILE" >&2
+  exit 1
+fi
+cp "$NOTICE_FILE" "$OUT_DIR/THIRD_PARTY_NOTICES.md"
 
 artifacts=("$OUT_DIR"/forwardx-agent-linux-*)
 if compgen -G "$OUT_DIR/forwardx-fxp-linux-*" >/dev/null; then

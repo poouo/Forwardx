@@ -3,7 +3,7 @@
   "index_url": "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md",
   "data_base_url": "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity",
   "country_url": "https://ftp.apnic.net/stats/apnic/delegated-apnic-latest",
-  "generated_by": "tools/prepare_data.py",
+  "generated_by": "ForwardX data import",
   "country": {
     "name": "中国",
     "code": "CN",

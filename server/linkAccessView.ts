@@ -1,7 +1,10 @@
 import { eq } from "drizzle-orm";
 import {
   forwardGroups,
+  forwardGroupMembers,
   hosts,
+  tunnelExitNodes,
+  tunnelHops,
   tunnels,
   userForwardGroupPermissions,
   userHostPermissions,
@@ -16,6 +19,20 @@ export type LinkAccessScope = {
   hostIds: Set<number>;
   tunnelIds: Set<number>;
   groupIds: Set<number>;
+  /** Resources exposed only while rendering an explicitly authorized group. */
+  groupHostIds?: Map<number, Set<number>>;
+  groupTunnelIds?: Map<number, Set<number>>;
+};
+
+type LinkAccessClosureInput = {
+  hostIds?: Iterable<unknown>;
+  tunnelIds?: Iterable<unknown>;
+  groupIds?: Iterable<unknown>;
+  groups?: Iterable<any>;
+  members?: Iterable<any>;
+  tunnels?: Iterable<any>;
+  tunnelHops?: Iterable<any>;
+  tunnelExitNodes?: Iterable<any>;
 };
 
 const linkAccessQueryCache = createQueryCache(500);
@@ -28,14 +45,147 @@ function warnLinkAccessLookupFailure(error: unknown) {
   console.warn("[LinkAccess] optional access lookup failed; direct user-owned resources remain available:", error instanceof Error ? error.message : String(error));
 }
 
+function positiveId(value: unknown) {
+  const id = Number(value || 0);
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
+function dbBool(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return value === true || value === 1 || value === "1" || String(value).trim().toLowerCase() === "true";
+}
+
+/**
+ * Expand resource ACLs to the topology needed to render and use shared links.
+ * A forward group is a complete resource: its enabled members (and a chain's
+ * entry group) must be visible even when the user was not separately granted
+ * each underlying host or tunnel. The expanded member IDs stay in a
+ * group-specific scope so granting a group does not grant standalone access
+ * to every host or tunnel referenced by that group.
+ */
+export function expandLinkAccessScope(input: LinkAccessClosureInput): LinkAccessScope {
+  const hostIds = new Set<number>();
+  const tunnelIds = new Set<number>();
+  const groupIds = new Set<number>();
+  const groupHostIds = new Map<number, Set<number>>();
+  const groupTunnelIds = new Map<number, Set<number>>();
+  for (const value of input.hostIds || []) {
+    const id = positiveId(value);
+    if (id > 0) hostIds.add(id);
+  }
+  for (const value of input.tunnelIds || []) {
+    const id = positiveId(value);
+    if (id > 0) tunnelIds.add(id);
+  }
+  const directTunnelIds = new Set(tunnelIds);
+  for (const value of input.groupIds || []) {
+    const id = positiveId(value);
+    if (id > 0) groupIds.add(id);
+  }
+
+  const groupsById = new Map<number, any>();
+  for (const group of input.groups || []) {
+    const id = positiveId(group?.id);
+    if (id > 0) groupsById.set(id, group);
+  }
+  const membersByGroupId = new Map<number, any[]>();
+  for (const member of input.members || []) {
+    const groupId = positiveId(member?.groupId);
+    if (groupId <= 0) continue;
+    const members = membersByGroupId.get(groupId) || [];
+    members.push(member);
+    membersByGroupId.set(groupId, members);
+  }
+  const tunnelsById = new Map<number, any>();
+  for (const tunnel of input.tunnels || []) {
+    const id = positiveId(tunnel?.id);
+    if (id > 0) tunnelsById.set(id, tunnel);
+  }
+  const tunnelHostIdsByTunnel = new Map<number, Set<number>>();
+  const addTunnelHost = (tunnelId: unknown, hostId: unknown) => {
+    const tunnel = positiveId(tunnelId);
+    const host = positiveId(hostId);
+    if (tunnel <= 0 || host <= 0) return;
+    const ids = tunnelHostIdsByTunnel.get(tunnel) || new Set<number>();
+    ids.add(host);
+    tunnelHostIdsByTunnel.set(tunnel, ids);
+  };
+  for (const tunnel of tunnelsById.values()) {
+    addTunnelHost(tunnel.id, tunnel.entryHostId);
+    addTunnelHost(tunnel.id, tunnel.exitHostId);
+  }
+  for (const hop of input.tunnelHops || []) addTunnelHost(hop?.tunnelId, hop?.hostId);
+  for (const exit of input.tunnelExitNodes || []) {
+    if (exit?.isEnabled !== undefined && !dbBool(exit.isEnabled, true)) continue;
+    addTunnelHost(exit?.tunnelId, exit?.hostId);
+  }
+
+  const pendingGroups = Array.from(groupIds);
+  const pendingTunnels = Array.from(tunnelIds);
+  const visitedGroups = new Set<number>();
+  const visitedTunnels = new Set<number>();
+  let groupIndex = 0;
+  let tunnelIndex = 0;
+  // Resolve the topology as a fixed point. Group chains can point at other
+  // groups, while a tunnel can point back to entry/exit groups.
+  while (groupIndex < pendingGroups.length || tunnelIndex < pendingTunnels.length) {
+    while (groupIndex < pendingGroups.length) {
+      const groupId = positiveId(pendingGroups[groupIndex]);
+      groupIndex += 1;
+      if (groupId <= 0 || visitedGroups.has(groupId)) continue;
+      visitedGroups.add(groupId);
+      const groupHostScope = groupHostIds.get(groupId) || new Set<number>();
+      const groupTunnelScope = groupTunnelIds.get(groupId) || new Set<number>();
+      groupHostIds.set(groupId, groupHostScope);
+      groupTunnelIds.set(groupId, groupTunnelScope);
+      const group = groupsById.get(groupId);
+      const entryGroupId = positiveId(group?.entryGroupId);
+      if (entryGroupId > 0 && !groupIds.has(entryGroupId)) {
+        groupIds.add(entryGroupId);
+        pendingGroups.push(entryGroupId);
+      }
+      for (const member of membersByGroupId.get(groupId) || []) {
+        if (member?.isEnabled !== undefined && !dbBool(member.isEnabled, true)) continue;
+        if (member?.memberType === "tunnel") {
+          const tunnelId = positiveId(member?.tunnelId);
+          if (tunnelId <= 0 || !tunnelsById.has(tunnelId)) continue;
+          groupTunnelScope.add(tunnelId);
+          if (!visitedTunnels.has(tunnelId)) pendingTunnels.push(tunnelId);
+          for (const hostId of tunnelHostIdsByTunnel.get(tunnelId) || []) groupHostScope.add(hostId);
+        } else {
+          const hostId = positiveId(member?.hostId);
+          if (hostId > 0) groupHostScope.add(hostId);
+        }
+      }
+    }
+    while (tunnelIndex < pendingTunnels.length) {
+      const tunnelId = positiveId(pendingTunnels[tunnelIndex]);
+      tunnelIndex += 1;
+      if (tunnelId <= 0 || visitedTunnels.has(tunnelId)) continue;
+      visitedTunnels.add(tunnelId);
+      if (directTunnelIds.has(tunnelId)) {
+        for (const hostId of tunnelHostIdsByTunnel.get(tunnelId) || []) hostIds.add(hostId);
+      }
+      const tunnel = tunnelsById.get(tunnelId);
+      for (const relatedGroupId of [tunnel?.entryGroupId, tunnel?.exitGroupId]) {
+        const groupId = positiveId(relatedGroupId);
+        if (groupId <= 0 || groupIds.has(groupId)) continue;
+        groupIds.add(groupId);
+        pendingGroups.push(groupId);
+      }
+    }
+  }
+  return { hostIds, tunnelIds, groupIds, groupHostIds, groupTunnelIds };
+}
+
 async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
   const db = await getDb();
-  if (!db) return { hostIds: new Set(), tunnelIds: new Set(), groupIds: new Set() };
+  if (!db) return { hostIds: new Set(), tunnelIds: new Set(), groupIds: new Set(), groupHostIds: new Map(), groupTunnelIds: new Map() };
   const safe = <T>(task: Promise<T>, fallback: T) => task.catch((error) => {
     warnLinkAccessLookupFailure(error);
     return fallback;
   });
-  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingResourceIds] = await Promise.all([
+  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingResourceIds, topologyGroups, topologyMembers, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
     safe(db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)), []),
     safe(db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)), []),
     safe(db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)), []),
@@ -44,30 +194,40 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     safe(db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)), []),
     safe(getActiveUserSubscriptions(userId), []),
     safe(getUserUsableTrafficBillingResourceIds(userId), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
+    safe(db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups), []),
+    safe(db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers), []),
+    safe(db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId, entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId }).from(tunnels), []),
+    safe(db.select({ tunnelId: tunnelHops.tunnelId, hostId: tunnelHops.hostId }).from(tunnelHops), []),
+    safe(db.select({ tunnelId: tunnelExitNodes.tunnelId, hostId: tunnelExitNodes.hostId, isEnabled: tunnelExitNodes.isEnabled }).from(tunnelExitNodes), []),
   ]);
   const subscriptionHostIds = (subscriptions as any[]).flatMap((subscription) => subscription.hostIds || []).map(Number);
   const subscriptionTunnelIds = (subscriptions as any[]).flatMap((subscription) => subscription.tunnelIds || []).map(Number);
   const subscriptionGroupIds = (subscriptions as any[]).flatMap((subscription) => subscription.forwardGroupIds || []).map(Number);
-  return {
-    hostIds: new Set([
-      ...(ownedHosts as any[]).map((host) => Number(host.id)),
-      ...hostPermissions.map((row: any) => Number(row.id)),
+  return expandLinkAccessScope({
+    hostIds: [
+      ...(ownedHosts as any[]).map((host) => host.id),
+      ...hostPermissions.map((row: any) => row.id),
       ...subscriptionHostIds,
-      ...billingResourceIds.hostIds.map(Number),
-    ]),
-    tunnelIds: new Set([
-      ...(ownedTunnels as any[]).map((tunnel) => Number(tunnel.id)),
-      ...tunnelPermissions.map((row: any) => Number(row.id)),
+      ...billingResourceIds.hostIds,
+    ],
+    tunnelIds: [
+      ...(ownedTunnels as any[]).map((tunnel) => tunnel.id),
+      ...tunnelPermissions.map((row: any) => row.id),
       ...subscriptionTunnelIds,
-      ...billingResourceIds.tunnelIds.map(Number),
-    ]),
-    groupIds: new Set([
-      ...(ownedForwardGroups as any[]).map((group) => Number(group.id)),
-      ...groupPermissions.map((row: any) => Number(row.id)),
+      ...billingResourceIds.tunnelIds,
+    ],
+    groupIds: [
+      ...(ownedForwardGroups as any[]).map((group) => group.id),
+      ...groupPermissions.map((row: any) => row.id),
       ...subscriptionGroupIds,
-      ...billingResourceIds.forwardGroupIds.map(Number),
-    ]),
-  };
+      ...billingResourceIds.forwardGroupIds,
+    ],
+    groups: topologyGroups as any[],
+    members: topologyMembers as any[],
+    tunnels: topologyTunnels as any[],
+    tunnelHops: topologyHops as any[],
+    tunnelExitNodes: topologyExits as any[],
+  });
 }
 
 export function getLinkAccessScope(user: { id: number; role: string }): Promise<LinkAccessScope | null> {
@@ -133,6 +293,16 @@ export function filterTunnelFieldsForUser(tunnel: any, scope: LinkAccessScope) {
 export function visibleForwardGroupMemberIds(group: any, scope: LinkAccessScope | null) {
   const members = Array.isArray(group?.members) ? group.members : [];
   if (!scope) return members.map((member: any) => Number(member.id));
+  const groupId = positiveId(group?.id);
+  const groupHostIds = scope.groupHostIds?.get(groupId);
+  const groupTunnelIds = scope.groupTunnelIds?.get(groupId);
+  if (groupHostIds || groupTunnelIds) {
+    return members
+      .filter((member: any) => member?.memberType === "tunnel"
+        ? !!groupTunnelIds?.has(Number(member.tunnelId || 0))
+        : !!groupHostIds?.has(Number(member.hostId || 0)))
+      .map((member: any) => Number(member.id));
+  }
   return members
     .filter((member: any) => member?.memberType === "tunnel"
       ? scope.tunnelIds.has(Number(member.tunnelId || 0))

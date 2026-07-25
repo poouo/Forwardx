@@ -40,6 +40,11 @@ function isMainBackupGostTunnelMode(mode: unknown) {
   return mainBackupGostTunnelModes.has(String(mode || "").toLowerCase());
 }
 
+function dbBool(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return value === true || value === 1 || value === "1" || String(value).trim().toLowerCase() === "true";
+}
+
 const failoverInputShape = {
   failoverEnabled: z.boolean().optional(),
   failoverStrategy: failoverStrategySchema.optional(),
@@ -401,7 +406,7 @@ async function isForwardGroupTrafficBillingRule(group: any, userId: number) {
   }
   const members = Array.isArray((group as any).members) ? (group as any).members : [];
   for (const member of members) {
-    if (!member?.isEnabled) continue;
+    if (!dbBool(member?.isEnabled, true)) continue;
     const resourceType = member.memberType === "tunnel" ? "tunnel" : member.memberType === "host" ? "host" : null;
     const resourceId = resourceType === "tunnel" ? Number(member.tunnelId || 0) : resourceType === "host" ? Number(member.hostId || 0) : 0;
     if (!resourceType || resourceId <= 0) continue;

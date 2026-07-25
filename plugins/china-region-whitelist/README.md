@@ -1,12 +1,12 @@
 # ForwardX 中国区域白名单
 
-这个插件把中国区域白名单脚本适配到 ForwardX 面板里使用。启用后，插件程序和数据会自动同步到所有 Agent。左侧列出全部主机并支持筛选；点击主机后，可在右侧新增、查看、修改、删除和刷新该 Agent 的实际白名单规则。
+这个插件把中国区域白名单能力适配到 ForwardX 面板里使用。启用后，ForwardX 自有运行时和数据会自动同步到所有 Agent。左侧列出全部主机并支持筛选；点击主机后，可在右侧新增、查看、修改、删除和刷新该 Agent 的实际白名单规则。
 
 每台主机的配置彼此独立，切换主机不会混用规则或状态。资源同步只会在配置不存在时写入默认配置，不会周期性覆盖用户在白名单管理界面保存的内容。
 
 Agent 节点管理通过通用 `resourceSchema` 和 Agent 操作接口实现，需要 Agent `2.2.151` 或更高版本，不会占用转发规则队列。选择 Agent 后会自动读取已配置的全国或省份名单、防火墙后端、规则数量、持久化服务状态和执行错误；保存或删除后会自动回读最新状态。
 
-插件运行时不依赖 Python。动态配置使用 Agent 安装脚本已校验的 `jq` 解析；仓库内的 Python 文件只用于维护预制区域数据，不会在 Agent 上执行。
+插件运行时不依赖 Python，也不下载或执行第三方白名单 shell 脚本。动态配置使用 Agent 安装脚本已校验的 `jq` 解析；区域解析、防火墙命令生成和 systemd 持久化均由 ForwardX 自有适配完成。
 
 ## 支持能力
 
@@ -32,16 +32,15 @@ Agent 会把完整插件目录写入：
 /etc/china-region-whitelist.conf
 ```
 
-正式应用后，插件会尽量配置开机恢复。没有 systemd 的系统会应用当前规则，但可能无法使用原脚本的 systemd 开机恢复能力。
+正式应用后，插件会尽量配置开机恢复。没有 systemd 的系统会应用当前规则，但无法使用 systemd 开机恢复。
 
 ## 数据说明
 
-插件内置数据参考 `GHUNLIL/china-region-whitelist` 的预制数据结构：
+插件内置数据按来源分开维护：
 
-- `data/country/CN.txt`：国家级中国大陆 IPv4 CIDR。
-- `data/regions/*.txt`：省级 CIDR。
-- `data/regions.tsv`、`data/regions.json`：区域索引。
-- `data/asn/*.txt`：预制 ASN 前缀。
-- `tools/firewall_lib.sh`：nftables/iptables 规则生成和清理逻辑。
+- `data/country/CN.txt`：APNIC delegated stats 生成的国家级数据。
+- `data/regions/*.txt`、`data/regions.tsv`、`data/regions.json`：省级 CIDR 和区域索引数据。
+- `data/asn/AS16509.txt`：ipverse/as-ip-blocks 的 ASN 数据。
+- `tools/forwardx_firewall.sh`：ForwardX 自有 nftables/iptables 规则生成和清理逻辑。
 
-插件适配层为 `forwardx-agent-run.sh`，用于让 ForwardX Agent 以非交互方式执行状态查看、JSON 状态回传、预演、应用和清理。
+插件适配层为 `forwardx-agent-run.sh`，用于让 ForwardX Agent 以非交互方式执行状态查看、JSON 状态回传、预演、应用和清理。完整来源、版权和许可证边界见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

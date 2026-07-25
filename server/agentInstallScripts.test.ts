@@ -36,12 +36,17 @@ test("GitHub entry script preserves panel defaults unless explicitly overridden"
   assert.doesNotMatch(script, /GITHUB_ACCELERATOR_ENABLED="\$\{GITHUB_ACCELERATOR_ENABLED:-false\}"/);
 });
 
-test("Mimic installer applies the configured accelerator to wrapper and upstream downloads", () => {
+test("Mimic installer applies the configured accelerator to upstream downloads", () => {
   const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-mimic.sh"), "utf8");
 
+  // Accelerator URL is prepended to every GitHub asset download
   assert.match(script, /url="\$\{GITHUB_ACCELERATOR_URL\}\/\$\{raw_url\}"/);
-  assert.match(script, /WMF_GITHUB_MIRRORS="\$github_mirrors" MIMIC_UPSTREAM_TAG=/);
+  // Mirror list combines accelerator with default mirrors
   assert.match(script, /printf '%s\/,%s\\n' "\$GITHUB_ACCELERATOR_URL" "\$mirrors"/);
+  // Downloads come directly from hack3ric/mimic releases (no wg-mimic-fabric wrapper)
+  assert.match(script, /MIMIC_REPO="hack3ric\/mimic"/);
+  assert.doesNotMatch(script, /wg-mimic-fabric/);
+  assert.doesNotMatch(script, /WMF_REPO|WMF_REF|WMF_GITHUB_MIRRORS/);
 });
 
 test("Agent services avoid duplicate logs and disable core dumps", () => {

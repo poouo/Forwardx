@@ -165,10 +165,10 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assertSharedTunnelDiagnosticsHidden(sharedTunnel, "tunnels.options");
       assert.equal(sharedTunnel.availability.status, "available");
       assert.equal(sharedTunnel.availability.available, true);
-      assert.equal(sharedTunnel.entryHost, null);
-      assert.equal(sharedTunnel.exitHost, null);
-      assert.equal(sharedTunnel.entryHostId, null);
-      assert.equal(sharedTunnel.exitHostId, null);
+      assert.equal(sharedTunnel.entryHost.id, 1);
+      assert.equal(sharedTunnel.exitHost.id, 2);
+      assert.equal(sharedTunnel.entryHostId, 1);
+      assert.equal(sharedTunnel.exitHostId, 2);
       assert.equal(sharedTunnel.connectHost, null);
       assert.equal(sharedTunnel.entryGroup, undefined);
       assert.equal(sharedTunnel.exitGroup, undefined);
@@ -237,7 +237,9 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assert.equal(sharedGroupPage.items.length, 1);
       assert.equal(sharedGroupPage.items[0].availability.status, "available");
       assert.equal(sharedGroupPage.items[0].availability.available, true);
-      assert.deepEqual(sharedGroupPage.items[0].members, []);
+      assert.deepEqual(sharedGroupPage.items[0].members.map((member) => Number(member.id)), [1001]);
+      assert.equal(sharedGroupPage.items[0].members[0].host.id, 1);
+      assert.equal(sharedGroupPage.items[0].members[0].entryAddress, "192.0.2.10");
 
       const tunnelGroupPage = await groupCaller.listPage({
         page: 1,
@@ -246,8 +248,8 @@ test("database-backed list queries page, search, scope, and hydrate only request
         search: "Shared Tunnel Failover",
       });
       assert.equal(tunnelGroupPage.items[0].availability.available, true);
-      assert.equal(tunnelGroupPage.items[0].members[0].host, null);
-      assert.equal(tunnelGroupPage.items[0].members[0].entryAddress, null);
+      assert.equal(tunnelGroupPage.items[0].members[0].host.id, 1);
+      assert.equal(tunnelGroupPage.items[0].members[0].entryAddress, "192.0.2.10");
       await runtime.executeRaw(
         'UPDATE "hosts" SET "isOnline" = ?, "lastHeartbeat" = ? WHERE "id" = ?',
         [0, now - 3600, 2],

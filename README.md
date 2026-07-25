@@ -185,7 +185,7 @@ pnpm check:versions
 - 妥善保存 Agent Token 和 DDNS Token，泄露后立即吊销。
 - 定期备份数据库和面板数据目录。
 
-## 赞助
+## 给作者充点克劳德
 
 USDT (TRON)：`TGCVssNj5v58JPHxPZLLVQXsphQzLqQ3fK`
 
@@ -199,6 +199,9 @@ USDT (Polygon)：`0x44543FE6C5569Efe2b0Dc13454D4008378c92fE3`
 
 GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
 
+ForwardX Agent also includes the third-party userspace WireGuard implementation
+under the MIT License. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Star 趋势
 
-[![Star History Chart](https://api.star-history.com/svg?repos=poouo/Forwardx&type=Date)](https://www.star-history.com/#poouo/Forwardx&Date)
+[![Stargazers over time](https://starchart.cc/poouo/Forwardx.svg)](https://starchart.cc/poouo/Forwardx)

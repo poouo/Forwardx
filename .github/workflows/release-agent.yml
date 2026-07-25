@@ -74,6 +74,7 @@ jobs:
             dist/agent/forwardx-runtime-linux-amd64
             dist/agent/forwardx-runtime-linux-arm64
             dist/agent/SHA256SUMS
+            dist/agent/THIRD_PARTY_NOTICES.md
           )
 
           for file in "${files[@]}"; do

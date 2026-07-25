@@ -218,7 +218,7 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.6.3");
+  assert.equal(manifest.version, "0.7.0");
   assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
@@ -238,10 +238,16 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
     path.resolve(process.cwd(), "plugins/china-region-whitelist/forwardx-agent-run.sh"),
     "utf8",
   );
+  const firewallAdapter = fs.readFileSync(
+    path.resolve(process.cwd(), "plugins/china-region-whitelist/tools/forwardx_firewall.sh"),
+    "utf8",
+  );
+  const agentRuntime = `${agentRunner}\n${firewallAdapter}`;
   assert.doesNotMatch(agentRunner, /\bpython3\b/);
   assert.match(agentRunner, /command -v jq/);
-  assert.match(agentRunner, /systemctl is-enabled --quiet/);
-  assert.doesNotMatch(agentRunner, /systemctl is-active --quiet/);
+  assert.match(agentRuntime, /systemctl is-enabled --quiet/);
+  assert.doesNotMatch(agentRuntime, /systemctl is-active --quiet/);
+  assert.doesNotMatch(agentRuntime, /GHUNLIL|firewall_lib\.sh/);
 });
 
 test("official Live2D widget exposes safe declarative settings and runtime defaults", () => {
