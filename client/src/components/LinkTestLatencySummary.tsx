@@ -33,6 +33,7 @@ type ProbeSegment = {
   message?: string | null;
   method?: string | null;
   pending?: boolean;
+  idle?: boolean;
   groupKey?: string | null;
   groupLabel?: string | null;
   latencyLabel?: string | null;
@@ -257,6 +258,7 @@ function segmentResultKey(segment: Pick<ProbeSegment, "from" | "to" | "groupKey"
 }
 
 function segmentHasConcreteResult(segment: ProbeSegment) {
+  if (segment.idle) return false;
   return segment.pending === true
     || hasUsableLatencyValue(segment.latencyMs)
     || !!segment.message
@@ -265,7 +267,8 @@ function segmentHasConcreteResult(segment: ProbeSegment) {
 }
 
 function segmentNeedsCachedResult(segment: ProbeSegment) {
-  return !segment.pending
+  return !segment.idle
+    && !segment.pending
     && segment.success
     && !hasUsableLatencyValue(segment.latencyMs)
     && !segment.message
@@ -296,6 +299,7 @@ function mergeProbeSegmentsWithCache(segments: ProbeSegment[], cachedSegments: P
       message: cached.message,
       method: segment.method || cached.method,
       pending: false,
+      idle: false,
       latencyLabel: cached.latencyLabel,
     };
   });
@@ -352,6 +356,7 @@ function buildProbeSegments(input: {
         message: detail.message || null,
         method: detail.method || null,
         pending: detail.pending === true,
+        idle: false,
         groupKey: detail.groupKey || null,
         groupLabel: detail.groupLabel || null,
       };
@@ -420,9 +425,13 @@ function buildProbeSegments(input: {
       const hasExplicitLatency = hasUsableLatencyValue(segment.latencyMs) || hasUsableLatencyValue(detailLatency);
       const hasExplicitState = hasExplicitSuccess || hasExplicitLatency || !!segment.message || !!detailMessage || segment.pending === true || detail?.pending === true;
       const isLastSegment = index === plannedSegments.length - 1;
+      const idle = !hasExplicitState
+        && !input.isTesting
+        && !input.isSuccess
+        && !input.parsed.message
+        && !hasUsableLatencyValue(input.fallbackLatencyMs);
       const pending = segment.pending === true || detail?.pending === true
-        || input.isTesting
-        || (!hasExplicitState && !input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs));
+        || input.isTesting;
       const success = pending
         ? true
         : typeof detailSuccess === "boolean"
@@ -450,6 +459,7 @@ function buildProbeSegments(input: {
         message: !pending && !success ? detailMessage || segment.message || (isLastSegment ? input.parsed.message || null : null) : null,
         method: detail?.method || segment.method || null,
         pending,
+        idle,
         groupKey: segment.groupKey || null,
         groupLabel: segment.groupLabel || null,
       };
@@ -460,6 +470,10 @@ function buildProbeSegments(input: {
   const targetFallback = input.targetLabel || "目的节点";
   const sourceMeta = lookupNodeMeta(input.nodeMeta, sourceFallback);
   const targetMeta = lookupNodeMeta(input.nodeMeta, targetFallback);
+  const idle = !input.isTesting
+    && !input.isSuccess
+    && !input.parsed.message
+    && !hasUsableLatencyValue(input.fallbackLatencyMs);
   return [{
     from: withNodeLabel(sourceMeta, sourceFallback),
     to: withNodeLabel(targetMeta, targetFallback),
@@ -469,7 +483,8 @@ function buildProbeSegments(input: {
     latencyMs: !input.isTesting && input.isSuccess && hasUsableLatencyValue(input.fallbackLatencyMs) ? Number(input.fallbackLatencyMs) : null,
     message: !input.isTesting && !input.isSuccess ? input.parsed.message || null : null,
     method: null,
-    pending: !input.isTesting && !input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs),
+    pending: input.isTesting,
+    idle,
     groupKey: null,
     groupLabel: null,
   }];
@@ -586,7 +601,7 @@ export function LinkTestProbeView({
     : null;
   const totalLatency = effectiveTesting ? null : branchTotalLatency ?? getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const hasSegments = segments.length > 0;
-  const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
+  const hasResult = effectiveTesting || segments.some((segment) => segmentHasConcreteResult(segment));
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
   const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 4 && !isBranchView;
@@ -597,9 +612,12 @@ export function LinkTestProbeView({
     : [segments];
   const getSegmentState = (segment: ProbeSegment) => {
     const testing = effectiveTesting && (isTesting || segment.pending);
+    const idle = !testing && !!segment.idle;
     const ok = testing || segment.success;
     const label = testing
       ? "探测中"
+      : idle
+        ? "等待探测"
       : segment.pending
         ? "探测中"
         : segment.latencyLabel
@@ -609,7 +627,21 @@ export function LinkTestProbeView({
             : ok
               ? "--"
               : "失败";
-    return { testing, ok, label };
+    return {
+      testing,
+      idle,
+      ok,
+      label,
+      lineClass: testing ? "bg-primary/70" : idle ? "bg-border" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+      textClass: testing ? "text-primary" : idle ? "text-muted-foreground" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+      badgeClass: testing
+        ? "border-primary/20 text-primary"
+        : idle
+          ? "border-border/70 text-muted-foreground"
+          : ok
+            ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+            : "border-destructive/20 text-destructive",
+    };
   };
   const renderFlag = (meta?: LinkTestNodeMeta) => {
     const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
@@ -723,7 +755,7 @@ export function LinkTestProbeView({
     );
   };
   const renderBranchLine = (segment: ProbeSegment, index: number, mobile = false) => {
-    const { testing, ok, label } = getSegmentState(segment);
+    const { testing, ok, label, lineClass, textClass, badgeClass } = getSegmentState(segment);
     return (
       <div key={`${mobile ? "mobile" : "desktop"}-branch-${segment.from}-${segment.to}-${index}`} className={cn(mobile ? "space-y-2" : "flex min-w-[22rem] items-start justify-center px-2 py-3")}>
         {mobile ? renderMobileNode(segment.from, segment.fromMeta) : renderNode(segment.from, segment.fromMeta)}
@@ -733,7 +765,7 @@ export function LinkTestProbeView({
           <div
             className={cn(
               mobile ? "absolute bottom-1 top-1 w-px" : "absolute inset-x-0 top-0 h-px",
-              testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+              lineClass,
               testing ? "animate-pulse" : "",
             )}
           />
@@ -742,8 +774,7 @@ export function LinkTestProbeView({
               mobile
                 ? "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm"
                 : "absolute left-1/2 top-[-2.05rem] max-w-[18rem] -translate-x-1/2 whitespace-normal text-center text-xs font-semibold leading-tight tabular-nums",
-              testing ? "text-primary" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
-              mobile && (testing ? "border-primary/20" : ok ? "border-emerald-500/20" : "border-destructive/20"),
+              mobile ? badgeClass : textClass,
             )}
           >
             {label || (ok ? "--" : "失败")}
@@ -755,13 +786,13 @@ export function LinkTestProbeView({
   };
 
   const renderDesktopConnector = (segment: ProbeSegment, key: string, widthClass = "min-w-[88px] flex-1", showLabel = true) => {
-    const { testing, ok, label } = getSegmentState(segment);
+    const { testing, label, lineClass, badgeClass } = getSegmentState(segment);
     return (
       <div key={key} className={cn("relative mt-[45px] h-px bg-border", widthClass)}>
         <div
           className={cn(
             "absolute inset-x-0 top-0 h-px",
-            testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+            lineClass,
             testing ? "animate-pulse" : "",
           )}
         />
@@ -769,7 +800,7 @@ export function LinkTestProbeView({
           <span
             className={cn(
               "absolute left-1/2 top-[-2rem] max-w-[8rem] -translate-x-1/2 truncate rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
-              testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+              badgeClass,
             )}
             title={label || undefined}
           >
@@ -781,13 +812,13 @@ export function LinkTestProbeView({
   };
 
   const renderMobileConnector = (segment: ProbeSegment, key: string, showLabel = true) => {
-    const { testing, ok, label } = getSegmentState(segment);
+    const { testing, ok, label, lineClass, badgeClass } = getSegmentState(segment);
     return (
       <div key={key} className="relative mx-auto flex h-12 max-w-[18rem] items-center justify-center">
         <div
           className={cn(
             "absolute bottom-1 top-1 w-px",
-            testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+            lineClass,
             testing ? "animate-pulse" : "",
           )}
         />
@@ -795,7 +826,7 @@ export function LinkTestProbeView({
           <span
             className={cn(
               "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
-              testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+              badgeClass,
             )}
           >
             {label || (ok ? "--" : "失败")}
@@ -830,14 +861,14 @@ export function LinkTestProbeView({
     >
       <div className="max-h-[9.5rem] space-y-1 overflow-y-auto pr-1">
         {entrySegments.map((segment, index) => {
-          const { testing, ok, label } = getSegmentState(segment);
+          const { ok, label, textClass } = getSegmentState(segment);
           const entryLabel = shortNodeLabel(segment.from, mobile ? 18 : 18);
           return (
             <div
               key={`entry-group-${segment.from}-${segment.to}-${index}`}
               className={cn(
                 "flex min-w-0 items-center justify-between gap-2 rounded-sm px-1 py-0.5 leading-tight",
-                testing ? "text-primary" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                textClass,
               )}
               title={segment.message || segment.from}
             >
@@ -859,6 +890,7 @@ export function LinkTestProbeView({
     const entryStates = entrySegments.map((segment) => getSegmentState(segment));
     const anyEntryTesting = entryStates.some((state) => state.testing);
     const anyEntryOk = entryStates.some((state) => state.ok);
+    const allEntriesIdle = entryStates.every((state) => state.idle);
     const entryConnectorSegment: ProbeSegment = {
       ...entrySegments[0],
       from: "入口组",
@@ -869,6 +901,7 @@ export function LinkTestProbeView({
       message: null,
       method: null,
       pending: anyEntryTesting,
+      idle: allEntriesIdle,
       groupKey: null,
       groupLabel: null,
       latencyLabel: null,
@@ -918,7 +951,7 @@ export function LinkTestProbeView({
           <div className="space-y-0 py-2 sm:hidden">
             {segments.map((segment, index) => {
               const firstNode = index === 0;
-              const { testing, ok, label } = getSegmentState(segment);
+              const { testing, ok, label, lineClass, badgeClass } = getSegmentState(segment);
               return (
                 <div key={`mobile-${segment.from}-${segment.to}-${index}`}>
                   {firstNode ? renderMobileNode(segment.from, segment.fromMeta) : null}
@@ -926,14 +959,14 @@ export function LinkTestProbeView({
                     <div
                       className={cn(
                         "absolute bottom-1 top-1 w-px",
-                        testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+                        lineClass,
                         testing ? "animate-pulse" : "",
                       )}
                     />
                     <span
                       className={cn(
                         "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
-                        testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+                        badgeClass,
                       )}
                     >
                       {label || (ok ? "--" : "失败")}
@@ -979,7 +1012,7 @@ export function LinkTestProbeView({
                   >
                     {rowSegments.map((segment, index) => {
                       const firstNode = index === 0;
-                      const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
+                      const { testing: segmentTesting, label, lineClass, textClass } = getSegmentState(segment);
                       return (
                         <div key={`${segment.from}-${segment.to}-${rowIndex}-${index}`} className="contents">
                           {firstNode ? (
@@ -1002,14 +1035,14 @@ export function LinkTestProbeView({
                             <div
                               className={cn(
                                 "absolute inset-x-0 top-0 h-px",
-                                segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
+                                lineClass,
                                 segmentTesting ? "animate-pulse" : "",
                               )}
                             />
                             <span
                               className={cn(
                                 "absolute left-1/2 top-[-2.05rem] max-w-[18rem] -translate-x-1/2 whitespace-normal text-center text-xs font-semibold leading-tight tabular-nums",
-                                segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                                textClass,
                               )}
                             >
                               {label || "\u00a0"}
@@ -1050,7 +1083,7 @@ export function LinkTestProbeView({
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
         )}>
-          {effectiveTesting ? "探测中" : formatLatencyMs(totalLatency)}
+          {effectiveTesting ? "探测中" : !hasResult ? "等待探测" : formatLatencyMs(totalLatency)}
         </span>
       </div>
     </div>

@@ -86,8 +86,15 @@ import { resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
-import { hashConfig, latestConfigRevision, recordConfigAuditEvent } from "./configAudit";
+import {
+  getMimicLifecycleRevisionSignature,
+  hashConfig,
+  latestConfigRevision,
+  recordConfigAuditEvent,
+  type MimicLifecycleResource,
+} from "./configAudit";
 import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
+import { mimicRuntimeLifecycles } from "./mimicRuntimeLifecycle";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
 import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
@@ -1243,9 +1250,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const configuredHostInterface = normalizeNetworkInterface((host as any).networkInterface);
     const hostInterface = configuredHostInterface || reportedDefaultNetworkInterface;
     const mimicFiltersByInterface = new Map<string, Set<string>>();
+    const mimicLifecycleResources = new Map<string, MimicLifecycleResource>();
     const reportedMimicInterfaces = new Set<string>();
+    const reportedMimicServicesByInterface = new Map<string, AgentLocalRuntimeServiceState>();
     let mimicRequestedWithoutInterface = false;
-    const addMimicFilter = (filter: string, iface = hostInterface) => {
+    const addMimicFilter = (
+      filter: string,
+      iface = hostInterface,
+      lifecycleResources: MimicLifecycleResource[] = [],
+    ) => {
       const networkInterface = normalizeNetworkInterface(iface);
       const text = String(filter || "").trim();
       if (!text) return;
@@ -1255,13 +1268,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       if (!mimicFiltersByInterface.has(networkInterface)) mimicFiltersByInterface.set(networkInterface, new Set());
       mimicFiltersByInterface.get(networkInterface)!.add(text);
+      for (const resource of lifecycleResources) {
+        const resourceId = Math.floor(Number(resource.resourceId) || 0);
+        if (resourceId <= 0) continue;
+        mimicLifecycleResources.set(`${resource.resourceType}:${resourceId}`, {
+          resourceType: resource.resourceType,
+          resourceId,
+        });
+      }
     };
     const dnsChangedKey = (scope: string, refId: unknown) => `${scope}:${Number(refId) || 0}`;
     const dnsChangedFor = (scope: string, refId: unknown) => dnsChangedScopes.has(dnsChangedKey(scope, refId));
     const dnsRuntimeGeneration = (scope: string, refId: unknown) => {
       return dnsRuntimeGenerations.generation(scope, refId, dnsChangedTokenByScope.get(dnsChangedKey(scope, refId)));
     };
-    const buildMimicRuntimeSyncCmds = (dnsRefreshToken = "", approvedRemovals = new Map<string, string>()) => {
+    const buildMimicRuntimeSyncCmds = (lifecycleToken: string, dnsRefreshToken = "", approvedRemovals = new Map<string, string>()) => {
       if (mimicRequestedWithoutInterface && !hostInterface) {
         return {
           commands: [`echo "[mimic] no usable network interface; configure the host network interface or upgrade the Agent so it can report the default interface"; exit 1`],
@@ -1286,6 +1307,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const backupEnabledPath = `${configPath}.forwardx-backup-enabled`;
         const dnsRefreshPath = `${configPath}.forwardx-dns-refresh`;
         const xdpModePath = `${configPath}.forwardx-xdp-mode`;
+        const lifecyclePath = `${configPath}.forwardx-lifecycle`;
         const configTempPath = `${configPath}.forwardx-new`;
         const serviceName = `mimic@${networkInterface}`;
         const bpfDropInPath = `/etc/systemd/system/${serviceName}.service.d/forwardx-bpf.conf`;
@@ -1297,7 +1319,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const restartRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} restart; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} restart; else echo "[mimic] cannot restore service ${serviceName} on unsupported init system"; exit 1; fi`;
         if (filters.length === 0) {
           removalCommands.push(
-            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(xdpModePath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 ${shQuote(bpfDropInPath)} 2>/dev/null || true; rmdir ${shQuote(bpfDropInDir)} 2>/dev/null || true; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi; fi; rm -f ${shQuote(xdpModePath)} 2>/dev/null || true`,
+            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(xdpModePath)} ${shQuote(lifecyclePath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 ${shQuote(bpfDropInPath)} 2>/dev/null || true; rmdir ${shQuote(bpfDropInDir)} 2>/dev/null || true; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi; fi; rm -f ${shQuote(xdpModePath)} ${shQuote(lifecyclePath)} 2>/dev/null || true`,
           );
           continue;
         }
@@ -1313,14 +1335,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `printf '\\n' >> ${shQuote(configTempPath)}; mimic_filter_count=$(grep -c '^filter = ' ${shQuote(configTempPath)} 2>/dev/null || true); if [ "$mimic_filter_count" -le 0 ] || [ "$mimic_filter_count" -gt 32 ]; then rm -f ${shQuote(configTempPath)}; echo "[mimic] invalid filter count: $mimic_filter_count (supported 1-32)"; exit 1; fi; if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then cp -p ${shQuote(configPath)} ${shQuote(`${configPath}.forwardx-last-good`)}; fi; mv -f ${shQuote(configTempPath)} ${shQuote(configPath)}; chmod 644 ${shQuote(configPath)}`,
           `echo "[mimic] sync ${shQuote(networkInterface)} filters=$mimic_filter_count"`,
           `if ! modprobe mimic 2>/dev/null; then echo "[mimic] kernel module could not be loaded"; exit 1; fi`,
+          `mimic_force_restart=0; if [ "$(cat ${shQuote(lifecyclePath)} 2>/dev/null || true)" != ${shQuote(lifecycleToken)} ]; then mimic_force_restart=1; fi`,
           dnsRefreshToken
             ? `mimic_old_hash=$(cat ${shQuote(configPath)}.sha256 2>/dev/null || true); if command -v sha256sum >/dev/null 2>&1; then mimic_new_hash=$(sha256sum ${shQuote(configPath)} 2>/dev/null | awk '{print "sha256:"$1}'); elif command -v cksum >/dev/null 2>&1; then mimic_new_hash=$(cksum ${shQuote(configPath)} 2>/dev/null | awk '{print "cksum:"$1":"$2}'); else mimic_new_hash="mtime:$(wc -c < ${shQuote(configPath)} 2>/dev/null):$(date -r ${shQuote(configPath)} +%s 2>/dev/null)"; fi; mimic_dns_restart=0; if { ${serviceActiveCheck}; } && [ "$mimic_new_hash" = "$mimic_old_hash" ] && [ "$(cat ${shQuote(dnsRefreshPath)} 2>/dev/null || true)" != ${shQuote(dnsRefreshToken)} ]; then mimic_dns_restart=1; fi`
             : "mimic_dns_restart=0",
           restartMimicServiceIfConfigChangedCmd(serviceName, configPath, networkInterface),
           dnsRefreshToken
-            ? `if [ "$mimic_dns_restart" = "1" ]; then echo ${shQuote(`[mimic] DNS refresh ${dnsRefreshToken}`)}; ${startManagedServiceCmd(serviceName)}; fi; printf '%s' ${shQuote(dnsRefreshToken)} > ${shQuote(dnsRefreshPath)}`
+            ? `if [ "$mimic_dns_restart" = "1" ] && [ "$mimic_needs_start" != "1" ]; then echo ${shQuote(`[mimic] DNS refresh ${dnsRefreshToken}`)}; ${startManagedServiceCmd(serviceName)}; fi; printf '%s' ${shQuote(dnsRefreshToken)} > ${shQuote(dnsRefreshPath)}`
             : "",
           `if ! mimic show ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] runtime hooks are unavailable on ${shQuote(networkInterface)}"; systemctl status ${shQuote(serviceName)}.service --no-pager -l 2>/dev/null || true; journalctl -u ${shQuote(serviceName)}.service -n 80 --no-pager 2>/dev/null || true; exit 1; fi`,
+          `mimic_lifecycle_tmp=${shQuote(`${lifecyclePath}.tmp`)}.$$; printf '%s' ${shQuote(lifecycleToken)} > "$mimic_lifecycle_tmp"; chmod 644 "$mimic_lifecycle_tmp"; mv -f "$mimic_lifecycle_tmp" ${shQuote(lifecyclePath)}`,
         ].filter(Boolean).join("\n"));
         rollbackCommands.push(`if [ -f ${shQuote(`${configPath}.forwardx-last-good`)} ]; then cp -p ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}; ${startManagedServiceCmd(serviceName)}; elif [ -f ${shQuote(backupPath)} ]; then ${stopManagedServiceCmd(serviceName)}; cp -p ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; rm -f ${shQuote(backupPath)} ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(xdpModePath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; else ${stopManagedServiceCmd(serviceName)}; rm -f ${shQuote(configPath)} ${shQuote(xdpModePath)} 2>/dev/null || true; fi`);
       }
@@ -2340,7 +2364,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         fxpSpec.relayKey = fxpHopKey(tunnel, nextHop, hopIdx + 1);
         if (nextMimicPort > 0) {
           const endpoint = mimicFilterEndpoint(fxpSpec.relayExitHost, nextMimicPort);
-          if (endpoint) addMimicFilter(`remote=${endpoint}`);
+          if (endpoint) addMimicFilter(`remote=${endpoint}`, hostInterface, [{ resourceType: "tunnel", resourceId: tunnel.id }]);
         }
         const nextIsFinalExit = Number(nextHop?.hostId || 0) === Number((hops[hops.length - 1] as any)?.hostId || 0);
         if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
@@ -2353,7 +2377,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             for (const route of extraRoutes) {
               if (route.udpPort <= 0) continue;
               const endpoint = mimicFilterEndpoint(route.host, route.udpPort);
-              if (endpoint) addMimicFilter(`remote=${endpoint}`);
+              if (endpoint) addMimicFilter(`remote=${endpoint}`, hostInterface, [{ resourceType: "tunnel", resourceId: tunnel.id }]);
             }
             fxpSpec.exits = [
               { host: fxpSpec.relayExitHost, port: fxpSpec.relayExitPort, udpPort: fxpSpec.udpRelayExitPort || fxpSpec.relayExitPort, key: fxpSpec.relayKey, peerId: wireGuardV2 ? String(Number(nextHop?.hostId || 0)) : undefined },
@@ -2428,25 +2452,32 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return routes;
     };
-    const addMimicRemoteFilterForRoutes = (routes: Array<{ host: string; port: number; udpPort?: number }>) => {
+    const addMimicRemoteFilterForRoutes = (
+      routes: Array<{ host: string; port: number; udpPort?: number }>,
+      lifecycleResources: MimicLifecycleResource[],
+    ) => {
       for (const route of routes) {
         const udpPort = Number(route.udpPort || 0);
         if (udpPort <= 0) continue;
         const endpoint = mimicFilterEndpoint(route.host, udpPort);
-        if (endpoint) addMimicFilter(`remote=${endpoint}`);
+        if (endpoint) addMimicFilter(`remote=${endpoint}`, hostInterface, lifecycleResources);
       }
     };
-    const addMimicLocalFilterForPort = (port: unknown) => {
+    const addMimicLocalFilterForPort = (port: unknown, lifecycleResources: MimicLifecycleResource[]) => {
       const p = Number(port) || 0;
       if (p <= 0 || p > 65535) return;
       // Mimic natively supports wildcard local filters and tracks interface
       // address changes itself. Avoid resolving only the first global address
       // in a shell command, which can miss the actual WireGuard destination.
-      addMimicFilter(`local=0.0.0.0:${p}`);
-      addMimicFilter(`local=[::]:${p}`);
+      addMimicFilter(`local=0.0.0.0:${p}`, hostInterface, lifecycleResources);
+      addMimicFilter(`local=[::]:${p}`, hostInterface, lifecycleResources);
     };
     const collectMimicFiltersForRule = async (rule: any, tunnel: any) => {
       if (!udpOverTcpEnabled(rule, tunnel) || !isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return;
+      const lifecycleResources: MimicLifecycleResource[] = [
+        { resourceType: "forward_rule", resourceId: Number(rule.id) },
+        { resourceType: "tunnel", resourceId: Number(tunnel.id) },
+      ];
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const hostId = Number(host.id);
       const addCurrentHostExtraExitFilters = () => {
@@ -2454,18 +2485,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const extraExitNodes = (tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [])
           .filter((node: any) => node?.isEnabled !== false && Number(node.hostId) === hostId);
         for (const extraExitNode of extraExitNodes) {
-          addMimicLocalFilterForPort(Number((extraExitNode as any).mimicPort || 0));
+          addMimicLocalFilterForPort(Number((extraExitNode as any).mimicPort || 0), lifecycleResources);
         }
       };
       if (isCurrentHostTunnelEntry(tunnel)) {
-        addMimicRemoteFilterForRoutes(await forwardXEntryRoutes(rule, tunnel));
+        addMimicRemoteFilterForRoutes(await forwardXEntryRoutes(rule, tunnel), lifecycleResources);
       }
       if (Array.isArray(hops) && hops.length >= 2) {
         const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === hostId);
         if (hostIdx >= 0) {
           const currentHop = hops[hostIdx] as any;
           if (hostIdx > 0) {
-            addMimicLocalFilterForPort(Number(currentHop?.mimicPort || 0));
+            addMimicLocalFilterForPort(Number(currentHop?.mimicPort || 0), lifecycleResources);
           }
           if (hostIdx < hops.length - 1) {
             const nextHop = isTunnelRelayFailover(tunnel, hops)
@@ -2477,7 +2508,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
               nextRoutes.push(...await forwardXExtraExitRoutes(tunnel));
             }
-            addMimicRemoteFilterForRoutes(nextRoutes);
+            addMimicRemoteFilterForRoutes(nextRoutes, lifecycleResources);
           }
         }
         addCurrentHostExtraExitFilters();
@@ -2485,7 +2516,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       const primaryExitHostId = Number(tunnel.exitHostId || 0);
       if (primaryExitHostId === hostId) {
-        addMimicLocalFilterForPort(Number((tunnel as any).mimicPort) || 0);
+        addMimicLocalFilterForPort(Number((tunnel as any).mimicPort) || 0, lifecycleResources);
       }
       addCurrentHostExtraExitFilters();
     };
@@ -2496,7 +2527,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!isForwardXWireGuardV2(tunnel) || !tunnelNeedsMimic(tunnel)) continue;
       const plan = await getCurrentHostForwardXWireGuardPlan(tunnel);
       if (!plan) continue;
-      for (const filter of buildForwardXWireGuardMimicFilters(plan)) addMimicFilter(filter);
+      for (const filter of buildForwardXWireGuardMimicFilters(plan)) {
+        addMimicFilter(filter, hostInterface, [{ resourceType: "tunnel", resourceId: Number(tunnel.id) }]);
+      }
     }
     for (const tunnel of hostTunnels as any[]) {
       if (isCurrentHostTunnelEntry(tunnel) && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
@@ -3680,7 +3713,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const name = String(service?.name || "").trim();
       if (!name.startsWith("mimic@")) continue;
       const iface = normalizeNetworkInterface(name.slice("mimic@".length));
-      if (iface) reportedMimicInterfaces.add(iface);
+      if (iface) {
+        reportedMimicInterfaces.add(iface);
+        reportedMimicServicesByInterface.set(iface, service);
+      }
     }
     const runtimeServiceUnhealthy = (serviceNames: Set<string>) => hasReportedRuntimeState && reportedRuntimeServices
       .some((service: AgentLocalRuntimeServiceState) => (
@@ -3904,7 +3940,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (fxpTunnel && endpointEnabled && tunnelNeedsMimic(tunnel)) {
         addMimicLocalFilterForPort(isCurrentHostPrimaryExit
           ? Number((tunnel as any).mimicPort || 0)
-          : Number((currentHostExtraExitNode as any)?.mimicPort || 0));
+          : Number((currentHostExtraExitNode as any)?.mimicPort || 0), [{
+          resourceType: "tunnel",
+          resourceId: Number(tunnel.id),
+        }]);
       }
       const tunnelSourcePort = fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? Number(tunnel.listenPort) : Number((currentHostExtraExitNode as any)?.listenPort || 0));
       const tunnelForwardType = tunnelExitRuntimeForwardType(tunnel);
@@ -3996,7 +4035,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         if (isFXP) {
           if (!isFirst && tunnelNeedsMimic(tunnel)) {
-            addMimicLocalFilterForPort(Number((hops[hostIdx] as any)?.mimicPort || 0));
+            addMimicLocalFilterForPort(Number((hops[hostIdx] as any)?.mimicPort || 0), [{
+              resourceType: "tunnel",
+              resourceId: Number(tunnel.id),
+            }]);
           }
           // ForwardX multi-hop
           if (isFirst) {
@@ -4626,7 +4668,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               appendPanelLog("error", `[TunnelRoute] missing ForwardX mimic UDP exit port tunnel=${tunnel.id} rule=${rule.id}`);
               continue;
             }
-            if (useUdpOverTcp) addMimicRemoteFilterForRoutes(entryRoutes);
+            if (useUdpOverTcp) {
+              addMimicRemoteFilterForRoutes(entryRoutes, [
+                { resourceType: "forward_rule", resourceId: Number(rule.id) },
+                { resourceType: "tunnel", resourceId: Number(tunnel.id) },
+              ]);
+            }
             const fxpSpec = await applyForwardXTransport({
               role: "entry",
               tunnelId: tunnel.id,
@@ -5287,6 +5334,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || approvedMimicRemovals.size > 0;
     const mimicRuntimeTopologyMismatch = desiredMimicInterfaces.size !== reportedMimicInterfaces.size
       || Array.from(desiredMimicInterfaces).some((iface) => !reportedMimicInterfaces.has(iface));
+    const mimicDesiredPlanSignature = JSON.stringify({
+      requestedWithoutInterface: mimicRequestedWithoutInterface,
+      interfaces: Array.from(mimicFiltersByInterface.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([iface, filters]) => [iface, Array.from(filters).sort()]),
+    });
+    const mimicResourceRevisionSignature = desiredMimicInterfaces.size > 0
+      ? await getMimicLifecycleRevisionSignature(Array.from(mimicLifecycleResources.values()))
+      : "";
+    const mimicRuntimeLifecycleToken = mimicRuntimeLifecycles.observe({
+      hostId: Number(host.id),
+      planSignature: mimicDesiredPlanSignature,
+      resourceRevisionSignature: mimicResourceRevisionSignature,
+      desired: desiredMimicInterfaces.size > 0,
+      repairNeeded: desiredMimicInterfaces.size > 0
+        && (mimicRuntimeServiceUnhealthy || mimicRuntimeTopologyMismatch),
+      revision: configRevision,
+    });
     const runtimeSyncBootstrap = !supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState;
     const gostReconcileCandidate = shouldReconcileGostRuntime({
       configChanged: gostRuntimeConfigChanged,
@@ -5409,7 +5474,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ])).sort();
       const mimicLogPlan = mimicLogIfaces.map((iface) => {
         const filters = Array.from(mimicFiltersByInterface.get(iface) || []).sort();
-        return `${iface}{desired=${filters.length ? compactMimicFiltersForLog(filters) : "-"} reported=${reportedMimicInterfaces.has(iface) ? "yes" : "no"}}`;
+        const reported = reportedMimicServicesByInterface.get(iface);
+        const active = reported ? (reported.active ? "yes" : "no") : "-";
+        const hooks = reported ? (reported.hooksReady === true ? "ready" : reported.hooksReady === false ? "missing" : "unknown") : "-";
+        const state = reported ? String(reported.connectionState || reported.status || "unknown") : "-";
+        return `${iface}{desired=${filters.length ? compactMimicFiltersForLog(filters) : "-"} reported=${reported ? "yes" : "no"} active=${active} hooks=${hooks} state=${state}}`;
       }).join(" ");
       const mimicLogSignature = JSON.stringify({
         hostInterface,
@@ -5420,7 +5489,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (shouldLogMimicRuntimePlan(Number(host.id), mimicLogSignature)) {
         appendPanelLog("info", `[Mimic] runtime plan host=${host.id} iface=${hostInterface || "-"} requestedWithoutInterface=${mimicRequestedWithoutInterface} dnsRefresh=${!!mimicDnsRefreshToken} ${mimicLogPlan || "plan=-"}`);
       }
-      const mimicCommandPlan = buildMimicRuntimeSyncCmds(mimicDnsRefreshToken, approvedMimicRemovals);
+      const mimicCommandPlan = buildMimicRuntimeSyncCmds(
+        mimicRuntimeLifecycleToken,
+        mimicDnsRefreshToken,
+        approvedMimicRemovals,
+      );
       const mimicRuntimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,

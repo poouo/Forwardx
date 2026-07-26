@@ -2,7 +2,7 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, LayoutGrid, List, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
 import HostStatusLabel from "@/components/HostStatusLabel";
-import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -258,6 +258,11 @@ export default function HostProbeServiceManager({
       : serviceItems,
     [hostsById, isTextFiltered, normalizedSearchQuery, serviceItems],
   );
+  const serviceOrder = useOptimisticSortableOrder({
+    items: filteredServiceItems,
+    getId: (service: any) => Number(service.id),
+  });
+  const displayedServiceItems = serviceOrder.items;
   useEffect(() => {
     onFilterStatsChange?.({ filtered: filteredServiceItems.length, total: serviceItems.length });
   }, [filteredServiceItems.length, onFilterStatsChange, serviceItems.length]);
@@ -301,15 +306,23 @@ export default function HostProbeServiceManager({
     onError: (err) => toast.error(err.message || "删除服务失败"),
   });
   const reorderServicesMutation = trpc.hosts.reorderProbeServices.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success("服务顺序已更新"); },
+    onSuccess: () => toast.success("服务顺序已更新"),
     onError: (err) => toast.error(err.message || "更新服务顺序失败"),
   });
+  const serviceReorderPending = reorderServicesMutation.isPending;
   const serviceSortable = useSortableReorder({
-    items: filteredServiceItems,
+    items: displayedServiceItems,
     getId: (service: any) => Number(service.id),
-    disabled: isTextFiltered || filteredServiceItems.length < 2,
+    disabled: isTextFiltered || serviceReorderPending || displayedServiceItems.length < 2,
     onReorder: (nextServices) => {
-      reorderServicesMutation.mutate({ ids: nextServices.map((service: any) => Number(service.id)) });
+      const requestId = serviceOrder.begin(nextServices);
+      reorderServicesMutation.mutate(
+        { ids: nextServices.map((service: any) => Number(service.id)) },
+        {
+          onError: () => serviceOrder.release(requestId),
+          onSettled: () => serviceOrder.resync(requestId, () => utils.hosts.probeServices.invalidate()),
+        },
+      );
     },
   });
 
@@ -432,7 +445,7 @@ export default function HostProbeServiceManager({
             <div className="p-4">
               <DataSectionLoading label="正在加载服务" />
             </div>
-          ) : filteredServiceItems.length === 0 ? (
+          ) : displayedServiceItems.length === 0 ? (
             <div className="flex min-h-[220px] flex-col items-center justify-center text-muted-foreground">
               <RadioTower className="mb-3 h-9 w-9 opacity-40" />
               <p className="text-sm">{isTextFiltered && serviceItems.length > 0 ? "未找到匹配服务" : "暂无服务"}</p>
@@ -441,9 +454,9 @@ export default function HostProbeServiceManager({
               )}
             </div>
           ) : viewMode === "card" ? (
-            <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="rect">
+            <SortableReorderContext sortable={serviceSortable} ids={displayedServiceItems.map((service) => Number(service.id))} strategy="rect">
               <div key="host-probe-service-card-view" className="standard-card-grid card-mode-transition gap-4 p-3">
-                {filteredServiceItems.map((service) => (
+                {displayedServiceItems.map((service) => (
                   <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
@@ -453,7 +466,7 @@ export default function HostProbeServiceManager({
                           onEdit={openEdit}
                           onDelete={confirmDelete}
                           onToggle={toggleServiceEnabled}
-                          dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
+                          dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={serviceReorderPending} />}
                           sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
                         />
                       </div>
@@ -464,9 +477,9 @@ export default function HostProbeServiceManager({
             </SortableReorderContext>
           ) : (
             <div key="host-probe-service-table-view" className="card-mode-transition">
-            <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
+            <SortableReorderContext sortable={serviceSortable} ids={displayedServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
               <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
-                {filteredServiceItems.map((service) => (
+                {displayedServiceItems.map((service) => (
                   <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
@@ -476,7 +489,7 @@ export default function HostProbeServiceManager({
                           onEdit={openEdit}
                           onDelete={confirmDelete}
                           onToggle={toggleServiceEnabled}
-                          dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
+                          dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={serviceReorderPending} />}
                           sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
                         />
                       </div>
@@ -498,9 +511,9 @@ export default function HostProbeServiceManager({
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
-                <SortableReorderContext sortable={serviceSortable} ids={filteredServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
+                <SortableReorderContext sortable={serviceSortable} ids={displayedServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
                 <TableBody>
-                  {filteredServiceItems.map((service) => (
+                  {displayedServiceItems.map((service) => (
                     <SortableItem key={service.id} id={Number(service.id)} disabled={serviceSortable.disabled} itemKind="row">
                       {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                     <TableRow
@@ -512,7 +525,7 @@ export default function HostProbeServiceManager({
                       )}
                     >
                       <TableCell className="w-[44px] px-2">
-                        <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
+                        <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={serviceReorderPending} />
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">

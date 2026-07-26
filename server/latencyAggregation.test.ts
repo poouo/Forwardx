@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeTunnelBranches, validateTunnelProbeSource } from "./agentReportRoutes";
+import { summarizeTunnelBranches, trafficAccountingHostIds, validateTunnelProbeSource } from "./agentReportRoutes";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
 import { getTunnelAutoHopAggregate, recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { shouldUseLatencyCandidate } from "./repositories/metricsRepository";
@@ -27,6 +27,51 @@ test("multi-exit tunnel is unavailable only when every exit fails", () => {
     { latencyMs: 0, isTimeout: true },
   ]);
   assert.deepEqual(summary, { unavailable: true, partial: false, latencyMs: null });
+});
+
+test("traffic accounting accepts every ForwardX entry-group host", () => {
+  const hosts = trafficAccountingHostIds(
+    { id: 41, hostId: 5 },
+    { id: 7, mode: "forwardx", entryHostId: 5, exitHostId: 9 },
+    new Set([5, 6, 7]),
+    undefined,
+  );
+  assert.deepEqual([...hosts].sort((left, right) => left - right), [5, 6, 7]);
+  assert.equal(hosts.has(9), false);
+});
+
+test("traffic accounting accepts enabled load-balanced exit hosts", () => {
+  const hosts = trafficAccountingHostIds(
+    { id: 42, hostId: 5 },
+    {
+      id: 8,
+      mode: "gost",
+      entryHostId: 5,
+      exitHostId: 9,
+      loadBalanceEnabled: true,
+      loadBalanceStrategy: "round_robin",
+    },
+    undefined,
+    new Set([10, 11]),
+  );
+  assert.deepEqual([...hosts].sort((left, right) => left - right), [9, 10, 11]);
+});
+
+test("traffic accounting ignores extra exits when load balancing is disabled", () => {
+  const hosts = trafficAccountingHostIds(
+    { id: 43, hostId: 5 },
+    {
+      id: 9,
+      mode: "realm",
+      entryHostId: 5,
+      exitHostId: 9,
+      loadBalanceEnabled: false,
+      loadBalanceStrategy: "round_robin",
+    },
+    undefined,
+    new Set([10, 11]),
+  );
+  assert.deepEqual([...hosts], [9]);
 });
 
 test("tunnel hop aggregation never mixes topology generations", () => {

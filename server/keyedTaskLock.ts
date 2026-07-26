@@ -5,6 +5,11 @@ type PendingTask = {
 
 const pendingTasks = new Map<string, PendingTask>();
 
+export function trafficBillingUserLockKey(userId: unknown) {
+  const id = Number(userId || 0);
+  return `traffic-billing-user:${Number.isFinite(id) && id > 0 ? Math.floor(id) : 0}`;
+}
+
 export async function withKeyedTaskLock<T>(keyValue: unknown, task: () => Promise<T>): Promise<T> {
   const key = String(keyValue || "").trim();
   if (!key) return task();

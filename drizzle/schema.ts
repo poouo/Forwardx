@@ -634,6 +634,16 @@ export const trafficStatBuckets = table("traffic_stat_buckets", {
 export type TrafficStatBucket = typeof trafficStatBuckets.$inferSelect;
 export type InsertTrafficStatBucket = typeof trafficStatBuckets.$inferInsert;
 
+export const agentTrafficReports = table("agent_traffic_reports", {
+  id: serial("id"),
+  hostId: int("hostId").notNull(),
+  producerId: varchar("producerId", { length: 128 }),
+  reportId: varchar("reportId", { length: 128 }).notNull(),
+  receivedAt: epoch("receivedAt").notNull().default(nowDefault()),
+});
+export type AgentTrafficReport = typeof agentTrafficReports.$inferSelect;
+export type InsertAgentTrafficReport = typeof agentTrafficReports.$inferInsert;
+
 export const tunnelLatencyStats = table("tunnel_latency_stats", {
   id: serial("id"),
   tunnelId: int("tunnelId").notNull(),

@@ -22,7 +22,10 @@ import { notifyTunnelLatencyRefresh } from "../tunnelLatencyRefresh";
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
 const TRAFFIC_BUCKET_RETENTION_HOURS = 72;
-const TRAFFIC_BUCKET_BACKFILL_MARKER = "v2";
+const LEGACY_TRAFFIC_REPORT_RETENTION_HOURS = 7 * 24;
+// v3 repairs bucket gaps left by older best-effort writes. Current traffic
+// writes update raw rows, counters and buckets in one transaction.
+const TRAFFIC_BUCKET_BACKFILL_MARKER = "v3";
 const TRAFFIC_BUCKET_BACKFILL_SETTING = "trafficStatBucketsBackfilled";
 const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_SETTING = "traffic-billing-rule-usage-v1";
 const USER_TRAFFIC_COUNTER_BACKFILL_SETTING = "user-traffic-counters-v1";
@@ -67,7 +70,7 @@ function warnTrafficBucketOnce(error: unknown, context?: { ruleId?: number; host
     context?.hostId ? `host=${context.hostId}` : "",
     context?.userId ? `user=${context.userId}` : "",
   ].filter(Boolean).join(" ");
-  console.warn(`[TrafficSummary] Bucket update skipped${details ? ` ${details}` : ""}:`, error instanceof Error ? error.message : String(error));
+  console.warn(`[TrafficSummary] Bucket update failed${details ? ` ${details}` : ""}; report will retry:`, error instanceof Error ? error.message : String(error));
 }
 
 function warnUserTrafficCounterOnce(error: unknown, context?: { ruleId?: number; userId?: number }) {
@@ -77,7 +80,7 @@ function warnUserTrafficCounterOnce(error: unknown, context?: { ruleId?: number;
     context?.ruleId ? `rule=${context.ruleId}` : "",
     context?.userId ? `user=${context.userId}` : "",
   ].filter(Boolean).join(" ");
-  console.warn(`[TrafficCounter] User counter update skipped${details ? ` ${details}` : ""}:`, error instanceof Error ? error.message : String(error));
+  console.warn(`[TrafficCounter] User counter update failed${details ? ` ${details}` : ""}; report will retry:`, error instanceof Error ? error.message : String(error));
 }
 
 function retentionCutoffSeconds(retainHours: number) {
@@ -715,18 +718,70 @@ export async function insertTrafficStatsBatch(items: TrafficStatBatchItem[]) {
   } catch (error) {
     const first = counterRows[0];
     warnUserTrafficCounterOnce(error, { ruleId: first?.ruleId, userId: first?.userId });
+    throw error;
   }
   try {
     await upsertTrafficStatBucketsBatch(counterRows);
   } catch (error) {
     const first = counterRows[0];
     warnTrafficBucketOnce(error, { ruleId: first?.ruleId, hostId: first?.hostId, userId: first?.userId });
+    throw error;
   }
   return {
     samples: rawRows.length,
     counters: counterRows.length,
     users: new Set(counterRows.map((row) => row.userId)).size,
   };
+}
+
+/** Claim a traffic report once per producer so network retries cannot bill it twice. */
+export async function claimAgentTrafficReport(hostId: number, reportId: string, producerId = "") {
+  const id = Math.floor(Number(hostId) || 0);
+  const key = String(reportId || "").trim().slice(0, 128);
+  const producer = String(producerId || "").trim().slice(0, 128);
+  if (id <= 0 || !key) return true;
+  const q = quoteIdentifier;
+  const nowSec = epochSeconds(nowDate());
+  const kind = getDatabaseKind();
+  if (!producer) {
+    // Compatibility for the short-lived reportId-only protocol. Released
+    // Agents before idempotent reporting do not send a reportId at all.
+    const legacySql = kind === "mysql"
+      ? `INSERT IGNORE INTO ${q("agent_traffic_reports")} (${q("hostId")}, ${q("reportId")}, ${q("receivedAt")}) VALUES (?, ?, ?)`
+      : `INSERT INTO ${q("agent_traffic_reports")} (${q("hostId")}, ${q("reportId")}, ${q("receivedAt")}) VALUES (?, ?, ?)
+         ON CONFLICT (${q("hostId")}, ${q("reportId")}) DO NOTHING`;
+    const inserted = rawAffectedRows(await executeRaw(legacySql, [id, key, nowSec])) > 0;
+    if (!inserted) {
+      await executeRaw(
+        `UPDATE ${q("agent_traffic_reports")} SET ${q("receivedAt")} = ? WHERE ${q("hostId")} = ? AND ${q("reportId")} = ?`,
+        [nowSec, id, key],
+      );
+    }
+    return inserted;
+  }
+
+  const insertSql = kind === "mysql"
+    ? `INSERT IGNORE INTO ${q("agent_traffic_reports")} (${q("hostId")}, ${q("producerId")}, ${q("reportId")}, ${q("receivedAt")}) VALUES (?, ?, ?, ?)`
+    : `INSERT INTO ${q("agent_traffic_reports")} (${q("hostId")}, ${q("producerId")}, ${q("reportId")}, ${q("receivedAt")}) VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`;
+  const inserted = await executeRaw(insertSql, [id, producer, key, nowSec]);
+  if (rawAffectedRows(inserted) > 0) return true;
+
+  // Producers send one frozen batch at a time. Replacing the producer head is
+  // therefore a new batch; the same ID (including a concurrent retry) is a
+  // duplicate. The conditional update keeps that decision atomic on every DB.
+  const updated = await executeRaw(
+    `UPDATE ${q("agent_traffic_reports")}
+        SET ${q("reportId")} = ?, ${q("receivedAt")} = ?
+      WHERE ${q("hostId")} = ? AND ${q("producerId")} = ? AND ${q("reportId")} <> ?`,
+    [key, nowSec, id, producer, key],
+  );
+  if (rawAffectedRows(updated) > 0) return true;
+  await executeRaw(
+    `UPDATE ${q("agent_traffic_reports")} SET ${q("receivedAt")} = ? WHERE ${q("hostId")} = ? AND ${q("producerId")} = ? AND ${q("reportId")} = ?`,
+    [nowSec, id, producer, key],
+  );
+  return false;
 }
 
 export async function insertTrafficStat(stat: InsertTrafficStat, options: { userId?: number } = {}) {
@@ -739,9 +794,15 @@ export async function insertTrafficStat(stat: InsertTrafficStat, options: { user
 export async function cleanOldTrafficStats(retainHours: number = 72) {
   const db = await getDb();
   if (!db) return;
+  const cutoff = retentionCutoffSeconds(retainHours);
+  const reportCutoff = retentionCutoffSeconds(Math.max(retainHours, LEGACY_TRAFFIC_REPORT_RETENTION_HOURS));
+  await executeRaw(
+    `DELETE FROM ${quoteIdentifier("agent_traffic_reports")}
+      WHERE ${quoteIdentifier("producerId")} IS NULL AND ${quoteIdentifier("receivedAt")} < ?`,
+    [reportCutoff],
+  ).catch(() => undefined);
   const billingBackfilled = await getSetting(TRAFFIC_BILLING_RULE_USAGE_BACKFILL_SETTING).catch(() => null);
   if (!billingBackfilled) return;
-  const cutoff = retentionCutoffSeconds(retainHours);
   await executeRaw(
     `DELETE FROM ${quoteIdentifier("traffic_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
     [cutoff],
@@ -1250,6 +1311,14 @@ function mergeTrafficSummaryRows(rows: TrafficSummaryRow[]) {
   return Array.from(merged.values());
 }
 
+function fillMissingTrafficSummaryRows(primary: TrafficSummaryRow[], fallback: TrafficSummaryRow[]) {
+  const keys = new Set(primary.map((item) => `${item.ruleId}:${item.hostId}`));
+  return [
+    ...primary,
+    ...fallback.filter((item) => !keys.has(`${item.ruleId}:${item.hostId}`)),
+  ];
+}
+
 async function getForwardGroupModeMap(groupIds: number[]) {
   const db = await getDb();
   const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
@@ -1733,9 +1802,21 @@ export async function getTrafficSummaryByRule(opts: {
     ? (await expandTrafficQueryRuleIds(requestedRuleIds)).queryRuleIds
     : requestedRuleIds;
   const since = opts.since ?? new Date(Date.now() - TRAFFIC_BUCKET_RETENTION_HOURS * 60 * 60 * 1000);
-  let result: TrafficSummaryRow[] =
-    await getTrafficSummaryRowsFromBuckets({ ...opts, since, ruleIds: expandedRuleIds }) ??
-    await getTrafficSummaryRowsFromStats({ ...opts, since, ruleIds: expandedRuleIds });
+  const queryOpts = { ...opts, since, ruleIds: expandedRuleIds };
+  const bucketRows = await getTrafficSummaryRowsFromBuckets(queryOpts);
+  let result: TrafficSummaryRow[];
+  if (bucketRows) {
+    const rawRows = await getTrafficSummaryRowsFromStats(queryOpts).catch(() => null);
+    // Raw samples are authoritative inside their retention window. Historical
+    // versions could commit a raw row while failing to update its bucket, so a
+    // partially populated bucket must not hide newer samples for the same
+    // rule/host pair. Buckets only fill pairs whose raw rows are unavailable.
+    result = rawRows
+      ? fillMissingTrafficSummaryRows(rawRows, bucketRows)
+      : bucketRows;
+  } else {
+    result = await getTrafficSummaryRowsFromStats(queryOpts);
+  }
   result = await normalizeTrafficSummaryRowsForRules(result, opts, requestedRuleIds);
 
   if (result.length === 0) return withEmptyTrafficLatency(result);
@@ -1994,7 +2075,7 @@ export async function getTrafficSeriesByRule(
 
   const q = quoteIdentifier;
   const useBuckets = bucket === TRAFFIC_BUCKET_MINUTES && await trafficBucketsReady() && canUseTrafficBuckets(since);
-  const rows = useBuckets
+  const bucketRows = useBuckets
     ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number; connections: number }>(
       `SELECT b.${q("bucketStart")} AS ${q("bucket")},
               COALESCE(SUM(b.${q("bytesIn")}), 0) AS ${q("bytesIn")},
@@ -2007,8 +2088,9 @@ export async function getTrafficSeriesByRule(
         GROUP BY b.${q("bucketStart")}
         ORDER BY b.${q("bucketStart")} ASC`,
       [TRAFFIC_BUCKET_MINUTES, ...effectiveRuleIds, bucketStartFor(sinceSec)],
-    ).catch(() => [])
-    : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number; connections: number }>(
+    ).catch(() => null)
+    : null;
+  const rows = bucketRows && bucketRows.length > 0 ? bucketRows : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number; connections: number }>(
       `SELECT ${bucketExprSql("ts", bucketSec)} AS ${q("bucket")},
               COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
               COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")},
@@ -2044,7 +2126,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
   const trafficTable = q("traffic_stats");
   const rulesTable = q("forward_rules");
   const canUseBuckets = bucket === TRAFFIC_BUCKET_MINUTES && await trafficBucketsReady() && canUseTrafficBuckets(since);
-  const rows = canUseBuckets
+  const bucketRows = canUseBuckets
     ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
       `SELECT b.${q("bucketStart")} AS ${q("bucket")},
               COALESCE(SUM(b.${q("bytesIn")}), 0) AS ${q("bytesIn")},
@@ -2056,9 +2138,10 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
         GROUP BY b.${q("bucketStart")}
         ORDER BY b.${q("bucketStart")} ASC`,
       opts.userId ? [TRAFFIC_BUCKET_MINUTES, startBucketSec, opts.userId] : [TRAFFIC_BUCKET_MINUTES, startBucketSec],
-    ).catch(() => [])
-    : opts.userId
-      ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
+    ).catch(() => null)
+    : null;
+  const rows = bucketRows && bucketRows.length > 0 ? bucketRows : (opts.userId
+    ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
         `SELECT ${bucketExprSql("ts", bucketSec)} AS ${q("bucket")},
                 COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
                 COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")}
@@ -2069,7 +2152,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
           ORDER BY ${q("bucket")} ASC`,
         [sinceSec, opts.userId],
       )
-      : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
+    : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
         `SELECT ${bucketExprSql("ts", bucketSec)} AS ${q("bucket")},
                 COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
                 COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")}
@@ -2078,7 +2161,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
           GROUP BY ${bucketExprSql("ts", bucketSec)}
           ORDER BY ${q("bucket")} ASC`,
         [sinceSec],
-      );
+      ));
 
   if (rows.length === 0) return [];
 

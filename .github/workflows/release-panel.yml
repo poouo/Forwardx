@@ -52,7 +52,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check version split
+      - name: Check release versions and tag
+        env:
+          FORWARDX_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: pnpm check:versions
 
       - name: Type check
@@ -163,6 +165,7 @@ jobs:
           fi
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
+            --build-arg "FORWARDX_VERSION=${VERSION#v}" \
             --push \
             "${TAG_ARGS[@]}" \
             .

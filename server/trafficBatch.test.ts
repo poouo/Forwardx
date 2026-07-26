@@ -19,9 +19,42 @@ test("traffic reports batch raw samples and counters without losing totals", () 
     const rules = await import(url("server/repositories/forwardRuleRepository.ts"));
     const billing = await import(url("server/repositories/trafficBillingRepository.ts"));
     const users = await import(url("server/repositories/userRepository.ts"));
+    const settings = await import(url("server/repositories/settingsRepository.ts"));
     try {
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
       await schema.ensureDatabaseSchema();
+
+      await assert.rejects(
+        runtime.withDatabaseTransaction(async () => {
+          assert.equal(await metrics.claimAgentTrafficReport(5, "producer-report-1", "agent-producer"), true);
+          throw new Error("rollback traffic report");
+        }),
+        /rollback traffic report/,
+      );
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "producer-report-1", "agent-producer")), true);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "producer-report-1", "agent-producer")), false);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "producer-report-2", "agent-producer")), true);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "producer-report-2", "agent-producer")), false);
+      const concurrentClaims = await Promise.all(Array.from({ length: 8 }, () =>
+        runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "concurrent-report", "fxp-producer"))));
+      assert.equal(concurrentClaims.filter(Boolean).length, 1);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "legacy-retained")), true);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "legacy-expired")), true);
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      await runtime.executeRaw("UPDATE agent_traffic_reports SET receivedAt = ? WHERE producerId IS NOT NULL", [nowSeconds - 30 * 24 * 60 * 60]);
+      await runtime.executeRaw("UPDATE agent_traffic_reports SET receivedAt = ? WHERE reportId = 'legacy-retained'", [nowSeconds - 8 * 24 * 60 * 60]);
+      assert.equal(await runtime.withDatabaseTransaction(() => metrics.claimAgentTrafficReport(5, "legacy-retained")), false);
+      await runtime.executeRaw("UPDATE agent_traffic_reports SET receivedAt = ? WHERE reportId = 'legacy-expired'", [nowSeconds - 8 * 24 * 60 * 60]);
+      await metrics.cleanOldTrafficStats(72);
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT producerId, reportId FROM agent_traffic_reports ORDER BY producerId, reportId"),
+        [
+          { producerId: null, reportId: "legacy-retained" },
+          { producerId: "agent-producer", reportId: "producer-report-2" },
+          { producerId: "fxp-producer", reportId: "concurrent-report" },
+        ],
+      );
+
       const sqlite = runtime.requireSqlite();
       const countStatements = async (work) => {
         const originalPrepare = sqlite.prepare;
@@ -131,6 +164,56 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       resources = resourceQuery.value;
       assert.equal(resourceQuery.count, 1);
       assert.equal(resources.get(11).resourceType, "tunnel");
+
+      const trafficSince = new Date(Date.now() - 60 * 60 * 1000);
+      await runtime.executeRaw("UPDATE forward_rules SET createdAt = ? WHERE id IN (11, 12)", [Math.floor(trafficSince.getTime() / 1000)]);
+      await runtime.executeRaw("UPDATE forward_rules SET forwardGroupRuleId = NULL WHERE id = 11");
+      await settings.setSetting("trafficStatBucketsBackfilled", "v3");
+      await runtime.executeRaw("DELETE FROM traffic_stat_buckets WHERE ruleId = 12");
+      await runtime.executeRaw("UPDATE traffic_stat_buckets SET bytesIn = 1, bytesOut = 2, connections = 1 WHERE ruleId = 11");
+      const partialBucketSummary = await metrics.getTrafficSummaryByRule({
+        userId: 7,
+        ruleIds: [11, 12],
+        since: trafficSince,
+        includeLatency: false,
+      });
+      const summaryByRule = new Map(partialBucketSummary.map((row) => [Number(row.ruleId), row]));
+      assert.deepEqual(
+        {
+          bytesIn: summaryByRule.get(11)?.bytesIn,
+          bytesOut: summaryByRule.get(11)?.bytesOut,
+          connections: summaryByRule.get(11)?.connections,
+        },
+        { bytesIn: 145, bytesOut: 106, connections: 24 },
+      );
+      assert.deepEqual(
+        {
+          bytesIn: summaryByRule.get(12)?.bytesIn,
+          bytesOut: summaryByRule.get(12)?.bytesOut,
+          connections: summaryByRule.get(12)?.connections,
+        },
+        { bytesIn: 7, bytesOut: 8, connections: 1 },
+      );
+
+      await runtime.executeRaw("DELETE FROM traffic_stat_buckets");
+      const emptyBucketRuleSeries = await metrics.getTrafficSeriesByRule(12, { bucketMinutes: 30, since: trafficSince });
+      assert.deepEqual(
+        emptyBucketRuleSeries.map((row) => ({ bytesIn: row.bytesIn, bytesOut: row.bytesOut, connections: row.connections })),
+        [{ bytesIn: 7, bytesOut: 8, connections: 1 }],
+      );
+      const emptyBucketGlobalSeries = await metrics.getGlobalTrafficSeries({ bucketMinutes: 30, since: trafficSince, userId: 7 });
+      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 152);
+      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 114);
+
+      await runtime.executeRaw("DROP TABLE traffic_stat_buckets");
+      const ruleSeries = await metrics.getTrafficSeriesByRule(12, { bucketMinutes: 30, since: trafficSince });
+      assert.deepEqual(
+        ruleSeries.map((row) => ({ bytesIn: row.bytesIn, bytesOut: row.bytesOut, connections: row.connections })),
+        [{ bytesIn: 7, bytesOut: 8, connections: 1 }],
+      );
+      const globalSeries = await metrics.getGlobalTrafficSeries({ bucketMinutes: 30, since: trafficSince, userId: 7 });
+      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 152);
+      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 114);
     } finally {
       await runtime.closeDatabase();
     }

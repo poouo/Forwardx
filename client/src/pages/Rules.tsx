@@ -5,7 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
-import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -55,6 +55,11 @@ import {
   type RuleTransferFile,
   type RuleTransferFileRule,
 } from "@/lib/ruleTransfer";
+import {
+  filterRuleEntryAddressesForDisplay,
+  getEntryAddressFamily as addressFamily,
+  type EntryAddressFamily,
+} from "@/lib/ruleEntryDisplay";
 import { cn } from "@/lib/utils";
 import {
   Plus,
@@ -975,38 +980,14 @@ function isForwardGroupMainBackupTunnelSupported(group: any | null | undefined, 
 }
 
 
-type AddressFamily = "ipv4" | "ipv6" | "hostname" | "unknown";
 type LiteralAddressFamily = "ipv4" | "ipv6";
-
-function cleanAddressLiteral(value: unknown) {
-  let text = String(value || "").trim();
-  if (!text) return "";
-  text = text.replace(/^tcp:\/\//i, "").trim();
-  if (text.startsWith("[") && text.includes("]")) return text.slice(1, text.indexOf("]")).trim();
-  return text;
-}
-
-function isIpv4Literal(value: string) {
-  const parts = value.split(".");
-  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-}
-
-function addressFamily(value: unknown): AddressFamily {
-  const text = cleanAddressLiteral(value);
-  if (!text) return "unknown";
-  if (isIpv4Literal(text)) return "ipv4";
-  const withoutZone = text.replace(/%.+$/, "");
-  if (withoutZone.includes(":") && /^[0-9a-f:.]+$/i.test(withoutZone)) return "ipv6";
-  if (/^[a-z0-9.-]+$/i.test(text)) return "hostname";
-  return "unknown";
-}
 
 function isKernelForwardType(type: unknown) {
   const text = String(type || "").trim().toLowerCase();
   return text === "iptables" || text === "nftables";
 }
 
-function familyLabel(family: AddressFamily) {
+function familyLabel(family: EntryAddressFamily) {
   if (family === "ipv4") return "IPv4";
   if (family === "ipv6") return "IPv6";
   if (family === "hostname") return "域名";
@@ -1071,7 +1052,7 @@ function lookupHostForWarning(hosts: any[] | undefined, hostById: Map<number, an
   return hostById?.get(hostId) || (hosts || []).find((host: any) => Number(host.id) === hostId) || null;
 }
 
-function kernelFamilyWarning(toolLabel: string, fromLabel: string, sourceFamilies: Set<LiteralAddressFamily>, targetLabel: string, targetFamily: AddressFamily) {
+function kernelFamilyWarning(toolLabel: string, fromLabel: string, sourceFamilies: Set<LiteralAddressFamily>, targetLabel: string, targetFamily: EntryAddressFamily) {
   if (targetFamily !== "ipv4" && targetFamily !== "ipv6") return null;
   const families = Array.from(sourceFamilies);
   if (families.length === 0) return null;
@@ -2450,13 +2431,8 @@ function RulesContent() {
 
   const reorderRulesMutation = trpc.rules.reorder.useMutation({
     onError: (err) => toast.error(err.message || "排序保存失败"),
-    onSettled: () => {
-      utils.rules.list.invalidate();
-      utils.rules.listPage.invalidate();
-      utils.rules.mapItems.invalidate();
-      utils.rules.listSummary.invalidate();
-    },
   });
+  const ruleReorderPending = reorderRulesMutation.isPending;
 
   const batchCreateMutation = trpc.rules.create.useMutation();
   const batchUpdateMutation = trpc.rules.update.useMutation();
@@ -4005,6 +3981,7 @@ function RulesContent() {
   ], [ruleCategoryCounts, ruleCategoryCountsReady]);
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
+      .sort((a, b) => a - b)
   ), [filteredRules]);
   const selfTestRuleDetail = useMemo(() => {
     if (!selfTestRule) return null;
@@ -4223,6 +4200,11 @@ function RulesContent() {
   const sortedFilteredRules = useMemo(() => {
     return [...filteredRules].sort(compareRulesBySavedOrder);
   }, [compareRulesBySavedOrder, filteredRules]);
+  const ruleOrder = useOptimisticSortableOrder({
+    items: sortedFilteredRules,
+    getId: (rule: any) => Number(rule.id),
+  });
+  const orderedFilteredRules = ruleOrder.items;
   const trafficTotalsCacheScope = useMemo(
     () => [
       ruleFilterCacheScope,
@@ -4255,36 +4237,41 @@ function RulesContent() {
   const filteredRuleTotal = needsFullRuleList
     ? filteredRules.length
     : Math.max(0, Number(rulePageMeta.totalItems) || 0);
-  const rulePagination = useServerPagination(needsFullRuleList || isRuleGlobeView ? [] : sortedFilteredRules, filteredRuleTotal, rulePageRequest, {
+  const rulePagination = useServerPagination(needsFullRuleList || isRuleGlobeView ? [] : orderedFilteredRules, filteredRuleTotal, rulePageRequest, {
     pageSize: rulePageSize,
     isReady: !isLoading && !!rulePageQuery.data,
   });
   const pagedRules = rulePagination.items;
-  const ruleSortingEnabled = ruleCategory !== "all" && effectiveViewMode !== "globe";
+  const ruleSortingEnabled = ruleCategory !== "all"
+    && effectiveViewMode !== "globe"
+    && !needsFullRuleList
+    && filterHost === "all"
+    && ruleSearchQuery.trim().length === 0
+    && (user?.role !== "admin" || filterUser !== "all");
+  const ruleSortingReady = ruleSortingEnabled && !rulePageQuery.isPlaceholderData;
   const ruleSortableItems = useMemo(() => {
-    if (ruleCategory === "all") return [];
-    const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
-    const categoryFilters: RuleFilterState = {
-      ...ruleFilters,
-      filterHost: "all",
-      searchQuery: "",
-      ruleCategory,
-    };
-    return sourceRules
-      .filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId)
-      .filter((rule: any) => isForwardRuleVisibleByFilters(rule, categoryFilters))
-      .sort(compareRulesBySavedOrder);
-  }, [baseScopedRules, compareRulesBySavedOrder, ruleCategory, ruleFilters, selectedScopedRules, selectedScopeQueryEnabled]);
+    if (!ruleSortingEnabled) return [];
+    return pagedRules.filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId);
+  }, [pagedRules, ruleSortingEnabled]);
   const ruleSortable = useSortableReorder({
     items: ruleSortableItems,
     getId: (rule: any) => Number(rule.id),
-    disabled: !ruleSortingEnabled || ruleSortableItems.length < 2,
+    disabled: !ruleSortingReady || ruleReorderPending || ruleSortableItems.length < 2,
     onReorder: (nextRules) => {
       if (ruleCategory === "all") return;
+      const requestId = ruleOrder.begin(nextRules);
       reorderRulesMutation.mutate({
         category: ruleCategory,
         ids: nextRules.map((rule: any) => Number(rule.id)),
         startIndex: (rulePagination.currentPage - 1) * rulePagination.pageSize,
+      }, {
+        onError: () => ruleOrder.release(requestId),
+        onSettled: () => ruleOrder.resync(requestId, () => Promise.all([
+          utils.rules.list.invalidate(),
+          utils.rules.listPage.invalidate(),
+          utils.rules.mapItems.invalidate(),
+          utils.rules.listSummary.invalidate(),
+        ])),
       });
     },
   });
@@ -5596,7 +5583,7 @@ function RulesContent() {
       : (getRuleEntries(rule).length > 0
         ? getRuleEntries(rule)
         : [{ label: "入口", value: "" }]);
-    const resolvedEntryAddresses = entryItems
+    const resolvedEntryAddresses = filterRuleEntryAddressesForDisplay(entryItems)
       .filter((entry) => String(entry.value || "").trim())
       .map((entry) => ({
         ...entry,
@@ -6170,6 +6157,7 @@ function RulesContent() {
             <SortableDragHandle
               dragHandleProps={sortable.handleProps}
               visible={sortable.isDragging}
+              busy={ruleReorderPending}
               className="mx-auto"
             />
           </TableCell>
@@ -6257,6 +6245,7 @@ function RulesContent() {
                   <SortableDragHandle
                     dragHandleProps={sortable.handleProps}
                     visible={sortable.isDragging}
+                    busy={ruleReorderPending}
                     className="bg-card/70"
                   />
                 )}
@@ -6350,6 +6339,7 @@ function RulesContent() {
                 <SortableDragHandle
                   dragHandleProps={sortable.handleProps}
                   visible={sortable.isDragging}
+                  busy={ruleReorderPending}
                   className="bg-card/70"
                 />
               )}
@@ -6747,7 +6737,7 @@ function RulesContent() {
                   <div className={sortableRuleCardGridClass}>
                     {pagedRules.map((rule: any) => (
                       <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled}>
-                        {(sortable) => renderRuleCard(rule, sortable)}
+                        {(sortable) => renderRuleCard(rule, ruleSortingEnabled ? sortable : undefined)}
                       </SortableItem>
                     ))}
                   </div>
@@ -6776,7 +6766,7 @@ function RulesContent() {
                     <div className={sortableRuleMobileGridClass}>
                       {pagedRules.map((rule: any) => (
                         <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled}>
-                          {(sortable) => renderRuleCard(rule, sortable)}
+                          {(sortable) => renderRuleCard(rule, ruleSortingEnabled ? sortable : undefined)}
                         </SortableItem>
                       ))}
                     </div>
@@ -6842,7 +6832,7 @@ function RulesContent() {
                           <TableBody>
                             {pagedRules.map((rule: any) => (
                               <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled} itemKind="row">
-                                {(sortable) => renderRuleTableRow(rule, sortable)}
+                                {(sortable) => renderRuleTableRow(rule, ruleSortingEnabled ? sortable : undefined)}
                               </SortableItem>
                             ))}
                           </TableBody>
@@ -8205,16 +8195,17 @@ function SelfTestDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const utils = trpc.useUtils();
+  const [optimisticTesting, setOptimisticTesting] = useState(false);
+  const [activeTestId, setActiveTestId] = useState<number | null>(null);
+  const manualTestRef = useRef(false);
   const { data: latest } = trpc.rules.latestTest.useQuery(
-    { ruleId },
+    { ruleId, includeActive: optimisticTesting },
     {
       enabled: open,
       refetchInterval: pollingInterval("interactive", open),
       refetchOnWindowFocus: false,
     }
   );
-  const [optimisticTesting, setOptimisticTesting] = useState(false);
-  const [activeTestId, setActiveTestId] = useState<number | null>(null);
   const startMutation = trpc.rules.startSelfTest.useMutation({
     onSuccess: (data) => {
       const nextTestId = Number(data?.id) || 0;
@@ -8223,12 +8214,14 @@ function SelfTestDialog({
       } else {
         setOptimisticTesting(false);
         setActiveTestId(null);
+        manualTestRef.current = false;
       }
       utils.rules.latestTest.invalidate({ ruleId });
     },
     onError: (e) => {
       setOptimisticTesting(false);
       setActiveTestId(null);
+      manualTestRef.current = false;
       toast.error(e?.message || "下发失败");
     },
   });
@@ -8241,6 +8234,7 @@ function SelfTestDialog({
     if (!open) {
       setOptimisticTesting(false);
       setActiveTestId(null);
+      manualTestRef.current = false;
     }
   }, [open]);
   useEffect(() => {
@@ -8252,8 +8246,9 @@ function SelfTestDialog({
       ]);
       setOptimisticTesting(false);
       setActiveTestId(null);
+      if (status === "success") manualTestRef.current = false;
     }
-  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting, ruleId, utils]);
+  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting, ruleId, status, utils]);
   useEffect(() => {
     if (!startMutation.isError) return;
     setOptimisticTesting(false);
@@ -8273,14 +8268,15 @@ function SelfTestDialog({
       return;
     }
     const message = parsedMessage.message.trim();
-    if (!isTesting && latest && !isSuccess && (message || isTimeout)) {
+    if (!isTesting && manualTestRef.current && latest && !isSuccess && isTerminalStatus) {
       const key = `${ruleId}:${status}:${latest?.updatedAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;
+        manualTestRef.current = false;
         toast.error(isTimeout ? "转发链路自测超时" : "转发链路自测失败", { duration: 5000 });
       }
     }
-  }, [open, isTesting, isSuccess, isTimeout, latest, latest?.updatedAt, parsedMessage.message, ruleId, status]);
+  }, [open, isTesting, isSuccess, isTerminalStatus, isTimeout, latest, latest?.updatedAt, parsedMessage.message, ruleId, status]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={`${probeDialogSizeClass} min-w-0`}>
@@ -8312,6 +8308,7 @@ function SelfTestDialog({
             className="w-full min-w-0 gap-2 sm:w-auto sm:min-w-[112px]"
             disabled={isTesting}
             onClick={() => {
+              manualTestRef.current = true;
               setOptimisticTesting(true);
               setActiveTestId(null);
               startMutation.mutate({ ruleId });

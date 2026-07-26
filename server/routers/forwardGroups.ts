@@ -212,11 +212,11 @@ export const forwardGroupsRouter = router({
     }),
 
   latestTest: protectedProcedure
-    .input(z.object({ groupId: z.number() }))
+    .input(z.object({ groupId: z.number(), includeActive: z.boolean().optional().default(true) }))
     .query(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user, { allowNull: true, silentUnauthorized: true });
       if (!group) return null;
-      return await db.getLatestForwardGroupTest(input.groupId) || null;
+      return await db.getLatestForwardGroupTest(input.groupId, { includeActive: input.includeActive }) || null;
     }),
 
   test: protectedProcedure

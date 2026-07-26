@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -12,12 +14,34 @@ func TestMimicConnectionStateParsing(t *testing.T) {
 		"state Idle":              "idle",
 		"no active connection":    "waiting",
 		"Connecting to peer":      "connecting",
+		"State: SYN sent":         "connecting",
+		"State: SYN received":     "connecting",
 		"hooks ready":             "unknown",
 	}
 	for input, expected := range cases {
 		if actual := mimicConnectionState(input); actual != expected {
 			t.Fatalf("input=%q state=%q want=%q", input, actual, expected)
 		}
+	}
+}
+
+func TestCompactShellFailureOutputKeepsFailureTail(t *testing.T) {
+	output := []byte(strings.Repeat("service startup output ", 100) + "XDP hook attach failed")
+	got := compactShellFailureOutput(output, errors.New("exit status 1"), false)
+	if len([]rune(got)) > 240 {
+		t.Fatalf("failure output is too long: %d", len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "XDP hook attach failed") {
+		t.Fatalf("failure tail was lost: %q", got)
+	}
+}
+
+func TestCompactShellFailureOutputFallsBackToExecutionError(t *testing.T) {
+	if got := compactShellFailureOutput(nil, errors.New("exit status 1"), false); got != "exit status 1" {
+		t.Fatalf("unexpected execution fallback: %q", got)
+	}
+	if got := compactShellFailureOutput(nil, context.DeadlineExceeded, true); got != "command timed out" {
+		t.Fatalf("unexpected timeout fallback: %q", got)
 	}
 }
 

@@ -59,12 +59,30 @@ import {
   nextForwardGroupHealthRecheckAt,
 } from "../forwardGroupHealthRecheck";
 import { notifyForwardGroupSwitch } from "../forwardGroupSwitchNotifier";
-import { withKeyedTaskLock } from "../keyedTaskLock";
+import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { reserveAvailableHostPort, type HostPortReservation } from "../portReservations";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+
+async function settleAndMarkForwardGroupRulePendingDelete(
+  rule: any,
+  resource?: { resourceType: any; resourceId: number } | null,
+) {
+  return withKeyedTaskLock(trafficBillingUserLockKey(rule?.userId), async () => {
+    const billed = resource
+      ? await settleTrafficBillingRuleOnDelete({
+        userId: Number(rule?.userId || 0),
+        ruleId: Number(rule?.id || 0),
+        resourceType: resource.resourceType,
+        resourceId: Number(resource.resourceId || 0),
+      })
+      : null;
+    await markForwardRulePendingDelete(Number(rule?.id || 0));
+    return billed;
+  });
+}
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -1112,7 +1130,7 @@ async function withForwardChainTargetLabel(test: any, template: any) {
   return { ...test, message: String(test.message).replaceAll(oldTarget, targetLabel) };
 }
 
-export async function getLatestForwardGroupTest(groupId: number) {
+export async function getLatestForwardGroupTest(groupId: number, options: { includeActive?: boolean } = {}) {
   const templates = await getForwardGroupTemplateRules(groupId);
   const templateIds = (templates as any[]).map((rule: any) => Number(rule.id)).filter((id: number) => id > 0);
   const table = quoteIdentifier("forward_tests");
@@ -1120,20 +1138,24 @@ export async function getLatestForwardGroupTest(groupId: number) {
   const updatedCol = quoteIdentifier("updatedAt");
   const createdCol = quoteIdentifier("createdAt");
   const messageCol = quoteIdentifier("message");
-  const groupNeedle = `"groupId":${Number(groupId)}`;
+  const normalizedGroupId = Number(groupId);
+  const groupNeedleWithTrailingField = `%"groupId":${normalizedGroupId},%`;
+  const groupNeedleAtObjectEnd = `%"groupId":${normalizedGroupId}}%`;
   const ruleFilter = templateIds.length > 0
     ? `${ruleCol} IN ${inList(templateIds).sql} OR `
     : "";
-  const filterSql = `(${ruleFilter}${messageCol} LIKE ?)`;
-  const filterArgs: any[] = [...templateIds, `%${groupNeedle}%`];
-  const pendingRows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
-    filterArgs,
-  );
+  const filterSql = `(${ruleFilter}${messageCol} LIKE ? OR ${messageCol} LIKE ?)`;
+  const filterArgs: any[] = [...templateIds, groupNeedleWithTrailingField, groupNeedleAtObjectEnd];
   const template = (templates as any[])[0] || null;
-  if (pendingRows[0]) return withForwardChainTargetLabel(pendingRows[0], template);
+  if (options.includeActive !== false) {
+    const pendingRows = await queryRaw<any>(
+      `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+      filterArgs,
+    );
+    if (pendingRows[0]) return withForwardChainTargetLabel(pendingRows[0], template);
+  }
   const rows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${filterSql} ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('success', 'failed', 'timeout') ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
     filterArgs,
   );
   return withForwardChainTargetLabel(rows[0], template);
@@ -2658,20 +2680,14 @@ async function removeManagedRule(ruleId: number) {
   const fallback = trafficBillingResourceCandidatesForRule(rule)[0];
   const resource = billingResource || fallback;
   if (!resource) {
-    await markForwardRulePendingDelete(ruleId);
+    await settleAndMarkForwardGroupRulePendingDelete(rule);
     await refreshRuleEndpoints(rule, "forward-group-child-deleted");
     return;
   }
-  const billed = await settleTrafficBillingRuleOnDelete({
-    userId: Number((rule as any).userId),
-    ruleId: Number((rule as any).id),
-    resourceType: resource.resourceType,
-    resourceId: resource.resourceId,
-  });
+  const billed = await settleAndMarkForwardGroupRulePendingDelete(rule, resource);
   if (billed && Number(billed.balanceAfterCents) < 0) {
     await setUserForwardAccess(Number((rule as any).userId), false, "traffic_billing_balance");
   }
-  await markForwardRulePendingDelete(ruleId);
   await refreshRuleEndpoints(rule, "forward-group-child-deleted");
 }
 
@@ -3026,18 +3042,10 @@ export async function deleteForwardGroup(id: number) {
     const billingResource = await findTrafficBillingResourceForRule(template);
     const fallback = trafficBillingResourceCandidatesForRule(template)[0];
     const resource = billingResource || fallback;
-    if (resource) {
-      const billed = await settleTrafficBillingRuleOnDelete({
-        userId: Number((template as any).userId),
-        ruleId: Number((template as any).id),
-        resourceType: resource.resourceType,
-        resourceId: resource.resourceId,
-      });
-      if (billed && Number(billed.balanceAfterCents) < 0) {
-        await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");
-      }
+    const billed = await settleAndMarkForwardGroupRulePendingDelete(template, resource);
+    if (billed && Number(billed.balanceAfterCents) < 0) {
+      await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");
     }
-    await markForwardRulePendingDelete(Number(template.id));
   }
   const members = await db.select().from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, id));
   for (const member of members as any[]) {

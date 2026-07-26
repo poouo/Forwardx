@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
-import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
@@ -1494,6 +1494,8 @@ function TunnelSelfTestDialog({
   const [optimisticTesting, setOptimisticTesting] = useState(false);
   const [startedLastTestAt, setStartedLastTestAt] = useState<string | null>(null);
   const [sawServerTesting, setSawServerTesting] = useState(false);
+  const manualTestRef = useRef(false);
+  const manualTestBaselineAtRef = useRef("");
   const testMutation = trpc.tunnels.test.useMutation({
     onSuccess: async () => {
       await utils.tunnels.list.invalidate();
@@ -1505,6 +1507,8 @@ function TunnelSelfTestDialog({
       setOptimisticTesting(false);
       setStartedLastTestAt(null);
       setSawServerTesting(false);
+      manualTestRef.current = false;
+      manualTestBaselineAtRef.current = "";
       toast.error(e.message || "测试失败");
     },
   });
@@ -1512,14 +1516,19 @@ function TunnelSelfTestDialog({
   const status = tunnel?.lastTestStatus as string | undefined;
   const lastTestAt = tunnel?.lastTestAt ? String(tunnel.lastTestAt) : "";
   const isServerTesting = status === "pending" || status === "running";
-  const isTesting = testMutation.isPending || optimisticTesting || isServerTesting;
+  const isTesting = testMutation.isPending || optimisticTesting || (manualTestRef.current && isServerTesting);
   const isSuccess = status === "success";
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
+  const displayingPreviousResult = isServerTesting && !manualTestRef.current;
+  const displaySuccess = displayingPreviousResult
+    ? typeof latencyMs === "number" && Number.isFinite(latencyMs)
+    : isSuccess;
   const lastFailureToastKey = useRef("");
-  const manualTestRef = useRef(false);
-  const manualTestBaselineAtRef = useRef("");
-  const parsedMessage = useMemo(() => parseLinkTestMessage(tunnel?.lastTestMessage), [tunnel?.lastTestMessage]);
+  const parsedMessage = useMemo(
+    () => parseLinkTestMessage(displayingPreviousResult ? null : tunnel?.lastTestMessage),
+    [displayingPreviousResult, tunnel?.lastTestMessage],
+  );
   const hasPendingDetails = hasPendingLinkTestDetails(parsedMessage);
   const displayTesting = isTesting || hasPendingDetails;
   const linkTestNodeData = useMemo(() => {
@@ -1831,7 +1840,7 @@ function TunnelSelfTestDialog({
   }, [open]);
 
   useEffect(() => {
-    if (isServerTesting) setSawServerTesting(true);
+    if (isServerTesting && manualTestRef.current) setSawServerTesting(true);
   }, [isServerTesting]);
 
   useEffect(() => {
@@ -1888,7 +1897,7 @@ function TunnelSelfTestDialog({
         <LinkTestProbeView
           parsed={parsedMessage}
           fallbackLatencyMs={latencyMs}
-          isSuccess={isSuccess}
+          isSuccess={displaySuccess}
           isTesting={displayTesting}
           sourceLabel={linkTestNodeData.sourceLabel}
           targetLabel={linkTestNodeData.targetLabel}
@@ -2471,6 +2480,11 @@ function TunnelsContent() {
       exitGroupById,
     ));
   }, [entryGroupById, exitGroupById, hosts, nginxTunnelEnabled, normalizedLinkSearchQuery, rawTunnelItems]);
+  const tunnelOrder = useOptimisticSortableOrder({
+    items: tunnelItems,
+    getId: (tunnel: any) => Number(tunnel.id),
+  });
+  const orderedTunnelItems = tunnelOrder.items;
   const filteredPortGroups = useMemo(() => {
     if (!normalizedLinkSearchQuery) return portGroups;
     return portGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
@@ -2492,7 +2506,7 @@ function TunnelsContent() {
     return exitGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
   }, [entryGroupById, exitGroups, hosts, normalizedLinkSearchQuery, tunnels]);
   const tunnelPagination = useServerPagination(
-    needsFullTunnelList || isTunnelGlobeView ? [] : tunnelItems,
+    needsFullTunnelList || isTunnelGlobeView ? [] : orderedTunnelItems,
     Number(tunnelPageQuery.data?.totalItems || 0),
     tunnelPageRequest,
     {
@@ -2802,21 +2816,28 @@ function TunnelsContent() {
 
   const reorderTunnelsMutation = trpc.tunnels.reorder.useMutation({
     onError: (e) => toast.error(e.message || "排序保存失败"),
-    onSettled: () => {
-      utils.tunnels.list.invalidate();
-      utils.tunnels.options.invalidate();
-      utils.tunnels.listPage.invalidate();
-      utils.tunnels.mapItems.invalidate();
-    },
   });
+  const tunnelReorderPending = reorderTunnelsMutation.isPending;
   const tunnelSortable = useSortableReorder({
-    items: tunnelItems,
+    items: pagedTunnels,
     getId: (tunnel: any) => Number(tunnel.id),
-    disabled: tunnelItems.length < 2,
+    disabled: tunnelPageQuery.isPlaceholderData
+      || isLinkSearchFiltered
+      || tunnelReorderPending
+      || pagedTunnels.length < 2,
     onReorder: (nextTunnels) => {
+      const requestId = tunnelOrder.begin(nextTunnels);
       reorderTunnelsMutation.mutate({
         ids: nextTunnels.map((tunnel: any) => Number(tunnel.id)),
         startIndex: (tunnelPagination.currentPage - 1) * tunnelPagination.pageSize,
+      }, {
+        onError: () => tunnelOrder.release(requestId),
+        onSettled: () => tunnelOrder.resync(requestId, () => Promise.all([
+          utils.tunnels.list.invalidate(),
+          utils.tunnels.options.invalidate(),
+          utils.tunnels.listPage.invalidate(),
+          utils.tunnels.mapItems.invalidate(),
+        ])),
       });
     },
   });
@@ -3803,6 +3824,7 @@ function TunnelsContent() {
                         <SortableDragHandle
                           dragHandleProps={handleProps}
                           visible={isDragging}
+                          busy={tunnelReorderPending}
                           className="bg-card/70"
                         />
                         {supported ? (
@@ -3898,6 +3920,7 @@ function TunnelsContent() {
                         <SortableDragHandle
                           dragHandleProps={handleProps}
                           visible={isDragging}
+                          busy={tunnelReorderPending}
                           className="bg-card/70"
                         />
                         {supported ? (
@@ -3992,6 +4015,7 @@ function TunnelsContent() {
                         <SortableDragHandle
                           dragHandleProps={handleProps}
                           visible={isDragging}
+                          busy={tunnelReorderPending}
                           className="mx-auto"
                         />
                       </TableCell>

@@ -25,7 +25,7 @@ import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
 import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
-import { withKeyedTaskLock } from "./keyedTaskLock";
+import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
 import { isRuleLatencyReportMethodCompatible } from "../shared/latencyProbe";
 import { completeSupportBundleHost } from "./supportBundle";
@@ -72,9 +72,40 @@ function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
 
-function trafficAccountingHostId(rule: any, tunnel: any | null) {
-  if (!tunnel) return Number(rule.hostId);
-  return isForwardXTunnel(tunnel) ? Number(tunnel.entryHostId) : Number(tunnel.exitHostId);
+function tunnelUsesExtraExitHosts(tunnel: any) {
+  return !!tunnel?.loadBalanceEnabled
+    && String(tunnel?.loadBalanceStrategy || "").trim().toLowerCase() !== "none";
+}
+
+async function withTrafficAccountingUserLocks<T>(userIds: number[], task: () => Promise<T>): Promise<T> {
+  const keys = Array.from(new Set(userIds
+    .map((id) => Math.floor(Number(id) || 0))
+    .filter((id) => id > 0)))
+    .sort((left, right) => left - right)
+    .map(trafficBillingUserLockKey);
+  const run = (index: number): Promise<T> => index >= keys.length
+    ? task()
+    : withKeyedTaskLock(keys[index], () => run(index + 1));
+  return run(0);
+}
+
+export function trafficAccountingHostIds(
+  rule: any,
+  tunnel: any | null,
+  entryHostIds: Set<number> | undefined,
+  extraExitHostIds: Set<number> | undefined,
+) {
+  if (!tunnel) return new Set([Number(rule.hostId || 0)]);
+  if (isForwardXTunnel(tunnel)) {
+    return entryHostIds && entryHostIds.size > 0
+      ? new Set(entryHostIds)
+      : new Set([Number(tunnel.entryHostId || 0)]);
+  }
+  const ids = new Set<number>([Number(tunnel.exitHostId || 0)]);
+  if (tunnelUsesExtraExitHosts(tunnel)) {
+    for (const hostId of extraExitHostIds || []) ids.add(Number(hostId));
+  }
+  return ids;
 }
 
 function shouldAccountForwardRuleTraffic(rule: any, group: any | null) {
@@ -449,6 +480,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
   let logHostName = "";
   let reportedStatCount = 0;
   let strictTrafficAccounting = false;
+  let trafficReportId = "";
+  let trafficReportProducerId = "";
+  let duplicateTrafficReport = false;
   try {
     const host = await getAgentHostIdentityFromRequest(req);
     if (!host) {
@@ -457,6 +491,12 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     }
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
+    trafficReportId = typeof req.body?.reportId === "string"
+      ? req.body.reportId.trim().slice(0, 128)
+      : "";
+    trafficReportProducerId = typeof req.body?.reportProducerId === "string"
+      ? req.body.reportProducerId.trim().slice(0, 128)
+      : "";
 
     const objectStats = Array.isArray(req.body?.stats)
       ? req.body.stats.filter(isAgentTrafficStat)
@@ -471,16 +511,25 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       res.status(400).json({ error: "stats array or hostTraffic is required" });
       return;
     }
-
     // An idle Agent may only report the host-wide network counters. Avoid
     // opening the full traffic transaction and querying billing/rule/tunnel
     // context when there are no rule deltas to account.
     if (stats.length === 0) {
-      if (hostTraffic) {
-        await db.recordHostTrafficSample(host.id, {
-          bytesIn: Number(hostTraffic.bytesIn) || 0,
-          bytesOut: Number(hostTraffic.bytesOut) || 0,
-        });
+      await db.withDatabaseTransaction(async () => {
+        if (trafficReportId && !await db.claimAgentTrafficReport(host.id, trafficReportId, trafficReportProducerId)) {
+          duplicateTrafficReport = true;
+          return;
+        }
+        if (hostTraffic) {
+          await db.recordHostTrafficSample(host.id, {
+            bytesIn: Number(hostTraffic.bytesIn) || 0,
+            bytesOut: Number(hostTraffic.bytesOut) || 0,
+          });
+        }
+      });
+      if (duplicateTrafficReport) {
+        res.json({ success: true, duplicate: true });
+        return;
       }
       const durationMs = Date.now() - requestStartedAt;
       if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {
@@ -492,7 +541,17 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
-    await db.withDatabaseTransaction(async () => {
+    const preliminaryTrafficContexts = await db.getForwardRuleTrafficContextsByIds(
+      stats.map((stat) => Number(stat.ruleId)),
+    );
+    const accountingUserIds = (preliminaryTrafficContexts as any[])
+      .map((context) => Number(context?.rule?.userId || 0))
+      .filter((userId) => userId > 0);
+    await withTrafficAccountingUserLocks(accountingUserIds, () => db.withDatabaseTransaction(async () => {
+    if (trafficReportId && !await db.claimAgentTrafficReport(host.id, trafficReportId, trafficReportProducerId)) {
+      duplicateTrafficReport = true;
+      return;
+    }
     if (hostTraffic) {
       await db.recordHostTrafficSample(host.id, {
         bytesIn: Number(hostTraffic.bytesIn) || 0,
@@ -511,6 +570,31 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     const trafficBillingEnabled = await db.isTrafficBillingEnabled();
     const trafficContexts = await db.getForwardRuleTrafficContextsByIds(stats.map((stat) => Number(stat.ruleId)));
     const contextsByRuleId = new Map((trafficContexts as any[]).map((context) => [Number(context.rule.id), context]));
+    const tunnelContextsById = new Map<number, any>();
+    for (const context of trafficContexts as any[]) {
+      const tunnelId = Number(context?.tunnel?.id || 0);
+      if (tunnelId > 0 && !tunnelContextsById.has(tunnelId)) {
+        tunnelContextsById.set(tunnelId, context.tunnel);
+      }
+    }
+    const tunnelContexts = Array.from(tunnelContextsById.values());
+    const tunnelIds = Array.from(tunnelContextsById.keys());
+    const [entryHostIdPairs, tunnelExitNodes] = await Promise.all([
+      Promise.all(tunnelContexts.map(async (tunnel) => [Number(tunnel.id), await tunnelEntryHostIds(tunnel)] as const)),
+      tunnelIds.length > 0
+        ? db.getTunnelExitNodesByTunnelIds(tunnelIds)
+        : Promise.resolve([]),
+    ]);
+    const entryHostsByTunnelId = new Map<number, Set<number>>(entryHostIdPairs);
+    const extraExitHostsByTunnelId = new Map<number, Set<number>>();
+    for (const node of tunnelExitNodes as any[]) {
+      const tunnelId = Number(node?.tunnelId || 0);
+      const hostId = Number(node?.hostId || 0);
+      if (tunnelId <= 0 || hostId <= 0 || node?.isEnabled === false) continue;
+      const hosts = extraExitHostsByTunnelId.get(tunnelId) || new Set<number>();
+      hosts.add(hostId);
+      extraExitHostsByTunnelId.set(tunnelId, hosts);
+    }
     const rulesWithBytes = new Set(stats
       .filter((stat) => (Number(stat.bytesIn) || 0) + (Number(stat.bytesOut) || 0) > 0)
       .map((stat) => Number(stat.ruleId)));
@@ -534,8 +618,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         continue;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
-      const accountingHostId = trafficAccountingHostId(rule, tunnel);
-      if (accountingHostId !== Number(host.id)) {
+      const accountingHostIds = trafficAccountingHostIds(
+        rule,
+        tunnel,
+        entryHostsByTunnelId.get(Number(tunnel?.id || tunnelId)),
+        extraExitHostsByTunnelId.get(Number(tunnel?.id || tunnelId)),
+      );
+      if (!accountingHostIds.has(Number(host.id))) {
         const ruleBytes = bytesIn + bytesOut;
         if (ruleBytes > 0 && tunnel && !isForwardXTunnel(tunnel)) {
           logTrafficReportSample(
@@ -582,29 +671,26 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     await db.markForwardRulesRunning(Array.from(runningRuleIds));
 
     for (const { rule, ruleBytes, billingResource } of billingEntries) {
-
       strictTrafficAccounting = true;
-      await withKeyedTaskLock(`traffic-billing-user:${Number(rule.userId)}`, async () => {
-        const user = await db.getUserById(Number(rule.userId));
-        if (user && Number((user as any).balanceCents || 0) <= 0) {
-          console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
-          await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-          await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
-          return;
-        }
-        const billed = await db.billTrafficUsage({
-          userId: Number(rule.userId),
-          ruleId: Number(rule.id),
-          bytes: ruleBytes,
-          resourceType: billingResource.resourceType,
-          resourceId: billingResource.resourceId,
-        });
-        if (billed && billed.balanceAfterCents < 0) {
-          console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
-          await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
-          await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
-        }
+      const user = await db.getUserById(Number(rule.userId));
+      if (user && Number((user as any).balanceCents || 0) <= 0) {
+        console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
+        await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+        await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
+        continue;
+      }
+      const billed = await db.billTrafficUsage({
+        userId: Number(rule.userId),
+        ruleId: Number(rule.id),
+        bytes: ruleBytes,
+        resourceType: billingResource.resourceType,
+        resourceId: billingResource.resourceId,
       });
+      if (billed && billed.balanceAfterCents < 0) {
+        console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
+        await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+        await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
+      }
     }
 
     // 累加用户已用流量
@@ -629,7 +715,12 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         }
       }
     });
-    });
+    }));
+
+    if (duplicateTrafficReport) {
+      res.json({ success: true, duplicate: true });
+      return;
+    }
 
     const durationMs = Date.now() - requestStartedAt;
     if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {

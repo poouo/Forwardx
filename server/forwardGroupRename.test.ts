@@ -206,3 +206,59 @@ test("forward resource renames propagate without restarting unchanged runtimes",
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("forward-group test history matches the exact group id", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-forward-group-test-"));
+  const databasePath = path.join(directory, "forward-group-test.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+
+    await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+    await schema.ensureDatabaseSchema();
+
+    const groups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+    const insertTest = async (id, groupId, status, updatedAt) => {
+      await runtime.executeRaw(
+        'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "message", "createdAt", "updatedAt") VALUES (?, 0, 1, ?, ?, ?, ?, ?)',
+        [id, groupId, status, JSON.stringify({ kind: "forward-chain-hop-summary", groupId, message: "group-" + groupId }), updatedAt, updatedAt],
+      );
+    };
+
+    try {
+      await insertTest(1, 1, "success", 100);
+      await insertTest(10, 10, "success", 200);
+      await insertTest(11, 10, "pending", 300);
+
+      const historical = await groups.getLatestForwardGroupTest(1, { includeActive: false });
+      assert.equal(Number(historical?.id), 1);
+      assert.equal(JSON.parse(String(historical?.message)).groupId, 1);
+
+      const withActive = await groups.getLatestForwardGroupTest(1);
+      assert.equal(Number(withActive?.id), 1, "group 10 active rows must not leak into group 1");
+    } finally {
+      await runtime.closeDatabase().catch(() => undefined);
+    }
+  `;
+
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: databasePath,
+        FORWARDX_LOG_DIR: path.join(directory, "logs"),
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -26,6 +26,7 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { compressImageFile, imageDataUrlSize } from "@/lib/imageUpload";
+import { downloadTextFile, type TextDownloadFile } from "@/lib/fileDownload";
 import { applyPersonalizationTheme } from "@/lib/personalizationTheme";
 import { cn } from "@/lib/utils";
 import {
@@ -514,18 +515,6 @@ function getMigrationCodeCountdown(code: { expiresAt: number } | null, now: numb
   return Math.max(0, Math.ceil((code.expiresAt - now) / 1000));
 }
 
-function downloadTextFile(filename: string, content: string, mimeType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 const settingsTabs = ["system", "telegram", "email", "personalization", "backup", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 const settingsTabItems = [
@@ -832,8 +821,12 @@ function PanelLogsSection() {
   });
   const exportLogsMutation = trpc.system.exportPanelLogs.useMutation({
     onSuccess: (data) => {
-      downloadTextFile(data.filename, data.content, data.mimeType || "text/plain;charset=utf-8");
-      toast.success(`已导出 ${data.count} 条日志`);
+      try {
+        downloadTextFile(data.filename, data.content, data.mimeType || "text/plain;charset=utf-8");
+        toast.success(`已导出 ${data.count} 条日志`);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "日志已生成，但浏览器保存文件失败");
+      }
     },
     onError: (err) => toast.error(err.message || "导出日志失败"),
   });
@@ -861,9 +854,13 @@ function PanelLogsSection() {
     const data = supportBundleQuery.data;
     if (!supportTaskId || !data?.complete || !data.download || downloadedSupportTaskRef.current === supportTaskId) return;
     downloadedSupportTaskRef.current = supportTaskId;
-    downloadTextFile(data.download.filename, data.download.content, data.download.mimeType);
-    const failed = data.hosts.filter((host) => host.status !== "complete").length;
-    toast.success(failed > 0 ? `支持包已生成，${failed} 台 Agent 未返回完整诊断` : "支持包已生成");
+    try {
+      downloadTextFile(data.download.filename, data.download.content, data.download.mimeType);
+      const failed = data.hosts.filter((host) => host.status !== "complete").length;
+      toast.success(failed > 0 ? `支持包已生成，${failed} 台 Agent 未返回完整诊断` : "支持包已生成");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "支持包已生成，但浏览器保存文件失败");
+    }
     setSupportTaskId("");
   }, [supportBundleQuery.data, supportTaskId]);
   const logLevelClass = (level: string) => {
@@ -1037,6 +1034,9 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [importFilename, setImportFilename] = useState("");
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const [exportProgress, setExportProgress] = useState<BackupTaskProgress | null>(null);
+  const [pendingBackupDownload, setPendingBackupDownload] = useState<TextDownloadFile | null>(null);
+  const [backupSaveCooldown, setBackupSaveCooldown] = useState(false);
+  const backupSaveCooldownTimerRef = useRef<number | null>(null);
   const [importProgress, setImportProgress] = useState<BackupTaskProgress | null>(null);
   const [onlineMigration, setOnlineMigration] = useState<{
     oldPanelUrl: string;
@@ -1238,33 +1238,67 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     window.setTimeout(() => setImportProgress(null), 2200);
   };
 
+  const startBackupSaveCooldown = () => {
+    setBackupSaveCooldown(true);
+    if (backupSaveCooldownTimerRef.current !== null) {
+      window.clearTimeout(backupSaveCooldownTimerRef.current);
+    }
+    backupSaveCooldownTimerRef.current = window.setTimeout(() => {
+      backupSaveCooldownTimerRef.current = null;
+      setBackupSaveCooldown(false);
+    }, 1500);
+  };
+
+  useEffect(() => () => {
+    if (backupSaveCooldownTimerRef.current !== null) {
+      window.clearTimeout(backupSaveCooldownTimerRef.current);
+    }
+  }, []);
+
   const exportBackupMutation = trpc.system.exportPanelBackup.useMutation({
     onSuccess: (data) => {
+      const backupFile: TextDownloadFile = {
+        filename: data.filename,
+        content: data.content,
+        mimeType: data.mimeType || "application/json;charset=utf-8",
+      };
       setExportProgress({
         percent: 92,
         step: "正在准备下载文件",
         detail: `备份文件 ${data.filename} 已生成，浏览器即将保存。`,
         status: "running",
       });
-      downloadTextFile(data.filename, data.content, data.mimeType || "application/json;charset=utf-8");
       setBackupPassword("");
       setBackupPasswordConfirm("");
-      finishExportProgress({
-        percent: 100,
-        step: "备份导出完成",
-        detail: "加密备份文件已交给浏览器下载。",
-        status: "success",
-      });
-      toast.success("加密备份已导出");
+      setPendingBackupDownload(backupFile);
+      startBackupSaveCooldown();
+      try {
+        downloadTextFile(backupFile.filename, backupFile.content, backupFile.mimeType);
+        finishExportProgress({
+          percent: 100,
+          step: "备份文件已生成",
+          detail: "已请求浏览器保存；若 Safari 没有开始下载，可点击“再次保存已生成备份”。",
+          status: "success",
+        });
+        toast.success("备份文件已生成");
+      } catch {
+        finishExportProgress({
+          percent: 100,
+          step: "备份已生成，浏览器保存失败",
+          detail: "无需重新导出，请点击“再次保存已生成备份”重试。",
+          status: "error",
+        });
+        toast.error("备份已生成，但浏览器未能保存文件，请点击重新保存");
+      }
     },
     onError: (err) => {
       finishExportProgress({
         percent: 100,
-        step: "备份导出失败",
-        detail: err.message || "导出备份失败",
+        step: "备份生成失败",
+        detail: err.message || "服务器生成备份失败",
         status: "error",
       });
-      toast.error(err.message || "导出备份失败");
+      toast.error(err.message || "服务器生成备份失败");
     },
   });
 
@@ -1449,6 +1483,33 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
         : current);
     }, 1600);
     exportBackupMutation.mutate({ password: backupPassword });
+  };
+
+  const handleRetryBackupDownload = () => {
+    if (!pendingBackupDownload || backupSaveCooldown) return;
+    startBackupSaveCooldown();
+    try {
+      downloadTextFile(
+        pendingBackupDownload.filename,
+        pendingBackupDownload.content,
+        pendingBackupDownload.mimeType,
+      );
+      finishExportProgress({
+        percent: 100,
+        step: "已再次请求浏览器保存",
+        detail: "若下载仍未开始，请检查当前浏览器对该站点的下载权限。",
+        status: "success",
+      });
+      toast.success("已再次请求浏览器保存加密备份");
+    } catch {
+      finishExportProgress({
+        percent: 100,
+        step: "浏览器保存失败",
+        detail: "请检查当前浏览器的下载权限后再次重试。",
+        status: "error",
+      });
+      toast.error("当前浏览器未能保存文件，请检查该站点的下载权限");
+    }
   };
 
   const handleBackupFileChange = async (file: File | undefined) => {
@@ -2052,10 +2113,18 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               <AlertDescription>备份文件不保存明文数据，忘记密码将无法解密恢复。</AlertDescription>
             </Alert>
             <BackupTaskProgressView progress={exportProgress} />
-            <Button className="gap-2" onClick={handleExportBackup} disabled={exportBackupMutation.isPending}>
-              {exportBackupMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {exportBackupMutation.isPending ? "正在导出..." : "导出加密备份"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button className="gap-2" onClick={handleExportBackup} disabled={exportBackupMutation.isPending}>
+                {exportBackupMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                {exportBackupMutation.isPending ? "正在导出..." : "导出加密备份"}
+              </Button>
+              {pendingBackupDownload && (
+                <Button variant="outline" className="gap-2" onClick={handleRetryBackupDownload} disabled={backupSaveCooldown}>
+                  {backupSaveCooldown ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {backupSaveCooldown ? "请稍候..." : "再次保存已生成备份"}
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
 

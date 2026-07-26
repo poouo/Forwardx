@@ -46,7 +46,9 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check version split
+      - name: Check release versions and tag
+        env:
+          FORWARDX_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: npm run check:versions
 
       - name: Run Agent tests and vet

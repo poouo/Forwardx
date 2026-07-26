@@ -1411,8 +1411,13 @@ function HostsContent() {
   const [hostGroupViewMode, setHostGroupViewMode] = useState<HostGroupViewMode>(() => getStoredHostGroupViewMode());
   const hostManageTabItems = user?.role === "admin" ? HOST_MANAGE_TAB_ITEMS_ADMIN : HOST_MANAGE_TAB_ITEMS_USER;
   const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
+  // Sorted, because the ids travel as a query input: keeping the visual order here
+  // would give every reorder a brand-new query key and refetch the whole summary.
   const currentPageHostIds = useMemo(
-    () => (hostPageQuery.data?.items || []).map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0),
+    () => (hostPageQuery.data?.items || [])
+      .map((host: any) => Number(host.id))
+      .filter((id: number) => Number.isInteger(id) && id > 0)
+      .sort((a: number, b: number) => a - b),
     [hostPageQuery.data?.items],
   );
   const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery({ hostIds: currentPageHostIds }, {
@@ -1429,10 +1434,24 @@ function HostsContent() {
     }
     return map;
   }, [hostStatusRows]);
-  const displayHosts = useMemo<any[]>(() => baseDisplayHosts.map((host: any) => {
-    const status = hostStatusById.get(Number(host?.id));
-    return status ? { ...host, ...status } : host;
-  }), [baseDisplayHosts, hostStatusById]);
+  // Drag-to-reorder used to wait for the server: the mutation invalidated the host
+  // page query and the list only moved once the refetch landed, so the dropped card
+  // snapped back to its old slot and the whole list visibly refreshed. Holding the
+  // dropped order until the refetched order arrives keeps the drop itself the only
+  // movement the user sees.
+  const [optimisticHostOrder, setOptimisticHostOrder] = useState<number[] | null>(null);
+  const displayHosts = useMemo<any[]>(() => {
+    const merged = baseDisplayHosts.map((host: any) => {
+      const status = hostStatusById.get(Number(host?.id));
+      return status ? { ...host, ...status } : host;
+    });
+    if (!optimisticHostOrder) return merged;
+    const rank = new Map(optimisticHostOrder.map((hostId, index) => [hostId, index]));
+    // Ignore an override that no longer describes exactly this page (paging or
+    // filtering moved on) so it can never hide or duplicate a row.
+    if (merged.length !== rank.size || merged.some((host: any) => !rank.has(Number(host.id)))) return merged;
+    return merged.sort((a: any, b: any) => Number(rank.get(Number(a.id))) - Number(rank.get(Number(b.id))));
+  }, [baseDisplayHosts, hostStatusById, optimisticHostOrder]);
   const hasDisplayHosts = displayHosts.length > 0 || Number(hostPageQuery.data?.totalItems || 0) > 0;
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const [manageFilterStats, setManageFilterStats] = useState<Record<HostManageTab, HostManageFilterStats>>({
@@ -1894,52 +1913,79 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
-  const pagedHostIdKey = useMemo(() => pagedHostIds.join(","), [pagedHostIds]);
+  // The live metric queries are keyed by their input, so handing them the visual
+  // order would rebuild the query on every reorder and blank out traffic, network
+  // and resource cells until the new request resolved.
+  const pagedMetricHostIds = useMemo(() => [...pagedHostIds].sort((a, b) => a - b), [pagedHostIds]);
+  const pagedHostIdKey = useMemo(() => pagedMetricHostIds.join(","), [pagedMetricHostIds]);
+  const hostOrderRequestRef = useRef(0);
+  const beginOptimisticHostOrder = useCallback((hostIds: number[]) => {
+    hostOrderRequestRef.current += 1;
+    setOptimisticHostOrder(hostIds);
+    return hostOrderRequestRef.current;
+  }, []);
+  const releaseOptimisticHostOrder = useCallback((requestId: number) => {
+    // A newer drop already owns the override; that one must stay on screen.
+    if (hostOrderRequestRef.current !== requestId) return;
+    setOptimisticHostOrder(null);
+  }, []);
+  const refreshHostOrderQueries = useCallback((includeHostGroups: boolean) => Promise.all([
+    utils.hosts.list.invalidate(),
+    utils.hosts.options.invalidate(),
+    utils.hosts.listPage.invalidate(),
+    utils.hosts.mapPoints.invalidate(),
+    ...(includeHostGroups ? [utils.hosts.hostGroups.invalidate()] : []),
+  ]), [utils]);
+  // Resync in the background instead of from `onSettled`: a mutation option is
+  // awaited before the pending flag clears, which would keep sorting locked for the
+  // whole refetch. The optimistic order is dropped once that refetch has landed, so
+  // the list never rewinds to the pre-drop order in between.
+  const resyncHostOrder = useCallback((requestId: number, includeHostGroups: boolean) => {
+    void refreshHostOrderQueries(includeHostGroups)
+      .catch(() => {})
+      .finally(() => releaseOptimisticHostOrder(requestId));
+  }, [refreshHostOrderQueries, releaseOptimisticHostOrder]);
   const reorderHostsMutation = trpc.hosts.reorder.useMutation({
-    onSuccess: () => {
-      utils.hosts.list.invalidate();
-      utils.hosts.options.invalidate();
-      utils.hosts.listPage.invalidate();
-      utils.hosts.mapPoints.invalidate();
-      toast.success("主机顺序已更新");
-    },
+    onSuccess: () => toast.success("主机顺序已更新"),
     onError: (err) => toast.error(err.message || "更新主机顺序失败"),
   });
   const reorderHostGroupMembersMutation = trpc.hosts.reorderHostGroupMembers.useMutation({
-    onSuccess: () => {
-      utils.hosts.hostGroups.invalidate();
-      utils.hosts.listPage.invalidate();
-      utils.hosts.list.invalidate();
-      utils.hosts.mapPoints.invalidate();
-      toast.success("分组主机顺序已更新");
-    },
+    onSuccess: () => toast.success("分组主机顺序已更新"),
     onError: (err) => toast.error(err.message || "更新分组主机顺序失败"),
   });
+  const hostReorderPending = reorderHostsMutation.isPending || reorderHostGroupMembersMutation.isPending;
   const hostSortGroupId = selectedHostGroupId === "all" ? null : Number(selectedHostGroupId);
   const hostSortMode: "hosts" | "group" | null = selectedHostGroupId !== "all" && selectedHostGroup
     ? "group"
     : selectedHostGroupId === "all" && enabledHostGroups.length === 0 && !(user?.role === "admin" && isHostGroupsLoading)
       ? "hosts"
       : null;
+  // Deliberately independent of the in-flight mutation: gating this on `isPending`
+  // swapped the sortable grid for the animated one for the length of the request,
+  // which remounted every card and read as a full page refresh after each drop.
   const hostSortingEnabled = !!hostSortMode
     && !isHostTextFiltered
     && viewMode !== "map"
     && viewMode !== "flat-map"
-    && !reorderHostsMutation.isPending
-    && !reorderHostGroupMembersMutation.isPending
     && filteredDisplayHosts.length > 1;
   const hostSortable = useSortableReorder({
     items: filteredDisplayHosts,
     getId: (host: any) => Number(host.id),
-    disabled: !hostSortingEnabled,
+    // One reorder at a time, otherwise two overlapping writes can land out of order.
+    disabled: !hostSortingEnabled || hostPageQuery.isPlaceholderData || hostReorderPending,
     onReorder: (nextHosts) => {
+      const groupSortId = hostSortMode === "group" ? hostSortGroupId : null;
+      if (!groupSortId && hostSortMode !== "hosts") return;
       const hostIds = nextHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0);
       const startIndex = (hostPagination.currentPage - 1) * hostPagination.pageSize;
-      if (hostSortMode === "group" && hostSortGroupId) {
-        reorderHostGroupMembersMutation.mutate({ groupId: hostSortGroupId, hostIds, startIndex });
+      const requestId = beginOptimisticHostOrder(hostIds);
+      const onError = () => releaseOptimisticHostOrder(requestId);
+      const onSettled = () => resyncHostOrder(requestId, !!groupSortId);
+      if (groupSortId) {
+        reorderHostGroupMembersMutation.mutate({ groupId: groupSortId, hostIds, startIndex }, { onError, onSettled });
         return;
       }
-      if (hostSortMode === "hosts") reorderHostsMutation.mutate({ ids: hostIds, startIndex });
+      reorderHostsMutation.mutate({ ids: hostIds, startIndex }, { onError, onSettled });
     },
   });
   const hostCardListMotionKey = useMemo(
@@ -1953,8 +1999,8 @@ function HostsContent() {
     [hostCardModeTransitionKey, hostPagination.currentPage, normalizedHostSearchQuery, selectedHostGroupId, viewMode],
   );
   useEffect(() => {
-    if (!hostLiveRefreshInterval || !pagedHostIds.length) return;
-    const hostIds = pagedHostIds;
+    if (!hostLiveRefreshInterval || !pagedMetricHostIds.length) return;
+    const hostIds = pagedMetricHostIds;
     if (hostIds.length === 0) return;
     watchMetricsMutation.mutate({ hostIds });
     const timer = window.setInterval(() => {
@@ -1964,8 +2010,8 @@ function HostsContent() {
   }, [hostLiveRefreshInterval, pagedHostIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
-    { hostIds: pagedHostIds },
-    { enabled: !!hostLiveRefreshInterval && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
+    { hostIds: pagedMetricHostIds },
+    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
   );
   const hostTrafficById = useMemo(() => {
     const map = new Map<number, any>();
@@ -1973,8 +2019,8 @@ function HostsContent() {
     return map;
   }, [hostTrafficRows]);
   const { data: hostLatestMetricRows = [] } = trpc.hosts.latestMetricsSummary.useQuery(
-    { hostIds: pagedHostIds },
-    { enabled: !!hostLiveRefreshInterval && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
+    { hostIds: pagedMetricHostIds },
+    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
   );
   const hostLatestMetricById = useMemo(() => {
     const map = new Map<number, any>();
@@ -2418,7 +2464,7 @@ function HostsContent() {
                       <div {...itemProps}>
                         {renderHostCard(host, {
                           compact: viewMode === "compact-card",
-                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="-ml-2" />,
+                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={hostReorderPending} className="-ml-2" />,
                           sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
                         })}
                       </div>
@@ -2453,7 +2499,7 @@ function HostsContent() {
                         <div {...itemProps}>
                           {renderHostCard(host, {
                             compact: false,
-                            dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="-ml-2" />,
+                            dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={hostReorderPending} className="-ml-2" />,
                             sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
                           })}
                         </div>
@@ -2531,7 +2577,7 @@ function HostsContent() {
                         host.mimicRuntimeMessage ? String(host.mimicRuntimeMessage) : "",
                       ].filter(Boolean).join("\n");
                       return (
-                      <SortableItem key={host.id} id={Number(host.id)} disabled={!hostSortingEnabled || hostSortable.disabled} itemKind="row">
+                      <SortableItem key={host.id} id={Number(host.id)} disabled={hostSortable.disabled} itemKind="row">
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <TableRow
                         {...itemProps}
@@ -2544,7 +2590,7 @@ function HostsContent() {
                         <TableCell className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-20 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card px-3 py-2.5">
                           <div className="flex min-w-0 items-center gap-2">
                             {hostSortingEnabled && (
-                              <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="shrink-0" />
+                              <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={hostReorderPending} className="shrink-0" />
                             )}
                             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/20 text-muted-foreground">
                               <Server className="h-3.5 w-3.5" />

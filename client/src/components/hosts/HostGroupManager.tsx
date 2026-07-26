@@ -1,6 +1,6 @@
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
-import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -200,6 +200,11 @@ export default function HostGroupManager({
       : sortedGroups,
     [hostsById, isTextFiltered, normalizedSearchQuery, sortedGroups],
   );
+  const groupOrder = useOptimisticSortableOrder({
+    items: filteredGroups,
+    getId: (group) => Number(group.id),
+  });
+  const displayedGroups = groupOrder.items;
   useEffect(() => {
     onFilterStatsChange?.({ filtered: filteredGroups.length, total: sortedGroups.length });
   }, [filteredGroups.length, onFilterStatsChange, sortedGroups.length]);
@@ -236,18 +241,23 @@ export default function HostGroupManager({
     onError: (err) => toast.error(err.message || "删除分组失败"),
   });
   const reorderGroupsMutation = trpc.hosts.reorderHostGroups.useMutation({
-    onSuccess: () => {
-      utils.hosts.hostGroups.invalidate();
-      toast.success("分组顺序已更新");
-    },
+    onSuccess: () => toast.success("分组顺序已更新"),
     onError: (err) => toast.error(err.message || "更新分组顺序失败"),
   });
+  const groupReorderPending = reorderGroupsMutation.isPending;
   const groupSortable = useSortableReorder({
-    items: filteredGroups,
+    items: displayedGroups,
     getId: (group) => Number(group.id),
-    disabled: isTextFiltered || filteredGroups.length < 2,
+    disabled: isTextFiltered || groupReorderPending || displayedGroups.length < 2,
     onReorder: (nextGroups) => {
-      reorderGroupsMutation.mutate({ ids: nextGroups.map((group) => Number(group.id)) });
+      const requestId = groupOrder.begin(nextGroups);
+      reorderGroupsMutation.mutate(
+        { ids: nextGroups.map((group) => Number(group.id)) },
+        {
+          onError: () => groupOrder.release(requestId),
+          onSettled: () => groupOrder.resync(requestId, () => utils.hosts.hostGroups.invalidate()),
+        },
+      );
     },
   });
 
@@ -378,17 +388,17 @@ export default function HostGroupManager({
         <DataSectionLoading label="正在加载主机分组" minHeight="min-h-[220px]" />
       ) : viewMode === "table" ? (
         <div key="host-group-table-view" className="card-mode-transition">
-          {filteredGroups.length === 0 ? (
+          {displayedGroups.length === 0 ? (
             <div className="sm:hidden">{renderEmptyState()}</div>
           ) : (
-            <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+            <SortableReorderContext sortable={groupSortable} ids={displayedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
               <div className="grid grid-cols-1 gap-4 sm:hidden">
-                {filteredGroups.map((group) => (
+                {displayedGroups.map((group) => (
                   <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
                     {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <div {...itemProps}>
                         {renderGroupCard(group, {
-                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />,
+                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={groupReorderPending} />,
                           sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
                         })}
                       </div>
@@ -413,15 +423,15 @@ export default function HostGroupManager({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredGroups.length === 0 ? (
+                    {displayedGroups.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={6}>
                           {renderEmptyState("border-0 bg-transparent shadow-none")}
                         </TableCell>
                       </TableRow>
                     ) : (
-                      <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
-                        {filteredGroups.map((group) => {
+                      <SortableReorderContext sortable={groupSortable} ids={displayedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+                        {displayedGroups.map((group) => {
                       const hostIds = groupHostIds(group);
                       return (
                         <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled} itemKind="row">
@@ -435,7 +445,7 @@ export default function HostGroupManager({
                           )}
                         >
                           <TableCell className="w-[44px] px-2">
-                            <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
+                            <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={groupReorderPending} />
                           </TableCell>
                           <TableCell>
                             <div className="flex min-w-0 items-center gap-2">
@@ -465,17 +475,17 @@ export default function HostGroupManager({
           </Card>
         </div>
       ) : (
-        filteredGroups.length === 0 ? (
+        displayedGroups.length === 0 ? (
           renderEmptyState("col-span-full")
         ) : (
-          <SortableReorderContext sortable={groupSortable} ids={filteredGroups.map((group) => Number(group.id))} strategy="rect">
+          <SortableReorderContext sortable={groupSortable} ids={displayedGroups.map((group) => Number(group.id))} strategy="rect">
             <div key="host-group-card-view" className="standard-card-grid gap-4">
-              {filteredGroups.map((group) => (
+              {displayedGroups.map((group) => (
                 <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
                   {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                     <div {...itemProps}>
                       {renderGroupCard(group, {
-                        dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />,
+                        dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={groupReorderPending} />,
                         sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
                       })}
                     </div>

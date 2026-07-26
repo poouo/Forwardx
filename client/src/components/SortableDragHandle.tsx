@@ -28,6 +28,7 @@ import { GripVertical } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -74,6 +75,63 @@ function useStableSortableIds(ids: Array<SortableId | UniqueIdentifier | null | 
   }
   stableRef.current = next;
   return next;
+}
+
+/**
+ * Keeps a completed drop visible while its server order is saved and refetched.
+ * The override only applies to the exact same item set, so stale page or filter
+ * data can never leak into a newly selected scope.
+ */
+export function useOptimisticSortableOrder<T>({
+  items,
+  getId,
+}: {
+  items: T[];
+  getId: (item: T) => SortableId;
+}) {
+  const [order, setOrder] = useState<string[] | null>(null);
+  const requestIdRef = useRef(0);
+
+  const orderedItems = useMemo(() => {
+    if (!order) return items;
+    const byId = new Map<string, T>();
+    for (const item of items) {
+      const key = sortableKey(getId(item));
+      if (!key || byId.has(key)) return items;
+      byId.set(key, item);
+    }
+    if (order.length !== byId.size || order.some((key) => !byId.has(key))) return items;
+    return order.map((key) => byId.get(key) as T);
+  }, [getId, items, order]);
+
+  const begin = useCallback((nextItems: T[]) => {
+    requestIdRef.current += 1;
+    setOrder(nextItems.map((item) => sortableKey(getId(item))));
+    return requestIdRef.current;
+  }, [getId]);
+
+  const release = useCallback((requestId: number) => {
+    if (requestIdRef.current !== requestId) return;
+    setOrder(null);
+  }, []);
+
+  const resync = useCallback((requestId: number, refresh: () => Promise<unknown> | unknown) => {
+    void (async () => {
+      try {
+        await refresh();
+        // Query consumers may copy fresh data into stable view state from an
+        // effect. Let that state commit before removing the visual override.
+        await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+      } catch {
+        // Keep mutation errors in the page-level toast; a failed refresh should
+        // still release the temporary order and leave the cached list usable.
+      } finally {
+        release(requestId);
+      }
+    })();
+  }, [release]);
+
+  return { begin, items: orderedItems, release, resync };
 }
 
 export function useSortableReorder<T>({
@@ -309,26 +367,35 @@ export function SortableItem({
 export function SortableDragHandle({
   dragHandleProps,
   visible,
+  busy,
   className,
 }: {
   dragHandleProps: SortableHandleProps;
   visible?: boolean;
+  /**
+   * Sorting is temporarily blocked while the previous order is being saved.
+   * The handle stays where it is instead of collapsing to `opacity-0`, because
+   * the pointer is still resting on it right after a drop.
+   */
+  busy?: boolean;
   className?: string;
 }) {
   const { ref, disabled, style, ...props } = dragHandleProps;
+  const unavailable = !!disabled && !busy;
   return (
     <button
       ref={ref as Ref<HTMLButtonElement>}
       type="button"
       aria-label="拖动排序"
-      title={disabled ? "至少需要两个项目才能排序" : "拖动排序"}
+      title={busy ? "正在保存排序" : disabled ? "至少需要两个项目才能排序" : "拖动排序"}
       disabled={disabled}
       {...props}
       className={cn(
         "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-all duration-200",
         "opacity-40 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover/sortable:opacity-100",
         visible && "pointer-events-auto opacity-100",
-        disabled ? "pointer-events-none cursor-default opacity-0" : "cursor-grab hover:bg-muted/70 hover:text-foreground active:scale-95 active:cursor-grabbing",
+        unavailable ? "pointer-events-none cursor-default opacity-0" : "cursor-grab hover:bg-muted/70 hover:text-foreground active:scale-95 active:cursor-grabbing",
+        busy && "cursor-progress",
         className,
       )}
       style={style}

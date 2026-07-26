@@ -133,14 +133,14 @@ export const selfTestRulesRouter = router({
     }),
 
   latestTest: protectedProcedure
-    .input(z.object({ ruleId: z.number() }))
+    .input(z.object({ ruleId: z.number(), includeActive: z.boolean().optional().default(true) }))
     .query(async ({ input, ctx }) => {
       const rule = await db.getForwardRuleById(input.ruleId);
       if (!rule) return null;
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) {
         return null;
       }
-      const t = await db.getLatestForwardTest(input.ruleId);
+      const t = await db.getLatestForwardTest(input.ruleId, { includeActive: input.includeActive });
       return t || null;
     })
 });

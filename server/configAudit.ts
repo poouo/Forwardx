@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, like, max, ne, or } from "drizzle-orm";
 import { configAuditEvents } from "../drizzle/schema";
 import { getDb, insertAndGetId } from "./dbRuntime";
 import { invalidateAgentStableHeartbeatPlan } from "./agentHeartbeatGate";
@@ -157,4 +157,72 @@ export async function getResourceConfigRevision(resourceType: string, resourceId
     .where(and(eq(configAuditEvents.resourceType, resourceType as any), eq(configAuditEvents.resourceId, resourceId)))
     .orderBy(desc(configAuditEvents.id)).limit(1);
   return Number(rows[0]?.id || 0);
+}
+
+export type MimicLifecycleResource = {
+  resourceType: "forward_rule" | "tunnel";
+  resourceId: number;
+};
+
+const MIMIC_LIFECYCLE_FIELDS: Record<MimicLifecycleResource["resourceType"], readonly string[]> = {
+  forward_rule: [
+    "isEnabled", "disabledByTunnel", "disabledByGroup", "disabledByUser", "pendingDelete",
+    "udpOverTcp", "forwardType", "protocol", "tunnelId", "hostId",
+  ],
+  tunnel: [
+    "isEnabled", "disabledByGroup", "udpOverTcp", "mode", "forwardxVersion",
+    "entryHostId", "exitHostId", "entryGroupId", "exitGroupId", "relayMode",
+  ],
+};
+
+export async function getMimicLifecycleRevisionSignature(resources: MimicLifecycleResource[]) {
+  const normalized = Array.from(new Map(resources
+    .map((resource) => ({
+      resourceType: resource.resourceType,
+      resourceId: Math.floor(Number(resource.resourceId) || 0),
+    }))
+    .filter((resource) => resource.resourceId > 0)
+    .map((resource) => [`${resource.resourceType}:${resource.resourceId}`, resource] as const)).values())
+    .sort((left, right) => left.resourceType.localeCompare(right.resourceType) || left.resourceId - right.resourceId);
+  if (normalized.length === 0) return "";
+
+  const db = await getDb();
+  if (!db) return normalized.map((resource) => `${resource.resourceType}:${resource.resourceId}:0`).join("|");
+
+  const revisionByResource = new Map<string, number>();
+  for (const resourceType of ["forward_rule", "tunnel"] as const) {
+    const ids = normalized
+      .filter((resource) => resource.resourceType === resourceType)
+      .map((resource) => resource.resourceId);
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const chunk = ids.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const lifecycleChange = or(
+        eq(configAuditEvents.action, "create" as any),
+        eq(configAuditEvents.action, "delete" as any),
+        ...MIMIC_LIFECYCLE_FIELDS[resourceType].map((field) => (
+          like(configAuditEvents.diffJson, `%\"${field}\"%`)
+        )),
+      );
+      const rows = await db.select({
+        resourceType: configAuditEvents.resourceType,
+        resourceId: configAuditEvents.resourceId,
+        revision: max(configAuditEvents.id),
+      }).from(configAuditEvents).where(and(
+        eq(configAuditEvents.resourceType, resourceType as any),
+        inArray(configAuditEvents.resourceId, chunk),
+        lifecycleChange,
+      )).groupBy(configAuditEvents.resourceType, configAuditEvents.resourceId);
+      for (const row of rows) {
+        revisionByResource.set(
+          `${String(row.resourceType)}:${Number(row.resourceId)}`,
+          Number(row.revision || 0),
+        );
+      }
+    }
+  }
+
+  return normalized.map((resource) => (
+    `${resource.resourceType}:${resource.resourceId}:${revisionByResource.get(`${resource.resourceType}:${resource.resourceId}`) || 0}`
+  )).join("|");
 }

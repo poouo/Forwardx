@@ -2,20 +2,27 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const trafficBatchInterval = 10 * time.Second
 
 type trafficBatchKey struct {
-	panelURL string
-	token    string
+	panelURL   string
+	token      string
+	producerID string
 }
 
 type trafficBatchValue struct {
@@ -23,10 +30,17 @@ type trafficBatchValue struct {
 	bytesOut uint64
 }
 
+type pendingTrafficBatch struct {
+	reportID string
+	byRule   map[int]trafficBatchValue
+}
+
 var trafficBatchMu sync.Mutex
 var trafficBatchFlushMu sync.Mutex
 var trafficBatchWorkerOnce sync.Once
 var trafficBatches = map[trafficBatchKey]map[int]trafficBatchValue{}
+var trafficPendingReports = map[trafficBatchKey]pendingTrafficBatch{}
+var trafficReportSequence atomic.Uint64
 var trafficHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func enqueueTraffic(cfg config, bytesIn, bytesOut uint64) {
@@ -35,7 +49,7 @@ func enqueueTraffic(cfg config, bytesIn, bytesOut uint64) {
 	if panelURL == "" || token == "" || cfg.RuleID <= 0 || (bytesIn == 0 && bytesOut == 0) {
 		return
 	}
-	key := trafficBatchKey{panelURL: panelURL, token: token}
+	key := trafficBatchKey{panelURL: panelURL, token: token, producerID: fxpTrafficProducerID(cfg)}
 	trafficBatchMu.Lock()
 	byRule := trafficBatches[key]
 	if byRule == nil {
@@ -83,6 +97,7 @@ func trafficBatchSnapshot() map[trafficBatchKey]map[int]trafficBatchValue {
 func acknowledgeTrafficBatch(key trafficBatchKey, sent map[int]trafficBatchValue) {
 	trafficBatchMu.Lock()
 	defer trafficBatchMu.Unlock()
+	delete(trafficPendingReports, key)
 	byRule := trafficBatches[key]
 	for ruleID, value := range sent {
 		current, ok := byRule[ruleID]
@@ -110,7 +125,30 @@ func acknowledgeTrafficBatch(key trafficBatchKey, sent map[int]trafficBatchValue
 	}
 }
 
-func postTrafficBatch(key trafficBatchKey, byRule map[int]trafficBatchValue) bool {
+func newFXPTrafficReportID() string {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err == nil {
+		return "fxp-" + hex.EncodeToString(nonce)
+	}
+	return fmt.Sprintf("fxp-%x-%x-%x", time.Now().UnixNano(), os.Getpid(), trafficReportSequence.Add(1))
+}
+
+func fxpTrafficProducerID(cfg config) string {
+	identity := fmt.Sprintf(
+		"%s\x00%s\x00%s\x00%d\x00%d\x00%d",
+		strings.TrimRight(strings.TrimSpace(cfg.PanelURL), "/"),
+		strings.TrimSpace(cfg.Token),
+		strings.ToLower(strings.TrimSpace(cfg.Role)),
+		cfg.TunnelID,
+		cfg.RuleID,
+		cfg.ListenPort,
+	)
+	hash := sha256.Sum256([]byte(identity))
+	return "fxp-" + hex.EncodeToString(hash[:])
+}
+
+func postTrafficBatch(key trafficBatchKey, pending pendingTrafficBatch) bool {
+	byRule := pending.byRule
 	ruleIDs := make([]int, 0, len(byRule))
 	for ruleID := range byRule {
 		ruleIDs = append(ruleIDs, ruleID)
@@ -123,7 +161,11 @@ func postTrafficBatch(key trafficBatchKey, byRule map[int]trafficBatchValue) boo
 			"ruleId": ruleID, "bytesIn": value.bytesIn, "bytesOut": value.bytesOut, "connections": 0,
 		})
 	}
-	env, err := encryptEnvelope(map[string]any{"stats": stats}, key.token)
+	env, err := encryptEnvelope(map[string]any{
+		"stats":            stats,
+		"reportId":         pending.reportID,
+		"reportProducerId": key.producerID,
+	}, key.token)
 	if err != nil {
 		log.Printf("traffic batch encrypt failed rules=%d: %v", len(stats), err)
 		return false
@@ -154,11 +196,50 @@ func postTrafficBatch(key trafficBatchKey, byRule map[int]trafficBatchValue) boo
 func flushTrafficBatches() {
 	trafficBatchFlushMu.Lock()
 	defer trafficBatchFlushMu.Unlock()
-	for key, byRule := range trafficBatchSnapshot() {
-		if postTrafficBatch(key, byRule) {
-			acknowledgeTrafficBatch(key, byRule)
+	for key, pending := range trafficBatchPendingSnapshot() {
+		if postTrafficBatch(key, pending) {
+			acknowledgeTrafficBatch(key, pending.byRule)
 		}
 	}
+}
+
+func trafficBatchPendingSnapshot() map[trafficBatchKey]pendingTrafficBatch {
+	trafficBatchMu.Lock()
+	defer trafficBatchMu.Unlock()
+	keys := make(map[trafficBatchKey]struct{}, len(trafficBatches)+len(trafficPendingReports))
+	for key := range trafficBatches {
+		keys[key] = struct{}{}
+	}
+	for key := range trafficPendingReports {
+		keys[key] = struct{}{}
+	}
+	out := make(map[trafficBatchKey]pendingTrafficBatch, len(keys))
+	for key := range keys {
+		if pending := trafficPendingReports[key]; len(pending.byRule) > 0 {
+			copy := make(map[int]trafficBatchValue, len(pending.byRule))
+			for ruleID, value := range pending.byRule {
+				copy[ruleID] = value
+			}
+			out[key] = pendingTrafficBatch{reportID: pending.reportID, byRule: copy}
+			continue
+		}
+		current := trafficBatches[key]
+		if len(current) == 0 {
+			continue
+		}
+		copy := make(map[int]trafficBatchValue, len(current))
+		for ruleID, value := range current {
+			if value.bytesIn > 0 || value.bytesOut > 0 {
+				copy[ruleID] = value
+			}
+		}
+		if len(copy) > 0 {
+			pending := pendingTrafficBatch{reportID: newFXPTrafficReportID(), byRule: copy}
+			trafficPendingReports[key] = pending
+			out[key] = pending
+		}
+	}
+	return out
 }
 
 func startTrafficReporter(cfg config, counter *trafficCounter) func() {
@@ -195,6 +276,7 @@ func startTrafficReporter(cfg config, counter *trafficCounter) func() {
 		once.Do(func() {
 			close(done)
 			reportDelta()
+			flushTrafficBatches()
 		})
 	}
 }

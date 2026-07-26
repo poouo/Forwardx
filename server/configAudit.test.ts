@@ -38,6 +38,50 @@ test("SQLite schema records a redacted monotonic configuration audit", () => {
       assert.ok(rows[1].id > rows[0].id);
       assert.match(rows[0].afterJson, /\[REDACTED\]/);
       assert.doesNotMatch(rows[0].afterJson, /top-secret/);
+
+      await audit.recordConfigAuditEvent({
+        resourceType: "tunnel",
+        resourceId: 91,
+        hostId: 1,
+        action: "create",
+        after: { id: 91, name: "mimic", isEnabled: true, udpOverTcp: true },
+      });
+      await audit.recordConfigAuditEvent({
+        resourceType: "tunnel",
+        resourceId: 91,
+        hostId: 1,
+        action: "update",
+        before: { id: 91, name: "mimic", isEnabled: true, udpOverTcp: true },
+        after: { id: 91, name: "renamed", isEnabled: true, udpOverTcp: true },
+      });
+      await audit.recordConfigAuditEvent({
+        resourceType: "tunnel",
+        resourceId: 91,
+        hostId: 1,
+        action: "update",
+        before: { id: 91, name: "renamed", isEnabled: true, udpOverTcp: true },
+        after: { id: 91, name: "renamed", isEnabled: false, udpOverTcp: true },
+      });
+      const enabledRevision = await audit.recordConfigAuditEvent({
+        resourceType: "tunnel",
+        resourceId: 91,
+        hostId: 1,
+        action: "update",
+        before: { id: 91, name: "renamed", isEnabled: false, udpOverTcp: true },
+        after: { id: 91, name: "renamed", isEnabled: true, udpOverTcp: true },
+      });
+      await audit.recordConfigAuditEvent({
+        resourceType: "tunnel",
+        resourceId: 91,
+        hostId: 1,
+        action: "update",
+        before: { id: 91, name: "renamed", isEnabled: true, udpOverTcp: true },
+        after: { id: 91, name: "renamed-again", isEnabled: true, udpOverTcp: true },
+      });
+      assert.equal(
+        await audit.getMimicLifecycleRevisionSignature([{ resourceType: "tunnel", resourceId: 91 }]),
+        "tunnel:91:" + enabledRevision,
+      );
     } finally {
       await runtime.closeDatabase();
     }

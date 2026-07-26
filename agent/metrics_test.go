@@ -3,12 +3,79 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func testTrafficReportIdentity(name string) string {
+	return trafficReportIdentityForPanel(
+		Config{Token: "token-" + name},
+		"https://"+name+".example.test",
+	)
+}
+
+func testRulePendingTrafficReport(reportID string, identity string, baselines ...persistedTrafficBaseline) pendingTrafficReport {
+	stats := make([]any, 0, len(baselines))
+	for _, baseline := range baselines {
+		stats = append(stats, []any{baseline.RuleID, baseline.In, baseline.Out, baseline.Conns})
+	}
+	return pendingTrafficReport{
+		Payload: map[string]any{
+			"reportId":         reportID,
+			"reportProducerId": trafficReportProducerID(identity),
+			"s":                stats,
+		},
+		Baselines:      baselines,
+		Identity:       identity,
+		HasRuleTraffic: len(baselines) > 0,
+		StatCount:      len(baselines),
+	}
+}
+
+func testHostPendingTrafficReport(reportID string, identity string) pendingTrafficReport {
+	report := testRulePendingTrafficReport(reportID, identity)
+	report.Payload["h"] = []any{uint64(1200), uint64(800)}
+	report.HasHostTraffic = true
+	return report
+}
+
+func useIsolatedTrafficState(t *testing.T) string {
+	t.Helper()
+	previousDir := trafficStateDir
+	previousRuleReportedAt := lastRuleTrafficReportAt
+	previousHostReportedAt := lastHostTrafficReportAt
+	previousDirty := trafficStateDirectoryDirty.Load()
+	previousSync := trafficStateDirectorySync
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+
+	stateDir := t.TempDir()
+	trafficStateDir = stateDir
+	lastRuleTrafficReportAt = time.Time{}
+	lastHostTrafficReportAt = time.Time{}
+	trafficStateDirectoryDirty.Store(false)
+	trafficStateDirectorySync = syncTrafficStateDirectory
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		lastRuleTrafficReportAt = previousRuleReportedAt
+		lastHostTrafficReportAt = previousHostReportedAt
+		trafficStateDirectorySync = previousSync
+		trafficStateDirectoryDirty.Store(previousDirty)
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+	return stateDir
+}
 
 func TestICMPEchoRequestChecksum(t *testing.T) {
 	packet := buildICMPEchoRequest(8, 0x1234, 1)
@@ -60,19 +127,575 @@ func TestTrafficBaselinesCommitOnlyAfterSuccessfulReport(t *testing.T) {
 		port:  update.port,
 		state: trafficPrevState{ruleID: 42, in: 1000, out: 500, conns: 2},
 	}
-	commitTrafficBaselines(true, []trafficBaselineUpdate{initial})
-	commitTrafficBaselines(false, []trafficBaselineUpdate{update})
+	if err := commitTrafficBaselines(true, []trafficBaselineUpdate{initial}); err != nil {
+		t.Fatalf("commit initial baseline: %v", err)
+	}
+	if err := commitTrafficBaselines(false, []trafficBaselineUpdate{update}); err != nil {
+		t.Fatalf("retain failed-report baseline: %v", err)
+	}
 	if ruleID, in, out, conns := readPrev(update.port); ruleID != 42 || in != 1000 || out != 500 || conns != 2 {
 		t.Fatalf("failed report advanced baseline: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
 	} else if delta(update.state.in, in) != 200 || delta(update.state.out, out) != 300 || delta(update.state.conns, conns) != 1 {
 		t.Fatal("failed report delta was not retained for retry")
 	}
 
-	commitTrafficBaselines(true, []trafficBaselineUpdate{update})
+	if err := commitTrafficBaselines(true, []trafficBaselineUpdate{update}); err != nil {
+		t.Fatalf("commit successful-report baseline: %v", err)
+	}
 	if ruleID, in, out, conns := readPrev(update.port); ruleID != 42 || in != 1200 || out != 800 || conns != 3 {
 		t.Fatalf("successful report did not advance baseline: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
 	} else if delta(1250, in) != 50 || delta(825, out) != 25 || delta(4, conns) != 1 {
 		t.Fatal("successful retry did not establish the next delta baseline")
+	}
+}
+
+func TestPendingTrafficReportPersistsPayloadAndCommitsSnapshot(t *testing.T) {
+	previousDir := trafficStateDir
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+
+	identity := testTrafficReportIdentity("stable")
+	report := testRulePendingTrafficReport(
+		"agent-stable-report",
+		identity,
+		persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3},
+	)
+	if err := os.WriteFile(trafficStateDir+"/port_22022.rule", []byte("42"), 0600); err != nil {
+		t.Fatalf("write current rule state: %v", err)
+	}
+	if err := savePendingTrafficReport(report); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+	loaded, ok, err := loadPendingTrafficReport(identity)
+	if err != nil {
+		t.Fatalf("load pending traffic report: %v", err)
+	}
+	if !ok || loaded.Payload["reportId"] != "agent-stable-report" || loaded.StatCount != 1 {
+		t.Fatalf("pending traffic report did not round trip: %+v ok=%v", loaded, ok)
+	}
+	if err := completePendingTrafficReport(loaded); err != nil {
+		t.Fatalf("complete pending traffic report: %v", err)
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); !os.IsNotExist(err) {
+		t.Fatalf("completed pending report was not removed: %v", err)
+	}
+	if ruleID, in, out, conns := readPrev("22022"); ruleID != 42 || in != 1200 || out != 800 || conns != 3 {
+		t.Fatalf("pending report baseline was not committed: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
+	}
+}
+
+func TestPendingTrafficReportStaysPendingUntilBaselinePersists(t *testing.T) {
+	previousDir := trafficStateDir
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+
+	report := testRulePendingTrafficReport(
+		"agent-durable-baseline",
+		testTrafficReportIdentity("durable-baseline"),
+		persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3},
+	)
+	if err := os.WriteFile(trafficStateDir+"/port_22022.rule", []byte("42"), 0600); err != nil {
+		t.Fatalf("write current rule state: %v", err)
+	}
+	if err := savePendingTrafficReport(report); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+	baselinePath := trafficStateDir + "/traffic_22022.prev"
+	if err := os.Mkdir(baselinePath, 0700); err != nil {
+		t.Fatalf("create baseline write blocker: %v", err)
+	}
+	if err := os.WriteFile(baselinePath+"/keep", []byte("block replacement"), 0600); err != nil {
+		t.Fatalf("populate baseline write blocker: %v", err)
+	}
+	if err := completePendingTrafficReport(report); err == nil {
+		t.Fatal("pending report completed even though its baseline could not persist")
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); err != nil {
+		t.Fatalf("pending report was not retained after baseline failure: %v", err)
+	}
+	trafficPrevMu.Lock()
+	_, cached := trafficPrevCache["22022"]
+	trafficPrevMu.Unlock()
+	if cached {
+		t.Fatal("failed baseline write advanced the in-memory baseline")
+	}
+	if err := os.Remove(baselinePath + "/keep"); err != nil {
+		t.Fatalf("remove baseline blocker file: %v", err)
+	}
+	if err := os.Remove(baselinePath); err != nil {
+		t.Fatalf("remove baseline blocker directory: %v", err)
+	}
+	if err := completePendingTrafficReport(report); err != nil {
+		t.Fatalf("complete pending report after baseline recovered: %v", err)
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); !os.IsNotExist(err) {
+		t.Fatalf("completed pending report was not removed: %v", err)
+	}
+}
+
+func TestPendingTrafficReportStaysPendingOnRuleStateReadFailure(t *testing.T) {
+	previousDir := trafficStateDir
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+
+	report := testRulePendingTrafficReport(
+		"agent-rule-state-read",
+		testTrafficReportIdentity("rule-state-read"),
+		persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3},
+	)
+	if err := savePendingTrafficReport(report); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+	rulePath := trafficStateDir + "/port_22022.rule"
+	if err := os.Mkdir(rulePath, 0700); err != nil {
+		t.Fatalf("create rule state read blocker: %v", err)
+	}
+	if err := completePendingTrafficReport(report); err == nil {
+		t.Fatal("pending report completed after a transient rule state read failure")
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); err != nil {
+		t.Fatalf("pending report was not retained after rule state read failure: %v", err)
+	}
+	if err := os.Remove(rulePath); err != nil {
+		t.Fatalf("remove rule state read blocker: %v", err)
+	}
+	if err := os.WriteFile(rulePath, []byte("42"), 0600); err != nil {
+		t.Fatalf("restore current rule state: %v", err)
+	}
+	if err := completePendingTrafficReport(report); err != nil {
+		t.Fatalf("complete pending report after rule state recovered: %v", err)
+	}
+}
+
+func TestPendingTrafficReportRejectsAnotherPanelIdentity(t *testing.T) {
+	previousDir := trafficStateDir
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+	writePrev("22022", 42, 1200, 800, 3)
+	oldIdentity := testTrafficReportIdentity("old-panel")
+	newIdentity := testTrafficReportIdentity("new-panel")
+	report := testHostPendingTrafficReport("agent-old-panel", oldIdentity)
+	if err := savePendingTrafficReport(report); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+	if _, ok, err := loadPendingTrafficReport(newIdentity); err != nil {
+		t.Fatalf("reject mismatched pending traffic report: %v", err)
+	} else if ok {
+		t.Fatal("pending report from another panel identity was accepted")
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); !os.IsNotExist(err) {
+		t.Fatalf("mismatched pending report was not removed: %v", err)
+	}
+	if _, err := os.Stat(trafficStateDir + "/traffic_22022.prev"); !os.IsNotExist(err) {
+		t.Fatalf("old traffic baseline was not removed: %v", err)
+	}
+}
+
+func TestTrafficReportIdentityChangeClearsPendingState(t *testing.T) {
+	previousDir := trafficStateDir
+	previousRuntimeURL, _ := runtimePanelURL.Load().(string)
+	previousRuleReportedAt := lastRuleTrafficReportAt
+	previousHostReportedAt := lastHostTrafficReportAt
+	trafficPrevMu.Lock()
+	previousCache := trafficPrevCache
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	trafficStateDir = t.TempDir()
+	t.Cleanup(func() {
+		trafficStateDir = previousDir
+		runtimePanelURL.Store(previousRuntimeURL)
+		lastRuleTrafficReportAt = previousRuleReportedAt
+		lastHostTrafficReportAt = previousHostReportedAt
+		trafficPrevMu.Lock()
+		trafficPrevCache = previousCache
+		trafficPrevMu.Unlock()
+	})
+
+	cfg := Config{PanelURL: "https://old.example.test", Token: "shared-token"}
+	runtimePanelURL.Store("")
+	oldIdentity := trafficReportIdentity(cfg)
+	if err := ensureTrafficReportIdentity(oldIdentity); err != nil {
+		t.Fatalf("initialize traffic report identity: %v", err)
+	}
+	writePrev("22022", 42, 1200, 800, 3)
+	if err := savePendingTrafficReport(testHostPendingTrafficReport("agent-old-panel", oldIdentity)); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+	lastRuleTrafficReportAt = time.Now()
+	lastHostTrafficReportAt = time.Now()
+
+	runtimePanelURL.Store("https://new.example.test")
+	newIdentity := trafficReportIdentity(cfg)
+	if newIdentity == oldIdentity {
+		t.Fatal("runtime panel switch did not change traffic report identity")
+	}
+	if err := ensureTrafficReportIdentity(newIdentity); err != nil {
+		t.Fatalf("switch traffic report identity: %v", err)
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); !os.IsNotExist(err) {
+		t.Fatalf("old panel pending report was not removed: %v", err)
+	}
+	if _, err := os.Stat(trafficStateDir + "/traffic_22022.prev"); !os.IsNotExist(err) {
+		t.Fatalf("old panel traffic baseline was not removed: %v", err)
+	}
+	trafficPrevMu.Lock()
+	cacheSize := len(trafficPrevCache)
+	trafficPrevMu.Unlock()
+	if cacheSize != 0 {
+		t.Fatalf("old panel traffic baseline cache was not cleared: %d entries", cacheSize)
+	}
+	if !lastRuleTrafficReportAt.IsZero() || !lastHostTrafficReportAt.IsZero() {
+		t.Fatal("old panel traffic report timestamps were not reset")
+	}
+	rawIdentity, err := os.ReadFile(trafficStateDir + "/" + trafficReportIdentityFile)
+	if err != nil {
+		t.Fatalf("read traffic report identity: %v", err)
+	}
+	if strings.TrimSpace(string(rawIdentity)) != newIdentity {
+		t.Fatalf("stored traffic report identity = %q, want %q", strings.TrimSpace(string(rawIdentity)), newIdentity)
+	}
+}
+
+func TestTrafficReportIdentityDoesNotAdvanceWhenStateCleanupFails(t *testing.T) {
+	useIsolatedTrafficState(t)
+	oldIdentity := testTrafficReportIdentity("cleanup-old")
+	newIdentity := testTrafficReportIdentity("cleanup-new")
+	if err := ensureTrafficReportIdentity(oldIdentity); err != nil {
+		t.Fatalf("initialize traffic report identity: %v", err)
+	}
+	writePrev("22022", 42, 1200, 800, 3)
+	if err := savePendingTrafficReport(testHostPendingTrafficReport("agent-cleanup-blocked", oldIdentity)); err != nil {
+		t.Fatalf("save pending traffic report: %v", err)
+	}
+
+	syncFailure := errors.New("directory sync blocked")
+	trafficStateDirectorySync = func(string) error { return syncFailure }
+	if err := ensureTrafficReportIdentity(newIdentity); !errors.Is(err, syncFailure) {
+		t.Fatal("traffic identity advanced even though old state cleanup failed")
+	}
+	rawIdentity, err := os.ReadFile(trafficStateDir + "/" + trafficReportIdentityFile)
+	if err != nil {
+		t.Fatalf("read retained traffic identity: %v", err)
+	}
+	if strings.TrimSpace(string(rawIdentity)) != oldIdentity {
+		t.Fatalf("traffic identity changed after failed cleanup: %q", strings.TrimSpace(string(rawIdentity)))
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); err != nil {
+		t.Fatalf("pending report was removed before cleanup completed: %v", err)
+	}
+	trafficPrevMu.Lock()
+	_, cached := trafficPrevCache["22022"]
+	trafficPrevMu.Unlock()
+	if !cached {
+		t.Fatal("baseline cache was cleared before filesystem cleanup completed")
+	}
+}
+
+func TestPendingTrafficReportDoesNotRestoreAnOldRuleBaseline(t *testing.T) {
+	useIsolatedTrafficState(t)
+	if err := os.WriteFile(trafficStateDir+"/port_22022.rule", []byte("43"), 0600); err != nil {
+		t.Fatalf("write replacement rule state: %v", err)
+	}
+	report := testRulePendingTrafficReport(
+		"agent-stale-rule",
+		testTrafficReportIdentity("stale-rule"),
+		persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3},
+	)
+	if err := savePendingTrafficReport(report); err != nil {
+		t.Fatalf("save stale pending traffic report: %v", err)
+	}
+	if err := completePendingTrafficReport(report); err != nil {
+		t.Fatalf("complete stale pending traffic report: %v", err)
+	}
+	if _, err := os.Stat(trafficStateDir + "/traffic_22022.prev"); !os.IsNotExist(err) {
+		t.Fatalf("old rule baseline was restored after port reuse: %v", err)
+	}
+}
+
+func TestPendingTrafficReportKeepsMalformedStateForDiagnosis(t *testing.T) {
+	useIsolatedTrafficState(t)
+	identity := testTrafficReportIdentity("malformed")
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "truncated", raw: []byte(`{"payload":`)},
+		{name: "trailing value", raw: []byte(`{} {}`)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(pendingTrafficReportPath(), tc.raw, 0600); err != nil {
+				t.Fatalf("write malformed pending report: %v", err)
+			}
+			if _, ok, err := loadPendingTrafficReport(identity); err == nil {
+				t.Fatal("malformed pending report was silently accepted")
+			} else if ok {
+				t.Fatal("malformed pending report was marked loadable")
+			}
+			retained, err := os.ReadFile(pendingTrafficReportPath())
+			if err != nil {
+				t.Fatalf("malformed pending report was removed: %v", err)
+			}
+			if !bytes.Equal(retained, tc.raw) {
+				t.Fatalf("malformed pending report changed: got %q want %q", retained, tc.raw)
+			}
+		})
+	}
+}
+
+func TestPendingTrafficReportRequiresStableIdentifiers(t *testing.T) {
+	useIsolatedTrafficState(t)
+	identity := testTrafficReportIdentity("required-identifiers")
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing report id", mutate: func(payload map[string]any) { delete(payload, "reportId") }},
+		{name: "null report id", mutate: func(payload map[string]any) { payload["reportId"] = nil }},
+		{name: "empty report id", mutate: func(payload map[string]any) { payload["reportId"] = "" }},
+		{name: "missing producer id", mutate: func(payload map[string]any) { delete(payload, "reportProducerId") }},
+		{name: "null producer id", mutate: func(payload map[string]any) { payload["reportProducerId"] = nil }},
+		{name: "empty producer id", mutate: func(payload map[string]any) { payload["reportProducerId"] = "" }},
+		{name: "wrong producer id", mutate: func(payload map[string]any) { payload["reportProducerId"] = "agent-other" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := testHostPendingTrafficReport("agent-required-fields", identity)
+			tc.mutate(report.Payload)
+			if err := savePendingTrafficReport(report); err == nil {
+				t.Fatal("pending report with an invalid identifier was saved")
+			}
+		})
+	}
+}
+
+func TestPendingTrafficReportRejectsInconsistentSnapshot(t *testing.T) {
+	identity := testTrafficReportIdentity("inconsistent")
+	baseline := persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3}
+	tests := []struct {
+		name   string
+		mutate func(*pendingTrafficReport)
+	}{
+		{name: "stat count", mutate: func(report *pendingTrafficReport) { report.StatCount++ }},
+		{name: "missing baseline", mutate: func(report *pendingTrafficReport) { report.Baselines = nil }},
+		{name: "payload rule", mutate: func(report *pendingTrafficReport) {
+			report.Payload["s"] = []any{[]any{43, 1200, 800, 3}}
+		}},
+		{name: "mixed payload formats", mutate: func(report *pendingTrafficReport) {
+			report.Payload["stats"] = []any{}
+		}},
+		{name: "rule traffic flag", mutate: func(report *pendingTrafficReport) { report.HasRuleTraffic = false }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := testRulePendingTrafficReport("agent-inconsistent", identity, baseline)
+			tc.mutate(&report)
+			if err := validatePendingTrafficReport(report); err == nil {
+				t.Fatal("inconsistent pending report passed validation")
+			}
+		})
+	}
+}
+
+func TestPendingTrafficReportLoadPreservesLargeIntegers(t *testing.T) {
+	useIsolatedTrafficState(t)
+	identity := testTrafficReportIdentity("large-integer")
+	const largeCounter = "9007199254740993"
+	raw := []byte(fmt.Sprintf(
+		`{"payload":{"reportId":"agent-large-integer","reportProducerId":%q,"s":[[42,%s,0,0]]},"baselines":[{"port":"22022","ruleId":42,"in":%s,"out":0,"conns":0}],"identity":%q,"hasRuleTraffic":true,"hasHostTraffic":false,"statCount":1}`,
+		trafficReportProducerID(identity), largeCounter, largeCounter, identity,
+	))
+	if err := os.WriteFile(pendingTrafficReportPath(), raw, 0600); err != nil {
+		t.Fatalf("write pending report with large counters: %v", err)
+	}
+	report, ok, err := loadPendingTrafficReport(identity)
+	if err != nil {
+		t.Fatalf("load pending report with large counters: %v", err)
+	}
+	if !ok {
+		t.Fatal("valid pending report with large counters was not loaded")
+	}
+	stats, ok := report.Payload["s"].([]any)
+	if !ok || len(stats) != 1 {
+		t.Fatalf("unexpected compact stats: %#v", report.Payload["s"])
+	}
+	row, ok := stats[0].([]any)
+	if !ok || len(row) != 4 {
+		t.Fatalf("unexpected compact stat row: %#v", stats[0])
+	}
+	counter, ok := row[1].(json.Number)
+	if !ok || counter.String() != largeCounter {
+		t.Fatalf("large payload counter lost precision: %#v", row[1])
+	}
+	if report.Baselines[0].In != uint64(9007199254740993) {
+		t.Fatalf("large baseline counter lost precision: %d", report.Baselines[0].In)
+	}
+}
+
+func TestTrafficStateRenameAndRemoveSyncDirectory(t *testing.T) {
+	stateDir := useIsolatedTrafficState(t)
+	var syncCalls atomic.Int32
+	trafficStateDirectorySync = func(gotDir string) error {
+		if gotDir != stateDir {
+			t.Fatalf("directory sync target = %q, want %q", gotDir, stateDir)
+		}
+		syncCalls.Add(1)
+		return nil
+	}
+	path := trafficStateDir + "/state"
+	if err := writeTrafficStateFile(path, []byte("durable"), 0600); err != nil {
+		t.Fatalf("write durable traffic state: %v", err)
+	}
+	if got := syncCalls.Load(); got != 1 {
+		t.Fatalf("rename directory sync calls = %d, want 1", got)
+	}
+	if err := removeTrafficStateFile(path, trafficStateDir); err != nil {
+		t.Fatalf("remove durable traffic state: %v", err)
+	}
+	if got := syncCalls.Load(); got != 2 {
+		t.Fatalf("rename and remove directory sync calls = %d, want 2", got)
+	}
+}
+
+func TestPendingTrafficReportWaitsForDirectorySyncRecovery(t *testing.T) {
+	useIsolatedTrafficState(t)
+	identity := testTrafficReportIdentity("sync-recovery")
+	report := testHostPendingTrafficReport("agent-sync-recovery", identity)
+	syncFailure := errors.New("directory sync unavailable")
+	syncRecovered := false
+	trafficStateDirectorySync = func(string) error {
+		if !syncRecovered {
+			return syncFailure
+		}
+		return nil
+	}
+	if err := savePendingTrafficReport(report); !errors.Is(err, syncFailure) {
+		t.Fatalf("save pending report error = %v, want directory sync failure", err)
+	}
+	if _, err := os.Stat(pendingTrafficReportPath()); err != nil {
+		t.Fatalf("renamed pending report was not retained after sync failure: %v", err)
+	}
+	if _, ok, err := loadPendingTrafficReport(identity); !errors.Is(err, syncFailure) {
+		t.Fatalf("load before directory sync recovery error = %v, want sync failure", err)
+	} else if ok {
+		t.Fatal("pending report became loadable before directory durability recovered")
+	}
+
+	syncRecovered = true
+	loaded, ok, err := loadPendingTrafficReport(identity)
+	if err != nil {
+		t.Fatalf("load pending report after directory sync recovered: %v", err)
+	}
+	if !ok || loaded.Payload["reportId"] != report.Payload["reportId"] {
+		t.Fatalf("pending report did not recover: %+v ok=%v", loaded, ok)
+	}
+}
+
+func TestFirstTrafficReportIdentityClearsLegacyState(t *testing.T) {
+	useIsolatedTrafficState(t)
+	identity := testTrafficReportIdentity("first-identity")
+	if err := writePrevState("22022", trafficPrevState{ruleID: 42, in: 1200, out: 800, conns: 3}); err != nil {
+		t.Fatalf("write legacy baseline: %v", err)
+	}
+	if err := savePendingTrafficReport(testHostPendingTrafficReport("agent-legacy-pending", identity)); err != nil {
+		t.Fatalf("write legacy pending report: %v", err)
+	}
+	lastRuleTrafficReportAt = time.Now()
+	lastHostTrafficReportAt = time.Now()
+
+	if err := ensureTrafficReportIdentity(identity); err != nil {
+		t.Fatalf("initialize first traffic identity: %v", err)
+	}
+	for _, path := range []string{trafficStateDir + "/traffic_22022.prev", pendingTrafficReportPath()} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy traffic state was not removed: %s (%v)", path, err)
+		}
+	}
+	trafficPrevMu.Lock()
+	cacheSize := len(trafficPrevCache)
+	trafficPrevMu.Unlock()
+	if cacheSize != 0 {
+		t.Fatalf("legacy traffic cache was not cleared: %d entries", cacheSize)
+	}
+	if !lastRuleTrafficReportAt.IsZero() || !lastHostTrafficReportAt.IsZero() {
+		t.Fatal("legacy traffic report timestamps were not reset")
+	}
+	rawIdentity, err := os.ReadFile(trafficStateDir + "/" + trafficReportIdentityFile)
+	if err != nil {
+		t.Fatalf("read initialized traffic identity: %v", err)
+	}
+	if strings.TrimSpace(string(rawIdentity)) != identity {
+		t.Fatalf("initialized traffic identity = %q, want %q", strings.TrimSpace(string(rawIdentity)), identity)
+	}
+}
+
+func TestTrafficReportIdentityUsesExactTokenBytes(t *testing.T) {
+	const panelURL = "https://panel.example.test"
+	plain := trafficReportIdentityForPanel(Config{Token: "shared-token"}, panelURL)
+	leading := trafficReportIdentityForPanel(Config{Token: " shared-token"}, panelURL)
+	trailing := trafficReportIdentityForPanel(Config{Token: "shared-token "}, panelURL)
+	if plain == leading || plain == trailing || leading == trailing {
+		t.Fatalf("token whitespace was ignored by traffic identity: plain=%s leading=%s trailing=%s", plain, leading, trailing)
+	}
+}
+
+func TestTrafficReportIDsAreUniqueAcrossEqualBatches(t *testing.T) {
+	first := newTrafficReportID()
+	second := newTrafficReportID()
+	if first == second {
+		t.Fatalf("equal traffic batches received the same report id: %q", first)
+	}
+	if !strings.HasPrefix(first, "agent-") || !strings.HasPrefix(second, "agent-") {
+		t.Fatalf("unexpected traffic report ids: %q %q", first, second)
+	}
+}
+
+func TestTrafficReportProducerIDIsStableForOnePanelIdentity(t *testing.T) {
+	identity := trafficReportIdentity(Config{PanelURL: "https://panel.example.test", Token: "token-a"})
+	first := trafficReportProducerID(identity)
+	second := trafficReportProducerID(identity)
+	if first == "agent-" || first != second {
+		t.Fatalf("traffic producer id is not stable: %q %q", first, second)
+	}
+	other := trafficReportProducerID(trafficReportIdentity(Config{PanelURL: "https://panel.example.test", Token: "token-b"}))
+	if first == other {
+		t.Fatalf("different Agent identities share producer id %q", first)
 	}
 }
 
@@ -117,13 +740,30 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	chain output {
 		tcp sport 22022 counter packets 4 bytes 2400 comment "fwx-stat-22022:out" # handle 6
 	}
+	chain forward {
+		tcp daddr 203.0.113.10 tcp dport 443 counter packets 1 bytes 600 comment "fwx-stat-22022:in" # handle 7
+		tcp saddr 203.0.113.10 tcp sport 443 counter packets 1 bytes 900 comment "fwx-stat-22022:out" # handle 8
+	}
 }`
 	counters, markers := parseNftProcessCounterSnapshot(raw)
 	if !markers["22022"] {
 		t.Fatal("nft process traffic marker was not detected")
 	}
-	if got := counters["22022"]; got.In != 1500 || got.Out != 2400 {
+	if got := counters["22022"]; got.In != 2100 || got.Out != 3300 {
 		t.Fatalf("unexpected nft process counters: %+v", got)
+	}
+}
+
+func TestNftProcessCountingCmdsAddTargetForwardRules(t *testing.T) {
+	commands := strings.Join(nftProcessCountingCmds(22022, "tcp", "203.0.113.10", 443), "\n")
+	for _, want := range []string{
+		"nft add chain inet forwardx_traffic forward '{ type filter hook forward priority mangle; policy accept; }'",
+		"forward meta l4proto tcp ct original proto-dst 22022 ip daddr 203.0.113.10 tcp dport 443",
+		"forward meta l4proto tcp ct original proto-dst 22022 ip saddr 203.0.113.10 tcp sport 443",
+	} {
+		if !strings.Contains(commands, want) {
+			t.Fatalf("nft process commands missing %q:\n%s", want, commands)
+		}
 	}
 }
 
@@ -144,6 +784,41 @@ func TestMaxTrafficCountersKeepsTheChainThatMatched(t *testing.T) {
 	got := maxTrafficCounters(trafficCounters{In: 4096, Out: 10}, trafficCounters{In: 20, Out: 2400})
 	if got.In != 4096 || got.Out != 2400 {
 		t.Fatalf("unexpected merged counters: %+v", got)
+	}
+}
+
+func TestShouldCollectRuleTrafficSkipsForwardXAndInvalidRules(t *testing.T) {
+	tests := []struct {
+		name  string
+		state localRuleState
+		want  bool
+	}{
+		{name: "iptables", state: localRuleState{RuleID: 1, ForwardType: "iptables"}, want: true},
+		{name: "realm", state: localRuleState{RuleID: 2, ForwardType: "realm"}, want: true},
+		{name: "forwardx", state: localRuleState{RuleID: 3, ForwardType: "forwardx"}, want: false},
+		{name: "forwardx case insensitive", state: localRuleState{RuleID: 4, ForwardType: " ForwardX "}, want: false},
+		{name: "missing rule", state: localRuleState{RuleID: 0, ForwardType: "gost"}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldCollectRuleTraffic(tc.state); got != tc.want {
+				t.Fatalf("shouldCollectRuleTraffic(%+v) = %v, want %v", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIptablesAgentCountingForwardTargetRuleScopesConntrackPort(t *testing.T) {
+	inbound := iptablesAgentCountingForwardTargetRule("tcp", "22022", "192.0.2.10", "8080", true)
+	if want := "FORWARD -p tcp -m conntrack --ctorigdstport 22022 -d 192.0.2.10 --dport 8080"; inbound != want {
+		t.Fatalf("inbound target rule = %q, want %q", inbound, want)
+	}
+	outbound := iptablesAgentCountingForwardTargetRule("tcp", "22022", "192.0.2.10", "8080", false)
+	if want := "FORWARD -p tcp -m conntrack --ctorigdstport 22022 -s 192.0.2.10 --sport 8080"; outbound != want {
+		t.Fatalf("outbound target rule = %q, want %q", outbound, want)
+	}
+	if !strings.Contains(inbound, "--ctorigdstport 22022") || !strings.Contains(outbound, "--ctorigdstport 22022") {
+		t.Fatal("target rules must retain the original listener port match")
 	}
 }
 

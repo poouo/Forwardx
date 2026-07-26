@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
-import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
+import { drizzle as drizzleSqliteProxy } from "drizzle-orm/sqlite-proxy";
 import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
 import mysql, { Pool, PoolOptions, type ConnectionOptions } from "mysql2/promise";
 import pg from "pg";
@@ -60,8 +60,44 @@ type DatabaseTransactionContext = {
 };
 
 const transactionContext = new AsyncLocalStorage<DatabaseTransactionContext>();
-let sqliteTransactionGate: Promise<void> | null = null;
-let releaseSqliteTransactionGate: (() => void) | null = null;
+
+type SqliteConnectionLockContext = {
+  sqlite: Database.Database;
+  active: boolean;
+};
+
+const sqliteConnectionLockContext = new AsyncLocalStorage<SqliteConnectionLockContext>();
+let sqliteConnectionQueue: Promise<void> = Promise.resolve();
+
+async function withSqliteConnectionLock<T>(sqlite: Database.Database, work: () => Promise<T> | T): Promise<T> {
+  const inherited = sqliteConnectionLockContext.getStore();
+  if (inherited?.active && inherited.sqlite === sqlite) return work();
+
+  const previous = sqliteConnectionQueue;
+  let release: () => void = () => {};
+  sqliteConnectionQueue = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+
+  const lock = { sqlite, active: true };
+  try {
+    return await sqliteConnectionLockContext.run(lock, work);
+  } finally {
+    lock.active = false;
+    release();
+  }
+}
+
+function createSqliteDrizzleDatabase(sqlite: Database.Database): Db {
+  const callback: any = (sqlText: string, params: any[], method: "run" | "all" | "get" | "values") => (
+    withSqliteConnectionLock(sqlite, () => {
+      const statement = sqlite.prepare(sqlText);
+      if (method === "run") return { rows: [], ...statement.run(...params) };
+      if (method === "get") return { rows: statement.raw().get(...params) };
+      return { rows: statement.raw().all(...params) };
+    })
+  );
+  return drizzleSqliteProxy(callback) as Db;
+}
 
 export class DatabaseNotConfiguredError extends Error {
   constructor(message = "Database is not configured") {
@@ -514,7 +550,7 @@ export async function connectDatabase(config = readDatabaseConfig()) {
   _sqlite = new Database(normalized.path);
   _sqlite.pragma("journal_mode = WAL");
   _sqlite.pragma("foreign_keys = ON");
-  _db = drizzleSqlite(_sqlite) as Db;
+  _db = createSqliteDrizzleDatabase(_sqlite);
   _kind = "sqlite";
   console.log(`[Database] SQLite opened at ${normalized.path}`);
   return _db;
@@ -549,7 +585,6 @@ export async function reconnectDatabase() {
 export async function getDb() {
   const active = transactionContext.getStore();
   if (active) return active.db;
-  if (_kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   if (_db) return _db;
   return connectDatabase();
 }
@@ -591,22 +626,19 @@ export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promis
   }
   if (_kind === "sqlite") {
     if (!_sqlite || !_db) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    while (sqliteTransactionGate) await sqliteTransactionGate;
-    sqliteTransactionGate = new Promise<void>((resolve) => { releaseSqliteTransactionGate = resolve; });
-    try {
-      _sqlite.exec("BEGIN IMMEDIATE");
-      const result = await transactionContext.run({ db: _db, sqlite: _sqlite }, work);
-      _sqlite.exec("COMMIT");
-      return result;
-    } catch (error) {
-      try { _sqlite.exec("ROLLBACK"); } catch { /* transaction may already be closed */ }
-      throw error;
-    } finally {
-      const release = releaseSqliteTransactionGate;
-      sqliteTransactionGate = null;
-      releaseSqliteTransactionGate = null;
-      release?.();
-    }
+    const sqlite = _sqlite;
+    const db = _db;
+    return withSqliteConnectionLock(sqlite, async () => {
+      try {
+        sqlite.exec("BEGIN IMMEDIATE");
+        const result = await transactionContext.run({ db, sqlite }, work);
+        sqlite.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try { sqlite.exec("ROLLBACK"); } catch { /* transaction may already be closed */ }
+        throw error;
+      }
+    });
   }
   throw new DatabaseNotConfiguredError();
 }
@@ -615,15 +647,8 @@ export async function withSqliteExclusive<T>(work: (sqlite: Database.Database) =
   if (transactionContext.getStore()) throw new Error("SQLite exclusive work cannot start inside a database transaction");
   if (!_db || !_kind) await connectDatabase();
   if (_kind !== "sqlite" || !_sqlite) throw new Error("SQLite direct migration requires an active SQLite database");
-  while (sqliteTransactionGate) await sqliteTransactionGate;
-  let release: () => void = () => {};
-  sqliteTransactionGate = new Promise<void>((resolve) => { release = resolve; });
-  try {
-    return await work(_sqlite);
-  } finally {
-    sqliteTransactionGate = null;
-    release();
-  }
+  const sqlite = _sqlite;
+  return withSqliteConnectionLock(sqlite, () => work(sqlite));
 }
 
 export function getDatabaseKind() {
@@ -680,7 +705,6 @@ function postgresSql(sqlText: string, params: any[] = []) {
 
 export async function executeRaw(sqlText: string, params: any[] = []) {
   const active = transactionContext.getStore();
-  if (!active && _kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
     const executor = active?.mysqlConnection || _pool;
@@ -691,7 +715,7 @@ export async function executeRaw(sqlText: string, params: any[] = []) {
   if (_kind === "sqlite") {
     const sqlite = active?.sqlite || _sqlite;
     if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return sqlite.prepare(sqlText).run(...normalizedParams);
+    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).run(...normalizedParams));
   }
   if (_kind === "postgresql") {
     const executor = active?.postgresClient || _pgPool;
@@ -704,7 +728,6 @@ export async function executeRaw(sqlText: string, params: any[] = []) {
 
 export async function queryRaw<T = Record<string, any>>(sqlText: string, params: any[] = []): Promise<T[]> {
   const active = transactionContext.getStore();
-  if (!active && _kind === "sqlite" && sqliteTransactionGate) await sqliteTransactionGate;
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
     const executor = active?.mysqlConnection || _pool;
@@ -715,7 +738,7 @@ export async function queryRaw<T = Record<string, any>>(sqlText: string, params:
   if (_kind === "sqlite") {
     const sqlite = active?.sqlite || _sqlite;
     if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return sqlite.prepare(sqlText).all(...normalizedParams) as T[];
+    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).all(...normalizedParams) as T[]);
   }
   if (_kind === "postgresql") {
     const executor = active?.postgresClient || _pgPool;

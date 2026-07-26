@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.174"
+var Version = "2.2.175"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -1830,6 +1830,11 @@ func main() {
 		}
 		return
 	}
+	stateLock, err := acquireAgentStateLock(trafficStateDir)
+	if err != nil {
+		fatal("acquire Agent state lock: %v", err)
+	}
+	defer stateLock.Close()
 
 	startAgentLogMaintenance()
 	// Restore Agent-owned forwarding runtimes before the first panel request.
@@ -3583,6 +3588,16 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 	if strings.TrimSpace(a.StatusType) == "runtime" {
 		mimicAction := isMimicRuntimeAction(a)
 		wireGuardAction := isWireGuardRuntimeAction(a)
+		runRuntimeShellBatch := func(commands []string, phase string) bool {
+			if !mimicAction {
+				return runShellBatch(commands)
+			}
+			commandOK, failureOutput := runShellBatchWithOutput(commands)
+			if !commandOK && failureOutput != "" {
+				actionMessage.set("mimic runtime %s failed: %s", phase, failureOutput)
+			}
+			return commandOK
+		}
 		if shouldSkipRuntimeAction(a) {
 			if mimicAction && shouldLogAgentReport("mimic-runtime-skip", agentReportLogInterval) {
 				logf("mimic runtime sync skipped; cached state healthy diagnostics=%s", mimicRuntimeDiagnostics())
@@ -3620,7 +3635,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		}
 		var managedConfigTx *managedConfigTransaction
 		if ok && len(a.PreCommands) > 0 {
-			ok = runShellBatch(a.PreCommands) && ok
+			ok = runRuntimeShellBatch(a.PreCommands, "prepare") && ok
 		}
 		if ok && len(a.ManagedConfigs) > 0 {
 			var err error
@@ -3632,7 +3647,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			}
 		}
 		if ok {
-			ok = runShellBatch(append(append([]string{}, a.Commands...), a.PostCommands...)) && ok
+			ok = runRuntimeShellBatch(append(append([]string{}, a.Commands...), a.PostCommands...), "sync") && ok
 		}
 		if ok && shouldVerifyManagedRuntimeSync(a) {
 			invalidateLocalRuntimeReadinessCache()
@@ -3648,7 +3663,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 				actionMessage.set("mimic removal rejected: explicit removal token missing")
 				logf("mimic runtime removal rejected commands=%d reason=missing-token", len(a.RemovalCommands))
 			} else {
-				ok = runShellBatch(a.RemovalCommands) && ok
+				ok = runRuntimeShellBatch(a.RemovalCommands, "cleanup") && ok
 			}
 		}
 		if !ok && (managedConfigTx != nil || len(a.RollbackCommands) > 0) {
@@ -4407,7 +4422,7 @@ func mimicConnectionState(output string) string {
 	switch {
 	case strings.Contains(text, "established"):
 		return "established"
-	case strings.Contains(text, "connecting"):
+	case strings.Contains(text, "connecting"), strings.Contains(text, "syn sent"), strings.Contains(text, "syn received"):
 		return "connecting"
 	case strings.Contains(text, "no active connection"), strings.Contains(text, "waiting"):
 		return "waiting"
@@ -6241,6 +6256,14 @@ func iptablesAgentIsIPAddress(value string) bool {
 	return net.ParseIP(iptablesAgentAddress(value)) != nil
 }
 
+func iptablesAgentCountingForwardTargetRule(proto, port, target, targetPort string, inbound bool) string {
+	match := fmt.Sprintf("-s %s --sport %s", target, targetPort)
+	if inbound {
+		match = fmt.Sprintf("-d %s --dport %s", target, targetPort)
+	}
+	return fmt.Sprintf("FORWARD -p %s -m conntrack --ctorigdstport %s %s", proto, port, match)
+}
+
 func iptablesAgentCommand(binary string, args string, optional bool) string {
 	if binary == "ip6tables" {
 		if optional {
@@ -6504,11 +6527,18 @@ const nftProcessTrafficTable = "forwardx_traffic"
 
 func nftProcessCountingCleanupCmd(port string) string {
 	marker := "fwx-stat-" + port + ":"
-	return fmt.Sprintf(`if command -v nft >/dev/null 2>&1 && nft list table inet %s >/dev/null 2>&1; then for c in input output; do while h=$(nft -a list chain inet %s "$c" 2>/dev/null | awk -v marker=%s 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet %s "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`, nftProcessTrafficTable, nftProcessTrafficTable, shellQuote(marker), nftProcessTrafficTable)
+	return fmt.Sprintf(`if command -v nft >/dev/null 2>&1 && nft list table inet %s >/dev/null 2>&1; then for c in input output forward; do while h=$(nft -a list chain inet %s "$c" 2>/dev/null | awk -v marker=%s 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet %s "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`, nftProcessTrafficTable, nftProcessTrafficTable, shellQuote(marker), nftProcessTrafficTable)
 }
 
-func nftProcessCountingCmds(port int, protocol string) []string {
+func nftProcessCountingCmds(port int, protocol string, targetIP string, targetPort int) []string {
 	p := strconv.Itoa(port)
+	target := iptablesAgentAddress(targetIP)
+	hasTarget := targetPort > 0 && iptablesAgentIsIPAddress(target)
+	targetPortText := strconv.Itoa(targetPort)
+	family := "ip"
+	if strings.Contains(target, ":") {
+		family = "ip6"
+	}
 	commands := []string{
 		"command -v nft >/dev/null 2>&1",
 		nftProcessCountingCleanupCmd(p),
@@ -6516,6 +6546,7 @@ func nftProcessCountingCmds(port int, protocol string) []string {
 		"nft add chain inet " + nftProcessTrafficTable + " input '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true",
 		"nft add chain inet " + nftProcessTrafficTable + " output '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true",
 	}
+	commands = append(commands, "nft add chain inet "+nftProcessTrafficTable+" forward '{ type filter hook forward priority mangle; policy accept; }' 2>/dev/null || true")
 	for _, proto := range runtimeProtocols(protocol) {
 		inComment := shellQuote(`"fwx-stat-` + p + `:in"`)
 		outComment := shellQuote(`"fwx-stat-` + p + `:out"`)
@@ -6523,6 +6554,12 @@ func nftProcessCountingCmds(port int, protocol string) []string {
 			fmt.Sprintf(`nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, inComment, nftProcessTrafficTable, proto, proto, p, inComment),
 			fmt.Sprintf(`nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, outComment, nftProcessTrafficTable, proto, proto, p, outComment),
 		)
+		if hasTarget {
+			commands = append(commands,
+				fmt.Sprintf(`nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s daddr %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s daddr %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, inComment, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, inComment),
+				fmt.Sprintf(`nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s saddr %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s saddr %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, outComment, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, outComment),
+			)
+		}
 	}
 	return commands
 }
@@ -6574,11 +6611,14 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 			target := iptablesAgentAddress(targetIP)
 			tp := strconv.Itoa(targetPort)
 			binary := iptablesAgentBinaryForTarget(target)
+			forwardIn := iptablesAgentCountingForwardTargetRule(proto, p, target, tp, true)
+			forwardOut := iptablesAgentCountingForwardTargetRule(proto, p, target, tp, false)
 			cleanupRules := []string{
 				fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
 				fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
 				fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
 				fmt.Sprintf(`INPUT -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
+				// Remove the pre-ctorigdstport rules emitted by older agents.
 				fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
 				fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
 			}
@@ -6586,12 +6626,12 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 				commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
 			}
 			targetRules := []string{
-				fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
-				fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
-				fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
-				fmt.Sprintf(`INPUT -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
-				fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
-				fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
+				// Process forwarders are isolated by their listener hooks above.
+				// A target-only local hook would merge every proxy instance that
+				// dials the same endpoint; only conntrack-qualified FORWARD rules
+				// can safely identify kernel DNAT traffic here.
+				forwardIn + fmt.Sprintf(` -m comment --comment %q`, inMarker),
+				forwardOut + fmt.Sprintf(` -m comment --comment %q`, outMarker),
 			}
 			for _, rule := range targetRules {
 				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
@@ -6607,7 +6647,7 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 		)
 	}
 	iptablesOK := runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(commands)
-	nftOK := runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingCmds(port, protocol))
+	nftOK := runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingCmds(port, protocol, targetIP, targetPort))
 	ok := iptablesOK || nftOK
 	if !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
 		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s iptables=%v nft=%v", p, targetIP, targetPort, protocol, iptablesOK, nftOK)
@@ -9083,13 +9123,21 @@ func post(cfg Config, path string, payload any, out any) error {
 }
 
 func postWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
-	err := postOnceWithClient(client, cfg, path, payload, out)
+	return postWithClientToPanelURL(client, cfg, currentPanelURL(cfg), path, payload, out)
+}
+
+func postToPanelURL(cfg Config, panelURL string, path string, payload any, out any) error {
+	return postWithClientToPanelURL(agentSyncHTTPClient, cfg, panelURL, path, payload, out)
+}
+
+func postWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
+	err := postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
 	if err == nil {
 		return nil
 	}
 	if syncSystemTimeForCommError(err) {
 		logf("retrying agent request after time sync path=%s", path)
-		return postOnceWithClient(client, cfg, path, payload, out)
+		return postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
 	}
 	return err
 }
@@ -9099,6 +9147,10 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 }
 
 func postOnceWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
+	return postOnceWithClientToPanelURL(client, cfg, currentPanelURL(cfg), path, payload, out)
+}
+
+func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
 	startedAt := time.Now()
 	env, err := encrypt(map[string]any{
 		"path":    path,
@@ -9108,7 +9160,10 @@ func postOnceWithClient(client *http.Client, cfg Config, path string, payload an
 		return err
 	}
 	body, _ := json.Marshal(env)
-	panelURL := currentPanelURL(cfg)
+	panelURL = strings.TrimRight(strings.TrimSpace(panelURL), "/")
+	if panelURL == "" {
+		return fmt.Errorf("panel URL is empty")
+	}
 	req, err := http.NewRequest("POST", panelURL+"/api/sync", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -9386,6 +9441,11 @@ func calcMAC(key, iv, ct []byte, ts int64) []byte {
 }
 
 func runShell(cmd string) bool {
+	ok, _ := runShellWithOutput(cmd)
+	return ok
+}
+
+func runShellWithOutput(cmd string) (bool, string) {
 	if len(cmd) > shellInlineMaxBytes {
 		logVerbosef("exec: long shell command bytes=%d via temp script", len(cmd))
 	} else {
@@ -9397,7 +9457,7 @@ func runShell(cmd string) bool {
 	c, cleanup, viaTemp, err := shellCommand(ctx, cmd)
 	if err != nil {
 		logf("exec failed before start err=%v %s", err, shellCommandLogSummary(cmd))
-		return false
+		return false, compactShellFailureOutput(nil, err, false)
 	}
 	out, err := c.CombinedOutput()
 	cleanup()
@@ -9407,7 +9467,7 @@ func runShell(cmd string) bool {
 		c, cleanup, _, err = shellCommandTempScript(ctx, cmd)
 		if err != nil {
 			logf("exec failed before temp retry err=%v %s", err, shellCommandLogSummary(cmd))
-			return false
+			return false, compactShellFailureOutput(nil, err, false)
 		}
 		retriedViaTemp = true
 		viaTemp = true
@@ -9420,16 +9480,16 @@ func runShell(cmd string) bool {
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		logf("exec timeout duration=%s temp=%v retriedTemp=%v outputBytes=%d %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), shellCommandLogSummary(cmd))
-		return false
+		return false, compactShellFailureOutput(out, ctx.Err(), true)
 	}
 	if err != nil {
 		logf("exec failed duration=%s temp=%v retriedTemp=%v outputBytes=%d err=%v %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), err, shellCommandLogSummary(cmd))
-		return false
+		return false, compactShellFailureOutput(out, err, false)
 	}
 	if elapsed >= actionShellSlowThreshold {
 		logf("exec slow duration=%s temp=%v retriedTemp=%v outputBytes=%d %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), shellCommandLogSummary(cmd))
 	}
-	return true
+	return true, ""
 }
 
 func runShellQuiet(cmd string) bool {
@@ -9467,6 +9527,11 @@ func runShellQuiet(cmd string) bool {
 }
 
 func runShellBatch(commands []string) bool {
+	ok, _ := runShellBatchWithOutput(commands)
+	return ok
+}
+
+func runShellBatchWithOutput(commands []string) (bool, string) {
 	filtered := make([]string, 0, len(commands))
 	for _, cmd := range commands {
 		if strings.TrimSpace(cmd) != "" {
@@ -9474,10 +9539,10 @@ func runShellBatch(commands []string) bool {
 		}
 	}
 	if len(filtered) == 0 {
-		return true
+		return true, ""
 	}
 	if len(filtered) == 1 {
-		return runShell(filtered[0])
+		return runShellWithOutput(filtered[0])
 	}
 	var script strings.Builder
 	script.WriteString("set +e\n")
@@ -9488,7 +9553,25 @@ func runShellBatch(commands []string) bool {
 		script.WriteString("\n) || __forwardx_status=1\n")
 	}
 	script.WriteString("exit $__forwardx_status\n")
-	return runShell(script.String())
+	return runShellWithOutput(script.String())
+}
+
+func compactShellFailureOutput(out []byte, err error, timedOut bool) string {
+	detail := strings.Join(strings.Fields(string(out)), " ")
+	if detail == "" {
+		switch {
+		case timedOut:
+			detail = "command timed out"
+		case err != nil:
+			detail = err.Error()
+		}
+	}
+	const maxRunes = 240
+	runes := []rune(detail)
+	if len(runes) > maxRunes {
+		return "..." + string(runes[len(runes)-(maxRunes-3):])
+	}
+	return detail
 }
 
 func isArgumentListTooLong(err error) bool {

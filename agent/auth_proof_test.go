@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -82,6 +83,48 @@ func TestPostOnceSendsBodyBoundAgentAuthProof(t *testing.T) {
 	}
 	if response["success"] != true {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestPostToPanelURLUsesTheTrafficIdentitySnapshot(t *testing.T) {
+	const token = "traffic-panel-snapshot-token"
+	previousPanelURL, _ := runtimePanelURL.Load().(string)
+	t.Cleanup(func() { runtimePanelURL.Store(previousPanelURL) })
+
+	var snapshotRequests atomic.Int32
+	snapshotPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		snapshotRequests.Add(1)
+		response, err := encrypt(map[string]any{"success": true}, token)
+		if err != nil {
+			t.Error(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer snapshotPanel.Close()
+
+	var runtimeRequests atomic.Int32
+	runtimePanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		runtimeRequests.Add(1)
+		http.Error(w, "traffic report used the changed runtime panel", http.StatusConflict)
+	}))
+	defer runtimePanel.Close()
+	runtimePanelURL.Store(runtimePanel.URL)
+
+	var response map[string]any
+	err := postToPanelURL(
+		Config{PanelURL: snapshotPanel.URL, Token: token},
+		snapshotPanel.URL,
+		"/api/agent/traffic",
+		map[string]any{"reportId": "snapshot-report", "s": []any{}},
+		&response,
+	)
+	if err != nil {
+		t.Fatalf("post traffic report to panel snapshot: %v", err)
+	}
+	if snapshotRequests.Load() != 1 || runtimeRequests.Load() != 0 {
+		t.Fatalf("traffic report routing snapshot=%d runtime=%d", snapshotRequests.Load(), runtimeRequests.Load())
 	}
 }
 

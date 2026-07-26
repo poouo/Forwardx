@@ -128,10 +128,12 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
     if (isIpAddress(target) && Number(targetPort) > 0) {
       const targetBinary = iptablesBinaryForTarget(target);
       const targetRules = [
-        ["OUTPUT", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
-        ["POSTROUTING", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
-        ["PREROUTING", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
-        ["INPUT", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
+        // Process forwarders are already isolated by their listener port in
+        // the input/output hooks above. Matching only the shared target in
+        // those hooks would merge traffic from every proxy instance that
+        // dials the same endpoint. Keep target matching for kernel DNAT,
+        // where packets traverse FORWARD and conntrack retains the original
+        // listener port.
         ["FORWARD", `-p ${proto} -m conntrack --ctorigdstport ${port} -d ${target} --dport ${targetPort}`, inMarker],
         ["FORWARD", `-p ${proto} -m conntrack --ctorigdstport ${port} -s ${target} --sport ${targetPort}`, outMarker],
       ] as const;
@@ -397,11 +399,12 @@ export function buildNftForwardCmds(rule: any): string[] {
   for (const proto of protos) {
     const inComment = nftDirectionComment(comment, "in");
     const outComment = nftDirectionComment(comment, "out");
+    const originalPortMatch = `ct original proto-dst ${rule.sourcePort}`;
     const fallbackInCounterRule = nftCounterRuleWithFallback(
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment ${nftCommentLiteral(inComment)}`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} comment ${nftCommentLiteral(inComment)} counter accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} comment ${nftCommentLiteral(inComment)} accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} counter accept comment ${nftCommentLiteral(inComment)}`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} comment ${nftCommentLiteral(inComment)} counter accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} comment ${nftCommentLiteral(inComment)} accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} accept`,
       `${inComment}:${proto}`,
     );
     cmds.push(nftDnatCounterRuleWithFallback(
@@ -413,13 +416,13 @@ export function buildNftForwardCmds(rule: any): string[] {
       `${inComment}:${proto}`,
     ));
     cmds.push(nftCounterRuleWithFallback(
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related counter accept comment ${nftCommentLiteral(outComment)}`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related comment ${nftCommentLiteral(outComment)} counter accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related comment ${nftCommentLiteral(outComment)} accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related counter accept comment ${nftCommentLiteral(outComment)}`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related comment ${nftCommentLiteral(outComment)} counter accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related comment ${nftCommentLiteral(outComment)} accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} accept`,
       `${outComment}:${proto}`,
     ));
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment ${nftCommentLiteral(comment)}`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} accept comment ${nftCommentLiteral(comment)}`);
   }
   return cmds;
 }
@@ -720,7 +723,7 @@ export function restartMimicServiceIfConfigChangedCmd(svcNameRaw: string, config
     startService,
     startAndWait,
     ensureBpfDropIn,
-    `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); mimic_needs_start=0; if [ "$new_hash" != "$old_hash" ] || [ "$mimic_dropin_changed" = "1" ] || ! { ${alreadyRunning}; } || ! mimic_hooks_ready; then mimic_needs_start=1; fi`,
+    `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); mimic_needs_start=0; if [ "\${mimic_force_restart:-0}" = "1" ] || [ "$new_hash" != "$old_hash" ] || [ "$mimic_dropin_changed" = "1" ] || ! { ${alreadyRunning}; } || ! mimic_hooks_ready; then mimic_needs_start=1; fi`,
     `if [ "$mimic_needs_start" = "1" ]; then`,
     `  mimic_cleanup_runtime`,
     `  mimic_reload_module || exit 1`,

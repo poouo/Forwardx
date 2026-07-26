@@ -15,7 +15,7 @@ import {
   tryReserveHostPort,
   type HostPortReservation,
 } from "../portReservations";
-import { withKeyedTaskLock } from "../keyedTaskLock";
+import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
 import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
 
@@ -479,15 +479,22 @@ async function assertForwardGroupPortWithinUserPlanRange(options: {
 }
 
 async function settleTrafficBillingForDeletedRule(rule: any) {
-  const billingResource = await db.findTrafficBillingResourceForRule(rule);
-  const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
-  const resource = billingResource || fallback;
-  if (!resource) return null;
-  const billed = await db.settleTrafficBillingRuleOnDelete({
-    userId: Number(rule.userId),
-    ruleId: Number(rule.id),
-    resourceType: resource.resourceType,
-    resourceId: resource.resourceId,
+  const billed = await withKeyedTaskLock(trafficBillingUserLockKey(rule.userId), async () => {
+    const billingResource = await db.findTrafficBillingResourceForRule(rule);
+    const fallback = db.trafficBillingResourceCandidatesForRule(rule)[0];
+    const resource = billingResource || fallback;
+    const result = resource
+      ? await db.settleTrafficBillingRuleOnDelete({
+        userId: Number(rule.userId),
+        ruleId: Number(rule.id),
+        resourceType: resource.resourceType,
+        resourceId: resource.resourceId,
+      })
+      : null;
+    // Keep settlement and the state transition under the same user lock so a
+    // traffic report cannot create fresh unsettled usage between them.
+    await db.markForwardRulePendingDelete(Number(rule.id));
+    return result;
   });
   if (billed && Number(billed.balanceAfterCents) < 0) {
     await db.setUserForwardAccess(Number(rule.userId), false, "traffic_billing_balance");
@@ -524,7 +531,6 @@ async function markTemplateChildrenPendingDelete(
     if (tunnelId) {
       await db.updateTunnel(tunnelId, { isRunning: false } as any);
     }
-    await db.markForwardRulePendingDelete(Number(child.id));
   }
   if (!options.deferRefresh) await refreshPendingTemplateChildren(childRules as any[], reason);
   return childRules;
@@ -559,11 +565,9 @@ export async function deleteForwardRuleForActor(
           await db.updateTunnel(childTunnelId, { isRunning: false } as any);
           if (tunnel) await pushTunnelEndpointRefresh(tunnel, `${reasonPrefix}-group-deleted`);
         }
-        await db.markForwardRulePendingDelete(Number(child.id));
         pushAgentRefresh(Number(child.hostId), `${reasonPrefix}-group-deleted`);
       }
       collectBilling(await settleTrafficBillingForDeletedRule(rule));
-      await db.markForwardRulePendingDelete(ruleId);
       await db.runForwardGroupFailover(Number((rule as any).forwardGroupId || 0));
       // Templates never run on an Agent, so they cannot receive a runtime stop ACK.
       // Their managed children remain pending until each Agent confirms removal.
@@ -577,7 +581,6 @@ export async function deleteForwardRuleForActor(
       await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
       if (tunnel) await pushTunnelEndpointRefresh(tunnel, `${reasonPrefix}-deleted`);
     }
-    await db.markForwardRulePendingDelete(ruleId);
     pushAgentRefresh(rule.hostId, `${reasonPrefix}-deleted`);
     return { success: true, rule, childRules: [] as any[], chargedCents, balanceAfterCents };
   });

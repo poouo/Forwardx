@@ -59,6 +59,37 @@ test("kernel forwarding gets nft forward-hook counters matched on the DNAT targe
   assert.match(commands, /for c in input output forward; do/);
 });
 
+test("native nft return counters keep shared targets isolated by original listener port", () => {
+  const commands = buildNftForwardCmds({
+    id: 42,
+    sourcePort: 22022,
+    targetIp: "203.0.113.10",
+    targetPort: 443,
+    protocol: "tcp",
+  }).join("\n");
+
+  assert.match(commands, /forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 ct original proto-dst 22022 counter accept comment '\"fwx-rule-42-in\"'/);
+  assert.match(commands, /forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 ct original proto-dst 22022 comment '\"fwx-rule-42-in\"' counter accept/);
+  assert.match(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct original proto-dst 22022 ct state established,related counter accept comment '\"fwx-rule-42-out\"'/);
+  assert.match(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct original proto-dst 22022 ct state established,related comment '\"fwx-rule-42-out\"' counter accept/);
+  assert.match(commands, /forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 ct original proto-dst 22022 accept comment '\"fwx-rule-42\"'/);
+  assert.doesNotMatch(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct state established,related counter accept comment/);
+});
+
+test("process counters do not attribute shared target traffic to every listener", () => {
+  const commands = buildCountingChainCmds(22022, "203.0.113.10", 443, "tcp").join("\n");
+
+  // Listener hooks account realm/socat/gost/nginx proxy traffic. Target-only
+  // local hooks cannot identify which proxy instance opened the connection,
+  // so only the conntrack-qualified FORWARD rules remain for kernel DNAT.
+  assert.doesNotMatch(commands, /-A OUTPUT .* -d 203\.0\.113\.10 --dport 443 .*fwx-stat-22022:in/);
+  assert.doesNotMatch(commands, /-A POSTROUTING .* -d 203\.0\.113\.10 --dport 443 .*fwx-stat-22022:in/);
+  assert.doesNotMatch(commands, /-A PREROUTING .* -s 203\.0\.113\.10 --sport 443 .*fwx-stat-22022:out/);
+  assert.doesNotMatch(commands, /-A INPUT .* -s 203\.0\.113\.10 --sport 443 .*fwx-stat-22022:out/);
+  assert.match(commands, /-A FORWARD .*--ctorigdstport 22022 -d 203\.0\.113\.10 --dport 443 .*fwx-stat-22022:in/);
+  assert.match(commands, /-A FORWARD .*--ctorigdstport 22022 -s 203\.0\.113\.10 --sport 443 .*fwx-stat-22022:out/);
+});
+
 test("forward-hook counters isolate listeners that share one DNAT target", () => {
   const first = buildCountingChainCmds(22022, "203.0.113.10", 443, "tcp").join("\n");
   const second = buildCountingChainCmds(22023, "203.0.113.10", 443, "tcp").join("\n");
@@ -98,6 +129,8 @@ test("Mimic service reconciliation cleans stale hooks and has an skb fallback", 
   assert.match(commands, /forwardx-bpf\.conf/);
   assert.match(commands, /CAP_BPF/);
   assert.match(commands, /mimic_dropin_changed/);
+  assert.match(commands, /\$\{mimic_force_restart:-0\}/);
+  assert.match(commands, /if \[ "\$mimic_needs_start" = "1" \]; then\s+mimic_cleanup_runtime/);
   assert.match(commands, /virtio\|virtio_net\|veth\|tap\|tun\|\*\) mimic_xdp_mode=skb/);
   assert.match(commands, /mimic_start_service\(\)/);
   assert.match(commands, /mimic_start_output="\$\(mimic_start_service 2>&1\)"/);

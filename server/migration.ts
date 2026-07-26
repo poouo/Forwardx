@@ -15,7 +15,6 @@ import {
   nowDate,
   queryRaw,
   readDatabaseConfig,
-  requireSqlite,
   withDatabaseTransaction,
   withSqliteExclusive,
 } from "./dbRuntime";
@@ -183,6 +182,7 @@ const MIGRATION_RUNTIME_TIMEOUT_MS = Math.max(
     : 15 * 60 * 1000,
 );
 const MIGRATION_RUNTIME_POLL_MS = 2_000;
+const DIRECT_SQLITE_OPTIONAL_SOURCE_TABLES = new Set(["agent_traffic_reports"]);
 
 function normalizePanelUrl(url: string) {
   const value = url.trim().replace(/\/+$/, "");
@@ -331,7 +331,7 @@ function validateSqliteMigrationFile(filePath: string) {
 async function createDirectSqliteBackup(meta: Omit<DirectSqliteMigrationMeta, "byteLength" | "sha256">) {
   const filePath = sqliteMigrationTempPath(`export-${Date.now()}`);
   try {
-    await requireSqlite().backup(filePath);
+    await withSqliteExclusive((sqlite) => sqlite.backup(filePath));
     validateSqliteMigrationFile(filePath);
     const stat = await fs.promises.stat(filePath);
     const sha256 = await sha256File(filePath);
@@ -709,6 +709,7 @@ const IMPORT_TABLE_ORDER = [
   "forward_group_latency_stats",
   "traffic_stats",
   "traffic_stat_buckets",
+  "agent_traffic_reports",
   "tcping_stats",
   "forward_tests",
   "forward_group_events",
@@ -1205,6 +1206,17 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
         },
       };
 
+    case "agent_traffic_reports":
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      row.producerId = String(source.producerId || row.producerId || "").trim().slice(0, 128) || null;
+      row.reportId = String(source.reportId || row.reportId || "").slice(0, 128);
+      return row.reportId ? {
+        row,
+        existingWhere: row.producerId
+          ? { hostId: row.hostId, producerId: row.producerId }
+          : { hostId: row.hostId, reportId: row.reportId },
+      } : null;
+
     case "tunnel_latency_stats":
       row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
       return { row };
@@ -1547,7 +1559,9 @@ export async function importDirectSqliteBackup(
         "SELECT name FROM migration_source.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
       ).all() as Array<{ name: string }>).map((row) => String(row.name)));
       for (const table of tableDefs) {
-        if (!sourceTables.has(table.name)) throw new Error(`源 SQLite 数据库缺少数据表 ${table.name}`);
+        if (!sourceTables.has(table.name) && !DIRECT_SQLITE_OPTIONAL_SOURCE_TABLES.has(table.name)) {
+          throw new Error(`源 SQLite 数据库缺少数据表 ${table.name}`);
+        }
       }
 
       runtimeSnapshot.tables.hosts = sqlite.prepare("SELECT * FROM migration_source.hosts").all() as Record<string, any>[];
@@ -1563,6 +1577,7 @@ export async function importDirectSqliteBackup(
           sqlite.exec(`DELETE FROM main.${sqliteIdentifier(table.name)}`);
         }
         for (const table of tableDefs) {
+          if (!sourceTables.has(table.name)) continue;
           const columns = table.columns.map((column) => sqliteIdentifier(column.name)).join(", ");
           sqlite.exec(
             `INSERT INTO main.${sqliteIdentifier(table.name)} (${columns}) SELECT ${columns} FROM migration_source.${sqliteIdentifier(table.name)}`,

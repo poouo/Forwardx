@@ -67,3 +67,72 @@ func TestActionSerialLocksOnlyBlockSharedResources(t *testing.T) {
 		}
 	}
 }
+
+func TestAcquireCurrentActionSerialLocksRejectsActionMadeStaleWhileWaiting(t *testing.T) {
+	actionEpochMu.Lock()
+	previousIssuedAt := latestActionIssuedAt
+	latestActionIssuedAt = map[string]int64{}
+	actionEpochMu.Unlock()
+	t.Cleanup(func() {
+		actionEpochMu.Lock()
+		latestActionIssuedAt = previousIssuedAt
+		actionEpochMu.Unlock()
+	})
+
+	older := action{
+		StatusType:  "runtime",
+		ForwardType: "mimic-runtime-sync",
+		Op:          "apply",
+		IssuedAt:    100,
+		Commands:    []string{"disable-mimic"},
+	}
+	if isOlderAction(older, true) {
+		t.Fatal("initial Mimic action unexpectedly stale")
+	}
+
+	releaseBlocker := acquireActionSerialLocks(actionSerialKeys(older))
+	if releaseBlocker == nil {
+		t.Fatal("expected Mimic runtime serial lock")
+	}
+	blockerReleased := false
+	t.Cleanup(func() {
+		if !blockerReleased {
+			releaseBlocker()
+		}
+	})
+
+	started := make(chan struct{})
+	currentResult := make(chan bool, 1)
+	go func() {
+		close(started)
+		unlock, current := acquireCurrentActionSerialLocks(older)
+		if unlock != nil {
+			unlock()
+		}
+		currentResult <- current
+	}()
+	<-started
+	select {
+	case <-currentResult:
+		t.Fatal("older Mimic action bypassed the held serial lock")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	newer := older
+	newer.IssuedAt = 200
+	newer.Commands = []string{"enable-mimic"}
+	if isOlderAction(newer, true) {
+		t.Fatal("newer Mimic action unexpectedly stale")
+	}
+
+	releaseBlocker()
+	blockerReleased = true
+	select {
+	case current := <-currentResult:
+		if current {
+			t.Fatal("older Mimic action remained executable after a newer action arrived while it waited")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting Mimic action did not resume after releasing the serial lock")
+	}
+}

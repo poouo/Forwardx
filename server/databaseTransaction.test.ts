@@ -132,12 +132,18 @@ test("SQLite billing transactions roll back and serialize concurrent updates", (
     import assert from "node:assert/strict";
     import path from "node:path";
     import { pathToFileURL } from "node:url";
+    import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
     const url = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
     const runtime = await import(url("server/dbRuntime.ts"));
     const schema = await import(url("server/dbSchema.ts"));
+    const isolationWrites = sqliteTable("transaction_isolation_writes", {
+      id: integer("id").primaryKey({ autoIncrement: true }),
+      value: text("value").notNull(),
+    });
     try {
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
       await schema.ensureDatabaseSchema();
+      await runtime.executeRaw('CREATE TABLE "transaction_isolation_writes" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "value" TEXT NOT NULL)');
       await runtime.executeRaw('INSERT INTO "users" ("id", "username", "password", "name", "role", "balanceCents") VALUES (?, ?, ?, ?, ?, ?)', [1, "alice", "x", "Alice", "user", 1000]);
 
       await assert.rejects(() => runtime.withDatabaseTransaction(async () => {
@@ -148,6 +154,74 @@ test("SQLite billing transactions roll back and serialize concurrent updates", (
         throw new Error("rollback");
       }), /rollback/);
       assert.equal((await runtime.queryRaw('SELECT "balanceCents" FROM "users" WHERE "id" = ?', [1]))[0].balanceCents, 1000);
+
+      const delayedDb = await runtime.getDb();
+      let markDelayedTransactionStarted;
+      const delayedTransactionStarted = new Promise((resolve) => { markDelayedTransactionStarted = resolve; });
+      let releaseDelayedTransaction;
+      const delayedTransactionHold = new Promise((resolve) => { releaseDelayedTransaction = resolve; });
+      const delayedTransaction = runtime.withDatabaseTransaction(async () => {
+        const transactionDb = await runtime.getDb();
+        await transactionDb.insert(isolationWrites).values({ value: "rolled-back-transaction-write" });
+        markDelayedTransactionStarted();
+        await delayedTransactionHold;
+        throw new Error("rollback-delayed-transaction");
+      });
+      const delayedTransactionFailure = assert.rejects(delayedTransaction, /rollback-delayed-transaction/);
+      await delayedTransactionStarted;
+      let delayedOutsideWriteResolved = false;
+      const delayedOutsideWrite = Promise.resolve(
+        delayedDb.insert(isolationWrites).values({ value: "delayed-outside-write" }),
+      ).then(() => { delayedOutsideWriteResolved = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(delayedOutsideWriteResolved, false, "a Drizzle query must wait when its database object predates the transaction");
+      releaseDelayedTransaction();
+      await delayedTransactionFailure;
+      await delayedOutsideWrite;
+      assert.deepEqual(
+        await runtime.queryRaw('SELECT "value" FROM "transaction_isolation_writes" ORDER BY "id"'),
+        [{ value: "delayed-outside-write" }],
+      );
+
+      let markFirstTransactionStarted;
+      const firstTransactionStarted = new Promise((resolve) => { markFirstTransactionStarted = resolve; });
+      let releaseFirstTransaction;
+      const firstTransactionHold = new Promise((resolve) => { releaseFirstTransaction = resolve; });
+      const firstTransaction = runtime.withDatabaseTransaction(async () => {
+        markFirstTransactionStarted();
+        await firstTransactionHold;
+      });
+      await firstTransactionStarted;
+
+      let markSecondTransactionStarted;
+      const secondTransactionStarted = new Promise((resolve) => { markSecondTransactionStarted = resolve; });
+      let releaseSecondTransaction;
+      const secondTransactionHold = new Promise((resolve) => { releaseSecondTransaction = resolve; });
+      const secondTransaction = runtime.withDatabaseTransaction(async () => {
+        await runtime.executeRaw('INSERT INTO "transaction_isolation_writes" ("value") VALUES (?)', ["rolled-back-second-transaction"]);
+        markSecondTransactionStarted();
+        await secondTransactionHold;
+        throw new Error("rollback-second-transaction");
+      });
+      const secondTransactionFailure = assert.rejects(secondTransaction, /rollback-second-transaction/);
+      let queuedOutsideWriteResolved = false;
+      const queuedOutsideWrite = runtime.executeRaw(
+        'INSERT INTO "transaction_isolation_writes" ("value") VALUES (?)',
+        ["queued-outside-write"],
+      ).then(() => { queuedOutsideWriteResolved = true; });
+
+      releaseFirstTransaction();
+      await firstTransaction;
+      await secondTransactionStarted;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(queuedOutsideWriteResolved, false, "a queued write must re-check serialization after the next transaction starts");
+      releaseSecondTransaction();
+      await secondTransactionFailure;
+      await queuedOutsideWrite;
+      assert.deepEqual(
+        await runtime.queryRaw('SELECT "value" FROM "transaction_isolation_writes" ORDER BY "id"'),
+        [{ value: "delayed-outside-write" }, { value: "queued-outside-write" }],
+      );
 
       const billing = await import(url("server/repositories/billingRepository.ts"));
       await Promise.all(Array.from({ length: 20 }, () => billing.addUserBalance(1, -10, { type: "purchase", description: "concurrent" })));

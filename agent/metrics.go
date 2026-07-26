@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -52,6 +59,12 @@ var (
 	lastRuleTrafficReportAt  time.Time
 	lastHostTrafficReportAt  time.Time
 	activeTrafficReportNanos atomic.Int64
+	trafficReportSequence    atomic.Uint64
+)
+
+const (
+	pendingTrafficReportFile  = "traffic_report.pending"
+	trafficReportIdentityFile = "traffic_report.identity"
 )
 
 type networkTargetDNSCacheEntry struct {
@@ -77,6 +90,15 @@ type localRuleState struct {
 type trafficCounters struct {
 	In  uint64
 	Out uint64
+}
+
+func shouldCollectRuleTraffic(state localRuleState) bool {
+	if state.RuleID <= 0 {
+		return false
+	}
+	// ForwardX entry runtimes report payload bytes themselves. Sampling their
+	// listener mangle counters as well would account the same traffic twice.
+	return !strings.EqualFold(strings.TrimSpace(state.ForwardType), "forwardx")
 }
 
 // maxTrafficCounters merges two counter samples for the same port by keeping the
@@ -110,6 +132,23 @@ type trafficPrevState struct {
 type trafficBaselineUpdate struct {
 	port  string
 	state trafficPrevState
+}
+
+type persistedTrafficBaseline struct {
+	Port   string `json:"port"`
+	RuleID int    `json:"ruleId"`
+	In     uint64 `json:"in"`
+	Out    uint64 `json:"out"`
+	Conns  uint64 `json:"conns"`
+}
+
+type pendingTrafficReport struct {
+	Payload        map[string]any             `json:"payload"`
+	Baselines      []persistedTrafficBaseline `json:"baselines,omitempty"`
+	Identity       string                     `json:"identity"`
+	HasRuleTraffic bool                       `json:"hasRuleTraffic"`
+	HasHostTraffic bool                       `json:"hasHostTraffic"`
+	StatCount      int                        `json:"statCount"`
 }
 
 type tcpingTask struct {
@@ -152,6 +191,470 @@ func hostTrafficSnapshot() map[string]any {
 		"bytesIn":  netBytes(0),
 		"bytesOut": netBytes(1),
 	}
+}
+
+func newTrafficReportID() string {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err == nil {
+		return "agent-" + hex.EncodeToString(nonce)
+	}
+	// Keep collection available on systems whose entropy source is temporarily
+	// unavailable. The process-local sequence prevents same-tick collisions.
+	return fmt.Sprintf("agent-%x-%x", time.Now().UnixNano(), trafficReportSequence.Add(1))
+}
+
+func trafficReportProducerID(identity string) string {
+	return "agent-" + strings.TrimSpace(identity)
+}
+
+func pendingTrafficReportPath() string {
+	return trafficStateDir + "/" + pendingTrafficReportFile
+}
+
+func trafficReportIdentity(cfg Config) string {
+	return trafficReportIdentityForPanel(cfg, currentPanelURL(cfg))
+}
+
+func trafficReportIdentityForPanel(cfg Config, panelURL string) string {
+	panelURL = strings.TrimRight(strings.TrimSpace(panelURL), "/")
+	// Authentication and encryption use the exact configured token bytes.
+	// Identity ownership must use the same semantics.
+	hash := sha256.Sum256([]byte(panelURL + "\x00" + cfg.Token))
+	return hex.EncodeToString(hash[:])
+}
+
+func writeTrafficStateFile(path string, data []byte, mode os.FileMode) error {
+	if err := ensureTrafficStateDirectoryDurable(trafficStateDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(trafficStateDir, 0755); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(trafficStateDir, ".traffic-state-*")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+	}
+	if err := file.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := replaceTrafficStateFile(tmp, path, trafficStateDir); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func ensureTrafficReportIdentity(identity string) error {
+	if strings.TrimSpace(identity) == "" {
+		return fmt.Errorf("traffic report identity is empty")
+	}
+	if err := ensureTrafficStateDirectoryDurable(trafficStateDir); err != nil {
+		return err
+	}
+	path := trafficStateDir + "/" + trafficReportIdentityFile
+	raw, err := os.ReadFile(path)
+	if err == nil && strings.TrimSpace(string(raw)) == identity {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// An absent identity is legacy state with unknown ownership. Clearing its
+	// baselines is conservative, but prevents a simultaneous Panel/token change
+	// during upgrade from attributing old traffic to the new identity.
+	if err == nil || os.IsNotExist(err) {
+		if clearErr := clearTrafficBaselinesForIdentityChange(); clearErr != nil {
+			return clearErr
+		}
+	}
+	return writeTrafficStateFile(path, []byte(identity+"\n"), 0600)
+}
+
+func trafficReportString(payload map[string]any, field string) (string, bool) {
+	value, ok := payload[field].(string)
+	if !ok || value == "" || value != strings.TrimSpace(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func trafficReportSlice(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		return typed, true
+	case [][]any:
+		result := make([]any, len(typed))
+		for index := range typed {
+			result[index] = typed[index]
+		}
+		return result, true
+	case []map[string]any:
+		result := make([]any, len(typed))
+		for index := range typed {
+			result[index] = typed[index]
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func trafficReportInteger(value any) (int, bool) {
+	var number int64
+	switch typed := value.(type) {
+	case int:
+		return typed, typed > 0
+	case int32:
+		number = int64(typed)
+	case int64:
+		number = typed
+	case uint:
+		if uint64(typed) > uint64(^uint(0)>>1) {
+			return 0, false
+		}
+		return int(typed), typed > 0
+	case uint32:
+		number = int64(typed)
+	case uint64:
+		if typed > uint64(^uint(0)>>1) {
+			return 0, false
+		}
+		return int(typed), typed > 0
+	case float64:
+		if typed <= 0 || typed != math.Trunc(typed) {
+			return 0, false
+		}
+		parsed, err := strconv.ParseInt(strconv.FormatFloat(typed, 'f', -1, 64), 10, strconv.IntSize)
+		return int(parsed), err == nil
+	case json.Number:
+		parsed, err := strconv.ParseInt(typed.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	default:
+		return 0, false
+	}
+	if number <= 0 || (strconv.IntSize == 32 && number > math.MaxInt32) {
+		return 0, false
+	}
+	return int(number), true
+}
+
+func trafficReportUint(value any) (uint64, bool) {
+	switch typed := value.(type) {
+	case uint64:
+		return typed, true
+	case uint:
+		return uint64(typed), true
+	case uint32:
+		return uint64(typed), true
+	case int:
+		return uint64(typed), typed >= 0
+	case int32:
+		return uint64(typed), typed >= 0
+	case int64:
+		return uint64(typed), typed >= 0
+	case float64:
+		if typed < 0 || typed != math.Trunc(typed) {
+			return 0, false
+		}
+		parsed, err := strconv.ParseUint(strconv.FormatFloat(typed, 'f', -1, 64), 10, 64)
+		return parsed, err == nil
+	case json.Number:
+		parsed, err := strconv.ParseUint(typed.String(), 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func validateTrafficReportNumbers(values ...any) bool {
+	for _, value := range values {
+		if _, ok := trafficReportUint(value); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func pendingTrafficPayloadSummary(payload map[string]any) ([]int, bool, error) {
+	objectStats, hasObjectStats := payload["stats"]
+	compactStats, hasCompactStats := payload["s"]
+	if hasObjectStats == hasCompactStats {
+		return nil, false, fmt.Errorf("traffic report must contain exactly one stats representation")
+	}
+
+	ruleIDs := []int{}
+	if hasObjectStats {
+		rows, ok := trafficReportSlice(objectStats)
+		if !ok {
+			return nil, false, fmt.Errorf("traffic report stats is not an array")
+		}
+		for _, rawRow := range rows {
+			row, ok := rawRow.(map[string]any)
+			if !ok {
+				return nil, false, fmt.Errorf("traffic report stats contains an invalid row")
+			}
+			ruleID, ok := trafficReportInteger(row["ruleId"])
+			if !ok || !validateTrafficReportNumbers(row["bytesIn"], row["bytesOut"], row["connections"]) {
+				return nil, false, fmt.Errorf("traffic report stats contains invalid counters")
+			}
+			ruleIDs = append(ruleIDs, ruleID)
+		}
+		if _, exists := payload["h"]; exists {
+			return nil, false, fmt.Errorf("traffic report mixes compact and object host traffic")
+		}
+		host, hasHost := payload["hostTraffic"]
+		if hasHost {
+			values, ok := host.(map[string]any)
+			if !ok || !validateTrafficReportNumbers(values["bytesIn"], values["bytesOut"]) {
+				return nil, false, fmt.Errorf("traffic report host traffic is invalid")
+			}
+		}
+		return ruleIDs, hasHost, nil
+	}
+
+	rows, ok := trafficReportSlice(compactStats)
+	if !ok {
+		return nil, false, fmt.Errorf("traffic report compact stats is not an array")
+	}
+	for _, rawRow := range rows {
+		row, ok := trafficReportSlice(rawRow)
+		if !ok || len(row) != 4 {
+			return nil, false, fmt.Errorf("traffic report compact stats contains an invalid row")
+		}
+		ruleID, ok := trafficReportInteger(row[0])
+		if !ok || !validateTrafficReportNumbers(row[1], row[2], row[3]) {
+			return nil, false, fmt.Errorf("traffic report compact stats contains invalid counters")
+		}
+		ruleIDs = append(ruleIDs, ruleID)
+	}
+	if _, exists := payload["hostTraffic"]; exists {
+		return nil, false, fmt.Errorf("traffic report mixes object and compact host traffic")
+	}
+	host, hasHost := payload["h"]
+	if hasHost {
+		values, ok := trafficReportSlice(host)
+		if !ok || len(values) != 2 || !validateTrafficReportNumbers(values...) {
+			return nil, false, fmt.Errorf("traffic report compact host traffic is invalid")
+		}
+	}
+	return ruleIDs, hasHost, nil
+}
+
+func validatePendingTrafficReport(report pendingTrafficReport) error {
+	identity := report.Identity
+	decodedIdentity, err := hex.DecodeString(identity)
+	if err != nil || len(decodedIdentity) != sha256.Size || identity != strings.ToLower(identity) {
+		return fmt.Errorf("traffic report identity is invalid")
+	}
+	reportID, ok := trafficReportString(report.Payload, "reportId")
+	if !ok || len(reportID) > 128 {
+		return fmt.Errorf("traffic report id is invalid")
+	}
+	producerID, ok := trafficReportString(report.Payload, "reportProducerId")
+	if !ok || len(producerID) > 128 || producerID != trafficReportProducerID(identity) {
+		return fmt.Errorf("traffic report producer id is invalid")
+	}
+	ruleIDs, hasHostTraffic, err := pendingTrafficPayloadSummary(report.Payload)
+	if err != nil {
+		return err
+	}
+	if report.StatCount != len(ruleIDs) || report.StatCount != len(report.Baselines) {
+		return fmt.Errorf("traffic report stats and baselines do not match")
+	}
+	if report.HasRuleTraffic != (report.StatCount > 0) || report.HasHostTraffic != hasHostTraffic {
+		return fmt.Errorf("traffic report content flags do not match payload")
+	}
+	if report.StatCount == 0 && !report.HasHostTraffic {
+		return fmt.Errorf("traffic report has no traffic payload")
+	}
+	ruleCounts := make(map[int]int, len(ruleIDs))
+	for _, ruleID := range ruleIDs {
+		ruleCounts[ruleID]++
+	}
+	ports := make(map[string]struct{}, len(report.Baselines))
+	for _, baseline := range report.Baselines {
+		portText := strings.TrimSpace(baseline.Port)
+		port, err := strconv.Atoi(portText)
+		if err != nil || port <= 0 || port > 65535 || strconv.Itoa(port) != portText {
+			return fmt.Errorf("traffic report baseline port is invalid")
+		}
+		if _, duplicate := ports[portText]; duplicate {
+			return fmt.Errorf("traffic report contains duplicate baseline port %s", portText)
+		}
+		ports[portText] = struct{}{}
+		if baseline.RuleID <= 0 || ruleCounts[baseline.RuleID] <= 0 {
+			return fmt.Errorf("traffic report baseline rule does not match payload")
+		}
+		ruleCounts[baseline.RuleID]--
+	}
+	for _, remaining := range ruleCounts {
+		if remaining != 0 {
+			return fmt.Errorf("traffic report baseline rules do not match payload")
+		}
+	}
+	return nil
+}
+
+func persistedTrafficBaselines(updates []trafficBaselineUpdate) []persistedTrafficBaseline {
+	baselines := make([]persistedTrafficBaseline, 0, len(updates))
+	for _, update := range updates {
+		baselines = append(baselines, persistedTrafficBaseline{
+			Port: update.port, RuleID: update.state.ruleID,
+			In: update.state.in, Out: update.state.out, Conns: update.state.conns,
+		})
+	}
+	return baselines
+}
+
+func pendingTrafficBaselineUpdates(baselines []persistedTrafficBaseline) []trafficBaselineUpdate {
+	updates := make([]trafficBaselineUpdate, 0, len(baselines))
+	for _, baseline := range baselines {
+		if strings.TrimSpace(baseline.Port) == "" || baseline.RuleID <= 0 {
+			continue
+		}
+		updates = append(updates, trafficBaselineUpdate{
+			port: baseline.Port,
+			state: trafficPrevState{
+				ruleID: baseline.RuleID, in: baseline.In, out: baseline.Out, conns: baseline.Conns,
+			},
+		})
+	}
+	return updates
+}
+
+func savePendingTrafficReport(report pendingTrafficReport) error {
+	if err := validatePendingTrafficReport(report); err != nil {
+		return fmt.Errorf("validate pending traffic report: %w", err)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	return writeTrafficStateFile(pendingTrafficReportPath(), raw, 0600)
+}
+
+func clearTrafficBaselinesForIdentityChange() error {
+	if err := ensureTrafficStateDirectoryDurable(trafficStateDir); err != nil {
+		return err
+	}
+	files, err := os.ReadDir(trafficStateDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, file := range files {
+		name := file.Name()
+		if strings.HasPrefix(name, "traffic_") && strings.HasSuffix(name, ".prev") {
+			if err := removeTrafficStateFile(trafficStateDir+"/"+name, trafficStateDir); err != nil {
+				return err
+			}
+		}
+	}
+	if err := removeTrafficStateFile(pendingTrafficReportPath(), trafficStateDir); err != nil {
+		return err
+	}
+	trafficPrevMu.Lock()
+	trafficPrevCache = map[string]trafficPrevState{}
+	trafficPrevMu.Unlock()
+	lastRuleTrafficReportAt = time.Time{}
+	lastHostTrafficReportAt = time.Time{}
+	return nil
+}
+
+func loadPendingTrafficReport(expectedIdentity string) (pendingTrafficReport, bool, error) {
+	if err := ensureTrafficStateDirectoryDurable(trafficStateDir); err != nil {
+		return pendingTrafficReport{}, false, err
+	}
+	raw, err := os.ReadFile(pendingTrafficReportPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return pendingTrafficReport{}, false, nil
+		}
+		return pendingTrafficReport{}, false, err
+	}
+	var report pendingTrafficReport
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&report); err != nil {
+		return pendingTrafficReport{}, false, fmt.Errorf("decode pending traffic report: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return pendingTrafficReport{}, false, fmt.Errorf("decode pending traffic report: multiple JSON values")
+		}
+		return pendingTrafficReport{}, false, fmt.Errorf("decode pending traffic report trailing data: %w", err)
+	}
+	if err := validatePendingTrafficReport(report); err != nil {
+		return pendingTrafficReport{}, false, fmt.Errorf("validate pending traffic report: %w", err)
+	}
+	if expectedIdentity != "" && report.Identity != expectedIdentity {
+		if err := clearTrafficBaselinesForIdentityChange(); err != nil {
+			return pendingTrafficReport{}, false, err
+		}
+		return pendingTrafficReport{}, false, nil
+	}
+	return report, true, nil
+}
+
+func completePendingTrafficReport(report pendingTrafficReport) error {
+	if err := ensureTrafficStateDirectoryDurable(trafficStateDir); err != nil {
+		return err
+	}
+	if err := validatePendingTrafficReport(report); err != nil {
+		return fmt.Errorf("validate pending traffic report: %w", err)
+	}
+	updates := pendingTrafficBaselineUpdates(report.Baselines)
+	currentUpdates := updates[:0]
+	for _, update := range updates {
+		rawRuleID, err := os.ReadFile(trafficStateDir + "/port_" + update.port + ".rule")
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read current traffic rule port %s: %w", update.port, err)
+		}
+		currentRuleID, err := strconv.Atoi(strings.TrimSpace(string(rawRuleID)))
+		if err != nil || currentRuleID <= 0 {
+			return fmt.Errorf("read current traffic rule port %s: invalid rule id", update.port)
+		}
+		if currentRuleID == update.state.ruleID {
+			currentUpdates = append(currentUpdates, update)
+		}
+	}
+	if err := commitTrafficBaselines(true, currentUpdates); err != nil {
+		return err
+	}
+	if err := removeTrafficStateFile(pendingTrafficReportPath(), trafficStateDir); err != nil {
+		return err
+	}
+	if report.HasRuleTraffic {
+		lastRuleTrafficReportAt = time.Now()
+	}
+	if report.HasHostTraffic {
+		lastHostTrafficReportAt = time.Now()
+	}
+	return nil
 }
 
 func shouldReportRuleTraffic(statCount int, now time.Time) bool {
@@ -252,6 +755,40 @@ func collectTraffic(cfg Config) time.Duration {
 	stats := []map[string]any{}
 	pendingBaselines := make([]trafficBaselineUpdate, 0, len(states))
 	watched := len(states)
+	reportPanelURL := currentPanelURL(cfg)
+	reportIdentity := trafficReportIdentityForPanel(cfg, reportPanelURL)
+	if err := ensureTrafficReportIdentity(reportIdentity); err != nil {
+		if shouldLogAgentReport("traffic-report-identity-failed", agentReportLogInterval) {
+			logf("traffic report identity state failed: %v", err)
+		}
+		return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+	}
+	pending, hasPending, err := loadPendingTrafficReport(reportIdentity)
+	if err != nil {
+		if shouldLogAgentReport("traffic-report-pending-load-failed", agentReportLogInterval) {
+			logf("traffic report pending state load failed: %v", err)
+		}
+		return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+	}
+	if hasPending {
+		response := map[string]any{}
+		if err := postToPanelURL(cfg, reportPanelURL, "/api/agent/traffic", pending.Payload, &response); err != nil {
+			if isTransientAgentCommError(err) {
+				logAgentCommError("traffic-report-retry", err)
+			} else if shouldLogAgentReport("traffic-report-retry-failed", agentReportLogInterval) {
+				logf("traffic report retry failed stats=%d: %v", pending.StatCount, err)
+			}
+		} else {
+			if seconds, ok := response["trafficReportInterval"].(float64); ok {
+				setActiveTrafficReportIntervalSeconds(int(seconds))
+			}
+			if err := completePendingTrafficReport(pending); err != nil && shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
+				logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, err)
+			}
+		}
+		nextInterval = trafficCollectionIntervalForRuleCount(len(states))
+		return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+	}
 	if len(states) > 0 {
 		iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
 		nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
@@ -260,7 +797,7 @@ func collectTraffic(cfg Config) time.Duration {
 		diagnostics.nftProcessMarkers = nftProcessMarkers
 		connCounts := conntrackConnectionsSnapshot(states)
 		for _, state := range states {
-			if state.RuleID <= 0 {
+			if !shouldCollectRuleTraffic(state) {
 				continue
 			}
 			counters := iptablesCounters[state.Port]
@@ -289,7 +826,9 @@ func collectTraffic(cfg Config) time.Duration {
 				stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 				pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
 			} else {
-				writePrevState(state.Port, nextBaseline)
+				if err := writePrevState(state.Port, nextBaseline); err != nil && shouldLogAgentReport("traffic-baseline-write-failed", agentReportLogInterval) {
+					logf("traffic baseline write failed port=%s rule=%d: %v", state.Port, state.RuleID, err)
+				}
 			}
 			logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
 		}
@@ -315,8 +854,22 @@ func collectTraffic(cfg Config) time.Duration {
 		}
 	}
 	if reportRuleTraffic || hostTraffic != nil {
+		payload["reportId"] = newTrafficReportID()
+		payload["reportProducerId"] = trafficReportProducerID(reportIdentity)
+		pending := pendingTrafficReport{
+			Payload: payload, Baselines: persistedTrafficBaselines(pendingBaselines),
+			Identity: reportIdentity, HasRuleTraffic: len(stats) > 0,
+			HasHostTraffic: hostTraffic != nil, StatCount: len(stats),
+		}
+		if err := savePendingTrafficReport(pending); err != nil {
+			if shouldLogAgentReport("traffic-report-persist-failed", agentReportLogInterval) {
+				logf("traffic report pending state failed stats=%d: %v", len(stats), err)
+			}
+			nextInterval = trafficCollectionIntervalForRuleCount(len(states))
+			return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+		}
 		response := map[string]any{}
-		if err := post(cfg, "/api/agent/traffic", payload, &response); err != nil {
+		if err := postToPanelURL(cfg, reportPanelURL, "/api/agent/traffic", payload, &response); err != nil {
 			if isTransientAgentCommError(err) {
 				logAgentCommError("traffic-report", err)
 			} else if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
@@ -326,14 +879,11 @@ func collectTraffic(cfg Config) time.Duration {
 			if seconds, ok := response["trafficReportInterval"].(float64); ok {
 				setActiveTrafficReportIntervalSeconds(int(seconds))
 			}
-			commitTrafficBaselines(true, pendingBaselines)
-			if len(stats) > 0 {
-				lastRuleTrafficReportAt = time.Now()
+			completeErr := completePendingTrafficReport(pending)
+			if completeErr != nil && shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
+				logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, completeErr)
 			}
-			if hostTraffic != nil {
-				lastHostTrafficReportAt = time.Now()
-			}
-			if agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+			if completeErr == nil && agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
 				logf("traffic report ok watched=%d stats=%d", watched, len(stats))
 			}
 		}
@@ -1704,27 +2254,35 @@ func readPrev(port string) (int, uint64, uint64, uint64) {
 }
 
 func writePrev(port string, ruleID int, in, out, conns uint64) {
-	writePrevState(port, trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns})
+	_ = writePrevState(port, trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns})
 }
 
-func writePrevState(port string, next trafficPrevState) {
+func writePrevState(port string, next trafficPrevState) error {
 	trafficPrevMu.Lock()
 	previous, exists := trafficPrevCache[port]
-	trafficPrevCache[port] = next
 	trafficPrevMu.Unlock()
 	if exists && previous == next {
-		return
+		return nil
 	}
-	_ = os.WriteFile(trafficStateDir+"/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", next.ruleID, next.in, next.out, next.conns)), 0644)
+	path := trafficStateDir + "/traffic_" + port + ".prev"
+	data := []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", next.ruleID, next.in, next.out, next.conns))
+	if err := writeTrafficStateFile(path, data, 0644); err != nil {
+		return err
+	}
+	cacheTrafficPrev(port, next)
+	return nil
 }
 
-func commitTrafficBaselines(reportSucceeded bool, updates []trafficBaselineUpdate) {
+func commitTrafficBaselines(reportSucceeded bool, updates []trafficBaselineUpdate) error {
 	if !reportSucceeded {
-		return
+		return nil
 	}
 	for _, update := range updates {
-		writePrevState(update.port, update.state)
+		if err := writePrevState(update.port, update.state); err != nil {
+			return fmt.Errorf("persist traffic baseline port %s: %w", update.port, err)
+		}
 	}
+	return nil
 }
 
 func cacheTrafficPrev(port string, state trafficPrevState) {

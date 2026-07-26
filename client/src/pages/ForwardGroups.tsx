@@ -44,7 +44,7 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import MultiHopEditor from "@/components/MultiHopEditor";
-import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { pollingInterval } from "@/lib/polling";
 import { buildLinkAvailabilityIndex } from "@/lib/linkAvailability";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -678,13 +678,13 @@ function ForwardGroupSelfTestDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const utils = trpc.useUtils();
+  const [optimisticTesting, setOptimisticTesting] = useState(false);
+  const [baselineTestId, setBaselineTestId] = useState(0);
+  const manualTestRef = useRef(false);
   const { data: latest } = trpc.forwardGroups.latestTest.useQuery(
-    { groupId },
+    { groupId, includeActive: optimisticTesting },
     { enabled: open, refetchInterval: pollingInterval("interactive", open), refetchOnWindowFocus: false }
   );
-  const [optimisticTesting, setOptimisticTesting] = useState(false);
-  const [baselineUpdatedAt, setBaselineUpdatedAt] = useState("");
-  const manualTestRef = useRef(false);
   const lastFailureToastKey = useRef("");
   const testMutation = trpc.forwardGroups.test.useMutation({
     onSuccess: async () => {
@@ -702,7 +702,8 @@ function ForwardGroupSelfTestDialog({
   const isSuccess = status === "success";
   const isFailed = !!latest && !isTesting && !isSuccess;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
-  const hasFreshResult = !baselineUpdatedAt || (latest?.updatedAt && String(latest.updatedAt) !== baselineUpdatedAt);
+  const latestTestId = Number(latest?.id) || 0;
+  const hasFreshResult = latestTestId > baselineTestId;
   const linkTestNodeData = useMemo(() => {
     const meta: Record<string, any> = {};
     const members = [...(group?.members || [])]
@@ -773,7 +774,7 @@ function ForwardGroupSelfTestDialog({
   useEffect(() => {
     if (!open) {
       setOptimisticTesting(false);
-      setBaselineUpdatedAt("");
+      setBaselineTestId(0);
       manualTestRef.current = false;
       lastFailureToastKey.current = "";
     }
@@ -829,7 +830,7 @@ function ForwardGroupSelfTestDialog({
           <Button
             onClick={() => {
               manualTestRef.current = true;
-              setBaselineUpdatedAt(latest?.updatedAt ? String(latest.updatedAt) : "");
+              setBaselineTestId(latestTestId);
               setOptimisticTesting(true);
               testMutation.mutate({ groupId });
             }}
@@ -963,6 +964,11 @@ export function ForwardGroupsContent({
   const rawVisibleGroups = pageGroups;
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const visibleGroups = rawVisibleGroups;
+  const groupOrder = useOptimisticSortableOrder({
+    items: visibleGroups,
+    getId: (group: any) => Number(group.id),
+  });
+  const orderedVisibleGroups = groupOrder.items;
   const modeTotal = Number(groupPageQuery.data?.scopeTotalItems || 0);
   const groupConfigStateById = useMemo(() => buildLinkAvailabilityIndex({
     hosts,
@@ -990,7 +996,7 @@ export function ForwardGroupsContent({
     return member.isEnabled !== false && state.available;
   };
   const activeCount = Number(groupPageQuery.data?.enabledItems || 0);
-  const groupPagination = useServerPagination(visibleGroups, Number(groupPageQuery.data?.totalItems || 0), groupPageRequest, {
+  const groupPagination = useServerPagination(orderedVisibleGroups, Number(groupPageQuery.data?.totalItems || 0), groupPageRequest, {
     pageSize: 12,
     isReady: !isLoading && !!groupPageQuery.data,
   });
@@ -1238,20 +1244,27 @@ export function ForwardGroupsContent({
 
   const reorderGroupsMutation = trpc.forwardGroups.reorderGroups.useMutation({
     onError: (e) => toast.error(e.message || "排序保存失败"),
-    onSettled: () => {
-      utils.forwardGroups.options.invalidate();
-      utils.forwardGroups.listPage.invalidate();
-    },
   });
+  const groupReorderPending = reorderGroupsMutation.isPending;
   const groupSortable = useSortableReorder({
-    items: visibleGroups,
+    items: pagedGroups,
     getId: (group: any) => Number(group.id),
-    disabled: visibleGroups.length < 2,
+    disabled: groupPageQuery.isPlaceholderData
+      || !!normalizedSearchQuery
+      || groupReorderPending
+      || pagedGroups.length < 2,
     onReorder: (nextGroups) => {
+      const requestId = groupOrder.begin(nextGroups);
       reorderGroupsMutation.mutate({
         groupMode: activeGroupMode,
         ids: nextGroups.map((group: any) => Number(group.id)),
         startIndex: (groupPagination.currentPage - 1) * groupPagination.pageSize,
+      }, {
+        onError: () => groupOrder.release(requestId),
+        onSettled: () => groupOrder.resync(requestId, () => Promise.all([
+          utils.forwardGroups.options.invalidate(),
+          utils.forwardGroups.listPage.invalidate(),
+        ])),
       });
     },
   });
@@ -1877,6 +1890,7 @@ export function ForwardGroupsContent({
                       <SortableDragHandle
                         dragHandleProps={handleProps}
                         visible={isDragging}
+                        busy={groupReorderPending}
                         className="bg-card/70"
                       />
                       {renderGroupEnabledSwitch(group)}
@@ -1974,6 +1988,7 @@ export function ForwardGroupsContent({
                       <SortableDragHandle
                         dragHandleProps={handleProps}
                         visible={isDragging}
+                        busy={groupReorderPending}
                         className="bg-card/70"
                       />
                       {renderGroupEnabledSwitch(group)}
@@ -2073,6 +2088,7 @@ export function ForwardGroupsContent({
                         <SortableDragHandle
                           dragHandleProps={handleProps}
                           visible={isDragging}
+                          busy={groupReorderPending}
                           className="mx-auto"
                         />
                       </TableCell>

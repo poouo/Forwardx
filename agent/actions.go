@@ -1115,7 +1115,10 @@ func actionWorkerLoop(workerID int) {
 				releaseRuntimeGate = func() { releaseOnce.Do(release) }
 				defer releaseRuntimeGate()
 			}
-			unlock := acquireActionSerialLocks(actionSerialKeys(job.action))
+			unlock, current := acquireCurrentActionSerialLocks(job.action)
+			if !current {
+				return
+			}
 			if unlock != nil {
 				defer unlock()
 			}
@@ -1313,6 +1316,20 @@ func actionSerialKeys(a action) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// Recheck staleness while holding the action's serial locks. A newer desired
+// state can arrive after a worker's queue checks but before it obtains these
+// locks; without this check the older action could run last and overwrite it.
+func acquireCurrentActionSerialLocks(a action) (func(), bool) {
+	unlock := acquireActionSerialLocks(actionSerialKeys(a))
+	if isOlderAction(a, false) {
+		if unlock != nil {
+			unlock()
+		}
+		return nil, false
+	}
+	return unlock, true
 }
 
 func acquireActionSerialLocks(keys []string) func() {

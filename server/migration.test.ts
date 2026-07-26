@@ -133,6 +133,7 @@ test("essential migration skips rebuildable history while SQLite direct migratio
     source.prepare("INSERT INTO tcping_stats (id, ruleId, hostId, latencyMs, isTimeout, recordedAt) VALUES (1, 1, 1, 33, 0, ?)").run(now);
     source.prepare("INSERT INTO host_traffic_counters (id, hostId, bytesIn, bytesOut) VALUES (1, 1, 1000, 2000)").run();
     source.prepare("INSERT INTO traffic_stat_buckets (id, bucketStart, bucketMinutes, userId, ruleId, hostId, bytesIn, bytesOut, connections) VALUES (1, ?, 30, 1, 1, 1, 500, 600, 2)").run(now);
+    source.prepare("INSERT INTO agent_traffic_reports (id, hostId, producerId, reportId, receivedAt) VALUES (1, 1, 'agent-producer', 'pending-report', ?)").run(now);
     source.prepare("UPDATE system_settings SET value = 'https://old.example.com' WHERE key = 'panelPublicUrl'").run();
     source.close();
 
@@ -146,6 +147,7 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       assert.equal(essential.dataScope, "essential");
       assert.equal(essential.tables.users.length, 1);
       assert.equal(essential.tables.host_traffic_counters.length, 1);
+      assert.equal(essential.tables.agent_traffic_reports.length, 1);
       assert.equal(essential.tables.host_metrics, undefined);
       assert.equal(essential.tables.tcping_stats, undefined);
       assert.equal(essential.tables.traffic_stat_buckets, undefined);
@@ -156,6 +158,10 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       const full = await migration.exportMigrationSnapshot("https://old.example.com", { dataScope: "full" });
       assert.equal(full.tables.traffic_stat_buckets.length, 1);
       await runtime.closeDatabase();
+
+      const legacySource = new BetterSqlite3(sourcePath);
+      legacySource.exec("DROP TABLE agent_traffic_reports");
+      legacySource.close();
 
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: targetPath } });
       await schema.ensureDatabaseSchema();
@@ -181,6 +187,7 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM host_metrics"))[0].count, 1);
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM tcping_stats"))[0].count, 1);
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM traffic_stat_buckets"))[0].count, 1);
+      assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM agent_traffic_reports"))[0].count, 0);
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM auth_sessions"))[0].count, 1);
       assert.equal(Number((await runtime.queryRaw("SELECT isOnline FROM hosts WHERE id = 1"))[0].isOnline), 0);
       assert.equal(Number((await runtime.queryRaw("SELECT isRunning FROM tunnels WHERE id = 1"))[0].isRunning), 0);
