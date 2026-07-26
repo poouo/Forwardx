@@ -915,8 +915,6 @@ func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	downstreamKey := "relay-to-exit-key"
 	targetPort := targetLn.Addr().(*net.TCPAddr).Port
 	exitPort := freeTCPPort(t)
-	relayPort := freeTCPPort(t)
-	entryPort := freeTCPPort(t)
 	exitDone := make(chan struct{})
 	relayDone := make(chan struct{})
 	entryDone := make(chan struct{})
@@ -935,6 +933,7 @@ func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	}()
 	waitForTCP(t, exitPort)
 
+	relayPort := freeTCPPort(t)
 	go func() {
 		_ = runRelay(relayDone, config{
 			Role:          "relay",
@@ -949,6 +948,7 @@ func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	}()
 	waitForTCP(t, relayPort)
 
+	entryPort := freeTCPPort(t)
 	go func() {
 		_ = runEntry(entryDone, config{
 			Role:       "entry",
@@ -1008,9 +1008,6 @@ func TestForwardXRelayChainTCPRoundTrip(t *testing.T) {
 	}
 	targetPort := targetLn.Addr().(*net.TCPAddr).Port
 	exitPort := freeTCPPort(t)
-	relay2Port := freeTCPPort(t)
-	relay1Port := freeTCPPort(t)
-	entryPort := freeTCPPort(t)
 	exitDone := make(chan struct{})
 	relay2Done := make(chan struct{})
 	relay1Done := make(chan struct{})
@@ -1031,6 +1028,7 @@ func TestForwardXRelayChainTCPRoundTrip(t *testing.T) {
 	}()
 	waitForTCP(t, exitPort)
 
+	relay2Port := freeTCPPort(t)
 	go func() {
 		_ = runRelay(relay2Done, config{
 			Role:          "relay",
@@ -1045,6 +1043,7 @@ func TestForwardXRelayChainTCPRoundTrip(t *testing.T) {
 	}()
 	waitForTCP(t, relay2Port)
 
+	relay1Port := freeTCPPort(t)
 	go func() {
 		_ = runRelay(relay1Done, config{
 			Role:          "relay",
@@ -1059,6 +1058,7 @@ func TestForwardXRelayChainTCPRoundTrip(t *testing.T) {
 	}()
 	waitForTCP(t, relay1Port)
 
+	entryPort := freeTCPPort(t)
 	go func() {
 		_ = runEntry(entryDone, config{
 			Role:       "entry",
