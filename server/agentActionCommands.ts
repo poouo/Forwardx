@@ -132,8 +132,8 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
         ["POSTROUTING", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
         ["PREROUTING", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
         ["INPUT", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
-        ["FORWARD", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
-        ["FORWARD", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
+        ["FORWARD", `-p ${proto} -m conntrack --ctorigdstport ${port} -d ${target} --dport ${targetPort}`, inMarker],
+        ["FORWARD", `-p ${proto} -m conntrack --ctorigdstport ${port} -s ${target} --sport ${targetPort}`, outMarker],
       ] as const;
       for (const [chain, rule, marker] of targetRules) cmds.push(addStatRule(targetBinary, chain, rule, marker));
     }
@@ -243,19 +243,20 @@ function buildNftProcessCountingCmds(port: number, protocol?: string, targetIp?:
       nftProcessCountingRuleCmd(nftProcessTrafficOutputChain, `meta l4proto ${proto} ${proto} sport ${port}`, outMarker),
     );
     // Kernel-space forwarding (iptables/nftables DNAT) never traverses the
-    // input/output hooks, so without a forward-hook counter these rules report
-    // zero bytes. DNAT rewrites the destination before the forward hook, so
-    // match the resolved target endpoint rather than the listen port.
+    // input/output hooks. DNAT rewrites the destination before the forward
+    // hook, so match the target endpoint and bind it to the conntrack tuple's
+    // original destination port. The latter keeps separate listeners that
+    // share one target from counting each other's traffic.
     if (hasTarget) {
       commands.push(
         nftProcessCountingRuleCmd(
           nftProcessTrafficForwardChain,
-          `meta l4proto ${proto} ${family} daddr ${target} ${proto} dport ${targetPort}`,
+          `meta l4proto ${proto} ct original proto-dst ${port} ${family} daddr ${target} ${proto} dport ${targetPort}`,
           inMarker,
         ),
         nftProcessCountingRuleCmd(
           nftProcessTrafficForwardChain,
-          `meta l4proto ${proto} ${family} saddr ${target} ${proto} sport ${targetPort}`,
+          `meta l4proto ${proto} ct original proto-dst ${port} ${family} saddr ${target} ${proto} sport ${targetPort}`,
           outMarker,
         ),
       );

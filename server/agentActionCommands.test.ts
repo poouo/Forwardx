@@ -43,20 +43,39 @@ test("kernel forwarding gets nft forward-hook counters matched on the DNAT targe
   const commands = buildCountingChainCmds(22022, "203.0.113.10", 443, "both").join("\n");
 
   // DNAT rewrites the destination before the forward hook, so the forward
-  // counters must match the target endpoint, not the listen port.
+  // counters match the target endpoint while conntrack keeps the listener
+  // identity available after the rewrite.
   assert.match(commands, /forwardx_traffic forward '\{ type filter hook forward priority mangle; policy accept; \}'/);
-  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 counter comment '"fwx-stat-22022:in"'/);
-  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 counter comment '"fwx-stat-22022:out"'/);
-  assert.match(commands, /forwardx_traffic forward meta l4proto udp ip daddr 203\.0\.113\.10 udp dport 443/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ct original proto-dst 22022 ip daddr 203\.0\.113\.10 tcp dport 443 counter comment '"fwx-stat-22022:in"'/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ct original proto-dst 22022 ip saddr 203\.0\.113\.10 tcp sport 443 counter comment '"fwx-stat-22022:out"'/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto udp ct original proto-dst 22022 ip daddr 203\.0\.113\.10 udp dport 443/);
+  assert.match(commands, /FORWARD -p tcp -m conntrack --ctorigdstport 22022 -d 203\.0\.113\.10 --dport 443/);
+  assert.match(commands, /FORWARD -p tcp -m conntrack --ctorigdstport 22022 -s 203\.0\.113\.10 --sport 443/);
+  // Keep the original-port chains as a compatibility fallback on hosts where
+  // one counter backend is unavailable.
+  assert.match(commands, /PREROUTING -p tcp --dport 22022/);
+  assert.match(commands, /POSTROUTING -p tcp --sport 22022/);
   // The cleanup pass must sweep the forward chain too, or stale counters leak.
   assert.match(commands, /for c in input output forward; do/);
+});
+
+test("forward-hook counters isolate listeners that share one DNAT target", () => {
+  const first = buildCountingChainCmds(22022, "203.0.113.10", 443, "tcp").join("\n");
+  const second = buildCountingChainCmds(22023, "203.0.113.10", 443, "tcp").join("\n");
+
+  assert.match(first, /ct original proto-dst 22022 ip daddr 203\.0\.113\.10 tcp dport 443/);
+  assert.match(second, /ct original proto-dst 22023 ip daddr 203\.0\.113\.10 tcp dport 443/);
+  assert.match(first, /--ctorigdstport 22022 -d 203\.0\.113\.10 --dport 443/);
+  assert.match(second, /--ctorigdstport 22023 -d 203\.0\.113\.10 --dport 443/);
+  assert.doesNotMatch(first, /ct original proto-dst 22023/);
+  assert.doesNotMatch(second, /ct original proto-dst 22022/);
 });
 
 test("nft forward-hook counters use the ip6 family for IPv6 targets", () => {
   const commands = buildCountingChainCmds(22022, "2001:db8::10", 443, "tcp").join("\n");
 
-  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip6 daddr 2001:db8::10 tcp dport 443/);
-  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip6 saddr 2001:db8::10 tcp sport 443/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ct original proto-dst 22022 ip6 daddr 2001:db8::10 tcp dport 443/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ct original proto-dst 22022 ip6 saddr 2001:db8::10 tcp sport 443/);
 });
 
 test("nft forward-hook counters are skipped when the target is not a resolved IP", () => {

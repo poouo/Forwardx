@@ -267,7 +267,7 @@ pnpm -v
 把 `VERSION` 改成 GitHub Releases 中的最新版本号：
 
 ```bash
-VERSION=v2.3.258
+VERSION=v2.3.259
 APP_DIR=/opt/forwardx-panel
 
 mkdir -p "$APP_DIR"
@@ -344,7 +344,7 @@ http://服务器IP:9810
 升级前建议先备份 `/opt/forwardx-panel/data`。升级时保留 `data` 和 `.env`，只替换程序文件。
 
 ```bash
-VERSION=v2.3.258
+VERSION=v2.3.259
 APP_DIR=/opt/forwardx-panel
 
 systemctl stop forwardx-panel

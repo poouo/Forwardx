@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.259] - 2026-07-26
+
+### 修复
+
+- 修复同一主机的多个 iptables/nftables 内核转发入口指向相同 DNAT 目标时，`FORWARD` hook 计数可能被每条规则同时命中、造成流量重复统计和重复计费的问题；转发计数现在同时匹配 conntrack 原始入口端口，仍保留 `FORWARD` hook 以及原有 `PREROUTING`/`POSTROUTING` 计数，避免重新出现内核转发流量为零。
+
+### 验证
+
+- 新增同目标、不同入口端口的 iptables 与 nftables 计数隔离回归测试，并通过服务端全量测试（341 项）、TypeScript 类型检查、生产构建、版本检查及 `git diff --check`。
+
+### 版本
+
+- 面板版本与 APK Release 版本升级至 `2.3.259`。
+- Agent 版本保持 `2.2.174`，Android APP 版本保持 `2.3.95`，ForwardX FXP runtime 日志版本保持 `2.2.105`。
+
 ## [2.3.258] - 2026-07-26
 
 ### 修复
