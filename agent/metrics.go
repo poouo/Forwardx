@@ -79,6 +79,20 @@ type trafficCounters struct {
 	Out uint64
 }
 
+// maxTrafficCounters merges two counter samples for the same port by keeping the
+// larger value per direction. Counters are monotonic byte totals, so the larger
+// sample is the one whose chain actually matched the traffic.
+func maxTrafficCounters(left trafficCounters, right trafficCounters) trafficCounters {
+	merged := left
+	if right.In > merged.In {
+		merged.In = right.In
+	}
+	if right.Out > merged.Out {
+		merged.Out = right.Out
+	}
+	return merged
+}
+
 type trafficDiagnosticsSnapshot struct {
 	iptablesMarkers   map[string]bool
 	ip6tablesMarkers  map[string]bool
@@ -255,7 +269,12 @@ func collectTraffic(cfg Config) time.Duration {
 					counters = nft
 				}
 			} else if diagnostics.nftProcessMarkers[state.Port] {
-				counters = nftProcessCounters[state.Port]
+				// Both counter families are installed for every port, but they
+				// cover different hooks: only one of them may have seen the
+				// traffic. Take the larger sample per direction instead of
+				// replacing, so a chain that matched nothing cannot zero out a
+				// chain that did.
+				counters = maxTrafficCounters(counters, nftProcessCounters[state.Port])
 			}
 			curConns := connCounts[state.Port]
 			prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)

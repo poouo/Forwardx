@@ -22,19 +22,18 @@ function textValue(value: string | number | null | undefined) {
 
 function readCachedValue(
   cacheKey: string | undefined,
-  fallback: string,
   fallbackCacheKeys: string[] = [],
 ) {
-  if (typeof window === "undefined") return fallback;
+  if (typeof window === "undefined") return null;
   try {
     const keys = [cacheKey, ...fallbackCacheKeys].filter((key): key is string => !!key);
     for (const key of keys) {
       const cached = window.localStorage.getItem(`${CACHE_PREFIX}${key}`);
       if (cached !== null && cached !== "") return cached;
     }
-    return fallback;
+    return null;
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -63,25 +62,40 @@ export default function AnimatedStatValue({
   const fallback = useMemo(() => textValue(fallbackValue ?? value), [fallbackValue, value]);
   const fallbackCacheKeySignature = fallbackCacheKeys.join("\u0000");
   const mirrorCacheKeySignature = mirrorCacheKeys.join("\u0000");
-  const [cachedState, setCachedState] = useState(() => ({
-    key: cacheKey || "",
-    value: readCachedValue(cacheKey, fallback, fallbackCacheKeys),
-  }));
+  const currentCacheKey = cacheKey || "";
+  const [cachedState, setCachedState] = useState(() => {
+    const cached = readCachedValue(cacheKey, fallbackCacheKeys);
+    return { key: currentCacheKey, value: cached ?? fallback, hasCachedValue: cached !== null };
+  });
+  const lastResolvedValueRef = useRef({
+    key: currentCacheKey,
+    value: cachedState.hasCachedValue ? cachedState.value : "",
+  });
 
   useEffect(() => {
-    setCachedState({ key: cacheKey || "", value: readCachedValue(cacheKey, fallback, fallbackCacheKeys) });
-  }, [cacheKey, fallback, fallbackCacheKeySignature]);
+    const cached = readCachedValue(cacheKey, fallbackCacheKeys);
+    setCachedState({ key: currentCacheKey, value: cached ?? fallback, hasCachedValue: cached !== null });
+  }, [cacheKey, currentCacheKey, fallback, fallbackCacheKeySignature]);
 
   useEffect(() => {
     if (loading) return;
-    setCachedState({ key: cacheKey || "", value: nextValue });
+    lastResolvedValueRef.current = { key: currentCacheKey, value: nextValue };
+    setCachedState({ key: currentCacheKey, value: nextValue, hasCachedValue: true });
     writeCachedValue(cacheKey, nextValue, mirrorCacheKeys);
-  }, [cacheKey, loading, mirrorCacheKeySignature, nextValue]);
+  }, [cacheKey, currentCacheKey, loading, mirrorCacheKeySignature, nextValue]);
 
-  const cachedValue = cachedState.key === (cacheKey || "")
+  const cachedValue = cachedState.key === currentCacheKey
     ? cachedState.value
-    : readCachedValue(cacheKey, fallback, fallbackCacheKeys);
-  const displayValue = loading ? cachedValue : nextValue;
+    : readCachedValue(cacheKey, fallbackCacheKeys) ?? "";
+  const hasCachedValue = cachedState.key === currentCacheKey
+    ? cachedState.hasCachedValue
+    : cachedValue !== "";
+  const lastResolvedValue = lastResolvedValueRef.current.key === currentCacheKey
+    ? lastResolvedValueRef.current.value
+    : "";
+  const loadingValue = hasCachedValue ? cachedValue : lastResolvedValue;
+  const displayValue = loading ? loadingValue : nextValue;
+  const isLoadingPlaceholder = loading && !displayValue;
   const previousDisplayRef = useRef(displayValue);
   const [animationState, setAnimationState] = useState({ key: 0, changed: false });
 
@@ -100,6 +114,7 @@ export default function AnimatedStatValue({
       className={cn("forwardx-stat-value", className)}
       title={title}
       data-loading={loading ? "true" : "false"}
+      data-empty={isLoadingPlaceholder ? "true" : "false"}
       data-changing={animationState.changed ? "true" : "false"}
     >
       <span
@@ -109,7 +124,7 @@ export default function AnimatedStatValue({
           state.changed ? { ...state, changed: false } : state
         ))}
       >
-        {displayValue}
+        {isLoadingPlaceholder ? fallback : displayValue}
       </span>
     </Component>
   );

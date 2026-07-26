@@ -28,7 +28,6 @@ import { GripVertical } from "lucide-react";
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -55,6 +54,28 @@ function sortableKey(id: SortableId | UniqueIdentifier | null | undefined) {
   return id === null || id === undefined ? "" : String(id);
 }
 
+/**
+ * Keeps one array reference for as long as the ids themselves do not change.
+ *
+ * `SortableContext` memoizes its item list by reference, and `useSortable`
+ * detects reordering with an identity check (`items !== previous.items`). A
+ * freshly built array on every render therefore reads as "the list changed",
+ * which makes dnd-kit drop to a zero-duration transition and skip the displace
+ * transforms — the neighbouring cards jump instead of sliding out of the way.
+ * Background polling re-renders these pages mid-drag, so the jump appeared at
+ * random. Comparing by content keeps the reference stable across those renders.
+ */
+function useStableSortableIds(ids: Array<SortableId | UniqueIdentifier | null | undefined>) {
+  const stableRef = useRef<string[]>([]);
+  const next = ids.map((id) => sortableKey(id)).filter(Boolean);
+  const previous = stableRef.current;
+  if (previous.length === next.length && previous.every((id, index) => id === next[index])) {
+    return previous;
+  }
+  stableRef.current = next;
+  return next;
+}
+
 export function useSortableReorder<T>({
   items,
   getId,
@@ -75,11 +96,7 @@ export function useSortableReorder<T>({
     itemsRef.current = items;
   }, [items]);
 
-  const ids = useMemo(() => (
-    items
-      .map((item) => sortableKey(getId(item)))
-      .filter(Boolean)
-  ), [getId, items]);
+  const ids = useStableSortableIds(items.map((item) => getId(item)));
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -173,6 +190,10 @@ export function SortableReorderContext<T>({
     const pointerCollisions = pointerWithin(args);
     return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
   }, []);
+  // Callers build this array inline on every render, so stabilize it before it
+  // reaches SortableContext's reference-based change detection.
+  const stableIds = useStableSortableIds(ids ?? []);
+  const sortableItems = ids ? stableIds : sortable.ids;
 
   return (
     <DndContext
@@ -186,7 +207,7 @@ export function SortableReorderContext<T>({
       onDragEnd={sortable.handleDragEnd}
       onDragCancel={sortable.handleDragCancel}
     >
-      <SortableContext items={ids ? ids.map((id) => sortableKey(id)).filter(Boolean) : sortable.ids} strategy={sortingStrategy}>
+      <SortableContext items={sortableItems} strategy={sortingStrategy}>
         {children}
       </SortableContext>
     </DndContext>

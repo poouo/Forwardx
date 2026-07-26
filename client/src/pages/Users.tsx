@@ -341,12 +341,13 @@ function UsersContent() {
   const { data: userSummary, isLoading: summaryLoading } = trpc.users.summary.useQuery(undefined, {
     enabled: currentUser?.role === "admin",
     refetchInterval: pollingInterval("slow"),
+    placeholderData: (previousData) => previousData,
   });
   const subscriptionPageRequest = usePersistentPageRequest("forwardx.users.subscriptions.page");
   const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
     page: subscriptionPageRequest.page,
     pageSize: 12,
-  }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions" });
+  }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions", placeholderData: (previousData) => previousData });
   const allSubscriptions = subscriptionPageQuery.data?.items || [];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
   const updateForwardGroupPermsMutation = trpc.users.setForwardGroupPermissions.useMutation({
@@ -419,6 +420,7 @@ function UsersContent() {
   const userPageInput = { page: userPageRequest.page, pageSize: 12 } as const;
   const userPageQuery = trpc.users.listPage.useQuery(userPageInput, {
     enabled: currentUser?.role === "admin" && manageType === "accounts",
+    placeholderData: (previousData) => previousData,
   });
   const users = userPageQuery.data?.items;
   const isLoading = userPageQuery.isLoading;

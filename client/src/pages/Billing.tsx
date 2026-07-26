@@ -242,16 +242,19 @@ export default function Billing() {
   const { data: billingSummary, isLoading: billingSummaryLoading } = trpc.billing.summary.useQuery(undefined, {
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const { data: users = [], isLoading: usersLoading } = trpc.users.options.useQuery(undefined, {
     enabled: activeTab === "ledger",
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData: any) => previousData,
   });
   const { data: plans = [] } = trpc.plans.options.useQuery(undefined, {
     enabled: activeTab === "redeem" || activeTab === "discount",
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData: any) => previousData,
   });
   const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
     page: subscriptionPageRequest.page,
@@ -260,12 +263,13 @@ export default function Billing() {
     enabled: activeTab === "subscriptions",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const subscriptions = (subscriptionPageQuery.data?.items || []) as any[];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
   const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery(
     { limit: 100 },
-    { enabled: activeTab === "balance", staleTime: 10_000, refetchOnWindowFocus: false },
+    { enabled: activeTab === "balance", staleTime: 10_000, refetchOnWindowFocus: false, placeholderData: (previousData) => previousData },
   );
   const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
     limit: 200,
@@ -274,6 +278,7 @@ export default function Billing() {
     enabled: activeTab === "ledger",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const redemptionPageQuery = trpc.billing.listRedemptionCodesPage.useQuery({
     page: redemptionPageRequest.page,
@@ -283,6 +288,7 @@ export default function Billing() {
     enabled: activeTab === "redeem",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const redemptionCodes = (redemptionPageQuery.data?.items || []) as any[];
   const redemptionCodesLoading = redemptionPageQuery.isLoading;
@@ -293,6 +299,7 @@ export default function Billing() {
     enabled: activeTab === "discount",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const discountCodes = (discountPageQuery.data?.items || []) as any[];
   const discountCodesLoading = discountPageQuery.isLoading;

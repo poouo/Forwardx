@@ -405,22 +405,23 @@ function TrafficPieCard({
 function DashboardContent() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
+  const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
   const { data: trafficTotals, isLoading: trafficTotalsLoading } = trpc.dashboard.trafficTotals.useQuery(undefined, {
     refetchInterval: pollingInterval("normal"),
     staleTime: 5000,
+    placeholderData: (previousData) => previousData,
   });
-  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
-  const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery();
-  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
-  const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
+  const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery(undefined, { placeholderData: (previousData) => previousData });
+  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
+  const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: pollingInterval("slow"), placeholderData: (previousData) => previousData });
   const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 24, limit: 30 },
-    { refetchInterval: pollingInterval("slow"), staleTime: 25000 },
+    { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 24, bucketMinutes: 60 },
-    { refetchInterval: pollingInterval("slow"), staleTime: 25000 },
+    { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
 
   const chartData = useMemo(

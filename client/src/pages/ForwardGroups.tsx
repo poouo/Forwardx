@@ -893,6 +893,7 @@ export function ForwardGroupsContent({
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const needsFullGroupList = showDialog || !!latencyGroup || !!testGroup || !!editRequest;
   const fullGroupQuery = trpc.forwardGroups.options.useQuery(undefined, {
@@ -900,6 +901,7 @@ export function ForwardGroupsContent({
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const pageGroups = (groupPageQuery.data?.items || []) as any[];
   const relatedPageGroups = (groupPageQuery.data?.relatedGroups || []) as any[];

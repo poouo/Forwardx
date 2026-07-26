@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.173"
+var Version = "2.2.174"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -4423,41 +4423,47 @@ func mimicHooksReady(iface string) (bool, string) {
 		return false, "invalid-interface"
 	}
 	parts := []string{}
+	hasXDP := false
+	hasTCEgress := false
 	if commandExists("ip") {
 		if out, err := commandCombinedOutputWithTimeout(3*time.Second, "ip", "-details", "link", "show", "dev", iface); err == nil && strings.Contains(strings.ToLower(string(out)), "xdp") {
+			hasXDP = true
 			parts = append(parts, "xdp")
 		}
 	}
 	if commandExists("tc") {
-		for _, direction := range []string{"ingress", "egress"} {
-			if out, err := commandCombinedOutputWithTimeout(3*time.Second, "tc", "filter", "show", "dev", iface, direction); err == nil && strings.TrimSpace(string(out)) != "" {
-				parts = append(parts, "tc-"+direction)
-			}
+		if out, err := commandCombinedOutputWithTimeout(3*time.Second, "tc", "filter", "show", "dev", iface, "egress"); err == nil && strings.TrimSpace(string(out)) != "" {
+			hasTCEgress = true
+			parts = append(parts, "tc-egress")
 		}
 	}
-	return len(parts) > 0, strings.Join(parts, ",")
+	return hasXDP && hasTCEgress, strings.Join(parts, ",")
 }
 
 func mimicRuntimeServiceReportFor(name string) localRuntimeServiceState {
 	report := localRuntimeServiceState{Name: name, HasWork: true, Status: "unknown", ConnectionState: "unknown"}
+	iface := strings.TrimPrefix(name, "mimic@")
+	if validNetworkInterfaceName(iface) {
+		hooksReady, hooks := mimicHooksReady(iface)
+		report.HooksReady = new(bool)
+		*report.HooksReady = hooksReady
+		if hooks != "" {
+			report.Message = "hooks=" + hooks
+		}
+	}
 	ok, message := mimicRuntimeServiceHealth(name)
 	report.Active = ok
-	report.Message = compactLogOutput(message)
+	if strings.TrimSpace(message) != "" {
+		report.Message = strings.TrimSpace(strings.TrimSpace(report.Message) + " " + compactLogOutput(message))
+	}
 	if !ok {
 		report.Status = "unavailable"
 		return report
 	}
-	iface := strings.TrimPrefix(name, "mimic@")
-	hooksReady, hooks := mimicHooksReady(iface)
-	report.HooksReady = new(bool)
-	*report.HooksReady = hooksReady
 	report.ConnectionState = mimicConnectionState(message)
 	report.Status = report.ConnectionState
 	if report.Status == "unknown" {
 		report.Status = "active"
-	}
-	if hooks != "" {
-		report.Message = strings.TrimSpace(report.Message + " hooks=" + hooks)
 	}
 	return report
 }
@@ -4491,6 +4497,13 @@ func mimicRuntimeServiceHealth(name string) (bool, string) {
 	}
 	if output == "" {
 		output = "mimic-show-ok"
+	}
+	hooksReady, hooks := mimicHooksReady(iface)
+	if !hooksReady {
+		if hooks == "" {
+			hooks = "none"
+		}
+		return false, "mimic-hooks-unavailable hooks=" + hooks
 	}
 	network := ensureMimicNetworkCompatibility(iface)
 	if strings.Contains(network, "ethtool-missing") || strings.Contains(network, "still-on:") || strings.Contains(network, "inspect-failed") || strings.Contains(network, "state-failed:") {

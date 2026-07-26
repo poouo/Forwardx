@@ -67,6 +67,26 @@ test("entry-group WireGuard test keeps the next hop private address", () => {
   );
 });
 
+test("private tunnels recover the configured private host address for legacy rows", () => {
+  const exit = {
+    entryIp: "103.177.163.138",
+    ipv4: "103.177.163.138",
+    tunnelEntryIp: "10.23.0.8",
+  };
+  assert.equal(
+    selectTunnelDialAddress({ networkType: "private" }, exit),
+    "10.23.0.8",
+  );
+  assert.equal(
+    selectEntryGroupTunnelTestAddress(
+      { networkType: "private" },
+      { hostId: 2, connectHost: null },
+      exit,
+    ),
+    "10.23.0.8",
+  );
+});
+
 test("keeps an idle GOST tunnel listening for latency probes", () => {
   const listeners = planGostTunnelProbeListeners(7, [{
     id: 11,

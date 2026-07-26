@@ -127,6 +127,26 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	}
 }
 
+func TestMaxTrafficCountersKeepsTheChainThatMatched(t *testing.T) {
+	// Kernel forwarding only crosses the iptables FORWARD chain, so the nft
+	// input/output counters stay at zero. Merging must not discard the sample
+	// that actually counted the traffic.
+	iptables := trafficCounters{In: 4096, Out: 8192}
+	if got := maxTrafficCounters(iptables, trafficCounters{}); got != iptables {
+		t.Fatalf("empty nft counters overwrote iptables counters: %+v", got)
+	}
+	// Process forwarding is the mirror case: nft saw it, iptables did not.
+	nft := trafficCounters{In: 1500, Out: 2400}
+	if got := maxTrafficCounters(trafficCounters{}, nft); got != nft {
+		t.Fatalf("empty iptables counters overwrote nft counters: %+v", got)
+	}
+	// Mixed coverage takes the larger value per direction independently.
+	got := maxTrafficCounters(trafficCounters{In: 4096, Out: 10}, trafficCounters{In: 20, Out: 2400})
+	if got.In != 4096 || got.Out != 2400 {
+		t.Fatalf("unexpected merged counters: %+v", got)
+	}
+}
+
 func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	atomic.StoreInt32(&tcpingCollectRunning, 1)
 	defer atomic.StoreInt32(&tcpingCollectRunning, 0)

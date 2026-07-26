@@ -35,6 +35,7 @@ import {
   defaultTunnelHostAddress,
   selectEntryGroupTunnelTestAddress,
   selectTunnelDialAddress,
+  selectTunnelHopDialAddress,
 } from "../tunnelAddressSelection";
 import { planManualTunnelTestRefresh } from "../tunnelRuntimePlan";
 import {
@@ -1597,7 +1598,7 @@ export const tunnelsRouter = router({
             const nextHop = tunnelHops[i + 1] as any;
             const fromHostId = Number(currentHop.hostId) || 0;
             const nextHost = await db.getHostById(Number(nextHop.hostId));
-            const nextAddr = String(nextHop.connectHost || "").trim() || getHostPublicAddress(nextHost);
+            const nextAddr = selectTunnelHopDialAddress(nextHop, nextHost, tunnel);
             const nextPort = Number(nextHop.listenPort) || 0;
             if (!fromHostId || !nextAddr || !nextPort) {
               const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
@@ -1712,7 +1713,7 @@ export const tunnelsRouter = router({
               const fromHostId = Number(currentHop.hostId) || 0;
               const currentHost = await db.getHostById(fromHostId);
               const nextHost = await db.getHostById(Number(nextHop.hostId));
-              const nextAddr = String(nextHop.connectHost || "").trim() || getHostPublicAddress(nextHost);
+              const nextAddr = selectTunnelHopDialAddress(nextHop, nextHost, tunnel);
               const nextPort = Number(nextHop.listenPort) || 0;
               if (!fromHostId || !nextAddr || !nextPort) {
                 const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
@@ -1822,7 +1823,7 @@ export const tunnelsRouter = router({
           let queued = 1;
           for (const endpoint of extraExitEndpoints) {
             const endpointHost = await db.getHostById(endpoint.hostId);
-            const endpointTarget = String(endpoint.connectHost || "").trim() || getHostPublicAddress(endpointHost);
+            const endpointTarget = selectTunnelHopDialAddress(endpoint, endpointHost, tunnel);
             const endpointPort = Number(endpoint.listenPort) || 0;
             if (!endpointTarget || !endpointPort) {
               const message = `TUNNEL_EXIT_TEST_TARGET_INVALID host=${endpoint.hostId} target=${endpointTarget || "-"} port=${endpointPort || "-"}`;

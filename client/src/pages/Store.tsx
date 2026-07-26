@@ -184,14 +184,16 @@ function StorePlanCard({
 export default function Store() {
   const utils = trpc.useUtils();
   const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
-  const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery();
+  const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: trafficBillingStore, isLoading: trafficBillingLoading } = trpc.trafficBilling.storeResources.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
+    placeholderData: (previousData) => previousData,
   });
-  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
   const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
+    placeholderData: (previousData) => previousData,
   });
   const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");

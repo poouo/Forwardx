@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCountingChainCmds, buildNftForwardCmds } from "./agentActionCommands";
+import {
+  buildCountingChainCmds,
+  buildNftForwardCmds,
+  restartMimicServiceIfConfigChangedCmd,
+} from "./agentActionCommands";
 
 test("nft rule comments keep nft string quotes after shell parsing", () => {
   const commands = buildNftForwardCmds({
@@ -33,4 +37,52 @@ test("all process forwarding modes use the shared bidirectional counters", () =>
   assert.match(commands, /forwardx_traffic input meta l4proto tcp tcp dport 22022/);
   assert.match(commands, /forwardx_traffic output meta l4proto tcp tcp sport 22022/);
   assert.doesNotMatch(commands, /target\.example/);
+});
+
+test("kernel forwarding gets nft forward-hook counters matched on the DNAT target", () => {
+  const commands = buildCountingChainCmds(22022, "203.0.113.10", 443, "both").join("\n");
+
+  // DNAT rewrites the destination before the forward hook, so the forward
+  // counters must match the target endpoint, not the listen port.
+  assert.match(commands, /forwardx_traffic forward '\{ type filter hook forward priority mangle; policy accept; \}'/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 counter comment '"fwx-stat-22022:in"'/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 counter comment '"fwx-stat-22022:out"'/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto udp ip daddr 203\.0\.113\.10 udp dport 443/);
+  // The cleanup pass must sweep the forward chain too, or stale counters leak.
+  assert.match(commands, /for c in input output forward; do/);
+});
+
+test("nft forward-hook counters use the ip6 family for IPv6 targets", () => {
+  const commands = buildCountingChainCmds(22022, "2001:db8::10", 443, "tcp").join("\n");
+
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip6 daddr 2001:db8::10 tcp dport 443/);
+  assert.match(commands, /forwardx_traffic forward meta l4proto tcp ip6 saddr 2001:db8::10 tcp sport 443/);
+});
+
+test("nft forward-hook counters are skipped when the target is not a resolved IP", () => {
+  const commands = buildCountingChainCmds(22022, "", 0, "both").join("\n");
+
+  assert.match(commands, /forwardx_traffic input meta l4proto tcp tcp dport 22022/);
+  assert.doesNotMatch(commands, /forwardx_traffic forward meta/);
+});
+
+test("Mimic service reconciliation cleans stale hooks and has an skb fallback", () => {
+  const commands = restartMimicServiceIfConfigChangedCmd("mimic@eth0", "/etc/mimic/eth0.conf", "eth0");
+
+  assert.match(commands, /xdp_mode = /);
+  assert.match(commands, /forwardx-xdp-mode/);
+  assert.match(commands, /xdpdrv off/);
+  assert.match(commands, /\/run\/mimic\/\*_\"\$mimic_ifindex\"\.lock/);
+  assert.match(commands, /\$mimic_xdp_mode XDP\/TC hooks were not ready; retrying with \$mimic_fallback_mode mode/);
+  assert.match(commands, /if \[ "\$mimic_xdp_mode" = "native" \]; then mimic_fallback_mode=skb; else mimic_fallback_mode=native; fi/);
+  assert.match(commands, /mimic_existing_xdp_mode/);
+  assert.match(commands, /forwardx-bpf\.conf/);
+  assert.match(commands, /CAP_BPF/);
+  assert.match(commands, /mimic_dropin_changed/);
+  assert.match(commands, /virtio\|virtio_net\|veth\|tap\|tun\|\*\) mimic_xdp_mode=skb/);
+  assert.match(commands, /mimic_start_service\(\)/);
+  assert.match(commands, /mimic_start_output="\$\(mimic_start_service 2>&1\)"/);
+  assert.match(commands, /service is active but XDP\/TC hooks were not detected/);
+  assert.doesNotMatch(commands, /\/sys\/class\/net\/'eth0'\//);
+  assert.doesNotMatch(commands, /systemctl disable 'mimic@eth0'/);
 });

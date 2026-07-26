@@ -301,9 +301,9 @@ function MobileOrderInfoRow({
 
 export default function Payments() {
   const utils = trpc.useUtils();
-  const { data: config, isLoading } = trpc.payment.getConfig.useQuery();
-  const { data: stats, isLoading: statsLoading } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000 });
-  const { data: orders, isLoading: ordersLoading } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000 });
+  const { data: config, isLoading } = trpc.payment.getConfig.useQuery(undefined, { placeholderData: (previousData) => previousData });
+  const { data: stats, isLoading: statsLoading } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000, placeholderData: (previousData) => previousData });
+  const { data: orders, isLoading: ordersLoading } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000, placeholderData: (previousData: any) => previousData });
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
   const [amount, setAmount] = useState("10");

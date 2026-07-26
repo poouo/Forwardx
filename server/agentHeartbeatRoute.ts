@@ -56,6 +56,7 @@ import {
   killByPatternCmd,
   removeManagedServiceCmd,
   restartManagedServiceIfConfigChangedCmd,
+  restartMimicServiceIfConfigChangedCmd,
   shQuote,
   startManagedServiceCmd,
   stopManagedServiceCmd,
@@ -88,7 +89,7 @@ import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
 import { hashConfig, latestConfigRevision, recordConfigAuditEvent } from "./configAudit";
 import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
-import { selectTunnelDialAddress } from "./tunnelAddressSelection";
+import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 import { buildForwardXMimicConfig } from "./mimicConfig";
 
@@ -1284,8 +1285,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const backupActivePath = `${configPath}.forwardx-backup-active`;
         const backupEnabledPath = `${configPath}.forwardx-backup-enabled`;
         const dnsRefreshPath = `${configPath}.forwardx-dns-refresh`;
+        const xdpModePath = `${configPath}.forwardx-xdp-mode`;
         const configTempPath = `${configPath}.forwardx-new`;
         const serviceName = `mimic@${networkInterface}`;
+        const bpfDropInPath = `/etc/systemd/system/${serviceName}.service.d/forwardx-bpf.conf`;
+        const bpfDropInDir = `/etc/systemd/system/${serviceName}.service.d`;
         const serviceNameQuoted = shQuote(serviceName);
         const serviceActiveCheck = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} status >/dev/null 2>&1; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} status >/dev/null 2>&1; else false; fi`;
         const serviceEnabledCheck = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-enabled --quiet ${serviceNameQuoted}.service; elif command -v rc-update >/dev/null 2>&1; then rc-update show default 2>/dev/null | grep -q -F ${shQuote(serviceName)}; else false; fi`;
@@ -1293,7 +1297,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const restartRestoredService = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart ${serviceNameQuoted}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${serviceNameQuoted} restart; elif [ -x /etc/init.d/${serviceName} ]; then /etc/init.d/${serviceName} restart; else echo "[mimic] cannot restore service ${serviceName} on unsupported init system"; exit 1; fi`;
         if (filters.length === 0) {
           removalCommands.push(
-            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 2>/dev/null || true; fi`,
+            `if [ -f ${shQuote(configPath)} ] && grep -q '^# Managed by ForwardX$' ${shQuote(configPath)} 2>/dev/null; then ${stopManagedServiceCmd(serviceName)}; if [ -f ${shQuote(backupPath)} ]; then mv -f ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; else rm -f ${shQuote(configPath)}; fi; rm -f ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(xdpModePath)} ${shQuote(configTempPath)} ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}.sha256 ${shQuote(bpfDropInPath)} 2>/dev/null || true; rmdir ${shQuote(bpfDropInDir)} 2>/dev/null || true; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi; fi; rm -f ${shQuote(xdpModePath)} 2>/dev/null || true`,
           );
           continue;
         }
@@ -1312,13 +1316,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           dnsRefreshToken
             ? `mimic_old_hash=$(cat ${shQuote(configPath)}.sha256 2>/dev/null || true); if command -v sha256sum >/dev/null 2>&1; then mimic_new_hash=$(sha256sum ${shQuote(configPath)} 2>/dev/null | awk '{print "sha256:"$1}'); elif command -v cksum >/dev/null 2>&1; then mimic_new_hash=$(cksum ${shQuote(configPath)} 2>/dev/null | awk '{print "cksum:"$1":"$2}'); else mimic_new_hash="mtime:$(wc -c < ${shQuote(configPath)} 2>/dev/null):$(date -r ${shQuote(configPath)} +%s 2>/dev/null)"; fi; mimic_dns_restart=0; if { ${serviceActiveCheck}; } && [ "$mimic_new_hash" = "$mimic_old_hash" ] && [ "$(cat ${shQuote(dnsRefreshPath)} 2>/dev/null || true)" != ${shQuote(dnsRefreshToken)} ]; then mimic_dns_restart=1; fi`
             : "mimic_dns_restart=0",
-          restartManagedServiceIfConfigChangedCmd(serviceName, configPath),
+          restartMimicServiceIfConfigChangedCmd(serviceName, configPath, networkInterface),
           dnsRefreshToken
             ? `if [ "$mimic_dns_restart" = "1" ]; then echo ${shQuote(`[mimic] DNS refresh ${dnsRefreshToken}`)}; ${startManagedServiceCmd(serviceName)}; fi; printf '%s' ${shQuote(dnsRefreshToken)} > ${shQuote(dnsRefreshPath)}`
             : "",
           `if ! mimic show ${shQuote(networkInterface)} >/dev/null 2>&1; then echo "[mimic] runtime hooks are unavailable on ${shQuote(networkInterface)}"; systemctl status ${shQuote(serviceName)}.service --no-pager -l 2>/dev/null || true; journalctl -u ${shQuote(serviceName)}.service -n 80 --no-pager 2>/dev/null || true; exit 1; fi`,
         ].filter(Boolean).join("\n"));
-        rollbackCommands.push(`if [ -f ${shQuote(`${configPath}.forwardx-last-good`)} ]; then cp -p ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}; ${startManagedServiceCmd(serviceName)}; elif [ -f ${shQuote(backupPath)} ]; then ${stopManagedServiceCmd(serviceName)}; cp -p ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; rm -f ${shQuote(backupPath)} ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; else ${stopManagedServiceCmd(serviceName)}; rm -f ${shQuote(configPath)} 2>/dev/null || true; fi`);
+        rollbackCommands.push(`if [ -f ${shQuote(`${configPath}.forwardx-last-good`)} ]; then cp -p ${shQuote(`${configPath}.forwardx-last-good`)} ${shQuote(configPath)}; ${startManagedServiceCmd(serviceName)}; elif [ -f ${shQuote(backupPath)} ]; then ${stopManagedServiceCmd(serviceName)}; cp -p ${shQuote(backupPath)} ${shQuote(configPath)}; if [ -f ${shQuote(backupEnabledPath)} ]; then if ! { ${enableRestoredService}; }; then exit 1; fi; fi; if [ -f ${shQuote(backupActivePath)} ]; then if ! { ${restartRestoredService}; }; then exit 1; fi; fi; rm -f ${shQuote(backupPath)} ${shQuote(backupActivePath)} ${shQuote(backupEnabledPath)} ${shQuote(dnsRefreshPath)} ${shQuote(xdpModePath)} ${shQuote(configTempPath)} ${shQuote(configPath)}.sha256 2>/dev/null || true; else ${stopManagedServiceCmd(serviceName)}; rm -f ${shQuote(configPath)} ${shQuote(xdpModePath)} 2>/dev/null || true; fi`);
       }
       return { commands: cmds, removalCommands, rollbackCommands };
     };
@@ -2032,19 +2036,33 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       hostIngressAddressById.set(id, addr);
       return addr;
     };
-    const getHopDialAddress = async (hop: any) => {
+    const getHopDialAddress = async (hop: any, tunnel?: any) => {
       const configured = String((hop as any)?.connectHost || "").trim();
       if (configured) {
         addDnsWatch(dnsWatches, configured, "tunnel-hop-connect", Number((hop as any)?.id || 0));
         return configured;
       }
+      const hopHost = await db.getHostById(Number((hop as any)?.hostId)) as any;
+      const selected = selectTunnelHopDialAddress(hop, hopHost, tunnel);
+      const privateAddress = String(hopHost?.tunnelEntryIp || "").trim();
+      if (privateAddress && selected === privateAddress) {
+        addDnsWatch(dnsWatches, selected, "tunnel-private", Number((hop as any)?.hostId || 0));
+        return selected;
+      }
       return getHostIngressAddress(Number((hop as any)?.hostId));
     };
-    const getExtraExitDialAddress = async (exitNode: any) => {
+    const getExtraExitDialAddress = async (exitNode: any, tunnel?: any) => {
       const configured = String((exitNode as any)?.connectHost || "").trim();
       if (configured) {
         addDnsWatch(dnsWatches, configured, "tunnel-exit-connect", Number((exitNode as any)?.id || 0));
         return configured;
+      }
+      const exitHost = await db.getHostById(Number((exitNode as any)?.hostId)) as any;
+      const selected = selectTunnelHopDialAddress(exitNode, exitHost, tunnel);
+      const privateAddress = String(exitHost?.tunnelEntryIp || "").trim();
+      if (privateAddress && selected === privateAddress) {
+        addDnsWatch(dnsWatches, selected, "tunnel-private", Number((exitNode as any)?.hostId || 0));
+        return selected;
       }
       return getHostIngressAddress(Number((exitNode as any)?.hostId));
     };
@@ -2090,13 +2108,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const finalExit = hops[hops.length - 1] as any;
           const relayHops = relayFailover ? tunnelRelayCandidates(hops) : [hops[1]];
           for (const relayHop of relayHops as any[]) {
-            const relayEndpointHost = await getHopDialAddress(relayHop);
+            const relayEndpointHost = await getHopDialAddress(relayHop, tunnel);
             for (const entryHostId of entryHostIds) {
               addLink(entryHostId, relayHop?.hostId, relayEndpointHost, relayHop?.mimicPort);
             }
           }
           if (relayFailover) {
-            const finalEndpointHost = await getHopDialAddress(finalExit);
+            const finalEndpointHost = await getHopDialAddress(finalExit, tunnel);
             for (const relayHop of relayHops as any[]) {
               addLink(relayHop?.hostId, finalExit?.hostId, finalEndpointHost, finalExit?.mimicPort);
             }
@@ -2104,7 +2122,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             for (let index = 1; index < hops.length - 1; index += 1) {
               const current = hops[index] as any;
               const next = hops[index + 1] as any;
-              addLink(current?.hostId, next?.hostId, await getHopDialAddress(next), next?.mimicPort);
+              addLink(current?.hostId, next?.hostId, await getHopDialAddress(next, tunnel), next?.mimicPort);
             }
           }
           if ((tunnel as any).loadBalanceEnabled && extraExitNodes.length > 0) {
@@ -2114,7 +2132,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ? [Number((hops[hops.length - 2] as any)?.hostId || 0)]
               : entryHostIds;
             for (const exitNode of extraExitNodes) {
-              const endpointHost = await getExtraExitDialAddress(exitNode);
+              const endpointHost = await getExtraExitDialAddress(exitNode, tunnel);
               addNode(exitNode?.hostId, exitNode?.mimicPort);
               for (const sourceHostId of branchSources) {
                 addLink(sourceHostId, exitNode?.hostId, endpointHost, exitNode?.mimicPort);
@@ -2129,7 +2147,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
           if ((tunnel as any).loadBalanceEnabled) {
             for (const exitNode of extraExitNodes) {
-              const endpointHost = await getExtraExitDialAddress(exitNode);
+              const endpointHost = await getExtraExitDialAddress(exitNode, tunnel);
               addNode(exitNode?.hostId, exitNode?.mimicPort);
               for (const entryHostId of entryHostIds) {
                 addLink(entryHostId, exitNode?.hostId, endpointHost, exitNode?.mimicPort);
@@ -2281,7 +2299,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if ((exitNode as any).isEnabled === false) continue;
         const port = Number((exitNode as any).listenPort || 0);
         if (port <= 0) continue;
-        const exitHost = await getExtraExitDialAddress(exitNode);
+        const exitHost = await getExtraExitDialAddress(exitNode, tunnel);
         if (!exitHost) continue;
         routes.push({ hostId: Number((exitNode as any).hostId || 0), host: exitHost, port, udpPort: Number((exitNode as any).mimicPort || 0), key: tunnelSecretSeed(tunnel) });
       }
@@ -2312,7 +2330,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const nextHop = isTunnelRelayFailover(tunnel, hops)
           ? hops[hops.length - 1] as any
           : hops[hopIdx + 1] as any;
-        const nextIp = await getHopDialAddress(nextHop);
+        const nextIp = await getHopDialAddress(nextHop, tunnel);
         const nextUdpPort = !wireGuardV2 && tunnelNeedsMimic(tunnel) ? Number(nextHop?.mimicPort || 0) : 0;
         const nextMimicPort = tunnelNeedsMimic(tunnel) ? Number(nextHop?.mimicPort || 0) : 0;
         fxpSpec.relayExitHost = String(nextIp).trim();
@@ -2369,7 +2387,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const nextHop = hops[1] as any;
         return {
           hostId: Number(nextHop?.hostId || 0),
-          host: String(await getHopDialAddress(nextHop)).trim(),
+          host: String(await getHopDialAddress(nextHop, tunnel)).trim(),
           port: Number(nextHop?.listenPort) || 0,
           udpPort: Number(nextHop?.mimicPort || 0),
           key: fxpHopKey(tunnel, nextHop, 1),
@@ -2389,7 +2407,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       if (Array.isArray(hops) && isTunnelRelayFailover(tunnel, hops)) {
         for (const relayHop of tunnelRelayCandidates(hops) as any[]) {
-          const relayHost = String(await getHopDialAddress(relayHop)).trim();
+          const relayHost = String(await getHopDialAddress(relayHop, tunnel)).trim();
           const relayPort = Number(relayHop?.listenPort) || 0;
           const relayKey = fxpHopKey(tunnel, relayHop, Number(relayHop?.seq || 0));
           if (!relayHost || relayPort <= 0 || !relayKey) continue;
@@ -2453,7 +2471,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const nextHop = isTunnelRelayFailover(tunnel, hops)
               ? hops[hops.length - 1] as any
               : hops[hostIdx + 1] as any;
-            const nextHost = String(await getHopDialAddress(nextHop)).trim();
+            const nextHost = String(await getHopDialAddress(nextHop, tunnel)).trim();
             const nextRoutes = [{ host: nextHost, port: Number(nextHop?.listenPort || 0), udpPort: Number(nextHop?.mimicPort || 0) }];
             const nextIsFinalExit = Number(nextHop?.hostId || 0) === Number((hops[hops.length - 1] as any)?.hostId || 0);
             if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
@@ -2485,7 +2503,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
         const nextHop = Array.isArray(hops) && hops.length >= 2 ? (hops[1] as any) : null;
         tunnelExitEndpointById.set(tunnel.id, {
-          host: nextHop ? await getHopDialAddress(nextHop) : await tunnelExitHostAddress(tunnel),
+          host: nextHop ? await getHopDialAddress(nextHop, tunnel) : await tunnelExitHostAddress(tunnel),
           port: nextHop ? Number(nextHop.listenPort) : Number(tunnel.listenPort),
           udpPort: nextHop ? Number(nextHop.mimicPort || 0) : Number((tunnel as any).mimicPort || 0),
         });
@@ -2510,7 +2528,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ? tunnelRelayCandidates(hops).map((hop: any, index: number) => ({ hop, index: index + 1 }))
             : [{ hop: relayFailover ? hops[hops.length - 1] : hops[routeHostIdx + 1], index: routeHostIdx + 1 }];
           const probes = await Promise.all(probeTargets.map(async ({ hop: nextHop, index: targetIndex }: any) => {
-            const targetIp = await getHopDialAddress(nextHop);
+            const targetIp = await getHopDialAddress(nextHop, tunnel);
             const targetPort = Number(nextHop?.listenPort) || 0;
             if (!targetIp || targetPort <= 0) return null;
             const relayCandidateIndex = relayFailover ? (currentHostIsEntry ? targetIndex : hostIdx) : 0;
@@ -2676,7 +2694,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
         const exitHost = endpoint.primary
           ? (String(primaryHostOverride || "").trim() || tunnelExitEndpointById.get(tunnel.id)?.host || await tunnelExitHostAddress(tunnel))
-          : await getExtraExitDialAddress(endpoint.node);
+          : await getExtraExitDialAddress(endpoint.node, tunnel);
         if (!exitHost || endpoint.listenPort <= 0) continue;
         const exitKey = endpoint.primary ? 0 : (endpoint.exitSeq || endpoint.exitNodeId);
         nodes.push(gostTunnelNode(
@@ -2814,7 +2832,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const relayFailover = isTunnelRelayFailover(tunnel, tunnelHops);
           if (relayFailover) {
             const relayNodes = await Promise.all(tunnelRelayCandidates(tunnelHops).map(async (hop: any, index: number) => {
-              const hopDialHost = await getHopDialAddress(hop);
+              const hopDialHost = await getHopDialAddress(hop, tunnel);
               if (!hopDialHost || !Number(hop.listenPort)) return null;
               const hopAddr = endpointHostPort(hopDialHost, hop.listenPort);
               routeParts.push(`relay#${index + 1}:${Number(hop.hostId)}@${hopAddr}`);
@@ -2835,7 +2853,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } else {
             for (let i = 1; i < tunnelHops.length - 1; i++) {
               const hop = tunnelHops[i] as any;
-              const hopDialHost = await getHopDialAddress(hop);
+              const hopDialHost = await getHopDialAddress(hop, tunnel);
               if (!hopDialHost || !Number(hop.listenPort)) return null;
               const hopAddr = endpointHostPort(hopDialHost, hop.listenPort);
               routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
@@ -2851,7 +2869,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             }
           }
           const exitHop = tunnelHops[tunnelHops.length - 1] as any;
-          const exitHost = await getHopDialAddress(exitHop);
+          const exitHost = await getHopDialAddress(exitHop, tunnel);
           const exitNodes = await buildLoadBalancedExitNodes(r, tunnel, exitHost);
           if (!exitHost || exitNodes.length === 0) return null;
           chainHops.push({
@@ -3299,7 +3317,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
           const exitHost = endpoint.primary
             ? (tunnelExitEndpointById.get(tunnel.id)?.host || await tunnelExitHostAddress(tunnel))
-            : await getExtraExitDialAddress(endpoint.node);
+            : await getExtraExitDialAddress(endpoint.node, tunnel);
           const addr = nginxEndpoint(exitHost, endpoint.listenPort);
           if (addr) {
             endpoints.push({ addr, primary: endpoint.primary });
@@ -4928,7 +4946,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (hostIdx <= 0 || hostIdx >= hops.length - 1) return null;
         const currentHop = hops[hostIdx] as any;
         const nextHop = isTunnelRelayFailover(tunnel, hops) ? hops[hops.length - 1] : hops[hostIdx + 1] as any;
-        const nextHost = await getHopDialAddress(nextHop);
+        const nextHost = await getHopDialAddress(nextHop, tunnel);
         const sourcePort = Number(currentHop.listenPort) || 0;
         const targetPort = Number(nextHop.listenPort) || 0;
         if (!sourcePort || !targetPort || !nextHost) return null;

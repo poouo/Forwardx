@@ -67,6 +67,46 @@ test("keeps a private endpoint in the WireGuard peer plan", () => {
   assert.equal(plans.get(3)?.peers.find((peer) => peer.hostId === 2)?.endpointHost, "10.23.0.8");
 });
 
+test("keeps a private endpoint in the Mimic remote filter", () => {
+  const plans = buildForwardXWireGuardPlans({
+    tunnelId: 9,
+    seed: "private-filter",
+    nodes: [{ hostId: 3 }, { hostId: 2, listenPort: 61561 }],
+    links: [{ fromHostId: 3, toHostId: 2, endpointHost: "10.23.0.8", endpointPort: 61561 }],
+  });
+
+  assert.deepEqual(buildForwardXWireGuardMimicFilters(plans.get(3)!), [
+    "remote=10.23.0.8:61561",
+  ]);
+});
+
+test("keeps private endpoints on every hop in a Mimic WireGuard chain", () => {
+  const plans = buildForwardXWireGuardPlans({
+    tunnelId: 11,
+    seed: "private-chain",
+    nodes: [
+      { hostId: 1 },
+      { hostId: 2, listenPort: 61561 },
+      { hostId: 3, listenPort: 61562 },
+    ],
+    links: [
+      { fromHostId: 1, toHostId: 2, endpointHost: "10.23.0.8", endpointPort: 61561 },
+      { fromHostId: 2, toHostId: 3, endpointHost: "10.23.0.9", endpointPort: 61562 },
+    ],
+  });
+
+  assert.deepEqual(buildForwardXWireGuardMimicFilters(plans.get(1)!), [
+    "remote=10.23.0.8:61561",
+  ]);
+  assert.deepEqual(buildForwardXWireGuardMimicFilters(plans.get(2)!), [
+    "local=0.0.0.0:61561",
+    "local=[::]:61561",
+    "remote=10.23.0.9:61562",
+  ]);
+  assert.equal(plans.get(1)?.peers.find((peer) => peer.hostId === 2)?.endpointHost, "10.23.0.8");
+  assert.equal(plans.get(2)?.peers.find((peer) => peer.hostId === 3)?.endpointHost, "10.23.0.9");
+});
+
 test("builds Mimic filters from the WireGuard peer plan", () => {
   const plans = buildForwardXWireGuardPlans({
     tunnelId: 10,

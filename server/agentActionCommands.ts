@@ -138,7 +138,7 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
       for (const [chain, rule, marker] of targetRules) cmds.push(addStatRule(targetBinary, chain, rule, marker));
     }
   }
-  cmds.push(...buildNftProcessCountingCmds(port, protocol));
+  cmds.push(...buildNftProcessCountingCmds(port, protocol, targetIp, targetPort));
   return cmds;
 }
 
@@ -201,6 +201,12 @@ const nftTable = "forwardx";
 const nftProcessTrafficTable = "forwardx_traffic";
 const nftProcessTrafficInputChain = "input";
 const nftProcessTrafficOutputChain = "output";
+const nftProcessTrafficForwardChain = "forward";
+const nftProcessTrafficChains = [
+  nftProcessTrafficInputChain,
+  nftProcessTrafficOutputChain,
+  nftProcessTrafficForwardChain,
+];
 const nftChain = (prefix: string, id: number) => `${prefix}_${id}`;
 const nftComment = (rule: any) => `fwx-rule-${Number(rule.id) || 0}`;
 const nftTrafficPreroutingChain = "traffic_prerouting";
@@ -213,20 +219,47 @@ const nftIpv6RoutefixComment = "fwx-ipv6-dnat-routefix";
 
 function nftProcessCountingCleanupCmd(port: number) {
   const marker = `fwx-stat-${port}:`;
-  return `if command -v nft >/dev/null 2>&1 && nft list table inet ${nftProcessTrafficTable} >/dev/null 2>&1; then for c in ${nftProcessTrafficInputChain} ${nftProcessTrafficOutputChain}; do while h=$(nft -a list chain inet ${nftProcessTrafficTable} "$c" 2>/dev/null | awk -v marker=${shellQuote(marker)} 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet ${nftProcessTrafficTable} "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`;
+  return `if command -v nft >/dev/null 2>&1 && nft list table inet ${nftProcessTrafficTable} >/dev/null 2>&1; then for c in ${nftProcessTrafficChains.join(" ")}; do while h=$(nft -a list chain inet ${nftProcessTrafficTable} "$c" 2>/dev/null | awk -v marker=${shellQuote(marker)} 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet ${nftProcessTrafficTable} "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`;
 }
 
-function buildNftProcessCountingCmds(port: number, protocol?: string) {
+function nftProcessCountingRuleCmd(chain: string, matchBody: string, marker: string) {
+  // nft accepts `counter` before or after `comment` depending on the version, so
+  // try both orderings before giving up.
+  return `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${chain} ${matchBody} counter comment ${nftCommentLiteral(marker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${chain} ${matchBody} comment ${nftCommentLiteral(marker)} counter 2>/dev/null || true; fi; true`;
+}
+
+function buildNftProcessCountingCmds(port: number, protocol?: string, targetIp?: string, targetPort?: number) {
   const commands = [
-    `if command -v nft >/dev/null 2>&1; then nft add table inet ${nftProcessTrafficTable} 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true; fi; true`,
+    `if command -v nft >/dev/null 2>&1; then nft add table inet ${nftProcessTrafficTable} 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficForwardChain} '{ type filter hook forward priority mangle; policy accept; }' 2>/dev/null || true; fi; true`,
   ];
+  const target = cleanAddress(targetIp);
+  const hasTarget = isIpAddress(target) && Number(targetPort) > 0;
+  const family = hasTarget ? nftAddressFamily(target) : "";
   for (const proto of forwardRuleProtocols(protocol, "both")) {
     const inMarker = `fwx-stat-${port}:in`;
     const outMarker = `fwx-stat-${port}:out`;
     commands.push(
-      `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} meta l4proto ${proto} ${proto} dport ${port} counter comment ${nftCommentLiteral(inMarker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} meta l4proto ${proto} ${proto} dport ${port} comment ${nftCommentLiteral(inMarker)} counter 2>/dev/null || true; fi; true`,
-      `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} meta l4proto ${proto} ${proto} sport ${port} counter comment ${nftCommentLiteral(outMarker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} meta l4proto ${proto} ${proto} sport ${port} comment ${nftCommentLiteral(outMarker)} counter 2>/dev/null || true; fi; true`,
+      nftProcessCountingRuleCmd(nftProcessTrafficInputChain, `meta l4proto ${proto} ${proto} dport ${port}`, inMarker),
+      nftProcessCountingRuleCmd(nftProcessTrafficOutputChain, `meta l4proto ${proto} ${proto} sport ${port}`, outMarker),
     );
+    // Kernel-space forwarding (iptables/nftables DNAT) never traverses the
+    // input/output hooks, so without a forward-hook counter these rules report
+    // zero bytes. DNAT rewrites the destination before the forward hook, so
+    // match the resolved target endpoint rather than the listen port.
+    if (hasTarget) {
+      commands.push(
+        nftProcessCountingRuleCmd(
+          nftProcessTrafficForwardChain,
+          `meta l4proto ${proto} ${family} daddr ${target} ${proto} dport ${targetPort}`,
+          inMarker,
+        ),
+        nftProcessCountingRuleCmd(
+          nftProcessTrafficForwardChain,
+          `meta l4proto ${proto} ${family} saddr ${target} ${proto} sport ${targetPort}`,
+          outMarker,
+        ),
+      );
+    }
   }
   return commands;
 }
@@ -556,6 +589,159 @@ export function restartManagedServiceIfConfigChangedCmd(svcNameRaw: string, conf
   const alreadyRunning = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${q}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${q} status >/dev/null 2>&1; elif [ -x /etc/init.d/${svcName} ]; then /etc/init.d/${svcName} status >/dev/null 2>&1; else false; fi`;
   const configHash = `if command -v sha256sum >/dev/null 2>&1; then sha256sum ${config} 2>/dev/null | awk '{print "sha256:"$1}'; elif command -v cksum >/dev/null 2>&1; then cksum ${config} 2>/dev/null | awk '{print "cksum:"$1":"$2}'; else echo "mtime:$(wc -c < ${config} 2>/dev/null):$(date -r ${config} +%s 2>/dev/null)"; fi`;
   return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ "$new_hash" != "$old_hash" ] || ! { ${alreadyRunning}; }; then ${start}; [ -n "$new_hash" ] && printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${svcName} config unchanged"; fi`;
+}
+
+function mimicInterfaceName(value: string) {
+  const name = String(value || "").trim();
+  if (!/^[A-Za-z0-9_.:-]+$/.test(name) || name === "." || name === "..") {
+    throw new Error(`Invalid network interface name: ${value}`);
+  }
+  return name;
+}
+
+/**
+ * Mimic's package service does not detach stale XDP programs or lock files.
+ * Do that only when the managed config really needs a restart, then retry in
+ * skb mode when native XDP cannot attach on a particular VPS NIC.
+ */
+export function restartMimicServiceIfConfigChangedCmd(svcNameRaw: string, configPath: string, ifaceRaw: string) {
+  const svcName = serviceName(svcNameRaw);
+  const iface = mimicInterfaceName(ifaceRaw);
+  const q = shQuote(svcName);
+  const config = shQuote(configPath);
+  const modeState = shQuote(`${configPath}.forwardx-xdp-mode`);
+  const qIface = shQuote(iface);
+  const dropInDir = `/etc/systemd/system/${svcName}.service.d`;
+  const dropInPath = `${dropInDir}/forwardx-bpf.conf`;
+  const dropIn = [
+    "[Service]",
+    "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_BPF",
+    "AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_BPF",
+    "NoNewPrivileges=no",
+    "",
+  ].join("\n");
+  const configHash = `if command -v sha256sum >/dev/null 2>&1; then sha256sum ${config} 2>/dev/null | awk '{print "sha256:"$1}'; elif command -v cksum >/dev/null 2>&1; then cksum ${config} 2>/dev/null | awk '{print "cksum:"$1":"$2}'; else echo "mtime:$(wc -c < ${config} 2>/dev/null):$(date -r ${config} +%s 2>/dev/null)"; fi`;
+  const alreadyRunning = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${q}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${q} status >/dev/null 2>&1; elif [ -x /etc/init.d/${svcName} ]; then /etc/init.d/${svcName} status >/dev/null 2>&1; else false; fi`;
+  const ensureBpfDropIn = [
+    `mimic_dropin_changed=0`,
+    `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then`,
+    `  mkdir -p ${shQuote(dropInDir)}`,
+    `  mimic_dropin_tmp=${shQuote(`${dropInPath}.tmp`)}.$$`,
+    `  printf '%s' ${shQuote(dropIn)} > "$mimic_dropin_tmp"`,
+    `  if [ ! -f ${shQuote(dropInPath)} ] || ! cmp -s "$mimic_dropin_tmp" ${shQuote(dropInPath)}; then`,
+    `    mv -f "$mimic_dropin_tmp" ${shQuote(dropInPath)}`,
+    `    chmod 644 ${shQuote(dropInPath)}`,
+    `    systemctl daemon-reload`,
+    `    mimic_dropin_changed=1`,
+    `  else`,
+    `    rm -f "$mimic_dropin_tmp"`,
+    `  fi`,
+    `fi`,
+  ].join("\n");
+  const setXdpMode = [
+    `mimic_set_xdp_mode() {`,
+    `  mimic_mode_tmp=${config}.xdp.$$`,
+    `  awk -v mode="$1" '/^[[:space:]]*xdp_mode[[:space:]]*=/ { if (!done) print "xdp_mode = " mode; done=1; next } { print } END { if (!done) print "xdp_mode = " mode }' ${config} > "$mimic_mode_tmp" && mv -f "$mimic_mode_tmp" ${config}`,
+    `}`,
+    `mimic_xdp_mode="\${FORWARDX_MIMIC_XDP_MODE:-}"`,
+    `case "$mimic_xdp_mode" in native|skb) ;; *) mimic_xdp_mode="" ;; esac`,
+    // The panel rewrites the managed config on every desired-state sync. Keep
+    // the selected mode in a sidecar so a successful fallback survives that
+    // rewrite and does not restart the tunnel on every heartbeat.
+    `mimic_saved_xdp_mode="\$(cat ${modeState} 2>/dev/null || true)"`,
+    `if [ -z "$mimic_xdp_mode" ]; then case "$mimic_saved_xdp_mode" in native|skb) mimic_xdp_mode="$mimic_saved_xdp_mode" ;; esac; fi`,
+    `mimic_existing_xdp_mode="\$(awk -F= '/^[[:space:]]*xdp_mode[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' ${config} 2>/dev/null || true)"`,
+    `if [ -z "$mimic_xdp_mode" ]; then case "$mimic_existing_xdp_mode" in native|skb) mimic_xdp_mode="$mimic_existing_xdp_mode" ;; esac; fi`,
+    `if [ -z "$mimic_xdp_mode" ]; then`,
+    `  mimic_driver="\$(readlink -f /sys/class/net/${iface}/device/driver 2>/dev/null || true)"`,
+    `  mimic_driver="\${mimic_driver##*/}"`,
+    `  case "$mimic_driver" in ena|ena_*|e1000|e1000e|igb|igc|mlx4_en|mlx5_core|virtio|virtio_net|veth|tap|tun|*) mimic_xdp_mode=skb ;; esac`,
+    `fi`,
+    `mimic_set_xdp_mode "$mimic_xdp_mode"`,
+    `mimic_persist_xdp_mode() { mimic_mode_state_tmp=${modeState}.tmp.$$; printf '%s' "$mimic_xdp_mode" > "$mimic_mode_state_tmp" && mv -f "$mimic_mode_state_tmp" ${modeState}; }`,
+  ].join("\n");
+  const hooksCheck = [
+    `mimic_hooks_ready() {`,
+    `  mimic_has_xdp=0; mimic_has_tc=0`,
+    `  if command -v ip >/dev/null 2>&1 && ip -details link show dev ${qIface} 2>/dev/null | grep -qi xdp; then mimic_has_xdp=1; fi`,
+    `  if command -v tc >/dev/null 2>&1; then`,
+    `    if [ -n "\$(tc filter show dev ${qIface} egress 2>/dev/null)" ]; then mimic_has_tc=1; fi`,
+    `  fi`,
+    `  [ "$mimic_has_xdp" = "1" ] && [ "$mimic_has_tc" = "1" ]`,
+    `}`,
+    `mimic_wait_for_hooks() { for mimic_attempt in 1 2 3 4 5; do mimic_hooks_ready && return 0; sleep 1; done; return 1; }`,
+  ].join("\n");
+  const cleanup = [
+    `mimic_cleanup_runtime() {`,
+    `  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop ${q}.service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1; then rc-service ${q} stop 2>/dev/null || true; elif [ -x /etc/init.d/${svcName} ]; then /etc/init.d/${svcName} stop 2>/dev/null || true; fi`,
+    `  if command -v ip >/dev/null 2>&1; then`,
+    `    ip link set dev ${qIface} xdp off 2>/dev/null || true`,
+    `    ip link set dev ${qIface} xdpgeneric off 2>/dev/null || true`,
+    `    ip link set dev ${qIface} xdpdrv off 2>/dev/null || true`,
+    `    ip link set dev ${qIface} xdpoffload off 2>/dev/null || true`,
+    `  fi`,
+    `  if command -v bpftool >/dev/null 2>&1; then`,
+    `    bpftool net detach xdp dev ${qIface} 2>/dev/null || true`,
+    `    bpftool net detach xdpgeneric dev ${qIface} 2>/dev/null || true`,
+    `    bpftool net detach xdpdrv dev ${qIface} 2>/dev/null || true`,
+    `    bpftool net detach xdpoffload dev ${qIface} 2>/dev/null || true`,
+    `  fi`,
+    `  mimic_ifindex="\$(cat /sys/class/net/${iface}/ifindex 2>/dev/null || true)"`,
+    `  if [ -n "$mimic_ifindex" ]; then rm -f /run/mimic/*_"$mimic_ifindex".lock 2>/dev/null || true; fi`,
+    `  if command -v modprobe >/dev/null 2>&1; then modprobe -r mimic 2>/dev/null || true; fi`,
+    `}`,
+  ].join("\n");
+  const reloadModule = [
+    `mimic_reload_module() {`,
+    `  if ! command -v modprobe >/dev/null 2>&1; then echo "[mimic] modprobe is unavailable"; return 1; fi`,
+    `  modprobe mimic 2>/dev/null || { echo "[mimic] kernel module could not be loaded"; return 1; }`,
+    `}`,
+  ].join("\n");
+  const startService = [
+    `mimic_start_service() {`,
+    `  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${q}.service >/dev/null 2>&1 || true; systemctl restart ${q}.service || { systemctl status ${q}.service --no-pager -l 2>/dev/null || true; journalctl -u ${q}.service -n 80 --no-pager 2>/dev/null || true; return 1; }; elif command -v rc-service >/dev/null 2>&1; then command -v rc-update >/dev/null 2>&1 && rc-update add ${q} default >/dev/null 2>&1 || true; rc-service ${q} restart; elif [ -x /etc/init.d/${svcName} ]; then command -v update-rc.d >/dev/null 2>&1 && update-rc.d ${q} defaults >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} on >/dev/null 2>&1 || true; /etc/init.d/${svcName} restart; else echo "[mimic] unsupported init system for ${svcName}"; return 1; fi`,
+    `}`,
+  ].join("\n");
+  const startAndWait = [
+    `mimic_start_and_wait() {`,
+    `  mimic_start_output=""`,
+    `  if ! mimic_start_output="\$(mimic_start_service 2>&1)"; then printf '%s\\n' "$mimic_start_output"; return 2; fi`,
+    `  if mimic_wait_for_hooks; then return 0; fi`,
+    `  return 2`,
+    `}`,
+  ].join("\n");
+  return [
+    "set -e",
+    setXdpMode,
+    hooksCheck,
+    cleanup,
+    reloadModule,
+    startService,
+    startAndWait,
+    ensureBpfDropIn,
+    `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); mimic_needs_start=0; if [ "$new_hash" != "$old_hash" ] || [ "$mimic_dropin_changed" = "1" ] || ! { ${alreadyRunning}; } || ! mimic_hooks_ready; then mimic_needs_start=1; fi`,
+    `if [ "$mimic_needs_start" = "1" ]; then`,
+    `  mimic_cleanup_runtime`,
+    `  mimic_reload_module || exit 1`,
+    `  mimic_start_status=0; mimic_start_and_wait || mimic_start_status=$?`,
+    `  if [ "$mimic_start_status" -ne 0 ]; then`,
+    `    if [ "$mimic_start_status" -eq 2 ] && [ "\${FORWARDX_MIMIC_AUTO_FALLBACK:-1}" != "0" ]; then`,
+    `      if [ "$mimic_xdp_mode" = "native" ]; then mimic_fallback_mode=skb; else mimic_fallback_mode=native; fi`,
+    `      echo "[mimic] $mimic_xdp_mode XDP/TC hooks were not ready; retrying with $mimic_fallback_mode mode"`,
+    `      mimic_xdp_mode="$mimic_fallback_mode"; mimic_set_xdp_mode "$mimic_xdp_mode"; mimic_cleanup_runtime; mimic_reload_module || exit 1`,
+    `      mimic_start_and_wait || { echo "[mimic] $mimic_xdp_mode XDP/TC hooks were not detected on ${iface}"; exit 1; }`,
+    `    else`,
+    `      echo "[mimic] service is active but XDP/TC hooks were not detected on ${iface}"; exit 1`,
+    `    fi`,
+    `  fi`,
+    `  new_hash=$(${configHash})`,
+    `  mimic_persist_xdp_mode`,
+    `  [ -n "$new_hash" ] && printf '%s' "$new_hash" > ${config}.sha256`,
+    `else`,
+    `  mimic_persist_xdp_mode`,
+    `  echo "[service] ${svcName} config unchanged and hooks ready"`,
+    `fi`,
+  ].join("\n");
 }
 
 export function stopManagedServiceCmd(svcNameRaw: string) {

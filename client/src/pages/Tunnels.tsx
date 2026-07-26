@@ -2151,6 +2151,7 @@ function TunnelsContent() {
     refetchInterval: pollingInterval("active"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const isTunnelGlobeView = activeSection === "tunnels" && viewMode === "globe";
   const tunnelMapQuery = trpc.tunnels.mapItems.useInfiniteQuery({
@@ -2162,6 +2163,7 @@ function TunnelsContent() {
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const mapTunnels = useMemo<any[]>(
     () => tunnelMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
@@ -2220,6 +2222,7 @@ function TunnelsContent() {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const isChainGlobeView = activeSection === "chains" && chainViewMode === "globe";
   const needsFullForwardGroupList = showDialog || showCreateTypeDialog || isChainGlobeView;

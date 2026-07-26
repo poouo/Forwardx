@@ -139,6 +139,30 @@ test("Mimic installer provisions the NIC offload management dependency", () => {
   assert.match(script, /ensure_ethtool \|\| log/);
 });
 
+test("Mimic installer uses codename-prefixed release assets", () => {
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-mimic.sh"), "utf8");
+
+  assert.match(script, /detect_deb_codenames\(\)/);
+  assert.match(script, /\$\{codename\}_mimic_\$\{TARGET_VERSION\}-1_\$\{arch\}\.deb/);
+  assert.match(script, /\$\{codename\}_mimic-dkms_\$\{TARGET_VERSION\}-1_\$\{arch\}\.deb/);
+  assert.match(script, /check_kernel_build_requirements/);
+  assert.match(script, /bpftool_bin="\$\(type -P bpftool/);
+  assert.match(script, /CHECKSUM_HACK=kprobe/);
+  assert.doesNotMatch(script, /matching vmlinux BTF is unavailable[\s\S]*return 1/);
+});
+
+test("Mimic source fallback installs a privileged service with stale-hook cleanup", () => {
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-mimic.sh"), "utf8");
+
+  assert.match(script, /ExecStartPre=-\$\{modprobe_bin\} -r mimic/);
+  assert.match(script, /ExecStartPre=-\$\{ip_bin\} link set dev %i xdp off/);
+  assert.match(script, /ExecStartPre=-\$\{sh_bin\} -c 'idx=/);
+  assert.match(script, /CapabilityBoundingSet=.*CAP_BPF/);
+  assert.match(script, /forwardx-bpf\.conf/);
+  assert.doesNotMatch(script, /User=mimic/);
+  assert.doesNotMatch(script, /Group=mimic/);
+});
+
 test("Agent release always builds the published FXP assets from Go", () => {
   const script = fs.readFileSync(path.join(process.cwd(), "scripts/build-agent-release.sh"), "utf8");
 

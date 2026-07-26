@@ -643,11 +643,13 @@ export default function Plans() {
     enabled: activeTab === "plans",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const planSummaryQuery = trpc.plans.summary.useQuery(undefined, {
     enabled: activeTab === "plans",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const plans = (planPageQuery.data?.items || []) as any[];
   const isLoading = planPageQuery.isLoading;

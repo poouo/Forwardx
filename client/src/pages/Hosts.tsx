@@ -1306,6 +1306,7 @@ function HostsContent() {
     refetchInterval: hostListRefreshInterval,
     refetchOnWindowFocus: true,
     staleTime: 25_000,
+    placeholderData: (previousData) => previousData,
   });
   const hostPageFilterKey = `${selectedHostGroupId}:${hostSearchQuery.trim()}`;
   const previousHostPageFilterKey = useRef(hostPageFilterKey);
@@ -1326,6 +1327,7 @@ function HostsContent() {
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: 25_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const mapHosts = useMemo<any[]>(
     () => hostMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
@@ -1354,6 +1356,7 @@ function HostsContent() {
     enabled: needsFullHostList,
     staleTime: 25_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData: any) => previousData,
   });
   const usesFullHostDisplay = isHostMapView || needsFullHostList;
   const hosts = (isHostMapView
@@ -1416,6 +1419,7 @@ function HostsContent() {
     enabled: !isHostMapView && !needsFullHostList && !!hostLiveRefreshInterval && currentPageHostIds.length > 0,
     refetchInterval: hostLiveRefreshInterval,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData: any) => previousData,
   });
   const hostStatusById = useMemo(() => {
     const map = new Map<number, any>();
@@ -1522,6 +1526,7 @@ function HostsContent() {
   }, {
     enabled: activeManageTab === "hosts",
     refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
+    placeholderData: (previousData) => previousData,
   });
   const effectiveHostSummary = hostSummary;
   const isEffectiveHostSummaryLoading = isHostSummaryLoading;
@@ -1903,6 +1908,9 @@ function HostsContent() {
   const reorderHostGroupMembersMutation = trpc.hosts.reorderHostGroupMembers.useMutation({
     onSuccess: () => {
       utils.hosts.hostGroups.invalidate();
+      utils.hosts.listPage.invalidate();
+      utils.hosts.list.invalidate();
+      utils.hosts.mapPoints.invalidate();
       toast.success("分组主机顺序已更新");
     },
     onError: (err) => toast.error(err.message || "更新分组主机顺序失败"),

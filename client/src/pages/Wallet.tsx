@@ -68,11 +68,11 @@ function ledgerIcon(item: any) {
 export default function Wallet() {
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
-  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({ limit: 150 });
-  const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
-  const { data: paymentOrders = [], isLoading: paymentOrdersLoading } = trpc.payment.myOrders.useQuery({ limit: 50 });
-  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery();
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { placeholderData: (previousData) => previousData });
+  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({ limit: 150 }, { placeholderData: (previousData) => previousData });
+  const { data: billingFeatures } = trpc.billing.featureStatus.useQuery(undefined, { placeholderData: (previousData) => previousData });
+  const { data: paymentOrders = [], isLoading: paymentOrdersLoading } = trpc.payment.myOrders.useQuery({ limit: 50 }, { placeholderData: (previousData: any) => previousData });
+  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [amount, setAmount] = useState("50");
   const [paymentType, setPaymentType] = useState<PaymentType>("stripe");

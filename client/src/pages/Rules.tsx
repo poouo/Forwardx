@@ -351,6 +351,7 @@ type RulePageSize = 12 | 24 | 36 | 48;
 type RuleGroupType = keyof typeof desktopRuleTypeLabels;
 type RuleGroupCollapsedState = Partial<Record<RuleGroupType, boolean>>;
 type RuleCategory = "all" | "local" | "tunnel" | "chain" | "group";
+type RuleCategoryCounts = Record<RuleCategory, number>;
 type RuleTransferScopeType = Exclude<RuleCategory, "all">;
 type RuleBatchManageMode = "copy" | "edit" | "export" | "import";
 type BatchEditFormData = Pick<RuleFormData, "routeMode" | "forwardType" | "tunnelId" | "forwardGroupId" | "targetIp" | "targetPort">;
@@ -383,6 +384,8 @@ const RULE_SORT_CATEGORY_RANK = new Map<RuleTransferScopeType, number>(
   RULE_SORT_CATEGORY_ORDER.map((category, index) => [category, index]),
 );
 const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
+const EMPTY_RULE_CATEGORY_COUNTS: RuleCategoryCounts = { all: 0, local: 0, tunnel: 0, chain: 0, group: 0 };
+const RULE_CATEGORY_COUNTS_CACHE_PREFIX = "forwardx.rules.categoryCounts.";
 const RULE_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const RULE_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const RULE_GLOBE_PATH_SURFACE_ALTITUDE = 0.028;
@@ -393,6 +396,45 @@ const RULE_GLOBE_PATH_LAYER_ALTITUDE_MAX = 0.018;
 const RULE_GLOBE_TARGET_OFFSET_DEGREES = 5.8;
 const RULE_GLOBE_COLORS = ["#334155", "#4ade80", "#f59e0b", "#fb7185", "#2dd4bf", "#f97316", "#84cc16", "#64748b", "#f472b6", "#14b8a6"];
 let reactGlobePrefetchStarted = false;
+
+function normalizeRuleCategoryCounts(value: unknown): RuleCategoryCounts {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const count = (key: RuleCategory) => Math.max(0, Math.floor(Number(source[key]) || 0));
+  const local = count("local");
+  const tunnel = count("tunnel");
+  const chain = count("chain");
+  const group = count("group");
+  return {
+    all: Math.max(0, Math.floor(Number(source.all) || local + tunnel + chain + group)),
+    local,
+    tunnel,
+    chain,
+    group,
+  };
+}
+
+function readCachedRuleCategoryCounts(cacheKey: string): RuleCategoryCounts | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(`${RULE_CATEGORY_COUNTS_CACHE_PREFIX}${cacheKey}`);
+    return raw ? normalizeRuleCategoryCounts(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedRuleCategoryCounts(cacheKey: string, counts: RuleCategoryCounts) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${RULE_CATEGORY_COUNTS_CACHE_PREFIX}${cacheKey}`, JSON.stringify(counts));
+  } catch {
+    // Local UI cache only; ignore storage failures.
+  }
+}
+
+function ruleCategoryCountsEqual(a: RuleCategoryCounts, b: RuleCategoryCounts) {
+  return RULE_CATEGORIES.every((category) => a[category] === b[category]);
+}
 
 function getStoredRuleViewMode(): RuleViewMode {
   if (typeof window === "undefined") return "card";
@@ -596,6 +638,18 @@ function RuleContentTransition({
   );
 }
 
+function RuleRouteTransition({
+  transitionKey: _transitionKey,
+  className,
+  children,
+}: {
+  transitionKey: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return <div className={className}>{children}</div>;
+}
+
 function RuleCardModeTransition({
   mode,
   className,
@@ -628,6 +682,7 @@ function RuleCardModeTransition({
     </div>
   );
 }
+
 
 function addRuleSearchPart(parts: string[], value: unknown) {
   const text = String(value ?? "").trim();
@@ -2259,6 +2314,7 @@ function RulesContent() {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const isRuleGlobeView = effectiveViewMode === "globe";
   const ruleMapQuery = trpc.rules.mapItems.useInfiniteQuery({
@@ -2273,6 +2329,7 @@ function RulesContent() {
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
   const mapRules = useMemo<any[]>(
     () => ruleMapQuery.data?.pages.flatMap((page) => page.items as any[]) || [],
@@ -2301,12 +2358,17 @@ function RulesContent() {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData: any) => previousData,
   });
   useEffect(() => {
     if (!showCopyDialog) return;
     void fullRulesQuery.refetch();
   }, [showCopyDialog]);
-  const { data: ruleListSummary, isLoading: ruleListSummaryLoading } = trpc.rules.listSummary.useQuery({
+  const {
+    data: ruleListSummary,
+    isLoading: ruleListSummaryInitialLoading,
+    isPlaceholderData: ruleListSummaryPlaceholder,
+  } = trpc.rules.listSummary.useQuery({
     ...(effectiveRulesQuery || {}),
     entryHostId: rulePageEntryHostId,
     category: ruleCategory,
@@ -2316,7 +2378,14 @@ function RulesContent() {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
   });
+  const ruleListSummaryLoading = ruleListSummaryInitialLoading || ruleListSummaryPlaceholder;
+  const [stableRuleListSummary, setStableRuleListSummary] = useState<any | null>(null);
+  useEffect(() => {
+    if (!ruleListSummary || ruleListSummaryPlaceholder) return;
+    setStableRuleListSummary(ruleListSummary);
+  }, [ruleListSummary, ruleListSummaryPlaceholder]);
   const rules = (isRuleGlobeView
     ? mapRules
     : needsFullRuleList
@@ -2327,6 +2396,11 @@ function RulesContent() {
     : needsFullRuleList
       ? fullRulesQuery.isLoading
       : rulePageQuery.isLoading;
+  const ruleListDataReady = isRuleGlobeView
+    ? ruleMapQuery.data !== undefined && !ruleMapQuery.isPlaceholderData
+    : needsFullRuleList
+      ? fullRulesQuery.data !== undefined && !fullRulesQuery.isPlaceholderData
+      : rulePageQuery.data !== undefined && !rulePageQuery.isPlaceholderData;
   const selectedScopeRules = undefined;
 
   const walletBalanceKnown = wallet?.balanceCents !== undefined && wallet?.balanceCents !== null;
@@ -3649,7 +3723,7 @@ function RulesContent() {
   }), [filterHost, forwardGroupById, getRuleEntryHostIdForSort, hostById, ruleCategory, ruleSearchQuery, filterUser, tunnelById, user?.id, user?.role, userById]);
   const baseScopedRules = useMemo(() => rules || [], [rules]);
   const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
-  const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
+  const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : ruleListDataReady;
   const [stableFilteredRules, setStableFilteredRules] = useState<any[]>([]);
   const [filteredRulesPrimed, setFilteredRulesPrimed] = useState(false);
   useEffect(() => {
@@ -3870,16 +3944,35 @@ function RulesContent() {
   const hasBatchEditChanges = hasBatchEditRouteSelection || hasBatchEditTargetIpChange || hasBatchEditTargetPortChange;
   const batchCopyDisabled = !canAdd || copyActionPending || selectedBatchRuleCount === 0 || selectedBatchTargetCount === 0;
   const batchEditDisabled = copyActionPending || selectedBatchRuleCount === 0 || !hasBatchEditChanges;
-  const ruleCategoryCounts = useMemo(() => {
+  const ruleFilterCacheScope = user?.role === "admin"
+    ? `admin-${user?.id || "self"}-${filterUser}`
+    : `user-${user?.id || "self"}`;
+  const ruleCategoryCountsCacheKey = useMemo(() => [
+    ruleFilterCacheScope,
+    filterHost,
+    ruleSearchQuery.trim() || "search-all",
+  ].map((value) => encodeURIComponent(String(value))).join("."), [filterHost, ruleFilterCacheScope, ruleSearchQuery]);
+  const [stableRuleCategoryCounts, setStableRuleCategoryCounts] = useState(() => {
+    const cached = readCachedRuleCategoryCounts(ruleCategoryCountsCacheKey);
+    return { counts: cached || EMPTY_RULE_CATEGORY_COUNTS, ready: !!cached };
+  });
+  const previousRuleCategoryCountsCacheKey = useRef(ruleCategoryCountsCacheKey);
+  useEffect(() => {
+    if (previousRuleCategoryCountsCacheKey.current === ruleCategoryCountsCacheKey) return;
+    previousRuleCategoryCountsCacheKey.current = ruleCategoryCountsCacheKey;
+    const cached = readCachedRuleCategoryCounts(ruleCategoryCountsCacheKey);
+    setStableRuleCategoryCounts({ counts: cached || EMPTY_RULE_CATEGORY_COUNTS, ready: !!cached });
+  }, [ruleCategoryCountsCacheKey]);
+  const liveRuleCategoryCounts = useMemo<RuleCategoryCounts>(() => {
     if (!needsFullRuleList && rulePageQuery.data?.categoryCounts) {
-      return rulePageQuery.data.categoryCounts;
+      return normalizeRuleCategoryCounts(rulePageQuery.data.categoryCounts);
     }
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
     const baseFilters = {
       ...ruleFilters,
       ruleCategory: "all" as RuleCategory,
     };
-    const counts: Record<RuleCategory, number> = { all: 0, local: 0, tunnel: 0, chain: 0, group: 0 };
+    const counts: RuleCategoryCounts = { ...EMPTY_RULE_CATEGORY_COUNTS };
     sourceRules
       .filter((rule: any) => isForwardRuleVisibleByFilters(rule, baseFilters))
       .forEach((rule: any) => {
@@ -3889,13 +3982,27 @@ function RulesContent() {
       });
     return counts;
   }, [baseScopedRules, forwardGroupById, needsFullRuleList, ruleFilters, rulePageQuery.data?.categoryCounts, selectedScopeQueryEnabled, selectedScopedRules]);
+  const hasFreshRuleCategoryCounts = !needsFullRuleList
+    ? rulePageQuery.data !== undefined && !rulePageQuery.isPlaceholderData
+    : fullRulesQuery.data !== undefined && !fullRulesQuery.isPlaceholderData;
+  useEffect(() => {
+    if (!hasFreshRuleCategoryCounts) return;
+    setStableRuleCategoryCounts((previous) => (
+      previous.ready && ruleCategoryCountsEqual(previous.counts, liveRuleCategoryCounts)
+        ? previous
+        : { counts: liveRuleCategoryCounts, ready: true }
+    ));
+    writeCachedRuleCategoryCounts(ruleCategoryCountsCacheKey, liveRuleCategoryCounts);
+  }, [hasFreshRuleCategoryCounts, liveRuleCategoryCounts, ruleCategoryCountsCacheKey]);
+  const ruleCategoryCountsReady = hasFreshRuleCategoryCounts || stableRuleCategoryCounts.ready;
+  const ruleCategoryCounts = hasFreshRuleCategoryCounts ? liveRuleCategoryCounts : stableRuleCategoryCounts.counts;
   const ruleCategoryItems = useMemo<SlidingTabItem<RuleCategory>[]>(() => [
-    { value: "all", label: "全部", icon: LayoutGrid, badge: ruleCategoryCounts.all },
-    { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, badge: ruleCategoryCounts.local },
-    { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, badge: ruleCategoryCounts.tunnel },
-    { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, badge: ruleCategoryCounts.chain },
-    { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, badge: ruleCategoryCounts.group },
-  ], [ruleCategoryCounts]);
+    { value: "all", label: "全部", icon: LayoutGrid, badge: ruleCategoryCountsReady ? ruleCategoryCounts.all : null },
+    { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, badge: ruleCategoryCountsReady ? ruleCategoryCounts.local : null },
+    { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, badge: ruleCategoryCountsReady ? ruleCategoryCounts.tunnel : null },
+    { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, badge: ruleCategoryCountsReady ? ruleCategoryCounts.chain : null },
+    { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, badge: ruleCategoryCountsReady ? ruleCategoryCounts.group : null },
+  ], [ruleCategoryCounts, ruleCategoryCountsReady]);
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
   ), [filteredRules]);
@@ -3949,6 +4056,7 @@ function RulesContent() {
       refetchInterval: pollingInterval("normal"),
       staleTime: 5000,
       refetchOnWindowFocus: false,
+      placeholderData: (previousData) => previousData,
     }
   );
   const { data: dailyTrafficSummary } = trpc.rules.trafficSummary.useQuery(
@@ -3958,6 +4066,7 @@ function RulesContent() {
       refetchInterval: pollingInterval("normal"),
       staleTime: 5000,
       refetchOnWindowFocus: false,
+      placeholderData: (previousData) => previousData,
     }
   );
   const [stableTotalTrafficSummaryRows, setStableTotalTrafficSummaryRows] = useState<any[]>([]);
@@ -4094,8 +4203,9 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [totalTrafficSummaryRows]);
-  const dailyTrafficTotals = ruleListSummary?.dailyTraffic || pageDailyTrafficTotals;
-  const totalTrafficTotals = ruleListSummary?.totalTraffic || pageTotalTrafficTotals;
+  const effectiveRuleListSummary = ruleListSummary ?? stableRuleListSummary;
+  const dailyTrafficTotals = effectiveRuleListSummary?.dailyTraffic || pageDailyTrafficTotals;
+  const totalTrafficTotals = effectiveRuleListSummary?.totalTraffic || pageTotalTrafficTotals;
   const compareRulesBySavedOrder = useCallback((a: any, b: any) => {
     const aCategory = getRuleCategory(a, forwardGroupById);
     const bCategory = getRuleCategory(b, forwardGroupById);
@@ -4115,23 +4225,36 @@ function RulesContent() {
   }, [compareRulesBySavedOrder, filteredRules]);
   const trafficTotalsCacheScope = useMemo(
     () => [
-      user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
+      ruleFilterCacheScope,
       filterHost,
       ruleCategory,
       ruleSearchQuery.trim() || "search-all",
     ].join("."),
-    [filterHost, ruleCategory, ruleSearchQuery, filterUser, user?.id, user?.role],
+    [filterHost, ruleCategory, ruleFilterCacheScope, ruleSearchQuery],
   );
-  const trafficTotalsLastCacheScope = `${user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`}`;
+  const trafficTotalsLastCacheScope = user?.role === "admin"
+    ? `admin-${user?.id || "self"}`
+    : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all" || ruleSearchQuery.trim().length > 0;
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const totalTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
   const dailyTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
+  const [stableRulePageMeta, setStableRulePageMeta] = useState({ activeItems: 0, totalItems: 0 });
+  useEffect(() => {
+    if (!rulePageQuery.data || rulePageQuery.isPlaceholderData) return;
+    setStableRulePageMeta({
+      activeItems: Math.max(0, Number(rulePageQuery.data.activeItems) || 0),
+      totalItems: Math.max(0, Number(rulePageQuery.data.totalItems) || 0),
+    });
+  }, [rulePageQuery.data, rulePageQuery.isPlaceholderData]);
+  const rulePageMeta = rulePageQuery.data ?? stableRulePageMeta;
   const activeCount = needsFullRuleList
     ? filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length
-    : Number(rulePageQuery.data?.activeItems || 0);
-  const filteredRuleTotal = needsFullRuleList ? filteredRules.length : Number(rulePageQuery.data?.totalItems || 0);
+    : Math.max(0, Number(rulePageMeta.activeItems) || 0);
+  const filteredRuleTotal = needsFullRuleList
+    ? filteredRules.length
+    : Math.max(0, Number(rulePageMeta.totalItems) || 0);
   const rulePagination = useServerPagination(needsFullRuleList || isRuleGlobeView ? [] : sortedFilteredRules, filteredRuleTotal, rulePageRequest, {
     pageSize: rulePageSize,
     isReady: !isLoading && !!rulePageQuery.data,
@@ -6817,7 +6940,7 @@ function RulesContent() {
               />
             </Tabs>
 
-            <RuleContentTransition
+            <RuleRouteTransition
               transitionKey={`rule-route-${form.routeMode}-${isForwardGroupRouteMode ? "resource" : "direct"}`}
               className="space-y-3"
             >
@@ -6970,7 +7093,7 @@ function RulesContent() {
                   )}
                 </div>
               )}
-            </RuleContentTransition>
+            </RuleRouteTransition>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>规则名称</Label>
