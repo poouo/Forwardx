@@ -232,15 +232,19 @@ test("forward-group test history matches the exact group id", () => {
 
     try {
       await insertTest(1, 1, "success", 100);
+      await insertTest(2, 1, "failed", 100);
+      await insertTest(3, 1, "pending", 300);
+      await insertTest(4, 1, "running", 300);
       await insertTest(10, 10, "success", 200);
-      await insertTest(11, 10, "pending", 300);
+      await insertTest(11, 10, "pending", 400);
 
       const historical = await groups.getLatestForwardGroupTest(1, { includeActive: false });
-      assert.equal(Number(historical?.id), 1);
+      assert.equal(Number(historical?.id), 2, "completed rows with equal timestamps must prefer the larger id");
       assert.equal(JSON.parse(String(historical?.message)).groupId, 1);
 
       const withActive = await groups.getLatestForwardGroupTest(1);
-      assert.equal(Number(withActive?.id), 1, "group 10 active rows must not leak into group 1");
+      assert.equal(Number(withActive?.id), 4, "active rows with equal timestamps must prefer the larger id");
+      assert.equal(JSON.parse(String(withActive?.message)).groupId, 1, "group 10 active rows must not leak into group 1");
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }

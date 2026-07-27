@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { handoffManualTestResult } from "@/lib/manualTestCache";
+import { handoffManualTestResult, hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { LinkTestProbeView, parseLinkTestMessage } from "./LinkTestLatencySummary";
 
 const plannedSegments = [{ from: "入口节点", to: "出口节点" }];
@@ -82,4 +82,10 @@ test("a missing manual test result cannot end the probing state", () => {
 
   assert.equal(handedOff, false);
   assert.equal(finished, false);
+});
+
+test("a post-mutation query snapshot completes even when the server timestamp is unchanged", () => {
+  assert.equal(hasQuerySnapshotAfter(100, 100), false);
+  assert.equal(hasQuerySnapshotAfter(100, 101), true);
+  assert.equal(hasQuerySnapshotAfter(null, 101), false);
 });

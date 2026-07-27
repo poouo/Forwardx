@@ -89,6 +89,26 @@ test("forward self-test leases recover lost deliveries and give claimed work a f
       const runtimeTimeouts = await metrics.timeoutStaleForwardTests(8, timeoutForTest);
       assert.deepEqual(runtimeTimeouts.map((row) => [Number(row.id), Number(row.timeoutSeconds)]), [[5, 30]]);
       assert.equal(await tests.hasActiveForwardTests(), false);
+
+      await runtime.executeRaw(
+        'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)',
+        [
+          6, 20, 20, 1, "success", now, now,
+          7, 20, 20, 1, "failed", now, now,
+        ],
+      );
+      const latestCompleted = await tests.getLatestForwardTest(20, { includeActive: false });
+      assert.equal(Number(latestCompleted?.id), 7, "completed rows with equal timestamps must prefer the larger id");
+
+      await runtime.executeRaw(
+        'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)',
+        [
+          8, 20, 20, 1, "pending", now, now,
+          9, 20, 20, 1, "running", now, now,
+        ],
+      );
+      const latestActive = await tests.getLatestForwardTest(20);
+      assert.equal(Number(latestActive?.id), 9, "active rows with equal timestamps must prefer the larger id");
     } finally {
       await runtime.closeDatabase();
     }

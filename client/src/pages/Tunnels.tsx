@@ -57,6 +57,7 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
 import { pollingInterval } from "@/lib/polling";
+import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -1486,29 +1487,42 @@ function TunnelSelfTestDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const utils = trpc.useUtils();
-  const { data: tunnel } = trpc.tunnels.getById.useQuery({ id: tunnelId }, {
+  const tunnelQuery = trpc.tunnels.getById.useQuery({ id: tunnelId }, {
     enabled: open,
     refetchInterval: pollingInterval("interactive", open),
     refetchOnWindowFocus: false,
   });
+  const { data: tunnel } = tunnelQuery;
   const [optimisticTesting, setOptimisticTesting] = useState(false);
   const [startedLastTestAt, setStartedLastTestAt] = useState<string | null>(null);
   const [sawServerTesting, setSawServerTesting] = useState(false);
+  const [postMutationQueryBaseline, setPostMutationQueryBaseline] = useState<number | null>(null);
   const manualTestRef = useRef(false);
   const manualTestBaselineAtRef = useRef("");
+  const manualTestResultObservedRef = useRef(false);
+  const tunnelQueryUpdatedAtRef = useRef(tunnelQuery.dataUpdatedAt);
+  useEffect(() => {
+    tunnelQueryUpdatedAtRef.current = tunnelQuery.dataUpdatedAt;
+  }, [tunnelQuery.dataUpdatedAt]);
   const testMutation = trpc.tunnels.test.useMutation({
     onSuccess: async () => {
-      await utils.tunnels.list.invalidate();
-      await utils.tunnels.options.invalidate();
-      await utils.tunnels.listPage.invalidate();
-      await utils.tunnels.mapItems.invalidate();
+      setPostMutationQueryBaseline(tunnelQueryUpdatedAtRef.current);
+      await utils.tunnels.getById.invalidate({ id: tunnelId });
+      void Promise.all([
+        utils.tunnels.list.invalidate(),
+        utils.tunnels.options.invalidate(),
+        utils.tunnels.listPage.invalidate(),
+        utils.tunnels.mapItems.invalidate(),
+      ]).catch(() => undefined);
     },
     onError: (e) => {
       setOptimisticTesting(false);
       setStartedLastTestAt(null);
       setSawServerTesting(false);
+      setPostMutationQueryBaseline(null);
       manualTestRef.current = false;
       manualTestBaselineAtRef.current = "";
+      manualTestResultObservedRef.current = false;
       toast.error(e.message || "测试失败");
     },
   });
@@ -1521,13 +1535,14 @@ function TunnelSelfTestDialog({
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
   const displayingPreviousResult = isServerTesting && !manualTestRef.current;
+  const waitingForManualResult = manualTestRef.current && !manualTestResultObservedRef.current;
   const displaySuccess = displayingPreviousResult
     ? typeof latencyMs === "number" && Number.isFinite(latencyMs)
     : isSuccess;
   const lastFailureToastKey = useRef("");
   const parsedMessage = useMemo(
-    () => parseLinkTestMessage(displayingPreviousResult ? null : tunnel?.lastTestMessage),
-    [displayingPreviousResult, tunnel?.lastTestMessage],
+    () => parseLinkTestMessage(displayingPreviousResult || waitingForManualResult ? null : tunnel?.lastTestMessage),
+    [displayingPreviousResult, tunnel?.lastTestMessage, waitingForManualResult],
   );
   const hasPendingDetails = hasPendingLinkTestDetails(parsedMessage);
   const displayTesting = isTesting || hasPendingDetails;
@@ -1830,30 +1845,49 @@ function TunnelSelfTestDialog({
   }, [displayTesting, entryGroups, hosts, parsedMessage.details, tunnel, tunnelName]);
 
   useEffect(() => {
-    if (!open) {
-      setOptimisticTesting(false);
-      setStartedLastTestAt(null);
-      setSawServerTesting(false);
-      manualTestRef.current = false;
-      manualTestBaselineAtRef.current = "";
-    }
-  }, [open]);
+    setOptimisticTesting(false);
+    setStartedLastTestAt(null);
+    setSawServerTesting(false);
+    setPostMutationQueryBaseline(null);
+    manualTestRef.current = false;
+    manualTestBaselineAtRef.current = "";
+    manualTestResultObservedRef.current = false;
+  }, [open, tunnelId]);
 
   useEffect(() => {
-    if (isServerTesting && manualTestRef.current) setSawServerTesting(true);
+    if (isServerTesting && manualTestRef.current) {
+      manualTestResultObservedRef.current = true;
+      setSawServerTesting(true);
+    }
   }, [isServerTesting]);
 
   useEffect(() => {
-    if (!optimisticTesting || isServerTesting) return;
     const hasNewTestTimestamp = startedLastTestAt === "__none__"
       ? !!lastTestAt
       : !!lastTestAt && lastTestAt !== startedLastTestAt;
-    if (sawServerTesting || hasNewTestTimestamp) {
+    const hasPostMutationQuerySnapshot = hasQuerySnapshotAfter(
+      postMutationQueryBaseline,
+      tunnelQuery.dataUpdatedAt,
+    );
+    if (manualTestRef.current && (isServerTesting || hasNewTestTimestamp || hasPostMutationQuerySnapshot)) {
+      manualTestResultObservedRef.current = true;
+    }
+    if (!optimisticTesting || isServerTesting) return;
+    if (sawServerTesting || hasNewTestTimestamp || hasPostMutationQuerySnapshot) {
       setOptimisticTesting(false);
       setStartedLastTestAt(null);
       setSawServerTesting(false);
+      setPostMutationQueryBaseline(null);
     }
-  }, [isServerTesting, lastTestAt, optimisticTesting, sawServerTesting, startedLastTestAt]);
+  }, [
+    isServerTesting,
+    lastTestAt,
+    optimisticTesting,
+    postMutationQueryBaseline,
+    sawServerTesting,
+    startedLastTestAt,
+    tunnelQuery.dataUpdatedAt,
+  ]);
 
   useEffect(() => {
     if (!open) {
@@ -1863,7 +1897,9 @@ function TunnelSelfTestDialog({
     const message = parsedMessage.message.trim();
     const messageLooksSuccessful = /测试成功|检测成功/.test(message) && !/失败|超时|不可达|异常/.test(message);
     const baselineAt = manualTestBaselineAtRef.current;
-    const hasFreshResult = !baselineAt || (tunnel?.lastTestAt && String(tunnel.lastTestAt) !== baselineAt);
+    const hasFreshResult = manualTestResultObservedRef.current
+      || !baselineAt
+      || (tunnel?.lastTestAt && String(tunnel.lastTestAt) !== baselineAt);
     if (!displayTesting && isFailed && message && !messageLooksSuccessful && manualTestRef.current && hasFreshResult) {
       const key = `${tunnelId}:${status}:${tunnel?.lastTestAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
@@ -1909,10 +1945,13 @@ function TunnelSelfTestDialog({
         <DialogFooter className="gap-2">
           <Button
             onClick={() => {
+              lastFailureToastKey.current = "";
               manualTestRef.current = true;
               manualTestBaselineAtRef.current = lastTestAt || "";
+              manualTestResultObservedRef.current = false;
               setStartedLastTestAt(lastTestAt || "__none__");
               setSawServerTesting(false);
+              setPostMutationQueryBaseline(null);
               setOptimisticTesting(true);
               testMutation.mutate({ id: tunnelId });
             }}

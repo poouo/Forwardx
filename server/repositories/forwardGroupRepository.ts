@@ -1140,6 +1140,7 @@ export async function getLatestForwardGroupTest(groupId: number, options: { incl
   const templates = await getForwardGroupTemplateRules(groupId);
   const templateIds = (templates as any[]).map((rule: any) => Number(rule.id)).filter((id: number) => id > 0);
   const table = quoteIdentifier("forward_tests");
+  const idCol = quoteIdentifier("id");
   const ruleCol = quoteIdentifier("ruleId");
   const updatedCol = quoteIdentifier("updatedAt");
   const createdCol = quoteIdentifier("createdAt");
@@ -1155,13 +1156,13 @@ export async function getLatestForwardGroupTest(groupId: number, options: { incl
   const template = (templates as any[])[0] || null;
   if (options.includeActive !== false) {
     const pendingRows = await queryRaw<any>(
-      `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+      `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC, ${idCol} DESC LIMIT 1`,
       filterArgs,
     );
     if (pendingRows[0]) return withForwardChainTargetLabel(pendingRows[0], template);
   }
   const rows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('success', 'failed', 'timeout') ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('success', 'failed', 'timeout') ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC, ${idCol} DESC LIMIT 1`,
     filterArgs,
   );
   return withForwardChainTargetLabel(rows[0], template);

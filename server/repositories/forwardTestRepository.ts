@@ -132,18 +132,19 @@ export async function getLatestForwardTest(ruleId: number, options: { includeAct
   const table = quoteIdentifier("forward_tests");
   const ruleCol = quoteIdentifier("ruleId");
   const statusCol = quoteIdentifier("status");
+  const idCol = quoteIdentifier("id");
   const updatedCol = quoteIdentifier("updatedAt");
   const createdCol = quoteIdentifier("createdAt");
   const messageCol = quoteIdentifier("message");
   if (options.includeActive !== false) {
     const pendingRows = await queryRaw<any>(
-      `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+      `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC, ${idCol} DESC LIMIT 1`,
       [ruleId],
     );
     if (pendingRows[0]) return pendingRows[0];
   }
   const rows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('success', 'failed', 'timeout') ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' OR ${messageCol} LIKE '%"kind":"forward-via-tunnel"%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('success', 'failed', 'timeout') ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' OR ${messageCol} LIKE '%"kind":"forward-via-tunnel"%' THEN 0 ELSE 1 END, ${createdCol} DESC, ${idCol} DESC LIMIT 1`,
     [ruleId],
   );
   return rows[0];
