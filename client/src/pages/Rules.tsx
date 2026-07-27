@@ -44,6 +44,13 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
+import { handoffManualTestResult } from "@/lib/manualTestCache";
+import {
+  buildStableRuleProbeMap,
+  clearRuleProbeCache,
+  hasRuleProbeAfterInvalidation,
+  updateRuleProbeCache,
+} from "@/lib/ruleProbeCache";
 import { batchOperationErrorMessage, chunkBatchItems, isBatchPortConflictError, runBatchOperations } from "@/lib/batchOperations";
 import {
   RULE_TRANSFER_FILE_KIND,
@@ -123,7 +130,7 @@ import {
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { resolveForwardRuleVisualStatus } from "@/lib/forwardRuleStatus";
-import { buildLinkAvailabilityIndex, resolveFreshLinkProbe } from "@/lib/linkAvailability";
+import { buildLinkAvailabilityIndex } from "@/lib/linkAvailability";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { useIsMobile } from "@/hooks/useMobile";
 
@@ -2144,6 +2151,18 @@ function RulesContent() {
   const search = useSearch();
   const isMobile = useIsMobile();
   const utils = trpc.useUtils();
+  const [ruleProbeCacheRevision, setRuleProbeCacheRevision] = useState(0);
+  const invalidatedRuleProbeIdsRef = useRef(new Set<number>());
+  const invalidateRuleProbeStatuses = useCallback((ruleIds: Iterable<number> | undefined) => {
+    if (!ruleIds) return;
+    const ids = Array.from(new Set(Array.from(ruleIds)
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)));
+    if (ids.length === 0) return;
+    ids.forEach((id) => invalidatedRuleProbeIdsRef.current.add(id));
+    clearRuleProbeCache(user?.id, ids);
+    setRuleProbeCacheRevision((revision) => revision + 1);
+  }, [user?.id]);
   const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
   useEffect(() => {
     const timer = window.setTimeout(() => setSecondaryQueriesReady(true), 300);
@@ -2163,7 +2182,7 @@ function RulesContent() {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
-  const { data: forwardGroups } = trpc.forwardGroups.options.useQuery(undefined, {
+  const { data: forwardGroups, isFetched: forwardGroupsFetched, isError: forwardGroupsError } = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: secondaryQueriesReady,
     refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
@@ -2406,7 +2425,8 @@ function RulesContent() {
   });
 
   const updateMutation = trpc.rules.update.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      invalidateRuleProbeStatuses([Number(variables.id)]);
       utils.rules.list.invalidate();
       utils.rules.listPage.invalidate();
       utils.rules.mapItems.invalidate();
@@ -2419,7 +2439,8 @@ function RulesContent() {
   });
 
   const deleteMutation = trpc.rules.delete.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      invalidateRuleProbeStatuses([Number(variables.id)]);
       utils.rules.list.invalidate();
       utils.rules.listPage.invalidate();
       utils.rules.mapItems.invalidate();
@@ -2501,7 +2522,8 @@ function RulesContent() {
     }));
   };
   const toggleMutation = trpc.rules.toggle.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      invalidateRuleProbeStatuses([Number(variables.id)]);
       await Promise.all([
         utils.rules.list.invalidate(),
         utils.rules.listPage.invalidate(),
@@ -3426,6 +3448,9 @@ function RulesContent() {
         if (result.value.updated) updated += 1;
         if (result.value.skipped) skipped += 1;
       }
+      invalidateRuleProbeStatuses(results
+        .filter((result) => result.status === "fulfilled" && result.value.updated)
+        .map((result) => Number(result.item.id)));
       await Promise.all([
         utils.rules.list.invalidate(),
         utils.rules.listPage.invalidate(),
@@ -3494,6 +3519,7 @@ function RulesContent() {
         failures.push(...chunkResult.item.map((id) => ({ id: Number(id), error })));
       }
       const deletedIds = new Set(deletedIdList);
+      invalidateRuleProbeStatuses(deletedIdList);
       setCopyRuleIds((prev) => prev.filter((id) => !deletedIds.has(Number(id))));
       await Promise.all([
         utils.rules.list.invalidate(),
@@ -4049,7 +4075,12 @@ function RulesContent() {
   const [stableTotalTrafficSummaryRows, setStableTotalTrafficSummaryRows] = useState<any[]>([]);
   const [stableDailyTrafficSummaryRows, setStableDailyTrafficSummaryRows] = useState<any[]>([]);
   const resetTrafficMutation = trpc.rules.resetTraffic.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      invalidateRuleProbeStatuses(
+        variables.scope === "rule" && variables.ruleId
+          ? [Number(variables.ruleId)]
+          : variables.ruleIds,
+      );
       clearRuleTrafficStatCaches();
       setStableTotalTrafficSummaryRows([]);
       setStableDailyTrafficSummaryRows([]);
@@ -4122,6 +4153,26 @@ function RulesContent() {
     });
     return m;
   }, [dailyTrafficSummaryRows]);
+  useEffect(() => {
+    if (dailyTrafficSummary === undefined) return;
+    updateRuleProbeCache(user?.id, trafficByRule);
+    let released = false;
+    for (const ruleId of invalidatedRuleProbeIdsRef.current) {
+      if (!hasRuleProbeAfterInvalidation(user?.id, ruleId, trafficByRule.get(ruleId))) continue;
+      invalidatedRuleProbeIdsRef.current.delete(ruleId);
+      released = true;
+    }
+    if (released) setRuleProbeCacheRevision((revision) => revision + 1);
+  }, [dailyTrafficSummary, trafficByRule, user?.id]);
+  const stableProbeByRule = useMemo(() => (
+    buildStableRuleProbeMap(
+      user?.id,
+      visibleRuleIdsForMetrics,
+      trafficByRule,
+      Date.now(),
+      invalidatedRuleProbeIdsRef.current,
+    )
+  ), [ruleProbeCacheRevision, trafficByRule, user?.id, visibleRuleIdsForMetrics]);
   const dailyTrafficByRule = useMemo(() => {
     const m = new Map<number, { bytesIn: number; bytesOut: number }>();
     dailyTrafficSummaryRows.forEach((t: any) => {
@@ -5524,15 +5575,32 @@ function RulesContent() {
     }
   };
 
+  const renderResolvedStatusDot = (visual: ReturnType<typeof resolveForwardRuleVisualStatus>) => {
+    if (visual.state === "running") {
+      return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+    }
+    if (visual.state === "error") {
+      return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
+    }
+    if (visual.state === "pending") {
+      return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+    }
+    return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+  };
+
   const renderStatusDot = (rule: any) => {
+    const latest = stableProbeByRule.get(Number(rule.id));
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
       const runtime = Array.isArray(group?.ruleRuntimeStatuses)
         ? group.ruleRuntimeStatuses.find((item: any) => Number(item.templateRuleId) === Number(rule.id))
         : null;
-      const rawGroupStatus = getForwardGroupConfigStatus(group);
+      const rawGroupStatus = group
+        ? getForwardGroupConfigStatus(group)
+        : forwardGroupsFetched || forwardGroupsError
+          ? "unavailable"
+          : "pending";
       const groupStatus = rawGroupStatus === "degraded" ? "available" : rawGroupStatus;
-      const latest = trafficByRule.get(Number(rule.id));
       const visual = resolveForwardRuleVisualStatus({
         ruleEnabled: !!rule.isEnabled,
         ruleRunning: !!rule.isRunning,
@@ -5545,29 +5613,17 @@ function RulesContent() {
         latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
         latestLatencyAt: latest?.latestLatencyAt,
       });
-      if (visual.state === "running") {
-        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
-      }
-      if (visual.state === "error") {
-        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
-      }
-      if (visual.state === "pending") {
-        return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
-      }
-      return <span title={visual.title} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+      return renderResolvedStatusDot(visual);
     }
-    const latest = trafficByRule.get(Number(rule.id));
-    const probe = resolveFreshLinkProbe(latest);
-    if (rule.isEnabled && (rule.isRunning || probe === "available")) {
-      return <span title={probe === "available" ? "最近一次端到端探测可达" : "Agent 已确认运行"} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
-    }
-    if (rule.isEnabled && probe === "unavailable") {
-      return <span title="最近一次端到端探测不可达" className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
-    }
-    if (rule.isEnabled) {
-      return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
-    }
-    return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+    return renderResolvedStatusDot(resolveForwardRuleVisualStatus({
+      ruleEnabled: !!rule.isEnabled,
+      ruleRunning: !!rule.isRunning,
+      groupEnabled: true,
+      groupConfigStatus: "available",
+      latestLatencyMs: latest?.latestLatencyMs,
+      latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
+      latestLatencyAt: latest?.latestLatencyAt,
+    }));
   };
 
   const getRuleTransferDisplay = (rule: any) => {
@@ -5953,7 +6009,7 @@ function RulesContent() {
   );
 
   const renderLatestLatency = (rule: any) => {
-    const t = trafficByRule.get(rule.id);
+    const t = stableProbeByRule.get(Number(rule.id));
     if (!t?.latestLatencyAt) return <span className="whitespace-nowrap text-xs text-muted-foreground">未测试</span>;
     if (t.latestLatencyIsTimeout) {
       return <LatencyRating isTimeout timeoutText="超时" className="whitespace-nowrap" />;
@@ -8240,15 +8296,22 @@ function SelfTestDialog({
   useEffect(() => {
     if (!optimisticTesting || !activeTestId || !isTerminalStatus) return;
     if (latestTestId >= activeTestId) {
+      handoffManualTestResult(
+        latest,
+        (result) => utils.rules.latestTest.setData(
+          { ruleId, includeActive: false },
+          result,
+        ),
+        () => setOptimisticTesting(false),
+      );
       void Promise.all([
         utils.rules.trafficSummary.invalidate(),
         utils.rules.tcpingSeries.invalidate({ ruleId, hours: 24 }),
       ]);
-      setOptimisticTesting(false);
       setActiveTestId(null);
       if (status === "success") manualTestRef.current = false;
     }
-  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting, ruleId, status, utils]);
+  }, [activeTestId, isTerminalStatus, latest, latestTestId, optimisticTesting, ruleId, status, utils]);
   useEffect(() => {
     if (!startMutation.isError) return;
     setOptimisticTesting(false);

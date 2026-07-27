@@ -32,14 +32,14 @@ test("silent Agent activity automatically evaluates failover and entry groups at
       };
       const nowSeconds = Math.floor(Date.now() / 1000);
 
-      for (const [id, name, address] of [
-        [1, "primary", "198.51.100.10"],
-        [2, "standby", "198.51.100.20"],
+      for (const [id, name, address, lastHeartbeat] of [
+        [1, "primary", "198.51.100.10", nowSeconds - 151],
+        [2, "standby", "198.51.100.20", nowSeconds],
       ]) {
         await insert(
           "hosts",
           ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"],
-          [id, name, address, address, 1, 1, nowSeconds],
+          [id, name, address, address, 1, 1, lastHeartbeat],
         );
       }
 
@@ -65,6 +65,7 @@ test("silent Agent activity automatically evaluates failover and entry groups at
           [id, groupId, "host", hostId, priority, 1],
         );
       }
+      await runtime.executeRaw('UPDATE "forward_group_members" SET "failureSince" = ? WHERE "id" = 201', [nowSeconds - 61]);
       await insert(
         "forward_rules",
         ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],

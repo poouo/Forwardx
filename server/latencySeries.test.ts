@@ -58,6 +58,13 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [31, 7, 0, "exit-2", now - 10]);
     await insert("forward_group_latency_stats", ["groupId", "latencyMs", "isTimeout", "recordedAt"], [20, 66, 0, now - 40]);
     await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [40, 1, 77, 0, now - 30]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 10, 0, now - 40]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 20, 0, now - 30]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 30, 0, now - 20]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 35, 0, now - 20]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 40, 0, now - 10]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [42, 1, 50, 0, now - 31 * 60]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [42, 1, 60, 0, now - 5 * 60]);
 
     const activeSeries = await metrics.getTcpingSeriesByRule(100, { since });
     assert.deepEqual(activeSeries.map((item) => item.latencyMs), [42]);
@@ -80,6 +87,15 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     assert.deepEqual(chainSeries.map((item) => item.latencyMs), [66]);
     const serviceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [40], hostId: 1, hours: 1 });
     assert.deepEqual(serviceSeries.map((item) => item.latencyMs), [77]);
+    const limitedServiceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [41], hostId: 1, hours: 1, limit: 3 });
+    assert.deepEqual(limitedServiceSeries.map((item) => item.latencyMs), [30, 35, 40]);
+    assert.deepEqual(limitedServiceSeries.map((item) => item.recordedAt.getTime()), [
+      (now - 20) * 1000,
+      (now - 20) * 1000,
+      (now - 10) * 1000,
+    ]);
+    const halfHourServiceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [42], hostId: 1, hours: 0.5 });
+    assert.deepEqual(halfHourServiceSeries.map((item) => item.latencyMs), [60]);
 
     assert.equal(await database.clearLegacyTunnelRuleLatencyHistoryOnce(), 1);
     assert.equal(Number((await runtime.queryRaw('SELECT COUNT(*) AS count FROM "tcping_stats" WHERE "ruleId" = 140'))[0]?.count || 0), 0);

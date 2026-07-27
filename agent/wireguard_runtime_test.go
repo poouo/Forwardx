@@ -80,6 +80,45 @@ func setTestWireGuardRuntime(t *testing.T, tunnelID int, runtime *wireGuardRunti
 	})
 }
 
+func TestWireGuardProbeTreatsMissingRuntimeOrPeerAsNotReady(t *testing.T) {
+	const tunnelID = 98001
+	setTestWireGuardRuntime(t, tunnelID, nil)
+	if _, status := wireGuardTCPLatencyDetailed(tunnelID, "peer", 443, 20*time.Millisecond); status != wireGuardProbeNotReady {
+		t.Fatalf("missing runtime status=%v, want not-ready", status)
+	}
+
+	runtime := &wireGuardRuntime{peers: map[string]wireGuardPeerSpec{}}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	if _, status := wireGuardTCPLatencyDetailed(tunnelID, "peer", 443, 20*time.Millisecond); status != wireGuardProbeNotReady {
+		t.Fatalf("missing peer status=%v, want not-ready", status)
+	}
+}
+
+func TestWireGuardProbeReportsTimeoutAfterPeerIsReady(t *testing.T) {
+	const tunnelID = 98002
+	runtime := &wireGuardRuntime{peers: map[string]wireGuardPeerSpec{
+		"peer": {ID: "peer", Address: "100.64.0.2"},
+	}}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	dialCalls := 0
+	_, status := wireGuardTCPLatencyWithDial(
+		tunnelID,
+		"peer",
+		443,
+		20*time.Millisecond,
+		func(context.Context, *wireGuardRuntime, string, int) (net.Conn, error) {
+			dialCalls++
+			return nil, fmt.Errorf("expected dial failure")
+		},
+	)
+	if status != wireGuardProbeTimeout {
+		t.Fatalf("ready peer dial failure status=%v, want timeout", status)
+	}
+	if dialCalls == 0 {
+		t.Fatal("ready peer was never dialed")
+	}
+}
+
 func testWireGuardKeyPair(t *testing.T) (string, string) {
 	t.Helper()
 	raw := make([]byte, 32)
@@ -125,8 +164,8 @@ func TestWireGuardUDPProxySessionOutgoingActivityPreventsExpiry(t *testing.T) {
 	}
 	select {
 	case packet := <-session.send:
-		if string(packet) != "outgoing-activity" {
-			t.Fatalf("unexpected queued packet %q", packet)
+		if string(packet.payload) != "outgoing-activity" {
+			t.Fatalf("unexpected queued packet %q", packet.payload)
 		}
 	default:
 		t.Fatal("outgoing UDP packet was not queued")
@@ -135,6 +174,68 @@ func TestWireGuardUDPProxySessionOutgoingActivityPreventsExpiry(t *testing.T) {
 	session.close()
 	if session.enqueue([]byte("after-close")) {
 		t.Fatal("closed UDP proxy session accepted a packet")
+	}
+}
+
+func TestWireGuardUDPProxyQueueDropsExpiredPackets(t *testing.T) {
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	session := newWireGuardUDPProxySession(connection)
+	defer session.close()
+
+	session.send <- wireGuardUDPProxyPacket{
+		payload:  []byte("stale"),
+		queuedAt: time.Now().Add(-wireGuardUDPProxyMaxQueueDelay),
+	}
+	if !session.enqueue([]byte("fresh")) {
+		t.Fatal("fresh packet was not queued")
+	}
+	go session.writeLoop()
+
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 16)
+	n, err := peer.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buf[:n]); got != "fresh" {
+		t.Fatalf("stale packet was written before fresh packet: %q", got)
+	}
+}
+
+func TestWireGuardUDPProxyQueueKeepsLastExpiredPacket(t *testing.T) {
+	packet := wireGuardUDPProxyPacket{
+		payload:  []byte("last"),
+		queuedAt: time.Now().Add(-wireGuardUDPProxyMaxQueueDelay),
+	}
+	if packet.superseded(time.Now(), 0) {
+		t.Fatal("last queued UDP packet was discarded without a replacement")
+	}
+	if !packet.superseded(time.Now(), 1) {
+		t.Fatal("stale UDP packet was retained ahead of a newer packet")
+	}
+}
+
+func TestWireGuardUDPProxyQueueKeepsNewestPacketWhenFull(t *testing.T) {
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	session := &wireGuardUDPProxySession{
+		conn: connection,
+		send: make(chan wireGuardUDPProxyPacket, 2),
+		done: make(chan struct{}),
+	}
+	defer session.close()
+
+	if !session.enqueue([]byte("oldest")) || !session.enqueue([]byte("older")) {
+		t.Fatal("failed to fill UDP proxy queue")
+	}
+	if session.enqueue([]byte("newest")) {
+		t.Fatal("full queue did not report a displaced packet")
+	}
+	first := <-session.send
+	second := <-session.send
+	if string(first.payload) != "older" || string(second.payload) != "newest" {
+		t.Fatalf("unexpected retained packets %q, %q", first.payload, second.payload)
 	}
 }
 

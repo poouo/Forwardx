@@ -15,7 +15,7 @@ test("uses stable performance-oriented Mimic defaults for V1 and V2", () => {
   // the same config valid for both official packages and source builds.
   assert.doesNotMatch(config, /^use_libxdp =/m);
   assert.match(config, /^keepalive = 300:10:3:600$/m);
-  assert.match(config, /^max_window = false$/m);
+  assert.match(config, /^max_window = true$/m);
   assert.doesNotMatch(config, /^link_type =/m);
   assert.doesNotMatch(config, /^xdp_mode =/m);
   assert.deepEqual(config.split("\n").filter((line) => line.startsWith("filter = ")), [

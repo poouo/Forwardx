@@ -1,3 +1,8 @@
+import {
+  LINK_PROBE_FRESH_MS,
+  LINK_PROBE_MAX_FUTURE_SKEW_MS,
+} from "@shared/linkProbePolicy";
+
 export type ForwardRuleVisualState = "disabled" | "running" | "pending" | "error";
 
 export type ForwardGroupConfigStatus = "available" | "pending" | "unavailable" | "error" | "disabled";
@@ -6,9 +11,6 @@ export type ForwardRuleVisualStatus = {
   state: ForwardRuleVisualState;
   title: string;
 };
-
-const RECENT_PROBE_WINDOW_MS = 5 * 60 * 1000;
-const MAX_FUTURE_PROBE_SKEW_MS = 60 * 1000;
 
 function timestampMillis(value: unknown) {
   if (value instanceof Date) return value.getTime();
@@ -35,12 +37,19 @@ export function resolveForwardRuleVisualStatus(input: {
     return { state: "disabled", title: "规则已停用" };
   }
 
+  const runtimeStatus = String(input.runtimeStatus || "").toLowerCase();
+  if (runtimeStatus === "disabled") {
+    return { state: "disabled", title: "托管规则已停用" };
+  }
   const probeAt = timestampMillis(input.latestLatencyAt);
   const probeIsRecent = probeAt > 0
-    && probeAt <= now + MAX_FUTURE_PROBE_SKEW_MS
-    && now - probeAt <= RECENT_PROBE_WINDOW_MS;
+    && probeAt <= now + LINK_PROBE_MAX_FUTURE_SKEW_MS
+    && now - probeAt <= LINK_PROBE_FRESH_MS;
   if (probeIsRecent && input.latestLatencyIsTimeout) {
     return { state: "error", title: "最近一次端到端探测超时" };
+  }
+  if (input.groupConfigStatus === "error" || input.groupConfigStatus === "unavailable") {
+    return { state: "error", title: "转发资源配置不可用" };
   }
   const hasLatency = input.latestLatencyMs !== null && input.latestLatencyMs !== undefined;
   const latencyMs = Number(input.latestLatencyMs);
@@ -48,7 +57,6 @@ export function resolveForwardRuleVisualStatus(input: {
     return { state: "running", title: `最近一次端到端探测可达（${Math.round(latencyMs)}ms）` };
   }
 
-  const runtimeStatus = String(input.runtimeStatus || "").toLowerCase();
   const running = Math.max(0, Number(input.runningCount) || 0);
   const expected = Math.max(0, Number(input.expectedCount) || 0);
   if (runtimeStatus === "running") {
@@ -59,13 +67,6 @@ export function resolveForwardRuleVisualStatus(input: {
   }
   if (runtimeStatus === "pending") {
     return { state: "pending", title: `等待 Agent 确认托管监听（${running} / ${expected}）` };
-  }
-  if (runtimeStatus === "disabled") {
-    return { state: "disabled", title: "托管规则已停用" };
-  }
-
-  if (input.groupConfigStatus === "error" || input.groupConfigStatus === "unavailable") {
-    return { state: "error", title: "转发资源配置不可用" };
   }
   if (input.groupConfigStatus === "pending") {
     return { state: "pending", title: "等待转发资源完成检测" };

@@ -219,7 +219,7 @@ test("normalizes PostgreSQL string numbers for every Agent self-test payload", (
 test("reserves outer packet headroom only when Mimic is active", () => {
   assert.equal(forwardXWireGuardMTU(false), FORWARDX_WIREGUARD_DEFAULT_MTU);
   assert.equal(forwardXWireGuardMTU(true), FORWARDX_WIREGUARD_MIMIC_MTU);
-  assert.equal(FORWARDX_WIREGUARD_MIMIC_MTU, 1350);
+  assert.equal(FORWARDX_WIREGUARD_MIMIC_MTU, 1280);
   assert.ok(FORWARDX_WIREGUARD_DEFAULT_MTU - FORWARDX_WIREGUARD_MIMIC_MTU >= 12);
 
   const plans = buildForwardXWireGuardPlans({

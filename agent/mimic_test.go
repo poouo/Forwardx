@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestSanitizeServiceNameAllowsSystemdTemplateInstance(t *testing.T) {
@@ -64,15 +65,24 @@ tcp-segmentation-offload: on
 generic-segmentation-offload: off
 generic-receive-offload: on
 large-receive-offload: on [fixed]
+rx-gro-hw: on
 rx-vlan-offload: on
 `
-	want := []string{"gro", "lro", "tso", "tx"}
+	want := []string{"gro", "lro", "rx-gro-hw", "tso", "tx"}
 	if got := enabledMimicOffloads(raw); !reflect.DeepEqual(got, want) {
 		t.Fatalf("enabledMimicOffloads() = %#v, want %#v", got, want)
 	}
-	mutableWant := []string{"gro", "tso", "tx"}
+	mutableWant := []string{"gro", "rx-gro-hw", "tso", "tx"}
 	if got := mutableMimicOffloads(raw); !reflect.DeepEqual(got, mutableWant) {
 		t.Fatalf("mutableMimicOffloads() = %#v, want %#v", got, mutableWant)
+	}
+	receiveWant := []string{"gro", "lro", "rx-gro-hw"}
+	if got := enabledMimicReceiveAggregationOffloads(raw); !reflect.DeepEqual(got, receiveWant) {
+		t.Fatalf("enabledMimicReceiveAggregationOffloads() = %#v, want %#v", got, receiveWant)
+	}
+	mutableReceiveWant := []string{"gro", "rx-gro-hw"}
+	if got := mutableMimicReceiveAggregationOffloads(raw); !reflect.DeepEqual(got, mutableReceiveWant) {
+		t.Fatalf("mutableMimicReceiveAggregationOffloads() = %#v, want %#v", got, mutableReceiveWant)
 	}
 }
 
@@ -102,9 +112,105 @@ func TestMimicOffloadRestoreArgsOnlyEnableKnownFeatures(t *testing.T) {
 }
 
 func TestMimicOffloadDisableArgsProtectActiveInterface(t *testing.T) {
-	want := []string{"-K", "eth0", "gro", "off", "gso", "off", "tx", "off"}
-	if got := mimicOffloadDisableArgs("eth0", []string{"gro", "gso", "tx"}); !reflect.DeepEqual(got, want) {
+	want := []string{"-K", "eth0", "gro", "off", "lro", "off"}
+	got, ok := mimicOffloadDisableArgs("eth0", []string{"gro", "lro", "gro"})
+	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("disable args = %#v, want %#v", got, want)
+	}
+	if _, ok := mimicOffloadDisableArgs("eth0", []string{"gro", "gso"}); ok {
+		t.Fatal("disable args accepted a throughput offload")
+	}
+}
+
+func TestMimicOffloadOperationLockSerializesOneInterface(t *testing.T) {
+	lock := mimicOffloadOperationLock("test-mimic-lock0")
+	lock.Lock()
+	locked := true
+	t.Cleanup(func() {
+		if locked {
+			lock.Unlock()
+		}
+	})
+
+	ready := make(chan struct{})
+	entered := make(chan struct{})
+	go func() {
+		other := mimicOffloadOperationLock("test-mimic-lock0")
+		close(ready)
+		other.Lock()
+		close(entered)
+		other.Unlock()
+	}()
+	<-ready
+	select {
+	case <-entered:
+		t.Fatal("same-interface offload operation was not serialized")
+	case <-time.After(20 * time.Millisecond):
+	}
+	lock.Unlock()
+	locked = false
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("same-interface offload operation did not resume")
+	}
+}
+
+func TestMimicNetworkFailuresRetryBeforeHealthySnapshots(t *testing.T) {
+	if got := mimicNetworkTuneCacheWindow("mimicReceive=off"); got != mimicNetworkTuneInterval {
+		t.Fatalf("healthy cache window=%s, want %s", got, mimicNetworkTuneInterval)
+	}
+	for _, message := range []string{"offload=ethtool-missing", "offload=inspect-failed", "mimicReceive=still-on:gro"} {
+		if got := mimicNetworkTuneCacheWindow(message); got != mimicNetworkFailureRetryWindow {
+			t.Fatalf("failure cache window=%s for %q, want %s", got, message, mimicNetworkFailureRetryWindow)
+		}
+	}
+}
+
+func TestMimicOffloadTunePlanDisablesOnlyReceiveAggregation(t *testing.T) {
+	plan, ok := buildMimicOffloadTunePlan(
+		[]string{"gro", "gso", "lro", "rx", "tso", "tx"},
+		[]string{"gro", "lro"},
+		nil,
+		false,
+	)
+	if !ok {
+		t.Fatal("fresh offload state was rejected")
+	}
+	if want := []string{"gro", "lro"}; !reflect.DeepEqual(plan.snapshot, want) || !reflect.DeepEqual(plan.disable, want) {
+		t.Fatalf("fresh plan = %#v, want snapshot/disable %#v", plan, want)
+	}
+	if len(plan.restore) != 0 {
+		t.Fatalf("fresh plan unexpectedly restores features: %#v", plan.restore)
+	}
+}
+
+func TestMimicOffloadTunePlanMigratesLegacySnapshotOnce(t *testing.T) {
+	legacy := []string{"gro", "gso", "lro", "rx", "tso", "tx"}
+	plan, ok := buildMimicOffloadTunePlan(nil, nil, legacy, true)
+	if !ok {
+		t.Fatal("legacy offload state was rejected")
+	}
+	wantRestore := []string{"gso", "rx", "tso", "tx"}
+	if !reflect.DeepEqual(plan.restore, wantRestore) {
+		t.Fatalf("legacy restore = %#v, want %#v", plan.restore, wantRestore)
+	}
+	if len(plan.snapshot) != 0 || len(plan.disable) != 0 {
+		t.Fatalf("legacy plan unexpectedly replaced state or disabled preserved offloads: %#v", plan)
+	}
+
+	plan, ok = buildMimicOffloadTunePlan(wantRestore, nil, legacy, true)
+	if !ok {
+		t.Fatal("migrated legacy offload state was rejected")
+	}
+	if len(plan.restore) != 0 || len(plan.disable) != 0 {
+		t.Fatalf("periodic check would retune migrated state: %#v", plan)
+	}
+}
+
+func TestMimicOffloadTunePlanRejectsUnknownLegacyFeature(t *testing.T) {
+	if _, ok := buildMimicOffloadTunePlan(nil, nil, []string{"gro", "unsafe"}, true); ok {
+		t.Fatal("unknown legacy offload state was accepted")
 	}
 }
 

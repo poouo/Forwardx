@@ -80,6 +80,31 @@ func TestTunnelAndMultiEntrySelfTestsWaitForRuntime(t *testing.T) {
 	if total := selfTestActionWaitWindow + selfTestPostActionReadinessWindow; total > selfTestRuntimeReadinessWindow {
 		t.Fatalf("action wait plus probe window=%s exceeds manual test budget=%s", total, selfTestRuntimeReadinessWindow)
 	}
+	if selfTestRuntimeReadinessWindow < wireGuardRuntimeWaitTimeout {
+		t.Fatalf("runtime readiness window=%s does not cover WireGuard startup=%s", selfTestRuntimeReadinessWindow, wireGuardRuntimeWaitTimeout)
+	}
+}
+
+func TestWaitForActionBatchReportsCompletion(t *testing.T) {
+	first := make(chan struct{})
+	second := make(chan struct{})
+	close(first)
+	close(second)
+	if !waitForActionBatch([]<-chan struct{}{first, nil, second}, time.Second) {
+		t.Fatal("completed action batch reported a timeout")
+	}
+}
+
+func TestActionWaitTimeoutKeepsFullRuntimeReadinessWindow(t *testing.T) {
+	pending := make(chan struct{})
+	actionsCompleted := waitForActionBatch([]<-chan struct{}{pending}, 5*time.Millisecond)
+	if actionsCompleted {
+		t.Fatal("unfinished action batch reported completion")
+	}
+	test := selfTest{Kind: "tunnel", runtimeActionsWaited: actionsCompleted}
+	if window := selfTestTCPReadinessWindow(test); window != selfTestRuntimeReadinessWindow {
+		t.Fatalf("timed-out action wait selected readiness window=%s, want %s", window, selfTestRuntimeReadinessWindow)
+	}
 }
 
 func TestSelfTestRetryDelayIsBounded(t *testing.T) {

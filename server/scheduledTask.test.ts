@@ -5,13 +5,33 @@ import {
   SELF_TEST_SWEEP_ACTIVE_WINDOW_MS,
   SELF_TEST_SWEEP_INTERVAL_MS,
   SELF_TEST_TIMEOUT_SECONDS,
+  RUNTIME_SELF_TEST_TIMEOUT_SECONDS,
   SelfTestSweepActivity,
+  selfTestTimeoutSeconds,
   startSelfTestSweepTimer,
 } from "./selfTestTiming";
 
-test("manual self-tests settle within a short interactive deadline", () => {
+test("manual self-tests outlive the Agent runtime readiness budget", () => {
   assert.equal(SELF_TEST_TIMEOUT_SECONDS, 8);
+  assert.equal(RUNTIME_SELF_TEST_TIMEOUT_SECONDS, 30);
+  assert.ok(RUNTIME_SELF_TEST_TIMEOUT_SECONDS > 4 + 20);
+  assert.equal(
+    SELF_TEST_SWEEP_ACTIVE_WINDOW_MS,
+    RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2,
+  );
   assert.equal(SELF_TEST_SWEEP_INTERVAL_MS, 2_000);
+});
+
+test("only runtime-dependent self-tests receive the extended timeout", () => {
+  for (const kind of ["tunnel", "tunnel-hop", "forward-via-tunnel", "forward-via-tunnel-entry", "forward-chain"]) {
+    assert.equal(selfTestTimeoutSeconds({ kind }), RUNTIME_SELF_TEST_TIMEOUT_SECONDS, kind);
+  }
+  assert.equal(
+    selfTestTimeoutSeconds({ kind: "forward-chain", runtimeDependent: false }),
+    SELF_TEST_TIMEOUT_SECONDS,
+  );
+  assert.equal(selfTestTimeoutSeconds({ kind: "direct" }), SELF_TEST_TIMEOUT_SECONDS);
+  assert.equal(selfTestTimeoutSeconds(null), SELF_TEST_TIMEOUT_SECONDS);
 });
 
 test("self-test timeout sweeps stay idle until work is created or claimed", () => {

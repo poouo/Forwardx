@@ -146,7 +146,7 @@ export default function HostProbeServiceLatencyDialog({
   const visibleServiceIds = useMemo(() => visibleServices.map((service) => Number(service.id)).filter(Boolean), [visibleServices]);
   const chartAnimationKey = useMemo(() => `${hostId || "host"}`, [hostId]);
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
-    { serviceIds, hostId, hours: 24 },
+    { serviceIds, hostId, hours: timeRangeHours },
     { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: pollingInterval("slow", open) },
   );
   const rangedData = useMemo(

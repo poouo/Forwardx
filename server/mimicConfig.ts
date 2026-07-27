@@ -16,7 +16,7 @@ export function buildForwardXMimicConfig(filters: Iterable<string>) {
     "log.verbosity = info",
     // Mimic 0.7.1 detects Ethernet, loopback, PPP and TUN link types.
     `keepalive = ${FORWARDX_MIMIC_KEEPALIVE}`,
-    "max_window = false",
+    "max_window = true",
     ...uniqueFilters.map((filter) => `filter = ${filter}`),
   ].join("\n");
 }

@@ -1,7 +1,23 @@
 export const SELF_TEST_TIMEOUT_SECONDS = 8;
+export const RUNTIME_SELF_TEST_TIMEOUT_SECONDS = 30;
 export const SELF_TEST_SWEEP_INTERVAL_MS = 2_000;
 export const SELF_TEST_SWEEP_ACTIVE_WINDOW_MS =
-  SELF_TEST_TIMEOUT_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2;
+  RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2;
+
+const RUNTIME_SELF_TEST_KINDS = new Set([
+  "tunnel",
+  "tunnel-hop",
+  "forward-via-tunnel",
+  "forward-via-tunnel-entry",
+  "forward-chain",
+]);
+
+export function selfTestTimeoutSeconds(meta: { kind?: string; runtimeDependent?: boolean } | null | undefined) {
+  const runtimeDependent = meta
+    && RUNTIME_SELF_TEST_KINDS.has(String(meta.kind || ""))
+    && !(meta.kind === "forward-chain" && meta.runtimeDependent === false);
+  return runtimeDependent ? RUNTIME_SELF_TEST_TIMEOUT_SECONDS : SELF_TEST_TIMEOUT_SECONDS;
+}
 
 export class SelfTestSweepActivity {
   private activeUntilMs: number;

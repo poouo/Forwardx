@@ -854,6 +854,75 @@ func TestScheduleTCPingCollectionDefersTopologyProbeWhileActionsPending(t *testi
 	}
 }
 
+func TestRuntimeProbeResultsAreDiscardedAfterCompletedAction(t *testing.T) {
+	previousPending := atomic.SwapInt64(&actionPendingCount, 0)
+	previousEpoch := runtimeActionEpoch.Load()
+	t.Cleanup(func() {
+		atomic.StoreInt64(&actionPendingCount, previousPending)
+		runtimeActionEpoch.Store(previousEpoch)
+	})
+
+	startEpoch := runtimeActionEpoch.Load()
+	markRuntimeActionQueued()
+	if pending := atomic.AddInt64(&actionPendingCount, -1); pending != 0 {
+		t.Fatalf("simulated action did not finish cleanly: pending=%d", pending)
+	}
+	if runtimeActionEpoch.Load() == startEpoch {
+		t.Fatal("queued runtime action did not advance the action epoch")
+	}
+	rules := []map[string]any{{"ruleId": 1}}
+	tunnels := []map[string]any{{"tunnelId": 2}}
+	groups := []map[string]any{{"groupId": 3}}
+	services := []map[string]any{{"serviceId": 4}}
+
+	rules, tunnels, groups, services = filterRuntimeProbeResultsAfterActions(
+		startEpoch,
+		false,
+		rules,
+		tunnels,
+		groups,
+		services,
+	)
+	if len(rules) != 0 || len(tunnels) != 0 || len(groups) != 0 {
+		t.Fatalf("stale runtime results survived action epoch change: rules=%v tunnels=%v groups=%v", rules, tunnels, groups)
+	}
+	if len(services) != 1 || services[0]["serviceId"] != 4 {
+		t.Fatalf("service result was discarded with runtime results: %v", services)
+	}
+}
+
+func TestExecuteTCPingTaskSkipsWireGuardRuntimeNotReady(t *testing.T) {
+	task := tcpingTask{
+		Kind:            "tunnel",
+		TunnelID:        12,
+		TargetIP:        "100.64.0.2",
+		TargetPort:      443,
+		WireGuardPeerID: "22",
+	}
+	result := executeTCPingTaskWithWireGuardProbe(task, func(int, string, int, time.Duration) (int, wireGuardProbeStatus) {
+		return 0, wireGuardProbeNotReady
+	})
+	if result.Payload != nil {
+		t.Fatalf("not-ready WireGuard runtime produced an automatic timeout: %v", result.Payload)
+	}
+}
+
+func TestExecuteTCPingTaskReportsStableWireGuardDialTimeout(t *testing.T) {
+	task := tcpingTask{
+		Kind:            "tunnel",
+		TunnelID:        12,
+		TargetIP:        "100.64.0.2",
+		TargetPort:      443,
+		WireGuardPeerID: "22",
+	}
+	result := executeTCPingTaskWithWireGuardProbe(task, func(int, string, int, time.Duration) (int, wireGuardProbeStatus) {
+		return 0, wireGuardProbeTimeout
+	})
+	if result.Payload == nil || result.Payload["isTimeout"] != true {
+		t.Fatalf("stable WireGuard dial failure was not reported as a timeout: %v", result.Payload)
+	}
+}
+
 func TestTCPingDynamicBatchLimitScalesWithoutUnboundedRuns(t *testing.T) {
 	tests := []struct {
 		total  int

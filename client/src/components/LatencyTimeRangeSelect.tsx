@@ -22,20 +22,14 @@ export function latencyTimeRangeLabel(hours: number) {
 export function filterLatencySeriesByTimeRange<T extends { recordedAt: string | Date }>(
   series: T[] | null | undefined,
   hours: number,
+  now = Date.now(),
 ) {
   if (!series?.length) return [];
   const rangeMs = Math.max(0.5, Number(hours) || DEFAULT_LATENCY_TIME_RANGE_HOURS) * 60 * 60 * 1000;
-  const times = series
-    .map((item) => new Date(item.recordedAt).getTime())
-    .filter((time) => Number.isFinite(time));
-  if (times.length === 0) return [];
-  const latestPointAt = Math.max(...times);
-  const now = Date.now();
-  const anchor = Math.abs(latestPointAt - now) > 60 * 1000 ? latestPointAt : now;
-  const cutoff = anchor - rangeMs;
+  const cutoff = now - rangeMs;
   return series.filter((item) => {
     const time = new Date(item.recordedAt).getTime();
-    return Number.isFinite(time) && time >= cutoff && time <= anchor + 60 * 1000;
+    return Number.isFinite(time) && time >= cutoff && time <= now;
   });
 }
 

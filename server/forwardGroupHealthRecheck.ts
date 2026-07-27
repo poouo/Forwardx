@@ -58,6 +58,17 @@ export function isActivityFreshAt(lastSeenAtValue: unknown, timeoutMsValue: unkn
   return now - lastSeenAt < timeoutMs;
 }
 
+export function latestKnownActivityAt(values: Iterable<unknown>, nowValue = Date.now()) {
+  const now = Number(nowValue);
+  if (!Number.isFinite(now)) return 0;
+  let latest = 0;
+  for (const value of values) {
+    const candidate = Number(value);
+    if (Number.isFinite(candidate) && candidate > latest) latest = candidate;
+  }
+  return latest > 0 ? Math.min(now, latest) : 0;
+}
+
 type ForwardGroupEvaluationQueueOptions = {
   debounceMs?: number;
   retryBaseMs?: number;

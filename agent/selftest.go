@@ -11,9 +11,9 @@ import (
 
 const selfTestWorkerConcurrency = 16
 const selfTestQueueCapacity = 256
-const selfTestRuntimeReadinessWindow = 6 * time.Second
+const selfTestRuntimeReadinessWindow = 20 * time.Second
 const selfTestActionWaitWindow = 4 * time.Second
-const selfTestPostActionReadinessWindow = 2 * time.Second
+const selfTestPostActionReadinessWindow = 5 * time.Second
 const selfTestTCPAttemptTimeout = 1500 * time.Millisecond
 const selfTestWireGuardAttemptTimeout = 2500 * time.Millisecond
 const selfTestPingTimeout = 1500 * time.Millisecond
@@ -82,11 +82,12 @@ func enqueueSelfTestsAfterActions(cfg Config, tests []selfTest, actionDone []<-c
 	tests = append([]selfTest(nil), tests...)
 	actionDone = append([]<-chan struct{}(nil), actionDone...)
 	enqueue := func() {
+		actionsCompleted := len(actionDone) == 0
 		if len(actionDone) > 0 {
-			waitForActionBatch(actionDone, selfTestActionWaitWindow)
+			actionsCompleted = waitForActionBatch(actionDone, selfTestActionWaitWindow)
 		}
 		for _, test := range tests {
-			test.runtimeActionsWaited = len(actionDone) > 0
+			test.runtimeActionsWaited = len(actionDone) > 0 && actionsCompleted
 			enqueueSelfTest(cfg, test)
 		}
 	}

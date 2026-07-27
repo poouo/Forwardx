@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.175"
+var Version = "2.2.176"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -265,6 +265,7 @@ var agentReportLogMu sync.Mutex
 var agentReportLogAt = map[string]time.Time{}
 var agentMemoryPrunedAt time.Time
 var actionPendingCount int64
+var runtimeActionEpoch atomic.Uint64
 var heartbeatWakeCh = make(chan struct{}, 1)
 var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
 var heartbeatUrgentWakeFromSSE atomic.Bool
@@ -655,7 +656,7 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		})
 	}
 	mimicServices := managedMimicServicesFromLocalConfig()
-	restoreUnusedMimicNetworkCompatibility(mimicServices)
+	restoreUnusedMimicNetworkCompatibility()
 	for _, service := range mimicServices {
 		report := mimicRuntimeServiceReportFor(service)
 		active := report.Active

@@ -2576,46 +2576,83 @@ export type TimedOutForwardTest = {
   ruleId: number;
   hostId: number;
   message: string | null;
+  timeoutSeconds?: number;
 };
 
-export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise<TimedOutForwardTest[]> {
+type ActiveForwardTestCandidate = TimedOutForwardTest & {
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export async function timeoutStaleForwardTests(
+  ttlSeconds: number = 60,
+  timeoutForTest?: (test: TimedOutForwardTest) => number,
+): Promise<TimedOutForwardTest[]> {
   const db = await getDb();
   if (!db) return [];
-  const cutoffSec = Math.floor((Date.now() - ttlSeconds * 1000) / 1000);
-  const nowSec = Math.floor(Date.now() / 1000);
-  const staleTests = await queryRaw<TimedOutForwardTest>(
-    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
+  const baseTimeoutSeconds = Math.max(1, Math.floor(Number(ttlSeconds) || 60));
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  const baseCutoffSec = Math.floor((nowMs - baseTimeoutSeconds * 1000) / 1000);
+  const candidates = await queryRaw<ActiveForwardTestCandidate>(
+    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")},
+            ${quoteIdentifier("status")}, ${quoteIdentifier("createdAt")}, ${quoteIdentifier("updatedAt")}
      FROM ${quoteIdentifier("forward_tests")}
      WHERE (${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
         OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?)`,
-    [cutoffSec, cutoffSec],
+    [baseCutoffSec, baseCutoffSec],
   );
-  if (staleTests.length === 0) return [];
+  if (candidates.length === 0) return [];
+
+  const timeoutById = new Map<number, number>();
+  for (const candidate of candidates) {
+    const id = Number(candidate.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const requestedTimeout = Number(timeoutForTest?.(candidate));
+    const effectiveTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? Math.max(baseTimeoutSeconds, Math.floor(requestedTimeout))
+      : baseTimeoutSeconds;
+    const referenceSec = String(candidate.status) === "running"
+      ? Number(candidate.updatedAt)
+      : Number(candidate.createdAt);
+    const cutoffSec = Math.floor((nowMs - effectiveTimeout * 1000) / 1000);
+    if (!Number.isFinite(referenceSec) || referenceSec >= cutoffSec) continue;
+    timeoutById.set(id, effectiveTimeout);
+  }
+  if (timeoutById.size === 0) return [];
+
   const kind = getDatabaseKind();
   const messageExpr = kind === "mysql"
     ? "CONCAT('自测超时：Agent 未在', ?, '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')"
     : "('自测超时：Agent 未在' || ? || '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')";
-  const ids = staleTests.map((test) => Number(test.id)).filter((id) => Number.isFinite(id) && id > 0);
-  if (ids.length === 0) return [];
-  const placeholders = ids.map(() => "?").join(", ");
-  const info: any = await executeRaw(
-    `UPDATE ${quoteIdentifier("forward_tests")}
-     SET ${quoteIdentifier("status")} = 'timeout',
-         ${quoteIdentifier("message")} = COALESCE(NULLIF(${quoteIdentifier("message")}, ''), ${messageExpr}),
-         ${quoteIdentifier("updatedAt")} = ?
-     WHERE ${quoteIdentifier("id")} IN (${placeholders})
-       AND ((${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
-         OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?))`,
-    [ttlSeconds, nowSec, ...ids, cutoffSec, cutoffSec],
-  );
-  const changed = rawAffectedRows(info);
-  if (changed <= 0) return [];
-  return queryRaw<TimedOutForwardTest>(
+  const changedIds: number[] = [];
+  for (const [id, effectiveTimeout] of timeoutById.entries()) {
+    const cutoffSec = Math.floor((nowMs - effectiveTimeout * 1000) / 1000);
+    const info: any = await executeRaw(
+      `UPDATE ${quoteIdentifier("forward_tests")}
+       SET ${quoteIdentifier("status")} = 'timeout',
+           ${quoteIdentifier("message")} = COALESCE(NULLIF(${quoteIdentifier("message")}, ''), ${messageExpr}),
+           ${quoteIdentifier("updatedAt")} = ?
+       WHERE ${quoteIdentifier("id")} = ?
+         AND ((${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
+           OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?))`,
+      [effectiveTimeout, nowSec, id, cutoffSec, cutoffSec],
+    );
+    if (rawAffectedRows(info) > 0) changedIds.push(id);
+  }
+  if (changedIds.length === 0) return [];
+  const placeholders = changedIds.map(() => "?").join(", ");
+  const timedOut = await queryRaw<TimedOutForwardTest>(
     `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
      FROM ${quoteIdentifier("forward_tests")}
      WHERE ${quoteIdentifier("id")} IN (${placeholders})
        AND ${quoteIdentifier("status")} = 'timeout'
        AND ${quoteIdentifier("updatedAt")} = ?`,
-    [...ids, nowSec],
+    [...changedIds, nowSec],
   );
+  return timedOut.map((test) => ({
+    ...test,
+    timeoutSeconds: timeoutById.get(Number(test.id)) || baseTimeoutSeconds,
+  }));
 }

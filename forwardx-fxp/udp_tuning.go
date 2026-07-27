@@ -12,8 +12,43 @@ const (
 	fxpUDPSessionBufferBytes = 512 * 1024
 	fxpUDPDirectQueueSize    = 512
 	fxpUDPStreamQueueSize    = 512
+	fxpUDPMaxQueueDelay      = 25 * time.Millisecond
 	fxpUDPDropLogInterval    = 5 * time.Second
 )
+
+type fxpUDPQueuedPacket struct {
+	payload  []byte
+	queuedAt time.Time
+}
+
+func enqueueFXPUDPPacket(queue chan fxpUDPQueuedPacket, payload []byte) bool {
+	packet := fxpUDPQueuedPacket{payload: payload, queuedAt: time.Now()}
+	select {
+	case queue <- packet:
+		return false
+	default:
+	}
+
+	// Prefer the newest datagram over replaying an older burst after congestion.
+	select {
+	case <-queue:
+	default:
+		return true
+	}
+	select {
+	case queue <- packet:
+	default:
+	}
+	return true
+}
+
+func (packet fxpUDPQueuedPacket) expired(now time.Time) bool {
+	return !packet.queuedAt.IsZero() && now.Sub(packet.queuedAt) >= fxpUDPMaxQueueDelay
+}
+
+func (packet fxpUDPQueuedPacket) superseded(now time.Time, pendingNewer int) bool {
+	return pendingNewer > 0 && packet.expired(now)
+}
 
 type rateLimitedLog struct {
 	interval   time.Duration

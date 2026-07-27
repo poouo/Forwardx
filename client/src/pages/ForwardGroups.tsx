@@ -47,6 +47,7 @@ import MultiHopEditor from "@/components/MultiHopEditor";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { pollingInterval } from "@/lib/polling";
 import { buildLinkAvailabilityIndex } from "@/lib/linkAvailability";
+import { handoffManualTestResult } from "@/lib/manualTestCache";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -782,9 +783,16 @@ function ForwardGroupSelfTestDialog({
 
   useEffect(() => {
     if (optimisticTesting && hasFreshResult && !isServerTesting && latest) {
-      setOptimisticTesting(false);
+      handoffManualTestResult(
+        latest,
+        (result) => utils.forwardGroups.latestTest.setData(
+          { groupId, includeActive: false },
+          result,
+        ),
+        () => setOptimisticTesting(false),
+      );
     }
-  }, [hasFreshResult, isServerTesting, latest, optimisticTesting]);
+  }, [groupId, hasFreshResult, isServerTesting, latest, optimisticTesting, utils]);
 
   useEffect(() => {
     const message = parsedMessage.message.trim();

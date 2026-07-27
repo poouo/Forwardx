@@ -94,8 +94,8 @@ type udpDirectEntrySession struct {
 	outLimiter      *limiter
 	counter         *trafficCounter
 	stopReporting   func()
-	send            chan []byte
-	recv            chan []byte
+	send            chan fxpUDPQueuedPacket
+	recv            chan fxpUDPQueuedPacket
 	done            chan struct{}
 	closeOnce       sync.Once
 	lastActivity    atomic.Int64
@@ -111,7 +111,7 @@ type udpDirectExitSession struct {
 	peerAddr      *net.UDPAddr
 	conn          *net.UDPConn
 	target        *net.UDPConn
-	send          chan []byte
+	send          chan fxpUDPQueuedPacket
 	cfg           config
 	ruleID        int
 	targetIP      string
@@ -135,8 +135,8 @@ type udpDirectRelaySession struct {
 	ruleID          int
 	endpoint        exitEndpoint
 	endpointIndex   int
-	downstreamSend  chan []byte
-	upstreamSend    chan []byte
+	downstreamSend  chan fxpUDPQueuedPacket
+	upstreamSend    chan fxpUDPQueuedPacket
 	done            chan struct{}
 	closeOnce       sync.Once
 	lastActivity    atomic.Int64
@@ -259,8 +259,8 @@ func newUDPDirectEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg co
 		outLimiter:    outLimiter,
 		counter:       counter,
 		stopReporting: startTrafficReporter(cfg, counter),
-		send:          make(chan []byte, fxpUDPDirectQueueSize),
-		recv:          make(chan []byte, fxpUDPDirectQueueSize),
+		send:          make(chan fxpUDPQueuedPacket, fxpUDPDirectQueueSize),
+		recv:          make(chan fxpUDPQueuedPacket, fxpUDPDirectQueueSize),
 		done:          make(chan struct{}),
 		remove:        remove,
 	}
@@ -283,9 +283,10 @@ func (s *udpDirectEntrySession) enqueue(payload []byte) {
 	select {
 	case <-s.done:
 		return
-	case s.send <- payload:
 	default:
-		fxpUDPDropLog.Printf("entry udp direct queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		if enqueueFXPUDPPacket(s.send, payload) {
+			fxpUDPDropLog.Printf("entry udp direct queue congested tunnel=%d rule=%d client=%s; dropping oldest packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		}
 	}
 }
 
@@ -294,9 +295,18 @@ func (s *udpDirectEntrySession) writeLoop() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.send:
+		case packet := <-s.send:
+			if packet.superseded(time.Now(), len(s.send)) {
+				fxpUDPDropLog.Printf("entry udp direct queued packet expired tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+				continue
+			}
+			payload := packet.payload
 			s.touch()
 			s.inLimiter.wait(len(payload))
+			if packet.superseded(time.Now(), len(s.send)) {
+				fxpUDPDropLog.Printf("entry udp direct queued packet expired after wait tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+				continue
+			}
 			packets, err := sealFXPUDPDatagrams(fxpUDPPacket{
 				packetType: fxpUDPTypeData,
 				tunnelID:   s.cfg.TunnelID,
@@ -329,9 +339,10 @@ func (s *udpDirectEntrySession) handleResponse(packet fxpUDPPacket) {
 	select {
 	case <-s.done:
 		return
-	case s.recv <- payload:
 	default:
-		fxpUDPDropLog.Printf("entry udp direct response queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		if enqueueFXPUDPPacket(s.recv, payload) {
+			fxpUDPDropLog.Printf("entry udp direct response queue congested tunnel=%d rule=%d client=%s; dropping oldest packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		}
 	}
 }
 
@@ -340,8 +351,12 @@ func (s *udpDirectEntrySession) clientWriteLoop() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.recv:
-			s.writeResponse(payload)
+		case packet := <-s.recv:
+			if packet.superseded(time.Now(), len(s.recv)) {
+				fxpUDPDropLog.Printf("entry udp direct response expired tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+				continue
+			}
+			s.writeResponse(packet.payload)
 		}
 	}
 }
@@ -480,7 +495,7 @@ func newUDPDirectExitSession(conn *net.UDPConn, peerAddr *net.UDPAddr, cfg confi
 		peerAddr:   peerAddr,
 		conn:       conn,
 		target:     target,
-		send:       make(chan []byte, fxpUDPDirectQueueSize),
+		send:       make(chan fxpUDPQueuedPacket, fxpUDPDirectQueueSize),
 		cfg:        cfg,
 		ruleID:     ruleID,
 		targetIP:   targetIP,
@@ -507,9 +522,10 @@ func (s *udpDirectExitSession) forwardToTarget(payload []byte) {
 	select {
 	case <-s.done:
 		return
-	case s.send <- payload:
 	default:
-		fxpUDPDropLog.Printf("exit udp direct target queue full tunnel=%d rule=%d peer=%s target=%s:%d; dropping packet", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort)
+		if enqueueFXPUDPPacket(s.send, payload) {
+			fxpUDPDropLog.Printf("exit udp direct target queue congested tunnel=%d rule=%d peer=%s target=%s:%d; dropping oldest packet", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort)
+		}
 	}
 }
 
@@ -518,8 +534,12 @@ func (s *udpDirectExitSession) writeTargetLoop() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.send:
-			s.writeTarget(payload)
+		case packet := <-s.send:
+			if packet.superseded(time.Now(), len(s.send)) {
+				fxpUDPDropLog.Printf("exit udp direct target packet expired tunnel=%d rule=%d peer=%s target=%s:%d; dropping stale packet", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort)
+				continue
+			}
+			s.writeTarget(packet.payload)
 		}
 	}
 }
@@ -705,8 +725,8 @@ func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg 
 		ruleID:         ruleID,
 		endpoint:       endpoint,
 		endpointIndex:  index,
-		downstreamSend: make(chan []byte, fxpUDPDirectQueueSize),
-		upstreamSend:   make(chan []byte, fxpUDPDirectQueueSize),
+		downstreamSend: make(chan fxpUDPQueuedPacket, fxpUDPDirectQueueSize),
+		upstreamSend:   make(chan fxpUDPQueuedPacket, fxpUDPDirectQueueSize),
 		done:           make(chan struct{}),
 		remove:         remove,
 	}
@@ -733,9 +753,10 @@ func (s *udpDirectRelaySession) forwardToDownstream(packet fxpUDPPacket) {
 	select {
 	case <-s.done:
 		return
-	case s.downstreamSend <- payload:
 	default:
-		fxpUDPDropLog.Printf("relay udp direct downstream queue full tunnel=%d rule=%d upstream=%s downstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.downstreamAddr)
+		if enqueueFXPUDPPacket(s.downstreamSend, payload) {
+			fxpUDPDropLog.Printf("relay udp direct downstream queue congested tunnel=%d rule=%d upstream=%s downstream=%s; dropping oldest packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.downstreamAddr)
+		}
 	}
 }
 
@@ -744,8 +765,12 @@ func (s *udpDirectRelaySession) downstreamWriteLoop() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.downstreamSend:
-			s.writeDownstream(payload)
+		case packet := <-s.downstreamSend:
+			if packet.superseded(time.Now(), len(s.downstreamSend)) {
+				fxpUDPDropLog.Printf("relay udp direct downstream packet expired tunnel=%d rule=%d upstream=%s downstream=%s; dropping stale packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.downstreamAddr)
+				continue
+			}
+			s.writeDownstream(packet.payload)
 		}
 	}
 }
@@ -781,9 +806,10 @@ func (s *udpDirectRelaySession) forwardToUpstream(packet fxpUDPPacket) {
 	select {
 	case <-s.done:
 		return
-	case s.upstreamSend <- payload:
 	default:
-		fxpUDPDropLog.Printf("relay udp direct upstream queue full tunnel=%d rule=%d upstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr)
+		if enqueueFXPUDPPacket(s.upstreamSend, payload) {
+			fxpUDPDropLog.Printf("relay udp direct upstream queue congested tunnel=%d rule=%d upstream=%s; dropping oldest packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr)
+		}
 	}
 }
 
@@ -792,8 +818,12 @@ func (s *udpDirectRelaySession) upstreamWriteLoop() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.upstreamSend:
-			s.writeUpstream(payload)
+		case packet := <-s.upstreamSend:
+			if packet.superseded(time.Now(), len(s.upstreamSend)) {
+				fxpUDPDropLog.Printf("relay udp direct upstream packet expired tunnel=%d rule=%d upstream=%s; dropping stale packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr)
+				continue
+			}
+			s.writeUpstream(packet.payload)
 		}
 	}
 }

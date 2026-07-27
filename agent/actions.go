@@ -245,7 +245,7 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 		close(done)
 		return done
 	}
-	atomic.AddInt64(&actionPendingCount, 1)
+	markRuntimeActionQueued()
 	enqueueActionJob(actionJob{cfg: cfg, action: a, done: done})
 	return done
 }
@@ -356,7 +356,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 				continue
 			}
 		}
-		atomic.AddInt64(&actionPendingCount, 1)
+		markRuntimeActionQueued()
 		enqueueActionJob(job)
 	}
 	rememberDesiredStateAppliedAfterActions(state, done)
@@ -1444,23 +1444,34 @@ func snapshotProtectedActionPorts() map[string]bool {
 	return ports
 }
 
-func waitForActionBatch(done []<-chan struct{}, timeout time.Duration) {
+func markRuntimeActionQueued() {
+	// Publish pending first so a collector cannot observe a new epoch while
+	// still seeing an idle queue. The epoch catches actions that finish before
+	// an in-flight probe completes.
+	atomic.AddInt64(&actionPendingCount, 1)
+	runtimeActionEpoch.Add(1)
+}
+
+func waitForActionBatch(done []<-chan struct{}, timeout time.Duration) bool {
 	if len(done) == 0 {
-		return
+		return true
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	for i, ch := range done {
+	completed := 0
+	for _, ch := range done {
 		if ch == nil {
 			continue
 		}
 		select {
 		case <-ch:
+			completed++
 		case <-timer.C:
-			logf("selftest action wait timeout completed=%d total=%d timeout=%s", i, len(done), timeout)
-			return
+			logf("selftest action wait timeout completed=%d total=%d timeout=%s", completed, len(done), timeout)
+			return false
 		}
 	}
+	return true
 }
 
 func logActionDuplicateSkip(a action, key string) {

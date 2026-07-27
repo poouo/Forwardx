@@ -8,6 +8,7 @@ import {
   ForwardGroupHostSilenceScheduler,
   forwardGroupChinaHealthStateAt,
   isActivityFreshAt,
+  latestKnownActivityAt,
   nextForwardGroupChinaHealthExpiryAt,
   nextForwardGroupHealthRecheckAt,
 } from "./forwardGroupHealthRecheck";
@@ -234,6 +235,14 @@ test("activity windows expire exactly at their configured deadline", () => {
   assert.equal(isActivityFreshAt(now - 150_000, 150_000, now), false);
   assert.equal(isActivityFreshAt(now - 149_999, 150_000, now), true);
   assert.equal(isActivityFreshAt(now - 150_001, 150_000, now), false);
+});
+
+test("forward group liveness uses the newest persisted or authenticated activity", () => {
+  const now = 1_000_000;
+  assert.equal(latestKnownActivityAt([now - 80_000, now - 5_000], now), now - 5_000);
+  assert.equal(latestKnownActivityAt([now - 5_000, now - 80_000], now), now - 5_000);
+  assert.equal(latestKnownActivityAt([null, 0, undefined], now), 0);
+  assert.equal(latestKnownActivityAt([now + 60_000], now), now, "future activity is clamped to the evaluation time");
 });
 
 test("China health snapshots expire exactly after the jitter-safe report window", () => {

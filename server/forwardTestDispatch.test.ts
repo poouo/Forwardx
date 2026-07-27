@@ -65,6 +65,30 @@ test("forward self-test leases recover lost deliveries and give claimed work a f
       assert.equal(await tests.completeForwardTestIfActive(3, { status: "success", latencyMs: 9 }), false);
       const timeoutRow = (await runtime.queryRaw('SELECT "status" FROM "forward_tests" WHERE "id" = ?', [3]))[0];
       assert.equal(timeoutRow.status, "timeout");
+
+      await runtime.executeRaw(
+        'INSERT INTO "forward_tests" ("id", "ruleId", "hostId", "userId", "status", "message", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          4, 4, 14, 1, "running", JSON.stringify({ kind: "direct" }), now - 60, now - 10,
+          5, 0, 15, 1, "running", JSON.stringify({ kind: "tunnel", tunnelId: 5 }), now - 60, now - 10,
+        ],
+      );
+      const timeoutForTest = (row) => {
+        try {
+          const kind = JSON.parse(String(row.message || "{}"))?.kind;
+          return kind === "tunnel" ? 30 : 8;
+        } catch {
+          return 8;
+        }
+      };
+      const shortTimeouts = await metrics.timeoutStaleForwardTests(8, timeoutForTest);
+      assert.deepEqual(shortTimeouts.map((row) => [Number(row.id), Number(row.timeoutSeconds)]), [[4, 8]]);
+      assert.equal(await tests.hasActiveForwardTests(), true);
+
+      await runtime.executeRaw('UPDATE "forward_tests" SET "updatedAt" = ? WHERE "id" = ?', [now - 40, 5]);
+      const runtimeTimeouts = await metrics.timeoutStaleForwardTests(8, timeoutForTest);
+      assert.deepEqual(runtimeTimeouts.map((row) => [Number(row.id), Number(row.timeoutSeconds)]), [[5, 30]]);
+      assert.equal(await tests.hasActiveForwardTests(), false);
     } finally {
       await runtime.closeDatabase();
     }

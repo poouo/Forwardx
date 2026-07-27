@@ -14,14 +14,24 @@ import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
-import { SELF_TEST_TIMEOUT_SECONDS, selfTestSweepActivity, startSelfTestSweepTimer } from "./selfTestTiming";
+import {
+  SELF_TEST_TIMEOUT_SECONDS,
+  selfTestTimeoutSeconds,
+  selfTestSweepActivity,
+  startSelfTestSweepTimer,
+} from "./selfTestTiming";
 
 type TimedOutForwardTest = {
   id: number;
   ruleId: number;
   hostId: number;
   message: string | null;
+  timeoutSeconds?: number;
 };
+
+function timeoutSecondsForForwardTest(test: TimedOutForwardTest) {
+  return selfTestTimeoutSeconds(parseSelfTestMeta(test.message));
+}
 
 const UPDATE_AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -122,15 +132,15 @@ async function runExpirationCheck() {
   }
 }
 
-async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], ttlSeconds: number) {
+async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], defaultTimeoutSeconds: number) {
   const settledTunnelIds = new Set<number>();
 
-  const settleTunnel = async (tunnelId: number, message: string, logSuffix: string) => {
+  const settleTunnel = async (tunnelId: number, message: string, logSuffix: string, timeoutSeconds: number) => {
     if (!Number.isFinite(tunnelId) || tunnelId <= 0 || settledTunnelIds.has(tunnelId)) return;
     settledTunnelIds.add(tunnelId);
     await db.updateTunnelTestResult(tunnelId, { status: "failed", latencyMs: null, message });
     await db.insertTunnelLatencyStat({ tunnelId, latencyMs: null, isTimeout: true }, { message });
-    appendPanelLog("warn", `[TunnelTest] tunnel=${tunnelId} timeout after ${ttlSeconds}s ${logSuffix}`);
+    appendPanelLog("warn", `[TunnelTest] tunnel=${tunnelId} timeout after ${timeoutSeconds}s ${logSuffix}`);
   };
 
   const settleTunnelAggregate = async (
@@ -159,14 +169,18 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
   };
 
   for (const test of timedOutTests) {
+    const timeoutSeconds = Number(test.timeoutSeconds) > 0
+      ? Number(test.timeoutSeconds)
+      : defaultTimeoutSeconds;
     const meta = parseSelfTestMeta(test.message);
     if (!meta) continue;
 
     if (meta.kind === "tunnel") {
       await settleTunnel(
         meta.tunnelId,
-        `隧道链路自测超时：Agent 未在 ${ttlSeconds} 秒内上报结果`,
+        `隧道链路自测超时：Agent 未在 ${timeoutSeconds} 秒内上报结果`,
         `test=${test.id} host=${test.hostId}`,
+        timeoutSeconds,
       );
       continue;
     }
@@ -178,7 +192,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
       const groupLabel = typeof (meta as any).groupLabel === "string" ? (meta as any).groupLabel : null;
       const latencyMode = tunnelHopLatencyMode(meta as any);
       const modeText = tunnelHopModeText(latencyMode);
-      const message = `${modeText.label}超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const message = `${modeText.label}超时：${hopLabel} 未在 ${timeoutSeconds} 秒内上报结果`;
       const aggregate = recordTunnelHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
@@ -213,7 +227,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
       const latencyMode = (meta as any).latencyMode === "multi-source-remaining-path"
         ? "multi-source-remaining-path"
         : (meta as any).latencyMode === "remaining-path" ? "remaining-path" : "sum";
-      const message = `转发链逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const message = `转发链逐跳测试超时：${hopLabel} 未在 ${timeoutSeconds} 秒内上报结果`;
       const aggregate = recordHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
@@ -258,7 +272,10 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
 async function runSelfTestTimeoutSweep() {
   if (!selfTestSweepActivity.shouldSweep()) return;
   try {
-    const timedOutTests = await db.timeoutStaleForwardTests(SELF_TEST_TIMEOUT_SECONDS);
+    const timedOutTests = await db.timeoutStaleForwardTests(
+      SELF_TEST_TIMEOUT_SECONDS,
+      timeoutSecondsForForwardTest,
+    );
     if (timedOutTests.length > 0) {
       await settleTimedOutTunnelTests(timedOutTests, SELF_TEST_TIMEOUT_SECONDS);
       for (const test of timedOutTests) {
@@ -278,7 +295,10 @@ async function runSelfTestTimeoutSweep() {
           : meta && "tunnelId" in meta && typeof meta.tunnelId === "number"
             ? ` tunnel=${meta.tunnelId}`
             : "";
-        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${targetPart} host=${test.hostId} timeout after ${SELF_TEST_TIMEOUT_SECONDS}s test=${test.id}`);
+        const timeoutSeconds = Number(test.timeoutSeconds) > 0
+          ? Number(test.timeoutSeconds)
+          : SELF_TEST_TIMEOUT_SECONDS;
+        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${targetPart} host=${test.hostId} timeout after ${timeoutSeconds}s test=${test.id}`);
       }
       console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }

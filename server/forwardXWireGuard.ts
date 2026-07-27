@@ -4,10 +4,13 @@ import { normalizeForwardXVersion } from "../shared/forwardTypes";
 
 export const AGENT_FORWARDX_WIREGUARD_VERSION = "2.2.154";
 export const FORWARDX_WIREGUARD_DEFAULT_MTU = 1380;
-// Mimic adds 12 bytes to the outer UDP packet. 1350 keeps the V2 userspace
-// WireGuard path below the common 1450-byte IPv6 cloud MTU while avoiding the
-// unnecessary fragmentation overhead of the former 1340-byte setting.
-export const FORWARDX_WIREGUARD_MIMIC_MTU = 1350;
+// Mimic adds 12 bytes to the outer UDP packet. 1280 (IPv6 minimum MTU) keeps
+// the V2 userspace WireGuard path safely below any reasonable path MTU,
+// including non-standard ISP/carrier paths (e.g. mobile, PPPoE with extra
+// overhead, cloud links with MTU < 1450). The throughput reduction is
+// negligible for gaming and latency-sensitive traffic since those workloads
+// use small packets well under this limit.
+export const FORWARDX_WIREGUARD_MIMIC_MTU = 1280;
 
 export function forwardXWireGuardMTU(mimicEnabled: boolean) {
   return mimicEnabled ? FORWARDX_WIREGUARD_MIMIC_MTU : FORWARDX_WIREGUARD_DEFAULT_MTU;

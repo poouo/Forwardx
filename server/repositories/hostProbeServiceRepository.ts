@@ -233,7 +233,10 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[]) {
 export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; hostId?: number; hours?: number; limit?: number } = {}) {
   const ids = Array.from(new Set((opts.serviceIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
   const hostId = Number(opts.hostId || 0);
-  const hours = clampPositiveInt(opts.hours, 24, 24 * 3);
+  const requestedHours = Number(opts.hours);
+  const hours = Number.isFinite(requestedHours) && requestedHours > 0
+    ? Math.max(0.5, Math.min(requestedHours, 24 * 3))
+    : 24;
   const limit = clampPositiveInt(opts.limit, 20_000, 100_000);
   const since = new Date(Date.now() - hours * 3600 * 1000);
   const q = quoteIdentifier;
@@ -253,11 +256,11 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
     `SELECT ${q("serviceId")}, ${q("hostId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("host_probe_service_stats")}
       WHERE ${conditions.join(" AND ")}
-      ORDER BY ${q("recordedAt")} ASC, ${q("id")} ASC
+      ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
       ${page.sql}`,
     [...params, ...page.params],
   );
-  return rows.map((row) => ({
+  return rows.reverse().map((row) => ({
     serviceId: Number(row.serviceId),
     hostId: Number(row.hostId),
     latencyMs: row.latencyMs == null ? null : Number(row.latencyMs),

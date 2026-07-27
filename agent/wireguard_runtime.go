@@ -29,6 +29,7 @@ const (
 	wireGuardUDPSessionIdleTimeout = 10 * time.Minute
 	wireGuardUDPIdlePollInterval   = 15 * time.Second
 	wireGuardUDPProxyQueueSize     = 512
+	wireGuardUDPProxyMaxQueueDelay = 25 * time.Millisecond
 	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
 	wireGuardUDPSessionBufferBytes = 512 * 1024
 	wireGuardRuntimeReleaseDelay   = time.Minute
@@ -87,10 +88,15 @@ type wireGuardInboundProxy struct {
 
 type wireGuardUDPProxySession struct {
 	conn         net.Conn
-	send         chan []byte
+	send         chan wireGuardUDPProxyPacket
 	done         chan struct{}
 	lastActivity atomic.Int64
 	closeOnce    sync.Once
+}
+
+type wireGuardUDPProxyPacket struct {
+	payload  []byte
+	queuedAt time.Time
 }
 
 type wireGuardRuntime struct {
@@ -529,7 +535,7 @@ func tuneWireGuardUDPConn(conn *net.UDPConn, bufferBytes int) {
 func newWireGuardUDPProxySession(conn net.Conn) *wireGuardUDPProxySession {
 	session := &wireGuardUDPProxySession{
 		conn: conn,
-		send: make(chan []byte, wireGuardUDPProxyQueueSize),
+		send: make(chan wireGuardUDPProxyPacket, wireGuardUDPProxyQueueSize),
 		done: make(chan struct{}),
 	}
 	if udpConn, ok := conn.(*net.UDPConn); ok {
@@ -568,15 +574,42 @@ func (session *wireGuardUDPProxySession) enqueue(payload []byte) bool {
 	default:
 	}
 	session.touch()
-	packet := append([]byte(nil), payload...)
+	packet := wireGuardUDPProxyPacket{
+		payload:  append([]byte(nil), payload...),
+		queuedAt: time.Now(),
+	}
 	select {
 	case <-session.done:
 		return false
 	case session.send <- packet:
 		return true
 	default:
+	}
+
+	// Keep real-time UDP traffic current during a brief writer stall. Retaining
+	// a full queue of older datagrams makes latency worse after the stall clears.
+	select {
+	case <-session.done:
+		return false
+	case <-session.send:
+	default:
 		return false
 	}
+	select {
+	case <-session.done:
+		return false
+	case session.send <- packet:
+	default:
+	}
+	return false
+}
+
+func (packet wireGuardUDPProxyPacket) expired(now time.Time) bool {
+	return !packet.queuedAt.IsZero() && now.Sub(packet.queuedAt) >= wireGuardUDPProxyMaxQueueDelay
+}
+
+func (packet wireGuardUDPProxyPacket) superseded(now time.Time, pendingNewer int) bool {
+	return pendingNewer > 0 && packet.expired(now)
 }
 
 func (session *wireGuardUDPProxySession) writeLoop() {
@@ -584,9 +617,24 @@ func (session *wireGuardUDPProxySession) writeLoop() {
 		select {
 		case <-session.done:
 			return
-		case payload := <-session.send:
-			_ = session.conn.SetWriteDeadline(time.Now().Add(wireGuardProxyDialTimeout))
-			if _, err := session.conn.Write(payload); err != nil {
+		case packet := <-session.send:
+			now := time.Now()
+			pendingNewer := len(session.send)
+			if packet.superseded(now, pendingNewer) {
+				continue
+			}
+			writeDeadline := now.Add(wireGuardProxyDialTimeout)
+			if pendingNewer > 0 && !packet.queuedAt.IsZero() {
+				freshnessDeadline := packet.queuedAt.Add(wireGuardUDPProxyMaxQueueDelay)
+				if freshnessDeadline.Before(writeDeadline) {
+					writeDeadline = freshnessDeadline
+				}
+			}
+			_ = session.conn.SetWriteDeadline(writeDeadline)
+			if _, err := session.conn.Write(packet.payload); err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() && pendingNewer > 0 {
+					continue
+				}
 				session.close()
 				return
 			}
@@ -695,7 +743,7 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 		}
 		proxy.sessionsMu.Unlock()
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-outbound-queue:"+proxy.key, agentReportLogInterval) {
-			logf("wireguard udp outbound queue full tunnel=%d peer=%s; dropping packet", runtime.spec.TunnelID, proxy.peerID)
+			logf("wireguard udp outbound queue congested tunnel=%d peer=%s; dropping oldest packet", runtime.spec.TunnelID, proxy.peerID)
 		}
 	}
 }
@@ -785,7 +833,7 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 		}
 		proxy.sessionsMu.Unlock()
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-inbound-queue:"+proxy.key, agentReportLogInterval) {
-			logf("wireguard udp inbound queue full tunnel=%d port=%d; dropping packet", runtime.spec.TunnelID, proxy.backendUDP)
+			logf("wireguard udp inbound queue congested tunnel=%d port=%d; dropping oldest packet", runtime.spec.TunnelID, proxy.backendUDP)
 		}
 	}
 }
@@ -962,33 +1010,68 @@ func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
 	return spec, nil
 }
 
+type wireGuardProbeStatus uint8
+
+const (
+	wireGuardProbeSuccess wireGuardProbeStatus = iota
+	wireGuardProbeTimeout
+	wireGuardProbeNotReady
+)
+
+type wireGuardProbeDialFunc func(context.Context, *wireGuardRuntime, string, int) (net.Conn, error)
+
 func wireGuardTCPLatency(tunnelID int, peerID string, port int, timeout time.Duration) (int, bool) {
+	latency, status := wireGuardTCPLatencyDetailed(tunnelID, peerID, port, timeout)
+	return latency, status == wireGuardProbeSuccess
+}
+
+func wireGuardTCPLatencyDetailed(tunnelID int, peerID string, port int, timeout time.Duration) (int, wireGuardProbeStatus) {
+	return wireGuardTCPLatencyWithDial(
+		tunnelID,
+		peerID,
+		port,
+		timeout,
+		func(ctx context.Context, runtime *wireGuardRuntime, peerID string, port int) (net.Conn, error) {
+			return runtime.dialPeerTCP(ctx, peerID, port)
+		},
+	)
+}
+
+func wireGuardTCPLatencyWithDial(tunnelID int, peerID string, port int, timeout time.Duration, dial wireGuardProbeDialFunc) (int, wireGuardProbeStatus) {
 	peerID = strings.TrimSpace(peerID)
-	if tunnelID <= 0 || peerID == "" || port <= 0 || port > 65535 {
-		return 0, false
+	if tunnelID <= 0 || peerID == "" {
+		return 0, wireGuardProbeNotReady
+	}
+	if port <= 0 || port > 65535 || dial == nil {
+		return 0, wireGuardProbeTimeout
 	}
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	sawReadyPeer := false
 	for {
 		runtime, err := waitForWireGuardProbePeer(ctx, tunnelID, peerID)
 		if err != nil {
-			return 0, false
+			if !sawReadyPeer {
+				return 0, wireGuardProbeNotReady
+			}
+			return 0, wireGuardProbeTimeout
 		}
+		sawReadyPeer = true
 		started := time.Now()
-		connection, err := runtime.dialPeerTCP(ctx, peerID, port)
+		connection, err := dial(ctx, runtime, peerID, port)
 		if err == nil {
 			_ = connection.Close()
 			latency := int(time.Since(started).Milliseconds())
 			if latency < 1 {
 				latency = 1
 			}
-			return latency, true
+			return latency, wireGuardProbeSuccess
 		}
 		if !waitForWireGuardProbeRetry(ctx) {
-			return 0, false
+			return 0, wireGuardProbeTimeout
 		}
 	}
 }

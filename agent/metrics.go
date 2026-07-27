@@ -938,7 +938,7 @@ func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) ti
 	return next
 }
 
-func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
+func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool, startActionEpoch uint64, startedWithActionsPending bool) {
 	ruleTasks := []tcpingTask{}
 	for _, state := range readLocalRuleStates() {
 		if task, ok := buildRuleLatencyProbeTask(state); ok {
@@ -1031,6 +1031,14 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	}
 
 	results, tunnels, forwardGroups, services := runTCPingTasks(selected)
+	results, tunnels, forwardGroups, services = filterRuntimeProbeResultsAfterActions(
+		startActionEpoch,
+		startedWithActionsPending,
+		results,
+		tunnels,
+		forwardGroups,
+		services,
+	)
 	reportPlan := agentTCPingReportGate.plan(results, tunnels, forwardGroups, services, force, time.Now())
 	results = reportPlan.results
 	tunnels = reportPlan.tunnels
@@ -1054,6 +1062,26 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 			}
 		}
 	}
+}
+
+func filterRuntimeProbeResultsAfterActions(startActionEpoch uint64, startedWithActionsPending bool, results, tunnels, forwardGroups, services []map[string]any) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
+	endActionEpoch := runtimeActionEpoch.Load()
+	pending := atomic.LoadInt64(&actionPendingCount)
+	if !startedWithActionsPending && pending == 0 && endActionEpoch == startActionEpoch {
+		return results, tunnels, forwardGroups, services
+	}
+	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 {
+		logVerbosef(
+			"tcping runtime results discarded after action change epoch=%d->%d pending=%d rules=%d tunnels=%d groups=%d",
+			startActionEpoch,
+			endActionEpoch,
+			pending,
+			len(results),
+			len(tunnels),
+			len(forwardGroups),
+		)
+	}
+	return nil, nil, nil, services
 }
 
 func buildTunnelProbeTasks(probes []tunnelProbe) []tcpingTask {
@@ -1138,7 +1166,9 @@ func buildExplicitRuleLatencyProbeTask(probe ruleLatencyProbe) (tcpingTask, bool
 }
 
 func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
-	if atomic.LoadInt64(&actionPendingCount) > 0 && (len(ruleProbes) > 0 || len(probes) > 0 || len(groupProbes) > 0) {
+	startActionEpoch := runtimeActionEpoch.Load()
+	startedWithActionsPending := atomic.LoadInt64(&actionPendingCount) > 0
+	if startedWithActionsPending && (len(ruleProbes) > 0 || len(probes) > 0 || len(groupProbes) > 0) {
 		logVerbosef("tcping collect deferred while runtime actions are pending=%d", atomic.LoadInt64(&actionPendingCount))
 		return false
 	}
@@ -1153,7 +1183,7 @@ func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes 
 	go func() {
 		started := time.Now()
 		defer atomic.StoreInt32(&tcpingCollectRunning, 0)
-		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force)
+		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force, startActionEpoch, startedWithActionsPending)
 		if elapsed := time.Since(started); elapsed >= 5*time.Second && shouldLogAgentReport("tcping-collect-slow-async", 5*time.Minute) {
 			logf("tcping collect slow duration=%s ruleProbes=%d tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(ruleProbesCopy), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
 		}
@@ -1362,12 +1392,23 @@ func tcpingTaskConcurrency(taskCount int) int {
 }
 
 func executeTCPingTask(task tcpingTask) tcpingTaskResult {
+	return executeTCPingTaskWithWireGuardProbe(task, wireGuardTCPLatencyDetailed)
+}
+
+func executeTCPingTaskWithWireGuardProbe(task tcpingTask, wireGuardProbe func(int, string, int, time.Duration) (int, wireGuardProbeStatus)) tcpingTaskResult {
 	var latency int
 	var reachable bool
 	if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
-		latency, reachable = wireGuardTCPLatency(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingWireGuardTimeout)
+		status := wireGuardProbeTimeout
+		if wireGuardProbe != nil {
+			latency, status = wireGuardProbe(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingWireGuardTimeout)
+		}
+		if status == wireGuardProbeNotReady {
+			return tcpingTaskResult{}
+		}
+		reachable = status == wireGuardProbeSuccess
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
 	}
