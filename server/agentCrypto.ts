@@ -13,10 +13,13 @@
  *   mac     = HMAC-SHA256(key_mac, "v1" || iv || ct || ts_bytes_8)
  *   信封    = { v:1, iv:<hex>, ct:<hex>, mac:<hex>, ts:<unix_ms> }
  *
- *   防重放：服务器对比 ts，超过 ±5 分钟拒绝
- *   关联消息：HMAC 把 iv/ct/ts 都覆盖，篡改任一字段即失败
+ *   防重放：v1 对比校准后的 ts；v2 使用面板签发且一次性消费的挑战
+ *   关联消息：HMAC 把 iv/ct/ts 都覆盖，认证证明同时绑定方法、路径和完整信封
  */
 import crypto from "crypto";
+import { performance } from "node:perf_hooks";
+import { panelCryptoNowMs } from "./panelClock";
+import { consumeAgentAuthChallenge, validateAgentAuthChallenge } from "./agentAuthChallenge";
 
 const KEY_SALT_ENC = "forwardx-agent-v1";
 const KEY_SALT_MAC = "forwardx-agent-mac";
@@ -25,6 +28,7 @@ const KEY_SALT_AUTH_ID = "forwardx-agent-auth-id";
 const IV_LEN = 16;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 const REPLAY_CACHE_CLEANUP_INTERVAL_MS = 10 * 1000;
+const REPLAY_CACHE_TTL_MS = 2 * REPLAY_WINDOW_MS + REPLAY_CACHE_CLEANUP_INTERVAL_MS;
 const DERIVED_KEY_CACHE_LIMIT = 4096;
 const seenEnvelopeMacs = new Map<string, number>();
 const seenAuthProofs = new Map<string, number>();
@@ -95,13 +99,12 @@ function cleanupReplayCache(cache: Map<string, number>, now: number) {
   }
 }
 
-function rememberOnce(cache: Map<string, number>, key: string, errorMessage: string) {
-  const now = Date.now();
+function rememberOnce(cache: Map<string, number>, key: string, errorMessage: string, now = performance.now()) {
   const existingExpiry = cache.get(key) || 0;
   if (existingExpiry > now) throw new Error(errorMessage);
   if (existingExpiry > 0) cache.delete(key);
   cleanupReplayCache(cache, now);
-  cache.set(key, now + REPLAY_WINDOW_MS);
+  cache.set(key, now + REPLAY_CACHE_TTL_MS);
 }
 
 export function getAgentCryptoCacheStats() {
@@ -153,18 +156,29 @@ export function signAgentAuthProof(input: {
 
 export function parseAgentAuthProof(raw: string | undefined | null) {
   const value = String(raw || "").trim();
-  const match = /^v1\.([a-f0-9]{32})\.(\d{10,})\.([a-f0-9]{16,64})\.([a-f0-9]{64})$/i.exec(value);
-  if (!match) return null;
+  const legacyMatch = /^v1\.([a-f0-9]{32})\.(\d{10,})\.([a-f0-9]{16,64})\.([a-f0-9]{64})$/i.exec(value);
+  if (legacyMatch) {
+    return {
+      version: "v1" as const,
+      fingerprint: legacyMatch[1].toLowerCase(),
+      ts: Number(legacyMatch[2]),
+      nonce: legacyMatch[3].toLowerCase(),
+      sig: legacyMatch[4].toLowerCase(),
+    };
+  }
+  const challengeMatch = /^v2\.([a-f0-9]{32})\.([A-Za-z0-9_-]{80,100})\.([a-f0-9]{16,64})\.([a-f0-9]{64})$/.exec(value);
+  if (!challengeMatch) return null;
   return {
-    fingerprint: match[1].toLowerCase(),
-    ts: Number(match[2]),
-    nonce: match[3].toLowerCase(),
-    sig: match[4].toLowerCase(),
+    version: "v2" as const,
+    fingerprint: challengeMatch[1].toLowerCase(),
+    challenge: challengeMatch[2],
+    nonce: challengeMatch[3].toLowerCase(),
+    sig: challengeMatch[4].toLowerCase(),
   };
 }
 
-export function rememberEncryptedEnvelope(envelope: EncryptedEnvelope) {
-  rememberOnce(seenEnvelopeMacs, envelope.mac, "Encrypted request replay detected");
+export function rememberEncryptedEnvelope(envelope: EncryptedEnvelope, nowMs?: number) {
+  rememberOnce(seenEnvelopeMacs, envelope.mac, "Encrypted request replay detected", nowMs);
 }
 
 export function verifyAgentAuthProof(input: {
@@ -174,23 +188,70 @@ export function verifyAgentAuthProof(input: {
   path: string;
   bodyText?: string;
 }): string | null {
+  return verifyAgentAuthProofDetails(input)?.token || null;
+}
+
+function challengeAuthInput(method: string, path: string, bodyText: string, challenge: string, nonce: string): string {
+  const bodyHash = crypto.createHash("sha256").update(bodyText || "", "utf8").digest("hex");
+  return ["v2", method.toUpperCase(), path, challenge, nonce, bodyHash].join("\n");
+}
+
+export function signAgentChallengeAuthProof(input: {
+  token: string;
+  method: string;
+  path: string;
+  bodyText?: string;
+  challenge: string;
+  nonce: string;
+}) {
+  return crypto
+    .createHmac("sha256", deriveAuthKey(input.token))
+    .update(challengeAuthInput(input.method, input.path, input.bodyText || "", input.challenge, input.nonce))
+    .digest("hex");
+}
+
+export function verifyAgentAuthProofDetails(input: {
+  raw: string;
+  candidateTokens: string[];
+  method: string;
+  path: string;
+  bodyText?: string;
+  nowMs?: number;
+}): { token: string; version: "v1" | "v2" } | null {
   const proof = parseAgentAuthProof(input.raw);
-  if (!proof || !Number.isFinite(proof.ts)) return null;
-  if (Math.abs(Date.now() - proof.ts) > REPLAY_WINDOW_MS) return null;
+  if (!proof) return null;
+  const nowMs = input.nowMs ?? panelCryptoNowMs();
+  if (proof.version === "v1" && (!Number.isFinite(proof.ts) || Math.abs(nowMs - proof.ts) > REPLAY_WINDOW_MS)) {
+    return null;
+  }
+  if (proof.version === "v2" && !validateAgentAuthChallenge(proof.challenge)) return null;
 
   const token = input.candidateTokens.find((item) => agentTokenFingerprint(item) === proof.fingerprint);
   if (!token) return null;
-  const expected = signAgentAuthProof({
-    token,
-    method: input.method,
-    path: input.path,
-    bodyText: input.bodyText || "",
-    ts: proof.ts,
-    nonce: proof.nonce,
-  });
+  const expected = proof.version === "v1"
+    ? signAgentAuthProof({
+      token,
+      method: input.method,
+      path: input.path,
+      bodyText: input.bodyText || "",
+      ts: proof.ts,
+      nonce: proof.nonce,
+    })
+    : signAgentChallengeAuthProof({
+      token,
+      method: input.method,
+      path: input.path,
+      bodyText: input.bodyText || "",
+      challenge: proof.challenge,
+      nonce: proof.nonce,
+    });
   if (!timingSafeEqualHex(expected, proof.sig)) return null;
-  rememberOnce(seenAuthProofs, `${proof.fingerprint}:${proof.ts}:${proof.nonce}:${proof.sig}`, "Agent auth replay detected");
-  return token;
+  if (proof.version === "v2") {
+    if (!consumeAgentAuthChallenge(proof.challenge)) return null;
+  } else {
+    rememberOnce(seenAuthProofs, `${proof.fingerprint}:${proof.ts}:${proof.nonce}:${proof.sig}`, "Agent auth replay detected");
+  }
+  return { token, version: proof.version };
 }
 
 function macInput(iv: Buffer, ct: Buffer, ts: number): Buffer {
@@ -201,14 +262,14 @@ function macInput(iv: Buffer, ct: Buffer, ts: number): Buffer {
 }
 
 /** 加密一段 JSON 可序列化数据 */
-export function encryptPayload(payload: any, token: string): EncryptedEnvelope {
+export function encryptPayload(payload: any, token: string, options: { timestampMs?: number } = {}): EncryptedEnvelope {
   const keyEnc = deriveEncKey(token);
   const keyMac = deriveMacKey(token);
   const iv = crypto.randomBytes(IV_LEN);
   const cipher = crypto.createCipheriv("aes-256-ctr", keyEnc, iv);
   const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
   const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const ts = Date.now();
+  const ts = options.timestampMs ?? panelCryptoNowMs();
   const mac = crypto.createHmac("sha256", keyMac).update(macInput(iv, ct, ts)).digest();
   return {
     v: 1,
@@ -220,7 +281,11 @@ export function encryptPayload(payload: any, token: string): EncryptedEnvelope {
 }
 
 /** 解密信封；解密失败抛错 */
-export function decryptPayload(envelope: EncryptedEnvelope, token: string, options: { rememberReplay?: boolean } = {}): any {
+export function decryptPayload(
+  envelope: EncryptedEnvelope,
+  token: string,
+  options: { rememberReplay?: boolean; validateTimestamp?: boolean; nowMs?: number } = {},
+): any {
   const keyEnc = deriveEncKey(token);
   const keyMac = deriveMacKey(token);
   const iv = Buffer.from(envelope.iv, "hex");
@@ -228,7 +293,8 @@ export function decryptPayload(envelope: EncryptedEnvelope, token: string, optio
   const macReceived = Buffer.from(envelope.mac, "hex");
   if (iv.length !== IV_LEN) throw new Error("Invalid IV length");
 
-  if (Math.abs(Date.now() - envelope.ts) > REPLAY_WINDOW_MS) {
+  const nowMs = options.nowMs ?? panelCryptoNowMs();
+  if (options.validateTimestamp !== false && Math.abs(nowMs - envelope.ts) > REPLAY_WINDOW_MS) {
     throw new Error("Request timestamp out of window (replay protection)");
   }
 
@@ -245,13 +311,17 @@ export function decryptPayload(envelope: EncryptedEnvelope, token: string, optio
   return JSON.parse(plaintext.toString("utf8"));
 }
 
-export function decryptPayloadWithCandidates(envelope: EncryptedEnvelope, tokens: string[]) {
+export function decryptPayloadWithCandidates(
+  envelope: EncryptedEnvelope,
+  tokens: string[],
+  options: { validateTimestamp?: boolean; nowMs?: number } = {},
+) {
   let lastError: Error | null = null;
   for (const token of tokens) {
     try {
       return {
         token,
-        payload: decryptPayload(envelope, token, { rememberReplay: false }),
+        payload: decryptPayload(envelope, token, { ...options, rememberReplay: false }),
       };
     } catch (error: any) {
       lastError = error instanceof Error ? error : new Error(String(error));

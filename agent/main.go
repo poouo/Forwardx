@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.176"
+var Version = "2.2.177"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -3389,14 +3389,45 @@ func mapBool(ok bool, yes string, no string) string {
 	return no
 }
 
+var syncSystemTimeForAgentEventStreamError = syncSystemTimeForCommError
+var syncSystemTimeForAgentRequestError = syncSystemTimeForCommError
+
+func prepareAgentEventStreamRetry(cfg Config, err error) bool {
+	if agentRequestResponseAuthenticated(err) {
+		return false
+	}
+	attempt, hasAttempt := agentRequestAttemptFromError(err)
+	if agentRequestAuthRejected(err) && hasAttempt && attempt.auth.version == "v2" {
+		return true
+	}
+	if !isClockSyncCandidateError(err) {
+		return false
+	}
+	if hasAttempt {
+		if attempt.auth.version == "v2" {
+			return false
+		}
+		if !attempt.auth.challengeKnownAtStart && agentAuthChallengeV2Known(currentPanelURL(cfg)) {
+			return true
+		}
+	}
+	return syncSystemTimeForAgentEventStreamError(err)
+}
+
 func agentEventStream(cfg Config) {
 	delay := agentEventStreamReconnectMinDelay
 	for {
 		startedAt := time.Now()
 		if err := runAgentEventStream(cfg); err != nil {
 			logAgentCommError("event-stream", err)
-			syncSystemTimeForCommError(err)
+			challengeAuthKnown := prepareAgentEventStreamRetry(cfg, err)
+			if challengeAuthKnown {
+				delay = agentEventStreamReconnectMinDelay
+			}
 			time.Sleep(delay)
+			if challengeAuthKnown {
+				continue
+			}
 			if time.Since(startedAt) >= agentEventStreamStableResetInterval {
 				delay = agentEventStreamReconnectMinDelay
 			} else {
@@ -3422,22 +3453,35 @@ func runAgentEventStream(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	authProof, err := newAgentAuthProof(cfg.Token, req.Method, req.URL.Path, nil)
+	auth, err := newAgentRequestAuthWithBodies(
+		req.Context(), agentEventHTTPClient, panelURL, cfg.Token, req.Method, req.URL.Path, nil, query,
+	)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Authorization", "Bearer "+authProof)
+	req.Header.Set("Authorization", "Bearer "+auth.proof)
 
 	resp, err := agentEventHTTPClient.Do(req)
 	if err != nil {
-		return err
+		return wrapAgentRequestAttemptError(err, auth, "", false)
 	}
 	defer resp.Body.Close()
+	observeAgentAuthCapability(panelURL, resp.Header.Get(agentAuthCapabilityHeader))
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		authResult := resp.Header.Get(agentAuthResultHeader)
+		responseAuthenticated := strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultAccepted)
+		if auth.version == "v2" && !responseAuthenticated && strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultRejected) {
+			invalidateAgentAuthChallenges(panelURL, auth.challengeGeneration)
+		}
+		return wrapAgentRequestAttemptError(
+			fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body))),
+			auth,
+			authResult,
+			responseAuthenticated,
+		)
 	}
 	agentEventStreamConnected.Store(true)
 	recordPanelMigrationStreamConnection(true)
@@ -9132,13 +9176,38 @@ func postToPanelURL(cfg Config, panelURL string, path string, payload any, out a
 }
 
 func postWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
-	err := postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
-	if err == nil {
-		return nil
-	}
-	if syncSystemTimeForCommError(err) {
-		logf("retrying agent request after time sync path=%s", path)
-		return postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
+	negotiationRetryUsed := false
+	rejectionRetryUsed := false
+	clockRetryUsed := false
+	var err error
+	for requestNumber := 0; requestNumber < 4; requestNumber++ {
+		err = postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
+		if err == nil {
+			return nil
+		}
+		if agentRequestResponseAuthenticated(err) {
+			return err
+		}
+		attempt, hasAttempt := agentRequestAttemptFromError(err)
+		if agentRequestAuthRejected(err) && hasAttempt && attempt.auth.version == "v2" && !rejectionRetryUsed {
+			rejectionRetryUsed = true
+			logf("retrying agent request after challenge rejection path=%s", path)
+			continue
+		}
+		if !isClockSyncCandidateError(err) || (hasAttempt && attempt.auth.version == "v2") {
+			return err
+		}
+		if hasAttempt && !attempt.auth.challengeKnownAtStart && agentAuthChallengeV2Known(panelURL) && !negotiationRetryUsed {
+			negotiationRetryUsed = true
+			logf("retrying agent request with challenge auth path=%s", path)
+			continue
+		}
+		if !clockRetryUsed && syncSystemTimeForAgentRequestError(err) {
+			clockRetryUsed = true
+			logf("retrying agent request after time sync path=%s", path)
+			continue
+		}
+		return err
 	}
 	return err
 }
@@ -9169,12 +9238,12 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 	if err != nil {
 		return err
 	}
-	authProof, err := newAgentAuthProof(cfg.Token, req.Method, req.URL.Path, body)
+	auth, err := newAgentRequestAuth(req.Context(), client, panelURL, cfg.Token, req.Method, req.URL.Path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authProof)
+	req.Header.Set("Authorization", "Bearer "+auth.proof)
 	res, err := client.Do(req)
 	if err != nil {
 		if isTransientAgentCommError(err) {
@@ -9182,19 +9251,26 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 		} else if shouldLogAgentReport("post-error:"+path, agentReportLogInterval) {
 			logf("agent request failed path=%s duration=%s error=%v", path, time.Since(startedAt).Round(time.Millisecond), err)
 		}
-		return err
+		return wrapAgentRequestAttemptError(err, auth, "", false)
 	}
 	defer res.Body.Close()
+	observeAgentAuthCapability(panelURL, res.Header.Get(agentAuthCapabilityHeader))
+	authResult := res.Header.Get(agentAuthResultHeader)
 	resBody, _ := io.ReadAll(res.Body)
 	decodedBody := resBody
 	var respEnv envelope
 	var decryptErr error
+	responseAuthenticated := strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultAccepted)
 	if err := json.Unmarshal(resBody, &respEnv); err == nil && respEnv.V == 1 {
 		if plain, err := decrypt(respEnv, cfg.Token); err == nil {
 			decodedBody = plain
+			responseAuthenticated = true
 		} else {
 			decryptErr = err
 		}
+	}
+	if auth.version == "v2" && !responseAuthenticated && strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultRejected) {
+		invalidateAgentAuthChallenges(panelURL, auth.challengeGeneration)
 	}
 	if res.StatusCode >= 300 {
 		var migrated struct {
@@ -9207,19 +9283,25 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 				panelURL = strings.TrimSpace(migrated.AgentUpgrade.PanelURL)
 			}
 			if panelURL != "" {
-				return migratedPanelError{PanelURL: panelURL}
+				return wrapAgentRequestAttemptError(migratedPanelError{PanelURL: panelURL}, auth, authResult, responseAuthenticated)
 			}
 		}
 		if decryptErr != nil {
-			return agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: decryptErr.Error()}
+			return wrapAgentRequestAttemptError(
+				agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: decryptErr.Error()},
+				auth, authResult, responseAuthenticated,
+			)
 		}
-		return agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: formatPanelErrorBody(decodedBody)}
+		return wrapAgentRequestAttemptError(
+			agentHTTPStatusError{StatusCode: res.StatusCode, Status: res.Status, Detail: formatPanelErrorBody(decodedBody)},
+			auth, authResult, responseAuthenticated,
+		)
 	}
 	if decryptErr != nil {
-		return decryptErr
+		return wrapAgentRequestAttemptError(decryptErr, auth, authResult, responseAuthenticated)
 	}
 	if err := json.Unmarshal(decodedBody, out); err != nil {
-		return err
+		return wrapAgentRequestAttemptError(err, auth, authResult, responseAuthenticated)
 	}
 	if elapsed := time.Since(startedAt); elapsed >= agentSlowRequestThreshold && shouldLogAgentReport("post-slow:"+path, agentReportLogInterval) {
 		logf("agent request slow path=%s duration=%s status=%d", path, elapsed.Round(time.Millisecond), res.StatusCode)
@@ -9319,6 +9401,9 @@ func isTransientAgentCommError(err error) bool {
 
 func isClockSyncCandidateError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if agentRequestResponseAuthenticated(err) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())

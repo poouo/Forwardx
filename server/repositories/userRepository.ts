@@ -22,7 +22,16 @@ export async function getUserByUsername(username: string) {
   const db = await getDb();
   if (!db) return undefined;
   const r = await db.select().from(users).where(eq(users.username, username)).limit(1);
-  return r[0];
+  if (r[0]) return r[0];
+
+  const normalized = username.trim().toLowerCase();
+  if (!normalized.includes("@")) return undefined;
+  const matches = await db
+    .select()
+    .from(users)
+    .where(sql`LOWER(${users.username}) = ${normalized} OR LOWER(${users.email}) = ${normalized}`)
+    .limit(2);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export async function getUserById(id: number) {

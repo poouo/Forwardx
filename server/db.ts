@@ -336,13 +336,14 @@ export async function createInitialAdmin(input: { email: string; password: strin
   const db = await getDb();
   if (!db) throw new Error("Database is not configured");
   if (await hasAdminUser()) throw new Error("管理员账户已存在，请直接登录");
+  const email = input.email.trim().toLowerCase();
 
   const id = await insertAndGetId("users", {
-    username: input.email,
+    username: email,
     password: hashPassword(input.password),
-    name: input.name?.trim() || input.email,
-    email: input.email,
-    avatar: randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`)),
+    name: input.name?.trim() || email,
+    email,
+    avatar: randomAvataaarsValue(String(`admin-${email}-${Date.now()}`)),
     role: "admin",
     accountEnabled: true,
     canAddRules: true,
@@ -357,15 +358,16 @@ export async function createInitialAdmin(input: { email: string; password: strin
 export async function updateInitialAdmin(input: { email: string; password?: string; name?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not configured");
-  const admin = (await db.select().from(users).where(eq(users.role, "admin")).limit(1))[0];
+  const admin = (await db.select().from(users).where(eq(users.role, "admin")).orderBy(users.id).limit(1))[0];
   if (!admin) throw new Error("管理员账户不存在");
+  const email = input.email.trim().toLowerCase();
   const payload: Record<string, unknown> = {
-    username: input.email,
-    email: input.email,
-    name: input.name?.trim() || input.email,
+    username: email,
+    email,
+    name: input.name?.trim() || email,
     avatar: (admin as any).avatar?.startsWith?.("preset:")
-      ? randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`))
-      : (admin as any).avatar || randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`)),
+      ? randomAvataaarsValue(String(`admin-${email}-${Date.now()}`))
+      : (admin as any).avatar || randomAvataaarsValue(String(`admin-${email}-${Date.now()}`)),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

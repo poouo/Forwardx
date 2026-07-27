@@ -17,7 +17,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -109,7 +108,7 @@ const (
 	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.107"
+	fxpRuntimeVersion    = "2.2.108"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -2237,25 +2236,25 @@ func reportProtocolBlock(cfg config, proto string) {
 		return
 	}
 	body, _ := json.Marshal(env)
-	req, err := http.NewRequest("POST", strings.TrimRight(cfg.PanelURL, "/")+"/api/agent/protocol-block", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("protocol block request failed: %v", err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-Encrypted", "1")
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := postFXPEncryptedPanelRequest(
+		trafficHTTPClient,
+		cfg.PanelURL,
+		cfg.Token,
+		"/api/agent/protocol-block",
+		body,
+	)
 	if err != nil {
 		log.Printf("protocol block report failed: %v", err)
 		return
 	}
-	_ = resp.Body.Close()
 	log.Printf("protocol block reported rule=%d tunnel=%d protocol=%s status=%s", cfg.RuleID, cfg.TunnelID, proto, resp.Status)
 }
 
 func encryptEnvelope(payload any, token string) (envelope, error) {
+	return encryptEnvelopeAt(payload, token, time.Now().UnixMilli())
+}
+
+func encryptEnvelopeAt(payload any, token string, timestamp int64) (envelope, error) {
 	plain, _ := json.Marshal(payload)
 	keyEnc := sha256.Sum256([]byte(token + "|forwardx-agent-v1"))
 	keyMac := sha256.Sum256([]byte(token + "|forwardx-agent-mac"))
@@ -2269,9 +2268,11 @@ func encryptEnvelope(payload any, token string) (envelope, error) {
 	}
 	ct := make([]byte, len(plain))
 	cipher.NewCTR(block, iv).XORKeyStream(ct, plain)
-	ts := time.Now().UnixMilli()
-	mac := calcMAC(keyMac[:], iv, ct, ts)
-	return envelope{V: 1, IV: hex.EncodeToString(iv), CT: hex.EncodeToString(ct), MAC: hex.EncodeToString(mac), TS: ts}, nil
+	mac := calcMAC(keyMac[:], iv, ct, timestamp)
+	return envelope{
+		V: 1, IV: hex.EncodeToString(iv), CT: hex.EncodeToString(ct),
+		MAC: hex.EncodeToString(mac), TS: timestamp,
+	}, nil
 }
 
 func calcMAC(key, iv, ct []byte, ts int64) []byte {

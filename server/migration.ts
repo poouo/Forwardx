@@ -199,6 +199,10 @@ export function getMigrationJob(id: string) {
   return jobs.get(id) || null;
 }
 
+export function hasActivePanelMigration() {
+  return [...jobs.values()].some((job) => job.status === "pending" || job.status === "running");
+}
+
 export const ESSENTIAL_MIGRATION_OMITTED_TABLES = new Set<(typeof MIGRATION_TABLES)[number]>([
   "host_metrics",
   "host_probe_service_stats",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeAgentReportedAddress } from "./agentAddressState";
-import { stableDesiredStateHash } from "./agentHeartbeatRoute";
+import { buildNginxRuntimeRetirementPlan, stableDesiredStateHash } from "./agentHeartbeatRoute";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
 import { HOST_ONLINE_TTL_MS } from "./repositories/hostRepository";
 import {
@@ -24,6 +24,27 @@ import {
   shouldPersistAgentPresence,
   shouldDeferAgentWorkForLocalState,
 } from "./agentHeartbeatGate";
+
+test("retires stale ForwardX Nginx state without requiring or reinstalling Nginx", () => {
+  const plan = buildNginxRuntimeRetirementPlan();
+  const commands = plan.commands.join("\n");
+
+  assert.deepEqual(plan.preCommands, []);
+  assert.deepEqual(plan.managedConfigs, []);
+  assert.equal(plan.commands.length, 3);
+  assert.match(commands, /systemctl disable 'forwardx-nginx'\.service/);
+  assert.match(commands, /rm -f "\$systemd_unit"/);
+  assert.match(commands, /\[\/]usr\/local\/bin\/forwardx-nginx\.\*\[\/]etc\/forwardx\/nginx\/nginx\[\.\]conf/);
+  assert.match(commands, /kill -KILL/);
+  assert.match(commands, /'\/etc\/forwardx\/nginx\/nginx\.conf\.forwardx-last-good'/);
+  assert.match(commands, /\.crt\.forwardx-last-good/);
+  assert.match(commands, /config cleanup failed/);
+  assert.doesNotMatch(commands, /\/usr\/sbin\/nginx|install -m 0755|chmod 0755/);
+  assert.match(
+    plan.commands[1],
+    /managed process cleanup failed"; exit 1; fi; rm -f '\/etc\/forwardx\/nginx\/nginx\.conf'/,
+  );
+});
 
 test("traffic reports use the steady window unless live metrics or strict accounting require it", () => {
   assert.equal(selectAgentTrafficReportInterval({ metricsWatching: false, strictAccounting: false }), 30);

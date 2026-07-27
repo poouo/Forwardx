@@ -874,14 +874,17 @@ export default function Login() {
                 </button>
               )}
               <div className="space-y-2">
-                <Label htmlFor="username">用户名</Label>
+                <Label htmlFor="username">用户名或邮箱</Label>
                 <Input
                   id="username"
                   type="text"
-                  placeholder="请输入用户名"
+                  placeholder="请输入用户名或邮箱"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   autoFocus={!mobileAuth.isNative || hasMobilePanelUrl}
                   disabled={isPending}
                 />

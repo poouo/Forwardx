@@ -16,6 +16,7 @@ import { initDatabase } from "./db";
 import { installPanelLogger } from "./_core/panelLogger";
 import { loadPanelSslRuntimeConfig } from "./panelSsl";
 import { startBackgroundServices } from "./backgroundServices";
+import { initializePanelClock } from "./panelClock";
 
 installPanelLogger();
 
@@ -89,6 +90,7 @@ function installSecurityHeaders(app: express.Express) {
 }
 
 async function startServer() {
+  await initializePanelClock();
   const databaseStatus = await initDatabase();
 
   const app = express();

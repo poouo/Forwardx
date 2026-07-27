@@ -10,7 +10,16 @@ import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncrypti
 import { AGENT_PANEL_MIGRATION_VERSION, hasAgentVersionChanged, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
-import { getAgentHostFromRequest, resolveAgentTokenFromAuthorization } from "./agentAuth";
+import {
+  AGENT_AUTH_RESULT_ACCEPTED,
+  AGENT_AUTH_RESULT_HEADER,
+  AGENT_AUTH_RESULT_REJECTED,
+  getAgentHostFromRequest,
+  hasClocklessAgentAuth,
+  hasSignedAgentAuthAttempt,
+  hasVerifiedAgentAuthProof,
+  resolveAgentTokenFromAuthorization,
+} from "./agentAuth";
 import { normalizeAgentText } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
@@ -22,6 +31,8 @@ import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifi
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 import { getMigratedToPanelUrl, getPanelMigrationAgentDirective } from "./panelMigrationAgentState";
 import { recordAuthenticatedAgentActivity } from "./agentActivity";
+import { issueAgentAuthChallenges } from "./agentAuthChallenge";
+import { panelCryptoNowMs } from "./panelClock";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -40,6 +51,16 @@ const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 
+agentRouter.use((req, res, next) => {
+  res.setHeader("X-ForwardX-Agent-Auth", "challenge-v2");
+  next();
+});
+
+agentRouter.get("/api/agent/auth-challenge", (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ v: 2, challenges: issueAgentAuthChallenges(req.query.count) });
+});
+
 const AGENT_STREAM_AUTH_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const agentStreamAuthLogCache = new Map<string, number>();
 
@@ -49,7 +70,7 @@ function agentErrorMessage(error: unknown) {
 
 function isAgentStreamAuthFailure(error: unknown, message = agentErrorMessage(error)) {
   if (error instanceof SyntaxError) return true;
-  return /mac verification failed|request timestamp out of window|encrypted request replay detected|no token candidates available|invalid iv length/i.test(message);
+  return /invalid agent auth proof|mac verification failed|request timestamp out of window|encrypted request replay detected|no token candidates available|invalid iv length/i.test(message);
 }
 
 function shouldLogAgentStreamAuthFailure(message: string) {
@@ -225,29 +246,40 @@ agentApiRouter.use(rejectAgentWhenPanelMigrated);
 
 agentRouter.get("/api/stream", async (req: Request, res: Response) => {
   try {
+    const protocolNowMs = panelCryptoNowMs();
     const rawEnvelope = String(req.query.e || "");
     const envelope = rawEnvelope ? JSON.parse(rawEnvelope) : null;
     if (!isEncryptedEnvelope(envelope)) {
+      res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_REJECTED);
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    const proofToken = await resolveAgentTokenFromAuthorization(req);
+    const proofToken = await resolveAgentTokenFromAuthorization(req, "", protocolNowMs, rawEnvelope);
     let token: string;
     let payload: any;
     if (proofToken) {
       token = proofToken;
-      payload = decryptPayload(envelope, token);
+      if (hasVerifiedAgentAuthProof(req)) {
+        res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
+      }
+      payload = decryptPayload(envelope, token, {
+        validateTimestamp: !hasClocklessAgentAuth(req),
+        nowMs: protocolNowMs,
+      });
+    } else if (hasSignedAgentAuthAttempt(req)) {
+      throw new Error("Invalid Agent auth proof");
     } else {
       let resolved;
       try {
-        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates());
+        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates(), { nowMs: protocolNowMs });
       } catch {
-        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates({ force: true }));
+        resolved = decryptPayloadWithCandidates(envelope, await db.getAgentAuthTokenCandidates({ force: true }), { nowMs: protocolNowMs });
       }
       token = resolved.token;
       payload = resolved.payload;
       rememberEncryptedEnvelope(envelope);
     }
+    res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
     await openAgentEventStream({
       req,
       res,
@@ -257,9 +289,19 @@ agentRouter.get("/api/stream", async (req: Request, res: Response) => {
   } catch (error) {
     const message = agentErrorMessage(error);
     if (isAgentStreamAuthFailure(error, message)) {
+      const proofVerified = hasVerifiedAgentAuthProof(req);
       if (shouldLogAgentStreamAuthFailure(message)) {
-        appendPanelLog("warn", "[Agent Stream] rejected encrypted stream request: " + message);
+        appendPanelLog(
+          "warn",
+          proofVerified
+            ? "[Agent Stream] rejected stream envelope after verified Agent proof: " + message
+            : "[Agent Stream] rejected encrypted stream request: " + message,
+        );
       }
+      res.setHeader(
+        AGENT_AUTH_RESULT_HEADER,
+        proofVerified ? AGENT_AUTH_RESULT_ACCEPTED : AGENT_AUTH_RESULT_REJECTED,
+      );
       res.status(401).json({ error: "Unauthorized", message });
       return;
     }
@@ -272,14 +314,16 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
   try {
     let token: string | null = null;
     try {
-      token = await resolveAgentTokenFromAuthorization(req);
+      token = await resolveAgentTokenFromAuthorization(req, "", panelCryptoNowMs());
     } catch {
       token = null;
     }
     if (!token) {
+      res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_REJECTED);
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
+    res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
     await openAgentEventStream({ req, res, token, agentVersion: req.header("X-Agent-Version") });
   } catch (error) {
     console.error("[Agent Events] Error:", error);

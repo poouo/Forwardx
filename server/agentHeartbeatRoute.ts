@@ -836,6 +836,41 @@ function ensureNginxBinaryCmd() {
   return `if [ -e ${nginx} ]; then chmod 0755 ${nginx} 2>/dev/null || true; else for bin in /usr/sbin/nginx /usr/local/nginx/sbin/nginx $(command -v nginx 2>/dev/null || true); do [ -n "$bin" ] || continue; [ -x "$bin" ] || continue; install -m 0755 "$bin" ${nginx} && break; done; fi; [ -x ${nginx} ]`;
 }
 
+export function buildNginxRuntimeRetirementPlan() {
+  const processPattern = "[/]usr/local/bin/forwardx-nginx.*[/]etc/forwardx/nginx/nginx[.]conf";
+  const persistentArtifacts = [
+    NGINX_CONFIG_PATH,
+    `${NGINX_CONFIG_PATH}.sha256`,
+    `${NGINX_CONFIG_PATH}.forwardx-last-good`,
+    `${NGINX_CONFIG_DIR}/modules.conf`,
+    "/run/forwardx-nginx.pid",
+  ];
+  const terminateManagedProcess = [
+    killByPatternCmd(processPattern),
+    `for attempt in 1 2 3; do if ! pgrep -f '${processPattern}' >/dev/null 2>&1; then break; fi; sleep 1; done`,
+    `if pgrep -f '${processPattern}' >/dev/null 2>&1; then for pid in $(pgrep -f '${processPattern}' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill -KILL "$pid" 2>/dev/null || true; done; sleep 1; fi`,
+    `if pgrep -f '${processPattern}' >/dev/null 2>&1; then echo "[service] ${NGINX_SERVICE_NAME} managed process cleanup failed"; exit 1; fi`,
+  ].join("; ");
+  const removePersistentState = [
+    `rm -f ${persistentArtifacts.map(shQuote).join(" ")} 2>/dev/null || true`,
+    `if [ -e ${shQuote(NGINX_CONFIG_PATH)} ]; then echo "[service] ${NGINX_SERVICE_NAME} config cleanup failed"; exit 1; fi`,
+  ].join("; ");
+  const removeManagedCertificates = [
+    `rm -f ${shQuote(NGINX_CERT_DIR)}/*.crt ${shQuote(NGINX_CERT_DIR)}/*.key ${shQuote(NGINX_CERT_DIR)}/*.crt.forwardx-last-good ${shQuote(NGINX_CERT_DIR)}/*.key.forwardx-last-good ${shQuote(NGINX_CERT_DIR)}/.forwardx-config-* ${shQuote(NGINX_CERT_DIR)}/.forwardx-restore-* 2>/dev/null || true`,
+    `rm -f ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-config-* ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-restore-* ${shQuote("/var/log/forwardx-agent/forwardx-nginx-error.log")} 2>/dev/null || true`,
+    `rmdir ${shQuote(NGINX_CERT_DIR)} ${shQuote(NGINX_CONFIG_DIR)} 2>/dev/null || true`,
+  ].join("; ");
+  return {
+    preCommands: [] as string[],
+    managedConfigs: [] as any[],
+    commands: [
+      removeManagedServiceCmd(NGINX_SERVICE_NAME),
+      `${terminateManagedProcess}; ${removePersistentState}`,
+      removeManagedCertificates,
+    ],
+  };
+}
+
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
   try {
@@ -3245,10 +3280,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const reload = `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c ${config} -s reload || { [ -s /run/forwardx-nginx.pid ] && kill -HUP "$(cat /run/forwardx-nginx.pid)" 2>/dev/null; }`;
       return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ -z "$new_hash" ]; then echo "[service] ${NGINX_SERVICE_NAME} config hash failed"; exit 1; fi; if [ "$new_hash" != "$old_hash" ] || ! { ${active}; }; then if { ${active}; }; then ${reload} || { echo "[service] ${NGINX_SERVICE_NAME} reload failed"; exit 1; }; else ${start}; fi; printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${NGINX_SERVICE_NAME} config unchanged"; fi`;
     };
-    const nginxManagedConfigs: any[] = [];
-    const nginxManagedConfigPreCommands: string[] = [];
-    const buildNginxRuntimeSyncCmds = async () => {
+    const buildNginxRuntimeSyncPlan = async () => {
       const startedAt = Date.now();
+      const nginxManagedConfigs: any[] = [];
       const upstreams: string[] = [];
       const servers: string[] = [];
       const certFingerprints: string[] = [];
@@ -3461,12 +3495,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ] : []),
       ].join("\n");
       const encodedConfig = Buffer.from(config, "utf8").toString("base64");
-      const cmds = [
+      const setupCmds = [
         `mkdir -p ${shQuote(NGINX_CONFIG_DIR)} ${shQuote(NGINX_CERT_DIR)} /var/log/forwardx-agent`,
         `modules_conf=${shQuote(`${NGINX_CONFIG_DIR}/modules.conf`)}; : > "$modules_conf"; for mod in /usr/lib/nginx/modules/ngx_stream_module.so /usr/lib64/nginx/modules/ngx_stream_module.so /usr/share/nginx/modules/ngx_stream_module.so modules/ngx_stream_module.so; do if [ -s "$mod" ]; then printf 'load_module %s;\\n' "$mod" > "$modules_conf"; break; fi; done`,
       ];
-      nginxManagedConfigPreCommands.push(...cmds);
-      cmds.length = 0;
+      const cmds: string[] = [];
       if (hasServers) {
         nginxManagedConfigs.push({
           path: NGINX_CONFIG_PATH,
@@ -3498,18 +3531,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           reloadNginxIfConfigChangedCmd(),
         ].filter(Boolean).map((cmd) => `(${cmd})`).join(" && ");
         cmds.push(nginxApplyCmd);
-      } else {
-        cmds.push(stopManagedServiceCmd(NGINX_SERVICE_NAME));
+        cmds.push(...countingCmds);
+        return {
+          preCommands: [ensureNginxBinaryCmd(), ...setupCmds],
+          commands: cmds,
+          managedConfigs: nginxManagedConfigs,
+        };
       }
-      cmds.push(...countingCmds);
-      return cmds;
+      const retirementPlan = buildNginxRuntimeRetirementPlan();
+      return {
+        ...retirementPlan,
+        commands: [...retirementPlan.commands, ...countingCmds],
+      };
     };
-    let nginxRuntimeSyncCmdsPromise: Promise<string[]> | null = null;
-    const getNginxRuntimeSyncCmds = () => {
-      if (!nginxRuntimeSyncCmdsPromise) {
-        nginxRuntimeSyncCmdsPromise = buildNginxRuntimeSyncCmds();
+    let nginxRuntimeSyncPlanPromise: ReturnType<typeof buildNginxRuntimeSyncPlan> | null = null;
+    const getNginxRuntimeSyncPlan = () => {
+      if (!nginxRuntimeSyncPlanPromise) {
+        nginxRuntimeSyncPlanPromise = buildNginxRuntimeSyncPlan();
       }
-      return nginxRuntimeSyncCmdsPromise;
+      return nginxRuntimeSyncPlanPromise;
     };
 
     const buildGostRuntimeSyncCmds = async () => [
@@ -5430,7 +5470,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || nginxModelMayHaveChanged
       || nginxPeriodicReconcileDue
     )) {
-      const nginxRuntimeCommands = await getNginxRuntimeSyncCmds();
+      const nginxRuntimePlan = await getNginxRuntimeSyncPlan();
       const nginxRuntimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,
@@ -5443,9 +5483,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         protocol: "tcp",
         knownRunning: false,
         forceRuntimeSync: true,
-        preCommands: [ensureNginxBinaryCmd(), ...nginxManagedConfigPreCommands],
-        commands: nginxRuntimeCommands,
-        managedConfigs: nginxManagedConfigs,
+        preCommands: nginxRuntimePlan.preCommands,
+        commands: nginxRuntimePlan.commands,
+        managedConfigs: nginxRuntimePlan.managedConfigs,
       } as any;
       const runtimeRepairResendMs = nginxRuntimeServiceUnhealthy
         ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS

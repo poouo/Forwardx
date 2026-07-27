@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -171,20 +170,17 @@ func postTrafficBatch(key trafficBatchKey, pending pendingTrafficBatch) bool {
 		return false
 	}
 	body, _ := json.Marshal(env)
-	req, err := http.NewRequest("POST", key.panelURL+"/api/agent/traffic", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("traffic batch request failed rules=%d: %v", len(stats), err)
-		return false
-	}
-	req.Header.Set("Authorization", "Bearer "+key.token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-Encrypted", "1")
-	resp, err := trafficHTTPClient.Do(req)
+	resp, err := postFXPEncryptedPanelRequest(
+		trafficHTTPClient,
+		key.panelURL,
+		key.token,
+		"/api/agent/traffic",
+		body,
+	)
 	if err != nil {
 		log.Printf("traffic batch report failed rules=%d: %v", len(stats), err)
 		return false
 	}
-	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		log.Printf("traffic batch report status rules=%d status=%s", len(stats), resp.Status)
 		return false

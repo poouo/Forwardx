@@ -18,6 +18,8 @@ http://服务器IP:9810
 
 第一次打开面板时不会直接进入后台，而是进入初始化向导。你需要先选择数据库，再创建管理员账号。
 
+如果安装脚本提示正在复用已有 Docker data volume，这不是全新安装：脚本会保留 `/data/database.json`，原 SQLite 数据库和管理员凭据也会继续生效，应使用原账号登录。SQLite 需要全新初始化时，先运行一键卸载并确认日志明确显示数据卷已删除；仅删除容器或执行 `docker compose down` 不会清空管理员数据。外部 MySQL/PostgreSQL 不会随 Docker 卸载而清空，重新连接同一个外部数据库时仍应使用原管理员账号；全新部署应改用已备份并确认为空的新数据库。
+
 Docker 部署的特点：
 
 - 安装简单。
@@ -267,7 +269,7 @@ pnpm -v
 把 `VERSION` 改成 GitHub Releases 中的最新版本号：
 
 ```bash
-VERSION=v2.3.261
+VERSION=v2.3.262
 APP_DIR=/opt/forwardx-panel
 
 mkdir -p "$APP_DIR"
@@ -344,7 +346,7 @@ http://服务器IP:9810
 升级前建议先备份 `/opt/forwardx-panel/data`。升级时保留 `data` 和 `.env`，只替换程序文件。
 
 ```bash
-VERSION=v2.3.261
+VERSION=v2.3.262
 APP_DIR=/opt/forwardx-panel
 
 systemctl stop forwardx-panel

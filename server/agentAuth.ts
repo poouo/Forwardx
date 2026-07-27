@@ -1,7 +1,11 @@
 import type { Request } from "express";
 import * as db from "./db";
-import { agentTokenFingerprint, parseAgentAuthProof, verifyAgentAuthProof } from "./agentCrypto";
+import { agentTokenFingerprint, parseAgentAuthProof, verifyAgentAuthProofDetails } from "./agentCrypto";
 import { recordAuthenticatedAgentActivity } from "./agentActivity";
+
+export const AGENT_AUTH_RESULT_HEADER = "X-ForwardX-Agent-Auth-Result";
+export const AGENT_AUTH_RESULT_ACCEPTED = "accepted";
+export const AGENT_AUTH_RESULT_REJECTED = "rejected";
 
 let indexedTokens: string[] | null = null;
 let tokenByFingerprint = new Map<string, string>();
@@ -18,6 +22,18 @@ function tokenCandidateForProof(raw: string, tokens: string[]) {
 
 export function getResolvedAgentToken(req: Request): string | undefined {
   return (req as any).agentToken || undefined;
+}
+
+export function hasClocklessAgentAuth(req: Request) {
+  return (req as any).agentAuthVersion === "v2";
+}
+
+export function hasVerifiedAgentAuthProof(req: Request) {
+  return (req as any).agentAuthVersion === "v1" || (req as any).agentAuthVersion === "v2";
+}
+
+export function hasSignedAgentAuthAttempt(req: Request) {
+  return (req as any).agentSignedAuthAttempted === true;
 }
 
 export async function getAgentHostFromRequest(req: Request) {
@@ -46,22 +62,31 @@ export async function getCandidateAgentTokens() {
   return db.getAgentAuthTokenCandidates();
 }
 
-export async function resolveAgentTokenFromAuthorization(req: Request, bodyText = "") {
+export async function resolveAgentTokenFromAuthorization(
+  req: Request,
+  bodyText = "",
+  nowMs?: number,
+  challengeBodyText = bodyText,
+) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   const credential = authHeader.substring(7).trim();
   if (!credential) return null;
-  if (!credential.startsWith("v1.")) return credential;
+  if (!credential.startsWith("v1.") && !credential.startsWith("v2.")) return credential;
+  (req as any).agentSignedAuthAttempted = true;
   const verify = (tokens: string[]) => {
     const candidate = tokenCandidateForProof(credential, tokens);
     if (!candidate) return null;
-    return verifyAgentAuthProof({
+    const verified = verifyAgentAuthProofDetails({
       raw: credential,
       candidateTokens: [candidate],
       method: req.method,
       path: req.path,
-      bodyText,
+      bodyText: credential.startsWith("v2.") ? challengeBodyText : bodyText,
+      nowMs,
     });
+    if (verified) (req as any).agentAuthVersion = verified.version;
+    return verified?.token || null;
   };
   const token = verify(await getCandidateAgentTokens());
   if (token) return token;

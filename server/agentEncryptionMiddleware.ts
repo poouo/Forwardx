@@ -1,7 +1,17 @@
 import { Request, Response, NextFunction } from "express";
 import * as db from "./db";
 import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
-import { getCandidateAgentTokens, resolveAgentTokenFromAuthorization } from "./agentAuth";
+import {
+  AGENT_AUTH_RESULT_ACCEPTED,
+  AGENT_AUTH_RESULT_HEADER,
+  AGENT_AUTH_RESULT_REJECTED,
+  getCandidateAgentTokens,
+  hasClocklessAgentAuth,
+  hasSignedAgentAuthAttempt,
+  hasVerifiedAgentAuthProof,
+  resolveAgentTokenFromAuthorization,
+} from "./agentAuth";
+import { panelCryptoNowMs } from "./panelClock";
 
 export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/register",
@@ -37,6 +47,7 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
   }
 
   if (!isEncryptedEnvelope(req.body)) {
+    res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_REJECTED);
     res.status(401).json({
       error: "Encrypted communication required",
       hint: "Please upgrade your Agent.",
@@ -48,16 +59,25 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
   const isSyncRequest = req.path === "/api/sync";
   let token: string | null = null;
   let payload: any = null;
+  const protocolNowMs = panelCryptoNowMs();
   try {
-    token = await resolveAgentTokenFromAuthorization(req, rawBodyText);
+    token = await resolveAgentTokenFromAuthorization(req, rawBodyText, protocolNowMs);
     if (token) {
-      payload = decryptPayload(req.body, token);
+      if (hasVerifiedAgentAuthProof(req)) {
+        res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
+      }
+      payload = decryptPayload(req.body, token, {
+        validateTimestamp: !hasClocklessAgentAuth(req),
+        nowMs: protocolNowMs,
+      });
+    } else if (hasSignedAgentAuthAttempt(req)) {
+      throw new Error("Invalid Agent auth proof");
     } else {
       let resolved;
       try {
-        resolved = decryptPayloadWithCandidates(req.body, await getCandidateAgentTokens());
+        resolved = decryptPayloadWithCandidates(req.body, await getCandidateAgentTokens(), { nowMs: protocolNowMs });
       } catch {
-        resolved = decryptPayloadWithCandidates(req.body, await db.getAgentAuthTokenCandidates({ force: true }));
+        resolved = decryptPayloadWithCandidates(req.body, await db.getAgentAuthTokenCandidates({ force: true }), { nowMs: protocolNowMs });
       }
       token = resolved.token;
       payload = resolved.payload;
@@ -65,6 +85,10 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
     }
   } catch (err: any) {
     const message = String(err?.message || "Unauthorized");
+    res.setHeader(
+      AGENT_AUTH_RESULT_HEADER,
+      hasVerifiedAgentAuthProof(req) ? AGENT_AUTH_RESULT_ACCEPTED : AGENT_AUTH_RESULT_REJECTED,
+    );
     res.status(401).json({
       error: "Unauthorized",
       message,
@@ -75,11 +99,13 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
     return;
   }
   if (!token) {
+    res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_REJECTED);
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
   try {
+    res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
     req.body = payload;
     (req as any).agentToken = token;
     const tunneledPath = isSyncRequest ? normalizeTunnelPath(req.body?.path) : "";

@@ -11,6 +11,7 @@ REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
 EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
+DATA_VOLUME_REUSE_NOTIFIED="false"
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -168,6 +169,11 @@ read_database_config_json() {
   if [ "$ACTION" != "install" ]; then
     return
   fi
+  if docker volume inspect "$(data_volume_name)" >/dev/null 2>&1; then
+    echo "[WARN] Existing Docker data volume detected; preserving its database configuration and administrator data."
+    echo "[INFO] Database selection is skipped on reinstall. Use the existing administrator account, or fully uninstall and confirm volume deletion before a clean install."
+    return
+  fi
   if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
     echo "[INFO] Non-interactive environment, database can be selected on first panel visit."
     return
@@ -272,10 +278,62 @@ data_volume_name() {
   printf "%s_forwardx-data" "$PROJECT_NAME"
 }
 
+panel_container_ids() {
+  {
+    docker inspect --format '{{.Id}}' "$CONTAINER_NAME" 2>/dev/null || true
+    docker ps -aq --filter "name=^/${CONTAINER_NAME}$" 2>/dev/null || true
+    docker ps -aq \
+      --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=forwardx" 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++'
+}
+
+panel_data_volume_names() {
+  local ids=""
+  local id=""
+  ids="$(panel_container_ids)"
+  if [ -z "$ids" ]; then
+    return
+  fi
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}{{end}}' "$id" 2>/dev/null || true
+  done <<< "$ids" | awk 'NF && !seen[$0]++'
+}
+
+uninstall_volume_state_file() {
+  printf "%s/.forwardx-uninstall-volumes" "$APP_DIR"
+}
+
+uninstall_data_volume_names() {
+  local state_file=""
+  state_file="$(uninstall_volume_state_file)"
+  {
+    printf "%s\n" "$(data_volume_name)"
+    if [ -f "$state_file" ]; then
+      awk 'NF' "$state_file"
+    fi
+    panel_data_volume_names
+  } | awk 'NF && !seen[$0]++'
+}
+
+persist_uninstall_data_volume_names() {
+  local volume_names="$1"
+  local state_file=""
+  state_file="$(uninstall_volume_state_file)"
+  mkdir -p "$APP_DIR"
+  (umask 077; printf "%s\n" "$volume_names" > "$state_file")
+}
+
 ensure_data_volume() {
   local volume_name
   volume_name="$(data_volume_name)"
   if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+    if [ "$ACTION" = "install" ] && [ "$DATA_VOLUME_REUSE_NOTIFIED" != "true" ]; then
+      echo "[WARN] Existing Docker data volume will be reused: $volume_name"
+      echo "[WARN] Existing SQLite data and administrator credentials are retained. Run the uninstall action and confirm volume deletion before a clean reinstall."
+      DATA_VOLUME_REUSE_NOTIFIED="true"
+    fi
     return
   fi
   docker volume create \
@@ -476,18 +534,13 @@ EOF
 }
 
 remove_existing_panel_containers() {
-  local ids_by_name=""
-  local ids_by_compose=""
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-  ids_by_name="$(docker ps -aq --filter "name=^/${CONTAINER_NAME}$" 2>/dev/null || true)"
-  ids_by_compose="$(docker ps -aq \
-    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
-    --filter "label=com.docker.compose.service=forwardx" 2>/dev/null || true)"
-  if [ -n "$ids_by_name" ] || [ -n "$ids_by_compose" ]; then
-    printf "%s\n%s\n" "$ids_by_name" "$ids_by_compose" | awk 'NF && !seen[$0]++' | while IFS= read -r id; do
-      docker rm -f "$id" 2>/dev/null || true
-    done
-  fi
+  local ids=""
+  local id=""
+  ids="$(panel_container_ids)"
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    docker rm -f "$id" 2>/dev/null || true
+  done <<< "$ids"
 }
 
 image_panel_version() {
@@ -615,20 +668,43 @@ upgrade_panel() {
 }
 
 uninstall_panel() {
+  local volume_names=""
+  local volume_name=""
+  local volume_remove_failed="false"
   require_root
   load_existing_env
   if ! confirm_yes "Confirm uninstall ForwardX Docker panel and delete deployment dir + Docker volume? [y/N] "; then
     echo "[INFO] Uninstall cancelled"
     return
   fi
+  volume_names="$(uninstall_data_volume_names)"
+  persist_uninstall_data_volume_names "$volume_names"
   cd "$APP_DIR" 2>/dev/null || true
   if [ -f "$APP_DIR/docker-compose.yml" ]; then
     compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" down --remove-orphans || true
   fi
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-
+  remove_existing_panel_containers
+  cd /
+  while IFS= read -r volume_name; do
+    [ -z "$volume_name" ] && continue
+    if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
+      continue
+    fi
+    if docker volume rm "$volume_name" >/dev/null 2>&1; then
+      echo "[INFO] Removed Docker data volume: $volume_name"
+    else
+      echo "[ERROR] Failed to remove Docker data volume: $volume_name"
+      echo "[ERROR] The volume is still in use or Docker refused the removal. Existing administrator credentials remain in that volume."
+      volume_remove_failed="true"
+    fi
+  done <<< "$volume_names"
+  if [ "$volume_remove_failed" = "true" ]; then
+    echo "[ERROR] ForwardX containers were removed, but persistent data was not fully deleted."
+    echo "[INFO] Deployment metadata is retained at $APP_DIR so the remaining volume can be located and the uninstall retried."
+    return 1
+  fi
   rm -rf "$APP_DIR"
-  docker volume rm "$(data_volume_name)" 2>/dev/null || true
+  echo "[INFO] External MySQL/PostgreSQL database contents, if configured, were not deleted."
   echo "[DONE] ForwardX Docker panel uninstalled"
 }
 

@@ -18,12 +18,13 @@ import {
   readDatabaseConfig,
   reconnectDatabase,
   testDatabaseConnection,
+  withDatabaseTransaction,
   writeDatabaseConfig,
 } from "../dbRuntime";
 import { countAll, quoteIdentifier } from "../dbCompat";
 import { createInitialAdmin, hasAdminUser, updateInitialAdmin } from "../db";
 import { getAllSettings, setSettings } from "../repositories/settingsRepository";
-import { getMigrationJob, startPanelMigration } from "../migration";
+import { getMigrationJob, hasActivePanelMigration, startPanelMigration } from "../migration";
 import {
   hasLocalSetupCompleteMarker,
   markLocalSetupComplete,
@@ -31,8 +32,10 @@ import {
 import { startBackgroundServices } from "../backgroundServices";
 import { isDevPanelMode } from "../devPanel";
 import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 let setupSchemaReadyKey = "";
+const SETUP_WRITE_LOCK_KEY = "panel-setup-write";
 
 function friendlyDatabaseError(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
@@ -97,6 +100,7 @@ async function ensureSetupSchemaReady() {
 }
 
 async function setupStatus() {
+  const localSetupComplete = hasLocalSetupCompleteMarker();
   if (isDevPanelMode()) {
     return {
       databaseConfigured: true,
@@ -109,6 +113,7 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: "new-panel",
       setupComplete: true,
+      setupLocked: false,
       config: maskDatabaseConfig(readDatabaseConfig()),
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -129,6 +134,7 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: null,
       setupComplete: false,
+      setupLocked: localSetupComplete,
       config: null,
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -141,10 +147,10 @@ async function setupStatus() {
     if (!db) throw new Error("数据库未连接");
     await ensureSetupSchemaReady();
     const hasAdmin = await hasAdminUser();
+    const migrationActive = hasActivePanelMigration();
     const settings = await getAllSettings();
     const setupDataChoice = settings.setupDataChoice || null;
-    const fastSetupComplete = hasAdmin && (setupDataChoice === "use-existing" || setupDataChoice === "new-panel");
-    const existingData = fastSetupComplete ? null : await getExistingDataSummary();
+    const existingData = hasAdmin || localSetupComplete ? null : await getExistingDataSummary();
     const hasExistingData = existingData?.hasExistingData ?? false;
     return {
       databaseConfigured: true,
@@ -156,7 +162,8 @@ async function setupStatus() {
       hasExistingData,
       existingData,
       setupDataChoice,
-      setupComplete: fastSetupComplete || (hasAdmin && !hasExistingData),
+      setupComplete: hasAdmin && !migrationActive,
+      setupLocked: localSetupComplete && !hasAdmin,
       config: maskDatabaseConfig(config),
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -175,6 +182,7 @@ async function setupStatus() {
       existingData: null,
       setupDataChoice: null,
       setupComplete: false,
+      setupLocked: localSetupComplete,
       config: maskDatabaseConfig(config),
       needsRestart,
       defaultSqlitePath: defaultSqlitePath(),
@@ -187,6 +195,9 @@ async function ensureSetupWriteAllowed(
   ctx: { user?: { role?: string } | null },
   options: { allowDatabaseRecovery?: boolean } = {},
 ) {
+  if (hasActivePanelMigration()) {
+    throw new TRPCError({ code: "CONFLICT", message: "SETUP_MIGRATION_RUNNING" });
+  }
   if (ctx.user?.role === "admin") return;
   if (hasLocalSetupCompleteMarker()) {
     throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
@@ -207,12 +218,34 @@ async function ensureSetupWriteAllowed(
   throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
 }
 
+async function withSetupWriteLock<T>(
+  ctx: { user?: { role?: string } | null },
+  work: () => Promise<T>,
+  options: { allowDatabaseRecovery?: boolean } = {},
+) {
+  return withKeyedTaskLock(SETUP_WRITE_LOCK_KEY, async () => {
+    await ensureSetupWriteAllowed(ctx, options);
+    return work();
+  });
+}
+
+async function lockInitialAdminCreation() {
+  const kind = getDatabaseKind();
+  if (!kind || kind === "sqlite") return;
+  const table = quoteIdentifier("system_settings");
+  const key = quoteIdentifier("key");
+  await queryRaw(`SELECT ${key} FROM ${table} WHERE ${key} = ? FOR UPDATE`, ["registrationEnabled"]);
+}
+
 function redactSetupStatusForPublic(status: Awaited<ReturnType<typeof setupStatus>>) {
   return {
     ...status,
+    hasExistingData: false,
+    existingData: null,
+    setupDataChoice: null,
     config: null,
     defaultSqlitePath: "",
-    error: status.setupComplete || status.hasAdmin ? null : status.error,
+    error: status.setupComplete || status.hasAdmin || status.setupLocked ? null : status.error,
   };
 }
 
@@ -246,27 +279,29 @@ async function getExistingDataSummary() {
 async function clearExistingPanelData() {
   await reconnectDatabase();
   await ensureDatabaseSchema();
-  const settings = await getAllSettings();
-  for (const table of [...MIGRATION_TABLES].reverse()) {
-    await executeRaw(`DELETE FROM ${quoteIdentifier(table)}`);
-  }
-  await setSettings({
-    storeEnabled: settings.storeEnabled ?? "false",
-    homepageEnabled: settings.homepageEnabled ?? "true",
-    homepageCustomEnabled: settings.homepageCustomEnabled ?? "false",
-    homepageHtml: settings.homepageHtml ?? "",
-    redemptionEnabled: settings.redemptionEnabled ?? "true",
-    discountEnabled: settings.discountEnabled ?? "true",
-    databaseConfigured: "true",
-    databaseType: getDatabaseKind() || "",
-    mysqlConfigured: getDatabaseKind() === "mysql" ? "true" : "false",
-    mysqlHost: settings.mysqlHost ?? "",
-    mysqlDatabase: settings.mysqlDatabase ?? "",
-    postgresqlConfigured: getDatabaseKind() === "postgresql" ? "true" : "false",
-    postgresqlHost: settings.postgresqlHost ?? "",
-    postgresqlDatabase: settings.postgresqlDatabase ?? "",
-    sqlitePath: settings.sqlitePath ?? "",
-    setupDataChoice: "new-panel",
+  await withDatabaseTransaction(async () => {
+    const settings = await getAllSettings();
+    for (const table of [...MIGRATION_TABLES].reverse()) {
+      await executeRaw(`DELETE FROM ${quoteIdentifier(table)}`);
+    }
+    await setSettings({
+      storeEnabled: settings.storeEnabled ?? "false",
+      homepageEnabled: settings.homepageEnabled ?? "true",
+      homepageCustomEnabled: settings.homepageCustomEnabled ?? "false",
+      homepageHtml: settings.homepageHtml ?? "",
+      redemptionEnabled: settings.redemptionEnabled ?? "true",
+      discountEnabled: settings.discountEnabled ?? "true",
+      databaseConfigured: "true",
+      databaseType: getDatabaseKind() || "",
+      mysqlConfigured: getDatabaseKind() === "mysql" ? "true" : "false",
+      mysqlHost: settings.mysqlHost ?? "",
+      mysqlDatabase: settings.mysqlDatabase ?? "",
+      postgresqlConfigured: getDatabaseKind() === "postgresql" ? "true" : "false",
+      postgresqlHost: settings.postgresqlHost ?? "",
+      postgresqlDatabase: settings.postgresqlDatabase ?? "",
+      sqlitePath: settings.sqlitePath ?? "",
+      setupDataChoice: "new-panel",
+    });
   });
 }
 
@@ -306,38 +341,38 @@ export const setupRouter = router({
   status: publicProcedure.query(async ({ ctx }) => {
     const status = await setupStatus();
     if (ctx.user?.role === "admin") return status;
-    if (status.setupComplete || status.hasAdmin) return redactSetupStatusForPublic(status);
+    if (status.setupComplete || status.hasAdmin || status.setupLocked) return redactSetupStatusForPublic(status);
     return status;
   }),
 
   testDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
-      await testDatabaseConnection(input as DatabaseConfig);
-      return { success: true };
+      return withSetupWriteLock(ctx, async () => {
+        await testDatabaseConnection(input as DatabaseConfig);
+        return { success: true };
+      }, { allowDatabaseRecovery: true });
     }),
 
   saveDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
-      return saveDatabase(input as DatabaseConfig);
+      return withSetupWriteLock(ctx, () => saveDatabase(input as DatabaseConfig), { allowDatabaseRecovery: true });
     }),
 
   testMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
-      await testDatabaseConnection({ type: "mysql", mysql: input });
-      return { success: true };
+      return withSetupWriteLock(ctx, async () => {
+        await testDatabaseConnection({ type: "mysql", mysql: input });
+        return { success: true };
+      }, { allowDatabaseRecovery: true });
     }),
 
   saveMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
-      return saveDatabase({ type: "mysql", mysql: input });
+      return withSetupWriteLock(ctx, () => saveDatabase({ type: "mysql", mysql: input }), { allowDatabaseRecovery: true });
     }),
 
   startMigration: publicProcedure
@@ -348,46 +383,49 @@ export const setupRouter = router({
       dataScope: z.enum(PANEL_MIGRATION_SCOPES).default("essential"),
     }))
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
-      await reconnectDatabase();
-      await ensureDatabaseSchema();
-      const job = startPanelMigration(input);
-      return job;
+      return withSetupWriteLock(ctx, async () => {
+        await reconnectDatabase();
+        await ensureDatabaseSchema();
+        return startPanelMigration(input);
+      });
     }),
 
   migrationStatus: publicProcedure
     .input(z.object({ jobId: z.string().min(1) }))
     .query(({ input }) => getMigrationJob(input.jobId)),
 
-  useExistingData: publicProcedure.mutation(async ({ ctx }) => {
-    await ensureSetupWriteAllowed(ctx);
+  useExistingData: publicProcedure.mutation(async ({ ctx }) => withSetupWriteLock(ctx, async () => {
     await reconnectDatabase();
     await ensureDatabaseSchema();
     await setSettings({ setupDataChoice: "use-existing" });
     return setupStatus();
-  }),
+  })),
 
-  resetExistingData: publicProcedure.mutation(async ({ ctx }) => {
-    await ensureSetupWriteAllowed(ctx);
+  resetExistingData: publicProcedure.mutation(async ({ ctx }) => withSetupWriteLock(ctx, async () => {
     await clearExistingPanelData();
     return setupStatus();
-  }),
+  })),
 
   createAdmin: publicProcedure
     .input(z.object({
       email: z.string().email("请输入有效邮箱地址").max(320),
-      password: z.string().min(8, "密码至少 8 位").max(128),
+      password: z.string().min(8, "密码至少 8 位").max(128).refine((value) => !!value.trim(), "请输入管理员密码"),
       name: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-    await ensureSetupWriteAllowed(ctx);
-    await reconnectDatabase();
-    await ensureDatabaseSchema();
-    const id = await createInitialAdmin(input);
-    await setSettings({ setupDataChoice: "new-panel" });
-    markLocalSetupComplete();
-    return { id, success: true };
-  }),
+      return withSetupWriteLock(ctx, async () => {
+        await reconnectDatabase();
+        await ensureDatabaseSchema();
+        const id = await withDatabaseTransaction(async () => {
+          await lockInitialAdminCreation();
+          const createdId = await createInitialAdmin(input);
+          await setSettings({ setupDataChoice: "new-panel" });
+          return createdId;
+        });
+        markLocalSetupComplete();
+        return { id, success: true };
+      });
+    }),
 
   updateAdmin: publicProcedure
     .input(z.object({
@@ -396,16 +434,23 @@ export const setupRouter = router({
       name: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
-      await reconnectDatabase();
-      await ensureDatabaseSchema();
-      if (input.password && input.password.length < 8) {
-        throw new Error("密码至少 8 位");
-      }
-      const id = await updateInitialAdmin(input);
-      const existingData = await getExistingDataSummary();
-      await setSettings({ setupDataChoice: existingData.hasExistingData ? "use-existing" : "new-panel" });
-      markLocalSetupComplete();
-      return { id, success: true };
+      return withSetupWriteLock(ctx, async () => {
+        await reconnectDatabase();
+        await ensureDatabaseSchema();
+        if (input.password !== undefined && !input.password.trim()) {
+          throw new Error("新密码不能为空");
+        }
+        if (input.password && input.password.length < 8) {
+          throw new Error("密码至少 8 位");
+        }
+        const id = await withDatabaseTransaction(async () => {
+          const updatedId = await updateInitialAdmin(input);
+          const existingData = await getExistingDataSummary();
+          await setSettings({ setupDataChoice: existingData.hasExistingData ? "use-existing" : "new-panel" });
+          return updatedId;
+        });
+        markLocalSetupComplete();
+        return { id, success: true };
+      });
     }),
 });

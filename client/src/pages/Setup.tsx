@@ -87,6 +87,7 @@ export default function Setup() {
   });
   const [sqlitePath, setSqlitePath] = useState(defaultSqlitePath);
   const [admin, setAdmin] = useState({ email: "", password: "", name: "" });
+  const [adminPasswordConfirmation, setAdminPasswordConfirmation] = useState("");
   const [migration, setMigration] = useState<{
     oldPanelUrl: string;
     migrationCode: string;
@@ -119,6 +120,7 @@ export default function Setup() {
   const configuredDatabaseLabel = databaseTypeLabel(configuredDatabaseType);
   const configuredDatabaseText = databaseConfigSummary(configuredDatabase);
   const dbReady = !!data?.databaseConnected && !!data?.schemaReady;
+  const setupLocked = !!data?.setupLocked;
   const hasAdmin = !!data?.hasAdmin;
   const hasExistingData = !!data?.hasExistingData;
   const existingData = data?.existingData;
@@ -285,7 +287,8 @@ export default function Setup() {
   };
 
   const handleAdminSubmit = () => {
-    if (!admin.email.trim()) {
+    const email = admin.email.trim().toLowerCase();
+    if (!email) {
       toast.error("请输入管理员邮箱");
       return;
     }
@@ -293,15 +296,19 @@ export default function Setup() {
       toast.error("请输入管理员密码");
       return;
     }
+    if (admin.password && admin.password !== adminPasswordConfirmation) {
+      toast.error("两次输入的管理员密码不一致");
+      return;
+    }
     if (hasAdmin) {
       updateAdmin.mutate({
-        email: admin.email.trim(),
-        password: admin.password.trim() || undefined,
+        email,
+        password: admin.password || undefined,
         name: admin.name.trim() || undefined,
       });
     } else {
       createAdmin.mutate({
-        email: admin.email.trim(),
+        email,
         password: admin.password,
         name: admin.name.trim() || undefined,
       });
@@ -348,6 +355,16 @@ export default function Setup() {
           <Alert variant={data.needsRestart ? "default" : "destructive"}>
             <AlertTitle>{data.needsRestart ? "等待服务重启" : "数据库连接异常"}</AlertTitle>
             <AlertDescription>{data.error}</AlertDescription>
+          </Alert>
+        )}
+
+        {setupLocked && (
+          <Alert variant="destructive">
+            <ShieldCheck className="h-4 w-4" />
+            <AlertTitle>检测到已有面板的初始化锁</AlertTitle>
+            <AlertDescription>
+              为防止公网访问者抢建管理员，当前数据库不能直接重新初始化。请恢复原数据库和管理员账号，或在主机确认备份后完整卸载并删除 Docker 数据卷，再重新安装。
+            </AlertDescription>
           </Alert>
         )}
 
@@ -646,6 +663,7 @@ export default function Setup() {
                     {hasAdmin ? "确认管理员账户。" : "创建初始管理员。"}
                   </CardDescription>
                 </CardHeader>
+                <form onSubmit={(event) => { event.preventDefault(); handleAdminSubmit(); }} autoComplete="on">
                 <CardContent className="grid gap-4">
                   {hasAdmin && (
                     <Alert>
@@ -656,36 +674,70 @@ export default function Setup() {
                   )}
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-2">
-                      <Label>管理员邮箱</Label>
-                      <Input type="email" value={admin.email} onChange={(e) => setAdmin({ ...admin, email: e.target.value })} placeholder="admin@example.com" />
+                      <Label htmlFor="setup-admin-email">管理员邮箱</Label>
+                      <Input
+                        id="setup-admin-email"
+                        name="username"
+                        type="email"
+                        value={admin.email}
+                        onChange={(e) => setAdmin({ ...admin, email: e.target.value })}
+                        placeholder="admin@example.com"
+                        autoComplete="username"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                      />
                     </div>
                     <div className="space-y-2">
-                      <Label>显示名称</Label>
-                      <Input value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} placeholder="管理员" />
+                      <Label htmlFor="setup-admin-name">显示名称</Label>
+                      <Input id="setup-admin-name" name="name" value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} placeholder="管理员" />
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label>{hasAdmin ? "新密码（留空不修改）" : "密码"}</Label>
-                    <Input type="password" value={admin.password} onChange={(e) => setAdmin({ ...admin, password: e.target.value })} placeholder="至少 8 位" />
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="setup-admin-password">{hasAdmin ? "新密码（留空不修改）" : "密码"}</Label>
+                      <Input
+                        id="setup-admin-password"
+                        name="new-password"
+                        type="password"
+                        value={admin.password}
+                        onChange={(e) => setAdmin({ ...admin, password: e.target.value })}
+                        placeholder="至少 8 位"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="setup-admin-password-confirmation">{hasAdmin ? "确认新密码" : "确认密码"}</Label>
+                      <Input
+                        id="setup-admin-password-confirmation"
+                        name="new-password-confirmation"
+                        type="password"
+                        value={adminPasswordConfirmation}
+                        onChange={(e) => setAdminPasswordConfirmation(e.target.value)}
+                        placeholder={admin.password ? "再次输入密码" : hasAdmin ? "留空不修改" : "再次输入密码"}
+                        autoComplete="new-password"
+                      />
+                    </div>
                   </div>
                   <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
-                    <Button variant="outline" onClick={() => setStep(2)}>
+                    <Button type="button" variant="outline" onClick={() => setStep(2)}>
                       <ArrowLeft className="mr-2 h-4 w-4" />
                       上一步
                     </Button>
                     <div className="flex flex-col gap-3 sm:flex-row">
                       {hasAdmin && (
-                        <Button variant="outline" onClick={() => { window.location.href = "/login"; }}>
+                        <Button type="button" variant="outline" onClick={() => { window.location.href = "/login"; }}>
                           直接登录
                         </Button>
                       )}
-                      <Button disabled={createAdmin.isPending || updateAdmin.isPending} onClick={handleAdminSubmit}>
+                      <Button type="submit" disabled={createAdmin.isPending || updateAdmin.isPending}>
                         {(createAdmin.isPending || updateAdmin.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                         {hasAdmin ? "保存并登录" : "创建并登录"}
                       </Button>
                     </div>
                   </div>
                 </CardContent>
+                </form>
               </Card>
             )}
           </div>
