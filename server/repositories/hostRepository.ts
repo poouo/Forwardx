@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
 import {
   agentTokens,
   forwardGroupMembers,
@@ -200,28 +200,28 @@ function hostListOrder(input: Omit<HostListQuery, keyof PageRequest>) {
     ];
   }
   if (input.orderByGroups) {
-    const firstGroupSort = sql`(
-      SELECT ${hostGroups.sortOrder}
+    const firstGroupValue = (column: SQLWrapper) => sql`(
+      SELECT ${column}
       FROM ${hostGroupMembers}
       INNER JOIN ${hostGroups} ON ${hostGroups.id} = ${hostGroupMembers.groupId}
       WHERE ${hostGroupMembers.hostId} = ${hosts.id}
         AND ${hostGroups.isEnabled} = ${sqlBool(true)}
-      ORDER BY ${hostGroups.sortOrder} ASC, ${hostGroups.id} ASC, ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
+      ORDER BY ${hostGroups.sortOrder} ASC, ${hostGroups.createdAt} DESC, ${hostGroups.id} DESC,
+        ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
       LIMIT 1
     )`;
-    const firstMemberSort = sql`(
-      SELECT ${hostGroupMembers.sortOrder}
-      FROM ${hostGroupMembers}
-      INNER JOIN ${hostGroups} ON ${hostGroups.id} = ${hostGroupMembers.groupId}
-      WHERE ${hostGroupMembers.hostId} = ${hosts.id}
-        AND ${hostGroups.isEnabled} = ${sqlBool(true)}
-      ORDER BY ${hostGroups.sortOrder} ASC, ${hostGroups.id} ASC, ${hostGroupMembers.sortOrder} ASC, ${hostGroupMembers.id} ASC
-      LIMIT 1
-    )`;
+    const firstGroupSort = firstGroupValue(hostGroups.sortOrder);
+    const firstGroupCreatedAt = firstGroupValue(hostGroups.createdAt);
+    const firstGroupId = firstGroupValue(hostGroups.id);
+    const firstMemberSort = firstGroupValue(hostGroupMembers.sortOrder);
+    const firstMemberId = firstGroupValue(hostGroupMembers.id);
     return [
       sql`CASE WHEN ${firstGroupSort} IS NULL THEN 1 ELSE 0 END ASC`,
       sql`${firstGroupSort} ASC`,
+      sql`${firstGroupCreatedAt} DESC`,
+      sql`${firstGroupId} DESC`,
       sql`${firstMemberSort} ASC`,
+      sql`${firstMemberId} ASC`,
       asc(hosts.sortOrder),
       desc(hosts.createdAt),
       desc(hosts.id),

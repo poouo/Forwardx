@@ -8,7 +8,7 @@ import DateTimePickerInput, {
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
 import HostCard from "@/components/hosts/HostCard";
-import HostGroupManager, { type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
+import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
 import {
@@ -1237,7 +1237,7 @@ function HostGroupFilterBar({
   const enabledGroups = useMemo(
     () => [...(groups || [])]
       .filter((group) => group.isEnabled !== false)
-      .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(b.id || 0) - Number(a.id || 0)),
+      .sort(compareHostGroupDisplayOrder),
     [groups],
   );
   if (enabledGroups.length === 0) return null;
@@ -1486,7 +1486,7 @@ function HostsContent() {
   const enabledHostGroups = useMemo(
     () => [...(hostGroups as HostGroupView[])]
       .filter((group) => group.isEnabled !== false)
-      .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id || 0) - Number(b.id || 0)),
+      .sort(compareHostGroupDisplayOrder),
     [hostGroups],
   );
   const selectedHostGroup = useMemo(

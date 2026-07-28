@@ -21,6 +21,7 @@ export type HostGroupView = {
   name: string;
   isEnabled: boolean;
   sortOrder?: number;
+  createdAt?: Date | string | number;
   hostIds?: number[];
   members?: Array<{ hostId: number; sortOrder?: number }>;
 };
@@ -38,6 +39,17 @@ const defaultForm: HostGroupForm = {
   hostIds: [],
   isEnabled: true,
 };
+
+export function compareHostGroupDisplayOrder(a: HostGroupView, b: HostGroupView) {
+  const sortDifference = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
+  if (sortDifference !== 0) return sortDifference;
+  const createdAtA = new Date(a.createdAt || 0).getTime();
+  const createdAtB = new Date(b.createdAt || 0).getTime();
+  if (Number.isFinite(createdAtA) && Number.isFinite(createdAtB) && createdAtA !== createdAtB) {
+    return createdAtB - createdAtA;
+  }
+  return Number(b.id || 0) - Number(a.id || 0);
+}
 
 function uniqueHostIds(hostIds: unknown[]) {
   return Array.from(new Set((hostIds || [])
@@ -189,7 +201,7 @@ export default function HostGroupManager({
     [hosts, selectedHostIdSet],
   );
   const sortedGroups = useMemo(
-    () => [...(groups || [])].sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(b.id || 0) - Number(a.id || 0)),
+    () => [...(groups || [])].sort(compareHostGroupDisplayOrder),
     [groups],
   );
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
@@ -205,13 +217,18 @@ export default function HostGroupManager({
     getId: (group) => Number(group.id),
   });
   const displayedGroups = groupOrder.items;
+  const refreshHostGroupQueries = () => Promise.all([
+    utils.hosts.hostGroups.invalidate(),
+    utils.hosts.listPage.invalidate(),
+    utils.hosts.mapPoints.invalidate(),
+  ]);
   useEffect(() => {
     onFilterStatsChange?.({ filtered: filteredGroups.length, total: sortedGroups.length });
   }, [filteredGroups.length, onFilterStatsChange, sortedGroups.length]);
 
   const createMutation = trpc.hosts.createHostGroup.useMutation({
     onSuccess: () => {
-      utils.hosts.hostGroups.invalidate();
+      void refreshHostGroupQueries();
       setDialogOpen(false);
       setForm(defaultForm);
       toast.success("分组已添加");
@@ -220,7 +237,7 @@ export default function HostGroupManager({
   });
   const updateMutation = trpc.hosts.updateHostGroup.useMutation({
     onSuccess: () => {
-      utils.hosts.hostGroups.invalidate();
+      void refreshHostGroupQueries();
       setDialogOpen(false);
       setEditingId(null);
       setForm(defaultForm);
@@ -230,12 +247,12 @@ export default function HostGroupManager({
   });
   const toggleMutation = trpc.hosts.updateHostGroup.useMutation({
     onSuccess: async () => {
-      await utils.hosts.hostGroups.invalidate();
+      await refreshHostGroupQueries();
     },
   });
   const deleteMutation = trpc.hosts.deleteHostGroup.useMutation({
     onSuccess: () => {
-      utils.hosts.hostGroups.invalidate();
+      void refreshHostGroupQueries();
       toast.success("分组已删除");
     },
     onError: (err) => toast.error(err.message || "删除分组失败"),
@@ -255,7 +272,7 @@ export default function HostGroupManager({
         { ids: nextGroups.map((group) => Number(group.id)) },
         {
           onError: () => groupOrder.release(requestId),
-          onSettled: () => groupOrder.resync(requestId, () => utils.hosts.hostGroups.invalidate()),
+          onSettled: () => groupOrder.resync(requestId, refreshHostGroupQueries),
         },
       );
     },

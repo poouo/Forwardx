@@ -566,3 +566,126 @@ test("database-backed list queries page, search, scope, and hydrate only request
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("admin all-host pagination keeps equal-sort groups contiguous across page boundaries", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-host-group-order-"));
+  const databasePath = path.join(directory, "host-group-order.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+
+      const hosts = await import(moduleUrl("server/repositories/hostRepository.ts"));
+      const quote = (name) => '"' + name + '"';
+      const insert = async (table, columns, values) => {
+        await runtime.executeRaw(
+          "INSERT INTO " + quote(table) + " (" + columns.map(quote).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+          values,
+        );
+      };
+
+      await insert("users", ["id", "username", "password", "name", "role", "balanceCents"], [1, "admin", "x", "Admin", "admin", 0]);
+
+      const hostRows = [
+        [101, "New group member B", 0, 100],
+        [102, "New group member A", 99, 101],
+        [103, "New group member C", 0, 102],
+        [201, "Old group member A", 50, 200],
+        [202, "Old group member B", 0, 201],
+        [203, "Old group member C", 0, 202],
+        [999, "Ungrouped", 0, 999],
+      ];
+      for (const [id, name, sortOrder, createdAt] of hostRows) {
+        await insert(
+          "hosts",
+          ["id", "name", "ip", "userId", "sortOrder", "createdAt", "updatedAt"],
+          [id, name, "192.0.2." + (id % 255), 1, sortOrder, createdAt, createdAt],
+        );
+      }
+
+      await insert(
+        "host_groups",
+        ["id", "name", "isEnabled", "sortOrder", "userId", "createdAt", "updatedAt"],
+        [10, "Newer group", 1, 0, 1, 200, 200],
+      );
+      await insert(
+        "host_groups",
+        ["id", "name", "isEnabled", "sortOrder", "userId", "createdAt", "updatedAt"],
+        [20, "Older group", 1, 0, 1, 100, 100],
+      );
+
+      for (const [id, groupId, hostId, sortOrder] of [
+        [1003, 10, 101, 0],
+        [1001, 10, 102, 0],
+        [1002, 10, 103, 1],
+        [2003, 20, 201, 0],
+        [2001, 20, 202, 1],
+        [2002, 20, 203, 2],
+      ]) {
+        await insert(
+          "host_group_members",
+          ["id", "groupId", "hostId", "sortOrder", "createdAt"],
+          [id, groupId, hostId, sortOrder, id],
+        );
+      }
+
+      const query = (page, pageSize) => hosts.getHostsPage({
+        page,
+        pageSize,
+        groupId: null,
+        orderByGroups: true,
+      });
+      const fullPage = await query(1, 20);
+      const expectedIds = [102, 101, 103, 201, 202, 203, 999];
+      assert.deepEqual(fullPage.items.map((host) => Number(host.id)), expectedIds);
+
+      const groupByHostId = new Map([
+        [101, 10], [102, 10], [103, 10],
+        [201, 20], [202, 20], [203, 20],
+      ]);
+      assert.deepEqual(
+        fullPage.items.map((host) => groupByHostId.get(Number(host.id)) ?? null),
+        [10, 10, 10, 20, 20, 20, null],
+      );
+
+      const firstPage = await query(1, 4);
+      const secondPage = await query(2, 4);
+      assert.deepEqual(firstPage.items.map((host) => Number(host.id)), [102, 101, 103, 201]);
+      assert.deepEqual(secondPage.items.map((host) => Number(host.id)), [202, 203, 999]);
+      assert.deepEqual(
+        [...firstPage.items, ...secondPage.items].map((host) => Number(host.id)),
+        expectedIds,
+      );
+      assert.equal(firstPage.totalItems, 7);
+      assert.equal(firstPage.totalPages, 2);
+      assert.equal(secondPage.page, 2);
+    } finally {
+      await runtime.closeDatabase().catch(() => undefined);
+    }
+  `;
+
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: databasePath,
+        FORWARDX_LOG_DIR: path.join(directory, "logs"),
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
