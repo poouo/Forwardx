@@ -750,6 +750,8 @@ export const tcpingStats = table("tcping_stats", {
   hostId: int("hostId").notNull(),
   latencyMs: int("latencyMs"),           // 延迟毫秒数，null 表示超时/不可达
   isTimeout: boolean("isTimeout").notNull().default(false),
+  healthStatus: varchar("healthStatus", { length: 16 }),
+  healthPending: boolean("healthPending").notNull().default(false),
   recordedAt: epoch("recordedAt").notNull().default(nowDefault()),
 });
 export type TcpingStat = typeof tcpingStats.$inferSelect;

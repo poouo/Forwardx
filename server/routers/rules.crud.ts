@@ -4,7 +4,13 @@ import { isIP } from "node:net";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
-import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
+import {
+  pushTunnelEndpointRefresh,
+  refreshUserForwardEndpoints,
+  requireHostUseAccess,
+  requireTrafficBillingAccessIfConfigured,
+  requireTunnelUseOrTrafficBillingAccess,
+} from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 import { isTelegramBotReady } from "../telegramReady";
@@ -416,6 +422,23 @@ async function isForwardGroupTrafficBillingRule(group: any, userId: number) {
   return false;
 }
 
+async function requireForwardGroupUseAccess(
+  ctx: { user: { id: number; role: string } },
+  forwardGroupId: number,
+) {
+  if (ctx.user.role === "admin") return { isTrafficBillingResource: false };
+  const isTrafficBillingResource = await requireTrafficBillingAccessIfConfigured(
+    ctx,
+    "forward_group",
+    forwardGroupId,
+  );
+  if (!isTrafficBillingResource) {
+    const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, forwardGroupId);
+    if (!hasPermission) throw new Error("无权使用该转发组");
+  }
+  return { isTrafficBillingResource };
+}
+
 async function assertRulePortWithinEntryPolicy(options: {
   hostId: number;
   sourcePort: number;
@@ -602,9 +625,9 @@ export async function toggleForwardRuleForActor(
       if ((rule as any).isForwardGroupTemplate) {
         if (actor.role !== "admin") {
           const groupId = Number((rule as any).forwardGroupId || 0);
-          const hasPermission = groupId ? await db.checkUserForwardGroupPermission(actor.id, groupId) : false;
-          if (!hasPermission) throw new Error("无权操作该转发组规则");
           if (isEnabled) {
+            if (!groupId) throw new Error("转发组不存在");
+            await requireForwardGroupUseAccess({ user: actor }, groupId);
             const owner = await requireForwardAccessReady(actor.id);
             const group = await db.getForwardGroupById(groupId);
             const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, actor.id);
@@ -931,8 +954,7 @@ export const crudRulesRouter = router({
           }
         }
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, forwardGroupId);
-          if (!hasPermission) throw new Error("无权使用该转发组");
+          await requireForwardGroupUseAccess(ctx, forwardGroupId);
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, forwardGroupId);
           if (planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
             throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
@@ -1301,8 +1323,7 @@ export const crudRulesRouter = router({
         if (!activeGroupId) throw new Error("转发组不存在");
         const groupChanged = activeGroupId !== groupId;
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, activeGroupId);
-          if (!hasPermission) throw new Error("无权修改该转发组规则");
+          await requireForwardGroupUseAccess(ctx, activeGroupId);
           const nextSourcePort = input.sourcePort ?? rule.sourcePort;
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, activeGroupId);
           if (planRange && (nextSourcePort < planRange.start || nextSourcePort > planRange.end)) {
@@ -1408,6 +1429,12 @@ export const crudRulesRouter = router({
         delete data.blockTls;
         const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "proxyProtocolVersion", "tcpFastOpen", "zeroCopy", "udpOverTcp", "udpOverTcpPort", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
+        if (data.isEnabled === true) {
+          data.disabledByUser = false;
+          data.disabledByTunnel = false;
+          data.disabledByGroup = false;
+          data.protocolBlockReason = null;
+        }
         if (keyFieldChanged || groupChanged || data.isEnabled !== undefined) data.isRunning = false;
         if (groupChanged) await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-route-changed");
         await db.updateForwardRule(input.id, data);
@@ -1425,8 +1452,7 @@ export const crudRulesRouter = router({
         const sourcePort = Number(input.sourcePort ?? (rule as any).sourcePort);
         if (!groupId) throw new Error("请选择转发链或转发组");
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, groupId);
-          if (!hasPermission) throw new Error("无权使用该转发组");
+          await requireForwardGroupUseAccess(ctx, groupId);
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, groupId);
           if (planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
             throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
@@ -1528,9 +1554,6 @@ export const crudRulesRouter = router({
         await db.runForwardGroupFailover(groupId);
         return { success: true, reset: true };
       }
-
-      await requireRuleProtocolEnabled(rule);
-
       // 如果修改了源端口，检查端口区间和占用
       let selectedTunnelForRule: any = null;
       let nextTunnelIdForRule: number | null = null;

@@ -93,3 +93,24 @@ test("TCPing gate always preserves configured service history and forced reports
   assert.equal(forced.results.length, 1);
   assert.deepEqual([...forced.transitionRuleIds], [41]);
 });
+
+test("TCPing gate accepts Agent health transitions and one-minute health snapshots", () => {
+  const gate = new AgentTcpingReportGate();
+  const now = Date.parse("2026-07-28T12:00:00Z");
+  const report = {
+    groupId: 8,
+    memberId: 81,
+    probeType: "entry",
+    topologyKey: "group-health-8-81",
+    isTimeout: false,
+    healthStatus: "healthy" as const,
+  };
+  gate.plan(input({ forwardGroups: [report] }), now).commit();
+  assert.equal(gate.plan(input({ forwardGroups: [report] }), now + 59_000).forwardGroups.length, 0);
+  assert.equal(gate.plan(input({ forwardGroups: [report] }), now + 60_000).forwardGroups.length, 1);
+
+  const transition = gate.plan(input({
+    forwardGroups: [{ ...report, isTimeout: true, healthStatus: "unhealthy" as const }],
+  }), now + 61_000);
+  assert.equal(transition.forwardGroups.length, 1);
+});

@@ -11,6 +11,8 @@ import {
   setUserAccountEnabledCommand,
   setUserForwardAccessCommand,
 } from "../services/userCommandService";
+import { withKeyedTaskLock } from "../keyedTaskLock";
+import { reconcileUserRuleResourceAuthorization } from "../ruleResourceAuthorization";
 
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
@@ -191,8 +193,11 @@ export const usersRouter = router({
     setHostPermissions: adminProcedure
       .input(z.object({ userId: z.number(), hostIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
-        await db.setUserHostPermissions(input.userId, input.hostIds);
-        clearLinkAccessScopeCache();
+        await withKeyedTaskLock(`user-resource-permissions:${input.userId}`, async () => {
+          await db.setUserHostPermissions(input.userId, input.hostIds);
+          clearLinkAccessScopeCache();
+          await reconcileUserRuleResourceAuthorization(input.userId);
+        });
         console.info(`[Users] Updated host permissions userId=${input.userId} count=${input.hostIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
@@ -205,8 +210,11 @@ export const usersRouter = router({
     setForwardGroupPermissions: adminProcedure
       .input(z.object({ userId: z.number(), forwardGroupIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
-        await db.setUserForwardGroupPermissions(input.userId, input.forwardGroupIds);
-        clearLinkAccessScopeCache();
+        await withKeyedTaskLock(`user-resource-permissions:${input.userId}`, async () => {
+          await db.setUserForwardGroupPermissions(input.userId, input.forwardGroupIds);
+          clearLinkAccessScopeCache();
+          await reconcileUserRuleResourceAuthorization(input.userId);
+        });
         console.info(`[Users] Updated forward group permissions userId=${input.userId} count=${input.forwardGroupIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
@@ -227,9 +235,13 @@ export const usersRouter = router({
         forwardGroupIds: z.array(z.number()).optional().default([]),
       }))
       .mutation(async ({ input, ctx }) => {
-        await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds, input.forwardGroupIds);
-        clearLinkAccessScopeCache();
-        const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
+        const recovery = await withKeyedTaskLock(`user-resource-permissions:${input.userId}`, async () => {
+          await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds, input.forwardGroupIds);
+          clearLinkAccessScopeCache();
+          const nextRecovery = await db.recoverUserForwardAccessIfEligible(input.userId);
+          await reconcileUserRuleResourceAuthorization(input.userId);
+          return nextRecovery;
+        });
         if (recovery.restored) {
           await refreshUserForwardEndpoints(input.userId, "traffic-billing-permission-forward-restored");
         }
@@ -245,8 +257,11 @@ export const usersRouter = router({
     setTunnelPermissions: adminProcedure
       .input(z.object({ userId: z.number(), tunnelIds: z.array(z.number()) }))
       .mutation(async ({ input, ctx }) => {
-        await db.setUserTunnelPermissions(input.userId, input.tunnelIds);
-        clearLinkAccessScopeCache();
+        await withKeyedTaskLock(`user-resource-permissions:${input.userId}`, async () => {
+          await db.setUserTunnelPermissions(input.userId, input.tunnelIds);
+          clearLinkAccessScopeCache();
+          await reconcileUserRuleResourceAuthorization(input.userId);
+        });
         console.info(`[Users] Updated tunnel permissions userId=${input.userId} count=${input.tunnelIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),

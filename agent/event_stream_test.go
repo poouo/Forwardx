@@ -25,31 +25,17 @@ func TestAgentEventStreamChallengeNegotiationSkipsClockSync(t *testing.T) {
 	previousPanelURL, _ := runtimePanelURL.Load().(string)
 	runtimePanelURL.Store("")
 	t.Cleanup(func() { runtimePanelURL.Store(previousPanelURL) })
-	previousSync := syncSystemTimeForAgentEventStreamError
-	defer func() { syncSystemTimeForAgentEventStreamError = previousSync }()
-
-	var syncCalls int
-	syncSystemTimeForAgentEventStreamError = func(error) bool {
-		syncCalls++
-		return true
-	}
 	cfg := Config{PanelURL: "https://panel.example.test"}
 	clockError := errors.New("event stream status: 401 Unauthorized: Request timestamp out of window")
 	legacyErr := wrapAgentRequestAttemptError(clockError, agentRequestAuth{version: "v1"}, agentAuthResultRejected, false)
-	if fastRetry := prepareAgentEventStreamRetry(cfg, legacyErr); !fastRetry {
-		t.Fatal("successful legacy clock sync did not request a fast retry")
-	}
-	if syncCalls != 1 {
-		t.Fatalf("legacy clock sync calls=%d", syncCalls)
+	if fastRetry := prepareAgentEventStreamRetry(cfg, legacyErr); fastRetry {
+		t.Fatal("legacy timestamp rejection retried without a challenge")
 	}
 
 	observeAgentAuthCapability(cfg.PanelURL, agentAuthChallengeCapability)
 	negotiationErr := wrapAgentRequestAttemptError(clockError, agentRequestAuth{version: "v1"}, agentAuthResultRejected, false)
 	if fastRetry := prepareAgentEventStreamRetry(cfg, negotiationErr); !fastRetry {
 		t.Fatal("negotiated event stream retry did not use challenge auth")
-	}
-	if syncCalls != 1 {
-		t.Fatalf("challenge auth triggered clock sync calls=%d", syncCalls)
 	}
 
 	fallbackErr := wrapAgentRequestAttemptError(
@@ -58,19 +44,13 @@ func TestAgentEventStreamChallengeNegotiationSkipsClockSync(t *testing.T) {
 		agentAuthResultRejected,
 		false,
 	)
-	if fastRetry := prepareAgentEventStreamRetry(cfg, fallbackErr); !fastRetry {
-		t.Fatal("challenge fetch fallback did not retry after clock sync")
-	}
-	if syncCalls != 2 {
-		t.Fatalf("challenge fallback clock sync calls=%d", syncCalls)
+	if fastRetry := prepareAgentEventStreamRetry(cfg, fallbackErr); fastRetry {
+		t.Fatal("challenge fetch failure retried legacy auth without a new challenge")
 	}
 
 	ordinaryV2Err := wrapAgentRequestAttemptError(io.EOF, agentRequestAuth{version: "v2"}, "", false)
 	if fastRetry := prepareAgentEventStreamRetry(cfg, ordinaryV2Err); fastRetry {
 		t.Fatal("ordinary v2 disconnect bypassed exponential backoff")
-	}
-	if syncCalls != 2 {
-		t.Fatalf("ordinary disconnect triggered clock sync calls=%d", syncCalls)
 	}
 
 	authenticatedErr := wrapAgentRequestAttemptError(

@@ -1,7 +1,12 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
-import { requireHostUseAccess, requireRuleAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
+import {
+  requireHostUseAccess,
+  requireRuleAccess,
+  requireTrafficBillingAccessIfConfigured,
+  requireTunnelUseOrTrafficBillingAccess,
+} from "./helpers";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const randomPortInputSchema = z.object({
@@ -11,6 +16,18 @@ const randomPortInputSchema = z.object({
   excludeRuleId: z.number().optional(),
   protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
 });
+
+async function requireForwardGroupPortAccess(ctx: { user: { id: number; role: string } }, forwardGroupId: number) {
+  if (ctx.user.role === "admin") return;
+  const isTrafficBillingResource = await requireTrafficBillingAccessIfConfigured(
+    ctx,
+    "forward_group",
+    forwardGroupId,
+  );
+  if (isTrafficBillingResource) return;
+  const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, forwardGroupId);
+  if (!hasPermission) throw new Error("无权使用该转发组");
+}
 
 export const portsRulesRouter = router({
   checkPort: protectedProcedure
@@ -31,8 +48,7 @@ export const portsRulesRouter = router({
       }
       if (input.forwardGroupId) {
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, input.forwardGroupId);
-          if (!hasPermission) throw new Error("无权使用该转发组");
+          await requireForwardGroupPortAccess(ctx, input.forwardGroupId);
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
           if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
             return { used: true, reason: `套餐端口必须在 ${planRange.start}-${planRange.end} 范围内` };
@@ -102,8 +118,7 @@ export const portsRulesRouter = router({
       if (input.forwardGroupId) {
         let planRange: { start: number; end: number } | null = null;
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, input.forwardGroupId);
-          if (!hasPermission) throw new Error("无权使用该转发组");
+          await requireForwardGroupPortAccess(ctx, input.forwardGroupId);
           planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
         }
         const port = await db.findAvailableForwardGroupPort(input.forwardGroupId, input.excludeRuleId, planRange, input.protocol);

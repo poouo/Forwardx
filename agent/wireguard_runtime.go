@@ -108,8 +108,10 @@ type wireGuardRuntime struct {
 	device       *device.Device
 	peers        map[string]wireGuardPeerSpec
 	outbound     map[string]*wireGuardOutboundProxy
+	outboundRefs map[string]int
+	refOutbound  map[string]map[string]struct{}
 	inbound      map[string]*wireGuardInboundProxy
-	refs         map[string]struct{}
+	refs         map[string]int
 	releaseTimer *time.Timer
 	closed       bool
 }
@@ -294,15 +296,17 @@ func newWireGuardRuntime(spec wireGuardSpec) (*wireGuardRuntime, error) {
 		return nil, fmt.Errorf("start wireguard: %w", err)
 	}
 	runtime := &wireGuardRuntime{
-		spec:      normalized,
-		signature: wireGuardSpecSignature(normalized),
-		tunDevice: tunDevice,
-		netstack:  tnet,
-		device:    dev,
-		peers:     map[string]wireGuardPeerSpec{},
-		outbound:  map[string]*wireGuardOutboundProxy{},
-		inbound:   map[string]*wireGuardInboundProxy{},
-		refs:      map[string]struct{}{},
+		spec:         normalized,
+		signature:    wireGuardSpecSignature(normalized),
+		tunDevice:    tunDevice,
+		netstack:     tnet,
+		device:       dev,
+		peers:        map[string]wireGuardPeerSpec{},
+		outbound:     map[string]*wireGuardOutboundProxy{},
+		outboundRefs: map[string]int{},
+		refOutbound:  map[string]map[string]struct{}{},
+		inbound:      map[string]*wireGuardInboundProxy{},
+		refs:         map[string]int{},
 	}
 	for _, peer := range normalized.Peers {
 		runtime.peers[peer.ID] = peer
@@ -452,14 +456,39 @@ func waitForWireGuardRuntime(tunnelID int, timeout time.Duration) (*wireGuardRun
 	}
 }
 
-func (runtime *wireGuardRuntime) addRef(id string) {
+func (runtime *wireGuardRuntime) addRef(id string, outboundKeys ...string) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.releaseTimer != nil {
 		runtime.releaseTimer.Stop()
 		runtime.releaseTimer = nil
 	}
-	runtime.refs[id] = struct{}{}
+	if runtime.refs == nil {
+		runtime.refs = map[string]int{}
+	}
+	if runtime.refOutbound == nil {
+		runtime.refOutbound = map[string]map[string]struct{}{}
+	}
+	if runtime.outboundRefs == nil {
+		runtime.outboundRefs = map[string]int{}
+	}
+	runtime.refs[id]++
+	keys := runtime.refOutbound[id]
+	if keys == nil {
+		keys = map[string]struct{}{}
+		runtime.refOutbound[id] = keys
+	}
+	for _, key := range outboundKeys {
+		key = strings.TrimSpace(key)
+		if key == "" || runtime.outbound[key] == nil {
+			continue
+		}
+		if _, exists := keys[key]; exists {
+			continue
+		}
+		keys[key] = struct{}{}
+		runtime.outboundRefs[key]++
+	}
 }
 
 func releaseWireGuardRuntimeRef(tunnelID int, id string) {
@@ -469,8 +498,25 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 	if runtime == nil {
 		return
 	}
+	proxiesToClose := make([]*wireGuardOutboundProxy, 0)
 	runtime.mu.Lock()
-	delete(runtime.refs, id)
+	if runtime.refs[id] <= 1 {
+		delete(runtime.refs, id)
+		for key := range runtime.refOutbound[id] {
+			if runtime.outboundRefs[key] <= 1 {
+				delete(runtime.outboundRefs, key)
+				if proxy := runtime.outbound[key]; proxy != nil {
+					delete(runtime.outbound, key)
+					proxiesToClose = append(proxiesToClose, proxy)
+				}
+			} else {
+				runtime.outboundRefs[key]--
+			}
+		}
+		delete(runtime.refOutbound, id)
+	} else {
+		runtime.refs[id]--
+	}
 	if len(runtime.refs) == 0 && runtime.releaseTimer == nil && !runtime.closed {
 		runtime.releaseTimer = time.AfterFunc(wireGuardRuntimeReleaseDelay, func() {
 			wireGuardRuntimesMu.RLock()
@@ -488,6 +534,10 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 		})
 	}
 	runtime.mu.Unlock()
+	for _, proxy := range proxiesToClose {
+		proxy.close()
+		logf("wireguard outbound proxy stopped tunnel=%d target=%s", tunnelID, proxy.key)
+	}
 }
 
 func (runtime *wireGuardRuntime) peerAddress(peerID string) (net.IP, error) {
@@ -658,18 +708,48 @@ func listenLoopbackTCPAndUDP() (net.Listener, *net.UDPConn, int, error) {
 	return nil, nil, 0, errors.New("allocate wireguard loopback proxy port failed")
 }
 
-func (runtime *wireGuardRuntime) ensureOutboundProxy(peerID string, tcpPort, udpPort int) (string, int, int, error) {
+func wireGuardOutboundProxyKey(peerID string, tcpPort, udpPort int) string {
+	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(peerID), tcpPort, udpPort)
+}
+
+func (runtime *wireGuardRuntime) ensureOutboundProxy(refID string, peerID string, tcpPort, udpPort int) (string, int, int, error) {
 	peerID = strings.TrimSpace(peerID)
-	if peerID == "" || tcpPort <= 0 || tcpPort > 65535 || udpPort <= 0 || udpPort > 65535 {
+	refID = strings.TrimSpace(refID)
+	if refID == "" || peerID == "" || tcpPort <= 0 || tcpPort > 65535 || udpPort <= 0 || udpPort > 65535 {
 		return "", 0, 0, errors.New("wireguard outbound proxy target is invalid")
 	}
 	if _, err := runtime.peerAddress(peerID); err != nil {
 		return "", 0, 0, err
 	}
-	key := fmt.Sprintf("%s:%d:%d", peerID, tcpPort, udpPort)
+	key := wireGuardOutboundProxyKey(peerID, tcpPort, udpPort)
 	runtime.mu.Lock()
+	retain := func() error {
+		if runtime.refs[refID] <= 0 {
+			return fmt.Errorf("wireguard runtime reference %q is not registered", refID)
+		}
+		if runtime.refOutbound == nil {
+			runtime.refOutbound = map[string]map[string]struct{}{}
+		}
+		if runtime.outboundRefs == nil {
+			runtime.outboundRefs = map[string]int{}
+		}
+		keys := runtime.refOutbound[refID]
+		if keys == nil {
+			keys = map[string]struct{}{}
+			runtime.refOutbound[refID] = keys
+		}
+		if _, exists := keys[key]; !exists {
+			keys[key] = struct{}{}
+			runtime.outboundRefs[key]++
+		}
+		return nil
+	}
 	if proxy := runtime.outbound[key]; proxy != nil {
 		port := proxy.tcpLn.Addr().(*net.TCPAddr).Port
+		if err := retain(); err != nil {
+			runtime.mu.Unlock()
+			return "", 0, 0, err
+		}
 		runtime.mu.Unlock()
 		return "127.0.0.1", port, port, nil
 	}
@@ -683,6 +763,12 @@ func (runtime *wireGuardRuntime) ensureOutboundProxy(peerID string, tcpPort, udp
 		tcpLn: listener, udpConn: udpConn, done: make(chan struct{}), sessions: map[string]*wireGuardUDPProxySession{},
 	}
 	runtime.outbound[key] = proxy
+	if err := retain(); err != nil {
+		delete(runtime.outbound, key)
+		runtime.mu.Unlock()
+		proxy.close()
+		return "", 0, 0, err
+	}
 	runtime.mu.Unlock()
 	go runtime.serveOutboundTCP(proxy)
 	go runtime.serveOutboundUDP(proxy)
@@ -956,7 +1042,7 @@ func (runtime *wireGuardRuntime) close() {
 	logf("wireguard runtime stopped tunnel=%d", runtime.spec.TunnelID)
 }
 
-func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
+func prepareFXPWireGuard(spec fxpSpec, refID string) (prepared fxpSpec, err error) {
 	if strings.ToLower(strings.TrimSpace(spec.TransportVersion)) != forwardXWireGuardVersion {
 		return spec, nil
 	}
@@ -964,6 +1050,17 @@ func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
 	if err != nil {
 		return spec, err
 	}
+	refID = strings.TrimSpace(refID)
+	if refID == "" {
+		return spec, errors.New("wireguard runtime reference is required")
+	}
+	runtime.addRef(refID)
+	committed := false
+	defer func() {
+		if !committed {
+			releaseWireGuardRuntimeRef(spec.TunnelID, refID)
+		}
+	}()
 	if spec.Role == "exit" || spec.Role == "relay" {
 		if err := runtime.ensureInboundProxy(spec.ListenPort, spec.UDPListenPort); err != nil {
 			return spec, err
@@ -974,21 +1071,38 @@ func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
 		if udpPort <= 0 {
 			udpPort = tcpPort
 		}
-		return runtime.ensureOutboundProxy(peerID, tcpPort, udpPort)
+		return runtime.ensureOutboundProxy(refID, peerID, tcpPort, udpPort)
 	}
-	if spec.Role == "entry" {
-		host, tcpPort, udpPort, err := prepareEndpoint(spec.ExitPeerID, spec.ExitPort, spec.UDPExitPort)
+	prepareEntry := func(entry *fxpSpec) error {
+		host, tcpPort, udpPort, err := prepareEndpoint(entry.ExitPeerID, entry.ExitPort, entry.UDPExitPort)
 		if err != nil {
-			return spec, err
+			return err
 		}
-		spec.ExitHost, spec.ExitPort, spec.UDPExitPort = host, tcpPort, udpPort
-		for index := range spec.Exits {
-			exit := &spec.Exits[index]
+		entry.ExitHost, entry.ExitPort, entry.UDPExitPort = host, tcpPort, udpPort
+		for index := range entry.Exits {
+			exit := &entry.Exits[index]
 			host, tcpPort, udpPort, err := prepareEndpoint(exit.PeerID, exit.Port, exit.UDPPort)
 			if err != nil {
-				return spec, err
+				return err
 			}
 			exit.Host, exit.Port, exit.UDPPort = host, tcpPort, udpPort
+		}
+		return nil
+	}
+	if spec.Role == "entry" {
+		if err := prepareEntry(&spec); err != nil {
+			return spec, err
+		}
+	}
+	if isFXPEntryGroup(spec) {
+		for index := range spec.Entries {
+			entry := &spec.Entries[index]
+			if entry.Role != "entry" || entry.TunnelID != spec.TunnelID || entry.TransportVersion != forwardXWireGuardVersion {
+				return spec, fmt.Errorf("invalid V2 entry group member tunnel=%d rule=%d", entry.TunnelID, entry.RuleID)
+			}
+			if err := prepareEntry(entry); err != nil {
+				return spec, fmt.Errorf("prepare V2 entry group rule=%d: %w", entry.RuleID, err)
+			}
 		}
 	}
 	if spec.Role == "relay" {
@@ -1006,7 +1120,7 @@ func prepareFXPWireGuard(spec fxpSpec) (fxpSpec, error) {
 			exit.Host, exit.Port, exit.UDPPort = host, tcpPort, udpPort
 		}
 	}
-	runtime.addRef(fxpServerID(spec))
+	committed = true
 	return spec, nil
 }
 

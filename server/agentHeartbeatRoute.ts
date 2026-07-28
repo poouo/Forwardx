@@ -82,7 +82,7 @@ import {
 } from "./forwardXWireGuard";
 import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
-import { resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
+import { resolveLocalForwardXTransportVersion, resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
@@ -99,6 +99,7 @@ import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
 import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 import { buildForwardXMimicConfig } from "./mimicConfig";
+import { gateForwardRulesForRuntime } from "./linkAccessView";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -190,6 +191,7 @@ type AgentLocalRuntimeRuleState = {
   targetIp?: string;
   targetPort?: number;
   protocol?: string;
+  transportVersion?: "v1" | "v2";
   ready?: boolean;
 };
 type AgentLocalRuntimeTunnelState = {
@@ -323,6 +325,11 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
         targetIp: String(item?.targetIp || "").trim() || undefined,
         targetPort: Number(item?.targetPort || 0) || undefined,
         protocol: String(item?.protocol || "").trim() || undefined,
+        transportVersion: String(item?.transportVersion || "").trim().toLowerCase() === "v2"
+          ? "v2" as const
+          : String(item?.transportVersion || "").trim().toLowerCase() === "v1"
+            ? "v1" as const
+            : undefined,
         ready: item?.ready !== false,
       }))
       .filter((item: AgentLocalRuntimeRuleState) => item.port > 0)
@@ -1270,12 +1277,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     // 获取该主机的转发规则
-    const [rules, hostTunnels, forwardProtocolSettings, configRevision] = await Promise.all([
+    const [rawRules, hostTunnels, forwardProtocolSettings, configRevision] = await Promise.all([
       db.getForwardRulesForAgent(host.id),
       db.getTunnelsByHost(host.id),
       getForwardProtocolSettings(),
       latestConfigRevision(),
     ]);
+    const rules = await gateForwardRulesForRuntime(rawRules as any[]);
     const actions: any[] = [];
     const dnsWatches = new Map<string, AgentDnsWatch>();
     const responseIssuedAt = Date.now();
@@ -1615,10 +1623,29 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
-    const agentAllRules = await db.getForwardRulesForAgentScope(
+    const rawAgentAllRules = await db.getForwardRulesForAgentScope(
       Number(host.id),
       (hostTunnels as any[]).map((tunnel: any) => Number(tunnel.id)),
     );
+    const agentAllRules = await gateForwardRulesForRuntime(rawAgentAllRules as any[]);
+    const forwardGroupHealthConfigs = await db.getForwardGroupHealthConfigs((agentAllRules as any[])
+      .map((rule: any) => Number(rule?.forwardGroupId || 0)));
+    const forwardGroupHealthConfigById = new Map((forwardGroupHealthConfigs as any[])
+      .filter((group: any) => group?.isEnabled && String(group.groupMode || "failover") === "failover")
+      .map((group: any) => [Number(group.id), group]));
+    const forwardGroupHealthByRuleId = new Map<number, any>();
+    for (const rule of agentAllRules as any[]) {
+      const groupId = Number(rule?.forwardGroupId || 0);
+      const memberId = Number(rule?.forwardGroupMemberId || 0);
+      const group = forwardGroupHealthConfigById.get(groupId) as any;
+      if (!group || memberId <= 0 || rule?.isForwardGroupTemplate) continue;
+      forwardGroupHealthByRuleId.set(Number(rule.id), {
+        groupId,
+        memberId,
+        failoverSeconds: Math.max(10, Number(group.failoverSeconds || 60)),
+        recoverSeconds: Math.max(10, Number(group.recoverSeconds || 120)),
+      });
+    }
     const hydrateRuntimeTarget = async (rule: any) => {
       if (!rule || !rule.targetIp) return;
       if (!(rule as any)._originalTargetIp) {
@@ -3567,15 +3594,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         exitPorts: tunnel ? currentHostTunnelExitPortsForRule(rule, tunnel) : [],
       });
     };
-    const runningRules: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
+    const runningRules: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any; forwardGroupHealth?: any }[] = [];
     const runningRuleSeen = new Set<string>();
     const guardRules: any[] = [];
-    const addRunningRule = (rule: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
+    const addRunningRule = (rule: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any; forwardGroupHealth?: any }) => {
       if (!rule.ruleId || !rule.sourcePort) return;
       const key = ruleRuntimeIdentityKey(rule.ruleId, rule.sourcePort, rule.protocol);
       if (runningRuleSeen.has(key)) return;
       runningRuleSeen.add(key);
-      runningRules.push(rule);
+      runningRules.push({
+        ...rule,
+        forwardGroupHealth: rule.forwardGroupHealth || forwardGroupHealthByRuleId.get(Number(rule.ruleId)),
+      });
     };
 
     const isKernelForwardRule = (rule: any) => {
@@ -3724,6 +3754,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ],
           fxp: tunnel && isForwardXTunnel(tunnel) ? {
             role: "entry",
+            transportVersion: isForwardXWireGuardV2(tunnel) ? "v2" : "v1",
             tunnelId: tunnel.id,
             ruleId: rule.id,
             listenPort: rule.sourcePort,
@@ -3844,9 +3875,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const port = Number(local.port || 0);
       const forwardType = String(local.forwardType || "").trim() || "unknown";
       const protocol = local.protocol || "both";
+      const transportVersion = resolveLocalForwardXTransportVersion({
+        reportedTransportVersion: local.transportVersion,
+        tunnel: tunnelById.get(Number(local.tunnelId || 0)),
+      });
       const fxp = forwardType === "forwardx" && Number(local.ruleId || 0) > 0
         ? {
             role: "entry",
+            ...(transportVersion ? { transportVersion } : {}),
             tunnelId: Number(local.tunnelId || 0),
             ruleId: Number(local.ruleId || 0),
             listenPort: port,
@@ -3923,7 +3959,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (isKernelForwardRule(rule)) return true;
       return Number(local.ruleId || 0) === Number(rule?.id || 0);
     };
-    const shouldForceStoppedKernelRuleCleanup = (rule: any) => supportsDesiredState && isKernelForwardRule(rule) && localRuleNeedsRemoval(rule);
+    const shouldForceStoppedKernelRuleCleanup = (rule: any) => !!rule?.resourceAccessDenied
+      || (supportsDesiredState && isKernelForwardRule(rule) && localRuleNeedsRemoval(rule));
 
     const settleStoppedRule = async (rule: any) => {
       const id = Number(rule?.id || 0);
@@ -4922,6 +4959,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: removeCmds,
             fxp: tunnel && isForwardXTunnel(tunnel) ? {
               role: "entry",
+              transportVersion: isForwardXWireGuardV2(tunnel) ? "v2" : "v1",
               tunnelId: tunnel.id,
               ruleId: rule.id,
               listenPort: rule.sourcePort,
@@ -5172,6 +5210,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         hopCount: 1,
         probeKey: `forward-group:${Number(probe.groupId)}:host:${Number(host.id)}:china:${Number(probe.memberId)}:${String(probe.targetIp).toLowerCase()}:${Number(probe.targetPort) || 0}`,
         topologyKey: `forward-group:${Number(probe.groupId)}:china:${Number(probe.memberId)}`,
+        failoverSeconds: Math.max(10, Number(probe.failoverSeconds || 60)),
+        recoverSeconds: Math.max(10, Number(probe.recoverSeconds || 120)),
+      });
+    }
+    for (const probe of forwardGroupProbeTopology.entryHealthProbes as any[]) {
+      const key = `entry:${probe.groupId}:${probe.memberId}`;
+      forwardGroupProbeMap.set(key, {
+        groupId: probe.groupId,
+        memberId: probe.memberId,
+        probeType: "entry",
+        targetIp: "",
+        targetPort: 0,
+        method: "self",
+        hopIndex: 0,
+        hopCount: 1,
+        probeKey: `forward-group:${Number(probe.groupId)}:host:${Number(host.id)}:entry:${Number(probe.memberId)}`,
+        topologyKey: `forward-group:${Number(probe.groupId)}:entry:${Number(probe.memberId)}`,
+        failoverSeconds: Math.max(10, Number(probe.failoverSeconds || 60)),
+        recoverSeconds: Math.max(10, Number(probe.recoverSeconds || 120)),
       });
     }
     const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
@@ -5186,12 +5243,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
           && isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel);
       })
-      .map((rule: any) => buildTunnelRuleLatencyProbe({
-        hostId: host.id,
-        rule,
-        tunnel: tunnelById.get(Number(rule.tunnelId || 0)),
-        targetIp: processTarget(rule),
-      }))
+      .map((rule: any) => {
+        const probe = buildTunnelRuleLatencyProbe({
+          hostId: host.id,
+          rule,
+          tunnel: tunnelById.get(Number(rule.tunnelId || 0)),
+          targetIp: processTarget(rule),
+        });
+        return probe ? {
+          ...probe,
+          forwardGroupHealth: forwardGroupHealthByRuleId.get(Number(rule.id)),
+        } : null;
+      })
       .filter(Boolean)
       .sort((left: any, right: any) => Number(left.ruleId) - Number(right.ruleId));
     const hostProbeServices = await db.getHostProbeTasksForHost(host.id);

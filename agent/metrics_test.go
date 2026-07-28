@@ -960,6 +960,9 @@ func TestTCPingDueIntervalScalesWithWorkAndServiceRequirements(t *testing.T) {
 	if got := capForwardGroupHealthProbeInterval(time.Minute, []forwardGroupProbe{{ProbeType: "china"}}); got != 30*time.Second {
 		t.Fatalf("forward-group health probe interval = %s", got)
 	}
+	if got := capForwardGroupHealthProbeInterval(time.Minute, []forwardGroupProbe{{ProbeType: "entry", FailoverSeconds: 10, RecoverSeconds: 120}}); got != 5*time.Second {
+		t.Fatalf("short forward-group health window interval = %s", got)
+	}
 	if got := capForwardGroupHealthProbeInterval(time.Minute, []forwardGroupProbe{{ProbeType: "chain"}}); got != time.Minute {
 		t.Fatalf("display-only chain probe interval should stay unchanged, got %s", got)
 	}

@@ -20,6 +20,8 @@ export type AgentTcpingResult = {
   topologyKey?: string;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  healthStatus?: "unknown" | "healthy" | "unhealthy";
+  healthPending?: boolean;
 };
 
 export type AgentTunnelTcpingResult = {
@@ -60,6 +62,8 @@ export type AgentForwardGroupLatencyResult = {
   targetPort?: number;
   probeKey?: string;
   topologyKey?: string;
+  healthStatus?: "unknown" | "healthy" | "unhealthy";
+  healthPending?: boolean;
 };
 
 export type SelfTestMeta =
@@ -132,7 +136,8 @@ export function isAgentHostTrafficStat(value: unknown): value is AgentHostTraffi
 export function isAgentTcpingResult(value: unknown): value is AgentTcpingResult {
   const item = value as Partial<AgentTcpingResult>;
   return validAgentProbeResult(item, "ruleId")
-    && validOptionalInteger(item.tunnelId, 0);
+    && validOptionalInteger(item.tunnelId, 0)
+    && validOptionalHealthDecision(item);
 }
 
 export function isAgentTunnelTcpingResult(value: unknown): value is AgentTunnelTcpingResult {
@@ -152,7 +157,13 @@ export function isAgentForwardGroupLatencyResult(value: unknown): value is Agent
   return validAgentProbeResult(item, "groupId")
     && validOptionalInteger(item.memberId, 1)
     && validOptionalInteger(item.hopIndex, 0)
-    && validOptionalInteger(item.hopCount, 1);
+    && validOptionalInteger(item.hopCount, 1)
+    && validOptionalHealthDecision(item);
+}
+
+function validOptionalHealthDecision(item: { healthStatus?: unknown; healthPending?: unknown }) {
+  return (item.healthStatus === undefined || item.healthStatus === "unknown" || item.healthStatus === "healthy" || item.healthStatus === "unhealthy")
+    && (item.healthPending === undefined || typeof item.healthPending === "boolean");
 }
 
 function validShortString(value: unknown, maxLength: number) {

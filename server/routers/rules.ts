@@ -5,32 +5,29 @@ import { crudRulesRouter } from "./rules.crud";
 import { portsRulesRouter } from "./rules.ports";
 import { selfTestRulesRouter } from "./rules.selfTest";
 import { trafficRulesRouter } from "./rules.traffic";
-
-function dbFlag(value: unknown) {
-  return value === true
-    || value === 1
-    || value === "1"
-    || String(value ?? "").trim().toLowerCase() === "true";
-}
+import { canUseForwardRuleResource, getLinkAccessScope } from "../linkAccessView";
 
 function positiveId(value: unknown) {
   const id = Number(value || 0);
   return Number.isFinite(id) && id > 0;
 }
 
-function isVisibleForwardGroupRuleForUser(rule: any, allowedForwardGroupIds: Set<number>) {
-  return dbFlag(rule?.isForwardGroupTemplate)
-    && positiveId(rule?.forwardGroupId)
-    && !positiveId(rule?.forwardGroupRuleId)
-    && !positiveId(rule?.forwardGroupMemberId)
-    && allowedForwardGroupIds.has(Number(rule.forwardGroupId));
+function isManagedForwardGroupChildRule(rule: any) {
+  return positiveId(rule?.forwardGroupRuleId) || positiveId(rule?.forwardGroupMemberId);
 }
 
-function isForwardGroupRule(rule: any) {
-  return positiveId(rule?.forwardGroupId)
-    || dbFlag(rule?.isForwardGroupTemplate)
-    || positiveId(rule?.forwardGroupRuleId)
-    || positiveId(rule?.forwardGroupMemberId);
+async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
+  if (user.role === "admin") return value;
+  const scope = await getLinkAccessScope(user);
+  const decorate = (rule: any) => ({
+    ...rule,
+    resourceAccessAllowed: canUseForwardRuleResource(rule, scope),
+  });
+  if (Array.isArray(value)) return value.map(decorate) as T;
+  if (value && Array.isArray((value as any).items)) {
+    return { ...value, items: (value as any).items.map(decorate) } as T;
+  }
+  return (value ? decorate(value) : value) as T;
 }
 
 
@@ -48,6 +45,7 @@ async function getRuleListRepositoryInput(
   user: { id: number; role: string },
 ) {
   const isAdmin = user.role === "admin";
+  const accessScope = isAdmin ? null : await getLinkAccessScope(user);
   const ownerUserId = isAdmin
     ? input.scope === "all"
       ? undefined
@@ -55,9 +53,15 @@ async function getRuleListRepositoryInput(
     : user.id;
   return {
     ownerUserId,
-    allowedForwardGroupIds: isAdmin
-      ? undefined
-      : await db.getUserAllowedForwardGroupIds(user.id),
+    searchVisibleHostIds: accessScope
+      ? Array.from(accessScope.useHostIds || accessScope.hostIds)
+      : undefined,
+    searchVisibleTunnelIds: accessScope
+      ? Array.from(accessScope.useTunnelIds || accessScope.tunnelIds)
+      : undefined,
+    searchVisibleForwardGroupIds: accessScope
+      ? Array.from(accessScope.useGroupIds || accessScope.groupIds)
+      : undefined,
     entryHostId: input.entryHostId,
     category: input.category,
     search: input.search,
@@ -80,15 +84,12 @@ export const rulesRouter = router({
           : input?.userId ?? ctx.user.id
         : ctx.user.id;
       const rules = await db.getForwardRules(requestedUserId, input?.hostId);
-      const allowedForwardGroupIds = isAdmin ? new Set<number>() : new Set(await db.getUserAllowedForwardGroupIds(ctx.user.id));
-      const visibleRules = isAdmin
+      const filtered = input?.tunnelId === undefined
         ? rules
-        : rules.filter((rule: any) => {
-          return !isForwardGroupRule(rule) || isVisibleForwardGroupRuleForUser(rule, allowedForwardGroupIds);
-        });
-      if (input?.tunnelId === undefined) return visibleRules;
-      if (input.tunnelId === null) return visibleRules.filter((rule: any) => !rule.tunnelId);
-      return visibleRules.filter((rule: any) => Number(rule.tunnelId || 0) === Number(input.tunnelId));
+        : input.tunnelId === null
+          ? rules.filter((rule: any) => !rule.tunnelId)
+          : rules.filter((rule: any) => Number(rule.tunnelId || 0) === Number(input.tunnelId));
+      return withRuleResourceAccess(filtered, ctx.user);
     }),
   listPage: protectedProcedure
     .input(z.object({
@@ -102,7 +103,8 @@ export const rulesRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const repositoryInput = await getRuleListRepositoryInput(input, ctx.user);
-      return db.getForwardRulesPage({ ...repositoryInput, page: input.page, pageSize: input.pageSize });
+      const page = await db.getForwardRulesPage({ ...repositoryInput, page: input.page, pageSize: input.pageSize });
+      return withRuleResourceAccess(page, ctx.user);
     }),
   mapItems: protectedProcedure
     .input(z.object({
@@ -116,7 +118,8 @@ export const rulesRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const repositoryInput = await getRuleListRepositoryInput(input, ctx.user);
-      return db.getForwardRuleMapBatch(repositoryInput, input.cursor || 0, input.limit);
+      const batch = await db.getForwardRuleMapBatch(repositoryInput, input.cursor || 0, input.limit);
+      return withRuleResourceAccess(batch, ctx.user);
     }),
   listSummary: protectedProcedure
     .input(z.object({
@@ -160,13 +163,8 @@ export const rulesRouter = router({
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) return null;
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) return null;
-      if (ctx.user.role !== "admin") {
-        if (isForwardGroupRule(rule)) {
-          const allowedForwardGroupIds = new Set(await db.getUserAllowedForwardGroupIds(ctx.user.id));
-          if (!isVisibleForwardGroupRuleForUser(rule, allowedForwardGroupIds)) return null;
-        }
-      }
-      return rule;
+      if (ctx.user.role !== "admin" && isManagedForwardGroupChildRule(rule)) return null;
+      return withRuleResourceAccess(rule, ctx.user);
     }),
   reorder: protectedProcedure
     .input(z.object({

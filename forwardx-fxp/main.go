@@ -459,6 +459,8 @@ func main() {
 	switch strings.ToLower(cfg.Role) {
 	case "entry":
 		err = runEntry(ctx.done, cfg)
+	case "entry-group":
+		err = runEntryGroup(ctx.done, cfg)
 	case "exit":
 		err = runExit(ctx.done, cfg)
 	case "relay":
@@ -583,10 +585,20 @@ func closeWriteConn(conn net.Conn) {
 	}
 }
 
-func runEntry(done <-chan struct{}, cfg config) error {
-	var wg sync.WaitGroup
-	var sessionWG sync.WaitGroup
-	errCh := make(chan error, 2)
+type entryServer struct {
+	serve func() error
+	close func() error
+}
+
+type entryRuntime struct {
+	cfg       config
+	servers   []entryServer
+	sessionWG sync.WaitGroup
+	closeOnce sync.Once
+}
+
+func prepareEntryRuntime(cfg config) (*entryRuntime, error) {
+	runtime := &entryRuntime{cfg: cfg, servers: make([]entryServer, 0, 2)}
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, UDPPort: cfg.UDPExitPort, Key: cfg.Key}, cfg.ExitStrategy)
 	inLimiter := newLimiter(cfg.LimitIn)
@@ -597,56 +609,180 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	if protocolHas(cfg, "tcp") {
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
-			return fmt.Errorf("entry tcp listen :%d: %w", cfg.ListenPort, err)
+			return nil, fmt.Errorf("entry tcp listen :%d: %w", cfg.ListenPort, err)
 		}
-		log.Printf("entry tcp listening on :%d tunnel=%d rule=%d", cfg.ListenPort, cfg.TunnelID, cfg.RuleID)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-done
-			_ = ln.Close()
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errCh <- acceptEntryTCP(ln, cfg, gate, selector, inLimiter, outLimiter, &sessionWG)
-		}()
+		runtime.servers = append(runtime.servers, entryServer{
+			serve: func() error {
+				return acceptEntryTCP(ln, cfg, gate, selector, inLimiter, outLimiter, &runtime.sessionWG)
+			},
+			close: ln.Close,
+		})
 	}
 	if protocolHas(cfg, "udp") {
 		port := udpListenPort(cfg)
 		addr, err := net.ResolveUDPAddr("udp", listenAddress(cfg.ListenHost, port))
 		if err != nil {
-			return err
+			runtime.close()
+			return nil, err
 		}
 		udpConn, err := net.ListenUDP("udp", addr)
 		if err != nil {
-			return fmt.Errorf("entry udp listen :%d: %w", port, err)
+			runtime.close()
+			return nil, fmt.Errorf("entry udp listen :%d: %w", port, err)
 		}
 		tuneUDPConn(udpConn, "entry", fxpUDPListenBufferBytes)
-		log.Printf("entry udp listening on :%d tunnel=%d rule=%d", port, cfg.TunnelID, cfg.RuleID)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-done
-			_ = udpConn.Close()
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errCh <- serveEntryUDPDirect(udpConn, cfg, selector, inLimiter, outLimiter)
-		}()
+		runtime.servers = append(runtime.servers, entryServer{
+			serve: func() error { return serveEntryUDPDirect(udpConn, cfg, selector, inLimiter, outLimiter) },
+			close: udpConn.Close,
+		})
 	}
-	wg.Wait()
-	waitForFXPSessionDrain("entry", cfg, &sessionWG)
-	select {
-	case err := <-errCh:
-		if errors.Is(err, net.ErrClosed) {
-			return nil
+	return runtime, nil
+}
+
+func (runtime *entryRuntime) close() {
+	if runtime == nil {
+		return
+	}
+	runtime.closeOnce.Do(func() {
+		for _, server := range runtime.servers {
+			_ = server.close()
 		}
-		return err
-	default:
-		return nil
+	})
+}
+
+func (runtime *entryRuntime) serve(done <-chan struct{}) error {
+	if runtime == nil {
+		return errors.New("entry runtime is nil")
 	}
+	select {
+	case <-done:
+		runtime.close()
+		return nil
+	default:
+	}
+	cfg := runtime.cfg
+	for _, protocol := range []string{"tcp", "udp"} {
+		if protocolHas(cfg, protocol) {
+			port := cfg.ListenPort
+			if protocol == "udp" {
+				port = udpListenPort(cfg)
+			}
+			log.Printf("entry %s listening on :%d tunnel=%d rule=%d", protocol, port, cfg.TunnelID, cfg.RuleID)
+		}
+	}
+
+	runtimeDone := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			close(runtimeDone)
+			runtime.close()
+		})
+	}
+	go func() {
+		select {
+		case <-done:
+			stop()
+		case <-runtimeDone:
+		}
+	}()
+
+	errCh := make(chan error, len(runtime.servers))
+	var serverWG sync.WaitGroup
+	for _, server := range runtime.servers {
+		server := server
+		serverWG.Add(1)
+		go func() {
+			defer serverWG.Done()
+			errCh <- server.serve()
+			stop()
+		}()
+	}
+	serverWG.Wait()
+	stop()
+	waitForFXPSessionDrain("entry", cfg, &runtime.sessionWG)
+	close(errCh)
+	for err := range errCh {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+	}
+	return nil
+}
+
+func runEntry(done <-chan struct{}, cfg config) error {
+	runtime, err := prepareEntryRuntime(cfg)
+	if err != nil {
+		return err
+	}
+	return runtime.serve(done)
+}
+
+func runEntryGroup(done <-chan struct{}, cfg config) error {
+	runtimes := make([]*entryRuntime, 0, len(cfg.Entries))
+	closeRuntimes := func() {
+		for _, runtime := range runtimes {
+			runtime.close()
+		}
+	}
+	for index, entry := range cfg.Entries {
+		select {
+		case <-done:
+			closeRuntimes()
+			return nil
+		default:
+		}
+		runtime, err := prepareEntryRuntime(entry)
+		if err != nil {
+			closeRuntimes()
+			return fmt.Errorf("entry-group entry %d rule=%d listen=%d: %w", index, entry.RuleID, entry.ListenPort, err)
+		}
+		runtimes = append(runtimes, runtime)
+	}
+
+	groupDone := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() { close(groupDone) })
+	}
+	go func() {
+		select {
+		case <-done:
+			stop()
+		case <-groupDone:
+		}
+	}()
+
+	type entryResult struct {
+		index int
+		err   error
+	}
+	results := make(chan entryResult, len(runtimes))
+	for i, runtime := range runtimes {
+		i, runtime := i, runtime
+		go func() {
+			err := runtime.serve(groupDone)
+			if err == nil {
+				select {
+				case <-groupDone:
+				default:
+					err = errors.New("entry runtime stopped unexpectedly")
+				}
+			}
+			stop()
+			results <- entryResult{index: i, err: err}
+		}()
+	}
+
+	var firstErr error
+	for range runtimes {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			entry := cfg.Entries[result.index]
+			firstErr = fmt.Errorf("entry-group entry %d rule=%d listen=%d: %w", result.index, entry.RuleID, entry.ListenPort, result.err)
+		}
+	}
+	return firstErr
 }
 
 func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, sessionWG *sync.WaitGroup) error {

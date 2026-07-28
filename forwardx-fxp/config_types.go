@@ -18,6 +18,7 @@ type udpTarget struct {
 
 type config struct {
 	Role                     string         `json:"role"`
+	Entries                  []config       `json:"entries,omitempty"`
 	TunnelID                 int            `json:"tunnelId"`
 	RuleID                   int            `json:"ruleId"`
 	ListenPort               int            `json:"listenPort"`

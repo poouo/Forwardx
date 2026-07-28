@@ -85,7 +85,10 @@ export type ForwardRuleListCategory = "all" | "local" | "tunnel" | "chain" | "gr
 
 export type ForwardRuleListQuery = PageRequest & {
   ownerUserId?: number;
-  allowedForwardGroupIds?: number[];
+  /** Root resources whose related metadata may participate in user search. */
+  searchVisibleHostIds?: number[];
+  searchVisibleTunnelIds?: number[];
+  searchVisibleForwardGroupIds?: number[];
   entryHostId?: number | null;
   category: ForwardRuleListCategory;
   search?: string;
@@ -103,12 +106,6 @@ type ForwardRuleSqlFilter = {
   params: any[];
   categorySql: string;
 };
-
-function normalizeForwardRuleIds(values: unknown[] | undefined) {
-  return Array.from(new Set((values || [])
-    .map((value) => Math.floor(Number(value)))
-    .filter((value) => Number.isInteger(value) && value > 0)));
-}
 
 function escapeForwardRuleSearchToken(value: string) {
   return value.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
@@ -170,6 +167,33 @@ function pushForwardRuleLike(clauses: string[], params: any[], expression: strin
   params.push(pattern);
 }
 
+function normalizeForwardRuleIds(values: unknown[] | undefined) {
+  return Array.from(new Set((values || [])
+    .map((value) => Math.floor(Number(value)))
+    .filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function pushScopedForwardRuleSearch(
+  clauses: string[],
+  params: any[],
+  idExpression: string,
+  visibleIds: number[] | undefined,
+  scopedClauses: string[],
+  scopedParams: any[],
+) {
+  if (scopedClauses.length === 0) return;
+  if (visibleIds === undefined) {
+    clauses.push("(" + scopedClauses.join(" OR ") + ")");
+    params.push(...scopedParams);
+    return;
+  }
+  const ids = normalizeForwardRuleIds(visibleIds);
+  if (ids.length === 0) return;
+  const visible = inList(ids);
+  clauses.push("(" + idExpression + " IN " + visible.sql + " AND (" + scopedClauses.join(" OR ") + "))");
+  params.push(...visible.params, ...scopedParams);
+}
+
 function buildForwardRuleSqlFilter(
   input: ForwardRuleListQuery,
   controls: ForwardRuleFilterControls = {},
@@ -189,25 +213,6 @@ function buildForwardRuleSqlFilter(
   if (ownerUserId > 0) {
     conditions.push(ruleColumn("r", "userId") + " = ?");
     params.push(ownerUserId);
-  }
-
-  if (input.allowedForwardGroupIds !== undefined) {
-    const allowedIds = normalizeForwardRuleIds(input.allowedForwardGroupIds);
-    const allowed = inList(allowedIds);
-    const directRule = [
-      "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0",
-      "COALESCE(" + ruleColumn("r", "isForwardGroupTemplate") + ", " + boolLiteral(false) + ") = " + boolLiteral(false),
-      "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
-    ].join(" AND ");
-    const groupTemplate = allowedIds.length > 0
-      ? [
-        "COALESCE(" + ruleColumn("r", "isForwardGroupTemplate") + ", " + boolLiteral(false) + ") = " + boolLiteral(true),
-        ruleColumn("r", "forwardGroupId") + " IN " + allowed.sql,
-        "COALESCE(" + ruleColumn("r", "forwardGroupMemberId") + ", 0) = 0",
-      ].join(" AND ")
-      : "1 = 0";
-    conditions.push("((" + directRule + ") OR (" + groupTemplate + "))");
-    params.push(...allowed.params);
   }
 
   if (includeEntryHost && Number(input.entryHostId || 0) > 0) {
@@ -234,6 +239,17 @@ function buildForwardRuleSqlFilter(
       ruleColumn("r", "protocolBlockReason"),
       ruleColumn("r", "failoverStrategy"),
       ruleColumn("r", "failoverTargets"),
+      ruleColumn("u", "username"),
+      ruleColumn("u", "name"),
+      ruleColumn("u", "email"),
+      ruleColumn("u", "displayRemark"),
+    ]) {
+      pushForwardRuleLike(tokenClauses, tokenParams, expression, pattern);
+    }
+
+    const groupClauses: string[] = [];
+    const groupParams: any[] = [];
+    for (const expression of [
       ruleColumn("g", "name"),
       ruleColumn("g", "remark"),
       ruleColumn("g", "groupType"),
@@ -245,35 +261,61 @@ function buildForwardRuleSqlFilter(
       ruleColumn("g", "lastDdnsValue"),
       ruleColumn("g", "lastStatus"),
       ruleColumn("g", "lastMessage"),
+    ]) {
+      pushForwardRuleLike(groupClauses, groupParams, expression, pattern);
+    }
+    pushScopedForwardRuleSearch(
+      tokenClauses,
+      tokenParams,
+      ruleColumn("g", "id"),
+      input.searchVisibleForwardGroupIds,
+      groupClauses,
+      groupParams,
+    );
+
+    const tunnelClauses: string[] = [];
+    const tunnelParams: any[] = [];
+    for (const expression of [
       ruleColumn("t", "name"),
       ruleColumn("t", "mode"),
       ruleColumn("t", "forwardxVersion"),
       ruleColumn("t", "networkType"),
       ruleColumn("t", "connectHost"),
       ruleColumn("t", "certDomain"),
-      ruleColumn("u", "username"),
-      ruleColumn("u", "name"),
-      ruleColumn("u", "email"),
-      ruleColumn("u", "displayRemark"),
     ]) {
-      pushForwardRuleLike(tokenClauses, tokenParams, expression, pattern);
+      pushForwardRuleLike(tunnelClauses, tunnelParams, expression, pattern);
     }
+    pushScopedForwardRuleSearch(
+      tokenClauses,
+      tokenParams,
+      ruleColumn("t", "id"),
+      input.searchVisibleTunnelIds,
+      tunnelClauses,
+      tunnelParams,
+    );
 
     const entryGroupClauses: string[] = [];
+    const entryGroupParams: any[] = [];
     for (const expression of [
       ruleColumn("entry_group", "name"),
       ruleColumn("entry_group", "remark"),
       ruleColumn("entry_group", "domain"),
     ]) {
-      pushForwardRuleLike(entryGroupClauses, tokenParams, expression, pattern);
+      pushForwardRuleLike(entryGroupClauses, entryGroupParams, expression, pattern);
     }
-    tokenClauses.push(
-      "EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_groups") + " entry_group"
-      + " WHERE " + ruleColumn("entry_group", "id") + " = " + ruleColumn("g", "entryGroupId")
-      + " AND (" + entryGroupClauses.join(" OR ") + "))",
+    pushScopedForwardRuleSearch(
+      tokenClauses,
+      tokenParams,
+      ruleColumn("g", "id"),
+      input.searchVisibleForwardGroupIds,
+      ["EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_groups") + " entry_group"
+        + " WHERE " + ruleColumn("entry_group", "id") + " = " + ruleColumn("g", "entryGroupId")
+        + " AND (" + entryGroupClauses.join(" OR ") + "))"],
+      entryGroupParams,
     );
 
     const directHostClauses: string[] = [];
+    const directHostParams: any[] = [];
     for (const expression of [
       ruleColumn("direct_host", "name"),
       ruleColumn("direct_host", "ip"),
@@ -282,16 +324,48 @@ function buildForwardRuleSqlFilter(
       ruleColumn("direct_host", "entryIp"),
       ruleColumn("direct_host", "tunnelEntryIp"),
     ]) {
-      pushForwardRuleLike(directHostClauses, tokenParams, expression, pattern);
+      pushForwardRuleLike(directHostClauses, directHostParams, expression, pattern);
     }
-    tokenClauses.push(
-      "EXISTS (SELECT 1 FROM " + quoteIdentifier("hosts") + " direct_host"
-      + " WHERE " + ruleColumn("direct_host", "id") + " IN ("
-      + ruleColumn("r", "hostId") + ", " + ruleColumn("t", "entryHostId") + ", " + ruleColumn("t", "exitHostId") + ")"
-      + " AND (" + directHostClauses.join(" OR ") + "))",
-    );
+    const directHostRouteClauses: string[] = [];
+    const directHostRouteParams: any[] = [];
+    if (input.searchVisibleHostIds === undefined && input.searchVisibleTunnelIds === undefined) {
+      directHostRouteClauses.push(
+        ruleColumn("direct_host", "id") + " IN ("
+        + ruleColumn("r", "hostId") + ", " + ruleColumn("t", "entryHostId") + ", " + ruleColumn("t", "exitHostId") + ")",
+      );
+    } else {
+      const hostIds = normalizeForwardRuleIds(input.searchVisibleHostIds);
+      if (hostIds.length > 0) {
+        const visibleHosts = inList(hostIds);
+        directHostRouteClauses.push(
+          "(" + ruleColumn("g", "id") + " IS NULL AND " + ruleColumn("t", "id") + " IS NULL"
+          + " AND " + ruleColumn("r", "hostId") + " IN " + visibleHosts.sql
+          + " AND " + ruleColumn("direct_host", "id") + " = " + ruleColumn("r", "hostId") + ")",
+        );
+        directHostRouteParams.push(...visibleHosts.params);
+      }
+      const tunnelIds = normalizeForwardRuleIds(input.searchVisibleTunnelIds);
+      if (tunnelIds.length > 0) {
+        const visibleTunnels = inList(tunnelIds);
+        directHostRouteClauses.push(
+          "(" + ruleColumn("t", "id") + " IN " + visibleTunnels.sql
+          + " AND " + ruleColumn("direct_host", "id") + " IN ("
+          + ruleColumn("t", "entryHostId") + ", " + ruleColumn("t", "exitHostId") + "))",
+        );
+        directHostRouteParams.push(...visibleTunnels.params);
+      }
+    }
+    if (directHostRouteClauses.length > 0) {
+      tokenClauses.push(
+        "EXISTS (SELECT 1 FROM " + quoteIdentifier("hosts") + " direct_host"
+        + " WHERE (" + directHostRouteClauses.join(" OR ") + ")"
+        + " AND (" + directHostClauses.join(" OR ") + "))",
+      );
+      tokenParams.push(...directHostRouteParams, ...directHostParams);
+    }
 
     const memberClauses: string[] = [];
+    const memberParams: any[] = [];
     for (const expression of [
       ruleColumn("group_member", "connectHost"),
       ruleColumn("member_host", "name"),
@@ -306,20 +380,25 @@ function buildForwardRuleSqlFilter(
       ruleColumn("member_exit_host", "name"),
       ruleColumn("member_exit_host", "ip"),
     ]) {
-      pushForwardRuleLike(memberClauses, tokenParams, expression, pattern);
+      pushForwardRuleLike(memberClauses, memberParams, expression, pattern);
     }
-    tokenClauses.push(
-      "EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_group_members") + " group_member"
-      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_host"
-      + " ON " + ruleColumn("member_host", "id") + " = " + ruleColumn("group_member", "hostId")
-      + " LEFT JOIN " + quoteIdentifier("tunnels") + " member_tunnel"
-      + " ON " + ruleColumn("member_tunnel", "id") + " = " + ruleColumn("group_member", "tunnelId")
-      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_entry_host"
-      + " ON " + ruleColumn("member_entry_host", "id") + " = " + ruleColumn("member_tunnel", "entryHostId")
-      + " LEFT JOIN " + quoteIdentifier("hosts") + " member_exit_host"
-      + " ON " + ruleColumn("member_exit_host", "id") + " = " + ruleColumn("member_tunnel", "exitHostId")
-      + " WHERE " + ruleColumn("group_member", "groupId") + " = " + ruleColumn("g", "id")
-      + " AND (" + memberClauses.join(" OR ") + "))",
+    pushScopedForwardRuleSearch(
+      tokenClauses,
+      tokenParams,
+      ruleColumn("g", "id"),
+      input.searchVisibleForwardGroupIds,
+      ["EXISTS (SELECT 1 FROM " + quoteIdentifier("forward_group_members") + " group_member"
+        + " LEFT JOIN " + quoteIdentifier("hosts") + " member_host"
+        + " ON " + ruleColumn("member_host", "id") + " = " + ruleColumn("group_member", "hostId")
+        + " LEFT JOIN " + quoteIdentifier("tunnels") + " member_tunnel"
+        + " ON " + ruleColumn("member_tunnel", "id") + " = " + ruleColumn("group_member", "tunnelId")
+        + " LEFT JOIN " + quoteIdentifier("hosts") + " member_entry_host"
+        + " ON " + ruleColumn("member_entry_host", "id") + " = " + ruleColumn("member_tunnel", "entryHostId")
+        + " LEFT JOIN " + quoteIdentifier("hosts") + " member_exit_host"
+        + " ON " + ruleColumn("member_exit_host", "id") + " = " + ruleColumn("member_tunnel", "exitHostId")
+        + " WHERE " + ruleColumn("group_member", "groupId") + " = " + ruleColumn("g", "id")
+        + " AND (" + memberClauses.join(" OR ") + "))"],
+      memberParams,
     );
 
     const numeric = /^\d+$/.test(token) ? Number(token) : 0;
@@ -333,16 +412,34 @@ function buildForwardRuleSqlFilter(
         ruleColumn("r", "gostRelayPort"),
         ruleColumn("r", "tunnelId"),
         ruleColumn("r", "forwardGroupId"),
-        ruleColumn("g", "id"),
-        ruleColumn("g", "sourcePort"),
-        ruleColumn("g", "targetPort"),
-        ruleColumn("t", "id"),
-        ruleColumn("t", "listenPort"),
-        ruleColumn("t", "mimicPort"),
       ]) {
         tokenClauses.push(expression + " = ?");
         tokenParams.push(numeric);
       }
+      pushScopedForwardRuleSearch(
+        tokenClauses,
+        tokenParams,
+        ruleColumn("g", "id"),
+        input.searchVisibleForwardGroupIds,
+        [
+          ruleColumn("g", "id") + " = ?",
+          ruleColumn("g", "sourcePort") + " = ?",
+          ruleColumn("g", "targetPort") + " = ?",
+        ],
+        [numeric, numeric, numeric],
+      );
+      pushScopedForwardRuleSearch(
+        tokenClauses,
+        tokenParams,
+        ruleColumn("t", "id"),
+        input.searchVisibleTunnelIds,
+        [
+          ruleColumn("t", "id") + " = ?",
+          ruleColumn("t", "listenPort") + " = ?",
+          ruleColumn("t", "mimicPort") + " = ?",
+        ],
+        [numeric, numeric, numeric],
+      );
     }
 
     const categoryLabels: Array<[Exclude<ForwardRuleListCategory, "all">, string]> = [

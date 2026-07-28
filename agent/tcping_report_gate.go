@@ -10,6 +10,7 @@ import (
 
 const (
 	tcpingSteadyReportEvery = 5 * time.Minute
+	tcpingHealthReportEvery = time.Minute
 	tcpingReportStateTTL    = 30 * time.Minute
 )
 
@@ -116,7 +117,12 @@ func addTCPingReportUnits(groups map[string][]string, kind string, reports []map
 			continue
 		}
 		unitKey := tcpingReportUnitKey(kind, report)
-		state := fmt.Sprintf("%s=%t", tcpingProbeStateKey(kind, report), tcpingReportStatus(report))
+		state := fmt.Sprintf(
+			"%s=%t:%s",
+			tcpingProbeStateKey(kind, report),
+			tcpingReportStatus(report),
+			tcpingReportText(report, "healthStatus"),
+		)
 		groups[unitKey] = append(groups[unitKey], state)
 	}
 }
@@ -145,6 +151,20 @@ func (gate *tcpingReportGate) plan(
 	addTCPingReportUnits(groups, "tunnel", tunnels, false)
 	addTCPingReportUnits(groups, "forwardGroup", forwardGroups, false)
 	signatures := tcpingReportUnitSignatures(groups)
+	healthUnits := map[string]bool{}
+	for _, reportGroup := range []struct {
+		kind    string
+		reports []map[string]any
+	}{
+		{kind: "rule", reports: results},
+		{kind: "forwardGroup", reports: forwardGroups},
+	} {
+		for _, report := range reportGroup.reports {
+			if tcpingReportText(report, "healthStatus") != "" {
+				healthUnits[tcpingReportUnitKey(reportGroup.kind, report)] = true
+			}
+		}
+	}
 	selected := make(map[string]bool, len(signatures))
 	updates := make(map[string]tcpingReportGateState, len(signatures))
 
@@ -160,7 +180,11 @@ func (gate *tcpingReportGate) plan(
 			state.lastSeenAt = now
 			gate.states[key] = state
 		}
-		if force || !exists || state.signature != signature || now.Sub(state.reportedAt) >= tcpingSteadyReportEvery {
+		reportEvery := tcpingSteadyReportEvery
+		if healthUnits[key] {
+			reportEvery = tcpingHealthReportEvery
+		}
+		if force || !exists || state.signature != signature || now.Sub(state.reportedAt) >= reportEvery {
 			selected[key] = true
 			updates[key] = tcpingReportGateState{signature: signature, reportedAt: now, lastSeenAt: now}
 		}

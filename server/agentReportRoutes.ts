@@ -982,10 +982,19 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       }, { preserveMessage: true });
       if (!summary.unavailable && !tunnel.isRunning) await db.updateTunnelRunningStatus(tunnelId, true);
     });
-    const chinaExpected = forwardGroupResults.some((report) => String(report.probeType || "") === "china")
-      ? await db.getForwardGroupChinaHealthProbesForHost(Number(host.id)) as any[]
-      : [];
+    const needsForwardGroupHealthTopology = forwardGroupResults.some((report) => {
+      const type = String(report.probeType || "");
+      return type === "china" || type === "entry";
+    });
+    const healthTopology = needsForwardGroupHealthTopology
+      ? await db.getForwardGroupProbeTopologyForHost(Number(host.id)) as any
+      : { chinaHealthProbes: [], entryHealthProbes: [] };
+    const chinaExpected = healthTopology.chinaHealthProbes || [];
     const chinaExpectedByKey = new Map(chinaExpected.map((probe: any) => [
+      `${Number(probe.groupId)}:${Number(probe.memberId)}`,
+      probe,
+    ]));
+    const entryExpectedByKey = new Map((healthTopology.entryHealthProbes || []).map((probe: any) => [
       `${Number(probe.groupId)}:${Number(probe.memberId)}`,
       probe,
     ]));
@@ -1016,6 +1025,18 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
             hostId: Number(host.id),
             latencyMs: typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null,
             isTimeout: !!report.isTimeout,
+            healthStatus: report.healthStatus,
+          });
+          continue;
+        }
+        if (String(report.probeType || "") === "entry") {
+          const expected = entryExpectedByKey.get(`${groupId}:${Number(report.memberId || 0)}`) as any;
+          if (!expected || report.healthStatus === undefined) continue;
+          await db.updateForwardGroupMemberAgentHealth({
+            groupId,
+            memberId: Number(report.memberId || 0),
+            hostId: Number(host.id),
+            healthStatus: report.healthStatus,
           });
           continue;
         }
@@ -1109,7 +1130,14 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         const isTimeout = !!report.isTimeout || baseLatency === null;
         const latencyMs = isTimeout ? null : baseLatency;
         return {
-          stat: { ruleId, hostId: host.id, latencyMs, isTimeout },
+          stat: {
+            ruleId,
+            hostId: host.id,
+            latencyMs,
+            isTimeout,
+            healthStatus: report.healthStatus || null,
+            healthPending: !!report.healthPending,
+          },
           gateReport: { ...report, latencyMs, isTimeout },
         };
       }
@@ -1130,12 +1158,15 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         tunnelRecordedAt: latestTunnelLatency?.recordedAt,
       });
       if (!combined) return null;
+      const tunnelIntroducedTimeout = combined.isTimeout && !report.isTimeout;
       return {
         stat: {
           ruleId,
           hostId: host.id,
           latencyMs: combined.latencyMs,
           isTimeout: combined.isTimeout,
+          healthStatus: tunnelIntroducedTimeout ? null : report.healthStatus || null,
+          healthPending: tunnelIntroducedTimeout ? false : !!report.healthPending,
         },
         gateReport: {
           ...report,

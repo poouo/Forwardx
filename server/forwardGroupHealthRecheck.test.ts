@@ -4,9 +4,11 @@ import {
   ForwardGroupEvaluationBatchError,
   ForwardGroupEvaluationQueue,
   FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS,
+  FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS,
   ForwardGroupHealthRecheckScheduler,
   ForwardGroupHostSilenceScheduler,
   forwardGroupChinaHealthStateAt,
+  forwardGroupAgentHealthStateAt,
   isActivityFreshAt,
   latestKnownActivityAt,
   nextForwardGroupChinaHealthExpiryAt,
@@ -251,11 +253,14 @@ test("China health snapshots expire exactly after the jitter-safe report window"
   const expiresAt = checkedAt + FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS;
   const member = { isEnabled: true, chinaHealthStatus: "healthy", chinaHealthCheckedAt: checkedAt };
 
-  assert.equal(FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS, 8 * 60_000);
+  assert.equal(FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS, 5 * 60_000);
+  assert.equal(FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS, 5 * 60_000);
   assert.equal(forwardGroupChinaHealthStateAt(member, expiresAt - 1), "healthy");
   assert.equal(forwardGroupChinaHealthStateAt(member, expiresAt), "stale");
   assert.equal(forwardGroupChinaHealthStateAt({ chinaHealthStatus: "healthy" }, now), "stale");
   assert.equal(forwardGroupChinaHealthStateAt({ chinaHealthStatus: "unknown" }, now), "pending");
+  assert.equal(forwardGroupAgentHealthStateAt({ healthStatus: "healthy", lastCheckedAt: checkedAt }, expiresAt - 1), "healthy");
+  assert.equal(forwardGroupAgentHealthStateAt({ healthStatus: "healthy", lastCheckedAt: checkedAt }, expiresAt), "stale");
   assert.equal(nextForwardGroupChinaHealthExpiryAt({ enabled: true, members: [member], now }), expiresAt);
 });
 

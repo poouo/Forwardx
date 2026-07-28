@@ -6,7 +6,8 @@ type HealthWindowMember = {
   recoveredLongEnough?: boolean;
 };
 
-export const FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS = 8 * 60 * 1000;
+export const FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS = 5 * 60 * 1000;
+export const FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS = FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS;
 
 export type ForwardGroupChinaHealthState = "healthy" | "unhealthy" | "pending" | "stale";
 
@@ -19,6 +20,16 @@ export function forwardGroupChinaHealthStateAt(member: any, nowValue = Date.now(
   const checkedAt = timestamp(member?.chinaHealthCheckedAt);
   if (!Number.isFinite(now) || checkedAt <= 0 || checkedAt > now + 60_000) return "stale";
   return now - checkedAt < FORWARD_GROUP_CHINA_HEALTH_FRESHNESS_TTL_MS ? status : "stale";
+}
+
+export function forwardGroupAgentHealthStateAt(member: any, nowValue = Date.now()): ForwardGroupChinaHealthState {
+  const status = String(member?.healthStatus || "unknown").trim().toLowerCase();
+  if (status === "unknown") return "pending";
+  if (status !== "healthy" && status !== "unhealthy") return "stale";
+  const now = Number(nowValue);
+  const checkedAt = timestamp(member?.lastCheckedAt);
+  if (!Number.isFinite(now) || checkedAt <= 0 || checkedAt > now + 60_000) return "stale";
+  return now - checkedAt < FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS ? status : "stale";
 }
 
 export function nextForwardGroupChinaHealthExpiryAt(input: {

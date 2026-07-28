@@ -62,6 +62,28 @@ test("disabled rules remain disabled even with a successful probe", () => {
   assert.equal(result.state, "disabled");
 });
 
+test("revoked resource access overrides cached running and probe state", () => {
+  const result = resolveForwardRuleVisualStatus({
+    ...base,
+    ruleRunning: true,
+    resourceAccessAllowed: false,
+    runtimeStatus: "running",
+    latestLatencyMs: 10,
+    latestLatencyIsTimeout: false,
+    latestLatencyAt: now - 10_000,
+  }, now);
+  assert.deepEqual(result, { state: "error", title: "资源授权失效" });
+});
+
+test("revoked resource access remains explicit after the rule is stopped", () => {
+  const result = resolveForwardRuleVisualStatus({
+    ...base,
+    ruleEnabled: false,
+    resourceAccessAllowed: false,
+  }, now);
+  assert.deepEqual(result, { state: "error", title: "资源授权失效" });
+});
+
 test("an available link alone does not claim that an unconfirmed rule is running", () => {
   const result = resolveForwardRuleVisualStatus({
     ruleEnabled: true,

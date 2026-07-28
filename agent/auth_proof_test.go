@@ -104,10 +104,6 @@ func TestPostNegotiatesChallengeAuthAndRetriesWithoutClockSync(t *testing.T) {
 		issued[challenge] = true
 	}
 
-	previousClockSyncAt := atomic.LoadInt64(&lastClockSyncAttemptAt)
-	atomic.StoreInt64(&lastClockSyncAttemptAt, time.Now().Unix())
-	t.Cleanup(func() { atomic.StoreInt64(&lastClockSyncAttemptAt, previousClockSyncAt) })
-
 	var postRequests atomic.Int32
 	var challengeRequests atomic.Int32
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -298,9 +294,6 @@ func TestChallengeCapabilityDoesNotRetryOrdinaryServerErrors(t *testing.T) {
 }
 
 func TestAuthenticatedBusinessErrorsAreNeverRetried(t *testing.T) {
-	previousSync := syncSystemTimeForAgentRequestError
-	defer func() { syncSystemTimeForAgentRequestError = previousSync }()
-
 	for _, statusCode := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(strconv.Itoa(statusCode), func(t *testing.T) {
 			resetAgentAuthChallengeCacheForTests()
@@ -308,11 +301,6 @@ func TestAuthenticatedBusinessErrorsAreNeverRetried(t *testing.T) {
 			const token = "authenticated-business-error-token"
 			challenges := testAgentAuthChallenges(agentAuthChallengeBatchSize, byte(statusCode))
 			var syncRequests atomic.Int32
-			var clockSyncCalls atomic.Int32
-			syncSystemTimeForAgentRequestError = func(error) bool {
-				clockSyncCalls.Add(1)
-				return true
-			}
 
 			panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set(agentAuthCapabilityHeader, agentAuthChallengeCapability)
@@ -355,8 +343,8 @@ func TestAuthenticatedBusinessErrorsAreNeverRetried(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), strconv.Itoa(statusCode)) {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if syncRequests.Load() != 1 || clockSyncCalls.Load() != 0 {
-				t.Fatalf("syncRequests=%d clockSyncCalls=%d", syncRequests.Load(), clockSyncCalls.Load())
+			if syncRequests.Load() != 1 {
+				t.Fatalf("syncRequests=%d", syncRequests.Load())
 			}
 		})
 	}
@@ -365,16 +353,9 @@ func TestAuthenticatedBusinessErrorsAreNeverRetried(t *testing.T) {
 func TestAcceptedEnvelopeReplayIsNeverRetried(t *testing.T) {
 	resetAgentAuthChallengeCacheForTests()
 	t.Cleanup(resetAgentAuthChallengeCacheForTests)
-	previousSync := syncSystemTimeForAgentRequestError
-	defer func() { syncSystemTimeForAgentRequestError = previousSync }()
 	const token = "accepted-envelope-replay-token"
 	challenges := testAgentAuthChallenges(agentAuthChallengeBatchSize, 12)
 	var syncRequests atomic.Int32
-	var clockSyncCalls atomic.Int32
-	syncSystemTimeForAgentRequestError = func(error) bool {
-		clockSyncCalls.Add(1)
-		return true
-	}
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set(agentAuthCapabilityHeader, agentAuthChallengeCapability)
 		if req.URL.Path == "/api/agent/auth-challenge" {
@@ -400,8 +381,8 @@ func TestAcceptedEnvelopeReplayIsNeverRetried(t *testing.T) {
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "replay detected") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if syncRequests.Load() != 1 || clockSyncCalls.Load() != 0 {
-		t.Fatalf("syncRequests=%d clockSyncCalls=%d", syncRequests.Load(), clockSyncCalls.Load())
+	if syncRequests.Load() != 1 {
+		t.Fatalf("syncRequests=%d", syncRequests.Load())
 	}
 }
 
@@ -448,19 +429,12 @@ func TestChallengeFetchFailureFallsBackToV1(t *testing.T) {
 	}
 }
 
-func TestChallengeFetchFailureRestoresV1ClockSyncFallback(t *testing.T) {
+func TestChallengeFetchFailureDoesNotModifySystemTimeOrRetryV1(t *testing.T) {
 	resetAgentAuthChallengeCacheForTests()
 	t.Cleanup(resetAgentAuthChallengeCacheForTests)
-	previousSync := syncSystemTimeForAgentRequestError
-	defer func() { syncSystemTimeForAgentRequestError = previousSync }()
 	const token = "challenge-clock-fallback-token"
 	var challengeRequests atomic.Int32
 	var syncRequests atomic.Int32
-	var clockSyncCalls atomic.Int32
-	syncSystemTimeForAgentRequestError = func(error) bool {
-		clockSyncCalls.Add(1)
-		return true
-	}
 
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/api/agent/auth-challenge" {
@@ -472,41 +446,25 @@ func TestChallengeFetchFailureRestoresV1ClockSyncFallback(t *testing.T) {
 			http.NotFound(w, req)
 			return
 		}
-		requestNumber := syncRequests.Add(1)
+		syncRequests.Add(1)
 		w.Header().Set(agentAuthCapabilityHeader, agentAuthChallengeCapability)
 		proof := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
 		if !strings.HasPrefix(proof, "v1.") {
 			t.Errorf("fallback proof=%s", proof)
 		}
-		if requestNumber == 1 {
-			w.Header().Set(agentAuthResultHeader, agentAuthResultRejected)
-			http.Error(w, "Request timestamp out of window (replay protection)", http.StatusUnauthorized)
-			return
-		}
-		response, err := encrypt(map[string]any{"success": true}, token)
-		if err != nil {
-			t.Error(err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set(agentAuthResultHeader, agentAuthResultAccepted)
-		_ = json.NewEncoder(w).Encode(response)
+		w.Header().Set(agentAuthResultHeader, agentAuthResultRejected)
+		http.Error(w, "Request timestamp out of window (replay protection)", http.StatusUnauthorized)
 	}))
 	defer panel.Close()
 	observeAgentAuthCapability(panel.URL, agentAuthChallengeCapability)
 
 	var response map[string]any
-	if err := postWithClientToPanelURL(
+	err := postWithClientToPanelURL(
 		panel.Client(), Config{PanelURL: panel.URL, Token: token}, panel.URL,
 		"/api/agent/register", map[string]any{"hostname": "clock-fallback"}, &response,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if response["success"] != true || challengeRequests.Load() != 1 || syncRequests.Load() != 2 || clockSyncCalls.Load() != 1 {
-		t.Fatalf(
-			"response=%#v challengeRequests=%d syncRequests=%d clockSyncCalls=%d",
-			response, challengeRequests.Load(), syncRequests.Load(), clockSyncCalls.Load(),
-		)
+	)
+	if err == nil || challengeRequests.Load() != 1 || syncRequests.Load() != 1 {
+		t.Fatalf("error=%v challengeRequests=%d syncRequests=%d", err, challengeRequests.Load(), syncRequests.Load())
 	}
 }
 

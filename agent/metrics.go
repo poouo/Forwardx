@@ -164,12 +164,15 @@ type tcpingTask struct {
 	TargetPort      int
 	HopIndex        int
 	HopCount        int
+	FailoverSeconds int
+	RecoverSeconds  int
 	SeriesKey       string
 	SeriesLabel     string
 	WireGuardPeerID string
 	SourcePort      int
 	ProbeKey        string
 	TopologyKey     string
+	GroupHealth     *forwardGroupHealthSpec
 }
 
 type tcpingTaskResult struct {
@@ -984,44 +987,56 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 
 	forwardGroupTasks := []tcpingTask{}
 	for _, probe := range groupProbes {
-		if probe.GroupID <= 0 || probe.TargetIP == "" || probe.HopCount <= 0 {
-			continue
-		}
 		method := strings.ToLower(strings.TrimSpace(probe.Method))
-		if method != "ping" && probe.TargetPort <= 0 {
+		if probe.GroupID <= 0 || probe.HopCount <= 0 || (method != "self" && probe.TargetIP == "") {
 			continue
 		}
-		if method != "ping" {
+		if method != "ping" && method != "self" && probe.TargetPort <= 0 {
+			continue
+		}
+		if method != "ping" && method != "self" {
 			method = "tcp"
 		}
 		forwardGroupTasks = append(forwardGroupTasks, tcpingTask{
-			Kind:        "forwardGroup",
-			GroupID:     probe.GroupID,
-			MemberID:    probe.MemberID,
-			ProbeType:   probe.ProbeType,
-			Method:      method,
-			TargetIP:    probe.TargetIP,
-			TargetPort:  probe.TargetPort,
-			HopIndex:    probe.HopIndex,
-			HopCount:    probe.HopCount,
-			ProbeKey:    probe.ProbeKey,
-			TopologyKey: probe.TopologyKey,
+			Kind:            "forwardGroup",
+			GroupID:         probe.GroupID,
+			MemberID:        probe.MemberID,
+			ProbeType:       probe.ProbeType,
+			Method:          method,
+			TargetIP:        probe.TargetIP,
+			TargetPort:      probe.TargetPort,
+			HopIndex:        probe.HopIndex,
+			HopCount:        probe.HopCount,
+			FailoverSeconds: probe.FailoverSeconds,
+			RecoverSeconds:  probe.RecoverSeconds,
+			ProbeKey:        probe.ProbeKey,
+			TopologyKey:     probe.TopologyKey,
 		})
 	}
 
+	healthRuleTasks := make([]tcpingTask, 0)
+	ordinaryRuleTasks := make([]tcpingTask, 0, len(ruleTasks))
+	for _, task := range ruleTasks {
+		if task.GroupHealth != nil {
+			healthRuleTasks = append(healthRuleTasks, task)
+		} else {
+			ordinaryRuleTasks = append(ordinaryRuleTasks, task)
+		}
+	}
 	cycleInterval := tcpingDueInterval(serviceProbes, len(ruleTasks), len(tunnelTasks)+len(forwardGroupTasks))
 	ruleRounds := tcpingRoundsForWindow(cycleInterval, 3*time.Minute)
-	ruleLimit := tcpingDynamicBatchLimit(len(ruleTasks), tcpingRuleBatchSize, ruleRounds, 256)
+	ruleLimit := tcpingDynamicBatchLimit(len(ordinaryRuleTasks), tcpingRuleBatchSize, ruleRounds, 256)
 	probeLimit := len(forwardGroupTasks)
 	serviceLimit := tcpingDynamicBatchLimit(len(serviceTasks), tcpingProbeBatchSize, 1, 96)
 	if force {
-		ruleLimit = len(ruleTasks)
+		ruleLimit = len(ordinaryRuleTasks)
 		serviceLimit = len(serviceTasks)
 	}
 	tunnelProbeLimit := len(tunnelTasks)
 	tcpingCursorMu.Lock()
 	selected := []tcpingTask{}
-	selected = append(selected, rotateTCPingTasks(ruleTasks, &tcpingRuleCursor, ruleLimit)...)
+	selected = append(selected, healthRuleTasks...)
+	selected = append(selected, rotateTCPingTasks(ordinaryRuleTasks, &tcpingRuleCursor, ruleLimit)...)
 	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, tunnelProbeLimit)...)
 	selected = append(selected, rotateTCPingTasks(forwardGroupTasks, &tcpingForwardGroupCursor, probeLimit)...)
 	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, serviceLimit)...)
@@ -1110,12 +1125,14 @@ func buildTunnelProbeTasks(probes []tunnelProbe) []tcpingTask {
 
 func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
 	port := parseStatePort(state.Port)
+	var groupHealth *forwardGroupHealthSpec
 	if desired, ok := desiredRunningRuleForStatePort(state.RuleID, port); ok {
 		state.TunnelID = desired.TunnelID
 		state.ForwardType = desired.ForwardType
 		state.TargetIP = desired.TargetIP
 		state.TargetPort = desired.TargetPort
 		state.Protocol = desired.Protocol
+		groupHealth = desired.GroupHealth
 	}
 	// Tunnel rules are measured from an explicit exit-host probe supplied by
 	// the panel. Probing their final target from an entry or relay host bypasses
@@ -1131,13 +1148,14 @@ func buildRuleLatencyProbeTask(state localRuleState) (tcpingTask, bool) {
 		method = "ping"
 	}
 	return tcpingTask{
-		Kind:       "rule",
-		RuleID:     state.RuleID,
-		Method:     method,
-		TargetIP:   state.TargetIP,
-		TargetPort: state.TargetPort,
-		SourcePort: port,
-		ProbeKey:   fmt.Sprintf("rule:%d:%s:%d:%s", state.RuleID, strings.ToLower(strings.TrimSpace(state.TargetIP)), state.TargetPort, method),
+		Kind:        "rule",
+		RuleID:      state.RuleID,
+		Method:      method,
+		TargetIP:    state.TargetIP,
+		TargetPort:  state.TargetPort,
+		SourcePort:  port,
+		ProbeKey:    fmt.Sprintf("rule:%d:%s:%d:%s", state.RuleID, strings.ToLower(strings.TrimSpace(state.TargetIP)), state.TargetPort, method),
+		GroupHealth: groupHealth,
 	}, true
 }
 
@@ -1162,6 +1180,7 @@ func buildExplicitRuleLatencyProbeTask(probe ruleLatencyProbe) (tcpingTask, bool
 		TargetPort:  probe.TargetPort,
 		ProbeKey:    probeKey,
 		TopologyKey: strings.TrimSpace(probe.TopologyKey),
+		GroupHealth: probe.GroupHealth,
 	}, true
 }
 
@@ -1398,7 +1417,10 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 func executeTCPingTaskWithWireGuardProbe(task tcpingTask, wireGuardProbe func(int, string, int, time.Duration) (int, wireGuardProbeStatus)) tcpingTaskResult {
 	var latency int
 	var reachable bool
-	if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
+	if task.Kind == "forwardGroup" && task.Method == "self" {
+		latency = 0
+		reachable = true
+	} else if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
 		status := wireGuardProbeTimeout
@@ -1469,6 +1491,7 @@ func executeTCPingTaskWithWireGuardProbe(task tcpingTask, wireGuardProbe func(in
 		payload["latencyMs"] = 0
 		payload["isTimeout"] = true
 	}
+	applyForwardGroupHealthDecision(task, reachable, payload, time.Now())
 	return tcpingTaskResult{Kind: task.Kind, Payload: payload}
 }
 

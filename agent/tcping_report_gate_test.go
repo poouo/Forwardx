@@ -81,6 +81,21 @@ func TestTCPingReportGateSendsWholeTopologyOnFailureAndRecovery(t *testing.T) {
 	}
 }
 
+func TestTCPingReportGateSendsAgentHealthDecisionWithUnchangedRawTimeout(t *testing.T) {
+	gate := newTCPingReportGate()
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	report := tcpingGateHop("group", 3, 0, "group-health", true)
+	report["memberId"] = 9
+	report["healthStatus"] = "healthy"
+	gate.commit(gate.plan(nil, nil, []map[string]any{report}, nil, false, now))
+
+	report["healthStatus"] = "unhealthy"
+	transition := gate.plan(nil, nil, []map[string]any{report}, nil, false, now.Add(time.Minute))
+	if len(transition.forwardGroups) != 1 {
+		t.Fatalf("health transition was suppressed: %+v", transition)
+	}
+}
+
 func TestTCPingReportGateRetriesFailedPostsAndSendsFiveMinuteSnapshots(t *testing.T) {
 	gate := newTCPingReportGate()
 	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)

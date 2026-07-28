@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -18,6 +19,10 @@ func readConfig(path string) (config, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return cfg, err
 	}
+	return normalizeConfig(cfg), nil
+}
+
+func normalizeConfig(cfg config) config {
 	cfg.Role = strings.ToLower(strings.TrimSpace(cfg.Role))
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
@@ -57,7 +62,10 @@ func readConfig(path string) (config, error) {
 	}
 	sort.Slice(udpTargets, func(i, j int) bool { return udpTargets[i].RuleID < udpTargets[j].RuleID })
 	cfg.UDPTargets = udpTargets
-	return cfg, nil
+	for i := range cfg.Entries {
+		cfg.Entries[i] = normalizeConfig(cfg.Entries[i])
+	}
+	return cfg
 }
 
 func normalizeExitStrategy(value string) string {
@@ -70,6 +78,9 @@ func normalizeExitStrategy(value string) string {
 }
 
 func validateConfig(cfg config) error {
+	if cfg.Role == "entry-group" {
+		return validateEntryGroupConfig(cfg)
+	}
 	if cfg.Key == "" {
 		return errors.New("empty key")
 	}
@@ -108,6 +119,89 @@ func validateConfig(cfg config) error {
 		if cfg.UDPRelayExitPort < 0 || cfg.UDPRelayExitPort > 65535 {
 			return errors.New("relay requires a valid udp relay exit port")
 		}
+	}
+	return nil
+}
+
+type entryListenLane struct {
+	network string
+	host    string
+	port    int
+	index   int
+}
+
+type entryListenLaneRegistry struct {
+	first    map[string]entryListenLane
+	wildcard map[string]entryListenLane
+	exact    map[string]entryListenLane
+}
+
+func newEntryListenLaneRegistry(size int) *entryListenLaneRegistry {
+	return &entryListenLaneRegistry{
+		first:    make(map[string]entryListenLane, size),
+		wildcard: make(map[string]entryListenLane, size),
+		exact:    make(map[string]entryListenLane, size),
+	}
+}
+
+func validateEntryGroupConfig(cfg config) error {
+	if len(cfg.Entries) == 0 {
+		return errors.New("entry-group requires at least one entry")
+	}
+	lanes := newEntryListenLaneRegistry(len(cfg.Entries) * 2)
+	for i, entry := range cfg.Entries {
+		if entry.Role != "entry" {
+			return fmt.Errorf("entry-group entry %d requires role entry", i)
+		}
+		if entry.TunnelID != cfg.TunnelID {
+			return fmt.Errorf("entry-group entry %d tunnel %d does not match group tunnel %d", i, entry.TunnelID, cfg.TunnelID)
+		}
+		if err := validateConfig(entry); err != nil {
+			return fmt.Errorf("entry-group entry %d: %w", i, err)
+		}
+		if protocolHas(entry, "tcp") {
+			if err := lanes.add(entryListenLane{network: "tcp", host: entry.ListenHost, port: entry.ListenPort, index: i}); err != nil {
+				return err
+			}
+		}
+		if protocolHas(entry, "udp") {
+			if err := lanes.add(entryListenLane{network: "udp", host: entry.ListenHost, port: udpListenPort(entry), index: i}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (registry *entryListenLaneRegistry) add(lane entryListenLane) error {
+	lane.host = strings.TrimSpace(lane.host)
+	key := lane.network + ":" + strconv.Itoa(lane.port)
+	var existing entryListenLane
+	conflict := false
+	if lane.host == "" {
+		existing, conflict = registry.first[key]
+	} else {
+		existing, conflict = registry.wildcard[key]
+		if !conflict {
+			existing, conflict = registry.exact[key+"\x00"+lane.host]
+		}
+	}
+	if conflict {
+		return fmt.Errorf(
+			"entry-group entries %d and %d conflict on %s listen %s",
+			existing.index,
+			lane.index,
+			lane.network,
+			listenAddress(lane.host, lane.port),
+		)
+	}
+	if _, exists := registry.first[key]; !exists {
+		registry.first[key] = lane
+	}
+	if lane.host == "" {
+		registry.wildcard[key] = lane
+	} else {
+		registry.exact[key+"\x00"+lane.host] = lane
 	}
 	return nil
 }

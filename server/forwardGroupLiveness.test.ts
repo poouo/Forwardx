@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-test("silent Agent activity automatically evaluates failover and entry groups at their liveness deadlines", () => {
+test("panel-Agent silence preserves failover and multi-entry DNS state", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-liveness-"));
   const databasePath = path.join(directory, "liveness.db");
   const script = String.raw`
@@ -19,7 +19,7 @@ test("silent Agent activity automatically evaluates failover and entry groups at
     try {
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
       await schema.ensureDatabaseSchema();
-      await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+      const groups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
       const activity = await import(moduleUrl("server/agentActivity.ts"));
 
       const q = (name) => '"' + name + '"';
@@ -82,25 +82,22 @@ test("silent Agent activity automatically evaluates failover and entry groups at
       const now = Date.now();
       activity.recordAuthenticatedAgentActivity(2, now);
       activity.recordAuthenticatedAgentActivity(1, now - 151_000);
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ?', [nowSeconds - 600]);
+      await groups.primeForwardGroupHostLivenessDeadlines();
+      await groups.scheduleForwardGroupsForHostHealthChange(1);
+      await groups.runForwardGroupFailover(10);
+      await groups.runForwardGroupFailover(20);
 
-      const deadline = Date.now() + 3_000;
-      let failoverState;
-      let entryState;
-      do {
-        [failoverState] = await runtime.queryRaw(
-          'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
-        );
-        [entryState] = await runtime.queryRaw(
-          'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 20',
-        );
-        if (Number(failoverState?.activeMemberId) === 102 && entryState?.lastDdnsValue === "198.51.100.20") break;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      } while (Date.now() < deadline);
-
-      assert.equal(Number(failoverState?.activeMemberId), 102, "failover group did not react to Agent silence");
-      assert.equal(failoverState?.lastDdnsValue, "198.51.100.20");
-      assert.equal(Number(entryState?.activeMemberId), 202, "entry group retained the silent Agent");
-      assert.equal(entryState?.lastDdnsValue, "198.51.100.20");
+      const [failoverState] = await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
+      );
+      const [entryState] = await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 20',
+      );
+      assert.equal(Number(failoverState?.activeMemberId), 101);
+      assert.equal(failoverState?.lastDdnsValue, "198.51.100.10");
+      assert.equal(Number(entryState?.activeMemberId), 201);
+      assert.equal(entryState?.lastDdnsValue, "198.51.100.10,198.51.100.20");
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }

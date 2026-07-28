@@ -87,6 +87,12 @@ func readPersistentJSONFiles(directory, prefix, suffix string, decode func([]byt
 
 func scrubFXPSpec(spec fxpSpec) fxpSpec {
 	spec = normalizeFXPSpec(spec)
+	if isFXPEntryGroup(spec) {
+		for index := range spec.Entries {
+			spec.Entries[index] = scrubFXPSpec(spec.Entries[index])
+		}
+		return spec
+	}
 	// Entry credentials are injected from the current Agent config at launch.
 	spec.PanelURL = ""
 	spec.Token = ""
@@ -97,12 +103,23 @@ func persistentFXPPath(spec fxpSpec) string {
 	spec = normalizeFXPSpec(spec)
 	return filepath.Join(
 		persistentFXPDir,
-		fmt.Sprintf("fxp-%s-%d-%d-%d.json", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort),
+		fmt.Sprintf("fxp-%s-%s-%d-%d-%d.json", spec.TransportVersion, spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort),
+	)
+}
+
+func persistentFXPEntryGroupPath(spec fxpSpec) string {
+	spec = normalizeFXPSpec(spec)
+	return filepath.Join(
+		persistentFXPDir,
+		fmt.Sprintf("fxp-group-%s-%d.json", spec.TransportVersion, spec.TunnelID),
 	)
 }
 
 func persistFXPSpec(spec fxpSpec) error {
 	spec = scrubFXPSpec(spec)
+	if isFXPEntryGroup(spec) {
+		return replacePersistedSharedFXPEntryGroup(spec)
+	}
 	if spec.Role == "" || spec.TunnelID <= 0 || spec.ListenPort <= 0 || spec.Key == "" {
 		return fmt.Errorf("invalid FXP persistence identity role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 	}
@@ -114,9 +131,76 @@ func persistFXPSpec(spec fxpSpec) error {
 	}{Version: persistentStateFileVersion, Spec: spec})
 }
 
+func replacePersistedSharedFXPEntryGroup(group fxpSpec) error {
+	group = scrubFXPSpec(group)
+	if !isFXPEntryGroup(group) || len(group.Entries) == 0 {
+		return fmt.Errorf("invalid FXP entry group tunnel=%d entries=%d", group.TunnelID, len(group.Entries))
+	}
+	for _, entry := range group.Entries {
+		if !isSharedFXPEntry(entry) || entry.Key == "" {
+			return fmt.Errorf("invalid FXP entry group member tunnel=%d rule=%d port=%d", entry.TunnelID, entry.RuleID, entry.ListenPort)
+		}
+	}
+	persistentRuntimeMu.Lock()
+	defer persistentRuntimeMu.Unlock()
+	groupPath := persistentFXPEntryGroupPath(group)
+	if err := writePersistentJSON(groupPath, struct {
+		Version int     `json:"version"`
+		Spec    fxpSpec `json:"spec"`
+	}{Version: persistentStateFileVersion, Spec: group}); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(persistentFXPDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, file := range entries {
+		if file.IsDir() || !strings.HasPrefix(file.Name(), "fxp-") || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(persistentFXPDir, file.Name())
+		if path == groupPath {
+			continue
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var stored struct {
+			Spec fxpSpec `json:"spec"`
+		}
+		if json.Unmarshal(raw, &stored) != nil {
+			continue
+		}
+		stored.Spec = normalizeFXPSpec(stored.Spec)
+		sameTunnelGroup := isFXPEntryGroup(stored.Spec) && stored.Spec.TunnelID == group.TunnelID && stored.Spec.TransportVersion == group.TransportVersion
+		sameTunnelEntry := isSharedFXPEntry(stored.Spec) && stored.Spec.TunnelID == group.TunnelID && stored.Spec.TransportVersion == group.TransportVersion
+		if sameTunnelGroup || sameTunnelEntry {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				return removeErr
+			}
+		}
+	}
+	return nil
+}
+
 func removePersistedFXPSpec(spec fxpSpec) {
 	requestedProtocol := strings.TrimSpace(spec.Protocol)
+	requestedTransportVersion := strings.TrimSpace(spec.TransportVersion)
 	spec = normalizeFXPSpec(spec)
+	matchSpec := spec
+	if requestedTransportVersion == "" {
+		matchSpec.TransportVersion = ""
+	}
+	if isFXPEntryGroup(spec) {
+		persistentRuntimeMu.Lock()
+		_ = os.Remove(persistentFXPEntryGroupPath(spec))
+		persistentRuntimeMu.Unlock()
+		for _, entry := range spec.Entries {
+			removePersistedFXPSpec(entry)
+		}
+		return
+	}
 	persistentRuntimeMu.Lock()
 	defer persistentRuntimeMu.Unlock()
 	if spec.TunnelID > 0 && spec.ListenPort > 0 {
@@ -141,6 +225,31 @@ func removePersistedFXPSpec(spec fxpSpec) {
 			continue
 		}
 		stored.Spec = normalizeFXPSpec(stored.Spec)
+		if isFXPEntryGroup(stored.Spec) {
+			remaining := make([]fxpSpec, 0, len(stored.Spec.Entries))
+			for _, member := range stored.Spec.Entries {
+				if !fxpRemovalMatchesEntry(matchSpec, member) {
+					remaining = append(remaining, member)
+				}
+			}
+			if len(remaining) == len(stored.Spec.Entries) {
+				continue
+			}
+			path := filepath.Join(persistentFXPDir, entry.Name())
+			if len(remaining) == 0 {
+				_ = os.Remove(path)
+				continue
+			}
+			stored.Spec.Entries = remaining
+			stored.Spec = scrubFXPSpec(stored.Spec)
+			if err := writePersistentJSON(path, struct {
+				Version int     `json:"version"`
+				Spec    fxpSpec `json:"spec"`
+			}{Version: persistentStateFileVersion, Spec: stored.Spec}); err != nil {
+				logf("persistent FXP entry group removal failed path=%s: %v", path, err)
+			}
+			continue
+		}
 		if spec.Role != "" && stored.Spec.Role != spec.Role {
 			continue
 		}
@@ -148,6 +257,9 @@ func removePersistedFXPSpec(spec fxpSpec) {
 			continue
 		}
 		if spec.TunnelID > 0 && stored.Spec.TunnelID != spec.TunnelID {
+			continue
+		}
+		if requestedTransportVersion != "" && stored.Spec.TransportVersion != normalizeFXPTransportVersion(requestedTransportVersion) {
 			continue
 		}
 		if spec.ListenPort > 0 && stored.Spec.ListenPort != spec.ListenPort {
@@ -161,22 +273,76 @@ func removePersistedFXPSpec(spec fxpSpec) {
 }
 
 func loadPersistedFXPSpecs() []fxpSpec {
-	byID := map[string]fxpSpec{}
-	_ = readPersistentJSONFiles(persistentFXPDir, "fxp-", ".json", func(raw []byte) error {
+	persistentRuntimeMu.Lock()
+	defer persistentRuntimeMu.Unlock()
+	type groupCandidate struct {
+		spec    fxpSpec
+		modTime int64
+		name    string
+	}
+	groupsByTunnel := map[string]groupCandidate{}
+	standalone := make([]fxpSpec, 0)
+	files, err := os.ReadDir(persistentFXPDir)
+	if err != nil {
+		return nil
+	}
+	for _, file := range files {
+		if file.IsDir() || !strings.HasPrefix(file.Name(), "fxp-") || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(persistentFXPDir, file.Name())
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			logf("persistent runtime snapshot read failed path=%s: %v", path, readErr)
+			continue
+		}
 		var stored struct {
 			Version int     `json:"version"`
 			Spec    fxpSpec `json:"spec"`
 		}
-		if err := json.Unmarshal(raw, &stored); err != nil {
-			return err
+		if decodeErr := json.Unmarshal(raw, &stored); decodeErr != nil {
+			logf("persistent runtime snapshot decode failed path=%s: %v", path, decodeErr)
+			continue
 		}
 		stored.Spec = scrubFXPSpec(stored.Spec)
-		if stored.Spec.Role == "" || stored.Spec.TunnelID <= 0 || stored.Spec.ListenPort <= 0 || stored.Spec.Key == "" {
-			return fmt.Errorf("invalid FXP snapshot")
+		if isFXPEntryGroup(stored.Spec) {
+			if len(stored.Spec.Entries) == 0 {
+				logf("persistent runtime snapshot invalid path=%s: empty FXP entry group", path)
+				continue
+			}
+			info, _ := file.Info()
+			modTime := int64(0)
+			if info != nil {
+				modTime = info.ModTime().UnixNano()
+			}
+			groupKey := fxpEntryGroupKey(stored.Spec.TransportVersion, stored.Spec.TunnelID)
+			previous, exists := groupsByTunnel[groupKey]
+			if !exists || modTime > previous.modTime || (modTime == previous.modTime && file.Name() > previous.name) {
+				groupsByTunnel[groupKey] = groupCandidate{spec: stored.Spec, modTime: modTime, name: file.Name()}
+			}
+			continue
 		}
-		byID[fxpServerID(stored.Spec)] = stored.Spec
-		return nil
-	})
+		if stored.Spec.Role == "" || stored.Spec.TunnelID <= 0 || stored.Spec.ListenPort <= 0 || stored.Spec.Key == "" {
+			logf("persistent runtime snapshot invalid path=%s", path)
+			continue
+		}
+		standalone = append(standalone, stored.Spec)
+	}
+
+	byID := map[string]fxpSpec{}
+	for _, spec := range standalone {
+		if _, grouped := groupsByTunnel[fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID)]; grouped && isSharedFXPEntry(spec) {
+			continue
+		}
+		byID[fxpServerID(spec)] = spec
+	}
+	for _, candidate := range groupsByTunnel {
+		for _, entry := range candidate.spec.Entries {
+			if isSharedFXPEntry(entry) && entry.Key != "" {
+				byID[fxpServerID(entry)] = entry
+			}
+		}
+	}
 	result := make([]fxpSpec, 0, len(byID))
 	for _, spec := range byID {
 		result = append(result, spec)
@@ -209,9 +375,14 @@ func migrateRuntimeFXPConfigsToPersistent() {
 		}
 		spec = scrubFXPSpec(spec)
 		if spec.TransportVersion == forwardXWireGuardVersion && fxpSpecLooksPreparedForWireGuard(spec) {
-			// Older Agents only persisted the WireGuard-translated config. It
-			// cannot safely be replayed because its peer ports are local proxy
-			// ports, so let the panel provide the original plan once.
+			// Runtime V2 configs contain translated loopback proxy endpoints. The
+			// original panel plan must remain the source for restart recovery.
+			continue
+		}
+		if isFXPEntryGroup(spec) {
+			if err := persistFXPSpec(spec); err == nil {
+				logf("migrated grouped runtime FXP snapshot path=%s tunnel=%d entries=%d", path, spec.TunnelID, len(spec.Entries))
+			}
 			continue
 		}
 		if err := persistFXPSpec(spec); err == nil {
@@ -222,6 +393,17 @@ func migrateRuntimeFXPConfigsToPersistent() {
 
 func fxpSpecLooksPreparedForWireGuard(spec fxpSpec) bool {
 	if spec.TransportVersion != forwardXWireGuardVersion {
+		return false
+	}
+	if isFXPEntryGroup(spec) {
+		if len(spec.Entries) == 0 {
+			return false
+		}
+		for _, entry := range spec.Entries {
+			if fxpSpecLooksPreparedForWireGuard(entry) {
+				return true
+			}
+		}
 		return false
 	}
 	if spec.Role == "entry" {
@@ -372,6 +554,7 @@ func restorePersistedForwardXRuntimes(cfg Config) {
 }
 
 func restorePersistedFXPSpecs(cfg Config, specs []fxpSpec) int {
+	specs = planPersistedFXPRestoreSpecs(specs)
 	if len(specs) == 0 {
 		return 0
 	}
@@ -388,7 +571,7 @@ func restorePersistedFXPSpecs(cfg Config, specs []fxpSpec) int {
 			defer workers.Done()
 			for spec := range jobs {
 				message := &actionMessage{}
-				ok := startFXP(cfg, spec, message)
+				ok := startFXP(cfg, spec, nil, message)
 				if !ok {
 					logf("local FXP runtime restore failed tunnel=%d rule=%d port=%d: %s", spec.TunnelID, spec.RuleID, spec.ListenPort, message.get())
 				}
@@ -409,4 +592,48 @@ func restorePersistedFXPSpecs(cfg Config, specs []fxpSpec) int {
 		}
 	}
 	return restored
+}
+
+func planPersistedFXPRestoreSpecs(specs []fxpSpec) []fxpSpec {
+	standalone := make([]fxpSpec, 0, len(specs))
+	entriesByGroup := map[string][]fxpSpec{}
+	groupSeeds := map[string]fxpSpec{}
+	for _, spec := range specs {
+		spec = normalizeFXPSpec(spec)
+		if isFXPEntryGroup(spec) {
+			key := fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID)
+			entriesByGroup[key] = append(entriesByGroup[key], spec.Entries...)
+			groupSeeds[key] = spec
+			continue
+		}
+		if isSharedFXPEntry(spec) {
+			key := fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID)
+			entriesByGroup[key] = append(entriesByGroup[key], spec)
+			groupSeeds[key] = spec
+			continue
+		}
+		standalone = append(standalone, spec)
+	}
+	for key, entries := range entriesByGroup {
+		seed := groupSeeds[key]
+		if group, ok := buildSharedFXPEntryGroup(entries, seed.TunnelID, seed.TransportVersion); ok {
+			standalone = append(standalone, group)
+		}
+	}
+	sort.Slice(standalone, func(i, j int) bool {
+		if standalone[i].TransportVersion != standalone[j].TransportVersion {
+			return standalone[i].TransportVersion < standalone[j].TransportVersion
+		}
+		if standalone[i].TunnelID != standalone[j].TunnelID {
+			return standalone[i].TunnelID < standalone[j].TunnelID
+		}
+		if standalone[i].Role != standalone[j].Role {
+			return standalone[i].Role < standalone[j].Role
+		}
+		if standalone[i].RuleID != standalone[j].RuleID {
+			return standalone[i].RuleID < standalone[j].RuleID
+		}
+		return standalone[i].ListenPort < standalone[j].ListenPort
+	})
+	return standalone
 }

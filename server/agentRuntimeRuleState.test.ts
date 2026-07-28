@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
+import { resolveLocalForwardXTransportVersion, resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 
 test("shared tunnel runtime keeps the public source port on entry hosts", () => {
   assert.equal(resolveRuleTrafficPortForHost({
@@ -27,4 +27,27 @@ test("direct rules always keep their source port", () => {
     isEntry: false,
     exitPorts: [60000],
   }), 55503);
+});
+
+test("local ForwardX transport version survives a deleted tunnel record", () => {
+  assert.equal(resolveLocalForwardXTransportVersion({
+    reportedTransportVersion: "v2",
+    tunnel: undefined,
+  }), "v2");
+});
+
+test("missing local ForwardX transport version stays unknown after tunnel deletion", () => {
+  assert.equal(resolveLocalForwardXTransportVersion({
+    reportedTransportVersion: undefined,
+    tunnel: undefined,
+  }), undefined);
+});
+
+test("legacy local state falls back to the retained tunnel version", () => {
+  assert.equal(resolveLocalForwardXTransportVersion({
+    tunnel: { mode: "forwardx", forwardxVersion: "v2" },
+  }), "v2");
+  assert.equal(resolveLocalForwardXTransportVersion({
+    tunnel: { mode: "forwardx", forwardxVersion: "v1" },
+  }), "v1");
 });

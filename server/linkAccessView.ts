@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   forwardGroups,
   forwardGroupMembers,
@@ -6,6 +6,7 @@ import {
   tunnelExitNodes,
   tunnelHops,
   tunnels,
+  users,
   userForwardGroupPermissions,
   userHostPermissions,
   userTunnelPermissions,
@@ -13,12 +14,19 @@ import {
 import { getDb } from "./dbRuntime";
 import { createQueryCache } from "./queryCache";
 import { getActiveUserSubscriptions } from "./repositories/billingRepository";
-import { getUserUsableTrafficBillingResourceIds } from "./repositories/trafficBillingRepository";
+import {
+  getActiveTrafficBillingResourceIds,
+  getUserUsableTrafficBillingResourceIds,
+} from "./repositories/trafficBillingRepository";
 
 export type LinkAccessScope = {
   hostIds: Set<number>;
   tunnelIds: Set<number>;
   groupIds: Set<number>;
+  /** Resources that may be selected as the root resource of a rule. */
+  useHostIds?: Set<number>;
+  useTunnelIds?: Set<number>;
+  useGroupIds?: Set<number>;
   /** Resources exposed only while rendering an explicitly authorized group. */
   groupHostIds?: Map<number, Set<number>>;
   groupTunnelIds?: Map<number, Set<number>>;
@@ -82,6 +90,9 @@ export function expandLinkAccessScope(input: LinkAccessClosureInput): LinkAccess
     const id = positiveId(value);
     if (id > 0) groupIds.add(id);
   }
+  const useHostIds = new Set(hostIds);
+  const useTunnelIds = new Set(tunnelIds);
+  const useGroupIds = new Set(groupIds);
 
   const groupsById = new Map<number, any>();
   for (const group of input.groups || []) {
@@ -175,7 +186,16 @@ export function expandLinkAccessScope(input: LinkAccessClosureInput): LinkAccess
       }
     }
   }
-  return { hostIds, tunnelIds, groupIds, groupHostIds, groupTunnelIds };
+  return {
+    hostIds,
+    tunnelIds,
+    groupIds,
+    useHostIds,
+    useTunnelIds,
+    useGroupIds,
+    groupHostIds,
+    groupTunnelIds,
+  };
 }
 
 async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
@@ -185,7 +205,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     warnLinkAccessLookupFailure(error);
     return fallback;
   });
-  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingResourceIds, topologyGroups, topologyMembers, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
+  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, activeBillingResourceIds, billingResourceIds, topologyGroups, topologyMembers, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
     safe(db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)), []),
     safe(db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)), []),
     safe(db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)), []),
@@ -193,6 +213,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     safe(db.select({ id: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId)), []),
     safe(db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)), []),
     safe(getActiveUserSubscriptions(userId), []),
+    safe(getActiveTrafficBillingResourceIds(), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
     safe(getUserUsableTrafficBillingResourceIds(userId), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
     safe(db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups), []),
     safe(db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers), []),
@@ -203,7 +224,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
   const subscriptionHostIds = (subscriptions as any[]).flatMap((subscription) => subscription.hostIds || []).map(Number);
   const subscriptionTunnelIds = (subscriptions as any[]).flatMap((subscription) => subscription.tunnelIds || []).map(Number);
   const subscriptionGroupIds = (subscriptions as any[]).flatMap((subscription) => subscription.forwardGroupIds || []).map(Number);
-  return expandLinkAccessScope({
+  const scope = expandLinkAccessScope({
     hostIds: [
       ...(ownedHosts as any[]).map((host) => host.id),
       ...hostPermissions.map((row: any) => row.id),
@@ -228,6 +249,30 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     tunnelHops: topologyHops as any[],
     tunnelExitNodes: topologyExits as any[],
   });
+  const usableBillingIds = {
+    host: new Set(billingResourceIds.hostIds.map(Number)),
+    tunnel: new Set(billingResourceIds.tunnelIds.map(Number)),
+    forward_group: new Set(billingResourceIds.forwardGroupIds.map(Number)),
+  };
+  const useIdsByType = {
+    host: scope.useHostIds || scope.hostIds,
+    tunnel: scope.useTunnelIds || scope.tunnelIds,
+    forward_group: scope.useGroupIds || scope.groupIds,
+  };
+  const activeBillingIds = {
+    host: activeBillingResourceIds.hostIds,
+    tunnel: activeBillingResourceIds.tunnelIds,
+    forward_group: activeBillingResourceIds.forwardGroupIds,
+  };
+  for (const resourceType of Object.keys(activeBillingIds) as Array<keyof typeof activeBillingIds>) {
+    for (const value of activeBillingIds[resourceType]) {
+      const resourceId = positiveId(value);
+      if (resourceId <= 0) continue;
+      if (usableBillingIds[resourceType].has(resourceId)) useIdsByType[resourceType].add(resourceId);
+      else useIdsByType[resourceType].delete(resourceId);
+    }
+  }
+  return scope;
 }
 
 export function getLinkAccessScope(user: { id: number; role: string }): Promise<LinkAccessScope | null> {
@@ -241,6 +286,54 @@ export function getLinkAccessScope(user: { id: number; role: string }): Promise<
 
 export function clearLinkAccessScopeCache() {
   linkAccessQueryCache.clear();
+}
+
+export function canUseForwardRuleResource(rule: any, scope: LinkAccessScope | null) {
+  if (!scope) return true;
+  const groupId = positiveId(rule?.forwardGroupId);
+  if (groupId > 0) return (scope.useGroupIds || scope.groupIds).has(groupId);
+  const tunnelId = positiveId(rule?.tunnelId);
+  if (tunnelId > 0) return (scope.useTunnelIds || scope.tunnelIds).has(tunnelId);
+  const hostId = positiveId(rule?.hostId);
+  return hostId > 0 && (scope.useHostIds || scope.hostIds).has(hostId);
+}
+
+/**
+ * Runtime rows keep their persisted enabled flag, but an Agent must treat a
+ * rule whose root resource is no longer authorized as disabled. Returning
+ * cloned denied rows lets the normal removal path clean up an existing
+ * listener without hiding or mutating the user's saved rule.
+ */
+export async function gateForwardRulesForRuntime<T extends Record<string, any>>(rules: T[]): Promise<T[]> {
+  const userIds = Array.from(new Set(rules
+    .map((rule) => positiveId(rule?.userId))
+    .filter((id) => id > 0)));
+  if (userIds.length === 0) return rules;
+
+  const db = await getDb();
+  if (!db) {
+    return rules.map((rule) => ({ ...rule, isEnabled: false, resourceAccessDenied: true }));
+  }
+  const userRows = await db
+    .select({ id: users.id, role: users.role })
+    .from(users)
+    .where(inArray(users.id, userIds));
+  const roleByUserId = new Map((userRows as any[])
+    .map((user) => [positiveId(user?.id), String(user?.role || "user")] as const));
+  const scopeEntries = await Promise.all(userIds.map(async (userId) => {
+    const role = roleByUserId.get(userId);
+    if (!role) return [userId, undefined] as const;
+    return [userId, await getLinkAccessScope({ id: userId, role })] as const;
+  }));
+  const scopeByUserId = new Map(scopeEntries);
+
+  return rules.map((rule) => {
+    const userId = positiveId(rule?.userId);
+    const scope = scopeByUserId.get(userId);
+    const allowed = scope !== undefined && canUseForwardRuleResource(rule, scope);
+    if (allowed) return rule;
+    return { ...rule, isEnabled: false, resourceAccessDenied: true };
+  });
 }
 
 function allowedHost(scope: LinkAccessScope, hostId: unknown) {

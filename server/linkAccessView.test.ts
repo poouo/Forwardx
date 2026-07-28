@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { expandLinkAccessScope, filterTunnelFieldsForUser, type LinkAccessScope } from "./linkAccessView";
+import {
+  canUseForwardRuleResource,
+  expandLinkAccessScope,
+  filterTunnelFieldsForUser,
+  type LinkAccessScope,
+} from "./linkAccessView";
 import { publicLinkAvailabilitySummary } from "./linkAvailabilitySummary";
 import { filterForwardGroupFieldsForUse } from "./repositories/forwardGroupRepository";
 
@@ -47,6 +56,13 @@ test("shared resource permissions expand to enabled topology members", () => {
   assert.deepEqual(Array.from(expanded.groupHostIds?.get(100) || []).sort((a, b) => a - b), [2, 5, 6, 7, 8]);
   assert.deepEqual(Array.from(expanded.groupHostIds?.get(90) || []).sort((a, b) => a - b), [4]);
   assert.deepEqual(Array.from(expanded.groupTunnelIds?.get(100) || []).sort((a, b) => a - b), [10]);
+  assert.deepEqual(Array.from(expanded.useHostIds || []), [1]);
+  assert.deepEqual(Array.from(expanded.useTunnelIds || []), []);
+  assert.deepEqual(Array.from(expanded.useGroupIds || []), [100]);
+  assert.equal(canUseForwardRuleResource({ forwardGroupId: 100 }, expanded), true);
+  assert.equal(canUseForwardRuleResource({ forwardGroupId: 90 }, expanded), false);
+  assert.equal(canUseForwardRuleResource({ tunnelId: 10 }, expanded), false);
+  assert.equal(canUseForwardRuleResource({ hostId: 2 }, expanded), false);
 });
 
 test("direct tunnel permissions include tunnel topology hosts", () => {
@@ -64,6 +80,120 @@ test("direct tunnel permissions include tunnel topology hosts", () => {
   assert.deepEqual(Array.from(expanded.tunnelIds), [11]);
   assert.deepEqual(Array.from(expanded.hostIds).sort((a, b) => a - b), [21, 22, 23, 24]);
   assert.deepEqual(Array.from(expanded.groupIds).sort((a, b) => a - b), [31, 32]);
+  assert.deepEqual(Array.from(expanded.useHostIds || []), []);
+  assert.deepEqual(Array.from(expanded.useTunnelIds || []), [11]);
+  assert.deepEqual(Array.from(expanded.useGroupIds || []), []);
+  assert.equal(canUseForwardRuleResource({ tunnelId: 11 }, expanded), true);
+  assert.equal(canUseForwardRuleResource({ hostId: 21 }, expanded), false);
+  assert.equal(canUseForwardRuleResource({ forwardGroupId: 31 }, expanded), false);
+});
+
+test("runtime gate disables revoked root resources without promoting expanded topology", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-link-runtime-gate-"));
+  const databasePath = path.join(directory, "runtime-gate.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const access = await import(moduleUrl("server/linkAccessView.ts"));
+    const quote = (name) => '"' + name + '"';
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO " + quote(table) + " (" + columns.map(quote).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      const now = Math.floor(Date.now() / 1000);
+
+      await insert("users", ["id", "username", "password", "role"], [1, "admin", "x", "admin"]);
+      await insert("users", ["id", "username", "password", "role"], [2, "member", "x", "user"]);
+      await insert(
+        "hosts",
+        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"],
+        [1, "topology-only", "192.0.2.1", "192.0.2.1", 1, 1, now],
+      );
+      await insert(
+        "hosts",
+        ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"],
+        [2, "directly-authorized", "192.0.2.2", "192.0.2.2", 1, 1, now],
+      );
+      await insert(
+        "tunnels",
+        ["id", "name", "entryHostId", "exitHostId", "mode", "listenPort", "userId", "isEnabled"],
+        [10, "authorized-tunnel", 1, 2, "tls", 24010, 1, 1],
+      );
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled"],
+        [20, "authorized-group", "host", "port", "127.0.0.1", 1, 1],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [201, 20, "host", 1, 0, 1],
+      );
+      await insert("user_host_permissions", ["userId", "hostId"], [2, 1]);
+      await insert("user_host_permissions", ["userId", "hostId"], [2, 2]);
+      await insert("user_tunnel_permissions", ["userId", "tunnelId"], [2, 10]);
+      await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 20]);
+
+      await runtime.executeRaw(
+        'DELETE FROM "user_host_permissions" WHERE "userId" = ? AND "hostId" = ?',
+        [2, 1],
+      );
+      access.clearLinkAccessScopeCache();
+
+      const revoked = { id: 100, userId: 2, hostId: 1, tunnelId: null, forwardGroupId: null, isEnabled: true };
+      const allowedTunnel = { id: 101, userId: 2, hostId: 1, tunnelId: 10, forwardGroupId: null, isEnabled: true };
+      const allowedGroup = { id: 102, userId: 2, hostId: 1, tunnelId: null, forwardGroupId: 20, isEnabled: true };
+      const allowedHost = { id: 103, userId: 2, hostId: 2, tunnelId: null, forwardGroupId: null, isEnabled: true };
+      const adminRule = { id: 104, userId: 1, hostId: 1, tunnelId: null, forwardGroupId: null, isEnabled: true };
+      const gated = await access.gateForwardRulesForRuntime([
+        revoked,
+        allowedTunnel,
+        allowedGroup,
+        allowedHost,
+        adminRule,
+      ]);
+
+      assert.equal(revoked.isEnabled, true, "the saved rule must not be mutated");
+      assert.notStrictEqual(gated[0], revoked);
+      assert.equal(gated[0].isEnabled, false);
+      assert.equal(gated[0].resourceAccessDenied, true);
+      assert.strictEqual(gated[1], allowedTunnel);
+      assert.strictEqual(gated[2], allowedGroup);
+      assert.strictEqual(gated[3], allowedHost);
+      assert.strictEqual(gated[4], adminRule);
+      assert.equal(gated.slice(1).some((rule) => rule.resourceAccessDenied), false);
+    } finally {
+      await runtime.closeDatabase().catch(() => undefined);
+    }
+  `;
+
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: databasePath,
+        FORWARDX_LOG_DIR: path.join(directory, "logs"),
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("shared tunnel status does not expose hosts outside the user's host scope", () => {

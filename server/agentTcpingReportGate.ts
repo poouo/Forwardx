@@ -6,6 +6,7 @@ import type {
 } from "../shared/agentDtos";
 
 export const AGENT_TCPING_STEADY_REPORT_MS = 5 * 60 * 1000;
+export const AGENT_HEALTH_STEADY_REPORT_MS = 60 * 1000;
 const AGENT_TCPING_GATE_STATE_TTL_MS = 30 * 60 * 1000;
 
 type ProbeResult = AgentTcpingResult | AgentTunnelTcpingResult | AgentForwardGroupLatencyResult;
@@ -83,7 +84,7 @@ function addUnits(
 ) {
   for (const report of reports) {
     const key = reportUnitKey(hostId, kind, report);
-    const state = `${probeStateKey(kind, report)}=${!!report.isTimeout}`;
+    const state = `${probeStateKey(kind, report)}=${!!report.isTimeout}:${text((report as any).healthStatus)}`;
     const values = units.get(key) || [];
     values.push(state);
     units.set(key, values);
@@ -119,6 +120,12 @@ export class AgentTcpingReportGate {
     addUnits(units, hostId, "tunnel", input.tunnels);
     addUnits(units, hostId, "forwardGroup", input.forwardGroups);
     const signatures = signaturesFor(units);
+    const healthUnits = new Set<string>();
+    for (const [kind, reports] of [["rule", input.results], ["forwardGroup", input.forwardGroups]] as const) {
+      for (const report of reports) {
+        if (text((report as any).healthStatus)) healthUnits.add(reportUnitKey(hostId, kind, report));
+      }
+    }
     const selected = new Set<string>();
     const transitions = new Set<string>();
     const updates: GateUpdate[] = [];
@@ -131,7 +138,10 @@ export class AgentTcpingReportGate {
       const previous = this.states.get(key);
       if (previous) previous.lastSeenAt = now;
       const transition = !previous || previous.signature !== signature;
-      if (!input.force && !transition && now - previous.acceptedAt < this.steadyReportMs) continue;
+      const steadyReportMs = healthUnits.has(key)
+        ? Math.min(this.steadyReportMs, AGENT_HEALTH_STEADY_REPORT_MS)
+        : this.steadyReportMs;
+      if (!input.force && !transition && now - previous.acceptedAt < steadyReportMs) continue;
       const sequence = ++this.sequence;
       selected.add(key);
       if (transition || input.force) transitions.add(key);

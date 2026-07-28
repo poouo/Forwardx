@@ -44,7 +44,6 @@ const iperf3IdleTimeout = 3 * time.Minute
 const selfTestIdlePollInterval = 60 * time.Second
 const selfTestActivePollInterval = 2 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
-const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute
 const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
@@ -149,10 +148,10 @@ const desiredStateVersionPath = "/var/lib/forwardx-agent/desired_state_agent_ver
 
 var upgradeStarted int32
 var upgradeStartedAt int64
-var clockSyncRunning int32
-var lastClockSyncAttemptAt int64
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
+var fxpControlMu sync.Mutex
+var fxpWireGuardRefSequence uint64
 var fxpEndpointEventMu sync.Mutex
 var fxpEndpointEvents = map[string]fxpEndpointEvent{}
 var fxpEndpointLogPattern = regexp.MustCompile(`exit endpoint (unhealthy|recovered) index=[0-9]+ endpoint=([^[:space:]]+)(?: reason=(.*))?`)
@@ -455,14 +454,15 @@ type localRuntimeStatePayload struct {
 }
 
 type localRuntimeRuleState struct {
-	Port        int    `json:"port"`
-	RuleID      int    `json:"ruleId"`
-	TunnelID    int    `json:"tunnelId,omitempty"`
-	ForwardType string `json:"forwardType"`
-	TargetIP    string `json:"targetIp,omitempty"`
-	TargetPort  int    `json:"targetPort,omitempty"`
-	Protocol    string `json:"protocol,omitempty"`
-	Ready       bool   `json:"ready"`
+	Port             int    `json:"port"`
+	RuleID           int    `json:"ruleId"`
+	TunnelID         int    `json:"tunnelId,omitempty"`
+	ForwardType      string `json:"forwardType"`
+	TargetIP         string `json:"targetIp,omitempty"`
+	TargetPort       int    `json:"targetPort,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
+	TransportVersion string `json:"transportVersion,omitempty"`
+	Ready            bool   `json:"ready"`
 }
 
 type localRuntimeTunnelState struct {
@@ -1412,21 +1412,33 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 	readiness := readLocalRuntimeReadinessCached()
 	ruleStates := readLocalRuntimeRuleStates()
 	ruleStates = mergeDesiredDisjointRuleStates(ruleStates, desiredRunningRuleStatesSnapshot())
+	activeFXPEntries := activeFXPEntrySpecsSnapshot()
+	var persistedFXPEntries []fxpSpec
+	persistedFXPLoaded := false
 	rules := make([]localRuntimeRuleState, 0, len(ruleStates))
 	for _, state := range ruleStates {
 		port := atoi(state.Port)
 		if port <= 0 {
 			continue
 		}
+		transportVersion := fxpTransportVersionForLocalRule(state, activeFXPEntries)
+		if transportVersion == "" && strings.EqualFold(strings.TrimSpace(state.ForwardType), "forwardx") {
+			if !persistedFXPLoaded {
+				persistedFXPEntries = loadPersistedFXPSpecs()
+				persistedFXPLoaded = true
+			}
+			transportVersion = fxpTransportVersionForLocalRule(state, persistedFXPEntries)
+		}
 		rules = append(rules, localRuntimeRuleState{
-			Port:        port,
-			RuleID:      state.RuleID,
-			TunnelID:    state.TunnelID,
-			ForwardType: strings.TrimSpace(state.ForwardType),
-			TargetIP:    strings.TrimSpace(state.TargetIP),
-			TargetPort:  state.TargetPort,
-			Protocol:    strings.TrimSpace(state.Protocol),
-			Ready:       localRuleStateReady(state, &readiness),
+			Port:             port,
+			RuleID:           state.RuleID,
+			TunnelID:         state.TunnelID,
+			ForwardType:      strings.TrimSpace(state.ForwardType),
+			TargetIP:         strings.TrimSpace(state.TargetIP),
+			TargetPort:       state.TargetPort,
+			Protocol:         strings.TrimSpace(state.Protocol),
+			TransportVersion: transportVersion,
+			Ready:            localRuleStateReady(state, &readiness),
 		})
 	}
 	tunnels := []localRuntimeTunnelState{}
@@ -1468,6 +1480,57 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 		return tunnels[i].Port < tunnels[j].Port
 	})
 	return localRuntimeStatePayload{Rules: rules, Tunnels: tunnels, Services: readiness.serviceStates}
+}
+
+func activeFXPEntrySpecsSnapshot() []fxpSpec {
+	fxpMu.Lock()
+	specs := make([]fxpSpec, 0, len(fxpServers))
+	for _, process := range fxpServers {
+		if process != nil {
+			specs = append(specs, process.spec)
+		}
+	}
+	fxpMu.Unlock()
+	return flattenFXPEntrySpecs(specs)
+}
+
+func flattenFXPEntrySpecs(specs []fxpSpec) []fxpSpec {
+	entries := make([]fxpSpec, 0, len(specs))
+	for _, spec := range specs {
+		spec = normalizeFXPSpec(spec)
+		if isFXPEntryGroup(spec) {
+			entries = append(entries, spec.Entries...)
+			continue
+		}
+		if isSharedFXPEntry(spec) {
+			entries = append(entries, spec)
+		}
+	}
+	return entries
+}
+
+func fxpTransportVersionForLocalRule(state localRuleState, entries []fxpSpec) string {
+	if !strings.EqualFold(strings.TrimSpace(state.ForwardType), "forwardx") || state.RuleID <= 0 || atoi(state.Port) <= 0 {
+		return ""
+	}
+	version := ""
+	for _, entry := range flattenFXPEntrySpecs(entries) {
+		entry = normalizeFXPSpec(entry)
+		if entry.RuleID != state.RuleID || entry.ListenPort != atoi(state.Port) {
+			continue
+		}
+		if state.TunnelID > 0 && entry.TunnelID != state.TunnelID {
+			continue
+		}
+		if strings.TrimSpace(state.Protocol) != "" && !runtimeProtocolsOverlap(entry.Protocol, state.Protocol) {
+			continue
+		}
+		if version != "" && version != entry.TransportVersion {
+			return ""
+		}
+		version = entry.TransportVersion
+	}
+	return version
 }
 
 func mergeDesiredDisjointRuleStates(ruleStates []localRuleState, desiredStates []localRuleState) []localRuleState {
@@ -1567,6 +1630,7 @@ type action struct {
 	RollbackCommands         []string            `json:"rollbackCommands,omitempty"`
 	PostCommands             []string            `json:"postCommands"`
 	Fxp                      *fxpSpec            `json:"fxp,omitempty"`
+	FXPEntryGroup            *fxpSpec            `json:"-"`
 	WireGuard                *wireGuardSpec      `json:"wireGuard,omitempty"`
 	Failover                 *failoverSpec       `json:"failover,omitempty"`
 	ReportStatus             *bool               `json:"reportStatus,omitempty"`
@@ -1592,14 +1656,22 @@ type desiredActionRecord struct {
 }
 
 type runningRule struct {
-	RuleID      int           `json:"ruleId"`
-	TunnelID    int           `json:"tunnelId,omitempty"`
-	SourcePort  int           `json:"sourcePort"`
-	TargetIP    string        `json:"targetIp"`
-	TargetPort  int           `json:"targetPort"`
-	Protocol    string        `json:"protocol"`
-	ForwardType string        `json:"forwardType"`
-	Failover    *failoverSpec `json:"failover,omitempty"`
+	RuleID      int                     `json:"ruleId"`
+	TunnelID    int                     `json:"tunnelId,omitempty"`
+	SourcePort  int                     `json:"sourcePort"`
+	TargetIP    string                  `json:"targetIp"`
+	TargetPort  int                     `json:"targetPort"`
+	Protocol    string                  `json:"protocol"`
+	ForwardType string                  `json:"forwardType"`
+	Failover    *failoverSpec           `json:"failover,omitempty"`
+	GroupHealth *forwardGroupHealthSpec `json:"forwardGroupHealth,omitempty"`
+}
+
+type forwardGroupHealthSpec struct {
+	GroupID         int `json:"groupId"`
+	MemberID        int `json:"memberId"`
+	FailoverSeconds int `json:"failoverSeconds"`
+	RecoverSeconds  int `json:"recoverSeconds"`
 }
 
 type failoverTarget struct {
@@ -1634,13 +1706,14 @@ type tunnelProbe struct {
 }
 
 type ruleLatencyProbe struct {
-	RuleID      int    `json:"ruleId"`
-	TunnelID    int    `json:"tunnelId"`
-	TargetIP    string `json:"targetIp"`
-	TargetPort  int    `json:"targetPort"`
-	Method      string `json:"method"`
-	ProbeKey    string `json:"probeKey,omitempty"`
-	TopologyKey string `json:"topologyKey,omitempty"`
+	RuleID      int                     `json:"ruleId"`
+	TunnelID    int                     `json:"tunnelId"`
+	TargetIP    string                  `json:"targetIp"`
+	TargetPort  int                     `json:"targetPort"`
+	Method      string                  `json:"method"`
+	ProbeKey    string                  `json:"probeKey,omitempty"`
+	TopologyKey string                  `json:"topologyKey,omitempty"`
+	GroupHealth *forwardGroupHealthSpec `json:"forwardGroupHealth,omitempty"`
 }
 
 type hostProbeServiceProbe struct {
@@ -1651,16 +1724,18 @@ type hostProbeServiceProbe struct {
 	IntervalSeconds int    `json:"intervalSeconds"`
 }
 type forwardGroupProbe struct {
-	GroupID     int    `json:"groupId"`
-	MemberID    int    `json:"memberId"`
-	ProbeType   string `json:"probeType"`
-	TargetIP    string `json:"targetIp"`
-	TargetPort  int    `json:"targetPort"`
-	Method      string `json:"method"`
-	HopIndex    int    `json:"hopIndex"`
-	HopCount    int    `json:"hopCount"`
-	ProbeKey    string `json:"probeKey,omitempty"`
-	TopologyKey string `json:"topologyKey,omitempty"`
+	GroupID         int    `json:"groupId"`
+	MemberID        int    `json:"memberId"`
+	ProbeType       string `json:"probeType"`
+	TargetIP        string `json:"targetIp"`
+	TargetPort      int    `json:"targetPort"`
+	Method          string `json:"method"`
+	HopIndex        int    `json:"hopIndex"`
+	HopCount        int    `json:"hopCount"`
+	FailoverSeconds int    `json:"failoverSeconds,omitempty"`
+	RecoverSeconds  int    `json:"recoverSeconds,omitempty"`
+	ProbeKey        string `json:"probeKey,omitempty"`
+	TopologyKey     string `json:"topologyKey,omitempty"`
 }
 
 type dnsWatchItem struct {
@@ -1729,6 +1804,7 @@ type selfTest struct {
 type fxpSpec struct {
 	Role                     string            `json:"role"`
 	TransportVersion         string            `json:"transportVersion,omitempty"`
+	Entries                  []fxpSpec         `json:"entries,omitempty"`
 	TunnelID                 int               `json:"tunnelId"`
 	RuleID                   int               `json:"ruleId"`
 	ListenPort               int               `json:"listenPort"`
@@ -2114,6 +2190,12 @@ func scheduleAgentTCPing(cfg Config, force bool) bool {
 	)
 	interval = agentPeriodicInterval(interval, "tcping")
 	interval = capForwardGroupHealthProbeInterval(interval, state.ForwardGroupProbes)
+	for _, rule := range state.RunningRules {
+		interval = capForwardGroupHealthSpecInterval(interval, rule.GroupHealth)
+	}
+	for _, probe := range state.RuleLatencyProbes {
+		interval = capForwardGroupHealthSpecInterval(interval, probe.GroupHealth)
+	}
 	tcpingScheduleMu.Lock()
 	due := lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= interval
 	tcpingScheduleMu.Unlock()
@@ -2131,9 +2213,38 @@ func scheduleAgentTCPing(cfg Config, force bool) bool {
 
 func capForwardGroupHealthProbeInterval(interval time.Duration, probes []forwardGroupProbe) time.Duration {
 	for _, probe := range probes {
-		if strings.EqualFold(strings.TrimSpace(probe.ProbeType), "china") && interval > agentForwardGroupHealthProbeMaxInterval {
-			return agentForwardGroupHealthProbeMaxInterval
+		probeType := strings.ToLower(strings.TrimSpace(probe.ProbeType))
+		if probeType != "china" && probeType != "entry" {
+			continue
 		}
+		interval = capForwardGroupHealthSpecInterval(interval, &forwardGroupHealthSpec{
+			FailoverSeconds: probe.FailoverSeconds,
+			RecoverSeconds:  probe.RecoverSeconds,
+		})
+	}
+	return interval
+}
+
+func capForwardGroupHealthSpecInterval(interval time.Duration, health *forwardGroupHealthSpec) time.Duration {
+	if health == nil {
+		return interval
+	}
+	windowSeconds := health.FailoverSeconds
+	if windowSeconds <= 0 || (health.RecoverSeconds > 0 && health.RecoverSeconds < windowSeconds) {
+		windowSeconds = health.RecoverSeconds
+	}
+	if windowSeconds <= 0 {
+		windowSeconds = 60
+	}
+	probeInterval := time.Duration(windowSeconds) * time.Second / 2
+	if probeInterval < 5*time.Second {
+		probeInterval = 5 * time.Second
+	}
+	if probeInterval > agentForwardGroupHealthProbeMaxInterval {
+		probeInterval = agentForwardGroupHealthProbeMaxInterval
+	}
+	if interval > probeInterval {
+		return probeInterval
 	}
 	return interval
 }
@@ -3389,9 +3500,6 @@ func mapBool(ok bool, yes string, no string) string {
 	return no
 }
 
-var syncSystemTimeForAgentEventStreamError = syncSystemTimeForCommError
-var syncSystemTimeForAgentRequestError = syncSystemTimeForCommError
-
 func prepareAgentEventStreamRetry(cfg Config, err error) bool {
 	if agentRequestResponseAuthenticated(err) {
 		return false
@@ -3411,7 +3519,7 @@ func prepareAgentEventStreamRetry(cfg Config, err error) bool {
 			return true
 		}
 	}
-	return syncSystemTimeForAgentEventStreamError(err)
+	return false
 }
 
 func agentEventStream(cfg Config) {
@@ -3770,7 +3878,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			ok = runShellBatch(a.Commands) && ok
 		}
 		if a.Fxp != nil {
-			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
+			fxpOK := startFXP(cfg, *a.Fxp, a.FXPEntryGroup, actionMessage)
 			if !fxpOK || agentVerboseLogs {
 				logf("action fxp role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.UDPListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
 			}
@@ -3806,7 +3914,7 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		} else {
 			stopFailoverProxy(a.RuleID, a.SourcePort)
 			if a.Fxp != nil {
-				stopFXP(*a.Fxp)
+				ok = stopFXP(*a.Fxp, a.FXPEntryGroup, actionMessage) && ok
 			}
 			cleanupLocalManagedRuleServices(a)
 			for _, name := range managedServiceNamesForAction(a) {
@@ -4917,6 +5025,11 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	if localRuleID <= 0 && localForwardType == "" {
 		if fxpMatchesRunning(a.Fxp) {
 			writeState(a)
+			if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
+				// The first action can start every listener in the shared group.
+				// Each sibling action must still install its own counters and marker files.
+				return false
+			}
 			return true
 		}
 		if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
@@ -4934,6 +5047,9 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	if localRuleID == a.RuleID && (localRuleTunnelID <= 0 || localRuleTunnelID == a.TunnelID) && (localForwardType == "" || localForwardType == a.ForwardType) {
 		if fxpMatchesRunning(a.Fxp) {
 			writeState(a)
+			if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
+				return false
+			}
 			return true
 		}
 		if hasLocalProtocol && normalizeRuntimeProtocol(localProtocol) != normalizeRuntimeProtocol(a.Protocol) {
@@ -5608,6 +5724,33 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 		return false
 	}
 	normalized := normalizeFXPSpec(*spec)
+	if isSharedFXPEntry(normalized) {
+		id := fxpEntryGroupServerID(normalized.TransportVersion, normalized.TunnelID)
+		configPath := fxpConfigPath(normalized)
+		fxpMu.Lock()
+		existing := fxpServers[id]
+		matches := existing != nil && fxpProcessActive(existing) && fxpEntryGroupContains(existing.spec, normalized)
+		if existing != nil && !matches {
+			delete(fxpServers, id)
+		}
+		fxpMu.Unlock()
+		if !matches {
+			raw, err := os.ReadFile(configPath)
+			if err == nil {
+				var group fxpSpec
+				if json.Unmarshal(raw, &group) == nil {
+					group = normalizeFXPSpec(group)
+					if fxpEntryGroupContains(group, normalized) && fxpRuntimeProcessExists(configPath) {
+						fxpMu.Lock()
+						fxpServers[id] = &fxpProcess{signature: fxpServerSignature(group), configPath: configPath, spec: group}
+						fxpMu.Unlock()
+						matches = true
+					}
+				}
+			}
+		}
+		return matches
+	}
 	id := fxpServerID(normalized)
 	signature := fxpServerSignature(normalized)
 	configPath := fxpConfigPath(normalized)
@@ -5922,7 +6065,26 @@ func unknownManagedListenerCleanupNeeded(port int, protocol string) bool {
 		}
 	}
 	configs, _ := filepath.Glob(fmt.Sprintf("/run/forwardx-agent/fxp-*-%d.json", port))
-	return len(configs) > 0
+	if len(configs) > 0 {
+		return true
+	}
+	groupConfigs, _ := filepath.Glob("/run/forwardx-agent/fxp-entry-group-*-*.json")
+	for _, path := range groupConfigs {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var group fxpSpec
+		if json.Unmarshal(raw, &group) != nil {
+			continue
+		}
+		for _, entry := range normalizeFXPSpec(group).Entries {
+			if entry.ListenPort == port || entry.UDPListenPort == port {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func restartManagedService(name string) {
@@ -6248,7 +6410,7 @@ func reconcileRemovePort(port string) {
 	forwardType := readForwardTypeByPort(port)
 	logf("reconcile remove stale local rule port=%s rule=%d forwardType=%s", port, ruleID, forwardType)
 	if forwardType == "forwardx" && ruleID > 0 {
-		stopFXP(fxpSpec{Role: "entry", RuleID: ruleID, ListenPort: atoi(port), Protocol: "both"})
+		_ = stopFXP(fxpSpec{Role: "entry", RuleID: ruleID, ListenPort: atoi(port), Protocol: "both"}, nil, nil)
 	}
 	if ruleID > 0 {
 		stopFailoverProxy(ruleID, atoi(port))
@@ -6787,9 +6949,223 @@ type fxpProcess struct {
 	spec       fxpSpec
 }
 
+const fxpEntryGroupRole = "entry-group"
+
+func normalizeFXPTransportVersion(version string) string {
+	if strings.EqualFold(strings.TrimSpace(version), forwardXWireGuardVersion) {
+		return forwardXWireGuardVersion
+	}
+	return "v1"
+}
+
+func isSharedFXPEntry(spec fxpSpec) bool {
+	version := normalizeFXPTransportVersion(spec.TransportVersion)
+	return strings.EqualFold(strings.TrimSpace(spec.Role), "entry") &&
+		(version == "v1" || version == forwardXWireGuardVersion) &&
+		spec.TunnelID > 0 && spec.RuleID > 0 && spec.ListenPort > 0
+}
+
+func isFXPEntryGroup(spec fxpSpec) bool {
+	version := normalizeFXPTransportVersion(spec.TransportVersion)
+	return strings.EqualFold(strings.TrimSpace(spec.Role), fxpEntryGroupRole) &&
+		(version == "v1" || version == forwardXWireGuardVersion) &&
+		spec.TunnelID > 0
+}
+
+func fxpEntryGroupKey(transportVersion string, tunnelID int) string {
+	return normalizeFXPTransportVersion(transportVersion) + ":" + strconv.Itoa(tunnelID)
+}
+
+func fxpEntryGroupServerID(transportVersion string, tunnelID int) string {
+	return fxpEntryGroupRole + ":" + fxpEntryGroupKey(transportVersion, tunnelID)
+}
+
+func fxpEntryIdentity(spec fxpSpec) string {
+	spec = normalizeFXPSpec(spec)
+	return strconv.Itoa(spec.RuleID) + ":" + strconv.Itoa(spec.ListenPort) + ":" + spec.Protocol
+}
+
+func fxpEntryMatches(left fxpSpec, right fxpSpec) bool {
+	left = normalizeFXPSpec(left)
+	right = normalizeFXPSpec(right)
+	return isSharedFXPEntry(left) && isSharedFXPEntry(right) &&
+		left.TransportVersion == right.TransportVersion &&
+		left.TunnelID == right.TunnelID &&
+		fxpServerSignature(left) == fxpServerSignature(right)
+}
+
+func fxpEntryGroupContains(group fxpSpec, entry fxpSpec) bool {
+	group = normalizeFXPSpec(group)
+	entry = normalizeFXPSpec(entry)
+	if !isFXPEntryGroup(group) || !isSharedFXPEntry(entry) || group.TransportVersion != entry.TransportVersion || group.TunnelID != entry.TunnelID {
+		return false
+	}
+	for _, candidate := range group.Entries {
+		if fxpEntryMatches(candidate, entry) {
+			return true
+		}
+	}
+	return false
+}
+
+func fxpRemovalMatchesEntry(request fxpSpec, entry fxpSpec) bool {
+	requestedProtocol := strings.TrimSpace(request.Protocol)
+	requestedTransportVersion := strings.TrimSpace(request.TransportVersion)
+	entry = normalizeFXPSpec(entry)
+	if !isSharedFXPEntry(entry) {
+		return false
+	}
+	if role := strings.TrimSpace(request.Role); role != "" && !strings.EqualFold(role, entry.Role) {
+		return false
+	}
+	if request.TunnelID > 0 && request.TunnelID != entry.TunnelID {
+		return false
+	}
+	if requestedTransportVersion != "" && normalizeFXPTransportVersion(requestedTransportVersion) != entry.TransportVersion {
+		return false
+	}
+	if request.RuleID > 0 && request.RuleID != entry.RuleID {
+		return false
+	}
+	if request.ListenPort > 0 && request.ListenPort != entry.ListenPort {
+		return false
+	}
+	return requestedProtocol == "" || runtimeProtocolsOverlap(entry.Protocol, request.Protocol)
+}
+
+func buildSharedFXPEntryGroup(entries []fxpSpec, tunnelID int, transportVersion string) (fxpSpec, bool) {
+	transportVersion = normalizeFXPTransportVersion(transportVersion)
+	compatible := make([]fxpSpec, 0, len(entries))
+	for _, entry := range entries {
+		entry = normalizeFXPSpec(entry)
+		if entry.TunnelID == tunnelID && entry.TransportVersion == transportVersion && isSharedFXPEntry(entry) {
+			compatible = append(compatible, entry)
+		}
+	}
+	group := fxpSpec{
+		Role:             fxpEntryGroupRole,
+		TransportVersion: transportVersion,
+		TunnelID:         tunnelID,
+		Entries:          compatible,
+	}
+	group = normalizeFXPSpec(group)
+	return group, tunnelID > 0 && len(group.Entries) > 0
+}
+
+func desiredSharedFXPEntryGroup(current *fxpSpec, removal *fxpSpec) (fxpSpec, bool) {
+	tunnelID := 0
+	transportVersion := ""
+	if current != nil {
+		tunnelID = current.TunnelID
+		transportVersion = normalizeFXPTransportVersion(current.TransportVersion)
+	}
+	if tunnelID <= 0 && removal != nil {
+		tunnelID = removal.TunnelID
+	}
+	if removal != nil && strings.TrimSpace(removal.TransportVersion) != "" {
+		transportVersion = normalizeFXPTransportVersion(removal.TransportVersion)
+	}
+	if removal != nil && (tunnelID <= 0 || transportVersion == "") {
+		for _, persisted := range loadPersistedFXPSpecs() {
+			if fxpRemovalMatchesEntry(*removal, persisted) {
+				tunnelID = persisted.TunnelID
+				transportVersion = persisted.TransportVersion
+				break
+			}
+		}
+	}
+	if transportVersion == "" {
+		transportVersion = "v1"
+	}
+	entries := make([]fxpSpec, 0)
+	for _, persisted := range loadPersistedFXPSpecs() {
+		if !isSharedFXPEntry(persisted) {
+			continue
+		}
+		if tunnelID > 0 && persisted.TunnelID != tunnelID {
+			continue
+		}
+		if persisted.TransportVersion != transportVersion {
+			continue
+		}
+		if removal != nil && fxpRemovalMatchesEntry(*removal, persisted) {
+			if tunnelID <= 0 {
+				tunnelID = persisted.TunnelID
+			}
+			continue
+		}
+		if current != nil && (persisted.RuleID == current.RuleID || fxpSpecsListenConflict(persisted, *current)) {
+			continue
+		}
+		entries = append(entries, persisted)
+	}
+	if current != nil {
+		entries = append(entries, *current)
+	}
+	return buildSharedFXPEntryGroup(entries, tunnelID, transportVersion)
+}
+
+func attachDesiredSharedFXPEntryGroups(actions []action) {
+	touched := map[string]fxpSpec{}
+	entriesByGroup := map[string][]fxpSpec{}
+	for _, persisted := range loadPersistedFXPSpecs() {
+		if isSharedFXPEntry(persisted) {
+			key := fxpEntryGroupKey(persisted.TransportVersion, persisted.TunnelID)
+			entriesByGroup[key] = append(entriesByGroup[key], persisted)
+		}
+	}
+	for _, item := range actions {
+		if item.Fxp == nil {
+			continue
+		}
+		spec := normalizeFXPSpec(*item.Fxp)
+		if !isSharedFXPEntry(spec) {
+			continue
+		}
+		key := fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID)
+		touched[key] = spec
+		current := entriesByGroup[key]
+		next := make([]fxpSpec, 0, len(current)+1)
+		for _, existing := range current {
+			if fxpRemovalMatchesEntry(spec, existing) || (item.Op == "apply" && (existing.RuleID == spec.RuleID || fxpSpecsListenConflict(existing, spec))) {
+				continue
+			}
+			next = append(next, existing)
+		}
+		if strings.TrimSpace(item.Op) == "apply" {
+			next = append(next, spec)
+		}
+		entriesByGroup[key] = next
+	}
+	staged := map[string]fxpSpec{}
+	for key, seed := range touched {
+		group, _ := buildSharedFXPEntryGroup(entriesByGroup[key], seed.TunnelID, seed.TransportVersion)
+		staged[key] = group
+	}
+	for index := range actions {
+		if actions[index].Fxp == nil {
+			continue
+		}
+		entry := normalizeFXPSpec(*actions[index].Fxp)
+		if !isSharedFXPEntry(entry) {
+			continue
+		}
+		group, ok := staged[fxpEntryGroupKey(entry.TransportVersion, entry.TunnelID)]
+		if !ok {
+			continue
+		}
+		groupCopy := group
+		actions[index].FXPEntryGroup = &groupCopy
+	}
+}
+
 type actionMessage struct {
 	mu  sync.Mutex
 	msg string
+}
+
+func newActionMessage() *actionMessage {
+	return &actionMessage{}
 }
 
 func (m *actionMessage) set(format string, args ...any) {
@@ -6823,7 +7199,10 @@ func (m *actionMessage) get() string {
 }
 
 func fxpServerID(spec fxpSpec) string {
-	return spec.Role + ":" + strconv.Itoa(spec.TunnelID) + ":" + strconv.Itoa(spec.RuleID) + ":" + strconv.Itoa(spec.ListenPort)
+	if isFXPEntryGroup(spec) {
+		return fxpEntryGroupServerID(spec.TransportVersion, spec.TunnelID)
+	}
+	return normalizeFXPTransportVersion(spec.TransportVersion) + ":" + spec.Role + ":" + strconv.Itoa(spec.TunnelID) + ":" + strconv.Itoa(spec.RuleID) + ":" + strconv.Itoa(spec.ListenPort)
 }
 
 func normalizeFXPSpec(spec fxpSpec) fxpSpec {
@@ -6832,6 +7211,44 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 	if spec.TransportVersion != forwardXWireGuardVersion {
 		spec.TransportVersion = "v1"
 	}
+	if spec.Role == fxpEntryGroupRole {
+		entries := make([]fxpSpec, 0, len(spec.Entries))
+		byIdentity := map[string]int{}
+		for _, entry := range spec.Entries {
+			entry.Entries = nil
+			entry.Role = "entry"
+			entry.TransportVersion = spec.TransportVersion
+			entry.TunnelID = spec.TunnelID
+			entry = normalizeFXPSpec(entry)
+			if !isSharedFXPEntry(entry) || entry.Key == "" {
+				continue
+			}
+			identity := fxpEntryIdentity(entry)
+			if index, exists := byIdentity[identity]; exists {
+				entries[index] = entry
+				continue
+			}
+			byIdentity[identity] = len(entries)
+			entries = append(entries, entry)
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].RuleID != entries[j].RuleID {
+				return entries[i].RuleID < entries[j].RuleID
+			}
+			if entries[i].ListenPort != entries[j].ListenPort {
+				return entries[i].ListenPort < entries[j].ListenPort
+			}
+			return entries[i].Protocol < entries[j].Protocol
+		})
+		spec.Entries = entries
+		spec.RuleID = 0
+		spec.ListenPort = 0
+		spec.UDPListenPort = 0
+		spec.Protocol = ""
+		spec.Key = ""
+		return spec
+	}
+	spec.Entries = nil
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
@@ -6881,6 +7298,13 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 
 func fxpServerSignature(spec fxpSpec) string {
 	spec = normalizeFXPSpec(spec)
+	if isFXPEntryGroup(spec) {
+		parts := []string{spec.Role, spec.TransportVersion, strconv.Itoa(spec.TunnelID)}
+		for _, entry := range spec.Entries {
+			parts = append(parts, fxpServerSignature(entry))
+		}
+		return strings.Join(parts, "||")
+	}
 	parts := []string{
 		spec.Role,
 		spec.TransportVersion,
@@ -6929,6 +7353,9 @@ func fxpServerSignature(spec fxpSpec) string {
 }
 
 func fxpConfigPath(spec fxpSpec) string {
+	if isFXPEntryGroup(spec) || isSharedFXPEntry(spec) {
+		return fmt.Sprintf("/run/forwardx-agent/fxp-entry-group-%s-%d.json", normalizeFXPTransportVersion(spec.TransportVersion), spec.TunnelID)
+	}
 	role := strings.ToLower(strings.TrimSpace(spec.Role))
 	return fmt.Sprintf("/run/forwardx-agent/fxp-%s-%d-%d-%d.json", role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 }
@@ -6989,6 +7416,23 @@ func fxpRuntimeProcessExistsForRulePort(ruleID int, port int) bool {
 			return true
 		}
 	}
+	groupPaths, _ := filepath.Glob("/run/forwardx-agent/fxp-entry-group-*-*.json")
+	for _, path := range groupPaths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var group fxpSpec
+		if json.Unmarshal(raw, &group) != nil {
+			continue
+		}
+		group = normalizeFXPSpec(group)
+		for _, entry := range group.Entries {
+			if entry.RuleID == ruleID && entry.ListenPort == port && fxpRuntimeProcessExists(path) {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -7044,6 +7488,14 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 func fxpListenEndpoints(spec fxpSpec) map[string]int {
 	spec = normalizeFXPSpec(spec)
 	endpoints := map[string]int{}
+	if isFXPEntryGroup(spec) {
+		for _, entry := range spec.Entries {
+			for protocol, port := range fxpListenEndpoints(entry) {
+				endpoints[protocol+":"+strconv.Itoa(port)] = port
+			}
+		}
+		return endpoints
+	}
 	for _, protocol := range runtimeProtocols(spec.Protocol) {
 		if protocol == "udp" {
 			if spec.UDPListenPort > 0 {
@@ -7061,9 +7513,13 @@ func fxpListenEndpoints(spec fxpSpec) map[string]int {
 func fxpSpecsListenConflict(left fxpSpec, right fxpSpec) bool {
 	leftEndpoints := fxpListenEndpoints(left)
 	rightEndpoints := fxpListenEndpoints(right)
-	for protocol, port := range leftEndpoints {
-		if port > 0 && rightEndpoints[protocol] == port {
-			return true
+	for leftLane, leftPort := range leftEndpoints {
+		leftProtocol := strings.SplitN(leftLane, ":", 2)[0]
+		for rightLane, rightPort := range rightEndpoints {
+			rightProtocol := strings.SplitN(rightLane, ":", 2)[0]
+			if leftPort > 0 && leftPort == rightPort && leftProtocol == rightProtocol {
+				return true
+			}
 		}
 	}
 	return false
@@ -7071,7 +7527,9 @@ func fxpSpecsListenConflict(left fxpSpec, right fxpSpec) bool {
 
 func stopConflictingFXP(spec fxpSpec) {
 	for _, conflicting := range stopConflictingFXPRuntime(spec) {
-		removePersistedFXPSpec(conflicting)
+		if !isFXPEntryGroup(spec) || !fxpEntryGroupContains(spec, conflicting) {
+			removePersistedFXPSpec(conflicting)
+		}
 	}
 }
 
@@ -7085,7 +7543,7 @@ func stopConflictingFXPRuntime(spec fxpSpec) []fxpSpec {
 	conflictingByID := map[string]fxpSpec{}
 	addConflict := func(candidate fxpSpec) {
 		candidate = normalizeFXPSpec(candidate)
-		if candidate.Role == "" || candidate.TunnelID <= 0 || candidate.ListenPort <= 0 {
+		if candidate.Role == "" || candidate.TunnelID <= 0 || len(fxpListenEndpoints(candidate)) == 0 {
 			return
 		}
 		if fxpServerID(candidate) == desiredID || !fxpSpecsListenConflict(candidate, spec) {
@@ -7120,20 +7578,97 @@ func stopConflictingFXPRuntime(spec fxpSpec) []fxpSpec {
 		killFXPByConfigPath(path)
 		_ = os.Remove(path)
 	}
-	for _, existing := range loadPersistedFXPSpecs() {
+	for _, existing := range planPersistedFXPRestoreSpecs(loadPersistedFXPSpecs()) {
+		if isFXPEntryGroup(spec) && fxpEntryGroupContains(spec, existing) {
+			continue
+		}
 		addConflict(existing)
 	}
 
 	conflictingSpecs := make([]fxpSpec, 0, len(conflictingByID))
 	for _, conflicting := range conflictingByID {
 		conflictingSpecs = append(conflictingSpecs, conflicting)
+	}
+	sort.Slice(conflictingSpecs, func(i, j int) bool {
+		return fxpServerID(conflictingSpecs[i]) < fxpServerID(conflictingSpecs[j])
+	})
+	for _, conflicting := range conflictingSpecs {
 		stopFXPRuntime(conflicting)
 	}
 	return conflictingSpecs
 }
 
-func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
-	if spec.Key == "" || spec.ListenPort <= 0 {
+func fxpSpecWithoutListenConflicts(existing fxpSpec, desired fxpSpec) (fxpSpec, bool) {
+	existing = normalizeFXPSpec(existing)
+	desired = normalizeFXPSpec(desired)
+	if !isFXPEntryGroup(existing) {
+		return fxpSpec{}, false
+	}
+	remaining := make([]fxpSpec, 0, len(existing.Entries))
+	for _, entry := range existing.Entries {
+		if !fxpSpecsListenConflict(entry, desired) {
+			remaining = append(remaining, entry)
+		}
+	}
+	existing.Entries = remaining
+	existing = normalizeFXPSpec(existing)
+	return existing, len(existing.Entries) > 0
+}
+
+func restoreFXPTransitionLocked(cfg Config, desired fxpSpec, desiredStarted bool, previousSame *fxpSpec, conflicts []fxpSpec, replacements []fxpSpec) {
+	if desiredStarted {
+		stopFXPRuntime(desired)
+	}
+	for _, replacement := range replacements {
+		stopFXPRuntime(replacement)
+	}
+	if previousSame == nil {
+		removePersistedFXPSpec(desired)
+	}
+	restore := func(spec fxpSpec, reason string) {
+		message := newActionMessage()
+		if !startFXPProcessLocked(cfg, spec, message) {
+			logf("fxp rollback restore failed reason=%s role=%s tunnel=%d rule=%d: %s", reason, spec.Role, spec.TunnelID, spec.RuleID, message.get())
+		}
+	}
+	if previousSame != nil {
+		restore(*previousSame, "same-runtime")
+	}
+	for _, conflict := range conflicts {
+		restore(conflict, "listen-conflict")
+	}
+}
+
+func startFXP(cfg Config, spec fxpSpec, desiredGroup *fxpSpec, actionMessage *actionMessage) bool {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	return startFXPLocked(cfg, spec, desiredGroup, actionMessage)
+}
+
+func startFXPLocked(cfg Config, spec fxpSpec, desiredGroup *fxpSpec, actionMessage *actionMessage) bool {
+	spec = normalizeFXPSpec(spec)
+	if isSharedFXPEntry(spec) {
+		var group fxpSpec
+		ok := false
+		if desiredGroup != nil {
+			group = normalizeFXPSpec(*desiredGroup)
+			ok = isFXPEntryGroup(group) && group.TransportVersion == spec.TransportVersion && group.TunnelID == spec.TunnelID && fxpEntryGroupContains(group, spec)
+		}
+		if desiredGroup == nil {
+			group, ok = desiredSharedFXPEntryGroup(&spec, nil)
+		}
+		if !ok {
+			actionMessage.set("fxp entry group invalid tunnel=%d rule=%d port=%d", spec.TunnelID, spec.RuleID, spec.ListenPort)
+			return false
+		}
+		return startFXPProcessLocked(cfg, group, actionMessage)
+	}
+	return startFXPProcessLocked(cfg, spec, actionMessage)
+}
+
+func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
+	spec = normalizeFXPSpec(spec)
+	if (!isFXPEntryGroup(spec) && (spec.Key == "" || spec.ListenPort <= 0)) || (isFXPEntryGroup(spec) && len(spec.Entries) == 0) {
 		actionMessage.set("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 		return false
 	}
@@ -7151,37 +7686,32 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp runtime missing: install /usr/local/bin/forwardx-fxp to use custom encrypted tunnels")
 		return false
 	}
-	spec = normalizeFXPSpec(spec)
 	originalSpec := spec
 
 	id := fxpServerID(spec)
+	wireGuardRefID := id
+	if spec.TransportVersion == forwardXWireGuardVersion {
+		wireGuardRefID = fmt.Sprintf("%s#%d", id, atomic.AddUint64(&fxpWireGuardRefSequence, 1))
+	}
 	signature := fxpServerSignature(spec)
 	configPath := fxpConfigPath(spec)
+	var previousSame *fxpSpec
 	fxpMu.Lock()
 	existing := fxpServers[id]
 	if existing != nil && existing.signature == signature && fxpProcessActive(existing) {
 		fxpMu.Unlock()
-		if err := persistFXPSpec(originalSpec); err != nil {
-			logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
-		}
 		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
 		return true
 	}
-	if existing != nil {
-		delete(fxpServers, id)
+	if existing != nil && fxpProcessActive(existing) {
+		copy := existing.spec
+		previousSame = &copy
 	}
 	fxpMu.Unlock()
 	if adoptExistingFXP(spec, signature, configPath) {
-		conflictingSpecs := stopConflictingFXPRuntime(spec)
-		persisted := true
 		if err := persistFXPSpec(originalSpec); err != nil {
-			persisted = false
 			logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
-		}
-		if persisted {
-			for _, conflicting := range conflictingSpecs {
-				removePersistedFXPSpec(conflicting)
-			}
+			return false
 		}
 		return true
 	}
@@ -7189,6 +7719,14 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	// this in-process replacement. Explicit remove paths call stopFXP instead.
 	stopFXPRuntime(spec)
 	conflictingSpecs := stopConflictingFXPRuntime(spec)
+	transitionCommitted := false
+	desiredStarted := false
+	replacementSpecs := make([]fxpSpec, 0, len(conflictingSpecs))
+	defer func() {
+		if !transitionCommitted {
+			restoreFXPTransitionLocked(cfg, originalSpec, desiredStarted, previousSame, conflictingSpecs, replacementSpecs)
+		}
+	}()
 	// When mimic is enabled, UDPListenPort (mimicPort) differs from ListenPort (TCP port).
 	// fxpPortCleanupCmds matches by config filename which always ends in ListenPort, so
 	// using it with mimicPort would never match. Kill the UDP port occupant directly via ss.
@@ -7198,23 +7736,12 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 			"awk '{match($0,/pid=([0-9]+)/,a); if(a[1]!=\"\" && a[1]!=\"$$\" && a[1]!=\"$PPID\") print a[1]}' | sort -u || true); " +
 			"do kill \"$pid\" 2>/dev/null || true; done")
 	}
-	ownerBeforeWait := listenPortOwnerSummary(spec.ListenPort)
-	portReleaseTimeout := fxpPortReleaseTimeout(ownerBeforeWait)
-	if portReleaseTimeout > 3*time.Second {
-		logf("fxp waits for shared nginx runtime handoff role=%s tunnel=%d rule=%d listen=:%d timeout=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, portReleaseTimeout)
-	}
-	if !waitForFXPListenPortFree(&spec, spec.ListenPort, portReleaseTimeout) {
-		owner := listenPortOwnerSummary(spec.ListenPort)
-		if spec.UDPListenPort > 0 && spec.UDPListenPort != spec.ListenPort {
-			if udpOwner := listenPortOwnerSummary(spec.UDPListenPort); udpOwner != "" {
-				owner = strings.TrimSpace(owner + " udpListen=:" + strconv.Itoa(spec.UDPListenPort) + " " + udpOwner)
-			}
-		}
-		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d listen=:%d udpListen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.UDPListenPort, owner)
+	if ready, lane, owner := waitForFXPListenEndpointsFree(spec); !ready {
+		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d lane=%s owner=%s", spec.Role, spec.TunnelID, spec.RuleID, lane, owner)
 		return false
 	}
 	if spec.TransportVersion == forwardXWireGuardVersion {
-		prepared, err := prepareFXPWireGuard(spec)
+		prepared, err := prepareFXPWireGuard(spec, wireGuardRefID)
 		if err != nil {
 			actionMessage.set("fxp wireguard prepare failed role=%s tunnel=%d rule=%d: %v", spec.Role, spec.TunnelID, spec.RuleID, err)
 			return false
@@ -7223,7 +7750,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	releaseWireGuardRef := func() {
 		if originalSpec.TransportVersion == forwardXWireGuardVersion {
-			releaseWireGuardRuntimeRef(originalSpec.TunnelID, id)
+			releaseWireGuardRuntimeRef(originalSpec.TunnelID, wireGuardRefID)
 		}
 	}
 
@@ -7235,6 +7762,11 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	if spec.Role == "entry" {
 		spec.PanelURL = currentPanelURL(cfg)
 		spec.Token = cfg.Token
+	} else if isFXPEntryGroup(spec) {
+		for index := range spec.Entries {
+			spec.Entries[index].PanelURL = currentPanelURL(cfg)
+			spec.Entries[index].Token = cfg.Token
+		}
 	}
 	logf(
 		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s exitStrategy=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d udpTargets=%d",
@@ -7300,21 +7832,31 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		return false
 	case <-time.After(300 * time.Millisecond):
 	}
+	if isFXPEntryGroup(originalSpec) && !waitForFXPListenEndpointsReady(originalSpec, 3*time.Second) {
+		_ = cmd.Process.Kill()
+		releaseWireGuardRef()
+		_ = os.Remove(configPath)
+		actionMessage.set("fxp entry group listeners not ready tunnel=%d entries=%d", originalSpec.TunnelID, len(originalSpec.Entries))
+		return false
+	}
 
 	persisted := true
 	if err := persistFXPSpec(originalSpec); err != nil {
 		persisted = false
 		logf("fxp persistent snapshot write failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
 	}
-	if persisted {
-		for _, conflicting := range conflictingSpecs {
-			removePersistedFXPSpec(conflicting)
-		}
+	if !persisted {
+		_ = cmd.Process.Kill()
+		releaseWireGuardRef()
+		_ = os.Remove(configPath)
+		actionMessage.set("fxp persistent snapshot write failed tunnel=%d", originalSpec.TunnelID)
+		return false
 	}
 
 	fxpMu.Lock()
 	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: originalSpec}
 	fxpMu.Unlock()
+	desiredStarted = true
 	go func() {
 		err := <-exited
 		fxpMu.Lock()
@@ -7328,17 +7870,84 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		}
 		releaseWireGuardRef()
 	}()
+	for _, conflicting := range conflictingSpecs {
+		replacement, hasRemaining := fxpSpecWithoutListenConflicts(conflicting, originalSpec)
+		if !hasRemaining {
+			continue
+		}
+		message := newActionMessage()
+		if !startFXPProcessLocked(cfg, replacement, message) {
+			actionMessage.set("fxp conflicting entry group rebuild failed tunnel=%d: %s", replacement.TunnelID, message.get())
+			return false
+		}
+		replacementSpecs = append(replacementSpecs, replacement)
+	}
+	for _, conflicting := range conflictingSpecs {
+		if _, hasRemaining := fxpSpecWithoutListenConflicts(conflicting, originalSpec); !hasRemaining {
+			removePersistedFXPSpec(conflicting)
+		}
+	}
+	transitionCommitted = true
 	logf("fxp %s started tunnel=%d rule=%d listen=:%d protocol=%s runtime=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, runtimePath)
 	return true
 }
 
-func stopFXP(spec fxpSpec) {
+func stopFXP(spec fxpSpec, desiredGroup *fxpSpec, actionMessage *actionMessage) bool {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	return stopFXPLocked(spec, desiredGroup, actionMessage)
+}
+
+func stopFXPLocked(spec fxpSpec, desiredGroup *fxpSpec, actionMessage *actionMessage) bool {
+	requestedTransportVersion := strings.TrimSpace(spec.TransportVersion)
+	spec = normalizeFXPSpec(spec)
+	if requestedTransportVersion == "" {
+		spec.TransportVersion = ""
+	}
+	if isSharedFXPEntry(spec) || (strings.EqualFold(spec.Role, "entry") && spec.RuleID > 0 && spec.ListenPort > 0) {
+		var group fxpSpec
+		groupKnown := false
+		if desiredGroup != nil {
+			group = normalizeFXPSpec(*desiredGroup)
+			groupKnown = isFXPEntryGroup(group) &&
+				(spec.TunnelID <= 0 || group.TunnelID == spec.TunnelID) &&
+				(strings.TrimSpace(spec.TransportVersion) == "" || group.TransportVersion == spec.TransportVersion)
+		}
+		hasRemaining := groupKnown && len(group.Entries) > 0
+		if !groupKnown {
+			group, hasRemaining = desiredSharedFXPEntryGroup(nil, &spec)
+		}
+		tunnelID := spec.TunnelID
+		if tunnelID <= 0 {
+			tunnelID = group.TunnelID
+		}
+		if hasRemaining {
+			cfg, _ := loadConfig(activeConfigPath)
+			if !startFXPProcessLocked(cfg, group, actionMessage) {
+				logf("fxp entry group rebuild failed after removal tunnel=%d rule=%d port=%d: %s", group.TunnelID, spec.RuleID, spec.ListenPort, actionMessage.get())
+				return false
+			}
+		} else if tunnelID > 0 {
+			transportVersion := spec.TransportVersion
+			if group.TransportVersion != "" {
+				transportVersion = group.TransportVersion
+			}
+			stopFXPRuntime(fxpSpec{Role: fxpEntryGroupRole, TransportVersion: transportVersion, TunnelID: tunnelID})
+			spec.TransportVersion = transportVersion
+			removePersistedFXPSpec(spec)
+		}
+		return true
+	}
 	stopFXPRuntime(spec)
 	removePersistedFXPSpec(spec)
+	return true
 }
 
 func stopFXPRuntime(spec fxpSpec) {
 	spec = normalizeFXPSpec(spec)
+	if isSharedFXPEntry(spec) {
+		spec = fxpSpec{Role: fxpEntryGroupRole, TransportVersion: spec.TransportVersion, TunnelID: spec.TunnelID}
+	}
 	id := fxpServerID(spec)
 	fxpMu.Lock()
 	s := fxpServers[id]
@@ -7350,9 +7959,6 @@ func stopFXPRuntime(spec fxpSpec) {
 		configPath := fxpConfigPath(spec)
 		killFXPByConfigPath(configPath)
 		_ = os.Remove(configPath)
-		if spec.TransportVersion == forwardXWireGuardVersion {
-			releaseWireGuardRuntimeRef(spec.TunnelID, id)
-		}
 		return
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
@@ -7395,12 +8001,17 @@ func stopFXPByPort(tunnelID int, listenPort int) {
 	if tunnelID <= 0 || listenPort <= 0 {
 		return
 	}
-	prefix := ":" + strconv.Itoa(tunnelID) + ":"
-	suffix := ":" + strconv.Itoa(listenPort)
 	var specs []fxpSpec
 	fxpMu.Lock()
-	for id, process := range fxpServers {
-		if !strings.Contains(id, prefix) || !strings.HasSuffix(id, suffix) || process == nil {
+	for _, process := range fxpServers {
+		if process == nil || process.spec.TunnelID != tunnelID {
+			continue
+		}
+		usesPort := false
+		for _, port := range fxpListenEndpoints(process.spec) {
+			usesPort = usesPort || port == listenPort
+		}
+		if !usesPort {
 			continue
 		}
 		// Keep the complete original spec so a V2 process releases its
@@ -7417,11 +8028,17 @@ func stopFXPByListenPort(listenPort int) {
 	if listenPort <= 0 {
 		return
 	}
-	suffix := ":" + strconv.Itoa(listenPort)
 	var specs []fxpSpec
 	fxpMu.Lock()
-	for id, process := range fxpServers {
-		if !strings.HasSuffix(id, suffix) || process == nil {
+	for _, process := range fxpServers {
+		if process == nil {
+			continue
+		}
+		usesPort := false
+		for _, port := range fxpListenEndpoints(process.spec) {
+			usesPort = usesPort || port == listenPort
+		}
+		if !usesPort {
 			continue
 		}
 		// Keep the complete original spec so a V2 process releases its
@@ -7439,6 +8056,61 @@ func fxpPortReleaseTimeout(owner string) time.Duration {
 		return 15 * time.Second
 	}
 	return 3 * time.Second
+}
+
+func waitForFXPListenEndpointsFree(spec fxpSpec) (bool, string, string) {
+	endpoints := fxpListenEndpoints(spec)
+	lanes := make([]string, 0, len(endpoints))
+	for lane := range endpoints {
+		lanes = append(lanes, lane)
+	}
+	sort.Strings(lanes)
+	deadline := time.Now().Add(3 * time.Second)
+	for _, lane := range lanes {
+		port := endpoints[lane]
+		protocol := strings.SplitN(lane, ":", 2)[0]
+		owner := ""
+		if listenPortBusy(protocol, port) {
+			owner = listenPortOwnerSummary(port)
+		}
+		if timeout := fxpPortReleaseTimeout(owner); timeout > 3*time.Second {
+			candidate := time.Now().Add(timeout)
+			if candidate.After(deadline) {
+				deadline = candidate
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			remaining = time.Millisecond
+		}
+		laneSpec := fxpSpec{ListenPort: port, UDPListenPort: port, Protocol: protocol}
+		if !waitForFXPListenPortFree(&laneSpec, port, remaining) {
+			return false, protocol + ":" + strconv.Itoa(port), listenPortOwnerSummary(port)
+		}
+	}
+	return true, "", ""
+}
+
+func waitForFXPListenEndpointsReady(spec fxpSpec, timeout time.Duration) bool {
+	endpoints := fxpListenEndpoints(spec)
+	deadline := time.Now().Add(timeout)
+	for {
+		ready := len(endpoints) > 0
+		for lane, port := range endpoints {
+			protocol := strings.SplitN(lane, ":", 2)[0]
+			if !listenPortBusy(protocol, port) {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func waitForFXPListenPortFree(spec *fxpSpec, listenPort int, timeout time.Duration) bool {
@@ -9178,7 +9850,6 @@ func postToPanelURL(cfg Config, panelURL string, path string, payload any, out a
 func postWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
 	negotiationRetryUsed := false
 	rejectionRetryUsed := false
-	clockRetryUsed := false
 	var err error
 	for requestNumber := 0; requestNumber < 4; requestNumber++ {
 		err = postOnceWithClientToPanelURL(client, cfg, panelURL, path, payload, out)
@@ -9200,11 +9871,6 @@ func postWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, 
 		if hasAttempt && !attempt.auth.challengeKnownAtStart && agentAuthChallengeV2Known(panelURL) && !negotiationRetryUsed {
 			negotiationRetryUsed = true
 			logf("retrying agent request with challenge auth path=%s", path)
-			continue
-		}
-		if !clockRetryUsed && syncSystemTimeForAgentRequestError(err) {
-			clockRetryUsed = true
-			logf("retrying agent request after time sync path=%s", path)
 			continue
 		}
 		return err
@@ -9423,51 +10089,6 @@ func isClockSyncCandidateError(err error) bool {
 		return true
 	}
 	return false
-}
-
-func syncSystemTimeForCommError(err error) bool {
-	if !isClockSyncCandidateError(err) {
-		return false
-	}
-	now := time.Now()
-	lastAttempt := atomic.LoadInt64(&lastClockSyncAttemptAt)
-	if lastAttempt > 0 && now.Sub(time.Unix(lastAttempt, 0)) < agentClockSyncCooldown {
-		return false
-	}
-	if !atomic.CompareAndSwapInt32(&clockSyncRunning, 0, 1) {
-		return false
-	}
-	atomic.StoreInt64(&lastClockSyncAttemptAt, now.Unix())
-	defer atomic.StoreInt32(&clockSyncRunning, 0)
-	return syncSystemTime("agent-panel communication failed: " + err.Error())
-}
-
-func syncSystemTime(reason string) bool {
-	logf("time sync requested: %s", reason)
-	commands := []string{
-		`command -v timedatectl >/dev/null 2>&1 && timedatectl set-ntp true`,
-		`command -v systemctl >/dev/null 2>&1 && { systemctl enable --now chronyd >/dev/null 2>&1 || systemctl enable --now chrony >/dev/null 2>&1 || systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || systemctl restart chronyd >/dev/null 2>&1 || systemctl restart chrony >/dev/null 2>&1 || systemctl restart systemd-timesyncd >/dev/null 2>&1; }`,
-		`command -v rc-service >/dev/null 2>&1 && { rc-update add chronyd default >/dev/null 2>&1 || true; rc-service chronyd restart; }`,
-		`command -v chronyc >/dev/null 2>&1 && { chronyc -a "burst 4/4" >/dev/null 2>&1 || true; chronyc -a makestep || chronyc tracking; }`,
-		`command -v ntpd >/dev/null 2>&1 && ntpd -q -p pool.ntp.org`,
-		`command -v busybox >/dev/null 2>&1 && busybox ntpd -q -p pool.ntp.org`,
-	}
-	ok := false
-	for _, cmd := range commands {
-		if runClockSyncCommand(cmd) {
-			ok = true
-		}
-	}
-	logf("time sync finished ok=%v current_utc=%s", ok, time.Now().UTC().Format(time.RFC3339))
-	return ok
-}
-
-func runClockSyncCommand(cmd string) bool {
-	out, err := commandCombinedOutputWithTimeout(30*time.Second, "sh", "-lc", cmd)
-	if len(out) > 0 {
-		logf("time sync: %s", strings.TrimSpace(string(out)))
-	}
-	return err == nil
 }
 
 func encrypt(payload any, token string) (envelope, error) {

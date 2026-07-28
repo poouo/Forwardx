@@ -285,6 +285,30 @@ test("database-backed list queries page, search, scope, and hydrate only request
         search: "Alice Owned Template",
       });
       assert.deepEqual(ownedRulePage.items.map((item) => Number(item.id)), [105]);
+      const revokedGroupRulePage = await rulesCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        category: "all",
+        search: "Chain Template",
+      });
+      assert.deepEqual(revokedGroupRulePage.items.map((item) => Number(item.id)), [104]);
+      assert.equal(Number((await rulesCaller.getById({ id: 104 }))?.id), 104);
+      assert.equal(await rulesCaller.getById({ id: 103 }), null);
+      assert.ok((await rulesCaller.list()).some((item) => Number(item.id) === 104));
+      const revokedGroupResourceSearch = await rulesCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        category: "all",
+        search: "Private Chain",
+      });
+      assert.deepEqual(revokedGroupResourceSearch.items, []);
+      const mixedVisibleResourceSearch = await rulesCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        category: "all",
+        search: "Singapore Exit",
+      });
+      assert.deepEqual(mixedVisibleResourceSearch.items.map((item) => Number(item.id)), [101]);
 
       const userPage = await users.getUsersPage({ page: 9, pageSize: 1 });
       assert.equal(userPage.totalItems, 2);
@@ -374,18 +398,19 @@ test("database-backed list queries page, search, scope, and hydrate only request
 
       const visibleRuleInput = {
         ownerUserId: 2,
-        allowedForwardGroupIds: [10],
+        searchVisibleHostIds: [3],
+        searchVisibleTunnelIds: [20],
+        searchVisibleForwardGroupIds: [10, 13, 14],
         entryHostId: null,
         category: "all",
         search: "",
       };
       const rulePage = await rules.getForwardRulesPage({ ...visibleRuleInput, page: 9, pageSize: 2 });
-      assert.equal(rulePage.totalItems, 3);
-      assert.equal(rulePage.scopeTotalItems, 3);
-      assert.equal(rulePage.page, 2);
-      assert.deepEqual(rulePage.categoryCounts, { all: 3, local: 2, tunnel: 1, chain: 0, group: 0 });
+      assert.equal(rulePage.totalItems, 5);
+      assert.equal(rulePage.scopeTotalItems, 5);
+      assert.equal(rulePage.page, 3);
+      assert.deepEqual(rulePage.categoryCounts, { all: 5, local: 3, tunnel: 1, chain: 1, group: 0 });
       assert.equal(rulePage.items.length, 1);
-      assert.notEqual(rulePage.items[0].id, 104);
 
       const tunnelSearch = await rules.getForwardRulesPage({
         ...visibleRuleInput,
@@ -412,9 +437,9 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assert.equal(entryFiltered.totalItems, 3);
 
       const mapBatch = await rules.getForwardRuleMapBatch(visibleRuleInput, 2, 2);
-      assert.equal(mapBatch.totalItems, 3);
-      assert.equal(mapBatch.items.length, 1);
-      assert.equal(mapBatch.nextCursor, undefined);
+      assert.equal(mapBatch.totalItems, 5);
+      assert.equal(mapBatch.items.length, 2);
+      assert.equal(mapBatch.nextCursor, 4);
 
       for (const [id, name, active, sortOrder] of [
         [30, "Basic", 1, 0],

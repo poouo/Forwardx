@@ -124,7 +124,9 @@ export const forwardGroupsRouter = router({
 
   options: protectedProcedure.query(async ({ ctx }) => {
     const accessScope = await getLinkAccessScope(ctx.user);
-    const allowedGroupIds = accessScope ? Array.from(accessScope.groupIds) : undefined;
+    const allowedGroupIds = accessScope
+      ? Array.from(accessScope.useGroupIds || accessScope.groupIds)
+      : undefined;
     const groups = await db.getForwardGroupOptions(allowedGroupIds);
     const itemIds = new Set((groups as any[]).map((group) => Number(group.id)));
     const relatedIds = Array.from(new Set((groups as any[])

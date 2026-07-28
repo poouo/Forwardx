@@ -307,6 +307,7 @@ function UsersContent() {
   const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
   const [trafficBillingForwardGroupIds, setTrafficBillingForwardGroupIds] = useState<number[]>([]);
   const [addAllowedHostId, setAddAllowedHostId] = useState("");
+  const [addAllowedPortForwardId, setAddAllowedPortForwardId] = useState("");
   const [addAllowedForwardGroupId, setAddAllowedForwardGroupId] = useState("");
   const [addAllowedTunnelId, setAddAllowedTunnelId] = useState("");
   const [addBillingHostId, setAddBillingHostId] = useState("");
@@ -892,6 +893,7 @@ function UsersContent() {
     setTrafficBillingHostIds([]);
     setTrafficBillingTunnelIds([]);
     setTrafficBillingForwardGroupIds([]);
+    setAddAllowedPortForwardId("");
     setAddAllowedForwardGroupId("");
     setAddAllowedTunnelId("");
     setAddBillingHostId("");
@@ -954,6 +956,7 @@ function UsersContent() {
     const forwardGroupId = Number(value);
     if (!Number.isFinite(forwardGroupId)) return;
     setAllowedForwardGroupIds(prev => (prev.includes(forwardGroupId) ? prev : [...prev, forwardGroupId]));
+    setAddAllowedPortForwardId("");
     setAddAllowedForwardGroupId("");
   };
 
@@ -1092,8 +1095,12 @@ function UsersContent() {
     const mode = normalizeForwardGroupModeForAuth(group);
     return mode === "port" || mode === "chain" || mode === "failover";
   });
-  const selectedAllowedForwardGroups = authForwardGroups.filter((group: any) => allowedForwardGroupIds.includes(Number(group.id)));
-  const availableAllowedForwardGroups = authForwardGroups.filter((group: any) => !allowedForwardGroupIds.includes(Number(group.id)));
+  const portForwardGroups = authForwardGroups.filter((group: any) => normalizeForwardGroupModeForAuth(group) === "port");
+  const chainAndFailoverGroups = authForwardGroups.filter((group: any) => normalizeForwardGroupModeForAuth(group) !== "port");
+  const selectedAllowedPortForwards = portForwardGroups.filter((group: any) => allowedForwardGroupIds.includes(Number(group.id)));
+  const availableAllowedPortForwards = portForwardGroups.filter((group: any) => !allowedForwardGroupIds.includes(Number(group.id)));
+  const selectedAllowedChainAndFailoverGroups = chainAndFailoverGroups.filter((group: any) => allowedForwardGroupIds.includes(Number(group.id)));
+  const availableAllowedChainAndFailoverGroups = chainAndFailoverGroups.filter((group: any) => !allowedForwardGroupIds.includes(Number(group.id)));
   const selectedAllowedHosts = (allHosts || []).filter((host: any) => allowedHostIds.includes(Number(host.id)));
   const availableAllowedHosts = (allHosts || []).filter((host: any) => !allowedHostIds.includes(Number(host.id)));
   const selectedAllowedTunnels = (allTunnels || []).filter((t: any) => allowedTunnelIds.includes(Number(t.id)));
@@ -2330,38 +2337,41 @@ function UsersContent() {
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                默认不展开全部资源，按需选择要授权给该用户的主机、端口转发、转发链、转发组、隧道和计费资源。
+                默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道、网络测试主机和计费资源。
               </p>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">主机授权</Label>
-                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
+                  <Label className="text-sm font-medium">端口转发授权</Label>
+                  <Badge variant="outline" className="text-[10px]">{selectedAllowedPortForwards.length} 条</Badge>
                 </div>
-                <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
+                <Select value={addAllowedPortForwardId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedPortForwards.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权的主机" : "暂无可添加主机"} />
+                    <SelectValue placeholder={availableAllowedPortForwards.length ? "选择要授权的端口转发" : "暂无可添加端口转发"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableAllowedHosts.map((host: any) => (
-                      <SelectItem key={host.id} value={String(host.id)} textValue={String(host.name || host.ip || `主机 #${host.id}`)}>
-                        {String(host.name || host.ip || `主机 #${host.id}`)}
+                    {availableAllowedPortForwards.map((group: any) => (
+                      <SelectItem key={group.id} value={String(group.id)}>
+                        {group.name} · {String(group.forwardType || "-")}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {selectedAllowedHosts.length > 0 ? (
+                {selectedAllowedPortForwards.length > 0 ? (
                   <AutoAnimateContainer className="space-y-2">
-                    {selectedAllowedHosts.map((host: any) => (
-                      <div key={host.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
-                        <span className="min-w-0 truncate text-sm font-medium">{String(host.name || host.ip || `主机 #${host.id}`)}</span>
+                    {selectedAllowedPortForwards.map((group: any) => (
+                      <div key={group.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium truncate">{group.name}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono truncate">{String(group.forwardType || "-")}</span>
+                        </div>
                         <Button
                           type="button"
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
                           title="移除授权"
-                          onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(host.id)))}
+                          onClick={() => setAllowedForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -2370,7 +2380,7 @@ function UsersContent() {
                   </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权主机，可从上方选择添加。
+                    暂未授权端口转发，可从上方选择添加。
                   </p>
                 )}
               </div>
@@ -2379,24 +2389,24 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">转发组授权</Label>
-                  <Badge variant="outline" className="text-[10px]">{allowedForwardGroupIds.length} 条</Badge>
+                  <Label className="text-sm font-medium">转发链/转发组授权</Label>
+                  <Badge variant="outline" className="text-[10px]">{selectedAllowedChainAndFailoverGroups.length} 条</Badge>
                 </div>
-                <Select value={addAllowedForwardGroupId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedForwardGroups.length}>
+                <Select value={addAllowedForwardGroupId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedChainAndFailoverGroups.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedForwardGroups.length ? "选择要授权的转发资源" : "暂无可添加转发资源"} />
+                    <SelectValue placeholder={availableAllowedChainAndFailoverGroups.length ? "选择要授权的转发链或转发组" : "暂无可添加转发链或转发组"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableAllowedForwardGroups.map((group: any) => (
+                    {availableAllowedChainAndFailoverGroups.map((group: any) => (
                       <SelectItem key={group.id} value={String(group.id)}>
                         {group.name} · {forwardGroupAuthLabel(group)} · {String(group.forwardType || "-")}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {selectedAllowedForwardGroups.length > 0 ? (
+                {selectedAllowedChainAndFailoverGroups.length > 0 ? (
                   <AutoAnimateContainer className="space-y-2">
-                    {selectedAllowedForwardGroups.map((group: any) => (
+                    {selectedAllowedChainAndFailoverGroups.map((group: any) => (
                       <div key={group.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-sm font-medium truncate">{group.name}</span>
@@ -2418,7 +2428,7 @@ function UsersContent() {
                   </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权转发资源，可从上方选择添加。
+                    暂未授权转发链或转发组，可从上方选择添加。
                   </p>
                 )}
               </div>
@@ -2471,6 +2481,53 @@ function UsersContent() {
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
                     暂未授权隧道，可从上方选择添加。
+                  </p>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label className="text-sm font-medium">网络测试主机授权</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  网络测试会展示用户自己创建、通过主机授权或套餐授权获得的主机；这里用于手动增加授权。端口转发、转发链或转发组的成员主机不会因此单独展示。
+                </p>
+                <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权用于网络测试的主机" : "暂无可添加网络测试主机"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableAllowedHosts.map((host: any) => (
+                      <SelectItem key={host.id} value={String(host.id)} textValue={String(host.name || host.ip || `主机 #${host.id}`)}>
+                        {String(host.name || host.ip || `主机 #${host.id}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedAllowedHosts.length > 0 ? (
+                  <AutoAnimateContainer className="space-y-2">
+                    {selectedAllowedHosts.map((host: any) => (
+                      <div key={host.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                        <span className="min-w-0 truncate text-sm font-medium">{String(host.name || host.ip || `主机 #${host.id}`)}</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(host.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </AutoAnimateContainer>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未额外授权网络测试主机。
                   </p>
                 )}
               </div>

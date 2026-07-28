@@ -171,6 +171,13 @@ function decorateIperf3Status(status: Iperf3Status, host: any) {
 }
 
 export const lookingGlassRouter = router({
+  hosts: protectedProcedure.query(async ({ ctx }) => {
+    await assertNetworkTestAllowed(ctx);
+    if (ctx.user.role === "admin") return db.getHostOptions();
+    const allowedHostIds = await db.getUserEffectiveAllowedHostIds(ctx.user.id);
+    return db.getHostOptions(ctx.user.id, allowedHostIds, ctx.user.id);
+  }),
+
   clientInfo: protectedProcedure.query(({ ctx }) => {
     return { ip: getRequestIp(ctx.req) };
   }),

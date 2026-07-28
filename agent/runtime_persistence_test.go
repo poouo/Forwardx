@@ -135,7 +135,7 @@ func TestRuntimeStopPreservesSnapshotsUntilExplicitRemoval(t *testing.T) {
 	if loaded := loadPersistedFXPSpecs(); len(loaded) != 1 {
 		t.Fatalf("runtime-only FXP stop removed snapshot: %#v", loaded)
 	}
-	stopFXP(fxp)
+	_ = stopFXP(fxp, nil, nil)
 	if loaded := loadPersistedFXPSpecs(); len(loaded) != 0 {
 		t.Fatalf("explicit FXP removal retained snapshot: %#v", loaded)
 	}

@@ -144,6 +144,21 @@ test("forward group switches after its configured heartbeat failure window", () 
       state = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
       ))[0];
+      assert.equal(Number(state.activeMemberId), 101, "panel communication age must not switch forwarding health");
+      await insert(
+        "tcping_stats",
+        ["ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt"],
+        [110, 1, null, 1, "unhealthy", 0, now],
+      );
+      await insert(
+        "tcping_stats",
+        ["ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt"],
+        [120, 2, 12, 0, "healthy", 0, now],
+      );
+      await forwardGroups.runForwardGroupFailover(10);
+      state = (await runtime.queryRaw(
+        'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
+      ))[0];
       assert.equal(Number(state.activeMemberId), 102);
       assert.equal(state.lastDdnsValue, "198.51.100.20");
       assert.equal(
@@ -155,7 +170,11 @@ test("forward group switches after its configured heartbeat failure window", () 
       assert.deepEqual(requests.map((request) => request.values), [["198.51.100.10"], ["198.51.100.20"]]);
 
       await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 1', [now]);
-      await runtime.executeRaw('UPDATE "forward_group_members" SET "healthySince" = ? WHERE "id" = 101', [now - 130]);
+      await insert(
+        "tcping_stats",
+        ["ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt"],
+        [110, 1, 11, 0, "healthy", 0, now + 1],
+      );
       await forwardGroups.runForwardGroupFailover(10);
       state = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 10',
@@ -173,8 +192,16 @@ test("forward group switches after its configured heartbeat failure window", () 
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       assert.equal(locks.keyedTaskDepth("forward-group-failover:10"), 2, "second failover should wait for the same group");
-      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ? WHERE "id" = 1', [now - 75]);
-      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 2', [now]);
+      await insert(
+        "tcping_stats",
+        ["ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt"],
+        [110, 1, null, 1, "unhealthy", 0, now + 2],
+      );
+      await insert(
+        "tcping_stats",
+        ["ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt"],
+        [120, 2, 10, 0, "healthy", 0, now + 2],
+      );
       held.release();
       await Promise.all([firstSync, queuedSync]);
       state = (await runtime.queryRaw(
@@ -217,10 +244,11 @@ test("forward group switches after its configured heartbeat failure window", () 
       let freshProbeState = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 30',
       ))[0];
-      assert.equal(freshProbeState.activeMemberId, null);
-      assert.equal(freshProbeState.lastDdnsValue, null);
+      assert.equal(Number(freshProbeState.activeMemberId), 301);
+      assert.equal(freshProbeState.lastDdnsValue, "198.51.100.10");
       assert.equal(freshProbeState.lastStatus, "down");
-      assert.equal(requests.at(-1).action, "delete", "a fresh timeout must not route traffic to the failing standby");
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10"]);
 
       await insert(
         "tcping_stats",
@@ -376,10 +404,11 @@ test("forward group switches after its configured heartbeat failure window", () 
       entryState = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
       ))[0];
-      assert.equal(entryState.activeMemberId, null);
-      assert.equal(entryState.lastDdnsValue, null);
+      assert.equal(Number(entryState.activeMemberId), 202);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.20");
       assert.equal(entryState.lastStatus, "down");
-      assert.equal(requests.at(-1).action, "delete", "all stale healthy snapshots must not remain routed indefinitely");
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
 
       await runtime.executeRaw('UPDATE "forward_groups" SET "chinaHealthCheckEnabled" = 0 WHERE "id" = 20');
       await forwardGroups.resetForwardGroupChinaHealth(20);
@@ -425,23 +454,23 @@ test("forward group switches after its configured heartbeat failure window", () 
       entryState = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 20',
       ))[0];
-      assert.equal(entryState.activeMemberId, null);
-      assert.equal(entryState.lastDdnsValue, null);
+      assert.equal(Number(entryState.activeMemberId), 201);
+      assert.equal(entryState.lastDdnsValue, "198.51.100.10");
       assert.equal(entryState.lastStatus, "down");
-      assert.equal(requests.at(-1).action, "delete");
-      assert.deepEqual(requests.at(-1).values, []);
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10"]);
 
       await runtime.executeRaw('UPDATE "hosts" SET "lastHeartbeat" = ?', [now - 75]);
       await forwardGroups.runForwardGroupFailover(10, { forceSync: true });
       state = (await runtime.queryRaw(
         'SELECT "activeMemberId", "lastDdnsValue", "lastStatus" FROM "forward_groups" WHERE "id" = 10',
       ))[0];
-      assert.equal(state.activeMemberId, null);
-      assert.equal(state.lastDdnsValue, null);
+      assert.equal(Number(state.activeMemberId), 102);
+      assert.equal(state.lastDdnsValue, "198.51.100.20");
       assert.equal(state.lastStatus, "down");
       assert.equal(requests.at(-1).domain, "edge.example.test");
-      assert.equal(requests.at(-1).action, "delete");
-      assert.deepEqual(requests.at(-1).values, []);
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
 
       await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ?', [now]);
       await runtime.executeRaw('UPDATE "forward_group_members" SET "healthySince" = ? WHERE "groupId" = 20', [now - 121]);
@@ -713,8 +742,17 @@ test("entry group health windows suppress transient DDNS flaps", () => {
       assert.equal(requests.length, oneEntry, "all-offline observation must keep the last entry during failover window");
       await runtime.executeRaw('UPDATE "forward_group_members" SET "failureSince" = ? WHERE "id" = 702', [now - 11]);
       await groups.runForwardGroupFailover(70);
-      assert.equal(requests.at(-1).action, "delete");
-      assert.deepEqual(requests.at(-1).values, []);
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"], "all-offline entry groups must retain one managed record");
+
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 1', [now]);
+      await runtime.executeRaw(
+        'UPDATE "forward_group_members" SET "chinaHealthStatus" = \'healthy\', "chinaHealthCheckedAt" = ?, "failureSince" = NULL, "healthySince" = ? WHERE "id" = 701',
+        [now, now - 11],
+      );
+      await groups.runForwardGroupFailover(70);
+      assert.equal(requests.at(-1).action, "replace");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.10"], "DNS must move to the member that recovers while the retained member remains offline");
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
       await new Promise((resolve) => webhook.close(resolve));

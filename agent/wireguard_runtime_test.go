@@ -80,6 +80,187 @@ func setTestWireGuardRuntime(t *testing.T, tunnelID int, runtime *wireGuardRunti
 	})
 }
 
+func TestV2EntryGroupWireGuardPreparationAndHandoffReferences(t *testing.T) {
+	const tunnelID = 98501
+	runtime := &wireGuardRuntime{
+		spec: wireGuardSpec{TunnelID: tunnelID},
+		peers: map[string]wireGuardPeerSpec{
+			"exit-a": {ID: "exit-a", Address: "100.110.0.2"},
+			"exit-b": {ID: "exit-b", Address: "100.110.0.3"},
+		},
+		outbound: map[string]*wireGuardOutboundProxy{},
+		inbound:  map[string]*wireGuardInboundProxy{},
+		refs:     map[string]int{},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	first := testV2EntrySpec(tunnelID, 3301, 45301, "exit-a")
+	first.ExitPort = 25001
+	first.UDPExitPort = 25002
+	second := testV2EntrySpec(tunnelID, 3302, 45302, "exit-b")
+	second.ExitPort = 26001
+	second.UDPExitPort = 26002
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{first, second}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("V2 entry group is invalid")
+	}
+
+	const firstRef = "v2-entry-group-test:first"
+	prepared, err := prepareFXPWireGuard(group, firstRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Entries) != 2 {
+		t.Fatalf("prepared V2 group entries=%d, want 2", len(prepared.Entries))
+	}
+	for _, entry := range prepared.Entries {
+		if entry.ExitHost != "127.0.0.1" || entry.ExitPort <= 0 || entry.UDPExitPort != entry.ExitPort {
+			t.Fatalf("rule %d has invalid local WireGuard endpoint: %#v", entry.RuleID, entry)
+		}
+	}
+	if prepared.Entries[0].ExitPort == prepared.Entries[1].ExitPort {
+		t.Fatalf("independent V2 exits share one local proxy port: %d", prepared.Entries[0].ExitPort)
+	}
+
+	runtime.mu.RLock()
+	proxyCount := len(runtime.outbound)
+	initialRefs := runtime.refs[firstRef]
+	proxyKeys := make([]string, 0, len(runtime.refOutbound[firstRef]))
+	for key := range runtime.refOutbound[firstRef] {
+		proxyKeys = append(proxyKeys, key)
+	}
+	runtime.mu.RUnlock()
+	if proxyCount != 2 {
+		t.Fatalf("WireGuard outbound proxies=%d, want one per V2 exit", proxyCount)
+	}
+	if initialRefs != 1 {
+		t.Fatalf("V2 group WireGuard references=%d, want one process reference", initialRefs)
+	}
+
+	// A replacement process acquires the same group identity before the old
+	// process exits. Releasing the old process must not drop the new reference.
+	const replacementRef = "v2-entry-group-test:replacement"
+	runtime.addRef(replacementRef, proxyKeys...)
+	releaseWireGuardRuntimeRef(tunnelID, firstRef)
+	runtime.mu.RLock()
+	handoffRefs := runtime.refs[replacementRef]
+	handoffTimer := runtime.releaseTimer
+	handoffProxyCount := len(runtime.outbound)
+	runtime.mu.RUnlock()
+	if handoffRefs != 1 || handoffTimer != nil || handoffProxyCount != 2 {
+		t.Fatalf("old V2 process release refs=%d timer=%v proxies=%d, want one live reference, no timer, and two proxies", handoffRefs, handoffTimer != nil, handoffProxyCount)
+	}
+
+	releaseWireGuardRuntimeRef(tunnelID, replacementRef)
+	runtime.mu.RLock()
+	_, retained := runtime.refs[replacementRef]
+	releaseScheduled := runtime.releaseTimer != nil
+	remainingProxies := len(runtime.outbound)
+	runtime.mu.RUnlock()
+	if retained || !releaseScheduled || remainingProxies != 0 {
+		t.Fatalf("final V2 process release retained=%v scheduled=%v proxies=%d", retained, releaseScheduled, remainingProxies)
+	}
+
+	const reacquiredRef = "v2-entry-group-test:reacquired"
+	runtime.addRef(reacquiredRef)
+	runtime.mu.RLock()
+	reacquiredRefs := runtime.refs[reacquiredRef]
+	releaseTimer := runtime.releaseTimer
+	runtime.mu.RUnlock()
+	if reacquiredRefs != 1 || releaseTimer != nil {
+		t.Fatalf("V2 reference reacquire refs=%d timer=%v", reacquiredRefs, releaseTimer != nil)
+	}
+}
+
+func TestV2EntryGroupWireGuardReplacementReclaimsRemovedEndpoint(t *testing.T) {
+	const tunnelID = 98502
+	runtime := &wireGuardRuntime{
+		spec: wireGuardSpec{TunnelID: tunnelID},
+		peers: map[string]wireGuardPeerSpec{
+			"exit-a": {ID: "exit-a", Address: "100.111.0.2"},
+			"exit-b": {ID: "exit-b", Address: "100.111.0.3"},
+		},
+		outbound: map[string]*wireGuardOutboundProxy{},
+		inbound:  map[string]*wireGuardInboundProxy{},
+		refs:     map[string]int{},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	removed := testV2EntrySpec(tunnelID, 3401, 45401, "exit-a")
+	removed.ExitPort, removed.UDPExitPort = 27001, 27002
+	retained := testV2EntrySpec(tunnelID, 3402, 45402, "exit-b")
+	retained.ExitPort, retained.UDPExitPort = 28001, 28002
+	oldGroup, ok := buildSharedFXPEntryGroup([]fxpSpec{removed, retained}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("old V2 entry group is invalid")
+	}
+	newGroup, ok := buildSharedFXPEntryGroup([]fxpSpec{retained}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("replacement V2 entry group is invalid")
+	}
+
+	if _, err := prepareFXPWireGuard(oldGroup, "replacement-test:old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareFXPWireGuard(newGroup, "replacement-test:new"); err != nil {
+		t.Fatal(err)
+	}
+	releaseWireGuardRuntimeRef(tunnelID, "replacement-test:old")
+
+	removedKey := wireGuardOutboundProxyKey(removed.ExitPeerID, removed.ExitPort, removed.UDPExitPort)
+	retainedKey := wireGuardOutboundProxyKey(retained.ExitPeerID, retained.ExitPort, retained.UDPExitPort)
+	runtime.mu.RLock()
+	_, removedExists := runtime.outbound[removedKey]
+	_, retainedExists := runtime.outbound[retainedKey]
+	proxyCount := len(runtime.outbound)
+	runtime.mu.RUnlock()
+	if removedExists || !retainedExists || proxyCount != 1 {
+		t.Fatalf("replacement proxy reconciliation removed=%v retained=%v count=%d", removedExists, retainedExists, proxyCount)
+	}
+
+	releaseWireGuardRuntimeRef(tunnelID, "replacement-test:new")
+	runtime.mu.RLock()
+	proxyCount = len(runtime.outbound)
+	runtime.mu.RUnlock()
+	if proxyCount != 0 {
+		t.Fatalf("final V2 reference retained %d outbound proxies", proxyCount)
+	}
+}
+
+func TestV2EntryGroupWireGuardPreparationFailureReclaimsCreatedProxies(t *testing.T) {
+	const tunnelID = 98503
+	runtime := &wireGuardRuntime{
+		spec: wireGuardSpec{TunnelID: tunnelID},
+		peers: map[string]wireGuardPeerSpec{
+			"valid-exit": {ID: "valid-exit", Address: "100.112.0.2"},
+		},
+		outbound: map[string]*wireGuardOutboundProxy{},
+		inbound:  map[string]*wireGuardInboundProxy{},
+		refs:     map[string]int{},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	valid := testV2EntrySpec(tunnelID, 3501, 45501, "valid-exit")
+	invalid := testV2EntrySpec(tunnelID, 3502, 45502, "missing-exit")
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{valid, invalid}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("V2 entry group is invalid")
+	}
+	if _, err := prepareFXPWireGuard(group, "failure-test"); err == nil {
+		t.Fatal("V2 WireGuard preparation unexpectedly succeeded")
+	}
+	runtime.mu.RLock()
+	proxyCount := len(runtime.outbound)
+	refCount := len(runtime.refs)
+	runtime.mu.RUnlock()
+	if proxyCount != 0 || refCount != 0 {
+		t.Fatalf("failed V2 preparation leaked proxies=%d refs=%d", proxyCount, refCount)
+	}
+}
+
 func TestWireGuardProbeTreatsMissingRuntimeOrPeerAsNotReady(t *testing.T) {
 	const tunnelID = 98001
 	setTestWireGuardRuntime(t, tunnelID, nil)
@@ -499,7 +680,10 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatalf("WireGuard TCP latency probe failed: reachable=%v latency=%d", reachable, latency)
 	}
 
-	_, localTCPPort, localUDPPort, err := left.ensureOutboundProxy("2", servicePort, servicePort)
+	const proxyRef = "wireguard-proxy-integration-test"
+	left.addRef(proxyRef)
+	defer releaseWireGuardRuntimeRef(901, proxyRef)
+	_, localTCPPort, localUDPPort, err := left.ensureOutboundProxy(proxyRef, "2", servicePort, servicePort)
 	if err != nil {
 		t.Fatal(err)
 	}

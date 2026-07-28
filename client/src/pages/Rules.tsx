@@ -343,6 +343,7 @@ const defaultForm: RuleFormData = {
 const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const nginxTunnelModes = new Set(["nginx_stream"]);
 const unsupportedProtocolTitle = "当前转发方式已停用，请编辑并切换到可用资源";
+const revokedResourceTitle = "资源授权已失效，请编辑规则并选择当前有权限的端口转发或隧道";
 const desktopRuleTypeLabels = {
   local: "端口转发",
   tunnel: "隧道转发",
@@ -673,8 +674,15 @@ function RuleCardModeTransition({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const reduceMotion = useReducedMotion();
+  const mountedModeRef = useRef<RuleCardSize | null>(null);
 
   useEffect(() => {
+    if (mountedModeRef.current === null) {
+      mountedModeRef.current = mode;
+      return;
+    }
+    if (mountedModeRef.current === mode) return;
+    mountedModeRef.current = mode;
     const element = ref.current;
     if (!element || reduceMotion || typeof element.animate !== "function") return;
 
@@ -2183,7 +2191,6 @@ function RulesContent() {
     refetchOnWindowFocus: false,
   });
   const { data: forwardGroups, isFetched: forwardGroupsFetched, isError: forwardGroupsError } = trpc.forwardGroups.options.useQuery(undefined, {
-    enabled: secondaryQueriesReady,
     refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
     refetchOnWindowFocus: false,
@@ -2565,9 +2572,10 @@ function RulesContent() {
 
   const renderRuleEnabledSwitch = (rule: any) => {
     const supported = isRuleSupported(rule);
-    const enabled = !!rule.isEnabled;
+    const resourceAccessAllowed = rule.resourceAccessAllowed !== false;
+    const enabled = resourceAccessAllowed && !!rule.isEnabled;
     const title = enabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发";
-    const content = supported ? (
+    const content = supported && resourceAccessAllowed ? (
       <OptimisticSwitch
         checked={enabled}
         onCheckedChangeAsync={(checked) => toggleRuleEnabled(rule, checked)}
@@ -2578,11 +2586,11 @@ function RulesContent() {
         aria-label={`${enabled ? "停用" : "启用"}转发规则 ${rule.name || ""}`}
       />
     ) : (
-      <span className="inline-flex shrink-0" title={unsupportedProtocolTitle}>
-        <Switch checked={false} disabled className="scale-75" aria-label="当前协议不支持，规则已停用" />
+      <span className="inline-flex shrink-0" title={resourceAccessAllowed ? unsupportedProtocolTitle : revokedResourceTitle}>
+        <Switch checked={false} disabled className="scale-75" aria-label={resourceAccessAllowed ? "当前协议不支持，规则已停用" : "资源授权已失效，规则已停用"} />
       </span>
     );
-    return supported ? content : renderUnsupportedHint(content);
+    return supported && resourceAccessAllowed ? content : renderUnsupportedHint(content, resourceAccessAllowed ? unsupportedProtocolTitle : revokedResourceTitle);
   };
 
   const resetForm = () => {
@@ -4062,10 +4070,10 @@ function RulesContent() {
       placeholderData: (previousData) => previousData,
     }
   );
-  const { data: dailyTrafficSummary } = trpc.rules.trafficSummary.useQuery(
+  const { data: dailyTrafficSummary, isFetched: dailyTrafficSummaryFetched } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: "24h", ruleIds: visibleRuleIdsForMetrics },
     {
-      enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
+      enabled: visibleRuleIdsForMetrics.length > 0,
       refetchInterval: pollingInterval("normal"),
       staleTime: 5000,
       refetchOnWindowFocus: false,
@@ -4173,6 +4181,14 @@ function RulesContent() {
       invalidatedRuleProbeIdsRef.current,
     )
   ), [ruleProbeCacheRevision, trafficByRule, user?.id, visibleRuleIdsForMetrics]);
+  const hasForwardGroupRules = useMemo(
+    () => filteredRules.some((rule: any) => Number(rule.forwardGroupId || 0) > 0),
+    [filteredRules],
+  );
+  const ruleStatusSnapshotReady = filteredRules.length === 0 || (
+    dailyTrafficSummaryFetched
+    && (!hasForwardGroupRules || forwardGroupsFetched || forwardGroupsError)
+  );
   const dailyTrafficByRule = useMemo(() => {
     const m = new Map<number, { bytesIn: number; bytesOut: number }>();
     dailyTrafficSummaryRows.forEach((t: any) => {
@@ -5604,6 +5620,7 @@ function RulesContent() {
       const visual = resolveForwardRuleVisualStatus({
         ruleEnabled: !!rule.isEnabled,
         ruleRunning: !!rule.isRunning,
+        resourceAccessAllowed: rule.resourceAccessAllowed,
         groupEnabled: group?.isEnabled !== false,
         groupConfigStatus: groupStatus,
         runtimeStatus: runtime?.status,
@@ -5618,6 +5635,7 @@ function RulesContent() {
     return renderResolvedStatusDot(resolveForwardRuleVisualStatus({
       ruleEnabled: !!rule.isEnabled,
       ruleRunning: !!rule.isRunning,
+      resourceAccessAllowed: rule.resourceAccessAllowed,
       groupEnabled: true,
       groupConfigStatus: "available",
       latestLatencyMs: latest?.latestLatencyMs,
@@ -5900,11 +5918,11 @@ function RulesContent() {
     );
   };
 
-  const renderUnsupportedHint = (children: ReactNode) => (
+  const renderUnsupportedHint = (children: ReactNode, title = unsupportedProtocolTitle) => (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent>{unsupportedProtocolTitle}</TooltipContent>
+        <TooltipContent>{title}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
@@ -6230,9 +6248,9 @@ function RulesContent() {
               {protocolUnsupportedLabel(protocolKey)} 当前不支持
             </span>
           )}
-          {rule.protocolBlockReason && (
+          {(rule.protocolBlockReason || rule.resourceAccessAllowed === false) && (
             <span className="mt-1 block text-[11px] leading-4 text-destructive">
-              {rule.protocolBlockReason}
+              {rule.protocolBlockReason || revokedResourceTitle}
             </span>
           )}
         </TableCell>
@@ -6325,9 +6343,9 @@ function RulesContent() {
               )}
             </div>
 
-            {rule.protocolBlockReason && (
+            {(rule.protocolBlockReason || rule.resourceAccessAllowed === false) && (
               <div className="line-clamp-2 text-[11px] leading-4 text-destructive">
-                {rule.protocolBlockReason}
+                {rule.protocolBlockReason || revokedResourceTitle}
               </div>
             )}
 
@@ -6383,9 +6401,9 @@ function RulesContent() {
                     {protocolUnsupportedLabel(protocolKey)} 当前不支持
                   </div>
                 )}
-                {rule.protocolBlockReason && (
+                {(rule.protocolBlockReason || rule.resourceAccessAllowed === false) && (
                   <div className="mt-1 text-[11px] leading-4 text-destructive">
-                    {rule.protocolBlockReason}
+                    {rule.protocolBlockReason || revokedResourceTitle}
                   </div>
                 )}
               </div>
@@ -6752,8 +6770,8 @@ function RulesContent() {
       </div>
 
       <RuleContentTransition transitionKey={ruleContentTransitionKey}>
-      {isLoading ? (
-        <DataSectionLoading label="正在加载转发规则" />
+      {isLoading || !ruleStatusSnapshotReady ? (
+        <DataSectionLoading label={isLoading ? "正在加载转发规则" : "正在加载规则状态"} />
       ) : filteredRules.length > 0 ? (
         <>
           {effectiveViewMode === "globe" ? (

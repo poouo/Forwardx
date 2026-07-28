@@ -61,6 +61,15 @@ test("Agent services avoid duplicate logs and disable core dumps", () => {
   assert.doesNotMatch(script, /output_log="\/var\/log\/forwardx-agent\/\$SERVICE_NAME\.log"/);
 });
 
+test("Agent install and upgrade do not install or modify host time synchronization", () => {
+  const script = generateInstallScript("https://panel.example.com");
+
+  assert.doesNotMatch(script, /\btime-sync\.target\b/);
+  assert.doesNotMatch(script, /\bsync_system_time\b/);
+  assert.doesNotMatch(script, /\b(?:chrony|chronyd|chronyc|systemd-timesyncd|timedatectl|ntpd)\b/);
+  assert.doesNotMatch(script, /\bdate\s+-s\b/);
+});
+
 test("Agent upgrade atomically normalizes config before replacing and restarting the service", () => {
   const script = generateInstallScript("https://panel.example.com");
   const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");

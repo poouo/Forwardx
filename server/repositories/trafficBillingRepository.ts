@@ -32,6 +32,23 @@ function emptyTrafficBillingResourceIds() {
   return { hostIds: [] as number[], tunnelIds: [] as number[], forwardGroupIds: [] as number[] };
 }
 
+function trafficBillingResourceIdsFromRows(rows: any[]) {
+  return {
+    hostIds: Array.from(new Set(rows
+      .filter((row: any) => row.resourceType === "host")
+      .map((row: any) => Number(row.resourceId))
+      .filter((id: number) => id > 0))),
+    tunnelIds: Array.from(new Set(rows
+      .filter((row: any) => row.resourceType === "tunnel")
+      .map((row: any) => Number(row.resourceId))
+      .filter((id: number) => id > 0))),
+    forwardGroupIds: Array.from(new Set(rows
+      .filter((row: any) => row.resourceType === "forward_group")
+      .map((row: any) => Number(row.resourceId))
+      .filter((id: number) => id > 0))),
+  };
+}
+
 function warnTrafficBillingAccessFailure(error: unknown) {
   const now = Date.now();
   if (now - lastTrafficBillingAccessWarningAt < 60_000) return;
@@ -291,6 +308,25 @@ export async function isTrafficBillingEnabled() {
 export async function setTrafficBillingEnabled(enabled: boolean) {
   await setSetting("trafficBillingEnabled", enabled ? "true" : "false");
   trafficBillingEnabledCache = { value: enabled, expiresAt: Date.now() + TRAFFIC_BILLING_ENABLED_CACHE_MS };
+}
+
+export async function getActiveTrafficBillingResourceIds() {
+  try {
+    if (!(await isTrafficBillingEnabled())) return emptyTrafficBillingResourceIds();
+    const db = await getDb();
+    if (!db) return emptyTrafficBillingResourceIds();
+    const rows = await db
+      .select({
+        resourceType: trafficBillingConfigs.resourceType,
+        resourceId: trafficBillingConfigs.resourceId,
+      })
+      .from(trafficBillingConfigs)
+      .where(eq(trafficBillingConfigs.enabled, true));
+    return trafficBillingResourceIdsFromRows(rows as any[]);
+  } catch (error) {
+    warnTrafficBillingAccessFailure(error);
+    return emptyTrafficBillingResourceIds();
+  }
 }
 
 export async function listTrafficBillingConfigs() {

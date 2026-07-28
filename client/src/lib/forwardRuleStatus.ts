@@ -24,6 +24,7 @@ function timestampMillis(value: unknown) {
 export function resolveForwardRuleVisualStatus(input: {
   ruleEnabled: boolean;
   ruleRunning?: boolean;
+  resourceAccessAllowed?: boolean;
   groupEnabled: boolean;
   groupConfigStatus: ForwardGroupConfigStatus;
   runtimeStatus?: string | null;
@@ -33,6 +34,9 @@ export function resolveForwardRuleVisualStatus(input: {
   latestLatencyIsTimeout?: boolean;
   latestLatencyAt?: Date | string | number | null;
 }, now = Date.now()): ForwardRuleVisualStatus {
+  if (input.resourceAccessAllowed === false) {
+    return { state: "error", title: "资源授权失效" };
+  }
   if (!input.ruleEnabled || !input.groupEnabled || input.groupConfigStatus === "disabled") {
     return { state: "disabled", title: "规则已停用" };
   }

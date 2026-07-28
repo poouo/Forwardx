@@ -262,6 +262,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		return nil
 	}
 	rememberDesiredStateReceived(state)
+	attachDesiredSharedFXPEntryGroups(state.Actions)
 	kernelSnapshot := newKernelForwardSnapshot()
 	// Pre-populate the per-port readiness cache once for all gost/nginx actions in this
 	// batch. Without this, canAdoptDesiredAction → desiredGostRuntimeReady calls
@@ -1305,7 +1306,7 @@ func actionSerialKeys(a action) []string {
 	if statusType == "runtime" {
 		return []string{"runtime:" + runtimeActionKey(a)}
 	}
-	keys := make([]string, 0, 2)
+	keys := make([]string, 0, 3)
 	if a.RuleID > 0 {
 		keys = append(keys, fmt.Sprintf("rule:%d", a.RuleID))
 	} else if a.TunnelID > 0 {
@@ -1313,6 +1314,9 @@ func actionSerialKeys(a action) []string {
 	}
 	if validActionPort(a.SourcePort) {
 		keys = append(keys, fmt.Sprintf("port:%d", a.SourcePort))
+	}
+	if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
+		keys = append(keys, fmt.Sprintf("fxp-entry-group:%d", a.Fxp.TunnelID))
 	}
 	sort.Strings(keys)
 	return keys

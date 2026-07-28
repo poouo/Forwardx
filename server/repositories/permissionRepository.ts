@@ -12,7 +12,7 @@ import {
 import { getDb } from "../dbRuntime";
 import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
 import { getActiveUserSubscriptions } from "./billingRepository";
-import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
+import { getActiveTrafficBillingResourceIds, getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { clearLinkAccessScopeCache } from "../linkAccessView";
 
 let lastPermissionLookupWarningAt = 0;
@@ -209,7 +209,7 @@ export async function getUserManualAllowedForwardGroupIds(userId: number): Promi
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
-  const [ownedRows, manualRows, planRows, billingResourceIds] = await Promise.all([
+  const [ownedRows, manualRows, planRows, activeBillingResourceIds, billingResourceIds] = await Promise.all([
     db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)).catch((error: unknown) => {
       warnPermissionLookupFailure(error);
       return [];
@@ -222,17 +222,23 @@ export async function getUserAllowedForwardGroupIds(userId: number): Promise<num
       warnPermissionLookupFailure(error);
       return [];
     }),
+    getActiveTrafficBillingResourceIds().catch((error) => {
+      warnPermissionLookupFailure(error);
+      return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
+    }),
     getUserUsableTrafficBillingResourceIds(userId).catch((error) => {
       warnPermissionLookupFailure(error);
       return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
     }),
   ]);
-  return Array.from(new Set([
+  const allowedIds = new Set([
     ...ownedRows.map((row: any) => Number(row.id)),
     ...manualRows,
     ...planRows,
-    ...billingResourceIds.forwardGroupIds,
-  ]));
+  ]);
+  for (const id of activeBillingResourceIds.forwardGroupIds) allowedIds.delete(Number(id));
+  for (const id of billingResourceIds.forwardGroupIds) allowedIds.add(Number(id));
+  return Array.from(allowedIds);
 }
 
 export async function setUserForwardGroupPermissions(userId: number, forwardGroupIds: number[]) {
@@ -247,23 +253,8 @@ export async function setUserForwardGroupPermissions(userId: number, forwardGrou
 }
 
 export async function checkUserForwardGroupPermission(userId: number, forwardGroupId: number): Promise<boolean> {
-  const db = await getDb();
-  if (!db) return false;
-  const ownedRows = await db.select({ id: forwardGroups.id }).from(forwardGroups).where(
-    and(eq(forwardGroups.id, forwardGroupId), eq(forwardGroups.userId, userId)),
-  ).limit(1).catch((error: unknown) => {
-    warnPermissionLookupFailure(error);
-    return [];
-  });
-  if (ownedRows.length > 0) return true;
-  const rows = await db.select().from(userForwardGroupPermissions).where(
-    and(eq(userForwardGroupPermissions.userId, userId), eq(userForwardGroupPermissions.forwardGroupId, forwardGroupId))
-  ).limit(1);
-  if (rows.length > 0) return true;
-  const planForwardGroupIds = await _getActiveSubscriptionForwardGroupIds(userId);
-  if (planForwardGroupIds.includes(forwardGroupId)) return true;
-  const billingResourceIds = await getUserUsableTrafficBillingResourceIds(userId);
-  return billingResourceIds.forwardGroupIds.includes(forwardGroupId);
+  const allowedIds = await getUserAllowedForwardGroupIds(userId);
+  return allowedIds.includes(Number(forwardGroupId));
 }
 
 export async function deleteForwardGroupPermissions(forwardGroupId: number) {

@@ -578,11 +578,17 @@ async function getTunnelDeleteImpact(tunnelId: number) {
   };
 }
 
-function visibleTunnelQueryScope(user: { id: number; role: string }, accessScope: LinkAccessScope | null) {
+function visibleTunnelQueryScope(
+  user: { id: number; role: string },
+  accessScope: LinkAccessScope | null,
+  forUse = false,
+) {
   if (user.role === "admin") return {} as { ownerUserId?: number; allowedTunnelIds?: number[] };
   return {
     ownerUserId: user.id,
-    allowedTunnelIds: Array.from(accessScope?.tunnelIds || []),
+    allowedTunnelIds: Array.from(
+      (forUse ? accessScope?.useTunnelIds : null) || accessScope?.tunnelIds || [],
+    ),
   };
 }
 
@@ -649,8 +655,12 @@ export const tunnelsRouter = router({
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const accessScope = await getLinkAccessScope(ctx.user);
-      const scope = visibleTunnelQueryScope(ctx.user, accessScope);
-      const tunnels = await db.getTunnelOptionRows(scope.ownerUserId, scope.allowedTunnelIds);
+      const scope = visibleTunnelQueryScope(ctx.user, accessScope, true);
+      const tunnelRows = await db.getTunnelOptionRows(scope.ownerUserId, scope.allowedTunnelIds);
+      const usableTunnelIds = accessScope?.useTunnelIds || accessScope?.tunnelIds;
+      const tunnels = usableTunnelIds
+        ? (tunnelRows as any[]).filter((tunnel) => usableTunnelIds.has(Number(tunnel.id)))
+        : tunnelRows;
       const hydrated = await attachTunnelEndpointHosts(tunnels as any[], { includeLatencySeries: false });
       const availabilityIndex = availabilityIndexForHydratedTunnels(hydrated);
       return attachTunnelAvailability(hydrated, availabilityIndex)
