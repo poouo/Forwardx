@@ -1318,13 +1318,17 @@ export async function recoverUserForwardAccessIfEligible(
     };
   }
 
-  if ((user as any).canAddRules && !pauseReason) {
-    return { allowed: true, restored: false, user };
+  // canAddRules may have been granted temporarily by traffic billing. Once no
+  // usable billing resource remains, rebuild it from manual/subscription data.
+  const baseline = await syncUserSubscriptionEntitlements(userId);
+  const baselineUser = await getUserById(userId) ?? user;
+  if (baseline.canAddRules) {
+    return { allowed: true, restored: false, user: baselineUser };
   }
   return {
     allowed: false,
     restored: false,
-    user,
+    user: baselineUser,
     reason: "no_access",
     message: "转发权限已暂停，请续费后再启用规则",
   };

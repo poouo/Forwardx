@@ -53,11 +53,14 @@ export async function requireTrafficBillingAccessIfConfigured(
   resourceId: number,
 ) {
   if (ctx.user.role === "admin") return false;
-  if (!(await db.isTrafficBillingEnabled())) return false;
-  const config = await db.findTrafficBillingConfig(resourceType, resourceId);
-  if (!config) return false;
-  const hasPermission = await db.checkUserTrafficBillingPermission(ctx.user.id, resourceType, resourceId);
-  if (!hasPermission) {
+  const snapshot = await db.getTrafficBillingAccessSnapshot(ctx.user.id);
+  if (snapshot.status === "disabled") return false;
+  if (snapshot.status === "failed") {
+    throw new Error("流量计费授权状态暂时无法确认，请稍后重试");
+  }
+  const state = db.trafficBillingSnapshotResourceState(snapshot, resourceType, resourceId);
+  if (!state.active) return false;
+  if (!state.usable) {
     if (resourceType === "host") throw new Error("您没有使用该主机流量计费资源的权限，请联系管理员授权");
     if (resourceType === "tunnel") throw new Error("您没有使用该隧道流量计费资源的权限，请联系管理员授权");
     throw new Error("您没有使用该转发计费资源的权限，请联系管理员授权");
@@ -134,8 +137,20 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, opt
   };
 }
 
-export async function refreshUserForwardEndpoints(userId: number, reason: string) {
-  const rules = await db.getForwardRulesForUserSync(userId);
+export async function refreshUserForwardEndpoints(
+  userId: number,
+  reason: string,
+  options: { urgent?: boolean; includeForwardGroups?: boolean } = {},
+) {
+  const rules = [...await db.getForwardRulesForUserSync(userId)] as any[];
+  if (options.includeForwardGroups) {
+    const rootRules = await db.getForwardRules(userId);
+    const templates = (rootRules as any[]).filter((rule) => rule?.isForwardGroupTemplate && Number(rule?.forwardGroupId || 0) > 0);
+    const childRows = await Promise.all(templates.map((template) => (
+      db.getForwardGroupChildRulesForTemplate(Number(template.id))
+    )));
+    for (const children of childRows) rules.push(...children as any[]);
+  }
   await db.resetForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
   const tunnelIds = new Set<number>();
@@ -144,13 +159,13 @@ export async function refreshUserForwardEndpoints(userId: number, reason: string
     if (rule.tunnelId) tunnelIds.add(Number(rule.tunnelId));
   }
   for (const hostId of hostIds) {
-    if (hostId > 0) pushAgentRefresh(hostId, reason);
+    if (hostId > 0) pushAgentRefresh(hostId, reason, { urgent: options.urgent === true });
   }
   for (const tunnelId of tunnelIds) {
     const tunnel = await db.getTunnelById(tunnelId);
     if (!tunnel) continue;
     await db.updateTunnel(tunnelId, { isRunning: false } as any);
-    await pushTunnelEndpointRefresh(tunnel, reason);
+    await pushTunnelEndpointRefresh(tunnel, reason, { urgent: options.urgent === true });
   }
 }
 

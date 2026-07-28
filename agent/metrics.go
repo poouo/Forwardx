@@ -93,26 +93,163 @@ type trafficCounters struct {
 }
 
 func shouldCollectRuleTraffic(state localRuleState) bool {
-	if state.RuleID <= 0 {
+	if state.RuleID <= 0 || parseStatePort(state.Port) <= 0 {
 		return false
 	}
-	// ForwardX entry runtimes report payload bytes themselves. Sampling their
-	// listener mangle counters as well would account the same traffic twice.
-	return !strings.EqualFold(strings.TrimSpace(state.ForwardType), "forwardx")
+	return trafficCounterFamilyForForwardType(state.ForwardType) != trafficCounterFamilyNone
 }
 
-// maxTrafficCounters merges two counter samples for the same port by keeping the
-// larger value per direction. Counters are monotonic byte totals, so the larger
-// sample is the one whose chain actually matched the traffic.
-func maxTrafficCounters(left trafficCounters, right trafficCounters) trafficCounters {
-	merged := left
-	if right.In > merged.In {
-		merged.In = right.In
+type trafficCounterFamily uint8
+
+const (
+	trafficCounterFamilyNone trafficCounterFamily = iota
+	trafficCounterFamilyIptables
+	trafficCounterFamilyNativeNFT
+	trafficCounterFamilyProcess
+)
+
+func trafficCounterFamilyForForwardType(forwardType string) trafficCounterFamily {
+	normalized := strings.ToLower(strings.TrimSpace(forwardType))
+	if normalized == "forwardx" || strings.HasPrefix(normalized, "forwardx-") {
+		return trafficCounterFamilyNone
 	}
-	if right.Out > merged.Out {
-		merged.Out = right.Out
+	if normalized == "nftables" {
+		return trafficCounterFamilyNativeNFT
 	}
-	return merged
+	if normalized == "iptables" {
+		return trafficCounterFamilyIptables
+	}
+	return trafficCounterFamilyProcess
+}
+
+func collectableRuleTrafficStates(states []localRuleState) []localRuleState {
+	filtered := make([]localRuleState, 0, len(states))
+	for _, state := range states {
+		if shouldCollectRuleTraffic(state) {
+			filtered = append(filtered, state)
+		}
+	}
+	return filtered
+}
+
+func collectableRuleTrafficPorts(states []localRuleState) map[string]bool {
+	ports := map[string]bool{}
+	for _, state := range states {
+		if shouldCollectRuleTraffic(state) && state.Port != "" {
+			ports[state.Port] = true
+		}
+	}
+	return ports
+}
+
+type trafficSnapshotRequirements struct {
+	iptables   bool
+	nativeNFT  bool
+	processNFT bool
+}
+
+func trafficSnapshotRequirementsForStates(states []localRuleState) trafficSnapshotRequirements {
+	requirements := trafficSnapshotRequirements{}
+	for _, state := range states {
+		if !shouldCollectRuleTraffic(state) {
+			continue
+		}
+		switch trafficCounterFamilyForForwardType(state.ForwardType) {
+		case trafficCounterFamilyIptables:
+			requirements.iptables = true
+		case trafficCounterFamilyNativeNFT:
+			requirements.nativeNFT = true
+		case trafficCounterFamilyProcess:
+			requirements.processNFT = true
+		}
+	}
+	return requirements
+}
+
+func processTrafficNeedsIptablesFallback(states []localRuleState, nftProcessMarkers map[string]bool) bool {
+	for _, state := range states {
+		if shouldCollectRuleTraffic(state) && trafficCounterFamilyForForwardType(state.ForwardType) == trafficCounterFamilyProcess && !hasCompleteNftProcessLayout(state, nftProcessMarkers) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCompleteNftProcessLayout(state localRuleState, markers map[string]bool) bool {
+	if state.Port == "" {
+		return false
+	}
+	for _, protocol := range runtimeProtocols(state.Protocol) {
+		if !markers[state.Port+":"+protocol+":in"] || !markers[state.Port+":"+protocol+":out"] {
+			return false
+		}
+	}
+	return true
+}
+
+func countersForRuleTrafficState(
+	state localRuleState,
+	iptablesCounters map[string]trafficCounters,
+	nftCounters map[int]trafficCounters,
+	nftProcessCounters map[string]trafficCounters,
+	nftProcessMarkers map[string]bool,
+) trafficCounters {
+	switch trafficCounterFamilyForForwardType(state.ForwardType) {
+	case trafficCounterFamilyIptables:
+		return iptablesCounters[state.Port]
+	case trafficCounterFamilyNativeNFT:
+		return nftCounters[state.RuleID]
+	case trafficCounterFamilyProcess:
+		if hasCompleteNftProcessLayout(state, nftProcessMarkers) {
+			return nftProcessCounters[state.Port]
+		}
+		return iptablesCounters[state.Port]
+	default:
+		return trafficCounters{}
+	}
+}
+
+func countingLayoutPresentForTrafficState(state localRuleState, diagnostics trafficDiagnosticsSnapshot) bool {
+	switch trafficCounterFamilyForForwardType(state.ForwardType) {
+	case trafficCounterFamilyIptables:
+		target := strings.Trim(strings.TrimSpace(state.TargetIP), "[]")
+		if net.ParseIP(target) == nil || state.TargetPort <= 0 {
+			return true
+		}
+		if strings.Contains(target, ":") {
+			return diagnostics.ip6tablesMarkers[state.Port]
+		}
+		return diagnostics.iptablesMarkers[state.Port]
+	case trafficCounterFamilyProcess:
+		return diagnostics.nftProcessMarkers[state.Port] ||
+			diagnostics.iptablesMarkers[state.Port] ||
+			diagnostics.ip6tablesMarkers[state.Port]
+	default:
+		return true
+	}
+}
+
+func repairMissingCountingLayouts(states []localRuleState, diagnostics trafficDiagnosticsSnapshot) {
+	for _, state := range states {
+		if state.Port == "" || countingLayoutPresentForTrafficState(state, diagnostics) {
+			continue
+		}
+		if !invalidateCountingChainState(state.Port) {
+			continue
+		}
+		port, err := strconv.Atoi(state.Port)
+		if err != nil || port <= 0 {
+			continue
+		}
+		ensureCountingChainsIfNeeded(runningRule{
+			RuleID:      state.RuleID,
+			SourcePort:  port,
+			TargetIP:    state.TargetIP,
+			TargetPort:  state.TargetPort,
+			Protocol:    state.Protocol,
+			ForwardType: state.ForwardType,
+		})
+	}
 }
 
 type trafficDiagnosticsSnapshot struct {
@@ -745,13 +882,14 @@ func prioritizeTrafficCollectionForRules(ruleCount int) {
 
 func collectTraffic(cfg Config) time.Duration {
 	started := time.Now()
-	states := readLocalRuleStates()
+	discoveredStates := readLocalRuleStates()
+	states := collectableRuleTrafficStates(discoveredStates)
 	nextInterval := trafficCollectionIntervalForRuleCount(len(states))
 	defer func() {
 		elapsed := time.Since(started)
 		if elapsed >= nextInterval/2 {
 			if shouldLogAgentReport("traffic-collect-slow", 5*time.Minute) {
-				logf("traffic collect slow rules=%d duration=%s nextInterval=%s", len(states), elapsed.Truncate(time.Millisecond), trafficCollectBackoffInterval(nextInterval, elapsed))
+				logf("traffic collect slow rules=%d discovered=%d duration=%s nextInterval=%s", len(states), len(discoveredStates), elapsed.Truncate(time.Millisecond), trafficCollectBackoffInterval(nextInterval, elapsed))
 			}
 		}
 	}()
@@ -793,29 +931,32 @@ func collectTraffic(cfg Config) time.Duration {
 		return trafficCollectBackoffInterval(nextInterval, time.Since(started))
 	}
 	if len(states) > 0 {
-		iptablesCounters, diagnostics := iptablesCounterSnapshotWithDiagnostics()
-		nftCounters, nftMarkers := nftablesCounterSnapshotWithDiagnostics()
-		diagnostics.nftMarkers = nftMarkers
-		nftProcessCounters, nftProcessMarkers := nftProcessCounterSnapshotWithDiagnostics()
-		diagnostics.nftProcessMarkers = nftProcessMarkers
+		requirements := trafficSnapshotRequirementsForStates(states)
+		iptablesCounters := map[string]trafficCounters{}
+		nftCounters := map[int]trafficCounters{}
+		nftProcessCounters := map[string]trafficCounters{}
+		diagnostics := trafficDiagnosticsSnapshot{
+			iptablesMarkers:   map[string]bool{},
+			ip6tablesMarkers:  map[string]bool{},
+			nftMarkers:        map[int]bool{},
+			nftProcessMarkers: map[string]bool{},
+		}
+		if requirements.nativeNFT {
+			nftCounters, diagnostics.nftMarkers = nftablesCounterSnapshotWithDiagnostics()
+		}
+		if requirements.processNFT {
+			nftProcessCounters, diagnostics.nftProcessMarkers = nftProcessCounterSnapshotWithDiagnostics()
+		}
+		if requirements.iptables || processTrafficNeedsIptablesFallback(states, diagnostics.nftProcessMarkers) {
+			var iptablesDiagnostics trafficDiagnosticsSnapshot
+			iptablesCounters, iptablesDiagnostics = iptablesCounterSnapshotWithDiagnostics()
+			diagnostics.iptablesMarkers = iptablesDiagnostics.iptablesMarkers
+			diagnostics.ip6tablesMarkers = iptablesDiagnostics.ip6tablesMarkers
+		}
+		repairMissingCountingLayouts(states, diagnostics)
 		connCounts := conntrackConnectionsSnapshot(states)
 		for _, state := range states {
-			if !shouldCollectRuleTraffic(state) {
-				continue
-			}
-			counters := iptablesCounters[state.Port]
-			if state.ForwardType == "nftables" {
-				if nft, ok := nftCounters[state.RuleID]; ok {
-					counters = nft
-				}
-			} else if diagnostics.nftProcessMarkers[state.Port] {
-				// Both counter families are installed for every port, but they
-				// cover different hooks: only one of them may have seen the
-				// traffic. Take the larger sample per direction instead of
-				// replacing, so a chain that matched nothing cannot zero out a
-				// chain that did.
-				counters = maxTrafficCounters(counters, nftProcessCounters[state.Port])
-			}
+			counters := countersForRuleTrafficState(state, iptablesCounters, nftCounters, nftProcessCounters, diagnostics.nftProcessMarkers)
 			curConns := connCounts[state.Port]
 			prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
 			initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
@@ -2073,14 +2214,37 @@ func nftProcessCounterSnapshotWithDiagnostics() (map[string]trafficCounters, map
 func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map[string]bool) {
 	out := map[string]trafficCounters{}
 	markers := map[string]bool{}
+	markerDirections := map[string]uint8{}
 	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out)`)
+	currentChain := ""
 	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "chain ") {
+			fields := strings.Fields(line)
+			currentChain = ""
+			if len(fields) >= 2 {
+				currentChain = fields[1]
+			}
+			continue
+		}
 		match := markerPattern.FindStringSubmatch(line)
 		if len(match) < 3 {
 			continue
 		}
 		port, direction := match[1], match[2]
-		markers[port] = true
+		if (direction == "in" && currentChain != "input") || (direction == "out" && currentChain != "output") {
+			continue
+		}
+		protocol := nftProcessCounterProtocol(line)
+		if protocol == "" {
+			continue
+		}
+		markers[port+":"+protocol+":"+direction] = true
+		if direction == "in" {
+			markerDirections[port] |= 1
+		} else {
+			markerDirections[port] |= 2
+		}
 		bytesValue, ok := nftCounterBytes(line)
 		if !ok {
 			continue
@@ -2093,7 +2257,19 @@ func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map
 		}
 		out[port] = counters
 	}
+	for port, directions := range markerDirections {
+		markers[port] = directions == 3
+	}
 	return out, markers
+}
+
+func nftProcessCounterProtocol(line string) string {
+	for _, field := range strings.Fields(line) {
+		if field == "tcp" || field == "udp" {
+			return field
+		}
+	}
+	return ""
 }
 
 func nftCounterBytes(line string) (uint64, bool) {
@@ -2123,7 +2299,8 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	iptablesMarker := diagnostics.iptablesMarkers[state.Port]
 	ip6tablesMarker := diagnostics.ip6tablesMarkers[state.Port]
 	nftMarker := false
-	if state.ForwardType == "nftables" {
+	forwardType := strings.ToLower(strings.TrimSpace(state.ForwardType))
+	if forwardType == "nftables" {
 		nftMarker = diagnostics.nftMarkers[state.RuleID]
 	}
 	nftProcessMarker := diagnostics.nftProcessMarkers[state.Port]
@@ -2136,19 +2313,14 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftProcessMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftMarker, nftProcessMarker, nftCounter)
 		return
 	}
-	if agentVerboseLogs && (din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables") {
+	if agentVerboseLogs && (din > 0 || dout > 0 || connections > 0 || targetIPv6 || forwardType == "nftables" || forwardType == "iptables") {
 		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftProcessMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftProcessMarker, nftCounter)
 	}
 }
 
 func conntrackConnectionsSnapshot(states []localRuleState) map[string]uint64 {
 	out := map[string]uint64{}
-	ports := map[string]bool{}
-	for _, state := range states {
-		if state.Port != "" {
-			ports[state.Port] = true
-		}
-	}
+	ports := collectableRuleTrafficPorts(states)
 	if len(ports) == 0 {
 		return out
 	}

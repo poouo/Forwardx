@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.177"
+var Version = "2.2.178"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -48,8 +48,8 @@ const publicIPRefreshInterval = time.Minute
 const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
 const trafficCollectMaxInterval = 30 * time.Second
-const countingChainRefreshInterval = 6 * time.Hour
-const countingChainRepairInitialDelay = 30 * time.Second
+const countingChainRepairInitialDelay = 2 * time.Second
+const countingChainRepairPace = 100 * time.Millisecond
 const runtimeActionRefreshInterval = 30 * time.Minute
 const agentLogRetention = 72 * time.Hour
 const agentLogMaxBytes int64 = 8 * 1024 * 1024
@@ -1912,6 +1912,7 @@ func main() {
 		fatal("acquire Agent state lock: %v", err)
 	}
 	defer stateLock.Close()
+	restoreCountingChainStates(agentBootID)
 
 	startAgentLogMaintenance()
 	// Restore Agent-owned forwarding runtimes before the first panel request.
@@ -4149,6 +4150,10 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 			logf("skip stale remove for desired type reassigned port=%d protocol=%s rule=%d removeType=%s desiredType=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol), a.RuleID, a.ForwardType, desired.ForwardType)
 			return true
 		}
+		if normalizeRuntimeProtocol(desired.Protocol) != normalizeRuntimeProtocol(a.Protocol) {
+			logf("skip stale remove for desired protocol reassigned port=%d rule=%d removeProtocol=%s desiredProtocol=%s forwardType=%s", a.SourcePort, a.RuleID, normalizeRuntimeProtocol(a.Protocol), normalizeRuntimeProtocol(desired.Protocol), a.ForwardType)
+			return true
+		}
 	}
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
@@ -4228,7 +4233,7 @@ func desiredRunningRuleForAction(a action) (runningRule, bool) {
 		}
 	}
 	if key := runningRuleIDPortKey(a.RuleID, a.SourcePort); key != "" {
-		if r, ok := desiredRunningRulesByRulePort[key]; ok {
+		if r, ok := desiredRunningRulesByRulePort[key]; ok && runtimeProtocolsOverlap(r.Protocol, a.Protocol) {
 			return r, true
 		}
 	}
@@ -6514,7 +6519,18 @@ func iptablesAgentDeleteByComment(binary string, table string, marker string) st
 	if table != "" {
 		tableArg = "-t " + table + " "
 	}
-	cmd := fmt.Sprintf(`while rule=$(%s %s-S 2>/dev/null | awk -v marker=%s '$0 ~ marker {sub(/^-A/, "-D"); print; exit}') && [ -n "$rule" ]; do %s %s$rule 2>/dev/null || break; done`, binary, tableArg, shellQuote(marker), binary, tableArg)
+	cmd := fmt.Sprintf(`%s %s-S 2>/dev/null | awk -v marker=%s '/^-A / {chain=$2; position[chain]++; if (index($0, marker)) {count++; chains[count]=chain; numbers[count]=position[chain]}} END {for (i=count; i>=1; i--) print chains[i], numbers[i]}' | while read -r chain number; do [ -n "$chain" ] && [ -n "$number" ] && %s %s-D "$chain" "$number" 2>/dev/null || true; done`, binary, tableArg, shellQuote(marker), binary, tableArg)
+	if binary == "ip6tables" {
+		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi; true"
+	}
+	return cmd + "; true"
+}
+
+func iptablesAgentDeleteCountingRules(binary string, port string) string {
+	marker := "fwx-stat-" + port + ":"
+	inChain := "FWX_IN_" + port
+	outChain := "FWX_OUT_" + port
+	cmd := fmt.Sprintf(`%s -t mangle -S 2>/dev/null | awk -v marker=%s -v in_chain=%s -v out_chain=%s '/^-A / {chain=$2; position[chain]++; matched=index($0, marker)>0; if (!matched) for (i=1; i<=NF; i++) if ($i==in_chain || $i==out_chain) {matched=1; break} if (matched) {count++; chains[count]=chain; numbers[count]=position[chain]}} END {for (i=count; i>=1; i--) print chains[i], numbers[i]}' | while read -r chain number; do [ -n "$chain" ] && [ -n "$number" ] && %s -t mangle -D "$chain" "$number" 2>/dev/null || true; done`, binary, shellQuote(marker), shellQuote(inChain), shellQuote(outChain), binary)
 	if binary == "ip6tables" {
 		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi; true"
 	}
@@ -6718,6 +6734,7 @@ func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	invalidateTrafficPrev(port)
 	removeTunnelStateByPort(port)
+	forgetCountingChainState(port)
 }
 
 func removeTunnelStateByPort(port string) {
@@ -6734,26 +6751,16 @@ const nftProcessTrafficTable = "forwardx_traffic"
 
 func nftProcessCountingCleanupCmd(port string) string {
 	marker := "fwx-stat-" + port + ":"
-	return fmt.Sprintf(`if command -v nft >/dev/null 2>&1 && nft list table inet %s >/dev/null 2>&1; then for c in input output forward; do while h=$(nft -a list chain inet %s "$c" 2>/dev/null | awk -v marker=%s 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet %s "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`, nftProcessTrafficTable, nftProcessTrafficTable, shellQuote(marker), nftProcessTrafficTable)
+	return fmt.Sprintf(`if command -v nft >/dev/null 2>&1 && nft list table inet %s >/dev/null 2>&1; then for c in input output forward; do for h in $(nft -a list chain inet %s "$c" 2>/dev/null | awk -v marker=%s 'index($0, marker) {print $NF}'); do nft delete rule inet %s "$c" handle "$h" 2>/dev/null || true; done; done; fi; true`, nftProcessTrafficTable, nftProcessTrafficTable, shellQuote(marker), nftProcessTrafficTable)
 }
 
-func nftProcessCountingCmds(port int, protocol string, targetIP string, targetPort int) []string {
+func nftProcessCountingCmds(port int, protocol string) []string {
 	p := strconv.Itoa(port)
-	target := iptablesAgentAddress(targetIP)
-	hasTarget := targetPort > 0 && iptablesAgentIsIPAddress(target)
-	targetPortText := strconv.Itoa(targetPort)
-	family := "ip"
-	if strings.Contains(target, ":") {
-		family = "ip6"
-	}
 	commands := []string{
-		"command -v nft >/dev/null 2>&1",
-		nftProcessCountingCleanupCmd(p),
 		"nft add table inet " + nftProcessTrafficTable + " 2>/dev/null || true",
 		"nft add chain inet " + nftProcessTrafficTable + " input '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true",
 		"nft add chain inet " + nftProcessTrafficTable + " output '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true",
 	}
-	commands = append(commands, "nft add chain inet "+nftProcessTrafficTable+" forward '{ type filter hook forward priority mangle; policy accept; }' 2>/dev/null || true")
 	for _, proto := range runtimeProtocols(protocol) {
 		inComment := shellQuote(`"fwx-stat-` + p + `:in"`)
 		outComment := shellQuote(`"fwx-stat-` + p + `:out"`)
@@ -6761,123 +6768,162 @@ func nftProcessCountingCmds(port int, protocol string, targetIP string, targetPo
 			fmt.Sprintf(`nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, inComment, nftProcessTrafficTable, proto, proto, p, inComment),
 			fmt.Sprintf(`nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, outComment, nftProcessTrafficTable, proto, proto, p, outComment),
 		)
-		if hasTarget {
+	}
+	return commands
+}
+
+func iptablesProcessCountingCmds(port int, protocol string) []string {
+	if port <= 0 {
+		return nil
+	}
+	p := strconv.Itoa(port)
+	inMarker := "fwx-stat-" + p + ":in"
+	outMarker := "fwx-stat-" + p + ":out"
+	commands := []string{}
+	for _, binary := range iptablesAgentBinaries() {
+		for _, proto := range runtimeProtocols(protocol) {
 			commands = append(commands,
-				fmt.Sprintf(`nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s daddr %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s daddr %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, inComment, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, inComment),
-				fmt.Sprintf(`nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s saddr %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s forward meta l4proto %s ct original proto-dst %s %s saddr %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, outComment, nftProcessTrafficTable, proto, p, family, target, proto, targetPortText, outComment),
+				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`INPUT -p %s --dport %s -m comment --comment %q`, proto, p, inMarker)),
+				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`OUTPUT -p %s --sport %s -m comment --comment %q`, proto, p, outMarker)),
 			)
 		}
 	}
 	return commands
 }
 
-func ensureCountingChains(port int, targetIP string, targetPort int, protocol string) bool {
-	if port <= 0 {
-		return true
+type countingRuleMode string
+
+const (
+	countingRuleNone      countingRuleMode = "none"
+	countingRuleKernel    countingRuleMode = "kernel"
+	countingRuleProcess   countingRuleMode = "process"
+	countingLayoutVersion                  = "v2"
+)
+
+func countingRuleModeForForwardType(forwardType string) countingRuleMode {
+	normalized := strings.ToLower(strings.TrimSpace(forwardType))
+	if normalized == "nftables" || normalized == "forwardx" || strings.HasPrefix(normalized, "forwardx-") {
+		return countingRuleNone
 	}
-	p := strconv.Itoa(port)
+	if normalized == "iptables" {
+		return countingRuleKernel
+	}
+	return countingRuleProcess
+}
+
+func countingRuleInstallCmds(rule runningRule) []string {
+	if rule.SourcePort <= 0 {
+		return nil
+	}
+	p := strconv.Itoa(rule.SourcePort)
 	inMarker := "fwx-stat-" + p + ":in"
 	outMarker := "fwx-stat-" + p + ":out"
-	protos := []string{"tcp", "udp"}
-	if protocol == "tcp" || protocol == "udp" {
-		protos = []string{protocol}
-	}
+	mode := countingRuleModeForForwardType(rule.ForwardType)
 	commands := []string{}
-	for _, binary := range iptablesAgentBinaries() {
+	if mode == countingRuleProcess {
+		return nftProcessCountingCmds(rule.SourcePort, rule.Protocol)
+	}
+	if mode != countingRuleKernel {
+		return commands
+	}
+	target := iptablesAgentAddress(rule.TargetIP)
+	if !iptablesAgentIsIPAddress(target) || rule.TargetPort <= 0 {
+		return commands
+	}
+	targetPort := strconv.Itoa(rule.TargetPort)
+	binary := iptablesAgentBinaryForTarget(target)
+	for _, proto := range runtimeProtocols(rule.Protocol) {
+		inRule := iptablesAgentCountingForwardTargetRule(proto, p, target, targetPort, true) + fmt.Sprintf(` -m comment --comment %q`, inMarker)
+		outRule := iptablesAgentCountingForwardTargetRule(proto, p, target, targetPort, false) + fmt.Sprintf(` -m comment --comment %q`, outMarker)
 		commands = append(commands,
-			iptablesAgentDeleteByComment(binary, "mangle", inMarker),
-			iptablesAgentDeleteByComment(binary, "mangle", outMarker),
+			iptablesAgentEnsure(binary, "mangle", inRule),
+			iptablesAgentEnsure(binary, "mangle", outRule),
 		)
-		legacyRules := []string{
-			fmt.Sprintf(`PREROUTING -p tcp --dport %s -j FWX_IN_%s`, p, p),
-			fmt.Sprintf(`PREROUTING -p udp --dport %s -j FWX_IN_%s`, p, p),
-			fmt.Sprintf(`INPUT -p tcp --dport %s -j FWX_IN_%s`, p, p),
-			fmt.Sprintf(`INPUT -p udp --dport %s -j FWX_IN_%s`, p, p),
-			fmt.Sprintf(`POSTROUTING -p tcp --sport %s -j FWX_OUT_%s`, p, p),
-			fmt.Sprintf(`POSTROUTING -p udp --sport %s -j FWX_OUT_%s`, p, p),
-			fmt.Sprintf(`OUTPUT -p tcp --sport %s -j FWX_OUT_%s`, p, p),
-			fmt.Sprintf(`OUTPUT -p udp --sport %s -j FWX_OUT_%s`, p, p),
-		}
-		for _, rule := range legacyRules {
-			commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
-		}
 	}
-	for _, proto := range protos {
-		for _, binary := range iptablesAgentBinaries() {
-			directRules := []string{
-				fmt.Sprintf(`PREROUTING -p %s --dport %s -m comment --comment %q`, proto, p, inMarker),
-				fmt.Sprintf(`INPUT -p %s --dport %s -m comment --comment %q`, proto, p, inMarker),
-				fmt.Sprintf(`POSTROUTING -p %s --sport %s -m comment --comment %q`, proto, p, outMarker),
-				fmt.Sprintf(`OUTPUT -p %s --sport %s -m comment --comment %q`, proto, p, outMarker),
-			}
-			for _, rule := range directRules {
-				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
-			}
-		}
-		if targetIP != "" && targetPort > 0 && iptablesAgentIsIPAddress(targetIP) {
-			target := iptablesAgentAddress(targetIP)
-			tp := strconv.Itoa(targetPort)
-			binary := iptablesAgentBinaryForTarget(target)
-			forwardIn := iptablesAgentCountingForwardTargetRule(proto, p, target, tp, true)
-			forwardOut := iptablesAgentCountingForwardTargetRule(proto, p, target, tp, false)
-			cleanupRules := []string{
-				fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
-				fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
-				fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
-				fmt.Sprintf(`INPUT -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
-				// Remove the pre-ctorigdstport rules emitted by older agents.
-				fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
-				fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
-			}
-			for _, rule := range cleanupRules {
-				commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
-			}
-			targetRules := []string{
-				// Process forwarders are isolated by their listener hooks above.
-				// A target-only local hook would merge every proxy instance that
-				// dials the same endpoint; only conntrack-qualified FORWARD rules
-				// can safely identify kernel DNAT traffic here.
-				forwardIn + fmt.Sprintf(` -m comment --comment %q`, inMarker),
-				forwardOut + fmt.Sprintf(` -m comment --comment %q`, outMarker),
-			}
-			for _, rule := range targetRules {
-				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
-			}
-		}
+	return commands
+}
+
+func countingRuleCleanupCmds(port int) []string {
+	if port <= 0 {
+		return nil
 	}
+	p := strconv.Itoa(port)
+	commands := []string{nftProcessCountingCleanupCmd(p)}
 	for _, binary := range iptablesAgentBinaries() {
 		commands = append(commands,
+			iptablesAgentDeleteCountingRules(binary, p),
 			iptablesAgentFlush(binary, "mangle", "FWX_IN_"+p),
 			iptablesAgentDeleteChain(binary, "mangle", "FWX_IN_"+p),
 			iptablesAgentFlush(binary, "mangle", "FWX_OUT_"+p),
 			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+p),
 		)
 	}
-	iptablesOK := runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(commands)
-	nftOK := runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingCmds(port, protocol, targetIP, targetPort))
-	ok := iptablesOK || nftOK
+	return commands
+}
+
+func ensureCountingChains(rule runningRule) bool {
+	if rule.SourcePort <= 0 {
+		return true
+	}
+	p := strconv.Itoa(rule.SourcePort)
+	mode := countingRuleModeForForwardType(rule.ForwardType)
+	if mode == countingRuleKernel {
+		target := iptablesAgentAddress(rule.TargetIP)
+		if !iptablesAgentIsIPAddress(target) || rule.TargetPort <= 0 {
+			if shouldLogAgentReport("traffic-counting-unresolved:"+p, 5*time.Minute) {
+				logf("traffic counting repair deferred port=%s target=%s:%d type=%s reason=target-unresolved", p, rule.TargetIP, rule.TargetPort, rule.ForwardType)
+			}
+			return false
+		}
+	}
+
+	cleanupOK := runShellBatch(countingRuleCleanupCmds(rule.SourcePort))
+	installOK := false
+	backend := string(mode)
+	if cleanupOK {
+		switch mode {
+		case countingRuleNone:
+			installOK = true
+		case countingRuleKernel:
+			backend = iptablesAgentBinaryForTarget(rule.TargetIP)
+			installOK = runShellQuiet("command -v "+backend+" >/dev/null 2>&1") && runShellBatch(countingRuleInstallCmds(rule))
+		case countingRuleProcess:
+			if runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingCmds(rule.SourcePort, rule.Protocol)) {
+				backend = "nft"
+				installOK = true
+			} else {
+				// Remove a partially installed nft layout before selecting the
+				// iptables listener hooks as the sole authoritative backend.
+				fallbackCleanupOK := runShellBatch(countingRuleCleanupCmds(rule.SourcePort))
+				backend = "iptables"
+				installOK = fallbackCleanupOK && runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(iptablesProcessCountingCmds(rule.SourcePort, rule.Protocol))
+			}
+		}
+	}
+	ok := cleanupOK && installOK
 	if !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
-		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s iptables=%v nft=%v", p, targetIP, targetPort, protocol, iptablesOK, nftOK)
+		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s type=%s mode=%s backend=%s cleanup=%v install=%v", p, rule.TargetIP, rule.TargetPort, rule.Protocol, rule.ForwardType, mode, backend, cleanupOK, installOK)
 	}
 	return ok
 }
 
 func ensureCountingChainsIfNeeded(r runningRule) {
-	if r.ForwardType == "nftables" || r.SourcePort <= 0 {
+	if r.SourcePort <= 0 {
 		return
 	}
 	signature := countingChainRuleSignature(r)
 	key := strconv.Itoa(r.SourcePort)
-	now := time.Now()
 	countingChainMu.Lock()
 	lastSig := countingChainSignatures[key]
 	lastChecked := countingChainCheckedAt[key]
-	if (lastSig == signature && !lastChecked.IsZero() && now.Sub(lastChecked) < countingChainRefreshInterval) || countingChainRepairPending[key] {
+	if (lastSig == signature && !lastChecked.IsZero()) || countingChainRepairPending[key] {
 		countingChainMu.Unlock()
 		return
 	}
 	countingChainSignatures[key] = signature
-	countingChainCheckedAt[key] = now
+	if lastSig != signature {
+		countingChainCheckedAt[key] = time.Time{}
+	}
 	countingChainRepairPending[key] = true
 	countingChainMu.Unlock()
 	countingChainRepairWorkersOnce.Do(startCountingChainRepairWorkers)
@@ -6895,16 +6941,7 @@ func ensureCountingChainsIfNeeded(r runningRule) {
 }
 
 func startCountingChainRepairWorkers() {
-	workers := runtime.NumCPU()
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > 2 {
-		workers = 2
-	}
-	for worker := 0; worker < workers; worker++ {
-		go countingChainRepairWorker()
-	}
+	go countingChainRepairWorker()
 }
 
 func countingChainRepairWorker() {
@@ -6915,20 +6952,22 @@ func countingChainRepairWorker() {
 		ok := true
 		current, exists := desiredRunningRuleForStatePort(rule.RuleID, rule.SourcePort)
 		if exists && countingChainRuleSignature(current) == countingChainRuleSignature(rule) {
-			ok = ensureCountingChains(rule.SourcePort, rule.TargetIP, rule.TargetPort, rule.Protocol)
+			ok = ensureCountingChains(rule)
+		} else {
+			ok = false
 		}
-		key := strconv.Itoa(rule.SourcePort)
-		countingChainMu.Lock()
-		delete(countingChainRepairPending, key)
-		if !ok {
-			countingChainCheckedAt[key] = time.Time{}
-		}
-		countingChainMu.Unlock()
+		finishCountingChainRepair(rule, ok)
+		time.Sleep(countingChainRepairPace)
 	}
 }
 
 func countingChainRuleSignature(rule runningRule) string {
-	return fmt.Sprintf("%d|%s|%d|%s", rule.SourcePort, rule.TargetIP, rule.TargetPort, rule.Protocol)
+	forwardType := strings.ToLower(strings.TrimSpace(rule.ForwardType))
+	prefix := fmt.Sprintf("%s|%d|%s|%s", countingLayoutVersion, rule.SourcePort, forwardType, normalizeRuntimeProtocol(rule.Protocol))
+	if countingRuleModeForForwardType(forwardType) != countingRuleKernel {
+		return prefix
+	}
+	return fmt.Sprintf("%s|%s|%d", prefix, strings.TrimSpace(rule.TargetIP), rule.TargetPort)
 }
 
 func removeState(port int) {
@@ -6940,6 +6979,7 @@ func removeState(port int) {
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
 	invalidateTrafficPrev(p)
 	removeTunnelStateByPort(p)
+	forgetCountingChainState(p)
 }
 
 type fxpProcess struct {
@@ -11159,14 +11199,6 @@ func pruneAgentMemoryCaches() {
 	actionEpochMu.Lock()
 	pruneIssuedAtMapLocked(latestActionIssuedAt, now, agentMemoryCacheRetention)
 	actionEpochMu.Unlock()
-	countingChainMu.Lock()
-	pruneTimeMapLocked(countingChainCheckedAt, now, agentMemoryCacheRetention, 0)
-	for key := range countingChainSignatures {
-		if _, ok := countingChainCheckedAt[key]; !ok {
-			delete(countingChainSignatures, key)
-		}
-	}
-	countingChainMu.Unlock()
 	runtimeActionMu.Lock()
 	for key, state := range runtimeActionCache {
 		if state.CheckedAt.IsZero() || now.Sub(state.CheckedAt) > agentMemoryCacheRetention {

@@ -154,6 +154,60 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       assert.equal(contextsById.get(12).tunnel, null);
 
       await runtime.executeRaw("INSERT INTO traffic_billing_configs (resourceType, resourceId, enabled, requiresPermission, pricePerGbCents, multiplier) VALUES ('host', 5, 1, 0, 1, 100), ('tunnel', 21, 1, 0, 1, 100), ('forward_group', 31, 1, 0, 1, 100)");
+
+      await billing.setTrafficBillingEnabled(false);
+      await runtime.executeRaw('ALTER TABLE "system_settings" RENAME TO "system_settings_unavailable"');
+      try {
+        await assert.rejects(
+          billing.getTrafficBillingEnabledForWrite(),
+          /system_settings|no such table/i,
+        );
+        await assert.rejects(
+          billing.billTrafficUsage({
+            userId: 7,
+            ruleId: 12,
+            bytes: 1024,
+            resourceType: "host",
+            resourceId: 5,
+          }),
+          /system_settings|no such table/i,
+        );
+        await assert.rejects(
+          billing.settleTrafficBillingRuleOnDelete({
+            userId: 7,
+            ruleId: 12,
+            resourceType: "host",
+            resourceId: 5,
+          }),
+          /system_settings|no such table/i,
+        );
+        await assert.rejects(
+          runtime.withDatabaseTransaction(async () => {
+            assert.equal(await metrics.claimAgentTrafficReport(5, "billing-switch-query-failure", "agent-producer"), true);
+            await billing.billTrafficUsage({
+              userId: 7,
+              ruleId: 12,
+              bytes: 1024,
+              resourceType: "host",
+              resourceId: 5,
+            });
+          }),
+          /system_settings|no such table/i,
+        );
+        assert.equal(
+          (await runtime.queryRaw("SELECT COUNT(*) AS count FROM agent_traffic_reports WHERE reportId = 'billing-switch-query-failure'"))[0].count,
+          0,
+          "a failed strict billing lookup must roll back the report claim",
+        );
+        assert.equal(
+          (await runtime.queryRaw("SELECT COUNT(*) AS count FROM traffic_billing_rule_usage WHERE ruleId = 12"))[0].count,
+          0,
+          "a failed strict billing lookup must not commit usage",
+        );
+      } finally {
+        await runtime.executeRaw('ALTER TABLE "system_settings_unavailable" RENAME TO "system_settings"');
+      }
+
       let resourceQuery = await countStatements(() => billing.findTrafficBillingResourcesForRules(contexts.map((context) => context.rule)));
       let resources = resourceQuery.value;
       assert.equal(resourceQuery.count, 1);

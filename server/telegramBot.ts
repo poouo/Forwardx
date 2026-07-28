@@ -28,7 +28,9 @@ import {
   forwardxQueryIntentResponseSchema,
 } from "./ai/skills/forwardxCore";
 import { KeyedTaskDispatcher } from "./keyedTaskDispatcher";
-import { getLinkAccessScope } from "./linkAccessView";
+import { canUseForwardRuleResource, getLinkAccessScope } from "./linkAccessView";
+import { gateForwardRulesForUserSurface } from "./forwardRuleVisibility";
+import { RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON } from "./ruleResourceAuthorization";
 import {
   adjustUserBalanceCommand,
   renewUserCommand,
@@ -1137,7 +1139,7 @@ async function usageText(user: any) {
 }
 
 async function rulesText(user: any) {
-  const rules = await attachForwardGroupModes(await db.getForwardRules(user.role === "admin" ? undefined : user.id));
+  const rules = await visibleRulesForTelegramUser(user);
   const visible = user.role === "admin" ? rules.slice(0, 10) : rules.slice(0, 15);
   if (visible.length === 0) return "<b>转发规则</b>\n\n暂无转发规则。";
   const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)), { includeLatency: true });
@@ -1154,7 +1156,7 @@ async function rulesText(user: any) {
 }
 
 async function rulesView(user: any, page = 0) {
-  const rules = await attachForwardGroupModes(await db.getForwardRules(user.role === "admin" ? undefined : user.id));
+  const rules = await visibleRulesForTelegramUser(user);
   const { page: safePage, totalPages } = clampPage(page, rules.length, RULE_PAGE_SIZE);
   const visible = rules.slice(safePage * RULE_PAGE_SIZE, safePage * RULE_PAGE_SIZE + RULE_PAGE_SIZE);
   const trafficByRuleId = visible.length > 0
@@ -1190,8 +1192,7 @@ async function rulesView(user: any, page = 0) {
 }
 
 async function ruleDetailText(ruleId: number, user: any) {
-  const storedRule = await db.getForwardRuleById(ruleId);
-  const rule = storedRule ? (await attachForwardGroupModes([storedRule]))[0] : null;
+  const rule = (await visibleRulesForTelegramUser(user)).find((item: any) => Number(item.id) === Number(ruleId));
   if (!rule || (user.role !== "admin" && rule.userId !== user.id)) return "规则不存在或无权查看。";
   const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)], { includeLatency: true })).get(Number(rule.id));
   const statusInfo = effectiveRuleStatusInfo(rule, traffic);
@@ -3688,14 +3689,6 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
   return true;
 }
 
-function isVisibleForwardGroupRuleForTelegramUser(rule: any, allowedForwardGroupIds: Set<number>) {
-  return !!rule?.isForwardGroupTemplate
-    && !!rule?.forwardGroupId
-    && !rule?.forwardGroupRuleId
-    && !rule?.forwardGroupMemberId
-    && allowedForwardGroupIds.has(Number(rule.forwardGroupId));
-}
-
 async function attachForwardGroupModes(rules: any[]) {
   const groupIds = Array.from(new Set(
     rules
@@ -3715,11 +3708,8 @@ async function visibleRulesForTelegramUser(user: any) {
   const isAdmin = user.role === "admin";
   const rules = await attachForwardGroupModes(await db.getForwardRules(isAdmin ? undefined : user.id));
   if (isAdmin) return rules as any[];
-  const allowedForwardGroupIds = new Set(await db.getUserAllowedForwardGroupIds(user.id));
-  return (rules as any[]).filter((rule: any) => {
-    const isForwardGroupRule = !!(rule?.forwardGroupId || rule?.isForwardGroupTemplate || rule?.forwardGroupRuleId || rule?.forwardGroupMemberId);
-    return !isForwardGroupRule || isVisibleForwardGroupRuleForTelegramUser(rule, allowedForwardGroupIds);
-  });
+  const scope = await getLinkAccessScope(user);
+  return gateForwardRulesForUserSurface(rules as any[], (rule) => canUseForwardRuleResource(rule, scope));
 }
 
 async function visibleHostsForTelegramUser(user: any) {
@@ -3870,6 +3860,13 @@ function hasRuleTraffic(summary?: AiRuleTrafficSummary) {
 function effectiveRuleStatusInfo(rule: any, summary?: AiRuleTrafficSummary): { kind: AiEffectiveRuleStatusKind; label: string; detail?: string } {
   const latencyMs = summary?.latestLatencyMs == null ? null : Number(summary.latestLatencyMs);
   const hasLatency = Number.isFinite(latencyMs) && latencyMs !== null && latencyMs >= 0;
+  if (rule?.resourceAccessDenied || String(rule?.protocolBlockReason || "") === RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON) {
+    return {
+      kind: "disabled",
+      label: "资源授权已失效",
+      detail: RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON,
+    };
+  }
   if (rule?.protocolBlockReason) {
     return {
       kind: "abnormal",

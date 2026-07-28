@@ -88,6 +88,75 @@ func TestSkipStaleRemoveWhenDesiredRuleStillRuns(t *testing.T) {
 	}
 }
 
+func TestSkipStaleRemoveProtectsReplacementProtocolLanes(t *testing.T) {
+	tests := []struct {
+		name    string
+		desired []runningRule
+		remove  action
+		want    bool
+	}{
+		{
+			name: "same rule narrows both to tcp",
+			desired: []runningRule{{
+				RuleID: 71, SourcePort: 31001, Protocol: "tcp", ForwardType: "gost",
+			}},
+			remove: action{StatusType: "rule", RuleID: 71, Op: "remove", SourcePort: 31001, Protocol: "both", ForwardType: "gost"},
+			want:   true,
+		},
+		{
+			name: "same rule narrows both to udp",
+			desired: []runningRule{{
+				RuleID: 72, SourcePort: 31002, Protocol: "udp", ForwardType: "gost",
+			}},
+			remove: action{StatusType: "rule", RuleID: 72, Op: "remove", SourcePort: 31002, Protocol: "both", ForwardType: "gost"},
+			want:   true,
+		},
+		{
+			name: "tcp and udp replacements use different rule ids",
+			desired: []runningRule{
+				{RuleID: 73, SourcePort: 31003, Protocol: "tcp", ForwardType: "gost"},
+				{RuleID: 74, SourcePort: 31003, Protocol: "udp", ForwardType: "gost"},
+			},
+			remove: action{StatusType: "rule", RuleID: 73, Op: "remove", SourcePort: 31003, Protocol: "both", ForwardType: "gost"},
+			want:   true,
+		},
+		{
+			name: "forward group template is replaced by managed child",
+			desired: []runningRule{{
+				RuleID: 76, TunnelID: 12, SourcePort: 31004, Protocol: "tcp", ForwardType: "realm",
+			}},
+			remove: action{StatusType: "rule", RuleID: 75, TunnelID: 0, Op: "remove", SourcePort: 31004, Protocol: "both", ForwardType: "realm"},
+			want:   true,
+		},
+		{
+			name: "managed forward group child is replaced",
+			desired: []runningRule{{
+				RuleID: 78, TunnelID: 13, SourcePort: 31005, Protocol: "udp", ForwardType: "socat",
+			}},
+			remove: action{StatusType: "rule", RuleID: 77, TunnelID: 13, Op: "remove", SourcePort: 31005, Protocol: "both", ForwardType: "socat"},
+			want:   true,
+		},
+		{
+			name: "disjoint protocol remains removable",
+			desired: []runningRule{{
+				RuleID: 79, TunnelID: 15, SourcePort: 31006, Protocol: "udp", ForwardType: "realm",
+			}},
+			remove: action{StatusType: "rule", RuleID: 79, TunnelID: 14, Op: "remove", SourcePort: 31006, Protocol: "tcp", ForwardType: "gost"},
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rememberDesiredRunningRules(tt.desired)
+			t.Cleanup(func() { rememberDesiredRunningRules(nil) })
+			if got := shouldSkipRemoveForReassignedPort(tt.remove); got != tt.want {
+				t.Fatalf("shouldSkipRemoveForReassignedPort() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTunnelPortChangeSupersedesOlderAction(t *testing.T) {
 	actionEpochMu.Lock()
 	previous := latestActionIssuedAt

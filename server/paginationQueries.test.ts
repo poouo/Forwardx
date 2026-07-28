@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pageResult, pageWindowForTotal } from "../shared/pagination";
+import { gateForwardRulesForUserSurface } from "./forwardRuleVisibility";
 
 test("page helpers clamp stale pages after the last item is removed", () => {
   assert.deepEqual(pageWindowForTotal({ page: 8, pageSize: 12 }, 13), {
@@ -19,6 +20,24 @@ test("page helpers clamp stale pages after the last item is removed", () => {
     totalItems: 13,
     totalPages: 2,
   });
+});
+
+test("user rule surfaces retain revoked roots and hide managed group children", () => {
+  const direct = { id: 1 };
+  const revokedRoot = { id: 2, forwardGroupId: 10, isForwardGroupTemplate: true, isEnabled: true };
+  const managedChild = { id: 3, forwardGroupId: 10, forwardGroupRuleId: 2, forwardGroupMemberId: 100 };
+  assert.deepEqual(gateForwardRulesForUserSurface(
+    [direct, revokedRoot, managedChild],
+    (rule) => !Number((rule as any).forwardGroupId || 0),
+  ), [
+    direct,
+    {
+      ...revokedRoot,
+      isEnabled: false,
+      resourceAccessAllowed: false,
+      resourceAccessDenied: true,
+    },
+  ]);
 });
 test("database-backed list queries page, search, scope, and hydrate only requested rows", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-pagination-"));
@@ -434,7 +453,43 @@ test("database-backed list queries page, search, scope, and hydrate only request
         pageSize: 10,
         entryHostId: 1,
       });
-      assert.equal(entryFiltered.totalItems, 3);
+      assert.deepEqual(entryFiltered.items.map((item) => Number(item.id)), [102, 101]);
+
+      const revokedTunnelEntryFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        searchVisibleTunnelIds: [],
+        page: 1,
+        pageSize: 10,
+        entryHostId: 1,
+      });
+      assert.deepEqual(revokedTunnelEntryFiltered.items.map((item) => Number(item.id)), [102]);
+
+      const revokedGroupEntryFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        searchVisibleForwardGroupIds: [],
+        page: 1,
+        pageSize: 10,
+        entryHostId: 1,
+      });
+      assert.deepEqual(revokedGroupEntryFiltered.items.map((item) => Number(item.id)), [101]);
+
+      const revokedTopologyEntryFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        searchVisibleTunnelIds: [],
+        searchVisibleForwardGroupIds: [],
+        page: 1,
+        pageSize: 10,
+        entryHostId: 1,
+      });
+      assert.deepEqual(revokedTopologyEntryFiltered.items, []);
+
+      const revokedGroupHostProbe = await rulesCaller.listPage({
+        page: 1,
+        pageSize: 10,
+        category: "all",
+        entryHostId: 2,
+      });
+      assert.deepEqual(revokedGroupHostProbe.items, []);
 
       const mapBatch = await rules.getForwardRuleMapBatch(visibleRuleInput, 2, 2);
       assert.equal(mapBatch.totalItems, 5);

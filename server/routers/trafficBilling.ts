@@ -2,6 +2,7 @@ import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
+import { reconcileTrafficBillingAuthorization } from "../trafficBillingAuthorization";
 
 const resourceTypeSchema = z.enum(["host", "tunnel", "forward_group"]);
 
@@ -41,7 +42,13 @@ export const trafficBillingRouter = router({
     .input(z.object({ enabled: z.boolean() }))
     .mutation(async ({ input }) => {
       await db.setTrafficBillingEnabled(input.enabled);
-      appendPanelLog("info", `[TrafficBilling] feature ${input.enabled ? "enabled" : "disabled"}`);
+      const reconciliation = await reconcileTrafficBillingAuthorization(
+        `traffic-billing-${input.enabled ? "enabled" : "disabled"}`,
+      );
+      appendPanelLog(
+        reconciliation.failures.length > 0 ? "warn" : "info",
+        `[TrafficBilling] feature ${input.enabled ? "enabled" : "disabled"} affectedUsers=${reconciliation.affectedUsers} disabledRules=${reconciliation.disabledRules} failures=${reconciliation.failures.length}`,
+      );
       return { enabled: input.enabled };
     }),
 
@@ -59,7 +66,13 @@ export const trafficBillingRouter = router({
     }))
     .mutation(async ({ input }) => {
       const config = await db.upsertTrafficBillingConfig(input as any);
-      appendPanelLog("info", `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} priceMilli=${input.pricePerGbMilliCents ?? 0} requiresPermission=${input.requiresPermission}`);
+      const reconciliation = await reconcileTrafficBillingAuthorization(
+        `traffic-billing-config-saved-${input.resourceType}-${input.resourceId}`,
+      );
+      appendPanelLog(
+        reconciliation.failures.length > 0 ? "warn" : "info",
+        `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} priceMilli=${input.pricePerGbMilliCents ?? 0} requiresPermission=${input.requiresPermission} affectedUsers=${reconciliation.affectedUsers} disabledRules=${reconciliation.disabledRules} failures=${reconciliation.failures.length}`,
+      );
       return config;
     }),
 
@@ -67,6 +80,13 @@ export const trafficBillingRouter = router({
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input }) => {
       await db.deleteTrafficBillingConfig(input.id);
+      const reconciliation = await reconcileTrafficBillingAuthorization(
+        `traffic-billing-config-deleted-${input.id}`,
+      );
+      appendPanelLog(
+        reconciliation.failures.length > 0 ? "warn" : "info",
+        `[TrafficBilling] config deleted id=${input.id} affectedUsers=${reconciliation.affectedUsers} disabledRules=${reconciliation.disabledRules} failures=${reconciliation.failures.length}`,
+      );
       return { success: true };
     }),
 

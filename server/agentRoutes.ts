@@ -47,7 +47,7 @@ function parseForwardProtocolSettings(value: string | null | undefined) {
     return null;
   }
 }
-const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
+const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.178";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 

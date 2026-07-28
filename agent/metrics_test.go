@@ -749,41 +749,70 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	if !markers["22022"] {
 		t.Fatal("nft process traffic marker was not detected")
 	}
-	if got := counters["22022"]; got.In != 2100 || got.Out != 3300 {
+	for _, marker := range []string{"22022:tcp:in", "22022:tcp:out", "22022:udp:in"} {
+		if !markers[marker] {
+			t.Fatalf("nft process layout marker %q was not detected", marker)
+		}
+	}
+	if markers["22022:udp:out"] {
+		t.Fatal("missing udp output rule was reported as installed")
+	}
+	if got := counters["22022"]; got.In != 1500 || got.Out != 2400 {
 		t.Fatalf("unexpected nft process counters: %+v", got)
 	}
 }
 
-func TestNftProcessCountingCmdsAddTargetForwardRules(t *testing.T) {
-	commands := strings.Join(nftProcessCountingCmds(22022, "tcp", "203.0.113.10", 443), "\n")
+func TestParseNftProcessCounterSnapshotRequiresCompleteListenerLayout(t *testing.T) {
+	raw := `table inet forwardx_traffic {
+	chain input {
+		tcp dport 22022 counter packets 3 bytes 1200 comment "fwx-stat-22022:in" # handle 4
+	}
+	chain forward {
+		tcp saddr 203.0.113.10 tcp sport 443 counter packets 1 bytes 900 comment "fwx-stat-22022:out" # handle 8
+	}
+}`
+	counters, markers := parseNftProcessCounterSnapshot(raw)
+	if markers["22022"] {
+		t.Fatal("partial input/forward layout was accepted as a complete process counter backend")
+	}
+	if got := counters["22022"]; got.In != 1200 || got.Out != 0 {
+		t.Fatalf("non-authoritative forward counter leaked into process traffic: %+v", got)
+	}
+}
+
+func TestNftProcessCountingCmdsUseOnlyListenerHooks(t *testing.T) {
+	commands := strings.Join(nftProcessCountingCmds(22022, "tcp"), "\n")
 	for _, want := range []string{
-		"nft add chain inet forwardx_traffic forward '{ type filter hook forward priority mangle; policy accept; }'",
-		"forward meta l4proto tcp ct original proto-dst 22022 ip daddr 203.0.113.10 tcp dport 443",
-		"forward meta l4proto tcp ct original proto-dst 22022 ip saddr 203.0.113.10 tcp sport 443",
+		"input meta l4proto tcp tcp dport 22022",
+		"output meta l4proto tcp tcp sport 22022",
 	} {
 		if !strings.Contains(commands, want) {
 			t.Fatalf("nft process commands missing %q:\n%s", want, commands)
 		}
 	}
+	if strings.Contains(commands, "forward meta l4proto") || strings.Contains(commands, "ct original proto-dst") {
+		t.Fatalf("process counters must not install kernel forwarding hooks:\n%s", commands)
+	}
 }
 
-func TestMaxTrafficCountersKeepsTheChainThatMatched(t *testing.T) {
-	// Kernel forwarding only crosses the iptables FORWARD chain, so the nft
-	// input/output counters stay at zero. Merging must not discard the sample
-	// that actually counted the traffic.
-	iptables := trafficCounters{In: 4096, Out: 8192}
-	if got := maxTrafficCounters(iptables, trafficCounters{}); got != iptables {
-		t.Fatalf("empty nft counters overwrote iptables counters: %+v", got)
+func TestRuleTrafficCountersUseExactlyOneBackend(t *testing.T) {
+	iptables := map[string]trafficCounters{"22022": {In: 9000, Out: 8000}}
+	nativeNFT := map[int]trafficCounters{7: {In: 7000, Out: 6000}}
+	processNFT := map[string]trafficCounters{"22022": {In: 1500, Out: 2400}}
+	processMarkers := map[string]bool{"22022:tcp:in": true, "22022:tcp:out": true}
+
+	process := localRuleState{Port: "22022", RuleID: 7, ForwardType: "gost", Protocol: "tcp"}
+	if got := countersForRuleTrafficState(process, iptables, nativeNFT, processNFT, processMarkers); got != processNFT["22022"] {
+		t.Fatalf("healthy process nft counters were merged with another backend: %+v", got)
 	}
-	// Process forwarding is the mirror case: nft saw it, iptables did not.
-	nft := trafficCounters{In: 1500, Out: 2400}
-	if got := maxTrafficCounters(trafficCounters{}, nft); got != nft {
-		t.Fatalf("empty iptables counters overwrote nft counters: %+v", got)
+	if got := countersForRuleTrafficState(process, iptables, nativeNFT, processNFT, nil); got != iptables["22022"] {
+		t.Fatalf("process counter did not fall back to iptables without a complete nft marker: %+v", got)
 	}
-	// Mixed coverage takes the larger value per direction independently.
-	got := maxTrafficCounters(trafficCounters{In: 4096, Out: 10}, trafficCounters{In: 20, Out: 2400})
-	if got.In != 4096 || got.Out != 2400 {
-		t.Fatalf("unexpected merged counters: %+v", got)
+	if got := countersForRuleTrafficState(localRuleState{Port: "22022", RuleID: 7, ForwardType: "iptables"}, iptables, nativeNFT, processNFT, processMarkers); got != iptables["22022"] {
+		t.Fatalf("iptables rule sampled a different backend: %+v", got)
+	}
+	if got := countersForRuleTrafficState(localRuleState{Port: "22022", RuleID: 7, ForwardType: "nftables"}, iptables, nativeNFT, processNFT, processMarkers); got != nativeNFT[7] {
+		t.Fatalf("native nftables rule sampled a different backend: %+v", got)
 	}
 }
 
@@ -793,16 +822,127 @@ func TestShouldCollectRuleTrafficSkipsForwardXAndInvalidRules(t *testing.T) {
 		state localRuleState
 		want  bool
 	}{
-		{name: "iptables", state: localRuleState{RuleID: 1, ForwardType: "iptables"}, want: true},
-		{name: "realm", state: localRuleState{RuleID: 2, ForwardType: "realm"}, want: true},
-		{name: "forwardx", state: localRuleState{RuleID: 3, ForwardType: "forwardx"}, want: false},
-		{name: "forwardx case insensitive", state: localRuleState{RuleID: 4, ForwardType: " ForwardX "}, want: false},
-		{name: "missing rule", state: localRuleState{RuleID: 0, ForwardType: "gost"}, want: false},
+		{name: "iptables", state: localRuleState{Port: "22001", RuleID: 1, ForwardType: "iptables"}, want: true},
+		{name: "realm", state: localRuleState{Port: "22002", RuleID: 2, ForwardType: "realm"}, want: true},
+		{name: "forwardx", state: localRuleState{Port: "22003", RuleID: 3, ForwardType: "forwardx"}, want: false},
+		{name: "forwardx case insensitive", state: localRuleState{Port: "22004", RuleID: 4, ForwardType: " ForwardX "}, want: false},
+		{name: "forwardx v1", state: localRuleState{Port: "22005", RuleID: 5, ForwardType: "forwardx-v1"}, want: false},
+		{name: "forwardx wireguard", state: localRuleState{Port: "22006", RuleID: 6, ForwardType: " ForwardX-WireGuard "}, want: false},
+		{name: "missing rule", state: localRuleState{Port: "22007", RuleID: 0, ForwardType: "gost"}, want: false},
+		{name: "missing port", state: localRuleState{RuleID: 7, ForwardType: "gost"}, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldCollectRuleTraffic(tc.state); got != tc.want {
 				t.Fatalf("shouldCollectRuleTraffic(%+v) = %v, want %v", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCollectableRuleTrafficStatesDriveIntervalsAndConntrackPorts(t *testing.T) {
+	states := []localRuleState{
+		{Port: "22001", RuleID: 1, ForwardType: "forwardx"},
+		{Port: "22002", RuleID: 2, ForwardType: "forwardx-v1"},
+		{Port: "22003", RuleID: 3, ForwardType: "iptables"},
+		{Port: "22004", RuleID: 4, ForwardType: "realm"},
+		{Port: "22005", RuleID: 0, ForwardType: "gost"},
+	}
+	filtered := collectableRuleTrafficStates(states)
+	if len(filtered) != 2 || filtered[0].Port != "22003" || filtered[1].Port != "22004" {
+		t.Fatalf("unexpected collectable states: %+v", filtered)
+	}
+	if got := trafficCollectIntervalForRuleCount(len(collectableRuleTrafficStates(states[:2]))); got != idleHostTrafficReportEvery {
+		t.Fatalf("self-reported-only interval=%s want=%s", got, idleHostTrafficReportEvery)
+	}
+	ports := collectableRuleTrafficPorts(states)
+	if len(ports) != 2 || !ports["22003"] || !ports["22004"] {
+		t.Fatalf("conntrack ports include non-collectable rules: %+v", ports)
+	}
+}
+
+func TestTrafficSnapshotRequirementsFollowForwardTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		states []localRuleState
+		want   trafficSnapshotRequirements
+	}{
+		{
+			name: "self reported only",
+			states: []localRuleState{
+				{Port: "1", RuleID: 1, ForwardType: "forwardx"},
+				{Port: "2", RuleID: 2, ForwardType: "forwardx-v1"},
+			},
+			want: trafficSnapshotRequirements{},
+		},
+		{name: "iptables", states: []localRuleState{{Port: "1", RuleID: 1, ForwardType: "iptables"}}, want: trafficSnapshotRequirements{iptables: true}},
+		{name: "native nft", states: []localRuleState{{Port: "1", RuleID: 1, ForwardType: "nftables"}}, want: trafficSnapshotRequirements{nativeNFT: true}},
+		{name: "process nft first", states: []localRuleState{{Port: "1", RuleID: 1, ForwardType: "gost"}}, want: trafficSnapshotRequirements{processNFT: true}},
+		{
+			name: "mixed",
+			states: []localRuleState{
+				{Port: "1", RuleID: 1, ForwardType: "iptables"},
+				{Port: "2", RuleID: 2, ForwardType: "nftables"},
+				{Port: "3", RuleID: 3, ForwardType: "realm"},
+			},
+			want: trafficSnapshotRequirements{iptables: true, nativeNFT: true, processNFT: true},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trafficSnapshotRequirementsForStates(tc.states); got != tc.want {
+				t.Fatalf("requirements=%+v want=%+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcessTrafficRequestsIptablesOnlyWhenNftLayoutIsMissing(t *testing.T) {
+	states := []localRuleState{
+		{Port: "22001", RuleID: 1, ForwardType: "gost", Protocol: "tcp"},
+		{Port: "22002", RuleID: 2, ForwardType: "realm", Protocol: "both"},
+		{Port: "22003", RuleID: 3, ForwardType: "nftables"},
+	}
+	completeMarkers := map[string]bool{
+		"22001:tcp:in": true, "22001:tcp:out": true,
+		"22002:tcp:in": true, "22002:tcp:out": true,
+		"22002:udp:in": true, "22002:udp:out": true,
+	}
+	if processTrafficNeedsIptablesFallback(states, completeMarkers) {
+		t.Fatal("complete process nft layouts unnecessarily requested iptables")
+	}
+	delete(completeMarkers, "22002:udp:out")
+	if !processTrafficNeedsIptablesFallback(states, completeMarkers) {
+		t.Fatal("missing process nft layout did not request iptables fallback")
+	}
+}
+
+func TestCountingLayoutPresenceUsesTheExpectedSingleBackend(t *testing.T) {
+	diagnostics := trafficDiagnosticsSnapshot{
+		iptablesMarkers:   map[string]bool{"22001": true, "22004": true},
+		ip6tablesMarkers:  map[string]bool{"22002": true},
+		nftMarkers:        map[int]bool{},
+		nftProcessMarkers: map[string]bool{"22003": true},
+	}
+	tests := []struct {
+		name  string
+		state localRuleState
+		want  bool
+	}{
+		{name: "IPv4 kernel marker", state: localRuleState{Port: "22001", RuleID: 1, ForwardType: "iptables", TargetIP: "192.0.2.10", TargetPort: 443}, want: true},
+		{name: "IPv6 kernel marker", state: localRuleState{Port: "22002", RuleID: 2, ForwardType: "iptables", TargetIP: "2001:db8::10", TargetPort: 443}, want: true},
+		{name: "process nft marker", state: localRuleState{Port: "22003", RuleID: 3, ForwardType: "gost"}, want: true},
+		{name: "process iptables fallback", state: localRuleState{Port: "22004", RuleID: 4, ForwardType: "realm"}, want: true},
+		{name: "missing process layout", state: localRuleState{Port: "22005", RuleID: 5, ForwardType: "socat"}, want: false},
+		{name: "missing IPv4 kernel layout", state: localRuleState{Port: "22006", RuleID: 6, ForwardType: "iptables", TargetIP: "192.0.2.20", TargetPort: 443}, want: false},
+		{name: "unresolved kernel target waits for DNS", state: localRuleState{Port: "22007", RuleID: 7, ForwardType: "iptables", TargetIP: "expired.example", TargetPort: 443}, want: true},
+		{name: "native nft owns its counters", state: localRuleState{Port: "22008", RuleID: 8, ForwardType: "nftables"}, want: true},
+		{name: "ForwardX self reports", state: localRuleState{Port: "22009", RuleID: 9, ForwardType: "forwardx-v1"}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countingLayoutPresentForTrafficState(tc.state, diagnostics); got != tc.want {
+				t.Fatalf("layout present=%v want=%v state=%+v", got, tc.want, tc.state)
 			}
 		})
 	}

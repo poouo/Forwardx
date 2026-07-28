@@ -6,15 +6,7 @@ import { portsRulesRouter } from "./rules.ports";
 import { selfTestRulesRouter } from "./rules.selfTest";
 import { trafficRulesRouter } from "./rules.traffic";
 import { canUseForwardRuleResource, getLinkAccessScope } from "../linkAccessView";
-
-function positiveId(value: unknown) {
-  const id = Number(value || 0);
-  return Number.isFinite(id) && id > 0;
-}
-
-function isManagedForwardGroupChildRule(rule: any) {
-  return positiveId(rule?.forwardGroupRuleId) || positiveId(rule?.forwardGroupMemberId);
-}
+import { isManagedForwardGroupChildRule } from "../forwardRuleVisibility";
 
 async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
   if (user.role === "admin") return value;

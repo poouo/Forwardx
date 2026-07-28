@@ -66,15 +66,6 @@ function iptablesDelete(binary: IptablesBinary, table: string | null, rule: stri
   return ignoreShellFailure(command);
 }
 
-function iptablesDeleteByComment(binary: IptablesBinary, table: string | null, marker: string) {
-  const tableArg = table ? `-t ${table} ` : "";
-  const command = `while rule=$(${binary} ${tableArg}-S 2>/dev/null | awk -v marker=${shellQuote(marker)} '$0 ~ marker {sub(/^-A/, "-D"); print; exit}') && [ -n "$rule" ]; do ${binary} ${tableArg}$rule 2>/dev/null || break; done`;
-  if (binary === "ip6tables") {
-    return `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`;
-  }
-  return ignoreShellFailure(command);
-}
-
 function iptablesFlush(binary: IptablesBinary, table: string, chain: string) {
   return iptablesCommand(binary, `-t ${table} -F ${chain} 2>/dev/null`, true);
 }
@@ -110,20 +101,42 @@ function nftAddressFamily(targetIp: unknown) {
   return isIpv6Address(targetIp) ? "ip6" : "ip";
 }
 
-export function buildCountingChainCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
+export type CountingRuleMode = "none" | "kernel" | "process";
+
+export function countingRuleModeForForwardType(forwardType?: string): CountingRuleMode {
+  const normalized = String(forwardType || "").trim().toLowerCase();
+  if (normalized === "nftables" || normalized === "forwardx" || normalized.startsWith("forwardx-")) return "none";
+  if (normalized === "iptables") return "kernel";
+  return "process";
+}
+
+function iptablesDeleteCountingRules(binary: IptablesBinary, port: number) {
+  const tableArg = "-t mangle ";
+  const marker = `fwx-stat-${port}:`;
+  const inChain = `FWX_IN_${port}`;
+  const outChain = `FWX_OUT_${port}`;
+  const command = `${binary} ${tableArg}-S 2>/dev/null | awk -v marker=${shellQuote(marker)} -v in_chain=${shellQuote(inChain)} -v out_chain=${shellQuote(outChain)} '/^-A / {chain=$2; position[chain]++; matched=index($0, marker)>0; if (!matched) for (i=1; i<=NF; i++) if ($i==in_chain || $i==out_chain) {matched=1; break} if (matched) {count++; chains[count]=chain; numbers[count]=position[chain]}} END {for (i=count; i>=1; i--) print chains[i], numbers[i]}' | while read -r chain number; do [ -n "$chain" ] && [ -n "$number" ] && ${binary} ${tableArg}-D "$chain" "$number" 2>/dev/null || true; done`;
+  if (binary === "ip6tables") {
+    return `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`;
+  }
+  return ignoreShellFailure(command);
+}
+
+export function buildCountingChainCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string, forwardType?: string): string[] {
   const protos = forwardRuleProtocols(protocol, "both");
   const inMarker = `fwx-stat-${port}:in`;
   const outMarker = `fwx-stat-${port}:out`;
   const addStatRule = (binary: IptablesBinary, chain: string, rule: string, marker: string) =>
     iptablesEnsure(binary, "mangle", `${chain} ${rule} -m comment --comment "${marker}"`, true);
+  const mode = countingRuleModeForForwardType(forwardType);
+  // Process runtimes are reconciled by the Agent from runningRules. Keeping
+  // these commands out of shared GOST/Nginx reload actions prevents an
+  // unrelated DNS target change from rescanning and rebuilding every port's
+  // counter rules.
+  if (mode === "process") return [];
   const cmds: string[] = [...buildCountingCleanupCmds(port, targetIp, targetPort, protocol)];
+  if (mode === "none") return cmds;
   for (const proto of protos) {
-    for (const binary of iptablesBinaries) {
-      cmds.push(addStatRule(binary, "PREROUTING", `-p ${proto} --dport ${port}`, inMarker));
-      cmds.push(addStatRule(binary, "INPUT", `-p ${proto} --dport ${port}`, inMarker));
-      cmds.push(addStatRule(binary, "POSTROUTING", `-p ${proto} --sport ${port}`, outMarker));
-      cmds.push(addStatRule(binary, "OUTPUT", `-p ${proto} --sport ${port}`, outMarker));
-    }
     const target = cleanAddress(targetIp);
     if (isIpAddress(target) && Number(targetPort) > 0) {
       const targetBinary = iptablesBinaryForTarget(target);
@@ -140,61 +153,25 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
       for (const [chain, rule, marker] of targetRules) cmds.push(addStatRule(targetBinary, chain, rule, marker));
     }
   }
-  cmds.push(...buildNftProcessCountingCmds(port, protocol, targetIp, targetPort));
   return cmds;
 }
 
 export function buildCountingCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
-  const protos = forwardRuleProtocols(protocol, "both");
-  const inMarker = `fwx-stat-${port}:in`;
-  const outMarker = `fwx-stat-${port}:out`;
   const cmds: string[] = [];
   for (const binary of iptablesBinaries) {
     cmds.push(
-      iptablesDelete(binary, "mangle", `PREROUTING -p tcp --dport ${port} -j FWX_IN_${port}`),
-      iptablesDelete(binary, "mangle", `PREROUTING -p udp --dport ${port} -j FWX_IN_${port}`),
-      iptablesDelete(binary, "mangle", `POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port}`),
-      iptablesDelete(binary, "mangle", `POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port}`),
-      iptablesDelete(binary, "mangle", `INPUT -p tcp --dport ${port} -j FWX_IN_${port}`),
-      iptablesDeleteByComment(binary, "mangle", inMarker),
-      iptablesDeleteByComment(binary, "mangle", outMarker),
-      iptablesDelete(binary, "mangle", `INPUT -p udp --dport ${port} -j FWX_IN_${port}`),
-      iptablesDelete(binary, "mangle", `OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port}`),
-      iptablesDelete(binary, "mangle", `OUTPUT -p udp --sport ${port} -j FWX_OUT_${port}`),
-      iptablesDelete(binary, "mangle", `FORWARD -p tcp -j FWX_IN_${port}`),
-      iptablesDelete(binary, "mangle", `FORWARD -p udp -j FWX_IN_${port}`),
-      iptablesDelete(binary, "mangle", `FORWARD -p tcp -j FWX_OUT_${port}`),
-      iptablesDelete(binary, "mangle", `FORWARD -p udp -j FWX_OUT_${port}`),
+      iptablesDeleteCountingRules(binary, port),
       iptablesFlush(binary, "mangle", `FWX_IN_${port}`),
       iptablesDeleteChain(binary, "mangle", `FWX_IN_${port}`),
       iptablesFlush(binary, "mangle", `FWX_OUT_${port}`),
       iptablesDeleteChain(binary, "mangle", `FWX_OUT_${port}`),
     );
   }
-  for (const proto of protos) {
-    for (const binary of iptablesBinaries) {
-      cmds.unshift(iptablesDelete(binary, "mangle", `PREROUTING -p ${proto} --dport ${port} -m comment --comment "${inMarker}"`));
-      cmds.unshift(iptablesDelete(binary, "mangle", `INPUT -p ${proto} --dport ${port} -m comment --comment "${inMarker}"`));
-      cmds.unshift(iptablesDelete(binary, "mangle", `POSTROUTING -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
-      cmds.unshift(iptablesDelete(binary, "mangle", `OUTPUT -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
-    }
-    const target = cleanAddress(targetIp);
-    if (isIpAddress(target) && Number(targetPort) > 0) {
-      const targetBinary = iptablesBinaryForTarget(target);
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `OUTPUT -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `POSTROUTING -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `PREROUTING -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `OUTPUT -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `POSTROUTING -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `PREROUTING -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
-      cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
-    }
-  }
+  // Keep the legacy parameters in the public API so old action builders can
+  // call the cleanup helper while upgrading from target-specific layouts.
+  void targetIp;
+  void targetPort;
+  void protocol;
   cmds.push(nftProcessCountingCleanupCmd(port));
   return cmds;
 }
@@ -221,50 +198,7 @@ const nftIpv6RoutefixComment = "fwx-ipv6-dnat-routefix";
 
 function nftProcessCountingCleanupCmd(port: number) {
   const marker = `fwx-stat-${port}:`;
-  return `if command -v nft >/dev/null 2>&1 && nft list table inet ${nftProcessTrafficTable} >/dev/null 2>&1; then for c in ${nftProcessTrafficChains.join(" ")}; do while h=$(nft -a list chain inet ${nftProcessTrafficTable} "$c" 2>/dev/null | awk -v marker=${shellQuote(marker)} 'index($0, marker) {print $NF; exit}') && [ -n "$h" ]; do nft delete rule inet ${nftProcessTrafficTable} "$c" handle "$h" 2>/dev/null || break; done; done; fi; true`;
-}
-
-function nftProcessCountingRuleCmd(chain: string, matchBody: string, marker: string) {
-  // nft accepts `counter` before or after `comment` depending on the version, so
-  // try both orderings before giving up.
-  return `if command -v nft >/dev/null 2>&1; then nft add rule inet ${nftProcessTrafficTable} ${chain} ${matchBody} counter comment ${nftCommentLiteral(marker)} 2>/dev/null || nft add rule inet ${nftProcessTrafficTable} ${chain} ${matchBody} comment ${nftCommentLiteral(marker)} counter 2>/dev/null || true; fi; true`;
-}
-
-function buildNftProcessCountingCmds(port: number, protocol?: string, targetIp?: string, targetPort?: number) {
-  const commands = [
-    `if command -v nft >/dev/null 2>&1; then nft add table inet ${nftProcessTrafficTable} 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficInputChain} '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficOutputChain} '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true; nft add chain inet ${nftProcessTrafficTable} ${nftProcessTrafficForwardChain} '{ type filter hook forward priority mangle; policy accept; }' 2>/dev/null || true; fi; true`,
-  ];
-  const target = cleanAddress(targetIp);
-  const hasTarget = isIpAddress(target) && Number(targetPort) > 0;
-  const family = hasTarget ? nftAddressFamily(target) : "";
-  for (const proto of forwardRuleProtocols(protocol, "both")) {
-    const inMarker = `fwx-stat-${port}:in`;
-    const outMarker = `fwx-stat-${port}:out`;
-    commands.push(
-      nftProcessCountingRuleCmd(nftProcessTrafficInputChain, `meta l4proto ${proto} ${proto} dport ${port}`, inMarker),
-      nftProcessCountingRuleCmd(nftProcessTrafficOutputChain, `meta l4proto ${proto} ${proto} sport ${port}`, outMarker),
-    );
-    // Kernel-space forwarding (iptables/nftables DNAT) never traverses the
-    // input/output hooks. DNAT rewrites the destination before the forward
-    // hook, so match the target endpoint and bind it to the conntrack tuple's
-    // original destination port. The latter keeps separate listeners that
-    // share one target from counting each other's traffic.
-    if (hasTarget) {
-      commands.push(
-        nftProcessCountingRuleCmd(
-          nftProcessTrafficForwardChain,
-          `meta l4proto ${proto} ct original proto-dst ${port} ${family} daddr ${target} ${proto} dport ${targetPort}`,
-          inMarker,
-        ),
-        nftProcessCountingRuleCmd(
-          nftProcessTrafficForwardChain,
-          `meta l4proto ${proto} ct original proto-dst ${port} ${family} saddr ${target} ${proto} sport ${targetPort}`,
-          outMarker,
-        ),
-      );
-    }
-  }
-  return commands;
+  return `if command -v nft >/dev/null 2>&1 && nft list table inet ${nftProcessTrafficTable} >/dev/null 2>&1; then for c in ${nftProcessTrafficChains.join(" ")}; do for h in $(nft -a list chain inet ${nftProcessTrafficTable} "$c" 2>/dev/null | awk -v marker=${shellQuote(marker)} 'index($0, marker) {print $NF}'); do nft delete rule inet ${nftProcessTrafficTable} "$c" handle "$h" 2>/dev/null || true; done; done; fi; true`;
 }
 
 function nftOptional(command: string) {

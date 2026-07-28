@@ -12,7 +12,7 @@ import {
 import { getDb } from "../dbRuntime";
 import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
 import { getActiveUserSubscriptions } from "./billingRepository";
-import { getActiveTrafficBillingResourceIds, getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
+import { getTrafficBillingAccessSnapshot, getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { clearLinkAccessScopeCache } from "../linkAccessView";
 
 let lastPermissionLookupWarningAt = 0;
@@ -209,7 +209,7 @@ export async function getUserManualAllowedForwardGroupIds(userId: number): Promi
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
-  const [ownedRows, manualRows, planRows, activeBillingResourceIds, billingResourceIds] = await Promise.all([
+  const [ownedRows, manualRows, planRows, billingSnapshot] = await Promise.all([
     db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)).catch((error: unknown) => {
       warnPermissionLookupFailure(error);
       return [];
@@ -222,22 +222,16 @@ export async function getUserAllowedForwardGroupIds(userId: number): Promise<num
       warnPermissionLookupFailure(error);
       return [];
     }),
-    getActiveTrafficBillingResourceIds().catch((error) => {
-      warnPermissionLookupFailure(error);
-      return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
-    }),
-    getUserUsableTrafficBillingResourceIds(userId).catch((error) => {
-      warnPermissionLookupFailure(error);
-      return { hostIds: [], tunnelIds: [], forwardGroupIds: [] };
-    }),
+    getTrafficBillingAccessSnapshot(userId),
   ]);
+  if (billingSnapshot.status === "failed") return [];
   const allowedIds = new Set([
     ...ownedRows.map((row: any) => Number(row.id)),
     ...manualRows,
     ...planRows,
   ]);
-  for (const id of activeBillingResourceIds.forwardGroupIds) allowedIds.delete(Number(id));
-  for (const id of billingResourceIds.forwardGroupIds) allowedIds.add(Number(id));
+  for (const id of billingSnapshot.activeResourceIds.forwardGroupIds) allowedIds.delete(Number(id));
+  for (const id of billingSnapshot.usableResourceIds.forwardGroupIds) allowedIds.add(Number(id));
   return Array.from(allowedIds);
 }
 

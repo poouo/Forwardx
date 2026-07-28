@@ -150,6 +150,67 @@ function forwardRuleEntryHostSql() {
   ].join("\n");
 }
 
+function forwardRuleEntryHostFilter(input: ForwardRuleListQuery, entryHostId: number) {
+  const hasScopedResources = input.searchVisibleHostIds !== undefined
+    || input.searchVisibleTunnelIds !== undefined
+    || input.searchVisibleForwardGroupIds !== undefined;
+  if (!hasScopedResources) {
+    return { sql: forwardRuleEntryHostSql() + " = ?", params: [entryHostId] };
+  }
+
+  const clauses: string[] = [];
+  const params: any[] = [];
+  const addVisibleRoot = (
+    rootExpression: string,
+    visibleIds: number[] | undefined,
+    entryExpression: string,
+    rootConditions: string[],
+  ) => {
+    const conditions = [...rootConditions];
+    if (visibleIds !== undefined) {
+      const ids = normalizeForwardRuleIds(visibleIds);
+      if (ids.length === 0) return;
+      const visible = inList(ids);
+      conditions.push(rootExpression + " IN " + visible.sql);
+      params.push(...visible.params);
+    }
+    conditions.push(entryExpression + " = ?");
+    params.push(entryHostId);
+    clauses.push("(" + conditions.join(" AND ") + ")");
+  };
+
+  addVisibleRoot(
+    ruleColumn("r", "forwardGroupId"),
+    input.searchVisibleForwardGroupIds,
+    forwardRuleEntryHostSql(),
+    ["COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) <> 0", ruleColumn("g", "id") + " IS NOT NULL"],
+  );
+  addVisibleRoot(
+    ruleColumn("r", "tunnelId"),
+    input.searchVisibleTunnelIds,
+    ruleColumn("t", "entryHostId"),
+    [
+      "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0",
+      "COALESCE(" + ruleColumn("r", "tunnelId") + ", 0) <> 0",
+      ruleColumn("t", "id") + " IS NOT NULL",
+    ],
+  );
+  addVisibleRoot(
+    ruleColumn("r", "hostId"),
+    input.searchVisibleHostIds,
+    ruleColumn("r", "hostId"),
+    [
+      "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0",
+      "COALESCE(" + ruleColumn("r", "tunnelId") + ", 0) = 0",
+    ],
+  );
+
+  return {
+    sql: clauses.length > 0 ? "(" + clauses.join(" OR ") + ")" : "1 = 0",
+    params,
+  };
+}
+
 function forwardRuleListFromSql() {
   return [
     "FROM " + quoteIdentifier("forward_rules") + " r",
@@ -216,8 +277,9 @@ function buildForwardRuleSqlFilter(
   }
 
   if (includeEntryHost && Number(input.entryHostId || 0) > 0) {
-    conditions.push(forwardRuleEntryHostSql() + " = ?");
-    params.push(Number(input.entryHostId));
+    const entryHostFilter = forwardRuleEntryHostFilter(input, Number(input.entryHostId));
+    conditions.push(entryHostFilter.sql);
+    params.push(...entryHostFilter.params);
   }
 
   const categorySql = forwardRuleListCategorySql();

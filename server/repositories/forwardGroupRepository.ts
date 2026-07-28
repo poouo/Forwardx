@@ -3534,11 +3534,15 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   const previousValues = new Set(previousValue.split(",").map((value) => value.trim()).filter(Boolean));
   const values: string[] = [];
   const excluded: string[] = [];
+  const healthWindows: any[] = [];
   const initialHealthSnapshot = new Map<number, string>();
   const pendingHealthExpiryCandidates: number[] = [];
   let activeMemberId: number | null = null;
   const chinaHealthEnabled = dbBool(group.chinaHealthCheckEnabled);
   const chinaHealthNow = Date.now();
+  const healthNow = new Date(chinaHealthNow);
+  const failoverMs = forwardGroupFailoverDelayMs(group);
+  const recoverMs = forwardGroupRecoverDelayMs(group);
   let pendingAgentHealth = false;
   const includeMember = (member: any, value: string) => {
     if (!values.includes(value)) {
@@ -3560,10 +3564,14 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
       Number(member.id),
       `${String(storedStatus || "unknown")}:${toDate(checkedAt)?.getTime() || 0}`,
     );
+    let observedFailureSince: Date | null = null;
     if (healthStatus === "pending" && !toDate(checkedAt)) {
       const waitingSince = toDate(member.updatedAt) || toDate(member.createdAt) || toDate(group.updatedAt) || toDate(group.createdAt) || new Date(chinaHealthNow);
       const expiresAt = waitingSince.getTime() + FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS;
-      if (chinaHealthNow >= expiresAt) healthStatus = "stale";
+      if (chinaHealthNow >= expiresAt) {
+        healthStatus = "stale";
+        observedFailureSince = new Date(expiresAt);
+      }
       else pendingHealthExpiryCandidates.push(expiresAt);
     }
     if (healthStatus === "pending") {
@@ -3572,10 +3580,71 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
       if (recordType === "CNAME" && previouslyIncluded) break;
       continue;
     }
-    if (healthStatus === "healthy") includeMember(member, value);
+
+    const healthy = healthStatus === "healthy";
+    if (!healthy && !observedFailureSince) {
+      const observedAt = toDate(checkedAt);
+      if (observedAt) {
+        const failureAt = healthStatus === "stale"
+          ? observedAt.getTime() + FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS
+          : observedAt.getTime();
+        observedFailureSince = new Date(Math.min(chinaHealthNow, failureAt));
+      }
+    }
+    const previousFailureSince = toDate(member.failureSince);
+    const previousHealthySince = toDate(member.healthySince);
+    const wasUnhealthy = String(member.healthStatus || "unknown") === "unhealthy" || !!previousFailureSince;
+    let failureSince: Date | null = null;
+    let healthySince: Date | null = null;
+    let failedLongEnough = false;
+    let recoveredLongEnough = false;
+    let include = false;
+    if (healthy) {
+      healthySince = previousHealthySince || healthNow;
+      recoveredLongEnough = chinaHealthNow - healthySince.getTime() >= recoverMs;
+      const recoveryRequired = !previouslyIncluded && wasUnhealthy;
+      include = previouslyIncluded || !recoveryRequired || recoveredLongEnough;
+    } else {
+      failureSince = previousFailureSince || observedFailureSince || healthNow;
+      if (observedFailureSince && observedFailureSince.getTime() < failureSince.getTime()) {
+        failureSince = observedFailureSince;
+      }
+      failedLongEnough = chinaHealthNow - failureSince.getTime() >= failoverMs;
+      include = previouslyIncluded && !failedLongEnough;
+    }
+
+    const sameTime = (left: unknown, right: Date | null) => (toDate(left)?.getTime() ?? null) === (right?.getTime() ?? null);
+    const nextHealthStatus = healthy ? "healthy" : "unhealthy";
+    if (
+      String(member.healthStatus || "unknown") !== nextHealthStatus
+      || !sameTime(member.failureSince, failureSince)
+      || !sameTime(member.healthySince, healthySince)
+    ) {
+      await db.update(forwardGroupMembers).set({
+        healthStatus: nextHealthStatus,
+        failureSince,
+        healthySince,
+        updatedAt: healthNow,
+      } as any).where(eq(forwardGroupMembers.id, member.id));
+    }
+
+    if (include) includeMember(member, value);
     else if (!excluded.includes(value)) excluded.push(value);
-    if (recordType === "CNAME" && healthStatus === "healthy") break;
+    healthWindows.push({
+      healthy,
+      failureSince,
+      healthySince,
+      failedLongEnough,
+      recoveredLongEnough,
+    });
+    if (recordType === "CNAME" && include) break;
   }
+  const healthWindowRecheckAt = nextForwardGroupHealthRecheckAt({
+    members: healthWindows,
+    failoverMs,
+    recoverMs,
+    now: chinaHealthNow,
+  });
   const healthExpiryAt = chinaHealthEnabled
     ? nextForwardGroupChinaHealthExpiryAt({ enabled: true, members, now: chinaHealthNow })
     : members
@@ -3586,9 +3655,10 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   const pendingHealthExpiryAt = pendingHealthExpiryCandidates
     .filter((value) => value > chinaHealthNow)
     .sort((left, right) => left - right)[0] ?? null;
-  forwardGroupHealthRechecks.replace(Number(group.id), healthExpiryAt && pendingHealthExpiryAt
-    ? Math.min(healthExpiryAt, pendingHealthExpiryAt)
-    : healthExpiryAt ?? pendingHealthExpiryAt);
+  const nextHealthRecheckAt = [healthWindowRecheckAt, healthExpiryAt, pendingHealthExpiryAt]
+    .filter((value): value is number => typeof value === "number" && value > chinaHealthNow)
+    .sort((left, right) => left - right)[0] ?? null;
+  forwardGroupHealthRechecks.replace(Number(group.id), nextHealthRecheckAt);
   const agentSelectionStillCurrent = async () => {
     if (initialHealthSnapshot.size > 0) {
       const currentRows = await db.select({

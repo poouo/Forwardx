@@ -15,8 +15,7 @@ import { getDb } from "./dbRuntime";
 import { createQueryCache } from "./queryCache";
 import { getActiveUserSubscriptions } from "./repositories/billingRepository";
 import {
-  getActiveTrafficBillingResourceIds,
-  getUserUsableTrafficBillingResourceIds,
+  getTrafficBillingAccessSnapshot,
 } from "./repositories/trafficBillingRepository";
 
 export type LinkAccessScope = {
@@ -205,7 +204,15 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     warnLinkAccessLookupFailure(error);
     return fallback;
   });
-  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, activeBillingResourceIds, billingResourceIds, topologyGroups, topologyMembers, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
+  const tracked = async <T>(task: Promise<T>, fallback: T) => {
+    try {
+      return { ok: true as const, value: await task };
+    } catch (error) {
+      warnLinkAccessLookupFailure(error);
+      return { ok: false as const, value: fallback };
+    }
+  };
+  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingSnapshot, topologyGroupsResult, topologyMembersResult, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
     safe(db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)), []),
     safe(db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)), []),
     safe(db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)), []),
@@ -213,10 +220,9 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     safe(db.select({ id: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId)), []),
     safe(db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)), []),
     safe(getActiveUserSubscriptions(userId), []),
-    safe(getActiveTrafficBillingResourceIds(), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
-    safe(getUserUsableTrafficBillingResourceIds(userId), { hostIds: [], tunnelIds: [], forwardGroupIds: [] }),
-    safe(db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups), []),
-    safe(db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers), []),
+    getTrafficBillingAccessSnapshot(userId),
+    tracked(db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups), []),
+    tracked(db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers), []),
     safe(db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId, entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId }).from(tunnels), []),
     safe(db.select({ tunnelId: tunnelHops.tunnelId, hostId: tunnelHops.hostId }).from(tunnelHops), []),
     safe(db.select({ tunnelId: tunnelExitNodes.tunnelId, hostId: tunnelExitNodes.hostId, isEnabled: tunnelExitNodes.isEnabled }).from(tunnelExitNodes), []),
@@ -224,6 +230,9 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
   const subscriptionHostIds = (subscriptions as any[]).flatMap((subscription) => subscription.hostIds || []).map(Number);
   const subscriptionTunnelIds = (subscriptions as any[]).flatMap((subscription) => subscription.tunnelIds || []).map(Number);
   const subscriptionGroupIds = (subscriptions as any[]).flatMap((subscription) => subscription.forwardGroupIds || []).map(Number);
+  const billingResourceIds = billingSnapshot.usableResourceIds;
+  const topologyGroups = topologyGroupsResult.value;
+  const topologyMembers = topologyMembersResult.value;
   const scope = expandLinkAccessScope({
     hostIds: [
       ...(ownedHosts as any[]).map((host) => host.id),
@@ -254,22 +263,61 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     tunnel: new Set(billingResourceIds.tunnelIds.map(Number)),
     forward_group: new Set(billingResourceIds.forwardGroupIds.map(Number)),
   };
+  const activeBillingIds = {
+    host: new Set(billingSnapshot.activeResourceIds.hostIds.map(Number)),
+    tunnel: new Set(billingSnapshot.activeResourceIds.tunnelIds.map(Number)),
+    forward_group: new Set(billingSnapshot.activeResourceIds.forwardGroupIds.map(Number)),
+  };
   const useIdsByType = {
     host: scope.useHostIds || scope.hostIds,
     tunnel: scope.useTunnelIds || scope.tunnelIds,
     forward_group: scope.useGroupIds || scope.groupIds,
   };
-  const activeBillingIds = {
-    host: activeBillingResourceIds.hostIds,
-    tunnel: activeBillingResourceIds.tunnelIds,
-    forward_group: activeBillingResourceIds.forwardGroupIds,
-  };
-  for (const resourceType of Object.keys(activeBillingIds) as Array<keyof typeof activeBillingIds>) {
-    for (const value of activeBillingIds[resourceType]) {
-      const resourceId = positiveId(value);
-      if (resourceId <= 0) continue;
-      if (usableBillingIds[resourceType].has(resourceId)) useIdsByType[resourceType].add(resourceId);
-      else useIdsByType[resourceType].delete(resourceId);
+  if (billingSnapshot.status === "failed") {
+    for (const useIds of Object.values(useIdsByType)) useIds.clear();
+  } else if (billingSnapshot.enabled) {
+    for (const resourceType of Object.keys(activeBillingIds) as Array<keyof typeof activeBillingIds>) {
+      for (const value of activeBillingIds[resourceType]) {
+        const resourceId = positiveId(value);
+        if (resourceId <= 0) continue;
+        if (usableBillingIds[resourceType].has(resourceId)) useIdsByType[resourceType].add(resourceId);
+        else useIdsByType[resourceType].delete(resourceId);
+      }
+    }
+    if (!topologyGroupsResult.ok || !topologyMembersResult.ok) {
+      useIdsByType.forward_group.clear();
+      return scope;
+    }
+    const groupsById = new Map((topologyGroups as any[]).map((group) => [positiveId(group?.id), group]));
+    const membersByGroupId = new Map<number, any[]>();
+    for (const member of topologyMembers as any[]) {
+      if (!dbBool(member?.isEnabled, true)) continue;
+      const groupId = positiveId(member?.groupId);
+      if (!groupId) continue;
+      const rows = membersByGroupId.get(groupId) || [];
+      rows.push(member);
+      membersByGroupId.set(groupId, rows);
+    }
+    const groupHasDeniedBillingMember = (rootGroupId: number) => {
+      const pending = [rootGroupId];
+      const visited = new Set<number>();
+      while (pending.length > 0) {
+        const groupId = positiveId(pending.shift());
+        if (!groupId || visited.has(groupId)) continue;
+        visited.add(groupId);
+        const entryGroupId = positiveId(groupsById.get(groupId)?.entryGroupId);
+        if (entryGroupId) pending.push(entryGroupId);
+        for (const member of membersByGroupId.get(groupId) || []) {
+          const hostId = member?.memberType === "host" ? positiveId(member?.hostId) : 0;
+          if (hostId && activeBillingIds.host.has(hostId) && !usableBillingIds.host.has(hostId)) return true;
+          const tunnelId = member?.memberType === "tunnel" ? positiveId(member?.tunnelId) : 0;
+          if (tunnelId && activeBillingIds.tunnel.has(tunnelId) && !usableBillingIds.tunnel.has(tunnelId)) return true;
+        }
+      }
+      return false;
+    };
+    for (const groupId of Array.from(useIdsByType.forward_group)) {
+      if (groupHasDeniedBillingMember(groupId)) useIdsByType.forward_group.delete(groupId);
     }
   }
   return scope;

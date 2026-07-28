@@ -567,7 +567,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       ruleBytes: number;
       billingResource: NonNullable<Awaited<ReturnType<typeof db.findTrafficBillingResourceForRule>>>;
     }> = [];
-    const trafficBillingEnabled = await db.isTrafficBillingEnabled();
+    const trafficBillingEnabled = await db.getTrafficBillingEnabledForWrite();
     const trafficContexts = await db.getForwardRuleTrafficContextsByIds(stats.map((stat) => Number(stat.ruleId)));
     const contextsByRuleId = new Map((trafficContexts as any[]).map((context) => [Number(context.rule.id), context]));
     const tunnelContextsById = new Map<number, any>();

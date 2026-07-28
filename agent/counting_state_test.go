@@ -1,0 +1,115 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"testing"
+	"time"
+)
+
+func isolateCountingStateTest(t *testing.T, bootID string) {
+	t.Helper()
+	previousStateDir := trafficStateDir
+	previousBootID := agentBootID
+	previousSignatures := countingChainSignatures
+	previousCheckedAt := countingChainCheckedAt
+	previousPending := countingChainRepairPending
+	previousQueue := countingChainRepairQueue
+	previousDesiredByPort := desiredRunningRulesByPort
+	previousDesiredByRulePort := desiredRunningRulesByRulePort
+
+	trafficStateDir = t.TempDir()
+	agentBootID = bootID
+	countingChainSignatures = map[string]string{}
+	countingChainCheckedAt = map[string]time.Time{}
+	countingChainRepairPending = map[string]bool{}
+	countingChainRepairQueue = make(chan runningRule, 4)
+	desiredRunningRulesByPort = map[string]runningRule{}
+	desiredRunningRulesByRulePort = map[string]runningRule{}
+
+	t.Cleanup(func() {
+		trafficStateDir = previousStateDir
+		agentBootID = previousBootID
+		countingChainSignatures = previousSignatures
+		countingChainCheckedAt = previousCheckedAt
+		countingChainRepairPending = previousPending
+		countingChainRepairQueue = previousQueue
+		desiredRunningRulesByPort = previousDesiredByPort
+		desiredRunningRulesByRulePort = previousDesiredByRulePort
+	})
+}
+
+func TestCountingChainStateRestoresOnlyWithinTheSameSystemBoot(t *testing.T) {
+	isolateCountingStateTest(t, "boot-a")
+	rule := runningRule{
+		RuleID:      71,
+		SourcePort:  22022,
+		TargetIP:    "203.0.113.10",
+		TargetPort:  443,
+		Protocol:    "tcp",
+		ForwardType: "gost",
+	}
+	rememberDesiredRunningRules([]runningRule{rule})
+	signature := countingChainRuleSignature(rule)
+	countingChainSignatures["22022"] = signature
+	countingChainRepairPending["22022"] = true
+
+	finishCountingChainRepair(rule, true)
+	raw, err := os.ReadFile(countingChainStatePath("22022"))
+	if err != nil {
+		t.Fatalf("read persisted counting state: %v", err)
+	}
+	var persisted persistedCountingChainState
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("decode persisted counting state: %v", err)
+	}
+	if persisted.BootID != "boot-a" || persisted.Signature != signature || persisted.CheckedAt <= 0 {
+		t.Fatalf("unexpected persisted counting state: %+v", persisted)
+	}
+
+	countingChainSignatures = map[string]string{}
+	countingChainCheckedAt = map[string]time.Time{}
+	restoreCountingChainStates("boot-a")
+	if countingChainSignatures["22022"] != signature || countingChainCheckedAt["22022"].IsZero() {
+		t.Fatalf("same-boot state was not restored: signature=%q checkedAt=%s", countingChainSignatures["22022"], countingChainCheckedAt["22022"])
+	}
+	ensureCountingChainsIfNeeded(rule)
+	if got := len(countingChainRepairQueue); got != 0 {
+		t.Fatalf("same-boot Agent restart queued %d unnecessary repairs", got)
+	}
+
+	restoreCountingChainStates("boot-b")
+	if len(countingChainSignatures) != 0 || len(countingChainCheckedAt) != 0 {
+		t.Fatalf("state from an earlier system boot was restored: signatures=%v checked=%v", countingChainSignatures, countingChainCheckedAt)
+	}
+	if _, err := os.Stat(countingChainStatePath("22022")); !os.IsNotExist(err) {
+		t.Fatalf("stale boot state file was not removed: %v", err)
+	}
+}
+
+func TestCountingChainStateInvalidationDoesNotDisruptPendingRepair(t *testing.T) {
+	isolateCountingStateTest(t, "boot-a")
+	rule := runningRule{RuleID: 72, SourcePort: 22023, Protocol: "udp", ForwardType: "realm"}
+	signature := countingChainRuleSignature(rule)
+	countingChainSignatures["22023"] = signature
+	countingChainCheckedAt["22023"] = time.Now()
+	if err := writeTrafficStateFile(countingChainStatePath("22023"), []byte(`{"schema":1,"bootId":"boot-a","signature":"`+signature+`","checkedAt":1}`), 0600); err != nil {
+		t.Fatalf("write counting state fixture: %v", err)
+	}
+
+	if !invalidateCountingChainState("22023") {
+		t.Fatal("missing layout did not invalidate a completed counting state")
+	}
+	if _, ok := countingChainSignatures["22023"]; ok {
+		t.Fatal("invalidated counting signature remained in memory")
+	}
+
+	countingChainSignatures["22023"] = signature
+	countingChainRepairPending["22023"] = true
+	if invalidateCountingChainState("22023") {
+		t.Fatal("an in-flight repair was invalidated a second time")
+	}
+	if countingChainSignatures["22023"] != signature {
+		t.Fatal("in-flight repair lost ownership of its signature")
+	}
+}

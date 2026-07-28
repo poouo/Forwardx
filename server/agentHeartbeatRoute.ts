@@ -98,6 +98,7 @@ import { mimicRuntimeLifecycles } from "./mimicRuntimeLifecycle";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
 import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
+import { selectResolvedTargetIp } from "./dnsTargetResolution";
 import { buildForwardXMimicConfig } from "./mimicConfig";
 import { gateForwardRulesForRuntime } from "./linkAccessView";
 
@@ -140,7 +141,7 @@ const REALM_CONFIG_DIR = "/etc/forwardx/realm";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const MIMIC_CONFIG_DIR = "/etc/mimic";
-const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
+const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.178";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_STATE_SIGNATURE_VERSION = "2.2.137";
@@ -827,7 +828,7 @@ async function resolveTargetIpCached(ruleId: number, raw: string, force = false)
     });
     resolvedIpInflight.set(inflightKey, work);
   }
-  const resolved = await work;
+  const resolved = selectResolvedTargetIp(trimmed, await work, cachedIp);
   resolvedIpCache.set(ruleId, { raw: trimmed, ip: resolved });
   resolvedIpCheckedAt.set(ruleId, Date.now());
   return resolved;
@@ -4481,7 +4482,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "iptables") {
           cmds.push(...buildIptablesForwardCmds(rule));
-          for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) cmds.push(c);
+          for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, rule.forwardType)) cmds.push(c);
           for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
           actions.push({
             ruleId: rule.id,
@@ -4800,7 +4801,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               networkInterface: hostInterface,
               commands: (!rule.isRunning || shouldRefreshForwardXEntryRule || shouldRepairLocalRule) ? [
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
-                ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+                ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, "forwardx"),
               ] : [],
               fxp: fxpSpec,
               failover: mainBackup,
@@ -4820,7 +4821,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             networkInterface: hostInterface,
             commands: [
               ...cleanupGuardBackendCmds(rule),
-              ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+              ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, rule.forwardType),
               ...buildRuleAccessLimitCmds(rule),
             ],
             failover: tunnel ? undefined : actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),

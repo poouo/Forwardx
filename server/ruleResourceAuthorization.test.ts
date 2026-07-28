@@ -17,8 +17,11 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
     const runtime = await import(moduleUrl("server/dbRuntime.ts"));
     const schema = await import(moduleUrl("server/dbSchema.ts"));
     const trafficBilling = await import(moduleUrl("server/repositories/trafficBillingRepository.ts"));
+    const linkAccess = await import(moduleUrl("server/linkAccessView.ts"));
     const { usersRouter } = await import(moduleUrl("server/routers/users.ts"));
     const { rulesRouter } = await import(moduleUrl("server/routers/rules.ts"));
+    const { trafficBillingRouter } = await import(moduleUrl("server/routers/trafficBilling.ts"));
+    const { reconcileTrafficBillingAuthorization } = await import(moduleUrl("server/trafficBillingAuthorization.ts"));
     const { RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON } = await import(moduleUrl("server/ruleResourceAuthorization.ts"));
     const q = (name) => '"' + name + '"';
     const insert = async (table, columns, values) => {
@@ -36,7 +39,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
     });
     const state = async (id) => {
       const [row] = await runtime.queryRaw(
-        'SELECT "hostId", "tunnelId", "forwardGroupId", "isEnabled", "isRunning", "pendingDelete", "protocolBlockReason" FROM "forward_rules" WHERE "id" = ?',
+        'SELECT "name", "hostId", "tunnelId", "forwardGroupId", "isEnabled", "isRunning", "pendingDelete", "protocolBlockReason" FROM "forward_rules" WHERE "id" = ?',
         [id],
       );
       return row;
@@ -48,9 +51,10 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       await trafficBilling.setTrafficBillingEnabled(true);
       const now = Math.floor(Date.now() / 1000);
 
-      await insert("users", ["id", "username", "password", "role", "canAddRules", "accountEnabled", "balanceCents"], [1, "admin", "x", "admin", 1, 1, 1000]);
-      await insert("users", ["id", "username", "password", "role", "canAddRules", "accountEnabled", "balanceCents"], [2, "member", "x", "user", 1, 1, 1000]);
-      await insert("users", ["id", "username", "password", "role", "canAddRules", "accountEnabled", "balanceCents"], [3, "other", "x", "user", 1, 1, 1000]);
+      await insert("users", ["id", "username", "password", "role", "canAddRules", "manualCanAddRules", "accountEnabled", "balanceCents"], [1, "admin", "x", "admin", 1, 1, 1, 1000]);
+      await insert("users", ["id", "username", "password", "role", "canAddRules", "manualCanAddRules", "accountEnabled", "balanceCents"], [2, "member", "x", "user", 1, 1, 1, 1000]);
+      await insert("users", ["id", "username", "password", "role", "canAddRules", "manualCanAddRules", "accountEnabled", "balanceCents"], [3, "other", "x", "user", 1, 1, 1, 1000]);
+      await insert("users", ["id", "username", "password", "role", "canAddRules", "manualCanAddRules", "accountEnabled", "balanceCents"], [4, "billing-only", "x", "user", 1, 0, 1, 1000]);
 
       for (const [id, name, ownerId] of [
         [1, "manual-entry", 1],
@@ -76,6 +80,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
         [22, "public-billing-port-forward", 3],
         [23, "private-billing-port-forward", 4],
         [24, "private-billing-with-manual-grant", 1],
+        [25, "member-private-billing-port-forward", 4],
       ]) {
         await insert(
           "forward_groups",
@@ -94,6 +99,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       await insert("user_tunnel_permissions", ["userId", "tunnelId"], [2, 10]);
       await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 20]);
       await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 24]);
+      await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 25]);
       await insert("traffic_billing_configs", ["id", "resourceType", "resourceId", "enabled", "requiresPermission", "pricePerGbCents", "multiplier"], [30, "host", 3, 1, 0, 1, 100]);
       await insert("traffic_billing_configs", ["id", "resourceType", "resourceId", "enabled", "requiresPermission", "pricePerGbCents", "multiplier"], [31, "host", 4, 1, 1, 1, 100]);
       await insert("traffic_billing_configs", ["id", "resourceType", "resourceId", "enabled", "requiresPermission", "pricePerGbCents", "multiplier"], [32, "forward_group", 22, 1, 0, 1, 100]);
@@ -123,6 +129,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
         [108, 3, "public-billing-group-rule", 22, 11800],
         [109, 4, "private-billing-group-rule", 23, 11900],
         [110, 1, "private-billing-manual-only-rule", 24, 12000],
+        [111, 4, "member-private-billing-group-rule", 25, 12100],
       ]) {
         await insert(
           "forward_rules",
@@ -134,6 +141,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       const admin = { id: 1, username: "admin", role: "admin", accountEnabled: true };
       const member = { id: 2, username: "member", role: "user", accountEnabled: true, allowedForwardTypes: null };
       const adminUsers = usersRouter.createCaller(context(admin));
+      const adminTrafficBilling = trafficBillingRouter.createCaller(context(admin));
       const memberRules = rulesRouter.createCaller(context(member));
 
       await adminUsers.setHostPermissions({ userId: 2, hostIds: [4] });
@@ -147,12 +155,13 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       assert.equal(Number((await state(108)).isEnabled), 1, "public billing groups must not require an extra grant");
       assert.equal(Number((await state(109)).isEnabled), 1, "explicit private billing group grants must remain usable");
       assert.equal(Number((await state(110)).isEnabled), 0, "a normal group grant must not bypass required billing authorization");
+      assert.equal(Number((await state(111)).isEnabled), 1, "a group member billing grant must keep the group usable");
 
       await adminUsers.setTunnelPermissions({ userId: 2, tunnelIds: [] });
       assert.equal(Number((await state(101)).isEnabled), 0);
       assert.equal((await state(101)).protocolBlockReason, RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON);
 
-      await adminUsers.setForwardGroupPermissions({ userId: 2, forwardGroupIds: [24] });
+      await adminUsers.setForwardGroupPermissions({ userId: 2, forwardGroupIds: [24, 25] });
       assert.equal(Number((await state(102)).isEnabled), 0);
       assert.equal((await state(102)).protocolBlockReason, RULE_RESOURCE_AUTHORIZATION_REVOKED_REASON);
       assert.equal(Number((await state(103)).isEnabled), 0, "managed child must stop with its revoked template");
@@ -162,6 +171,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       assert.equal(Number((await state(105)).isEnabled), 0, "private billing resource must stop after its grant is removed");
       assert.equal(Number((await state(108)).isEnabled), 1, "public billing group must ignore explicit billing grants");
       assert.equal(Number((await state(109)).isEnabled), 0, "private billing group must stop after its grant is removed");
+      assert.equal(Number((await state(111)).isEnabled), 0, "a group must stop when an enabled member loses required billing permission");
       assert.equal(Number((await state(106)).isEnabled), 1);
       assert.equal(Number((await state(107)).isEnabled), 1, "another user's rule must not be changed");
 
@@ -177,12 +187,58 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       await assert.rejects(() => memberRules.toggle({ id: 101, isEnabled: true }), /无权使用该隧道/);
       await assert.rejects(() => memberRules.toggle({ id: 102, isEnabled: true }), /无权.*转发组/);
       await assert.rejects(() => memberRules.toggle({ id: 110, isEnabled: true }), /计费资源.*权限|授权/);
+      await assert.rejects(() => memberRules.toggle({ id: 111, isEnabled: true }), /计费成员.*授权/);
 
       const usableGroupIds = (await (await import(moduleUrl("server/routers/forwardGroups.ts"))).forwardGroupsRouter
         .createCaller(context(member)).options()).map((group) => Number(group.id));
       assert.ok(usableGroupIds.includes(22));
       assert.ok(!usableGroupIds.includes(23));
       assert.ok(!usableGroupIds.includes(24));
+      assert.ok(!usableGroupIds.includes(25));
+
+      const hostConfig = await adminTrafficBilling.saveConfig({
+        resourceType: "host",
+        resourceId: 5,
+        enabled: true,
+        requiresPermission: true,
+        pricePerGbMilliCents: 1000,
+      });
+      assert.equal(Number((await state(106)).isEnabled), 0, "saving a private billing config must immediately revoke an ungranted owned rule");
+      await adminTrafficBilling.saveConfig({
+        id: Number(hostConfig.id),
+        resourceType: "host",
+        resourceId: 5,
+        enabled: true,
+        requiresPermission: false,
+        pricePerGbMilliCents: 1000,
+      });
+      await memberRules.toggle({ id: 106, isEnabled: true });
+      assert.equal(Number((await state(106)).isEnabled), 1, "a public billing config must become usable without a stale access cache");
+      await adminTrafficBilling.deleteConfig({ id: Number(hostConfig.id) });
+      assert.equal(Number((await state(106)).isEnabled), 1, "deleting a billing config must preserve access to the user's own host");
+
+      const [billingOnlyBeforeDisable] = await runtime.queryRaw(
+        'SELECT "canAddRules", "manualCanAddRules" FROM "users" WHERE "id" = ?',
+        [4],
+      );
+      assert.equal(Number(billingOnlyBeforeDisable.canAddRules), 1);
+      assert.equal(Number(billingOnlyBeforeDisable.manualCanAddRules), 0);
+      await adminTrafficBilling.setEnabled({ enabled: false });
+      const [billingOnlyAfterDisable] = await runtime.queryRaw(
+        'SELECT "canAddRules" FROM "users" WHERE "id" = ?',
+        [4],
+      );
+      assert.equal(Number(billingOnlyAfterDisable.canAddRules), 0, "closing the last billing access path must restore a rule-less user to the manual/plan baseline");
+      await memberRules.toggle({ id: 110, isEnabled: true });
+      assert.equal(Number((await state(110)).isEnabled), 1, "disabling global billing must restore the normal manual group grant immediately");
+      await runtime.executeRaw('UPDATE "system_settings" SET "value" = ? WHERE "key" = ?', ["true", "trafficBillingEnabled"]);
+      assert.equal(
+        (await trafficBilling.getTrafficBillingAccessSnapshot(2)).status,
+        "ready",
+        "a disabled-state cache must not bypass billing enabled by another panel instance",
+      );
+      await adminTrafficBilling.setEnabled({ enabled: true });
+      assert.equal(Number((await state(110)).isEnabled), 0, "re-enabling billing must immediately reconcile private resources");
 
       await adminUsers.setHostPermissions({ userId: 2, hostIds: [2] });
       await memberRules.update({ id: 100, hostId: 2, forwardType: "iptables", tunnelId: null, forwardGroupId: null, isEnabled: true });
@@ -195,18 +251,101 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
       assert.equal((await state(101)).protocolBlockReason, null);
 
       await adminUsers.setForwardGroupPermissions({ userId: 2, forwardGroupIds: [21] });
+      const restrictedMemberRules = rulesRouter.createCaller(context({ ...member, allowedForwardTypes: "gost" }));
+      await assert.rejects(
+        () => restrictedMemberRules.update({ id: 102, forwardGroupId: null, hostId: 3, forwardType: "iptables", tunnelId: null, isEnabled: true }),
+        /没有使用 iptables 转发方式的权限/,
+      );
+      await restrictedMemberRules.update({
+        id: 100,
+        name: "manual-host-rule-renamed",
+        hostId: 2,
+        forwardType: "iptables",
+        tunnelId: null,
+        forwardGroupId: null,
+      });
+      assert.equal((await state(100)).name, "manual-host-rule-renamed", "an unchanged full-form route must not block an unrelated edit");
+      await assert.rejects(
+        () => restrictedMemberRules.update({ id: 100, hostId: 3, forwardType: "iptables", tunnelId: null, forwardGroupId: null }),
+        /没有使用 iptables 转发方式的权限/,
+      );
+      await assert.rejects(
+        () => restrictedMemberRules.update({ id: 100, forwardGroupId: 21, forwardType: "iptables", isEnabled: true }),
+        /没有使用 iptables 转发方式的权限/,
+      );
+      await assert.rejects(
+        () => restrictedMemberRules.create({
+          name: "restricted-group-create",
+          forwardGroupId: 21,
+          forwardType: "gost",
+          protocol: "tcp",
+          sourcePort: 12200,
+          targetIp: "203.0.113.30",
+          targetPort: 80,
+        }),
+        /没有使用 iptables 转发方式的权限/,
+      );
+      await assert.rejects(
+        () => memberRules.update({ id: 102, forwardGroupId: null, hostId: 2, forwardType: "iptables", tunnelId: null, isEnabled: true }),
+        /普通端口转发请先创建转发组或转发链/,
+      );
+      await assert.rejects(
+        () => restrictedMemberRules.update({ id: 102, forwardGroupId: 21, forwardType: "iptables", isEnabled: true }),
+        /没有使用 iptables 转发方式的权限/,
+      );
       await memberRules.update({ id: 102, forwardGroupId: 21, isEnabled: true });
       assert.equal(Number((await state(102)).forwardGroupId), 21);
       assert.equal(Number((await state(102)).isEnabled), 1);
       assert.equal((await state(102)).protocolBlockReason, null);
       assert.equal(Number((await state(102)).pendingDelete), 0);
+      await restrictedMemberRules.update({ id: 102, name: "manual-group-rule-renamed", forwardGroupId: 21, forwardType: "iptables" });
+      assert.equal((await state(102)).name, "manual-group-rule-renamed", "an unchanged group route must remain editable");
+
+      await runtime.executeRaw('DROP TABLE "user_traffic_billing_permissions"');
+      const degradedSnapshot = await trafficBilling.getTrafficBillingAccessSnapshot(2);
+      assert.equal(degradedSnapshot.status, "degraded");
+      assert.ok(degradedSnapshot.activeResourceIds.hostIds.includes(4));
+      assert.ok(degradedSnapshot.usableResourceIds.hostIds.includes(3), "public billing resources remain usable without a permission-table join");
+      assert.ok(!degradedSnapshot.usableResourceIds.hostIds.includes(4), "private billing resources fail closed without a permission-table join");
+      linkAccess.clearLinkAccessScopeCache();
+      const degradedScope = await linkAccess.getLinkAccessScope(member);
+      assert.equal(degradedScope.useHostIds.has(5), true, "an unconfigured owned host must remain usable when the permission join fails");
+      assert.equal(degradedScope.useHostIds.has(4), false, "an active billing host must fail closed when permission lookup fails");
+      assert.equal(degradedScope.useGroupIds.has(23), false, "an active billing group must fail closed when permission lookup fails");
+
+      await runtime.executeRaw('DROP TABLE "forward_group_members"');
+      linkAccess.clearLinkAccessScopeCache();
+      const missingTopologyScope = await linkAccess.getLinkAccessScope(member);
+      assert.equal(missingTopologyScope.useGroupIds.has(21), false, "group roots must fail closed when member topology cannot be verified");
+      assert.equal(missingTopologyScope.useHostIds.has(5), true, "a group-topology failure must not hide unrelated direct resources");
+
+      const userFailureResult = await reconcileTrafficBillingAuthorization("test-missing-group-topology");
+      assert.ok(userFailureResult.failures.some((failure) => failure.userId !== null), "per-user reconciliation failures must be reported");
+      const configWrittenWithUserFailures = await adminTrafficBilling.saveConfig({
+        resourceType: "host",
+        resourceId: 5,
+        enabled: true,
+        requiresPermission: false,
+        pricePerGbMilliCents: 1000,
+      });
+      assert.equal(Number(configWrittenWithUserFailures.resourceId), 5, "a per-user reconciliation failure must not reject a saved config");
+
+      await runtime.executeRaw('DROP TABLE "users"');
+      const enumerationFailureResult = await reconcileTrafficBillingAuthorization("test-missing-users");
+      assert.equal(enumerationFailureResult.failures.length, 1);
+      assert.equal(enumerationFailureResult.failures[0].userId, null);
+      assert.match(enumerationFailureResult.failures[0].error, /^user enumeration failed:/);
+      assert.deepEqual(await adminTrafficBilling.setEnabled({ enabled: false }), { enabled: false });
+      assert.deepEqual(await adminTrafficBilling.deleteConfig({ id: Number(configWrittenWithUserFailures.id) }), { success: true });
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }
   `;
 
   try {
-    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+    const scriptPath = path.join(directory, "resource-auth.mjs");
+    fs.writeFileSync(scriptPath, script, "utf8");
+    const result = spawnSync(process.execPath, ["--import", "tsx", scriptPath], {
       cwd: process.cwd(),
       env: {
         ...process.env,

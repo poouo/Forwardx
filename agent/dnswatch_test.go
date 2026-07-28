@@ -216,6 +216,35 @@ func TestDNSWatchSchedulerKeepsNormalAndConfirmationCadenceSeparate(t *testing.T
 	}
 }
 
+func TestDNSWatchWakeDoesNotBypassScheduledPollForUnchangedItems(t *testing.T) {
+	now := time.Unix(400, 0)
+	nextScanAt := now.Add(dnsWatchIdlePollInterval)
+	items := []dnsWatchItem{
+		{Host: "b.example.com", Scope: "host-entry", RefID: 2},
+		{Host: "A.EXAMPLE.COM.", Scope: "forward-rule-target", RefID: 1},
+	}
+	reordered := []dnsWatchItem{
+		{Host: "a.example.com", Scope: "forward-rule-target", RefID: 1},
+		{Host: "b.example.com", Scope: "host-entry", RefID: 2},
+	}
+	signature := dnsWatchItemsSignature(items)
+	if signature != dnsWatchItemsSignature(reordered) {
+		t.Fatal("equivalent DNS watch lists should have the same signature")
+	}
+	if dnsWatchWakeNeedsScan(signature, signature, now, nextScanAt) {
+		t.Fatal("unchanged DNS watch list bypassed the scheduled poll interval")
+	}
+	if !dnsWatchWakeNeedsScan(signature, signature, nextScanAt, nextScanAt) {
+		t.Fatal("scheduled DNS poll was suppressed when it became due")
+	}
+	changed := append(append([]dnsWatchItem(nil), reordered...), dnsWatchItem{
+		Host: "new.example.com", Scope: "tunnel-connect", RefID: 3,
+	})
+	if !dnsWatchWakeNeedsScan(dnsWatchItemsSignature(changed), signature, now, nextScanAt) {
+		t.Fatal("changed DNS watch list did not trigger an immediate poll")
+	}
+}
+
 func TestSuccessfulCoalescedHeartbeatPreservesDNSChanges(t *testing.T) {
 	resetDNSWatchTestState()
 	defer resetDNSWatchTestState()

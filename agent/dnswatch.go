@@ -74,12 +74,19 @@ func wakeAgentDNSWatchScheduler() {
 }
 
 func agentDNSWatchScheduler() {
-	delay := dnsWatchIdlePollInterval
+	nextScanAt := time.Now().Add(dnsWatchIdlePollInterval)
+	lastWatchSignature := ""
 	for {
+		delay := time.Until(nextScanAt)
+		if delay < 0 {
+			delay = 0
+		}
 		timer := time.NewTimer(delay)
+		woke := false
 		select {
 		case <-timer.C:
 		case <-agentDNSWatchWakeCh:
+			woke = true
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -88,14 +95,37 @@ func agentDNSWatchScheduler() {
 			}
 		}
 		state := heartbeatStateSnapshotCopy()
+		watchSignature := dnsWatchItemsSignature(state.DNSWatch)
+		now := time.Now()
+		if woke && !dnsWatchWakeNeedsScan(watchSignature, lastWatchSignature, now, nextScanAt) {
+			continue
+		}
 		needsConfirmation := updateDNSWatch(state.DNSWatch)
+		lastWatchSignature = watchSignature
 		wakeHeartbeatForPendingDNS()
 		if needsConfirmation {
-			delay = dnsWatchConfirmPollInterval
+			nextScanAt = time.Now().Add(dnsWatchConfirmPollInterval)
 		} else {
-			delay = dnsWatchIdlePollInterval
+			nextScanAt = time.Now().Add(dnsWatchIdlePollInterval)
 		}
 	}
+}
+
+func dnsWatchWakeNeedsScan(currentSignature string, lastSignature string, now time.Time, nextScanAt time.Time) bool {
+	return currentSignature != lastSignature || !now.Before(nextScanAt)
+}
+
+func dnsWatchItemsSignature(items []dnsWatchItem) string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		host := normalizeDNSWatchHost(item.Host)
+		if host == "" {
+			continue
+		}
+		keys = append(keys, strings.ToLower(host)+"\x00"+strings.TrimSpace(item.Scope)+"\x00"+strconv.Itoa(item.RefID))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\x01")
 }
 
 func wakeHeartbeatForPendingDNS() bool {
