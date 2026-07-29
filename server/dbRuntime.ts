@@ -57,6 +57,8 @@ type DatabaseTransactionContext = {
   mysqlConnection?: any;
   postgresClient?: any;
   sqlite?: Database.Database;
+  afterCommit: Array<() => Promise<void> | void>;
+  afterSettled: Array<() => Promise<void> | void>;
 };
 
 const transactionContext = new AsyncLocalStorage<DatabaseTransactionContext>();
@@ -589,56 +591,112 @@ export async function getDb() {
   return connectDatabase();
 }
 
+export function isDatabaseTransactionActive() {
+  return !!transactionContext.getStore();
+}
+
+export async function afterDatabaseCommit(work: () => Promise<void> | void) {
+  const active = transactionContext.getStore();
+  if (active) {
+    active.afterCommit.push(work);
+    return;
+  }
+  await work();
+}
+
+export async function afterDatabaseTransactionSettled(work: () => Promise<void> | void) {
+  const active = transactionContext.getStore();
+  if (active) {
+    active.afterSettled.push(work);
+    return;
+  }
+  await work();
+}
+
+async function runAfterCommitCallbacks(callbacks: Array<() => Promise<void> | void>) {
+  for (const callback of callbacks) await callback();
+}
+
+async function runAfterSettledCallbacks(callbacks: Array<() => Promise<void> | void>) {
+  for (const callback of callbacks) await callback();
+}
+
 export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
   if (transactionContext.getStore()) return work();
   if (!_db || !_kind) await connectDatabase();
   if (_kind === "mysql") {
     if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
     const connection = await _pool.getConnection();
+    const afterCommit: Array<() => Promise<void> | void> = [];
+    const afterSettled: Array<() => Promise<void> | void> = [];
+    let result: T;
     try {
-      await connection.beginTransaction();
-      const db = drizzleMysql(connection as any) as Db;
-      const result = await transactionContext.run({ db, mysqlConnection: connection }, work);
-      await connection.commit();
-      return result;
-    } catch (error) {
-      await connection.rollback().catch(() => undefined);
-      throw error;
+      try {
+        await connection.beginTransaction();
+        const db = drizzleMysql(connection as any) as Db;
+        result = await transactionContext.run({ db, mysqlConnection: connection, afterCommit, afterSettled }, work);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback().catch(() => undefined);
+        throw error;
+      } finally {
+        connection.release();
+      }
     } finally {
-      connection.release();
+      await runAfterSettledCallbacks(afterSettled);
     }
+    await runAfterCommitCallbacks(afterCommit);
+    return result;
   }
   if (_kind === "postgresql") {
     if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
     const client = await _pgPool.connect();
+    const afterCommit: Array<() => Promise<void> | void> = [];
+    const afterSettled: Array<() => Promise<void> | void> = [];
+    let result: T;
     try {
-      await client.query("BEGIN");
-      const db = drizzlePostgres(client as any) as Db;
-      const result = await transactionContext.run({ db, postgresClient: client }, work);
-      await client.query("COMMIT");
-      return result;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      try {
+        await client.query("BEGIN");
+        const db = drizzlePostgres(client as any) as Db;
+        result = await transactionContext.run({ db, postgresClient: client, afterCommit, afterSettled }, work);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     } finally {
-      client.release();
+      await runAfterSettledCallbacks(afterSettled);
     }
+    await runAfterCommitCallbacks(afterCommit);
+    return result;
   }
   if (_kind === "sqlite") {
     if (!_sqlite || !_db) throw new DatabaseNotConfiguredError("SQLite database is not connected");
     const sqlite = _sqlite;
     const db = _db;
-    return withSqliteConnectionLock(sqlite, async () => {
-      try {
-        sqlite.exec("BEGIN IMMEDIATE");
-        const result = await transactionContext.run({ db, sqlite }, work);
-        sqlite.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try { sqlite.exec("ROLLBACK"); } catch { /* transaction may already be closed */ }
-        throw error;
-      }
-    });
+    const afterCommit: Array<() => Promise<void> | void> = [];
+    const afterSettled: Array<() => Promise<void> | void> = [];
+    let result: T;
+    try {
+      result = await withSqliteConnectionLock(sqlite, async () => {
+        let transactionResult: T;
+        try {
+          sqlite.exec("BEGIN IMMEDIATE");
+          transactionResult = await transactionContext.run({ db, sqlite, afterCommit, afterSettled }, work);
+          sqlite.exec("COMMIT");
+        } catch (error) {
+          try { sqlite.exec("ROLLBACK"); } catch { /* transaction may already be closed */ }
+          throw error;
+        }
+        return transactionResult;
+      });
+    } finally {
+      await runAfterSettledCallbacks(afterSettled);
+    }
+    await runAfterCommitCallbacks(afterCommit);
+    return result;
   }
   throw new DatabaseNotConfiguredError();
 }

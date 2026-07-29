@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.179"
+var Version = "2.2.180"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -318,14 +318,413 @@ func broadcastManagedRuntimeListenReady() {
 }
 
 type actionJob struct {
-	cfg              Config
-	action           action
-	done             chan struct{}
-	desiredKey       string
-	desiredSignature string
-	enqueuedAt       time.Time
-	protectedPort    string
-	prerequisites    []<-chan struct{}
+	cfg                      Config
+	action                   action
+	previousRuntime          localActionRuntimeSnapshot
+	done                     chan struct{}
+	result                   *actionJobResult
+	resultOK                 bool
+	resultReady              bool
+	dependentResultOK        bool
+	dependentResultReady     bool
+	handoffFinalizedByResult bool
+	desiredKey               string
+	desiredSignature         string
+	enqueuedAt               time.Time
+	protectedPort            string
+	prerequisites            []<-chan struct{}
+	resultPrereqs            []*actionJobResult
+	dependentResults         []*actionJobResult
+}
+
+type localActionRuntimeSnapshot struct {
+	valid        bool
+	tunnel       bool
+	ruleID       int
+	tunnelID     int
+	forwardType  string
+	protocol     string
+	hasProtocol  bool
+	handoffState *actionHandoffState
+}
+
+type actionHandoffState struct {
+	mu                      sync.Mutex
+	once                    sync.Once
+	commit                  func()
+	rollback                func()
+	batch                   *actionHandoffBatch
+	stoppedSharedServices   []string
+	stoppedSharedServiceSet map[string]bool
+}
+
+type actionHandoffBatch struct {
+	mu              sync.Mutex
+	finalizerOnce   sync.Once
+	participants    int
+	resolved        int
+	failed          bool
+	cancelled       bool
+	cfg             Config
+	originals       map[string]fxpSpec
+	selectors       []fxpRuntimeSelector
+	selectorKeys    map[string]bool
+	guardActions    []action
+	finalizeForTest func(bool, Config, []fxpSpec, []fxpRuntimeSelector)
+}
+
+func newActionHandoffBatch() *actionHandoffBatch {
+	return &actionHandoffBatch{
+		originals:    map[string]fxpSpec{},
+		selectorKeys: map[string]bool{},
+	}
+}
+
+func (batch *actionHandoffBatch) addParticipant(guards ...action) {
+	if batch == nil {
+		return
+	}
+	batch.mu.Lock()
+	batch.participants++
+	batch.guardActions = append(batch.guardActions, guards...)
+	batch.mu.Unlock()
+}
+
+func fxpHandoffSelectorKey(selector fxpRuntimeSelector) string {
+	return fmt.Sprintf("%s:%d:%d:%d:%s", strings.TrimSpace(selector.role), selector.tunnelID, selector.ruleID, selector.listenPort, normalizeRuntimeProtocol(selector.protocol))
+}
+
+func (batch *actionHandoffBatch) registerSelector(selector fxpRuntimeSelector) {
+	if batch == nil || !selector.valid() {
+		return
+	}
+	batch.mu.Lock()
+	defer batch.mu.Unlock()
+	batch.registerSelectorLocked(selector)
+}
+
+func (batch *actionHandoffBatch) registerSelectorLocked(selector fxpRuntimeSelector) {
+	selectorKey := fxpHandoffSelectorKey(selector)
+	if batch.selectorKeys[selectorKey] {
+		return
+	}
+	batch.selectorKeys[selectorKey] = true
+	batch.selectors = append(batch.selectors, selector)
+}
+
+func (batch *actionHandoffBatch) prepareFXPTransition(cfg Config, originals []fxpSpec, selector fxpRuntimeSelector) bool {
+	if batch == nil {
+		return false
+	}
+	batch.mu.Lock()
+	defer batch.mu.Unlock()
+	batch.cfg = cfg
+	batch.registerSelectorLocked(selector)
+	for _, original := range originals {
+		original = normalizeFXPSpec(original)
+		id := fxpServerID(original)
+		if _, exists := batch.originals[id]; exists {
+			continue
+		}
+		if err := persistFXPSpec(original); err != nil {
+			logf("fxp handoff batch recovery snapshot write failed runtime=%s: %v", id, err)
+			return false
+		}
+		batch.originals[id] = original
+	}
+	return true
+}
+
+func (batch *actionHandoffBatch) resolve(ok bool) {
+	if batch == nil {
+		return
+	}
+	batch.mu.Lock()
+	if batch.resolved >= batch.participants {
+		batch.mu.Unlock()
+		return
+	}
+	batch.resolved++
+	if !ok {
+		batch.failed = true
+	}
+	ready := batch.participants > 0 && batch.resolved == batch.participants
+	failed := batch.failed
+	cfg := batch.cfg
+	originals := make([]fxpSpec, 0, len(batch.originals))
+	for _, original := range batch.originals {
+		originals = append(originals, original)
+	}
+	sort.Slice(originals, func(i, j int) bool {
+		return fxpServerID(originals[i]) < fxpServerID(originals[j])
+	})
+	selectors := append([]fxpRuntimeSelector(nil), batch.selectors...)
+	guardActions := append([]action(nil), batch.guardActions...)
+	finalizeForTest := batch.finalizeForTest
+	batch.mu.Unlock()
+	if !ready {
+		return
+	}
+	batch.finalizerOnce.Do(func() {
+		unlock := acquireActionSerialLocks(actionSerialKeysForActions(guardActions))
+		if unlock != nil {
+			defer unlock()
+		}
+		for _, guard := range guardActions {
+			if !isOlderAction(guard, false) {
+				continue
+			}
+			batch.mu.Lock()
+			batch.cancelled = true
+			batch.mu.Unlock()
+			logf("fxp handoff batch finalization cancelled by newer desired state %s", actionLogSummary(guard))
+			return
+		}
+		if finalizeForTest != nil {
+			finalizeForTest(!failed, cfg, originals, selectors)
+			return
+		}
+		if !failed {
+			commitFXPHandoffBatchPersistence(originals, selectors)
+			return
+		}
+		fxpControlMu.Lock()
+		defer fxpControlMu.Unlock()
+		restoreFXPHandoffOriginalsLocked(cfg, originals)
+	})
+}
+
+func (state *actionHandoffState) attachBatch(batch *actionHandoffBatch) {
+	if state == nil || batch == nil {
+		return
+	}
+	state.mu.Lock()
+	state.batch = batch
+	state.mu.Unlock()
+}
+
+func (state *actionHandoffState) handoffBatch() *actionHandoffBatch {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.batch
+}
+
+func (state *actionHandoffState) setFinalizers(commit, rollback func()) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.commit = commit
+	state.rollback = rollback
+	state.mu.Unlock()
+}
+
+func (state *actionHandoffState) managesFXPPersistence() bool {
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.batch != nil || state.commit != nil || state.rollback != nil
+}
+
+func (state *actionHandoffState) registerStoppedSharedService(name string) bool {
+	if state == nil {
+		return false
+	}
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.stoppedSharedServiceSet == nil {
+		state.stoppedSharedServiceSet = map[string]bool{}
+	}
+	if state.stoppedSharedServiceSet[name] {
+		return false
+	}
+	state.stoppedSharedServiceSet[name] = true
+	state.stoppedSharedServices = append(state.stoppedSharedServices, name)
+	return true
+}
+
+func (state *actionHandoffState) runCommit() {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	commit := state.commit
+	batch := state.batch
+	state.mu.Unlock()
+	state.once.Do(func() {
+		if batch != nil {
+			batch.resolve(true)
+			return
+		}
+		if commit != nil {
+			commit()
+		}
+	})
+}
+
+func (state *actionHandoffState) finish() {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	batch := state.batch
+	state.mu.Unlock()
+	state.once.Do(func() {
+		if batch != nil {
+			batch.resolve(true)
+		}
+	})
+}
+
+func (state *actionHandoffState) cancel() {
+	if state == nil {
+		return
+	}
+	state.once.Do(func() {})
+}
+
+func (state *actionHandoffState) runRollback() {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	rollback := state.rollback
+	batch := state.batch
+	stoppedSharedServices := append([]string(nil), state.stoppedSharedServices...)
+	state.mu.Unlock()
+	state.once.Do(func() {
+		if batch != nil {
+			batch.resolve(false)
+		} else if rollback != nil {
+			rollback()
+		}
+		for _, service := range stoppedSharedServices {
+			restartManagedServiceProcessForHandoff(service)
+		}
+		if len(stoppedSharedServices) > 0 {
+			invalidateLocalRuntimeReadinessCache()
+			requestLocalRuntimeStateUpload()
+		}
+	})
+}
+
+type actionJobResult struct {
+	done            chan struct{}
+	once            sync.Once
+	ok              atomic.Bool
+	finalizerMu     sync.Mutex
+	finalizerOnce   sync.Once
+	dependentCount  int
+	dependentFailed bool
+	commitFn        func()
+	rollbackFn      func()
+}
+
+func newActionJobResult() *actionJobResult {
+	return &actionJobResult{done: make(chan struct{})}
+}
+
+func (result *actionJobResult) complete(ok bool) {
+	if result == nil {
+		return
+	}
+	result.once.Do(func() {
+		result.ok.Store(ok)
+		close(result.done)
+	})
+}
+
+func (result *actionJobResult) wait() bool {
+	if result == nil {
+		return true
+	}
+	<-result.done
+	return result.ok.Load()
+}
+
+func (result *actionJobResult) setFinalizers(commit, rollback func()) {
+	if result == nil {
+		return
+	}
+	result.finalizerMu.Lock()
+	result.commitFn = commit
+	result.rollbackFn = rollback
+	result.finalizerMu.Unlock()
+}
+
+func (result *actionJobResult) addDependent() {
+	if result == nil {
+		return
+	}
+	result.finalizerMu.Lock()
+	result.dependentCount++
+	result.finalizerMu.Unlock()
+}
+
+func (result *actionJobResult) hasDependents() bool {
+	if result == nil {
+		return false
+	}
+	result.finalizerMu.Lock()
+	defer result.finalizerMu.Unlock()
+	return result.dependentCount > 0
+}
+
+func (result *actionJobResult) resolveDependent(ok bool) {
+	if result == nil {
+		return
+	}
+	result.finalizerMu.Lock()
+	if result.dependentCount <= 0 {
+		result.finalizerMu.Unlock()
+		return
+	}
+	if !ok {
+		result.dependentFailed = true
+	}
+	result.dependentCount--
+	ready := result.dependentCount == 0
+	failed := result.dependentFailed
+	commit := result.commitFn
+	rollback := result.rollbackFn
+	result.finalizerMu.Unlock()
+	if !ready {
+		return
+	}
+	result.finalizerOnce.Do(func() {
+		if failed {
+			if rollback != nil {
+				rollback()
+			}
+			return
+		}
+		if commit != nil {
+			commit()
+		}
+	})
+}
+
+func (result *actionJobResult) rollback() {
+	if result == nil {
+		return
+	}
+	result.finalizerMu.Lock()
+	rollback := result.rollbackFn
+	result.finalizerMu.Unlock()
+	result.finalizerOnce.Do(func() {
+		if rollback != nil {
+			rollback()
+		}
+	})
 }
 
 type heartbeatStaticSnapshot struct {
@@ -914,7 +1313,7 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return readiness.nginxReadyForPort(port, state.Protocol)
 	case "forwardx":
-		return fxpRuntimeProcessExistsForRulePort(state.RuleID, port)
+		return fxpRuntimeReadyForRulePort(state.RuleID, port, state.Protocol, readiness.listenSnapshot)
 	default:
 		return true
 	}
@@ -930,7 +1329,7 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 	case "nginx-tunnel", "nginx-tunnel-exit":
 		return readiness.nginxReadyForPort(port, "tcp")
 	case "forwardx-tunnel":
-		return fxpRuntimeProcessExistsForTunnelPort(tunnelID, port)
+		return fxpRuntimeReadyForTunnelPort(tunnelID, port, readiness.listenSnapshot)
 	default:
 		return true
 	}
@@ -2833,11 +3232,16 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		dependentSelfTests = append(dependentSelfTests, t)
 	}
 	enqueueSelfTestsAfterActions(cfg, dependentSelfTests, actionDone)
-	for port := range snapshotProtectedActionPorts() {
+	activeActionPorts := snapshotProtectedActionPorts()
+	for port := range activeActionPorts {
 		pendingActionPorts[port] = true
 	}
 	syncRunningRuleState(state.RunningRules, pendingActionPorts)
 	for _, r := range state.RunningRules {
+		if runningRuleStateWriteProtected(r, pendingActionPorts) {
+			logVerbosef("running rule state write deferred for pending action rule=%d port=%d protocol=%s", r.RuleID, r.SourcePort, normalizeRuntimeProtocol(r.Protocol))
+			continue
+		}
 		writeRunningRuleState(r)
 		ensureCountingChainsIfNeeded(r)
 	}
@@ -3732,6 +4136,14 @@ func handleAction(cfg Config, a action) bool {
 }
 
 func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()) bool {
+	return handleActionWithRuntimeSnapshot(cfg, a, releaseRuntimeGate, nil)
+}
+
+func handleActionWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate func(), previousRuntime *localActionRuntimeSnapshot) bool {
+	return handleActionJobWithRuntimeSnapshot(cfg, a, releaseRuntimeGate, previousRuntime, nil)
+}
+
+func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate func(), previousRuntime *localActionRuntimeSnapshot, jobResult *actionJobResult) bool {
 	if strings.TrimSpace(a.StatusType) == "runtime" && pluginAgentTaskIDPattern.MatchString(strings.TrimSpace(a.PluginID)) {
 		releasePluginLock := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: strings.TrimSpace(a.PluginID), Intent: "write"})
 		defer releasePluginLock()
@@ -3829,6 +4241,24 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 				rollbackOK = runShellBatch(a.RollbackCommands) && rollbackOK
 			}
 			logf("managed config rollback complete forwardType=%s ok=%v configs=%d", a.ForwardType, rollbackOK, len(a.ManagedConfigs))
+		} else if ok && managedConfigTx != nil {
+			if jobResult != nil && jobResult.hasDependents() {
+				rollbackCommands := append([]string(nil), a.RollbackCommands...)
+				jobResult.setFinalizers(
+					managedConfigTx.commit,
+					func() {
+						rollbackOK := managedConfigTx.rollback()
+						if len(rollbackCommands) > 0 {
+							rollbackOK = runShellBatch(rollbackCommands) && rollbackOK
+						}
+						invalidateLocalRuntimeReadinessCache()
+						requestLocalRuntimeStateUpload()
+						logf("managed config dependent rollback complete forwardType=%s ok=%v configs=%d", a.ForwardType, rollbackOK, len(a.ManagedConfigs))
+					},
+				)
+			} else {
+				managedConfigTx.commit()
+			}
 		}
 		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
@@ -3856,16 +4286,18 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 	}
 	if a.HandoffOnly {
 		logf("runtime handoff cleanup start %s", actionLogSummary(a))
-		cleanupStaleRuntimeBeforeApply(a)
+		cleanup := cleanupStaleRuntimeBeforeApply(cfg, a, actionMessage, previousRuntime)
 		invalidateLocalRuntimeReadinessCache()
-		return true
+		return cleanup.ok
 	}
 	logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logIPv6ActionDiagnostic(a)
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
-		preserveRunningFXP := cleanupStaleRuntimeBeforeApply(a)
-		if preserveRunningFXP {
+		cleanup := cleanupStaleRuntimeBeforeApply(cfg, a, actionMessage, previousRuntime)
+		if !cleanup.ok {
+			ok = false
+		} else if cleanup.preserveRunningFXP {
 			logf("action preserves already-running fxp rule=%d tunnel=%d port=%d; skipping disruptive apply commands", a.RuleID, a.TunnelID, a.SourcePort)
 		} else {
 			cleanupKernelForwardPortBeforeApply(a)
@@ -3878,21 +4310,23 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 			}
 			ok = runShellBatch(a.Commands) && ok
 		}
-		if a.Fxp != nil {
+		if cleanup.ok && a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, a.FXPEntryGroup, actionMessage)
 			if !fxpOK || agentVerboseLogs {
 				logf("action fxp role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.UDPListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
 			}
 			ok = fxpOK && ok
 		}
-		if a.Failover != nil && a.Failover.Enabled {
+		if cleanup.ok && a.Failover != nil && a.Failover.Enabled {
 			failoverOK := startFailoverProxy(a.RuleID, a.SourcePort, *a.Failover, actionMessage)
 			if !failoverOK || agentVerboseLogs {
 				logf("action failover rule=%d listen=%d targets=%d ok=%v", a.RuleID, a.Failover.ListenPort, len(a.Failover.Targets), failoverOK)
 			}
 			ok = failoverOK && ok
 		}
-		runPostCommands(a.PostCommands, actionMessage)
+		if cleanup.ok {
+			runPostCommands(a.PostCommands, actionMessage)
+		}
 		if releaseRuntimeGate != nil {
 			releaseRuntimeGate()
 		}
@@ -3939,18 +4373,8 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 		}
 		requestLocalRuntimeStateUpload()
 	}
-	if ok && !skippedStaleRemove && validActionPort(a.SourcePort) {
-		if a.Op == "apply" && a.Fxp == nil {
-			// A successful non-FXP replacement supersedes any old local FXP
-			// snapshot on the same protocol lane. Keep it while this apply is
-			// failing so a later Agent restart can still restore the last good
-			// runtime.
-			removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
-		} else if a.Op == "remove" && a.Fxp == nil {
-			// Older panel actions may omit the FXP payload on remove. Remove the
-			// matching lane by port so such actions cannot resurrect stale FXP.
-			removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
-		}
+	if ok && !skippedStaleRemove {
+		cleanupSupersededFXPPersistence(a, previousRuntime)
 	}
 
 	if ok && !skippedStaleRemove && a.Op == "remove" && shouldReportActionStatus(a) && actionRequiresKernelForwardConsistency(a) {
@@ -3969,6 +4393,30 @@ func handleActionWithRuntimeGate(cfg Config, a action, releaseRuntimeGate func()
 	reportActionStatus(cfg, a, running, actionMessage.get())
 	invalidateLocalRuntimeReadinessCache()
 	return ok
+}
+
+func cleanupSupersededFXPPersistence(a action, previousRuntime *localActionRuntimeSnapshot) {
+	if !validActionPort(a.SourcePort) || a.Fxp != nil {
+		return
+	}
+	if a.Op == "apply" {
+		if previousRuntime != nil && previousRuntime.handoffState.managesFXPPersistence() {
+			// The handoff transaction owns the recovery snapshot until every
+			// participant has committed or the complete batch has rolled back.
+			return
+		}
+		// A successful non-FXP replacement supersedes any old local FXP
+		// snapshot on the same protocol lane. Keep it while this apply is
+		// failing so a later Agent restart can still restore the last good
+		// runtime.
+		removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+		return
+	}
+	if a.Op == "remove" {
+		// Older panel actions may omit the FXP payload on remove. Remove the
+		// matching lane by port so such actions cannot resurrect stale FXP.
+		removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+	}
 }
 
 func shouldVerifyManagedRuntimeListen(a action) bool {
@@ -4964,22 +5412,132 @@ func logActionPortHandoff(a action) {
 	}
 }
 
-func cleanupStaleRuntimeBeforeApply(a action) bool {
-	if a.Op != "apply" || !validActionPort(a.SourcePort) {
+type staleRuntimeCleanupResult struct {
+	preserveRunningFXP bool
+	ok                 bool
+}
+
+func sharedRuntimeOwnerTransition(a action, previousRuntime *localActionRuntimeSnapshot) (string, string, bool) {
+	if previousRuntime == nil || !previousRuntime.valid {
+		return "", "", false
+	}
+	previousOwner := sharedRuntimeOwnerForForwardType(previousRuntime.forwardType)
+	desiredOwner := sharedRuntimeOwnerForForwardType(a.ForwardType)
+	return previousOwner, desiredOwner, previousOwner != "" && previousOwner != desiredOwner
+}
+
+func previousSharedRuntimeServiceNames(previousRuntime *localActionRuntimeSnapshot, listenPort int, protocol string) []string {
+	if previousRuntime == nil {
+		return nil
+	}
+	previousForwardType := strings.TrimSpace(previousRuntime.forwardType)
+	switch sharedRuntimeOwnerForForwardType(previousForwardType) {
+	case "nginx-runtime-sync":
+		return []string{nginxServiceName}
+	case "gost-runtime-sync":
+		seen := map[string]bool{}
+		services := make([]string, 0, 2)
+		appendService := func(name string) {
+			name = sanitizeServiceName(name)
+			if name == "" || seen[name] {
+				return
+			}
+			seen[name] = true
+			services = append(services, name)
+		}
+		for _, path := range managedGostConfigPathsForListenPortProtocol(listenPort, protocol) {
+			if path == nginxConfigPath {
+				continue
+			}
+			appendService(managedGostServiceNameForConfig(path))
+		}
+		if len(services) > 0 {
+			return services
+		}
+
+		candidates := []string{runtimeConfigPath, legacyRuntimeConfigPath, legacyGostConfigPath}
+		fallback := runtimeServiceName
+		if desiredGostRuntimeScope(previousForwardType) == desiredGostTunnelRuntimeScope {
+			candidates = []string{tunnelRuntimeConfigPath, legacyTunnelRuntimeConfigPath, legacyTunnelConfigPath}
+			fallback = tunnelRuntimeServiceName
+		}
+		for _, path := range candidates {
+			if managedRuntimeConfigUsesPort(path, listenPort) {
+				appendService(managedGostServiceNameForConfig(path))
+			}
+		}
+		if len(services) == 0 {
+			appendService(fallback)
+		}
+		return services
+	default:
+		return nil
+	}
+}
+
+func stopPreviousSharedRuntimeForHandoff(a action, previousRuntime *localActionRuntimeSnapshot, actionMessage *actionMessage) bool {
+	previousOwner, desiredOwner, changed := sharedRuntimeOwnerTransition(a, previousRuntime)
+	if !changed {
+		return true
+	}
+	if previousRuntime.handoffState == nil {
+		previousRuntime.handoffState = &actionHandoffState{}
+	}
+	protocol := a.Protocol
+	if previousRuntime.hasProtocol {
+		protocol = previousRuntime.protocol
+	}
+	services := previousSharedRuntimeServiceNames(previousRuntime, a.SourcePort, protocol)
+	for _, service := range services {
+		if !previousRuntime.handoffState.registerStoppedSharedService(service) {
+			continue
+		}
+		logf("shared runtime handoff stopping old service=%s owner=%s desiredOwner=%s port=%d protocol=%s", service, previousOwner, desiredOwner, a.SourcePort, normalizeRuntimeProtocol(protocol))
+		if !stopManagedServiceProcessForHandoff(service) {
+			actionMessage.set("shared runtime handoff failed stopping %s for port=%d", service, a.SourcePort)
+			return false
+		}
+	}
+	invalidateLocalRuntimeReadinessCache()
+	oldAction := a
+	oldAction.ForwardType = previousRuntime.forwardType
+	oldAction.Protocol = protocol
+	if !waitForActionListenPortFree(oldAction, 3*time.Second) {
+		actionMessage.set("shared runtime handoff port still busy after stopping owner=%s port=%d protocol=%s", previousOwner, a.SourcePort, normalizeRuntimeProtocol(protocol))
+		logf("shared runtime handoff port still busy owner=%s desiredOwner=%s port=%d protocol=%s listeners=%s", previousOwner, desiredOwner, a.SourcePort, normalizeRuntimeProtocol(protocol), listenPortOwnerSummary(a.SourcePort))
 		return false
 	}
+	return true
+}
+
+func cleanupStaleRuntimeBeforeApply(cfg Config, a action, actionMessage *actionMessage, previousRuntime *localActionRuntimeSnapshot) staleRuntimeCleanupResult {
+	if a.Op != "apply" || !validActionPort(a.SourcePort) {
+		return staleRuntimeCleanupResult{ok: true}
+	}
+	if a.HandoffOnly && !stopPreviousSharedRuntimeForHandoff(a, previousRuntime, actionMessage) {
+		return staleRuntimeCleanupResult{}
+	}
 	port := strconv.Itoa(a.SourcePort)
-	sharedNginxRuntimePort := actionPortOwnedBySharedNginx(a)
+	previousOwner, _, sharedOwnerChanged := sharedRuntimeOwnerTransition(a, previousRuntime)
+	preservePreviousSharedNginx := a.HandoffOnly && sharedOwnerChanged && previousOwner == "nginx-runtime-sync"
+	sharedNginxRuntimePort := actionPortOwnedBySharedNginx(a) || preservePreviousSharedNginx
 	if a.StatusType == "tunnel" && a.TunnelID > 0 {
 		localTunnelID := readTunnelIDByPort(port)
 		localForwardType := readTunnelForwardTypeByPort(port)
+		if shouldUsePreviousTunnelRuntime(a, localTunnelID, localForwardType, previousRuntime) {
+			localTunnelID = previousRuntime.tunnelID
+			localForwardType = previousRuntime.forwardType
+			logf("tunnel runtime cleanup uses queued owner snapshot port=%d oldTunnel=%d oldForwardType=%s", a.SourcePort, localTunnelID, localForwardType)
+		}
 		if localTunnelID <= 0 && localForwardType == "" {
-			if fxpMatchesRunning(a.Fxp) {
+			if fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 				writeState(a)
-				return true
+				return staleRuntimeCleanupResult{preserveRunningFXP: true, ok: true}
 			}
 			if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
-				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+				if !cleanupUnknownManagedListener(cfg, port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol), actionMessage) {
+					return staleRuntimeCleanupResult{}
+				}
 				if !sharedNginxRuntimePort {
 					waitForActionListenPortFree(a, 2*time.Second)
 				}
@@ -4988,14 +5546,25 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			if !sharedNginxRuntimePort {
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
-			return false
+			return staleRuntimeCleanupResult{ok: true}
 		}
 		if localTunnelID == a.TunnelID && (localForwardType == "" || localForwardType == a.ForwardType) {
-			if fxpMatchesRunning(a.Fxp) {
+			if fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 				writeState(a)
-				return true
+				return staleRuntimeCleanupResult{preserveRunningFXP: true, ok: true}
 			}
-			return false
+			if desiredActionLocalRuntimeReady(a) {
+				return staleRuntimeCleanupResult{ok: true}
+			}
+			if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
+				if !cleanupUnknownManagedListener(cfg, port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol), actionMessage) {
+					return staleRuntimeCleanupResult{}
+				}
+				if !sharedNginxRuntimePort {
+					waitForActionListenPortFree(a, 2*time.Second)
+				}
+			}
+			return staleRuntimeCleanupResult{ok: true}
 		}
 		logf(
 			"tunnel runtime cleanup before apply port=%d oldTunnel=%d oldForwardType=%s newTunnel=%d newForwardType=%s",
@@ -5006,10 +5575,16 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			a.ForwardType,
 		)
 		if localForwardType == "forwardx-tunnel" && localTunnelID > 0 {
-			stopFXPByPort(localTunnelID, a.SourcePort)
+			if !stopFXPByPort(localTunnelID, a.SourcePort, a.Protocol) {
+				actionMessage.set("fxp tunnel handoff failed tunnel=%d port=%d protocol=%s", localTunnelID, a.SourcePort, normalizeRuntimeProtocol(a.Protocol))
+				return staleRuntimeCleanupResult{}
+			}
 		}
 		if a.Fxp != nil {
-			stopFXPByListenPort(a.SourcePort)
+			if !stopFXPByListenEndpoint(a.SourcePort, a.Protocol) {
+				actionMessage.set("fxp listen handoff failed port=%d protocol=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol))
+				return staleRuntimeCleanupResult{}
+			}
 		}
 		for _, cmd := range managedPortCleanupCmdsForApply(port, sharedNginxRuntimePort) {
 			_ = runShell(cmd)
@@ -5018,27 +5593,37 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
 		removeTunnelStateByPort(port)
-		return false
+		return staleRuntimeCleanupResult{ok: true}
 	}
 	if a.RuleID <= 0 {
-		return false
+		return staleRuntimeCleanupResult{ok: true}
 	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
 	localRuleTunnelID := readRuleTunnelIDByPort(port)
 	_, _, localProtocol, hasLocalProtocol := readTargetInfo(port)
+	if shouldUsePreviousRuleRuntime(a, localRuleID, localForwardType, localRuleTunnelID, localProtocol, hasLocalProtocol, previousRuntime) {
+		localRuleID = previousRuntime.ruleID
+		localForwardType = previousRuntime.forwardType
+		localRuleTunnelID = previousRuntime.tunnelID
+		localProtocol = previousRuntime.protocol
+		hasLocalProtocol = previousRuntime.hasProtocol
+		logf("rule runtime cleanup uses queued owner snapshot port=%d oldRule=%d oldTunnel=%d oldForwardType=%s", a.SourcePort, localRuleID, localRuleTunnelID, localForwardType)
+	}
 	if localRuleID <= 0 && localForwardType == "" {
-		if fxpMatchesRunning(a.Fxp) {
+		if fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 			writeState(a)
 			if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
 				// The first action can start every listener in the shared group.
 				// Each sibling action must still install its own counters and marker files.
-				return false
+				return staleRuntimeCleanupResult{ok: true}
 			}
-			return true
+			return staleRuntimeCleanupResult{preserveRunningFXP: true, ok: true}
 		}
 		if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
-			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+			if !cleanupUnknownManagedListener(cfg, port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol), actionMessage) {
+				return staleRuntimeCleanupResult{}
+			}
 			if !sharedNginxRuntimePort {
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
@@ -5047,35 +5632,48 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		if !sharedNginxRuntimePort {
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
-		return false
+		return staleRuntimeCleanupResult{ok: true}
 	}
 	if localRuleID == a.RuleID && (localRuleTunnelID <= 0 || localRuleTunnelID == a.TunnelID) && (localForwardType == "" || localForwardType == a.ForwardType) {
-		if fxpMatchesRunning(a.Fxp) {
+		if fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 			writeState(a)
 			if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
-				return false
+				return staleRuntimeCleanupResult{ok: true}
 			}
-			return true
+			return staleRuntimeCleanupResult{preserveRunningFXP: true, ok: true}
+		}
+		if desiredActionLocalRuntimeReady(a) {
+			return staleRuntimeCleanupResult{ok: true}
 		}
 		if hasLocalProtocol && normalizeRuntimeProtocol(localProtocol) != normalizeRuntimeProtocol(a.Protocol) {
 			if cleanupManagedRuleProtocol(localForwardType, a.SourcePort, localProtocol) {
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
 		}
-		return false
+		if actionUsesManagedListener(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
+			if !cleanupUnknownManagedListener(cfg, port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol), actionMessage) {
+				return staleRuntimeCleanupResult{}
+			}
+			if !sharedNginxRuntimePort {
+				waitForActionListenPortFree(a, 2*time.Second)
+			}
+		}
+		return staleRuntimeCleanupResult{ok: true}
 	}
 	if localRuleID > 0 && localRuleID != a.RuleID && hasLocalProtocol && !runtimeProtocolsOverlap(localProtocol, a.Protocol) {
 		// The legacy marker stores only one rule per numeric port. A valid UDP
 		// marker can therefore hide a leaked TCP Realm/Socat service (and vice
 		// versa). Clean only the lane needed by this apply; keep the disjoint rule.
 		if unknownManagedListenerCleanupNeeded(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol)) {
-			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
+			if !cleanupUnknownManagedListener(cfg, port, a.SourcePort, a.ForwardType, gostRuntimeListenProtocol(a.ForwardType, a.Protocol), actionMessage) {
+				return staleRuntimeCleanupResult{}
+			}
 		}
 		cleanupGostRuntimeIfPortBusy(a.SourcePort, gostRuntimeListenProtocol(a.ForwardType, a.Protocol))
 		if !sharedNginxRuntimePort {
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
-		return false
+		return staleRuntimeCleanupResult{ok: true}
 	}
 	logf(
 		"runtime cleanup before apply port=%d oldRule=%d oldForwardType=%s newRule=%d newForwardType=%s",
@@ -5085,11 +5683,22 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		a.RuleID,
 		a.ForwardType,
 	)
-	if localForwardType == "forwardx" && localRuleID > 0 {
-		stopFXPRuntime(fxpSpec{Role: "entry", RuleID: localRuleID, ListenPort: a.SourcePort, Protocol: "both"})
+	cleanupProtocol := "both"
+	if hasLocalProtocol {
+		cleanupProtocol = localProtocol
+	}
+	var handoffState *actionHandoffState
+	if previousRuntime != nil {
+		handoffState = previousRuntime.handoffState
+	}
+	if !stopStaleForwardXRuleRuntimeWithRollback(cfg, localForwardType, localRuleID, localRuleTunnelID, a.SourcePort, cleanupProtocol, actionMessage, handoffState) {
+		return staleRuntimeCleanupResult{}
 	}
 	if a.Fxp != nil {
-		stopFXPByListenPort(a.SourcePort)
+		if !stopFXPByListenEndpoint(a.SourcePort, a.Protocol) {
+			actionMessage.set("fxp listen handoff failed port=%d protocol=%s", a.SourcePort, normalizeRuntimeProtocol(a.Protocol))
+			return staleRuntimeCleanupResult{}
+		}
 	}
 	if localRuleID > 0 {
 		stopFailoverProxyRuntime(localRuleID, a.SourcePort)
@@ -5103,7 +5712,59 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	if !sharedNginxRuntimePort {
 		waitForActionListenPortFree(a, 2*time.Second)
 	}
-	return false
+	return staleRuntimeCleanupResult{ok: true}
+}
+
+func shouldUsePreviousTunnelRuntime(a action, localTunnelID int, localForwardType string, previous *localActionRuntimeSnapshot, targetReadyOverride ...bool) bool {
+	if previous == nil || !previous.valid || !previous.tunnel {
+		return false
+	}
+	currentMatches := !tunnelActionNeedsPreRuntimeHandoff(a, localTunnelID, localForwardType)
+	previousDiffers := tunnelActionNeedsPreRuntimeHandoff(a, previous.tunnelID, previous.forwardType)
+	targetReady := false
+	if len(targetReadyOverride) > 0 {
+		targetReady = targetReadyOverride[0]
+	} else {
+		targetReady = desiredActionLocalRuntimeReady(a)
+	}
+	return currentMatches && previousDiffers && !targetReady
+}
+
+func shouldUsePreviousRuleRuntime(a action, localRuleID int, localForwardType string, localTunnelID int, localProtocol string, hasLocalProtocol bool, previous *localActionRuntimeSnapshot, targetReadyOverride ...bool) bool {
+	if previous == nil || !previous.valid || previous.tunnel {
+		return false
+	}
+	currentMatches := !ruleActionNeedsPreRuntimeHandoff(a, localRuleID, localForwardType, localTunnelID, localProtocol, hasLocalProtocol)
+	previousDiffers := ruleActionNeedsPreRuntimeHandoff(a, previous.ruleID, previous.forwardType, previous.tunnelID, previous.protocol, previous.hasProtocol)
+	targetReady := false
+	if len(targetReadyOverride) > 0 {
+		targetReady = targetReadyOverride[0]
+	} else {
+		targetReady = desiredActionLocalRuntimeReady(a)
+	}
+	return currentMatches && previousDiffers && !targetReady
+}
+
+func stopStaleForwardXRuleRuntime(cfg Config, localForwardType string, localRuleID int, localTunnelID int, listenPort int, protocol string, actionMessage *actionMessage) bool {
+	return stopStaleForwardXRuleRuntimeWithRollback(cfg, localForwardType, localRuleID, localTunnelID, listenPort, protocol, actionMessage, nil)
+}
+
+func stopStaleForwardXRuleRuntimeWithRollback(cfg Config, localForwardType string, localRuleID int, localTunnelID int, listenPort int, protocol string, actionMessage *actionMessage, handoffState *actionHandoffState) bool {
+	if strings.TrimSpace(localForwardType) != "forwardx" || localRuleID <= 0 || listenPort <= 0 {
+		return true
+	}
+
+	// V1 and V2 entry rules can share one entry-group process. Its runtime ID
+	// no longer contains the individual rule ID, so retire the actual listener
+	// owner before applying a non-FXP replacement. Keep the persisted snapshot
+	// until the replacement succeeds so a failed handoff remains recoverable.
+	return handoffFXPBySelectorWithRollback(cfg, fxpRuntimeSelector{
+		role:       "entry",
+		tunnelID:   localTunnelID,
+		ruleID:     localRuleID,
+		listenPort: listenPort,
+		protocol:   protocol,
+	}, actionMessage, handoffState)
 }
 
 func actionUsesSharedNginxRuntime(a action) bool {
@@ -5138,9 +5799,11 @@ func actionUsesManagedListener(a action) bool {
 	}
 }
 
-func cleanupUnknownManagedListener(port string, listenPort int, forwardType string, protocol string) {
+func cleanupUnknownManagedListener(cfg Config, port string, listenPort int, forwardType string, protocol string, actionMessage *actionMessage) bool {
 	logf("runtime cleanup unknown local state port=%s protocol=%s newForwardType=%s", port, normalizeRuntimeProtocol(protocol), forwardType)
-	stopConflictingFXPRuntime(fxpSpec{ListenPort: listenPort, UDPListenPort: listenPort, Protocol: protocol})
+	if !handoffFXPBySelector(cfg, fxpRuntimeSelector{listenPort: listenPort, protocol: protocol}, actionMessage) {
+		return false
+	}
 	for _, name := range managedListenerServiceNamesForProtocol(listenPort, protocol) {
 		cleanupManagedService(name)
 		if strings.HasPrefix(name, "forwardx-realm-") {
@@ -5150,6 +5813,7 @@ func cleanupUnknownManagedListener(port string, listenPort int, forwardType stri
 	for _, cmd := range managedListenerCleanupCmdsForProtocol(port, protocol) {
 		_ = runShell(cmd)
 	}
+	return true
 }
 
 func managedListenerServiceNamesForProtocol(port int, protocol string) []string {
@@ -5724,7 +6388,7 @@ func runtimePortOccupiedByProtocol(port int, protocol string) bool {
 	return false
 }
 
-func fxpMatchesRunning(spec *fxpSpec) bool {
+func fxpMatchesRunning(spec *fxpSpec, desiredGroups ...*fxpSpec) bool {
 	if spec == nil {
 		return false
 	}
@@ -5732,10 +6396,21 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 	if isSharedFXPEntry(normalized) {
 		id := fxpEntryGroupServerID(normalized.TransportVersion, normalized.TunnelID)
 		configPath := fxpConfigPath(normalized)
+		var desiredGroup *fxpSpec
+		if len(desiredGroups) > 0 && desiredGroups[0] != nil {
+			candidate := normalizeFXPSpec(*desiredGroups[0])
+			if isFXPEntryGroup(candidate) && candidate.TransportVersion == normalized.TransportVersion && candidate.TunnelID == normalized.TunnelID && fxpEntryGroupContains(candidate, normalized) {
+				desiredGroup = &candidate
+			}
+		}
+		matchesDesiredGroup := func(group fxpSpec) bool {
+			return desiredGroup == nil || fxpServerSignature(group) == fxpServerSignature(*desiredGroup)
+		}
 		fxpMu.Lock()
 		existing := fxpServers[id]
-		matches := existing != nil && fxpProcessActive(existing) && fxpEntryGroupContains(existing.spec, normalized)
-		if existing != nil && !matches {
+		existingActive := existing != nil && fxpProcessActive(existing)
+		matches := existingActive && fxpEntryGroupContains(existing.spec, normalized) && matchesDesiredGroup(existing.spec)
+		if existing != nil && !existingActive {
 			delete(fxpServers, id)
 		}
 		fxpMu.Unlock()
@@ -5745,7 +6420,7 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 				var group fxpSpec
 				if json.Unmarshal(raw, &group) == nil {
 					group = normalizeFXPSpec(group)
-					if fxpEntryGroupContains(group, normalized) && fxpRuntimeProcessExists(configPath) {
+					if fxpEntryGroupContains(group, normalized) && matchesDesiredGroup(group) && fxpRuntimeProcessExists(configPath) {
 						fxpMu.Lock()
 						fxpServers[id] = &fxpProcess{signature: fxpServerSignature(group), configPath: configPath, spec: group}
 						fxpMu.Unlock()
@@ -5754,6 +6429,11 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 				}
 			}
 		}
+		if matches {
+			readiness := readLocalRuntimeReadinessCached()
+			matches = fxpRuntimeListenersReady(normalized, readiness.listenSnapshot) &&
+				wireGuardFXPProxiesReady(normalized)
+		}
 		return matches
 	}
 	id := fxpServerID(normalized)
@@ -5761,13 +6441,19 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 	configPath := fxpConfigPath(normalized)
 	fxpMu.Lock()
 	existing := fxpServers[id]
-	matches := existing != nil && existing.signature == signature && fxpProcessActive(existing)
-	if existing != nil && !matches {
+	existingActive := existing != nil && fxpProcessActive(existing)
+	matches := existingActive && existing.signature == signature
+	if existing != nil && !existingActive {
 		delete(fxpServers, id)
 	}
 	fxpMu.Unlock()
 	if !matches {
 		matches = adoptExistingFXP(normalized, signature, configPath)
+	}
+	if matches {
+		readiness := readLocalRuntimeReadinessCached()
+		matches = fxpRuntimeListenersReady(normalized, readiness.listenSnapshot) &&
+			wireGuardFXPProxiesReady(normalized)
 	}
 	if matches {
 		logf("fxp %s already running with matching runtime tunnel=%d rule=%d listen=:%d protocol=%s", normalized.Role, normalized.TunnelID, normalized.RuleID, normalized.ListenPort, normalized.Protocol)
@@ -6047,6 +6733,32 @@ func cleanupManagedService(name string) {
 	cacheManagedServiceActivity(name, false)
 }
 
+var stopManagedServiceProcessForHandoff = stopManagedServiceProcess
+var restartManagedServiceProcessForHandoff = restartManagedService
+
+func stopManagedServiceProcess(name string) bool {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return false
+	}
+	ok := runShell(managedServiceStopShell(name))
+	if ok {
+		cacheManagedServiceActivity(name, false)
+	}
+	return ok
+}
+
+func managedServiceStopShell(name string) string {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return "true"
+	}
+	q := shellQuote(name)
+	return "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop " + q + ".service 2>/dev/null || true; " +
+		"elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " stop 2>/dev/null || true; " +
+		"elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " stop 2>/dev/null || true; fi"
+}
+
 func unknownManagedListenerCleanupNeeded(port int, protocol string) bool {
 	if !validActionPort(port) {
 		return false
@@ -6301,6 +7013,13 @@ func writeRunningRuleState(r runningRule) {
 	if r.TargetIP != "" && r.TargetPort > 0 {
 		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n%s\n", r.TargetIP, r.TargetPort, normalizeRuntimeProtocol(r.Protocol))), 0644)
 	}
+}
+
+func runningRuleStateWriteProtected(r runningRule, protectedPorts map[string]bool) bool {
+	if r.SourcePort <= 0 {
+		return false
+	}
+	return protectedActionMatchesPort(protectedPorts, strconv.Itoa(r.SourcePort), r.Protocol)
 }
 
 func readRuleIDByPort(port string) int {
@@ -6983,10 +7702,11 @@ func removeState(port int) {
 }
 
 type fxpProcess struct {
-	signature  string
-	cmd        *exec.Cmd
-	configPath string
-	spec       fxpSpec
+	signature      string
+	cmd            *exec.Cmd
+	configPath     string
+	spec           fxpSpec
+	wireGuardRefID string
 }
 
 const fxpEntryGroupRole = "entry-group"
@@ -7372,6 +8092,18 @@ func attachDesiredSharedFXPEntryGroups(actions []action) {
 			group.add(persisted)
 		}
 	}
+	// A desired non-FXP apply supersedes any persisted ForwardX member with the
+	// same rule identity. Remove it before attaching the final group to sibling
+	// ForwardX actions so those siblings rebuild immediately in this batch.
+	for _, item := range actions {
+		if strings.TrimSpace(item.Op) != "apply" || item.Fxp != nil || item.RuleID <= 0 {
+			continue
+		}
+		removal := fxpSpec{Role: "entry", RuleID: item.RuleID, TunnelID: item.TunnelID}
+		for _, group := range groups {
+			group.removeMatching(removal)
+		}
+	}
 	for _, mutation := range mutations {
 		group := groups[mutation.key]
 		group.removeMatching(mutation.spec)
@@ -7641,15 +8373,49 @@ func fxpRuntimeProcessExists(configPath string) bool {
 	return len(fxpRuntimePIDs(configPath)) > 0
 }
 
-func fxpRuntimeProcessExistsForRulePort(ruleID int, port int) bool {
+func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSnapshot *runtimeListenSnapshot) bool {
 	if ruleID <= 0 || port <= 0 {
 		return false
 	}
+	fxpMu.Lock()
+	tracked := make([]*fxpProcess, 0, len(fxpServers))
+	for _, process := range fxpServers {
+		tracked = append(tracked, process)
+	}
+	fxpMu.Unlock()
+	for _, process := range tracked {
+		if process == nil || !fxpProcessActive(process) {
+			continue
+		}
+		for _, candidate := range fxpRuleReadinessCandidates(process.spec) {
+			candidate = normalizeFXPSpec(candidate)
+			if candidate.Role != "entry" || candidate.RuleID != ruleID || candidate.ListenPort != port ||
+				!runtimeProtocolsOverlap(candidate.Protocol, protocol) {
+				continue
+			}
+			if !fxpRuntimeListenersReady(candidate, listenSnapshot) {
+				continue
+			}
+			if candidate.TransportVersion != forwardXWireGuardVersion || wireGuardFXPProxiesReady(candidate) {
+				return true
+			}
+		}
+	}
+
 	pattern := fmt.Sprintf("/run/forwardx-agent/fxp-*-*-%d-%d.json", ruleID, port)
 	paths, _ := filepath.Glob(pattern)
 	for _, path := range paths {
-		if fxpRuntimeProcessExists(path) {
-			return true
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var spec fxpSpec
+		if json.Unmarshal(raw, &spec) == nil {
+			spec = normalizeFXPSpec(spec)
+			if spec.TransportVersion != forwardXWireGuardVersion && runtimeProtocolsOverlap(spec.Protocol, protocol) &&
+				fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
+				return true
+			}
 		}
 	}
 	groupPaths, _ := filepath.Glob("/run/forwardx-agent/fxp-entry-group-*-*.json")
@@ -7663,8 +8429,12 @@ func fxpRuntimeProcessExistsForRulePort(ruleID int, port int) bool {
 			continue
 		}
 		group = normalizeFXPSpec(group)
+		if group.TransportVersion == forwardXWireGuardVersion {
+			continue
+		}
 		for _, entry := range group.Entries {
-			if entry.RuleID == ruleID && entry.ListenPort == port && fxpRuntimeProcessExists(path) {
+			if entry.RuleID == ruleID && entry.ListenPort == port && runtimeProtocolsOverlap(entry.Protocol, protocol) &&
+				fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(entry, listenSnapshot) {
 				return true
 			}
 		}
@@ -7672,14 +8442,67 @@ func fxpRuntimeProcessExistsForRulePort(ruleID int, port int) bool {
 	return false
 }
 
-func fxpRuntimeProcessExistsForTunnelPort(tunnelID int, port int) bool {
+func fxpRuleReadinessCandidates(spec fxpSpec) []fxpSpec {
+	spec = normalizeFXPSpec(spec)
+	if isFXPEntryGroup(spec) {
+		return spec.Entries
+	}
+	return []fxpSpec{spec}
+}
+
+func fxpRuntimeListenersReady(spec fxpSpec, listenSnapshot *runtimeListenSnapshot) bool {
+	endpoints := fxpListenEndpoints(spec)
+	if len(endpoints) == 0 {
+		return false
+	}
+	for lane, port := range endpoints {
+		protocol := strings.SplitN(lane, ":", 2)[0]
+		if !runtimeListenPortReady(listenSnapshot, port, protocol, []string{"forwardx-fxp"}) {
+			return false
+		}
+	}
+	return true
+}
+
+func fxpRuntimeReadyForTunnelPort(tunnelID int, port int, listenSnapshot *runtimeListenSnapshot) bool {
 	if tunnelID <= 0 || port <= 0 {
 		return false
 	}
+	fxpMu.Lock()
+	tracked := make([]*fxpProcess, 0, len(fxpServers))
+	for _, process := range fxpServers {
+		tracked = append(tracked, process)
+	}
+	fxpMu.Unlock()
+	for _, process := range tracked {
+		if process == nil || !fxpProcessActive(process) {
+			continue
+		}
+		spec := normalizeFXPSpec(process.spec)
+		if isFXPEntryGroup(spec) || spec.TunnelID != tunnelID || !fxpSpecUsesListenEndpoint(spec, port, "both") {
+			continue
+		}
+		if !fxpRuntimeListenersReady(spec, listenSnapshot) {
+			continue
+		}
+		if spec.TransportVersion != forwardXWireGuardVersion || wireGuardFXPProxiesReady(spec) {
+			return true
+		}
+	}
+
 	pattern := fmt.Sprintf("/run/forwardx-agent/fxp-*-%d-*-%d.json", tunnelID, port)
 	paths, _ := filepath.Glob(pattern)
 	for _, path := range paths {
-		if fxpRuntimeProcessExists(path) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var spec fxpSpec
+		if json.Unmarshal(raw, &spec) != nil {
+			continue
+		}
+		spec = normalizeFXPSpec(spec)
+		if spec.TransportVersion != forwardXWireGuardVersion && fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
 			return true
 		}
 	}
@@ -7711,6 +8534,10 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 		return false
 	}
 	if !fxpRuntimeProcessExists(configPath) {
+		return false
+	}
+	readiness := readLocalRuntimeReadinessCached()
+	if !fxpRuntimeListenersReady(spec, readiness.listenSnapshot) {
 		return false
 	}
 	id := fxpServerID(spec)
@@ -7851,19 +8678,28 @@ func fxpSpecWithoutListenConflicts(existing fxpSpec, desired fxpSpec) (fxpSpec, 
 	return existing, len(existing.Entries) > 0
 }
 
-func restoreFXPTransitionLocked(cfg Config, desired fxpSpec, desiredStarted bool, previousSame *fxpSpec, conflicts []fxpSpec, replacements []fxpSpec) {
+type fxpTransitionRestoreStarter func(Config, fxpSpec, *actionMessage, bool) bool
+
+func restoreFXPTransitionLocked(cfg Config, desired fxpSpec, desiredStarted bool, previousSame *fxpSpec, conflicts []fxpSpec, replacements []fxpSpec, persistenceEnabled bool) {
+	restoreFXPTransitionLockedWithStarter(cfg, desired, desiredStarted, previousSame, conflicts, replacements, persistenceEnabled, startFXPProcessLockedWithPersistence)
+}
+
+func restoreFXPTransitionLockedWithStarter(cfg Config, desired fxpSpec, desiredStarted bool, previousSame *fxpSpec, conflicts []fxpSpec, replacements []fxpSpec, persistenceEnabled bool, start fxpTransitionRestoreStarter) {
 	if desiredStarted {
 		stopFXPRuntime(desired)
 	}
 	for _, replacement := range replacements {
 		stopFXPRuntime(replacement)
 	}
-	if previousSame == nil {
+	if persistenceEnabled && previousSame == nil {
 		removePersistedFXPSpec(desired)
+	}
+	if start == nil {
+		start = startFXPProcessLockedWithPersistence
 	}
 	restore := func(spec fxpSpec, reason string) {
 		message := newActionMessage()
-		if !startFXPProcessLocked(cfg, spec, message) {
+		if !start(cfg, spec, message, persistenceEnabled) {
 			logf("fxp rollback restore failed reason=%s role=%s tunnel=%d rule=%d: %s", reason, spec.Role, spec.TunnelID, spec.RuleID, message.get())
 		}
 	}
@@ -7903,6 +8739,10 @@ func startFXPLocked(cfg Config, spec fxpSpec, desiredGroup *fxpSpec, actionMessa
 }
 
 func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
+	return startFXPProcessLockedWithPersistence(cfg, spec, actionMessage, true)
+}
+
+func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessage *actionMessage, persistenceEnabled bool) bool {
 	spec = normalizeFXPSpec(spec)
 	if (!isFXPEntryGroup(spec) && (spec.Key == "" || spec.ListenPort <= 0)) || (isFXPEntryGroup(spec) && len(spec.Entries) == 0) {
 		actionMessage.set("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
@@ -7934,20 +8774,31 @@ func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessag
 	var previousSame *fxpSpec
 	fxpMu.Lock()
 	existing := fxpServers[id]
-	if existing != nil && existing.signature == signature && fxpProcessActive(existing) {
-		fxpMu.Unlock()
-		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
-		return true
-	}
-	if existing != nil && fxpProcessActive(existing) {
+	existingActive := existing != nil && fxpProcessActive(existing)
+	existingMatches := existingActive && existing.signature == signature
+	if existingActive {
 		copy := existing.spec
 		previousSame = &copy
 	}
 	fxpMu.Unlock()
+	if existingMatches {
+		readiness := readLocalRuntimeReadinessCached()
+		existingMatches = fxpRuntimeListenersReady(spec, readiness.listenSnapshot) &&
+			wireGuardFXPProxiesReady(spec)
+	}
+	if existingMatches {
+		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
+		return true
+	}
+	if existingActive && existing.signature == signature {
+		logf("fxp dependency or listener drift detected; rebuilding role=%s version=%s tunnel=%d rule=%d", spec.Role, spec.TransportVersion, spec.TunnelID, spec.RuleID)
+	}
 	if adoptExistingFXP(spec, signature, configPath) {
-		if err := persistFXPSpec(originalSpec); err != nil {
-			logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
-			return false
+		if persistenceEnabled {
+			if err := persistFXPSpec(originalSpec); err != nil {
+				logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+				return false
+			}
 		}
 		return true
 	}
@@ -7960,7 +8811,7 @@ func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessag
 	replacementSpecs := make([]fxpSpec, 0, len(conflictingSpecs))
 	defer func() {
 		if !transitionCommitted {
-			restoreFXPTransitionLocked(cfg, originalSpec, desiredStarted, previousSame, conflictingSpecs, replacementSpecs)
+			restoreFXPTransitionLocked(cfg, originalSpec, desiredStarted, previousSame, conflictingSpecs, replacementSpecs, persistenceEnabled)
 		}
 	}()
 	// When mimic is enabled, UDPListenPort (mimicPort) differs from ListenPort (TCP port).
@@ -7973,8 +8824,18 @@ func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessag
 			"do kill \"$pid\" 2>/dev/null || true; done")
 	}
 	if ready, lane, owner := waitForFXPListenEndpointsFree(spec); !ready {
-		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d lane=%s owner=%s", spec.Role, spec.TunnelID, spec.RuleID, lane, owner)
-		return false
+		staleConfigPaths := []string{configPath}
+		for _, conflicting := range conflictingSpecs {
+			staleConfigPaths = append(staleConfigPaths, fxpConfigPath(conflicting))
+		}
+		for _, staleConfigPath := range staleConfigPaths {
+			killFXPByConfigPath(staleConfigPath)
+		}
+		logf("fxp replacement forced stale runtime exit role=%s tunnel=%d rule=%d lane=%s owner=%s", spec.Role, spec.TunnelID, spec.RuleID, lane, owner)
+		if forcedReady, forcedLane, forcedOwner := waitForFXPListenEndpointsFree(spec); !forcedReady {
+			actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d lane=%s owner=%s", spec.Role, spec.TunnelID, spec.RuleID, forcedLane, forcedOwner)
+			return false
+		}
 	}
 	if spec.TransportVersion == forwardXWireGuardVersion {
 		prepared, err := prepareFXPWireGuard(spec, wireGuardRefID)
@@ -8076,21 +8937,25 @@ func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessag
 		return false
 	}
 
-	persisted := true
-	if err := persistFXPSpec(originalSpec); err != nil {
-		persisted = false
-		logf("fxp persistent snapshot write failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
-	}
-	if !persisted {
-		_ = cmd.Process.Kill()
-		releaseWireGuardRef()
-		_ = os.Remove(configPath)
-		actionMessage.set("fxp persistent snapshot write failed tunnel=%d", originalSpec.TunnelID)
-		return false
+	if persistenceEnabled {
+		if err := persistFXPSpec(originalSpec); err != nil {
+			logf("fxp persistent snapshot write failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+			_ = cmd.Process.Kill()
+			releaseWireGuardRef()
+			_ = os.Remove(configPath)
+			actionMessage.set("fxp persistent snapshot write failed tunnel=%d", originalSpec.TunnelID)
+			return false
+		}
 	}
 
 	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath, spec: originalSpec}
+	fxpServers[id] = &fxpProcess{
+		signature:      signature,
+		cmd:            cmd,
+		configPath:     configPath,
+		spec:           originalSpec,
+		wireGuardRefID: wireGuardRefID,
+	}
 	fxpMu.Unlock()
 	desiredStarted = true
 	go func() {
@@ -8112,15 +8977,17 @@ func startFXPProcessLocked(cfg Config, spec fxpSpec, actionMessage *actionMessag
 			continue
 		}
 		message := newActionMessage()
-		if !startFXPProcessLocked(cfg, replacement, message) {
+		if !startFXPProcessLockedWithPersistence(cfg, replacement, message, persistenceEnabled) {
 			actionMessage.set("fxp conflicting entry group rebuild failed tunnel=%d: %s", replacement.TunnelID, message.get())
 			return false
 		}
 		replacementSpecs = append(replacementSpecs, replacement)
 	}
-	for _, conflicting := range conflictingSpecs {
-		if _, hasRemaining := fxpSpecWithoutListenConflicts(conflicting, originalSpec); !hasRemaining {
-			removePersistedFXPSpec(conflicting)
+	if persistenceEnabled {
+		for _, conflicting := range conflictingSpecs {
+			if _, hasRemaining := fxpSpecWithoutListenConflicts(conflicting, originalSpec); !hasRemaining {
+				removePersistedFXPSpec(conflicting)
+			}
 		}
 	}
 	transitionCommitted = true
@@ -8218,6 +9085,12 @@ func stopFXPRuntime(spec fxpSpec) {
 }
 
 func stopFXPByTunnelTransport(tunnelID int, transportVersion string) {
+	for _, spec := range fxpSpecsByTunnelTransport(tunnelID, transportVersion) {
+		stopFXPRuntime(spec)
+	}
+}
+
+func fxpSpecsByTunnelTransport(tunnelID int, transportVersion string) []fxpSpec {
 	transportVersion = strings.ToLower(strings.TrimSpace(transportVersion))
 	fxpMu.Lock()
 	specs := make([]fxpSpec, 0)
@@ -8228,63 +9101,490 @@ func stopFXPByTunnelTransport(tunnelID int, transportVersion string) {
 		specs = append(specs, process.spec)
 	}
 	fxpMu.Unlock()
-	for _, spec := range specs {
-		stopFXPRuntime(spec)
-	}
+	sort.Slice(specs, func(i, j int) bool {
+		return fxpServerID(specs[i]) < fxpServerID(specs[j])
+	})
+	return specs
 }
 
-func stopFXPByPort(tunnelID int, listenPort int) {
-	if tunnelID <= 0 || listenPort <= 0 {
-		return
-	}
-	var specs []fxpSpec
-	fxpMu.Lock()
-	for _, process := range fxpServers {
-		if process == nil || process.spec.TunnelID != tunnelID {
-			continue
-		}
-		usesPort := false
-		for _, port := range fxpListenEndpoints(process.spec) {
-			usesPort = usesPort || port == listenPort
-		}
-		if !usesPort {
-			continue
-		}
-		// Keep the complete original spec so a V2 process releases its
-		// WireGuard reference correctly when it exits.
-		specs = append(specs, process.spec)
-	}
-	fxpMu.Unlock()
-	for _, spec := range specs {
-		stopFXPRuntime(spec)
-	}
+type fxpRuntimeSelector struct {
+	role       string
+	tunnelID   int
+	ruleID     int
+	listenPort int
+	protocol   string
 }
 
-func stopFXPByListenPort(listenPort int) {
+func (selector fxpRuntimeSelector) valid() bool {
+	return selector.listenPort > 0 && selector.listenPort <= 65535
+}
+
+func (selector fxpRuntimeSelector) matches(spec fxpSpec) bool {
+	if !selector.valid() {
+		return false
+	}
+	spec = normalizeFXPSpec(spec)
+	if selector.tunnelID > 0 && spec.TunnelID != selector.tunnelID {
+		return false
+	}
+	if isFXPEntryGroup(spec) {
+		for _, entry := range spec.Entries {
+			if selector.matches(entry) {
+				return true
+			}
+		}
+		return false
+	}
+	if role := strings.ToLower(strings.TrimSpace(selector.role)); role != "" && spec.Role != role {
+		return false
+	}
+	if selector.ruleID > 0 && spec.RuleID != selector.ruleID {
+		return false
+	}
+	return fxpSpecUsesListenEndpoint(spec, selector.listenPort, selector.protocol)
+}
+
+func fxpSpecUsesListenEndpoint(spec fxpSpec, listenPort int, protocol string) bool {
 	if listenPort <= 0 {
-		return
+		return false
 	}
-	var specs []fxpSpec
+	wanted := map[string]bool{}
+	for _, lane := range runtimeProtocols(protocol) {
+		wanted[lane] = true
+	}
+	for lane, port := range fxpListenEndpoints(spec) {
+		laneProtocol := strings.SplitN(lane, ":", 2)[0]
+		if port == listenPort && wanted[laneProtocol] {
+			return true
+		}
+	}
+	return false
+}
+
+func stopFXPByPort(tunnelID int, listenPort int, protocol string) bool {
+	if tunnelID <= 0 {
+		return true
+	}
+	return stopFXPBySelector(fxpRuntimeSelector{tunnelID: tunnelID, listenPort: listenPort, protocol: protocol})
+}
+
+func stopFXPByListenEndpoint(listenPort int, protocol string) bool {
+	return stopFXPBySelector(fxpRuntimeSelector{listenPort: listenPort, protocol: protocol})
+}
+
+func stopFXPByListenPort(listenPort int) bool {
+	return stopFXPByListenEndpoint(listenPort, "both")
+}
+
+func stopFXPBySelector(selector fxpRuntimeSelector) bool {
+	if !selector.valid() {
+		return true
+	}
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	return stopFXPSpecsLocked(fxpSpecsForSelectorLocked(selector), selector)
+}
+
+func handoffFXPBySelector(cfg Config, selector fxpRuntimeSelector, statusMessage *actionMessage) bool {
+	return handoffFXPBySelectorWithRollback(cfg, selector, statusMessage, nil)
+}
+
+func handoffFXPBySelectorWithRollback(cfg Config, selector fxpRuntimeSelector, statusMessage *actionMessage, handoffState *actionHandoffState) bool {
+	if !selector.valid() {
+		return true
+	}
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+
+	specs := fxpSpecsForSelectorLocked(selector)
+	originals := append([]fxpSpec(nil), specs...)
+	transactional := handoffState != nil && len(originals) > 0
+	batch := handoffState.handoffBatch()
+	if batch != nil && !batch.prepareFXPTransition(cfg, originals, selector) {
+		statusMessage.set("fxp handoff batch recovery snapshot failed port=%d protocol=%s", selector.listenPort, normalizeRuntimeProtocol(selector.protocol))
+		return false
+	}
+	if batch == nil && transactional && !persistFXPHandoffRecoverySnapshot(originals) {
+		statusMessage.set("fxp handoff recovery snapshot failed port=%d protocol=%s", selector.listenPort, normalizeRuntimeProtocol(selector.protocol))
+		return false
+	}
+	start := func(spec fxpSpec, message *actionMessage) bool {
+		return startFXPProcessLockedWithPersistence(cfg, spec, message, !transactional)
+	}
+	stop := func(spec fxpSpec) bool {
+		return stopFXPSpecsLocked([]fxpSpec{spec}, selector)
+	}
+	if !transitionFXPSelectorLocked(selector, specs, start, stop, statusMessage) {
+		return false
+	}
+	if !transactional || batch != nil {
+		return true
+	}
+
+	handoffState.setFinalizers(
+		func() { commitFXPHandoffPersistence(originals, selector) },
+		func() {
+			fxpControlMu.Lock()
+			defer fxpControlMu.Unlock()
+			restoreFXPHandoffOriginalsLocked(cfg, originals)
+		},
+	)
+	return true
+}
+
+func persistFXPHandoffRecoverySnapshot(originals []fxpSpec) bool {
+	ok := true
+	for _, original := range originals {
+		if err := persistFXPSpec(original); err != nil {
+			ok = false
+			logf("fxp handoff recovery snapshot write failed runtime=%s: %v", fxpServerID(original), err)
+		}
+	}
+	return ok
+}
+
+func commitFXPHandoffPersistence(originals []fxpSpec, selector fxpRuntimeSelector) {
+	for _, original := range originals {
+		original = normalizeFXPSpec(original)
+		if isFXPEntryGroup(original) {
+			replacement, removed := fxpEntryGroupWithoutSelector(original, selector)
+			if !removed {
+				continue
+			}
+			if len(replacement.Entries) > 0 {
+				if err := persistFXPSpec(replacement); err != nil {
+					logf("fxp handoff persistence commit failed runtime=%s: %v", fxpServerID(original), err)
+				}
+				continue
+			}
+		}
+		removePersistedFXPSpec(original)
+	}
+}
+
+func commitFXPHandoffBatchPersistence(originals []fxpSpec, selectors []fxpRuntimeSelector) {
+	for _, original := range originals {
+		original = normalizeFXPSpec(original)
+		if isFXPEntryGroup(original) {
+			replacement := original
+			removed := false
+			for _, selector := range selectors {
+				var matched bool
+				replacement, matched = fxpEntryGroupWithoutSelector(replacement, selector)
+				removed = removed || matched
+			}
+			if !removed {
+				continue
+			}
+			if len(replacement.Entries) > 0 {
+				if err := persistFXPSpec(replacement); err != nil {
+					logf("fxp handoff batch persistence commit failed runtime=%s: %v", fxpServerID(original), err)
+				}
+				continue
+			}
+			removePersistedFXPSpec(original)
+			continue
+		}
+		for _, selector := range selectors {
+			if selector.matches(original) {
+				removePersistedFXPSpec(original)
+				break
+			}
+		}
+	}
+	// A selector can have no live original when the Agent adopted an orphaned
+	// runtime incompletely or only a stale recovery snapshot remains. Commit
+	// against the persisted entries too, so a successful handoff cannot revive
+	// that old listener after restart.
+	for _, persisted := range loadPersistedFXPSpecs() {
+		for _, selector := range selectors {
+			if selector.matches(persisted) {
+				removePersistedFXPSpec(persisted)
+				break
+			}
+		}
+	}
+}
+
+func restoreFXPHandoffOriginalsLocked(cfg Config, originals []fxpSpec) {
+	for _, original := range originals {
+		message := newActionMessage()
+		if !startFXPProcessLocked(cfg, original, message) {
+			logf("fxp handoff batch rollback failed runtime=%s: %s", fxpServerID(original), message.get())
+		}
+	}
+}
+
+type fxpHandoffStartFunc func(fxpSpec, *actionMessage) bool
+type fxpHandoffStopFunc func(fxpSpec) bool
+
+func transitionFXPSelectorLocked(selector fxpRuntimeSelector, specs []fxpSpec, start fxpHandoffStartFunc, stop fxpHandoffStopFunc, statusMessage *actionMessage) bool {
+	if !selector.valid() || len(specs) == 0 {
+		return true
+	}
+	if start == nil || stop == nil {
+		statusMessage.set("fxp handoff operations unavailable port=%d protocol=%s", selector.listenPort, normalizeRuntimeProtocol(selector.protocol))
+		return false
+	}
+
+	transitioned := make([]fxpSpec, 0, len(specs))
+	rollback := func() {
+		for index := len(transitioned) - 1; index >= 0; index-- {
+			message := newActionMessage()
+			if !start(transitioned[index], message) {
+				logf("fxp handoff rollback failed runtime=%s: %s", fxpServerID(transitioned[index]), message.get())
+			}
+		}
+	}
+
+	for _, current := range specs {
+		current = normalizeFXPSpec(current)
+		if isFXPEntryGroup(current) {
+			replacement, removed := fxpEntryGroupWithoutSelector(current, selector)
+			if !removed {
+				continue
+			}
+			if len(replacement.Entries) > 0 {
+				if !start(replacement, statusMessage) {
+					message := newActionMessage()
+					if !start(current, message) {
+						logf("fxp handoff current-group rollback failed runtime=%s: %s", fxpServerID(current), message.get())
+					}
+					rollback()
+					return false
+				}
+				transitioned = append(transitioned, current)
+				continue
+			}
+		}
+
+		// Standalone runtimes and entry groups with no remaining members can be
+		// stopped outright. Persistence is deliberately retained until the target
+		// apply succeeds, so the last member remains restart-recoverable.
+		transitioned = append(transitioned, current)
+		if !stop(current) {
+			rollback()
+			statusMessage.set("fxp handoff stop failed runtime=%s port=%d protocol=%s", fxpServerID(current), selector.listenPort, normalizeRuntimeProtocol(selector.protocol))
+			return false
+		}
+	}
+	return true
+}
+
+func fxpEntryGroupWithoutSelector(group fxpSpec, selector fxpRuntimeSelector) (fxpSpec, bool) {
+	group = normalizeFXPSpec(group)
+	if !isFXPEntryGroup(group) || !selector.valid() {
+		return group, false
+	}
+	remaining := make([]fxpSpec, 0, len(group.Entries))
+	removed := false
+	for _, entry := range group.Entries {
+		if selector.matches(entry) {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+	group.Entries = remaining
+	return normalizeFXPSpec(group), removed
+}
+
+func fxpSpecsForSelectorLocked(selector fxpRuntimeSelector) []fxpSpec {
+	if !selector.valid() {
+		return nil
+	}
+
+	liveSpecs := make([]fxpSpec, 0)
 	fxpMu.Lock()
 	for _, process := range fxpServers {
 		if process == nil {
 			continue
 		}
-		usesPort := false
-		for _, port := range fxpListenEndpoints(process.spec) {
-			usesPort = usesPort || port == listenPort
-		}
-		if !usesPort {
-			continue
-		}
-		// Keep the complete original spec so a V2 process releases its
-		// WireGuard reference correctly when it exits.
-		specs = append(specs, process.spec)
+		liveSpecs = append(liveSpecs, process.spec)
 	}
 	fxpMu.Unlock()
+
+	runtimeSpecs := make([]fxpSpec, 0)
+	paths, _ := filepath.Glob("/run/forwardx-agent/fxp-*.json")
+	for _, path := range paths {
+		if !fxpRuntimeProcessExists(path) {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var spec fxpSpec
+		if json.Unmarshal(raw, &spec) == nil {
+			runtimeSpecs = append(runtimeSpecs, spec)
+		}
+	}
+
+	// Persistence is only a discovery fallback for a verified orphan process
+	// whose runtime JSON was removed. A stale snapshot must not restart an old
+	// group or block a new listener during handoff.
+	persistedCandidates := fxpSpecsMatchingSelector(
+		selector,
+		planPersistedFXPRestoreSpecs(loadPersistedFXPSpecs()),
+	)
+	persistedSpecs := fxpSpecsWithRunningProcess(
+		persistedCandidates,
+		fxpRuntimeProcessExists,
+	)
+	return fxpSpecsMatchingSelector(selector, liveSpecs, runtimeSpecs, persistedSpecs)
+}
+
+func fxpSpecsWithRunningProcess(specs []fxpSpec, processExists func(string) bool) []fxpSpec {
+	if len(specs) == 0 || processExists == nil {
+		return nil
+	}
+	running := make([]fxpSpec, 0, len(specs))
 	for _, spec := range specs {
+		if processExists(fxpConfigPath(spec)) {
+			running = append(running, spec)
+		}
+	}
+	return running
+}
+
+func stopFXPSpecsLocked(specs []fxpSpec, selector fxpRuntimeSelector) bool {
+	configPaths := make([]string, 0, len(specs))
+	trackedProcesses := trackedFXPOSProcesses(specs)
+	hadRuntime := len(trackedProcesses) > 0
+	for _, spec := range specs {
+		configPath := fxpConfigPath(spec)
+		configPaths = append(configPaths, configPath)
+		hadRuntime = hadRuntime || fxpRuntimeProcessExists(configPath)
 		stopFXPRuntime(spec)
 	}
+	if len(specs) == 0 {
+		return true
+	}
+	if waitForFXPProcessesExit(configPaths, trackedProcesses, 2*time.Second) {
+		return !hadRuntime || waitForFXPSelectorEndpointFree(selector, 2*time.Second)
+	}
+
+	// A graceful FXP shutdown normally completes immediately. Do not let a
+	// stuck process survive until the generic six-second watchdog: the
+	// replacement runtime must only start after the old process has exited.
+	for _, configPath := range configPaths {
+		killFXPByConfigPath(configPath)
+	}
+	for _, process := range trackedProcesses {
+		_ = process.Kill()
+	}
+	if waitForFXPProcessesExit(configPaths, trackedProcesses, 2*time.Second) {
+		return !hadRuntime || waitForFXPSelectorEndpointFree(selector, 2*time.Second)
+	}
+	logf("fxp handoff process still running port=%d protocol=%s owner=%s", selector.listenPort, normalizeRuntimeProtocol(selector.protocol), listenPortOwnerSummary(selector.listenPort))
+	return false
+}
+
+func waitForFXPSelectorEndpointFree(selector fxpRuntimeSelector, timeout time.Duration) bool {
+	if !selector.valid() {
+		return true
+	}
+	spec := fxpSpec{
+		ListenPort:    selector.listenPort,
+		UDPListenPort: selector.listenPort,
+		Protocol:      selector.protocol,
+	}
+	if waitForFXPListenPortFree(&spec, selector.listenPort, timeout) {
+		return true
+	}
+	logf("fxp handoff endpoint still busy port=%d protocol=%s owner=%s", selector.listenPort, normalizeRuntimeProtocol(selector.protocol), listenPortOwnerSummary(selector.listenPort))
+	return false
+}
+
+func trackedFXPOSProcesses(specs []fxpSpec) []*os.Process {
+	if len(specs) == 0 {
+		return nil
+	}
+	seen := map[int]bool{}
+	processes := make([]*os.Process, 0, len(specs))
+	fxpMu.Lock()
+	for _, spec := range specs {
+		tracked := fxpServers[fxpServerID(spec)]
+		if tracked == nil || tracked.cmd == nil || tracked.cmd.Process == nil {
+			continue
+		}
+		process := tracked.cmd.Process
+		if process.Pid <= 0 || seen[process.Pid] {
+			continue
+		}
+		seen[process.Pid] = true
+		processes = append(processes, process)
+	}
+	fxpMu.Unlock()
+	return processes
+}
+
+func waitForFXPProcessesExit(configPaths []string, trackedProcesses []*os.Process, timeout time.Duration) bool {
+	if len(configPaths) == 0 && len(trackedProcesses) == 0 {
+		return true
+	}
+	if timeout <= 0 {
+		timeout = time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		running := false
+		for _, process := range trackedProcesses {
+			if process != nil && process.Signal(syscall.Signal(0)) == nil {
+				running = true
+				break
+			}
+		}
+		for _, configPath := range configPaths {
+			if running {
+				break
+			}
+			if fxpRuntimeProcessExists(configPath) {
+				running = true
+				break
+			}
+		}
+		if !running {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func fxpSpecsMatchingSelector(selector fxpRuntimeSelector, sources ...[]fxpSpec) []fxpSpec {
+	if !selector.valid() {
+		return nil
+	}
+	byID := map[string]fxpSpec{}
+	for _, source := range sources {
+		for _, spec := range source {
+			spec = normalizeFXPSpec(spec)
+			id := fxpServerID(spec)
+			if _, exists := byID[id]; exists {
+				continue
+			}
+			byID[id] = spec
+		}
+	}
+	specs := make([]fxpSpec, 0)
+	for _, spec := range byID {
+		if selector.matches(spec) {
+			// Keep the complete original spec so a V2 process releases its
+			// WireGuard reference correctly when it exits.
+			specs = append(specs, spec)
+		}
+	}
+	sort.Slice(specs, func(i, j int) bool {
+		return fxpServerID(specs[i]) < fxpServerID(specs[j])
+	})
+	return specs
+}
+
+func fxpSpecsUsingListenPort(listenPort int, sources ...[]fxpSpec) []fxpSpec {
+	return fxpSpecsMatchingSelector(fxpRuntimeSelector{listenPort: listenPort, protocol: "both"}, sources...)
 }
 
 func fxpPortReleaseTimeout(owner string) time.Duration {
@@ -9310,7 +10610,7 @@ func prepareProtocolGuardPort(rule guardRule) {
 		return
 	}
 	port := strconv.Itoa(rule.ListenPort)
-	stopFXPByListenPort(rule.ListenPort)
+	stopFXPByListenEndpoint(rule.ListenPort, rule.Protocol)
 	backendPort := rule.BackendPort
 	if backendPort <= 0 {
 		backendPort = rule.TargetPort

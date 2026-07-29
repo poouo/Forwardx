@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 type managedConfigSpec struct {
@@ -23,11 +25,19 @@ type managedConfigBackup struct {
 	previous     []byte
 	hadPrevious  bool
 	previousMode os.FileMode
+	generation   uint64
 }
 
 type managedConfigTransaction struct {
-	backups []managedConfigBackup
+	backups    []managedConfigBackup
+	stateMu    sync.Mutex
+	finished   bool
+	rollbackOK bool
 }
+
+var managedConfigMutationMu sync.Mutex
+var managedConfigGeneration atomic.Uint64
+var managedConfigCurrentGeneration = map[string]uint64{}
 
 func validateManagedConfigSpec(spec managedConfigSpec, data []byte, stagedPath string) error {
 	if len(data) == 0 {
@@ -63,31 +73,35 @@ func managedConfigFileMode(spec managedConfigSpec) (os.FileMode, error) {
 }
 
 func applyManagedConfigs(specs []managedConfigSpec) (*managedConfigTransaction, error) {
+	managedConfigMutationMu.Lock()
+	defer managedConfigMutationMu.Unlock()
+
 	tx := &managedConfigTransaction{backups: make([]managedConfigBackup, 0, len(specs))}
+	generation := managedConfigGeneration.Add(1)
 	for _, raw := range specs {
 		spec := raw
 		spec.Path = filepath.Clean(strings.TrimSpace(spec.Path))
 		if spec.Path == "." || !filepath.IsAbs(spec.Path) {
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, fmt.Errorf("managed config path must be absolute: %q", raw.Path)
 		}
 		mode, err := managedConfigFileMode(spec)
 		if err != nil {
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, err
 		}
 		data, err := base64.StdEncoding.DecodeString(spec.ContentBase64)
 		if err != nil {
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, fmt.Errorf("decode %s: %w", spec.Path, err)
 		}
 		if err := os.MkdirAll(filepath.Dir(spec.Path), 0755); err != nil {
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, err
 		}
 		staged, err := os.CreateTemp(filepath.Dir(spec.Path), ".forwardx-config-*")
 		if err != nil {
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, err
 		}
 		stagedPath := staged.Name()
@@ -103,7 +117,7 @@ func applyManagedConfigs(specs []managedConfigSpec) (*managedConfigTransaction, 
 		}
 		if err != nil {
 			cleanup()
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, err
 		}
 		previous, readErr := os.ReadFile(spec.Path)
@@ -111,29 +125,30 @@ func applyManagedConfigs(specs []managedConfigSpec) (*managedConfigTransaction, 
 		previousMode := mode
 		if readErr != nil && !os.IsNotExist(readErr) {
 			cleanup()
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, readErr
 		}
 		if hadPrevious {
 			info, statErr := os.Stat(spec.Path)
 			if statErr != nil {
 				cleanup()
-				tx.rollback()
+				tx.rollbackLocked()
 				return nil, statErr
 			}
 			previousMode = info.Mode().Perm()
 			if err := writeManagedConfigAtomic(spec.Path+".forwardx-last-good", previous, previousMode); err != nil {
 				cleanup()
-				tx.rollback()
+				tx.rollbackLocked()
 				return nil, err
 			}
 		}
-		tx.backups = append(tx.backups, managedConfigBackup{spec: spec, previous: previous, hadPrevious: hadPrevious, previousMode: previousMode})
+		tx.backups = append(tx.backups, managedConfigBackup{spec: spec, previous: previous, hadPrevious: hadPrevious, previousMode: previousMode, generation: generation})
 		if err := os.Rename(stagedPath, spec.Path); err != nil {
 			cleanup()
-			tx.rollback()
+			tx.rollbackLocked()
 			return nil, err
 		}
+		managedConfigCurrentGeneration[spec.Path] = generation
 	}
 	return tx, nil
 }
@@ -161,10 +176,28 @@ func (tx *managedConfigTransaction) rollback() bool {
 	if tx == nil {
 		return true
 	}
+	managedConfigMutationMu.Lock()
+	defer managedConfigMutationMu.Unlock()
+	return tx.rollbackLocked()
+}
+
+func (tx *managedConfigTransaction) rollbackLocked() bool {
+	if tx == nil {
+		return true
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.finished {
+		return tx.rollbackOK
+	}
 	ok := true
 	services := map[string]bool{}
 	for index := len(tx.backups) - 1; index >= 0; index-- {
 		backup := tx.backups[index]
+		if managedConfigCurrentGeneration[backup.spec.Path] != backup.generation {
+			logf("managed config rollback skipped stale generation path=%s generation=%d current=%d", backup.spec.Path, backup.generation, managedConfigCurrentGeneration[backup.spec.Path])
+			continue
+		}
 		var err error
 		if backup.hadPrevious {
 			err = writeManagedConfigAtomic(backup.spec.Path, backup.previous, backup.previousMode)
@@ -177,7 +210,9 @@ func (tx *managedConfigTransaction) rollback() bool {
 		if err != nil {
 			ok = false
 			logf("managed config restore failed path=%s error=%v", backup.spec.Path, err)
+			continue
 		}
+		delete(managedConfigCurrentGeneration, backup.spec.Path)
 		_ = os.Remove(backup.spec.Path + ".sha256")
 		if service := strings.TrimSpace(backup.spec.ServiceName); service != "" {
 			services[service] = services[service] || backup.hadPrevious
@@ -190,5 +225,27 @@ func (tx *managedConfigTransaction) rollback() bool {
 			cleanupManagedService(service)
 		}
 	}
+	tx.finished = true
+	tx.rollbackOK = ok
 	return ok
+}
+
+func (tx *managedConfigTransaction) commit() {
+	if tx == nil {
+		return
+	}
+	managedConfigMutationMu.Lock()
+	defer managedConfigMutationMu.Unlock()
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.finished {
+		return
+	}
+	for _, backup := range tx.backups {
+		if managedConfigCurrentGeneration[backup.spec.Path] == backup.generation {
+			delete(managedConfigCurrentGeneration, backup.spec.Path)
+		}
+	}
+	tx.finished = true
+	tx.rollbackOK = true
 }

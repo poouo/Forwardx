@@ -1393,12 +1393,13 @@ function selectPreferredForwardGroupLatencyChild(
 async function getFirstEnabledMemberByGroup(groupIds: number[]) {
   const db = await getDb();
   const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
-  const map = new Map<number, { id: number; priority: number }>();
+  const map = new Map<number, { id: number; hostId: number; priority: number }>();
   if (!db || ids.length === 0) return map;
   const rows = await db
     .select({
       id: forwardGroupMembers.id,
       groupId: forwardGroupMembers.groupId,
+      hostId: forwardGroupMembers.hostId,
       priority: forwardGroupMembers.priority,
     })
     .from(forwardGroupMembers)
@@ -1410,7 +1411,7 @@ async function getFirstEnabledMemberByGroup(groupIds: number[]) {
     const priority = Number(row.priority || 0);
     const prev = map.get(groupId);
     if (!prev || priority < prev.priority || (priority === prev.priority && id < prev.id)) {
-      map.set(groupId, { id, priority });
+      map.set(groupId, { id, hostId: Number(row.hostId || 0), priority });
     }
   }
   return map;
@@ -1464,7 +1465,9 @@ async function getForwardGroupTrafficChildRows(parentRuleIds: number[]) {
   const firstMemberByGroup = await getFirstEnabledMemberByGroup(chainGroupIds);
   return childRows.filter((row) => {
     if (groupModeById.get(row.groupId) !== "chain") return true;
-    return Number(firstMemberByGroup.get(row.groupId)?.id || 0) === row.memberId;
+    const firstMember = firstMemberByGroup.get(row.groupId);
+    return Number(firstMember?.id || 0) === row.memberId
+      && (!Number(firstMember?.hostId || 0) || Number(firstMember?.hostId || 0) === row.hostId);
   });
 }
 
@@ -1541,7 +1544,7 @@ async function normalizeTrafficSummaryRowsForRules(
       .where(sql`${forwardRules.id} IN (${sql.join(groupChildIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.forwardGroupRuleId} IS NOT NULL`);
     const groupModeById = await getForwardGroupModeMap((childRows as any[]).map((row: any) => Number(row.groupId || 0)));
     const chainMemberRows = (childRows as any[]).filter((row: any) => groupModeById.get(Number(row.groupId || 0)) === "chain");
-    const firstChainMemberByGroup = new Map<number, number>();
+    const firstChainMemberByGroup = new Map<number, { id: number; hostId: number; priority: number }>();
     if (chainMemberRows.length > 0) {
       const groupIds = Array.from(new Set(chainMemberRows.map((row: any) => Number(row.groupId || 0)).filter((id: number) => id > 0)));
       if (groupIds.length > 0) {
@@ -1549,6 +1552,7 @@ async function normalizeTrafficSummaryRowsForRules(
           .select({
             id: forwardGroupMembers.id,
             groupId: forwardGroupMembers.groupId,
+            hostId: forwardGroupMembers.hostId,
             priority: forwardGroupMembers.priority,
             isEnabled: forwardGroupMembers.isEnabled,
           })
@@ -1557,14 +1561,18 @@ async function normalizeTrafficSummaryRowsForRules(
         for (const row of memberRows as any[]) {
           if (!rowBool((row as any).isEnabled)) continue;
           const groupId = Number((row as any).groupId || 0);
-          const previousId = firstChainMemberByGroup.get(groupId);
-          if (!previousId) {
-            firstChainMemberByGroup.set(groupId, Number(row.id));
+          const previous = firstChainMemberByGroup.get(groupId);
+          const candidate = {
+            id: Number(row.id),
+            hostId: Number(row.hostId || 0),
+            priority: Number(row.priority || 0),
+          };
+          if (!previous) {
+            firstChainMemberByGroup.set(groupId, candidate);
             continue;
           }
-          const previous = (memberRows as any[]).find((item: any) => Number(item.id) === previousId);
-          if (Number((row as any).priority || 0) < Number(previous?.priority || 0)) {
-            firstChainMemberByGroup.set(groupId, Number(row.id));
+          if (candidate.priority < previous.priority || (candidate.priority === previous.priority && candidate.id < previous.id)) {
+            firstChainMemberByGroup.set(groupId, candidate);
           }
         }
       }
@@ -1572,8 +1580,12 @@ async function normalizeTrafficSummaryRowsForRules(
     const parentByChild = new Map<number, { parentId: number; hostId: number }>();
     for (const row of childRows as any[]) {
       const groupMode = groupModeById.get(Number(row.groupId || 0));
-      if (groupMode === "chain" && Number(firstChainMemberByGroup.get(Number(row.groupId || 0)) || 0) !== Number(row.memberId || 0)) {
-        continue;
+      if (groupMode === "chain") {
+        const firstMember = firstChainMemberByGroup.get(Number(row.groupId || 0));
+        if (Number(firstMember?.id || 0) !== Number(row.memberId || 0)
+          || (Number(firstMember?.hostId || 0) > 0 && Number(firstMember?.hostId || 0) !== Number(row.hostId || 0))) {
+          continue;
+        }
       }
       parentByChild.set(Number(row.id), { parentId: Number(row.parentId), hostId: Number(row.hostId) });
     }

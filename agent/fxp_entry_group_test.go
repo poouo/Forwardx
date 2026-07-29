@@ -136,6 +136,32 @@ func TestDesiredV2EntryGroupAttachmentRemainsLocalToItsBatch(t *testing.T) {
 	requireFXPEntryGroupMembers(t, *firstBatch[0].FXPEntryGroup, first, second)
 }
 
+func TestDesiredEntryGroupDropsMemberReplacedByNonFXPAction(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	first := testV1EntrySpec(86, 3501, 45501)
+	second := testV1EntrySpec(86, 3502, 45502)
+	initial, ok := buildSharedFXPEntryGroup([]fxpSpec{first, second}, first.TunnelID, first.TransportVersion)
+	if !ok {
+		t.Fatal("initial entry group is invalid")
+	}
+	if err := persistFXPSpec(initial); err != nil {
+		t.Fatal(err)
+	}
+
+	actions := []action{
+		{Op: "apply", StatusType: "rule", ForwardType: "nginx", TunnelID: first.TunnelID, RuleID: first.RuleID, SourcePort: first.ListenPort, Protocol: first.Protocol},
+		{Op: "apply", StatusType: "rule", ForwardType: "forwardx", TunnelID: second.TunnelID, RuleID: second.RuleID, SourcePort: second.ListenPort, Protocol: second.Protocol, Fxp: &second},
+	}
+	attachDesiredSharedFXPEntryGroups(actions)
+	if actions[1].FXPEntryGroup == nil {
+		t.Fatal("remaining ForwardX action has no desired entry group")
+	}
+	requireFXPEntryGroupMembers(t, *actions[1].FXPEntryGroup, second)
+	if fxpEntryGroupContains(*actions[1].FXPEntryGroup, first) {
+		t.Fatal("desired entry group retained the member replaced by Nginx")
+	}
+}
+
 func TestDesiredV2EntryGroupLifecycleAddUpdateAndRemove(t *testing.T) {
 	usePersistentRuntimeTestDirs(t)
 

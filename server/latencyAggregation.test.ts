@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeTunnelBranches, trafficAccountingHostIds, validateTunnelProbeSource } from "./agentReportRoutes";
+import {
+  shouldAccountForwardRuleTraffic,
+  summarizeTunnelBranches,
+  trafficAccountingHostIds,
+  validateTunnelProbeSource,
+} from "./agentReportRoutes";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
 import { getTunnelAutoHopAggregate, recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { shouldUseLatencyCandidate } from "./repositories/metricsRepository";
@@ -221,4 +226,30 @@ test("forward-chain hop aggregation never mixes topology generations", () => {
     isTimeout: false,
     generation: "new",
   }), { success: true, latencyMs: 25 });
+});
+
+test("forward-chain traffic counts only the first internal listener", () => {
+  const group = {
+    groupMode: "chain",
+    members: [
+      { id: 101, hostId: 1, priority: 0, isEnabled: true },
+      { id: 102, hostId: 2, priority: 1, isEnabled: true },
+    ],
+  };
+  const common = {
+    forwardGroupId: 10,
+    forwardGroupRuleId: 20,
+    forwardGroupMemberId: 101,
+  };
+
+  assert.equal(shouldAccountForwardRuleTraffic({ ...common, hostId: 1 }, group), true);
+  assert.equal(
+    shouldAccountForwardRuleTraffic({ ...common, hostId: 9 }, group),
+    false,
+    "an external entry listener shares the first member id but must not be counted again",
+  );
+  assert.equal(
+    shouldAccountForwardRuleTraffic({ ...common, hostId: 2, forwardGroupMemberId: 102 }, group),
+    false,
+  );
 });

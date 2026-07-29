@@ -246,7 +246,7 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 		return done
 	}
 	markRuntimeActionQueued()
-	enqueueActionJob(actionJob{cfg: cfg, action: a, done: done})
+	enqueueActionJob(actionJob{cfg: cfg, action: a, previousRuntime: captureLocalActionRuntimeSnapshot(a), done: done})
 	return done
 }
 
@@ -263,6 +263,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	}
 	rememberDesiredStateReceived(state)
 	attachDesiredSharedFXPEntryGroups(state.Actions)
+	wireGuardReplacementTunnels := desiredWireGuardReplacementTunnels(state.Actions)
 	kernelSnapshot := newKernelForwardSnapshot()
 	// Pre-populate the per-port readiness cache once for all gost/nginx actions in this
 	// batch. Without this, canAdoptDesiredAction → desiredGostRuntimeReady calls
@@ -282,28 +283,33 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		key := desiredActionKey(a)
 		if key == "" {
 			doneCh := make(chan struct{})
-			pendingJobs = append(pendingJobs, actionJob{cfg: cfg, action: a, done: doneCh})
+			pendingJobs = append(pendingJobs, actionJob{cfg: cfg, action: a, previousRuntime: captureLocalActionRuntimeSnapshot(a), done: doneCh})
 			done = append(done, doneCh)
 			continue
 		}
 		signature := desiredActionSignature(a)
+		forceWireGuardReapply := desiredActionNeedsWireGuardReplacementReapply(a, wireGuardReplacementTunnels)
 		seen[key] = true
 		record, hasRecord := records[key]
 		forceSchemaApply := desiredActionRecordForcesApply(record, hasRecord)
 		if desiredActionRecordMatches(record, hasRecord, signature) {
 			if record.Success {
-				if desiredActionRecordConsistent(a, kernelSnapshot) {
+				if !forceWireGuardReapply && desiredActionRecordConsistent(a, kernelSnapshot) {
 					continue
 				}
 				delete(records, key)
 				if shouldLogAgentReport("desired-state-drift:"+key, agentReportLogInterval) {
-					logf("desired state drift detected; reapply queued key=%s %s", key, actionLogSummary(a))
+					reason := "runtime-drift"
+					if forceWireGuardReapply {
+						reason = "wireguard-identity-replacement"
+					}
+					logf("desired state drift detected; reapply queued key=%s reason=%s %s", key, reason, actionLogSummary(a))
 				}
-			} else if time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
+			} else if !forceWireGuardReapply && time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
 				continue
 			}
 		}
-		if !forceSchemaApply && canAdoptDesiredAction(a) {
+		if !forceSchemaApply && !forceWireGuardReapply && canAdoptDesiredAction(a) {
 			records[key] = newDesiredActionRecord(signature, true)
 			rememberDesiredActionApplied(a)
 			if shouldReportDesiredAdoptionStatus(a) {
@@ -324,6 +330,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		pendingJobs = append(pendingJobs, actionJob{
 			cfg:              cfg,
 			action:           a,
+			previousRuntime:  captureLocalActionRuntimeSnapshot(a),
 			done:             doneCh,
 			desiredKey:       key,
 			desiredSignature: signature,
@@ -344,16 +351,12 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	for _, job := range pendingJobs {
 		if isOlderAction(job.action, true) {
 			releaseQueuedAction(job.action)
-			if job.done != nil {
-				close(job.done)
-			}
+			finishUnqueuedActionJob(job)
 			continue
 		}
 		if job.desiredKey == "" {
 			if !reserveQueuedAction(job.action) {
-				if job.done != nil {
-					close(job.done)
-				}
+				finishUnqueuedActionJob(job)
 				continue
 			}
 		}
@@ -362,6 +365,27 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	}
 	rememberDesiredStateAppliedAfterActions(state, done)
 	return done
+}
+
+func desiredWireGuardReplacementTunnels(actions []action) map[int]bool {
+	result := map[int]bool{}
+	for _, a := range actions {
+		if strings.TrimSpace(a.Op) != "apply" || !isWireGuardRuntimeAction(a) || a.TunnelID <= 0 || a.WireGuard == nil {
+			continue
+		}
+		if wireGuardRuntimeIdentityReplacementRequired(a.TunnelID, a.WireGuard) {
+			result[a.TunnelID] = true
+		}
+	}
+	return result
+}
+
+func desiredActionNeedsWireGuardReplacementReapply(a action, replacementTunnels map[int]bool) bool {
+	if len(replacementTunnels) == 0 || strings.TrimSpace(a.Op) != "apply" || a.Fxp == nil {
+		return false
+	}
+	spec := normalizeFXPSpec(*a.Fxp)
+	return spec.TransportVersion == forwardXWireGuardVersion && spec.TunnelID > 0 && replacementTunnels[spec.TunnelID]
 }
 
 func desiredStateActionRecordsApplied(state *desiredState) bool {
@@ -530,7 +554,7 @@ func desiredActionLocalRuntimeReady(a action) bool {
 	}
 	if a.Fxp != nil {
 		checkedService = true
-		if !fxpMatchesRunning(a.Fxp) {
+		if !fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 			return false
 		}
 		if a.ForwardType == "forwardx" || a.ForwardType == "forwardx-tunnel" {
@@ -562,7 +586,7 @@ func desiredKnownRunningActionReady(a action) bool {
 	if !desiredManagedServiceReady(a, a.ServiceNameExtra, a.UnitExtra) {
 		return false
 	}
-	if a.Fxp != nil && !fxpMatchesRunning(a.Fxp) {
+	if a.Fxp != nil && !fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
 		return false
 	}
 	if a.Failover != nil && a.Failover.Enabled {
@@ -1054,14 +1078,175 @@ func actionDispatcherLoop() {
 }
 
 func finishActionJob(job actionJob) {
-	if job.done != nil {
-		close(job.done)
+	finishActionJobOutcome(job, true)
+}
+
+func finishUnqueuedActionJob(job actionJob) {
+	finishActionJobOutcome(job, false)
+}
+
+func finishActionJobOutcome(job actionJob, releasePending bool) {
+	finalize := func() {
+		ok := resolveFinalActionJobOutcome(job)
+		job.result.complete(ok)
+		if job.done != nil {
+			close(job.done)
+		}
+		if !releasePending {
+			return
+		}
+		releaseProtectedActionPort(job.protectedPort)
+		releaseQueuedAction(job.action)
+		if atomic.AddInt64(&actionPendingCount, -1) == 0 {
+			wakeHeartbeat()
+		}
 	}
-	releaseProtectedActionPort(job.protectedPort)
-	releaseQueuedAction(job.action)
-	if atomic.AddInt64(&actionPendingCount, -1) == 0 {
-		wakeHeartbeat()
+	if !job.resultReady && (len(job.prerequisites) > 0 || len(job.resultPrereqs) > 0) {
+		go finalize()
+		return
 	}
+	finalize()
+}
+
+func resolveFinalActionJobOutcome(job actionJob) bool {
+	prerequisitesOK := true
+	for _, prerequisite := range job.prerequisites {
+		if prerequisite != nil {
+			<-prerequisite
+		}
+	}
+	for _, prerequisite := range job.resultPrereqs {
+		if !prerequisite.wait() {
+			prerequisitesOK = false
+		}
+	}
+
+	ok := job.resultReady && job.resultOK && prerequisitesOK
+	if !job.resultReady && prerequisitesOK && !isOlderAction(job.action, false) &&
+		sharedRuntimeOwnsDesiredActionListener(job.action) && desiredActionLocalRuntimeReady(job.action) {
+		ok = true
+		logf("action completion adopted ready shared runtime %s", actionLogSummary(job.action))
+	}
+
+	// Resolve shared-runtime transactions before the old FXP snapshot. On
+	// failure this first releases the replacement listener, so restoring FXP
+	// cannot race a still-running Nginx or Gost process for the same port.
+	for _, prerequisite := range job.resultPrereqs {
+		prerequisite.resolveDependent(ok)
+	}
+	resolveActionJobHandoffResult(job, ok)
+	return ok
+}
+
+func resolveActionJobHandoffResult(job actionJob, ok bool) {
+	state := job.previousRuntime.handoffState
+	if state == nil || job.action.HandoffOnly {
+		return
+	}
+	if !ok {
+		finalizeActionHandoffState(job.action, state, actionHandoffRollback)
+		return
+	}
+	if job.action.Fxp != nil {
+		// A successful FXP apply has already persisted the new generation.
+		// Do not rewrite it from the old handoff snapshot.
+		finalizeActionHandoffState(job.action, state, actionHandoffFinish)
+		return
+	}
+	finalizeActionHandoffState(job.action, state, actionHandoffCommit)
+}
+
+func resolveActionJobPrerequisites(job actionJob, ok bool) {
+	resolve := func() {
+		for _, prerequisite := range job.resultPrereqs {
+			prerequisite.wait()
+			prerequisite.resolveDependent(ok)
+		}
+	}
+	if !job.resultReady && len(job.resultPrereqs) > 0 {
+		go resolve()
+		return
+	}
+	resolve()
+}
+
+func resolveActionJobHandoff(job actionJob, ok bool) {
+	state := job.previousRuntime.handoffState
+	if state == nil || job.action.HandoffOnly {
+		return
+	}
+	if job.resultReady {
+		if ok {
+			if job.action.Fxp != nil {
+				// A successful FXP apply has already persisted the new generation.
+				// Do not rewrite it from the old handoff snapshot.
+				finalizeActionHandoffState(job.action, state, actionHandoffFinish)
+			} else {
+				finalizeActionHandoffState(job.action, state, actionHandoffCommit)
+			}
+		} else {
+			finalizeActionHandoffState(job.action, state, actionHandoffRollback)
+		}
+		return
+	}
+	go func() {
+		prerequisitesOK := true
+		for _, prerequisite := range job.resultPrereqs {
+			if !prerequisite.wait() {
+				prerequisitesOK = false
+			}
+		}
+		if prerequisitesOK && sharedRuntimeOwnsDesiredActionListener(job.action) && desiredActionLocalRuntimeReady(job.action) {
+			finalizeActionHandoffState(job.action, state, actionHandoffCommit)
+			return
+		}
+		finalizeActionHandoffState(job.action, state, actionHandoffRollback)
+	}()
+}
+
+type actionHandoffFinalization uint8
+
+const (
+	actionHandoffCommit actionHandoffFinalization = iota
+	actionHandoffFinish
+	actionHandoffRollback
+)
+
+func finalizeActionHandoffState(guard action, state *actionHandoffState, finalization actionHandoffFinalization) bool {
+	if state == nil {
+		return false
+	}
+	if state.handoffBatch() != nil {
+		finalizeActionHandoffStateUnlocked(state, finalization)
+		return true
+	}
+
+	unlock := acquireActionSerialLocks(actionSerialKeys(guard))
+	if unlock != nil {
+		defer unlock()
+	}
+	if isOlderAction(guard, false) {
+		state.cancel()
+		logf("runtime handoff finalization cancelled by newer desired state %s", actionLogSummary(guard))
+		return false
+	}
+	finalizeActionHandoffStateUnlocked(state, finalization)
+	return true
+}
+
+func finalizeActionHandoffStateUnlocked(state *actionHandoffState, finalization actionHandoffFinalization) {
+	switch finalization {
+	case actionHandoffCommit:
+		state.runCommit()
+	case actionHandoffFinish:
+		state.finish()
+	case actionHandoffRollback:
+		state.runRollback()
+	}
+}
+
+func sharedRuntimeOwnsDesiredActionListener(a action) bool {
+	return a.Fxp == nil && sharedRuntimeOwnerForForwardType(a.ForwardType) != ""
 }
 
 func startActionWorkerLoops(count int) {
@@ -1101,11 +1286,14 @@ func actionWorkerLoop(workerID int) {
 					logf("action queue wait slow worker=%d waited=%s pendingActions=%d queued=%d %s", workerID, waited.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 				}
 			}
-			defer finishActionJob(job)
+			defer func() { finishActionJob(job) }()
 			if isOlderAction(job.action, false) {
 				return
 			}
-			waitForActionPrerequisites(job)
+			if !waitForActionPrerequisites(job) {
+				logf("action prerequisite failed; skipping %s", actionLogSummary(job.action))
+				return
+			}
 			if isOlderAction(job.action, false) {
 				return
 			}
@@ -1124,7 +1312,9 @@ func actionWorkerLoop(workerID int) {
 				defer unlock()
 			}
 			started := time.Now()
-			ok := handleActionWithRuntimeGate(job.cfg, job.action, releaseRuntimeGate)
+			ok := handleActionJobWithRuntimeSnapshot(job.cfg, job.action, releaseRuntimeGate, &job.previousRuntime, job.result)
+			job.resultOK = ok
+			job.resultReady = true
 			if ok {
 				rememberDesiredActionApplied(job.action)
 			}
@@ -1157,18 +1347,21 @@ func isSharedRuntimeSyncAction(a action) bool {
 // Shared runtime configs own many ports at once. Apply those configs as a short
 // batch phase before per-port work, then retain normal parallelism for all ports.
 func prepareDesiredActionJobs(jobs []actionJob) []actionJob {
+	return prepareDesiredActionJobsWithOwnerResolver(jobs, localForwardTypeForAction)
+}
+
+func prepareDesiredActionJobsWithOwnerResolver(jobs []actionJob, resolveOwner func(action) string) []actionJob {
 	if len(jobs) < 2 {
 		return jobs
 	}
 	sharedRuntimeJobs := make([]actionJob, 0, 2)
 	remainingJobs := make([]actionJob, 0, len(jobs))
-	prerequisites := make([]<-chan struct{}, 0, 2)
 	for _, job := range jobs {
 		if isSharedRuntimeSyncAction(job.action) {
-			sharedRuntimeJobs = append(sharedRuntimeJobs, job)
-			if job.done != nil {
-				prerequisites = append(prerequisites, job.done)
+			if job.result == nil {
+				job.result = newActionJobResult()
 			}
+			sharedRuntimeJobs = append(sharedRuntimeJobs, job)
 			continue
 		}
 		remainingJobs = append(remainingJobs, job)
@@ -1176,36 +1369,274 @@ func prepareDesiredActionJobs(jobs []actionJob) []actionJob {
 	if len(sharedRuntimeJobs) == 0 {
 		return jobs
 	}
-	handoffJobs := make([]actionJob, 0)
-	handoffPrerequisites := make([]<-chan struct{}, 0)
-	for _, job := range remainingJobs {
-		if !actionNeedsPreRuntimeHandoff(job.action) {
+	previousForwardTypes := make([]string, len(remainingJobs))
+	sharedRuntimeTransitions := map[string]map[string]bool{}
+	for remainingIndex := range remainingJobs {
+		job := &remainingJobs[remainingIndex]
+		previousForwardType := strings.TrimSpace(job.previousRuntime.forwardType)
+		if previousForwardType == "" && resolveOwner != nil {
+			previousForwardType = resolveOwner(job.action)
+		}
+		previousForwardTypes[remainingIndex] = previousForwardType
+		if !actionJobNeedsPreRuntimeHandoff(*job) {
 			continue
 		}
-		done := make(chan struct{})
+		previousOwner := sharedRuntimeOwnerForForwardType(previousForwardType)
+		desiredOwner := sharedRuntimeOwnerForForwardType(job.action.ForwardType)
+		if previousOwner == "" || desiredOwner == "" || previousOwner == desiredOwner {
+			continue
+		}
+		if sharedRuntimeTransitions[previousOwner] == nil {
+			sharedRuntimeTransitions[previousOwner] = map[string]bool{}
+		}
+		sharedRuntimeTransitions[previousOwner][desiredOwner] = true
+	}
+	handoffJobs := make([]actionJob, 0)
+	handoffBatches := map[string]*actionHandoffBatch{}
+	for remainingIndex := range remainingJobs {
+		job := &remainingJobs[remainingIndex]
+		previousForwardType := previousForwardTypes[remainingIndex]
+		relevantRuntimeIndexes := make([]int, 0, len(sharedRuntimeJobs))
+		for runtimeIndex := range sharedRuntimeJobs {
+			if sharedRuntimeActionRequiredBy(sharedRuntimeJobs[runtimeIndex].action, job.action, previousForwardType) {
+				relevantRuntimeIndexes = append(relevantRuntimeIndexes, runtimeIndex)
+			}
+		}
+		if len(relevantRuntimeIndexes) == 0 {
+			continue
+		}
+		for _, runtimeIndex := range relevantRuntimeIndexes {
+			runtimeJob := &sharedRuntimeJobs[runtimeIndex]
+			if runtimeJob.done != nil {
+				job.prerequisites = append(job.prerequisites, runtimeJob.done)
+			}
+			job.resultPrereqs = append(job.resultPrereqs, runtimeJob.result)
+			runtimeJob.result.addDependent()
+		}
+		if !actionJobNeedsPreRuntimeHandoff(*job) {
+			continue
+		}
+		if batchKey := fxpEntryGroupHandoffBatchKey(*job); batchKey != "" {
+			batch := handoffBatches[batchKey]
+			if batch == nil {
+				batch = newActionHandoffBatch()
+				handoffBatches[batchKey] = batch
+			}
+			batch.addParticipant(job.action)
+			protocol := "both"
+			if job.previousRuntime.hasProtocol {
+				protocol = job.previousRuntime.protocol
+			}
+			batch.registerSelector(fxpRuntimeSelector{
+				role:       "entry",
+				tunnelID:   job.previousRuntime.tunnelID,
+				ruleID:     job.previousRuntime.ruleID,
+				listenPort: job.action.SourcePort,
+				protocol:   protocol,
+			})
+			job.previousRuntime.handoffState.attachBatch(batch)
+		}
+		result := newActionJobResult()
 		handoffAction := job.action
 		handoffAction.HandoffOnly = true
 		handoffJobs = append(handoffJobs, actionJob{
-			cfg:    job.cfg,
-			action: handoffAction,
-			done:   done,
+			cfg:             job.cfg,
+			action:          handoffAction,
+			previousRuntime: job.previousRuntime,
+			done:            make(chan struct{}),
+			result:          result,
 		})
-		handoffPrerequisites = append(handoffPrerequisites, done)
-	}
-	if len(handoffPrerequisites) > 0 {
-		for index := range sharedRuntimeJobs {
-			sharedRuntimeJobs[index].prerequisites = append(sharedRuntimeJobs[index].prerequisites, handoffPrerequisites...)
+		for _, runtimeIndex := range relevantRuntimeIndexes {
+			sharedRuntimeJobs[runtimeIndex].resultPrereqs = append(sharedRuntimeJobs[runtimeIndex].resultPrereqs, result)
+			result.addDependent()
 		}
+		// A successful shared-runtime phase only makes the target runnable. Keep
+		// the old FXP recovery snapshot until the concrete per-port target has
+		// either succeeded or independently proven its listener ready.
+		handoffGuard := job.action
+		handoffState := job.previousRuntime.handoffState
+		result.setFinalizers(nil, func() {
+			finalizeActionHandoffState(handoffGuard, handoffState, actionHandoffRollback)
+		})
 	}
-	for index := range remainingJobs {
-		if actionNeedsSharedRuntimePhase(remainingJobs[index].action) {
-			remainingJobs[index].prerequisites = append(remainingJobs[index].prerequisites, prerequisites...)
-		}
-	}
+	linkOneWaySharedRuntimeTransitions(sharedRuntimeJobs, sharedRuntimeTransitions)
 	ordered := make([]actionJob, 0, len(handoffJobs)+len(sharedRuntimeJobs)+len(remainingJobs))
 	ordered = append(ordered, handoffJobs...)
 	ordered = append(ordered, sharedRuntimeJobs...)
 	return append(ordered, remainingJobs...)
+}
+
+// A one-way shared-runtime owner change must remove the old owner's desired
+// config before the new owner starts. For a simultaneous swap in both
+// directions, both handoff jobs stop their old processes first, so the runtime
+// jobs can synchronize in parallel without introducing a dependency cycle.
+func linkOneWaySharedRuntimeTransitions(runtimeJobs []actionJob, transitions map[string]map[string]bool) {
+	indexes := map[string]int{}
+	for index := range runtimeJobs {
+		indexes[strings.TrimSpace(runtimeJobs[index].action.ForwardType)] = index
+	}
+	for previousOwner, desiredOwners := range transitions {
+		previousIndex, previousExists := indexes[previousOwner]
+		if !previousExists {
+			continue
+		}
+		for desiredOwner := range desiredOwners {
+			desiredIndex, desiredExists := indexes[desiredOwner]
+			if !desiredExists || desiredIndex == previousIndex || transitions[desiredOwner][previousOwner] {
+				continue
+			}
+			previousJob := &runtimeJobs[previousIndex]
+			desiredJob := &runtimeJobs[desiredIndex]
+			if previousJob.done != nil && !actionJobHasDonePrerequisite(*desiredJob, previousJob.done) {
+				desiredJob.prerequisites = append(desiredJob.prerequisites, previousJob.done)
+			}
+			if previousJob.result != nil && !actionJobHasResultPrerequisite(*desiredJob, previousJob.result) {
+				desiredJob.resultPrereqs = append(desiredJob.resultPrereqs, previousJob.result)
+				previousJob.result.addDependent()
+			}
+		}
+	}
+}
+
+func actionJobHasDonePrerequisite(job actionJob, prerequisite <-chan struct{}) bool {
+	for _, existing := range job.prerequisites {
+		if existing == prerequisite {
+			return true
+		}
+	}
+	return false
+}
+
+func actionJobHasResultPrerequisite(job actionJob, prerequisite *actionJobResult) bool {
+	for _, existing := range job.resultPrereqs {
+		if existing == prerequisite {
+			return true
+		}
+	}
+	return false
+}
+
+func actionJobNeedsPreRuntimeHandoff(job actionJob) bool {
+	a := job.action
+	if strings.TrimSpace(a.Op) != "apply" || !actionNeedsSharedRuntimePhase(a) || !validActionPort(a.SourcePort) {
+		return false
+	}
+	previous := job.previousRuntime
+	if !previous.valid {
+		return actionNeedsPreRuntimeHandoff(a)
+	}
+	if previous.tunnel {
+		return tunnelActionNeedsPreRuntimeHandoff(a, previous.tunnelID, previous.forwardType)
+	}
+	return ruleActionNeedsPreRuntimeHandoff(
+		a,
+		previous.ruleID,
+		previous.forwardType,
+		previous.tunnelID,
+		previous.protocol,
+		previous.hasProtocol,
+	)
+}
+
+func fxpEntryGroupHandoffBatchKey(job actionJob) string {
+	previous := job.previousRuntime
+	if !sharedRuntimeOwnsDesiredActionListener(job.action) || !previous.valid || previous.tunnel ||
+		previous.handoffState == nil || strings.TrimSpace(previous.forwardType) != "forwardx" || previous.ruleID <= 0 || previous.tunnelID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("entry:%d", previous.tunnelID)
+}
+
+func localForwardTypeForAction(a action) string {
+	snapshot := captureLocalActionRuntimeSnapshot(a)
+	forwardType := strings.TrimSpace(snapshot.forwardType)
+	if !snapshot.valid || forwardType == "" || forwardType != strings.TrimSpace(a.ForwardType) || desiredActionLocalRuntimeReady(a) {
+		return forwardType
+	}
+	if owner := activeSharedRuntimeForwardType(a.SourcePort, a.Protocol); owner != "" {
+		return owner
+	}
+	return forwardType
+}
+
+func captureLocalActionRuntimeSnapshot(a action) localActionRuntimeSnapshot {
+	if !validActionPort(a.SourcePort) || strings.TrimSpace(a.StatusType) == "runtime" {
+		return localActionRuntimeSnapshot{}
+	}
+	port := strconv.Itoa(a.SourcePort)
+	if strings.TrimSpace(a.StatusType) == "tunnel" || (a.TunnelID > 0 && a.RuleID <= 0) {
+		snapshot := localActionRuntimeSnapshot{
+			tunnel:       true,
+			tunnelID:     readTunnelIDByPort(port),
+			forwardType:  strings.TrimSpace(readTunnelForwardTypeByPort(port)),
+			handoffState: &actionHandoffState{},
+		}
+		snapshot.valid = snapshot.tunnelID > 0 || snapshot.forwardType != ""
+		return snapshot
+	}
+	_, _, protocol, hasProtocol := readTargetInfo(port)
+	snapshot := localActionRuntimeSnapshot{
+		ruleID:       readRuleIDByPort(port),
+		tunnelID:     readRuleTunnelIDByPort(port),
+		forwardType:  strings.TrimSpace(readForwardTypeByPort(port)),
+		protocol:     protocol,
+		hasProtocol:  hasProtocol,
+		handoffState: &actionHandoffState{},
+	}
+	snapshot.valid = snapshot.ruleID > 0 || snapshot.forwardType != ""
+	return snapshot
+}
+
+func activeSharedRuntimeForwardType(port int, protocol string) string {
+	if !validActionPort(port) {
+		return ""
+	}
+	for _, path := range managedGostConfigPathsForListenPortProtocol(port, protocol) {
+		if path == nginxConfigPath {
+			return "nginx"
+		}
+		return "gost"
+	}
+	if managedRuntimeConfigUsesPort(nginxConfigPath, port) {
+		return "nginx"
+	}
+	for _, path := range []string{runtimeConfigPath, tunnelRuntimeConfigPath, legacyRuntimeConfigPath, legacyTunnelRuntimeConfigPath, legacyGostConfigPath, legacyTunnelConfigPath} {
+		if managedRuntimeConfigUsesPort(path, port) {
+			return "gost"
+		}
+	}
+	return ""
+}
+
+func sharedRuntimeOwnerForForwardType(forwardType string) string {
+	switch strings.TrimSpace(forwardType) {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return "nginx-runtime-sync"
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+		return "gost-runtime-sync"
+	default:
+		return ""
+	}
+}
+
+func sharedRuntimeActionRequiredBy(runtimeAction action, dependent action, previousForwardType string) bool {
+	if !isSharedRuntimeSyncAction(runtimeAction) || strings.TrimSpace(dependent.StatusType) == "runtime" {
+		return false
+	}
+	runtimeType := strings.TrimSpace(runtimeAction.ForwardType)
+	if runtimeType == sharedRuntimeOwnerForForwardType(dependent.ForwardType) ||
+		runtimeType == sharedRuntimeOwnerForForwardType(previousForwardType) {
+		return true
+	}
+	if runtimeType == "forwardx-wireguard" {
+		if dependent.Fxp == nil {
+			return false
+		}
+		spec := normalizeFXPSpec(*dependent.Fxp)
+		return spec.TransportVersion == forwardXWireGuardVersion &&
+			spec.TunnelID > 0 && spec.TunnelID == runtimeAction.TunnelID
+	}
+	return false
 }
 
 func actionNeedsPreRuntimeHandoff(a action) bool {
@@ -1257,9 +1688,9 @@ func actionNeedsSharedRuntimePhase(a action) bool {
 	}
 }
 
-func waitForActionPrerequisites(job actionJob) {
-	if len(job.prerequisites) == 0 {
-		return
+func waitForActionPrerequisites(job actionJob) bool {
+	if len(job.prerequisites) == 0 && len(job.resultPrereqs) == 0 {
+		return true
 	}
 	startedAt := time.Now()
 	for _, prerequisite := range job.prerequisites {
@@ -1267,9 +1698,16 @@ func waitForActionPrerequisites(job actionJob) {
 			<-prerequisite
 		}
 	}
+	ok := true
+	for _, result := range job.resultPrereqs {
+		if !result.wait() {
+			ok = false
+		}
+	}
 	if waited := time.Since(startedAt); waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-runtime-prerequisite-wait", agentReportLogInterval) {
 		logf("action runtime prerequisite wait duration=%s %s", waited.Round(time.Millisecond), actionLogSummary(job.action))
 	}
+	return ok
 }
 
 func acquireSharedRuntimeSyncGate(a action) func() {
@@ -1319,6 +1757,14 @@ func actionSerialKeys(a action) []string {
 		keys = append(keys, fmt.Sprintf("fxp-entry-group:%d", a.Fxp.TunnelID))
 	}
 	sort.Strings(keys)
+	return keys
+}
+
+func actionSerialKeysForActions(actions []action) []string {
+	keys := make([]string, 0, len(actions)*2)
+	for _, a := range actions {
+		keys = append(keys, actionSerialKeys(a)...)
+	}
 	return keys
 }
 

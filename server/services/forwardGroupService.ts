@@ -259,14 +259,28 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
-  await db.updateForwardGroup(id, {
-    ...normalized.data,
-    isEnabled: enabledChanged ? !!existing.isEnabled : desiredEnabled,
-  } as any, { skipSync: true });
-  if (membersChanged) {
-    await db.replaceForwardGroupMembers(id, normalized.members as any, { skipSync: enabledChanged });
+  const persistConfiguration = async (options: { deferRefresh?: boolean; skipMemberSync?: boolean } = {}) => {
+    await db.updateForwardGroup(id, {
+      ...normalized.data,
+      isEnabled: enabledChanged ? !!existing.isEnabled : desiredEnabled,
+    } as any, { skipSync: true });
+    if (membersChanged) {
+      await db.replaceForwardGroupMembers(id, normalized.members as any, {
+        skipSync: enabledChanged || options.skipMemberSync,
+        deferRefresh: options.deferRefresh,
+      });
+    }
+    if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
+  };
+  if (normalized.data.groupMode === "chain" && !enabledChanged) {
+    await db.withForwardGroupSyncTransaction(
+      id,
+      () => persistConfiguration({ deferRefresh: true, skipMemberSync: true }),
+      membersChanged ? {} : { preserveRuntime: true },
+    );
+    return db.getForwardGroupById(id);
   }
-  if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
+  await persistConfiguration();
   if (enabledChanged) {
     await db.setForwardGroupEnabled(id, desiredEnabled);
     if (membersChanged && (normalized.data.groupMode === "entry" || normalized.data.groupMode === "exit")) {

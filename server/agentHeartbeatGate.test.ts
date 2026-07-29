@@ -8,6 +8,7 @@ import {
   buildNginxStreamServerBlock,
   buildNginxTunnelServerCertificate,
   buildNginxTunnelTlsClientOptions,
+  selectForwardChainListenerPort,
   stableDesiredStateHash,
 } from "./agentHeartbeatRoute";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
@@ -293,6 +294,19 @@ test("desired-state aggregate hash ignores delivery timestamps and per-action tr
     stableDesiredStateHash([{ ...action, issuedAt: 200, configHash: "delivery-b" }]),
   );
   assert.notEqual(stableDesiredStateHash([action]), stableDesiredStateHash([{ ...action, ruleId: 8 }]));
+});
+
+test("forward-chain target reconciliation uses the downstream listener port", () => {
+  const childRules = [
+    { id: 11, forwardGroupMemberId: 101, hostId: 9, sourcePort: 42005, pendingDelete: false },
+    { id: 12, forwardGroupMemberId: 101, hostId: 1, sourcePort: 12007, pendingDelete: false },
+    { id: 13, forwardGroupMemberId: 102, hostId: 2, sourcePort: 22008, pendingDelete: false },
+    { id: 14, forwardGroupMemberId: 102, hostId: 2, sourcePort: 22009, pendingDelete: true },
+  ];
+
+  assert.equal(selectForwardChainListenerPort(childRules, 101, 1, 42005), 12007);
+  assert.equal(selectForwardChainListenerPort(childRules, 102, 2, 12007), 22008);
+  assert.equal(selectForwardChainListenerPort(childRules, 999, 9, 33000), 33000);
 });
 
 test("an Agent version change requires a fresh desired-state reconciliation", () => {

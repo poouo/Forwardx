@@ -12,6 +12,8 @@ IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
 EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
 DATA_VOLUME_REUSE_NOTIFIED="false"
+RESOLVED_IMAGE=""
+EXPECTED_PANEL_VERSION=""
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -387,7 +389,7 @@ latest_release_version() {
     | head -1 || true)"
 
   if [ -z "$tag" ]; then
-    echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url"
+    echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url" >&2
     return 1
   fi
   printf "%s\n" "$tag"
@@ -404,20 +406,32 @@ resolve_release_version() {
   fi
 
   if [[ ! "$normalized" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "[ERROR] Invalid release version: ${normalized:-<empty>}"
+    echo "[ERROR] Invalid release version: ${normalized:-<empty>}" >&2
     return 1
   fi
   printf "%s\n" "$normalized"
 }
 
-resolve_image_ref() {
+resolve_image_selection() {
   local version=""
+  RESOLVED_IMAGE=""
+  EXPECTED_PANEL_VERSION=""
+
   if [ -n "$EXPLICIT_FORWARDX_IMAGE" ]; then
-    printf "%s\n" "$EXPLICIT_FORWARDX_IMAGE"
+    RESOLVED_IMAGE="$EXPLICIT_FORWARDX_IMAGE"
+    if [ -n "${FORWARDX_TARGET_VERSION:-}" ]; then
+      if ! EXPECTED_PANEL_VERSION="$(resolve_release_version)"; then
+        return 1
+      fi
+    fi
     return
   fi
-  version="$(resolve_release_version)"
-  printf "%s:v%s\n" "$IMAGE_REPO" "$version"
+
+  if ! version="$(resolve_release_version)"; then
+    return 1
+  fi
+  EXPECTED_PANEL_VERSION="$version"
+  RESOLVED_IMAGE="${IMAGE_REPO}:v${version}"
 }
 
 install_base_deps() {
@@ -539,7 +553,9 @@ remove_existing_panel_containers() {
   ids="$(panel_container_ids)"
   while IFS= read -r id; do
     [ -z "$id" ] && continue
-    docker rm -f "$id" 2>/dev/null || true
+    if docker rm -f "$id" >/dev/null 2>&1; then
+      echo "[INFO] Removed previous ForwardX container: $id"
+    fi
   done <<< "$ids"
 }
 
@@ -548,27 +564,110 @@ image_panel_version() {
   docker run --rm --entrypoint node "$image" -p "require('./package.json').version"
 }
 
+image_label_version() {
+  local image="$1"
+  docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image"
+}
+
+image_id() {
+  local image="$1"
+  docker image inspect --format '{{.Id}}' "$image"
+}
+
 assert_target_image_ready() {
   local image="$1"
-  local target="${FORWARDX_TARGET_VERSION:-}"
-  local expected=""
-  local actual=""
-  if [ -z "$target" ]; then
+  local expected="${2:-}"
+  local package_version=""
+  local label_version=""
+  local normalized_label=""
+  if [ -z "$expected" ]; then
     return
   fi
-  expected="$(normalize_version "$target")"
-  actual="$(image_panel_version "$image" 2>/dev/null || true)"
-  actual="$(normalize_version "$actual")"
-  if [ -z "$actual" ]; then
-    echo "[INFO] Unable to read panel version from image $image"
-    echo "[INFO] GitHub Actions may still be building or uploading release assets. Please retry later."
+  expected="$(normalize_version "$expected")"
+  package_version="$(image_panel_version "$image" 2>/dev/null || true)"
+  package_version="$(normalize_version "$package_version")"
+  label_version="$(image_label_version "$image" 2>/dev/null || true)"
+  label_version="$(normalize_version "$label_version")"
+  normalized_label="$(printf "%s" "$label_version" | tr '[:upper:]' '[:lower:]')"
+
+  if [ "$package_version" != "$expected" ]; then
+    echo "[ERROR] Pulled ForwardX image failed version verification: $image"
+    echo "[ERROR] Expected v$expected; package=${package_version:-unreadable}; label=${label_version:-unreadable}"
+    echo "[INFO] The release image may still be publishing, or a Docker registry mirror/proxy may be serving stale content."
+    echo "[INFO] Check 'docker info' for Registry Mirrors, bypass or purge the stale mirror cache, then retry the upgrade."
     exit "$ASSETS_PENDING_EXIT_CODE"
   fi
-  if [ "$actual" != "$expected" ]; then
-    echo "[INFO] Image version mismatch: expected v$expected, got v$actual"
-    echo "[INFO] Release image may still be building/pushing. Please retry later."
-    exit "$ASSETS_PENDING_EXIT_CODE"
+
+  case "$normalized_label" in
+    ""|unknown|"<no value>"|null)
+      echo "[WARN] Image OCI version label is unavailable; verified the embedded package version instead."
+      ;;
+    "$expected")
+      ;;
+    *)
+      echo "[ERROR] Pulled ForwardX image label conflicts with its expected version: $image"
+      echo "[ERROR] Expected v$expected; package=v$package_version; label=v$label_version"
+      echo "[INFO] A Docker registry mirror/proxy may be serving stale or inconsistent image metadata."
+      echo "[INFO] Check 'docker info' for Registry Mirrors, bypass or purge the stale mirror cache, then retry the upgrade."
+      exit "$ASSETS_PENDING_EXIT_CODE"
+      ;;
+  esac
+
+  echo "[INFO] Verified pulled image version: v$expected"
+}
+
+running_panel_version() {
+  docker exec "$CONTAINER_NAME" node -p "require('/app/package.json').version"
+}
+
+assert_running_panel_ready() {
+  local expected_image_id="$1"
+  local expected_version="${2:-}"
+  local running=""
+  local active_image_id=""
+  local running_version=""
+  local attempt=0
+
+  while [ "$attempt" -lt 15 ]; do
+    running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+    active_image_id="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+    if [ "$running" = "true" ]; then
+      running_version="$(running_panel_version 2>/dev/null || true)"
+      if [ -n "$running_version" ]; then
+        break
+      fi
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  if [ "$running" != "true" ]; then
+    echo "[ERROR] ForwardX container did not remain running after recreation: $CONTAINER_NAME"
+    echo "[INFO] Inspect it with: docker logs --tail 100 $CONTAINER_NAME"
+    return 1
   fi
+  if [ -z "$running_version" ]; then
+    echo "[ERROR] Unable to read the ForwardX version from the running container: $CONTAINER_NAME"
+    echo "[INFO] Inspect it with: docker logs --tail 100 $CONTAINER_NAME"
+    return 1
+  fi
+  if [ -z "$expected_image_id" ] || [ "$active_image_id" != "$expected_image_id" ]; then
+    echo "[ERROR] Recreated container is not using the image that was just pulled."
+    echo "[ERROR] Pulled image ID: ${expected_image_id:-unreadable}"
+    echo "[ERROR] Running image ID: ${active_image_id:-unreadable}"
+    echo "[INFO] Check for duplicate Compose projects/containers and retry the upgrade."
+    return 1
+  fi
+
+  running_version="$(normalize_version "$running_version")"
+  expected_version="$(normalize_version "$expected_version")"
+  if [ -n "$expected_version" ] && [ "$running_version" != "$expected_version" ]; then
+    echo "[ERROR] Running ForwardX version mismatch: expected v$expected_version, got ${running_version:+v}${running_version:-unreadable}"
+    echo "[INFO] The container image ID is correct, but its runtime package is inconsistent. Check Docker storage and registry mirror integrity."
+    return 1
+  fi
+
+  echo "[INFO] Verified running ForwardX container: image=$active_image_id version=${running_version:+v}$running_version"
 }
 
 image_repository_from_ref() {
@@ -625,6 +724,8 @@ cleanup_old_panel_images() {
 
 start_panel() {
   local image="$1"
+  local expected_version="${2:-}"
+  local pulled_image_id=""
   cd "$APP_DIR"
   echo "[INFO] Pulling image: $image"
   if ! docker pull "$image"; then
@@ -632,10 +733,17 @@ start_panel() {
     echo "[INFO] GitHub Actions may still be building or uploading release assets. Please retry later."
     exit "$ASSETS_PENDING_EXIT_CODE"
   fi
-  assert_target_image_ready "$image"
+  assert_target_image_ready "$image" "$expected_version"
+  pulled_image_id="$(image_id "$image" 2>/dev/null || true)"
+  if [ -z "$pulled_image_id" ]; then
+    echo "[ERROR] Unable to resolve the pulled image ID: $image"
+    echo "[INFO] Check Docker daemon storage and retry the upgrade."
+    return 1
+  fi
   remove_existing_panel_containers
   ensure_data_volume
   compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" up -d --remove-orphans forwardx
+  assert_running_panel_ready "$pulled_image_id" "$expected_version"
   cleanup_old_panel_images "$image"
 }
 
@@ -645,11 +753,12 @@ install_panel() {
   install_docker
   load_existing_env
   read_database_config_json
-  image="$(resolve_image_ref)"
+  resolve_image_selection
+  image="$RESOLVED_IMAGE"
   write_compose_file
   write_env "$image"
   write_database_config_to_volume
-  start_panel "$image"
+  start_panel "$image" "$EXPECTED_PANEL_VERSION"
   echo "[DONE] ForwardX Docker panel started: http://SERVER_IP:$PORT"
   echo "[INFO] Image: $image"
 }
@@ -659,10 +768,11 @@ upgrade_panel() {
   require_root
   load_existing_env
   install_docker
-  image="$(resolve_image_ref)"
+  resolve_image_selection
+  image="$RESOLVED_IMAGE"
   write_compose_file
   write_env "$image"
-  start_panel "$image"
+  start_panel "$image" "$EXPECTED_PANEL_VERSION"
   echo "[DONE] ForwardX Docker panel upgraded and restarted"
   echo "[INFO] Image: $image"
 }

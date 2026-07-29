@@ -122,7 +122,7 @@ export const portsRulesRouter = router({
           planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
         }
         const port = await db.findAvailableForwardGroupPort(input.forwardGroupId, input.excludeRuleId, planRange, input.protocol);
-        if (!port) throw new Error("转发组成员端口区间内已无共同可用端口");
+        if (!port) throw new Error("转发组入口端口区间内已无可用端口");
         return { port };
       }
       if (!input.hostId) throw new Error("请选择主机");

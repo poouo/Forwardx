@@ -595,6 +595,7 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
       .select({
         id: forwardGroupMembers.id,
         groupId: forwardGroupMembers.groupId,
+        hostId: forwardGroupMembers.hostId,
         isEnabled: forwardGroupMembers.isEnabled,
         priority: forwardGroupMembers.priority,
       })

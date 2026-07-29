@@ -1052,7 +1052,7 @@ export const crudRulesRouter = router({
           if (!reservation) throw new Error(`入口 Agent 端口 ${sourcePort} 已被占用或正在分配`);
           groupReservations.push(reservation);
         }
-        const id = await db.createForwardRule({
+        const createTemplateRule = () => db.createForwardRule({
           hostId,
           name: input.name,
           forwardType,
@@ -1096,9 +1096,15 @@ export const crudRulesRouter = router({
           isRunning: false,
           userId: ctx.user.id,
         } as any);
+        let id = 0;
+        if (isForwardChain) {
+          id = await db.withForwardGroupSyncTransaction(forwardGroupId, createTemplateRule);
+        } else {
+          id = await createTemplateRule();
+          await db.syncForwardGroupRules(forwardGroupId);
+        }
         await quotaReservation?.release();
         quotaReservation = null;
-        await db.syncForwardGroupRules(forwardGroupId);
         await db.runForwardGroupFailover(forwardGroupId);
         return { id, sourcePort };
         } finally {
@@ -1464,13 +1470,20 @@ export const crudRulesRouter = router({
           data.protocolBlockReason = null;
         }
         if (keyFieldChanged || groupChanged || data.isEnabled !== undefined) data.isRunning = false;
-        if (groupChanged) await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-route-changed");
-        await db.updateForwardRule(input.id, data);
-        if (groupChanged) {
-          await db.syncForwardGroupRules(groupId);
-          await db.runForwardGroupFailover(groupId);
+        if (!groupChanged && isForwardChain) {
+          await db.withForwardGroupSyncTransaction(
+            activeGroupId,
+            () => db.updateForwardRule(input.id, data),
+          );
+        } else {
+          if (groupChanged) await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-route-changed");
+          await db.updateForwardRule(input.id, data);
+          if (groupChanged) {
+            await db.syncForwardGroupRules(groupId);
+            await db.runForwardGroupFailover(groupId);
+          }
+          await db.syncForwardGroupRules(activeGroupId);
         }
-        await db.syncForwardGroupRules(activeGroupId);
         await db.runForwardGroupFailover(activeGroupId);
         return { success: true, reset: keyFieldChanged || groupChanged };
       }

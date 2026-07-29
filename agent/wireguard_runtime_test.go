@@ -12,6 +12,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,6 +45,18 @@ func TestWireGuardDeviceUpdateConfigPreservesExistingPeers(t *testing.T) {
 	}
 	if !strings.Contains(config, "persistent_keepalive_interval=0") {
 		t.Fatal("incremental update cannot clear stale keepalive settings")
+	}
+}
+
+func TestWireGuardDeviceUpdateConfigRebindsChangedListenPort(t *testing.T) {
+	previous := wireGuardSpec{ListenPort: 51820}
+	next := wireGuardSpec{ListenPort: 51821}
+	config := wireGuardDeviceUpdateConfig(previous, next, nil)
+	if !strings.HasPrefix(config, "listen_port=51821\n") {
+		t.Fatalf("listen-port update config=%q", config)
+	}
+	if unchanged := wireGuardDeviceUpdateConfig(next, next, nil); strings.Contains(unchanged, "listen_port=") {
+		t.Fatalf("unchanged listen port was unnecessarily rebound: %q", unchanged)
 	}
 }
 
@@ -172,6 +185,151 @@ func TestV2EntryGroupWireGuardPreparationAndHandoffReferences(t *testing.T) {
 	runtime.mu.RUnlock()
 	if reacquiredRefs != 1 || releaseTimer != nil {
 		t.Fatalf("V2 reference reacquire refs=%d timer=%v", reacquiredRefs, releaseTimer != nil)
+	}
+}
+
+func TestWireGuardFXPProxiesReadyDetectsDependencyDrift(t *testing.T) {
+	const tunnelID = 98509
+	runtime := &wireGuardRuntime{
+		spec: wireGuardSpec{TunnelID: tunnelID},
+		peers: map[string]wireGuardPeerSpec{
+			"exit-a": {ID: "exit-a", Address: "100.119.0.2"},
+		},
+		outbound: map[string]*wireGuardOutboundProxy{},
+		inbound:  map[string]*wireGuardInboundProxy{},
+		refs:     map[string]int{},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	entry := testV2EntrySpec(tunnelID, 3391, 45901, "exit-a")
+	entry.ExitPort = 25901
+	entry.UDPExitPort = 25902
+	const entryRef = "dependency-drift-entry"
+	if wireGuardFXPProxiesMatchConfig(entry, entry, entryRef) {
+		t.Fatal("V2 entry was ready without its outbound proxy")
+	}
+	preparedEntry, err := prepareFXPWireGuard(entry, entryRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wireGuardFXPProxiesMatchConfig(entry, preparedEntry, entryRef) {
+		t.Fatal("V2 entry did not recognize its live outbound proxy and prepared port")
+	}
+	if wireGuardFXPProxiesMatchConfig(entry, preparedEntry, "unrelated-process") {
+		t.Fatal("V2 entry accepted a proxy owned only by another process")
+	}
+	activeGroup, ok := buildSharedFXPEntryGroup([]fxpSpec{preparedEntry}, entry.TunnelID, entry.TransportVersion)
+	if !ok || !wireGuardFXPProxiesMatchConfig(entry, activeGroup, entryRef) {
+		t.Fatal("V2 entry member did not recognize its proxy in an active shared config")
+	}
+	wrongPreparedEntry := preparedEntry
+	wrongPreparedEntry.ExitPort++
+	wrongPreparedEntry.UDPExitPort++
+	if wireGuardFXPProxiesMatchConfig(entry, wrongPreparedEntry, entryRef) {
+		t.Fatal("V2 entry accepted a runtime config pointing at a stale local proxy port")
+	}
+	key := wireGuardOutboundProxyKey(entry.ExitPeerID, entry.ExitPort, entry.UDPExitPort)
+	runtime.mu.RLock()
+	entryProxy := runtime.outbound[key]
+	runtime.mu.RUnlock()
+	if err := entryProxy.tcpLn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entryProxy.done:
+	case <-time.After(time.Second):
+		t.Fatal("outbound proxy loop exit did not mark the proxy closed")
+	}
+	if wireGuardFXPProxiesMatchConfig(entry, preparedEntry, entryRef) {
+		t.Fatal("V2 entry accepted an outbound proxy whose serve loop exited")
+	}
+	_, rebuiltTCPPort, rebuiltUDPPort, err := runtime.ensureOutboundProxy(entryRef, entry.ExitPeerID, entry.ExitPort, entry.UDPExitPort)
+	if err != nil {
+		t.Fatalf("rebuild closed outbound proxy: %v", err)
+	}
+	preparedEntry.ExitPort = rebuiltTCPPort
+	preparedEntry.UDPExitPort = rebuiltUDPPort
+	if !wireGuardFXPProxiesMatchConfig(entry, preparedEntry, entryRef) {
+		t.Fatal("V2 entry did not accept its rebuilt outbound proxy")
+	}
+	runtime.mu.Lock()
+	delete(runtime.peers, entry.ExitPeerID)
+	runtime.mu.Unlock()
+	if wireGuardFXPProxiesMatchConfig(entry, preparedEntry, entryRef) {
+		t.Fatal("V2 entry accepted an outbound proxy whose peer disappeared")
+	}
+	runtime.mu.Lock()
+	runtime.peers[entry.ExitPeerID] = wireGuardPeerSpec{ID: entry.ExitPeerID, Address: "100.119.0.2"}
+	runtime.mu.Unlock()
+
+	exit := fxpSpec{
+		Role:             "exit",
+		TransportVersion: forwardXWireGuardVersion,
+		TunnelID:         tunnelID,
+		ListenPort:       26901,
+		UDPListenPort:    26902,
+	}
+	activeExit := exit
+	activeExit.ListenHost = "127.0.0.1"
+	const exitRef = "dependency-drift-exit"
+	if wireGuardFXPProxiesMatchConfig(exit, activeExit, exitRef) {
+		t.Fatal("V2 exit was ready without its inbound proxy")
+	}
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		_ = tcpLn.Close()
+		t.Fatal(err)
+	}
+	exit.ListenPort = tcpLn.Addr().(*net.TCPAddr).Port
+	exit.UDPListenPort = udpConn.LocalAddr().(*net.UDPAddr).Port
+	activeExit = exit
+	activeExit.ListenHost = "127.0.0.1"
+	inboundKey := fmt.Sprintf("%d:%d", exit.ListenPort, exit.UDPListenPort)
+	inboundProxy := &wireGuardInboundProxy{
+		key: inboundKey, tcpPort: exit.ListenPort, udpPort: exit.UDPListenPort,
+		backendHost: "127.0.0.1", backendTCP: exit.ListenPort, backendUDP: exit.UDPListenPort,
+		tcpLn: tcpLn, udpConn: udpConn, done: make(chan struct{}), sessions: map[string]*wireGuardUDPProxySession{},
+	}
+	runtime.mu.Lock()
+	runtime.refs[exitRef] = 1
+	runtime.inbound[inboundKey] = inboundProxy
+	runtime.inboundRefs = map[string]int{inboundKey: 1}
+	runtime.refInbound = map[string]map[string]struct{}{
+		exitRef: {inboundKey: {}},
+	}
+	runtime.mu.Unlock()
+	if !wireGuardFXPProxiesMatchConfig(exit, activeExit, exitRef) {
+		t.Fatal("V2 exit did not recognize its inbound proxy")
+	}
+	if wireGuardFXPProxiesMatchConfig(exit, activeExit, "unrelated-process") {
+		t.Fatal("V2 exit accepted an inbound proxy owned only by another process")
+	}
+	go runtime.serveInboundTCP(inboundProxy)
+	if err := inboundProxy.tcpLn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inboundProxy.done:
+	case <-time.After(time.Second):
+		t.Fatal("inbound proxy loop exit did not mark the proxy closed")
+	}
+	if wireGuardFXPProxiesMatchConfig(exit, activeExit, exitRef) {
+		t.Fatal("V2 exit accepted an inbound proxy whose serve loop exited")
+	}
+
+	setTestWireGuardRuntime(t, tunnelID, nil)
+	if wireGuardFXPProxiesMatchConfig(entry, preparedEntry, entryRef) {
+		t.Fatal("V2 entry was ready after its WireGuard runtime disappeared")
+	}
+	v1 := entry
+	v1.TransportVersion = "v1"
+	if !wireGuardFXPProxiesReady(v1) {
+		t.Fatal("V1 FXP incorrectly depends on WireGuard proxies")
 	}
 }
 
@@ -325,6 +483,200 @@ func TestWireGuardInstanceReleaseDoesNotAffectReplacementRuntime(t *testing.T) {
 	replacement.mu.RUnlock()
 	if replacementTimer != nil {
 		t.Fatal("unknown old reference scheduled cleanup of the replacement runtime")
+	}
+}
+
+func TestWireGuardIdentityReplacementFailureRestoresPreviousRuntime(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	const tunnelID = 98513
+	privateKey, publicKey := testWireGuardKeyPair(t)
+	oldSpec := wireGuardSpec{
+		TunnelID: tunnelID, PrivateKey: privateKey, PublicKey: publicKey,
+		Address: "100.122.0.1", ListenPort: 0, MTU: 1380,
+	}
+	oldRuntime, err := newWireGuardRuntime(oldSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTestWireGuardRuntime(t, tunnelID, oldRuntime)
+	t.Cleanup(func() {
+		wireGuardRuntimesMu.RLock()
+		current := wireGuardRuntimes[tunnelID]
+		wireGuardRuntimesMu.RUnlock()
+		if current != nil {
+			current.close()
+		}
+	})
+
+	occupied, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	replacementPrivateKey, replacementPublicKey := testWireGuardKeyPair(t)
+	replacement := oldSpec
+	replacement.PrivateKey = replacementPrivateKey
+	replacement.PublicKey = replacementPublicKey
+	replacement.ListenPort = occupied.LocalAddr().(*net.UDPAddr).Port
+	if err := applyWireGuardRuntime(replacement); err == nil || !strings.Contains(err.Error(), "previous runtime restored") {
+		t.Fatalf("replacement error=%v, want a restored previous runtime", err)
+	}
+
+	wireGuardRuntimesMu.RLock()
+	restored := wireGuardRuntimes[tunnelID]
+	wireGuardRuntimesMu.RUnlock()
+	if restored == nil || restored == oldRuntime {
+		t.Fatalf("restored runtime=%p old=%p", restored, oldRuntime)
+	}
+	if !wireGuardRuntimeReady(tunnelID, &oldSpec) {
+		t.Fatal("previous WireGuard runtime was not healthy after replacement rollback")
+	}
+	if wireGuardRuntimeReady(tunnelID, &replacement) {
+		t.Fatal("failed replacement was reported as the active WireGuard runtime")
+	}
+}
+
+func newTestWireGuardRuntimeState(tunnelID int) *wireGuardRuntime {
+	return &wireGuardRuntime{
+		spec:         wireGuardSpec{TunnelID: tunnelID},
+		peers:        map[string]wireGuardPeerSpec{},
+		outbound:     map[string]*wireGuardOutboundProxy{},
+		outboundRefs: map[string]int{},
+		refOutbound:  map[string]map[string]struct{}{},
+		inbound:      map[string]*wireGuardInboundProxy{},
+		inboundRefs:  map[string]int{},
+		refInbound:   map[string]map[string]struct{}{},
+		refs:         map[string]int{},
+	}
+}
+
+func armTestWireGuardReleaseTimer(runtime *wireGuardRuntime) uint64 {
+	runtime.mu.Lock()
+	runtime.releaseGeneration++
+	generation := runtime.releaseGeneration
+	runtime.releaseTimer = time.AfterFunc(time.Hour, func() {})
+	runtime.mu.Unlock()
+	return generation
+}
+
+func TestWireGuardStaleIdleReleaseDoesNotCloseReplacementRuntime(t *testing.T) {
+	const tunnelID = 98510
+	oldRuntime := newTestWireGuardRuntimeState(tunnelID)
+	replacement := newTestWireGuardRuntimeState(tunnelID)
+	setTestWireGuardRuntime(t, tunnelID, oldRuntime)
+	t.Cleanup(oldRuntime.close)
+	t.Cleanup(replacement.close)
+	oldGeneration := armTestWireGuardReleaseTimer(oldRuntime)
+
+	wireGuardRuntimesMu.Lock()
+	wireGuardRuntimes[tunnelID] = replacement
+	wireGuardRuntimesMu.Unlock()
+	if stopWireGuardRuntimeInstanceIfUnused(tunnelID, oldRuntime, oldGeneration) {
+		t.Fatal("stale idle callback closed an unrelated replacement runtime")
+	}
+
+	wireGuardRuntimesMu.RLock()
+	current := wireGuardRuntimes[tunnelID]
+	wireGuardRuntimesMu.RUnlock()
+	replacement.mu.RLock()
+	replacementClosed := replacement.closed
+	replacement.mu.RUnlock()
+	if current != replacement || replacementClosed {
+		t.Fatalf("replacement runtime current=%v closed=%v", current == replacement, replacementClosed)
+	}
+}
+
+func TestWireGuardReacquireInvalidatesRunningIdleRelease(t *testing.T) {
+	const tunnelID = 98511
+	runtime := newTestWireGuardRuntimeState(tunnelID)
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+	staleGeneration := armTestWireGuardReleaseTimer(runtime)
+
+	acquired, ok, err := tryAcquireWireGuardRuntimeRef(tunnelID, "reacquired-process")
+	if err != nil || !ok || acquired != runtime {
+		t.Fatalf("runtime reacquire acquired=%v current=%v err=%v", ok, acquired == runtime, err)
+	}
+	if stopWireGuardRuntimeInstanceIfUnused(tunnelID, runtime, staleGeneration) {
+		t.Fatal("stale idle callback closed a reacquired runtime")
+	}
+	runtime.mu.RLock()
+	refCount := runtime.refs["reacquired-process"]
+	closed := runtime.closed
+	runtime.mu.RUnlock()
+	if refCount != 1 || closed {
+		t.Fatalf("reacquired runtime refs=%d closed=%v", refCount, closed)
+	}
+}
+
+func TestWireGuardAcquireAndIdleReleaseAreAtomic(t *testing.T) {
+	const tunnelID = 98512
+	wireGuardRuntimesMu.Lock()
+	previous := wireGuardRuntimes[tunnelID]
+	delete(wireGuardRuntimes, tunnelID)
+	wireGuardRuntimesMu.Unlock()
+	t.Cleanup(func() {
+		wireGuardRuntimesMu.Lock()
+		if previous != nil {
+			wireGuardRuntimes[tunnelID] = previous
+		} else {
+			delete(wireGuardRuntimes, tunnelID)
+		}
+		wireGuardRuntimesMu.Unlock()
+	})
+
+	for iteration := 0; iteration < 256; iteration++ {
+		runtime := newTestWireGuardRuntimeState(tunnelID)
+		wireGuardRuntimesMu.Lock()
+		wireGuardRuntimes[tunnelID] = runtime
+		wireGuardRuntimesMu.Unlock()
+		generation := armTestWireGuardReleaseTimer(runtime)
+
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		var acquired bool
+		var stopped bool
+		var acquireErr error
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			<-start
+			_, acquired, acquireErr = tryAcquireWireGuardRuntimeRef(tunnelID, "concurrent-process")
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			stopped = stopWireGuardRuntimeInstanceIfUnused(tunnelID, runtime, generation)
+		}()
+		close(start)
+		workers.Wait()
+		if acquireErr != nil {
+			t.Fatalf("iteration %d acquire failed: %v", iteration, acquireErr)
+		}
+		if acquired == stopped {
+			t.Fatalf("iteration %d acquired=%v stopped=%v, want exactly one winner", iteration, acquired, stopped)
+		}
+
+		wireGuardRuntimesMu.RLock()
+		current := wireGuardRuntimes[tunnelID]
+		wireGuardRuntimesMu.RUnlock()
+		runtime.mu.RLock()
+		closed := runtime.closed
+		refs := runtime.refs["concurrent-process"]
+		runtime.mu.RUnlock()
+		if acquired && (current != runtime || closed || refs != 1) {
+			t.Fatalf("iteration %d acquired runtime current=%v closed=%v refs=%d", iteration, current == runtime, closed, refs)
+		}
+		if stopped && (current == runtime || !closed || refs != 0) {
+			t.Fatalf("iteration %d stopped runtime current=%v closed=%v refs=%d", iteration, current == runtime, closed, refs)
+		}
+
+		wireGuardRuntimesMu.Lock()
+		if wireGuardRuntimes[tunnelID] == runtime {
+			delete(wireGuardRuntimes, tunnelID)
+		}
+		wireGuardRuntimesMu.Unlock()
+		runtime.close()
 	}
 }
 
@@ -1005,11 +1357,22 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer right.close()
-	const rightInboundRef = "tcp-udp-proxy-exit"
-	right.addRef(rightInboundRef)
-	if err := right.ensureInboundProxy(rightInboundRef, servicePort, servicePort); err != nil {
+	const oldRightInboundRef = "tcp-udp-proxy-exit:old"
+	if err := right.addRef(oldRightInboundRef); err != nil {
 		t.Fatal(err)
 	}
+	if err := right.ensureInboundProxy(oldRightInboundRef, servicePort, servicePort); err != nil {
+		t.Fatal(err)
+	}
+	const replacementRightInboundRef = "tcp-udp-proxy-exit:replacement"
+	if err := right.addRef(replacementRightInboundRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.ensureInboundProxy(replacementRightInboundRef, servicePort, servicePort); err != nil {
+		t.Fatal(err)
+	}
+	defer releaseWireGuardRuntimeInstanceRef(right, 901, replacementRightInboundRef)
+	releaseWireGuardRuntimeInstanceRef(right, 901, oldRightInboundRef)
 
 	left, err := newWireGuardRuntime(wireGuardSpec{
 		TunnelID:   901,
@@ -1031,13 +1394,31 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatalf("WireGuard TCP latency probe failed: reachable=%v latency=%d", reachable, latency)
 	}
 
-	const proxyRef = "wireguard-proxy-integration-test"
-	left.addRef(proxyRef)
-	defer releaseWireGuardRuntimeRef(901, proxyRef)
-	_, localTCPPort, localUDPPort, err := left.ensureOutboundProxy(proxyRef, "2", servicePort, servicePort)
+	const oldProxyRef = "wireguard-proxy-integration-test:old"
+	if err := left.addRef(oldProxyRef); err != nil {
+		t.Fatal(err)
+	}
+	_, localTCPPort, localUDPPort, err := left.ensureOutboundProxy(oldProxyRef, "2", servicePort, servicePort)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Model an FXP replacement: the new process acquires the existing local
+	// proxy before the old process exits. Traffic through the returned endpoint
+	// must remain usable after the old process releases its reference.
+	const replacementProxyRef = "wireguard-proxy-integration-test:replacement"
+	if err := left.addRef(replacementProxyRef); err != nil {
+		t.Fatal(err)
+	}
+	_, replacementTCPPort, replacementUDPPort, err := left.ensureOutboundProxy(replacementProxyRef, "2", servicePort, servicePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseWireGuardRuntimeRef(901, replacementProxyRef)
+	if replacementTCPPort != localTCPPort || replacementUDPPort != localUDPPort {
+		t.Fatalf("replacement allocated a different proxy endpoint tcp=%d/%d udp=%d/%d", localTCPPort, replacementTCPPort, localUDPPort, replacementUDPPort)
+	}
+	releaseWireGuardRuntimeRef(901, oldProxyRef)
 
 	tcpClient, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(localTCPPort)), 8*time.Second)
 	if err != nil {

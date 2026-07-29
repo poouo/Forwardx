@@ -60,6 +60,10 @@ test("forward-group port checks cover every entry and exclude the edited templat
         { used: true },
       );
       assert.deepEqual(
+        await caller.checkPort({ forwardGroupId: 10, sourcePort: 17500, protocol: "udp" }),
+        { used: true },
+      );
+      assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 10, sourcePort: 17501, protocol: "tcp" }),
         { used: false },
       );
@@ -93,6 +97,11 @@ test("forward-group port checks cover every entry and exclude the edited templat
       await assert.rejects(
         () => userCaller.checkPort({ forwardGroupId: 11, sourcePort: 17501, protocol: "tcp" }),
         /无权使用该转发组/,
+      );
+      await runtime.executeRaw('UPDATE "hosts" SET "portRangeStart" = ?, "portRangeEnd" = ? WHERE "id" = ?', [17500, 17500, 1]);
+      await assert.rejects(
+        () => caller.randomPort({ forwardGroupId: 10, protocol: "udp" }),
+        /入口端口区间内已无可用端口/,
       );
     } finally {
       await runtime.closeDatabase();

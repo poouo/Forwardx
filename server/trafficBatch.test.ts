@@ -147,7 +147,10 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       assert.equal(contextQuery.count, 2);
       assert.equal(contexts.length, 2);
       const contextsById = new Map(contexts.map((context) => [Number(context.rule.id), context]));
-      assert.deepEqual(contextsById.get(11).group.members.map((member) => Number(member.id)), [312, 311]);
+      assert.deepEqual(
+        contextsById.get(11).group.members.map((member) => [Number(member.id), Number(member.hostId)]),
+        [[312, 6], [311, 5]],
+      );
       assert.equal(contextsById.get(11).tunnel.exitHostId, 6);
       assert.equal(contextsById.get(11).tunnel.trafficMultiplier, 130);
       assert.equal(contextsById.get(12).group, null);

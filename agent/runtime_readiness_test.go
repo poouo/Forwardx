@@ -2,10 +2,12 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGostTunnelReadinessIgnoresUnhealthyDuplicateMainRuntime(t *testing.T) {
@@ -304,6 +306,101 @@ func TestManagedRuleReadinessRequiresRealProtocolSockets(t *testing.T) {
 	snapshot.tcpPorts[port] = []string{`tcp LISTEN 0 4096 *:10889 *:* users:(("xray",pid=99,fd=3))`}
 	if localRuleStateReady(state, &readiness) {
 		t.Fatal("a socket owned by another process must not satisfy realm readiness")
+	}
+}
+
+func TestFXPRuntimeReadinessRequiresEveryProtocolListener(t *testing.T) {
+	const port = 10891
+	spec := fxpSpec{Role: "entry", TransportVersion: "v1", TunnelID: 71, RuleID: 72, ListenPort: port, UDPListenPort: port, Protocol: "both"}
+	snapshot := &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{
+			port: {`tcp LISTEN 0 4096 *:10891 *:* users:(("forwardx-fxp",pid=73,fd=3))`},
+		},
+		udpPorts: map[int][]string{
+			port: {`udp UNCONN 0 0 *:10891 *:* users:(("forwardx-fxp",pid=73,fd=4))`},
+		},
+		usable: true,
+	}
+	if !fxpRuntimeListenersReady(spec, snapshot) {
+		t.Fatal("FXP with both protocol listeners was not ready")
+	}
+	delete(snapshot.udpPorts, port)
+	if fxpRuntimeListenersReady(spec, snapshot) {
+		t.Fatal("FXP was ready after its UDP listener disappeared")
+	}
+	snapshot.udpPorts[port] = []string{`udp UNCONN 0 0 *:10891 *:* users:(("forwardx-fxp",pid=73,fd=4))`}
+	snapshot.tcpPorts[port] = []string{`tcp LISTEN 0 4096 *:10891 *:* users:(("nginx",pid=74,fd=3))`}
+	if fxpRuntimeListenersReady(spec, snapshot) {
+		t.Fatal("a listener owned by another process satisfied FXP readiness")
+	}
+}
+
+func TestFXPMatchesRunningRequiresTheExpectedListener(t *testing.T) {
+	const port = 10892
+	spec := normalizeFXPSpec(fxpSpec{
+		Role:             "entry",
+		TransportVersion: "v1",
+		TunnelID:         73,
+		RuleID:           74,
+		ListenPort:       port,
+		Protocol:         "tcp",
+		Key:              "readiness-test",
+	})
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{spec}, spec.TunnelID, spec.TransportVersion)
+	if !ok {
+		t.Fatal("failed to build test FXP entry group")
+	}
+	id := fxpServerID(group)
+
+	fxpMu.Lock()
+	previousProcess, hadPreviousProcess := fxpServers[id]
+	fxpServers[id] = &fxpProcess{
+		signature: fxpServerSignature(group),
+		cmd:       &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}},
+		spec:      group,
+	}
+	fxpMu.Unlock()
+
+	localRuntimeReadinessCacheMu.Lock()
+	previousCache := localRuntimeReadinessCacheResult
+	previousCachedAt := localRuntimeReadinessCachedAt
+	previousInvalid := localRuntimeReadinessCacheInvalid
+	localRuntimeReadinessCacheResult = &localRuntimeReadiness{listenSnapshot: &runtimeListenSnapshot{
+		tcpPorts: map[int][]string{},
+		udpPorts: map[int][]string{},
+		usable:   true,
+	}}
+	localRuntimeReadinessCachedAt = time.Now()
+	localRuntimeReadinessCacheInvalid = false
+	localRuntimeReadinessCacheMu.Unlock()
+
+	t.Cleanup(func() {
+		fxpMu.Lock()
+		if hadPreviousProcess {
+			fxpServers[id] = previousProcess
+		} else {
+			delete(fxpServers, id)
+		}
+		fxpMu.Unlock()
+		localRuntimeReadinessCacheMu.Lock()
+		localRuntimeReadinessCacheResult = previousCache
+		localRuntimeReadinessCachedAt = previousCachedAt
+		localRuntimeReadinessCacheInvalid = previousInvalid
+		localRuntimeReadinessCacheMu.Unlock()
+	})
+
+	if fxpMatchesRunning(&spec) {
+		t.Fatal("FXP process without its expected listener was treated as running")
+	}
+
+	localRuntimeReadinessCacheMu.Lock()
+	localRuntimeReadinessCacheResult.listenSnapshot.tcpPorts[port] = []string{
+		`tcp LISTEN 0 4096 *:10892 *:* users:(("forwardx-fxp",pid=75,fd=3))`,
+	}
+	localRuntimeReadinessCachedAt = time.Now()
+	localRuntimeReadinessCacheMu.Unlock()
+	if !fxpMatchesRunning(&spec) {
+		t.Fatal("FXP process with its expected listener was not treated as running")
 	}
 }
 

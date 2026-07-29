@@ -155,6 +155,43 @@ test("SQLite billing transactions roll back and serialize concurrent updates", (
       }), /rollback/);
       assert.equal((await runtime.queryRaw('SELECT "balanceCents" FROM "users" WHERE "id" = ?', [1]))[0].balanceCents, 1000);
 
+      const committedCallbacks = [];
+      await runtime.withDatabaseTransaction(async () => {
+        await runtime.executeRaw('UPDATE "users" SET "balanceCents" = ? WHERE "id" = ?', [900, 1]);
+        await runtime.afterDatabaseCommit(async () => {
+          const [row] = await runtime.queryRaw('SELECT "balanceCents" FROM "users" WHERE "id" = ?', [1]);
+          committedCallbacks.push(Number(row.balanceCents));
+        });
+        await runtime.withDatabaseTransaction(async () => {
+          await runtime.afterDatabaseCommit(() => { committedCallbacks.push(901); });
+        });
+        assert.deepEqual(committedCallbacks, [], "post-commit work ran before the outer transaction committed");
+      });
+      assert.deepEqual(committedCallbacks, [900, 901]);
+      await assert.rejects(() => runtime.withDatabaseTransaction(async () => {
+        await runtime.afterDatabaseCommit(() => { committedCallbacks.push(999); });
+        throw new Error("discard-after-commit");
+      }), /discard-after-commit/);
+      assert.deepEqual(committedCallbacks, [900, 901], "rolled-back post-commit work was not discarded");
+
+      const settledCallbacks = [];
+      await runtime.withDatabaseTransaction(async () => {
+        await runtime.afterDatabaseTransactionSettled(() => { settledCallbacks.push("commit"); });
+        await runtime.withDatabaseTransaction(async () => {
+          await runtime.afterDatabaseTransactionSettled(() => { settledCallbacks.push("nested-commit"); });
+        });
+        assert.deepEqual(settledCallbacks, [], "transaction-settled work ran before the outer commit");
+      });
+      assert.deepEqual(settledCallbacks, ["commit", "nested-commit"]);
+      await assert.rejects(() => runtime.withDatabaseTransaction(async () => {
+        await runtime.afterDatabaseTransactionSettled(() => { settledCallbacks.push("rollback"); });
+        throw new Error("run-after-rollback");
+      }), /run-after-rollback/);
+      assert.deepEqual(settledCallbacks, ["commit", "nested-commit", "rollback"]);
+      await runtime.afterDatabaseTransactionSettled(() => { settledCallbacks.push("outside"); });
+      assert.deepEqual(settledCallbacks, ["commit", "nested-commit", "rollback", "outside"]);
+      await runtime.executeRaw('UPDATE "users" SET "balanceCents" = ? WHERE "id" = ?', [1000, 1]);
+
       const delayedDb = await runtime.getDb();
       let markDelayedTransactionStarted;
       const delayedTransactionStarted = new Promise((resolve) => { markDelayedTransactionStarted = resolve; });

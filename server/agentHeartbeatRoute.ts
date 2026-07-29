@@ -418,6 +418,28 @@ export function stableDesiredStateHash(actions: any[]) {
   }));
 }
 
+export function selectForwardChainListenerPort(
+  childRules: any[],
+  memberIdValue: unknown,
+  hostIdValue: unknown,
+  fallbackPortValue: unknown,
+) {
+  const memberId = Number(memberIdValue || 0);
+  const hostId = Number(hostIdValue || 0);
+  const fallbackPort = Number(fallbackPortValue || 0);
+  const child = childRules.find((candidate: any) => {
+    const pendingDelete = candidate?.pendingDelete === true
+      || candidate?.pendingDelete === 1
+      || candidate?.pendingDelete === "1"
+      || String(candidate?.pendingDelete || "").toLowerCase() === "true";
+    return !pendingDelete
+      && Number(candidate?.forwardGroupMemberId || 0) === memberId
+      && Number(candidate?.hostId || 0) === hostId;
+  });
+  const port = Number(child?.sourcePort || 0);
+  return port > 0 ? port : fallbackPort;
+}
+
 function agentPluginInventorySignature(inventory: ReturnType<typeof getAgentPluginInventory>) {
   if (!inventory) return "";
   return stableStateSignature({
@@ -1622,6 +1644,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const forwardChainHostById = new Map<number, any>();
     const forwardChainGroupById = new Map<number, any>();
+    const forwardChainChildrenByTemplateId = new Map<number, Promise<any[]>>();
     const getForwardChainHost = async (hostId: number) => {
       const id = Number(hostId);
       if (!Number.isFinite(id) || id <= 0) return null;
@@ -1637,6 +1660,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const group = await db.getForwardGroupById(id);
       forwardChainGroupById.set(id, group || null);
       return group || null;
+    };
+    const getForwardChainChildren = async (templateRuleId: number) => {
+      const id = Number(templateRuleId);
+      if (!Number.isFinite(id) || id <= 0) return [] as any[];
+      let pending = forwardChainChildrenByTemplateId.get(id);
+      if (!pending) {
+        pending = db.getForwardGroupChildRulesForTemplate(id).then((rows: any) => rows as any[]);
+        forwardChainChildrenByTemplateId.set(id, pending);
+      }
+      return pending;
     };
     const resolveForwardChainTarget = async (rule: any) => {
       const groupId = Number(rule?.forwardGroupId || 0);
@@ -1666,7 +1699,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!isEntryGroupHost) return null;
         const firstHost = await getForwardChainHost(Number(currentMember.hostId));
         const targetIp = chainMemberAddress(currentMember, firstHost);
-        const targetPort = Number(rule.sourcePort) || 0;
+        const childRules = await getForwardChainChildren(Number(rule.forwardGroupRuleId || 0));
+        const targetPort = selectForwardChainListenerPort(
+          childRules,
+          currentMember.id,
+          currentMember.hostId,
+          rule.targetPort,
+        );
         if (!targetIp || targetPort <= 0) return null;
         const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
         const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);
@@ -1680,7 +1719,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (nextMember.memberType !== "host") return null;
       const nextHost = await getForwardChainHost(Number(nextMember.hostId));
       const targetIp = chainMemberAddress(nextMember, nextHost);
-      const targetPort = Number(rule.sourcePort) || 0;
+      const childRules = await getForwardChainChildren(Number(rule.forwardGroupRuleId || 0));
+      const targetPort = selectForwardChainListenerPort(
+        childRules,
+        nextMember.id,
+        nextMember.hostId,
+        rule.targetPort,
+      );
       if (!targetIp || targetPort <= 0) return null;
       const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
       const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);

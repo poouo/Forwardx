@@ -108,7 +108,7 @@ export function trafficAccountingHostIds(
   return ids;
 }
 
-function shouldAccountForwardRuleTraffic(rule: any, group: any | null) {
+export function shouldAccountForwardRuleTraffic(rule: any, group: any | null) {
   const groupId = Number(rule?.forwardGroupId || 0);
   const templateId = Number(rule?.forwardGroupRuleId || 0);
   const memberId = Number(rule?.forwardGroupMemberId || 0);
@@ -117,7 +117,11 @@ function shouldAccountForwardRuleTraffic(rule: any, group: any | null) {
   const members = [...(group.members || [])]
     .filter((member: any) => !!member.isEnabled)
     .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
-  return Number(members[0]?.id || 0) === memberId;
+  const firstMember = members[0] as any;
+  if (Number(firstMember?.id || 0) !== memberId) return false;
+  const firstHostId = Number(firstMember?.hostId || 0);
+  if (!firstHostId) return true;
+  return Number(rule?.hostId || 0) === firstHostId;
 }
 
 function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null, group: any | null) {

@@ -91,3 +91,19 @@ func TestApplyHeartbeatStateInvalidatesUnsignedReplacementSections(t *testing.T)
 		t.Fatalf("signed empty state is authoritative, got signature %q", signature)
 	}
 }
+
+func TestRunningRuleStateWriteWaitsForActivePortAction(t *testing.T) {
+	rule := runningRule{RuleID: 41, SourcePort: 15441, Protocol: "both", ForwardType: "nginx"}
+	if !runningRuleStateWriteProtected(rule, map[string]bool{actionPortProtocolKey(rule.SourcePort, "tcp"): true}) {
+		t.Fatal("a pending TCP action did not protect the desired both-protocol marker")
+	}
+	if !runningRuleStateWriteProtected(rule, map[string]bool{actionPortProtocolKey(rule.SourcePort, "both"): true}) {
+		t.Fatal("a pending both-protocol action did not protect its desired marker")
+	}
+	if runningRuleStateWriteProtected(rule, map[string]bool{actionPortProtocolKey(rule.SourcePort+1, "both"): true}) {
+		t.Fatal("an unrelated pending port blocked the desired marker")
+	}
+	if runningRuleStateWriteProtected(rule, nil) {
+		t.Fatal("a desired marker with no active action was deferred")
+	}
+}
