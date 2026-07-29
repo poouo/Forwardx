@@ -137,6 +137,8 @@ const NGINX_SERVICE_NAME = "forwardx-nginx";
 const NGINX_CONFIG_DIR = "/etc/forwardx/nginx";
 const NGINX_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf";
 const NGINX_CERT_DIR = "/etc/forwardx/nginx/certs";
+const NGINX_ERROR_LOG_PATH = "/var/log/forwardx-agent/forwardx-nginx-error.log";
+const NGINX_SESSION_LOG_PATH = "/var/log/forwardx-agent/forwardx-nginx-session.log";
 const REALM_CONFIG_DIR = "/etc/forwardx/realm";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
@@ -176,6 +178,141 @@ const AGENT_STATE_SECTION_NAMES = [
   "dnsWatch",
 ] as const;
 const AGENT_STATE_SIGNATURE_SCHEMA = "v2";
+
+type NginxStreamServerOptions = {
+  name: string;
+  listenPort: number;
+  proto: "tcp" | "udp";
+  upstream: string;
+  sslServer?: {
+    certPath: string;
+    keyPath: string;
+  } | null;
+  sslClient?: {
+    serverName?: string | null;
+  } | null;
+};
+
+const nginxConfigQuote = (value: unknown) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+
+const nginxListenLine = (port: number, proto: "tcp" | "udp") => {
+  const parts = [`listen [::]:${port}`];
+  if (proto === "udp") parts.push("udp", "reuseport");
+  else parts.push("so_keepalive=60s:15s:4");
+  parts.push("ipv6only=off");
+  return `${parts.join(" ")};`;
+};
+
+export function buildNginxStreamServerBlock(options: NginxStreamServerOptions) {
+  const lines = [
+    "  server {",
+    `    # ${nginxConfigQuote(options.name)}`,
+    options.sslServer && options.proto === "tcp"
+      ? `    listen [::]:${options.listenPort} ssl so_keepalive=60s:15s:4 ipv6only=off;`
+      : `    ${nginxListenLine(options.listenPort, options.proto)}`,
+    "    proxy_connect_timeout 10s;",
+    options.proto === "udp" ? "    proxy_timeout 2m;" : "    proxy_timeout 24h;",
+  ];
+  if (options.proto === "tcp") {
+    lines.push("    proxy_socket_keepalive on;");
+  }
+  if (options.sslServer && options.proto === "tcp") {
+    lines.push(
+      `    ssl_certificate ${options.sslServer.certPath};`,
+      `    ssl_certificate_key ${options.sslServer.keyPath};`,
+      "    ssl_protocols TLSv1.2 TLSv1.3;",
+    );
+  }
+  if (options.sslClient && options.proto === "tcp") {
+    lines.push(
+      "    proxy_ssl on;",
+      // Existing certificates may be self-signed or lack a matching SAN. Keep encryption compatible
+      // until tunnels have an explicit CA trust model that can safely enable identity verification.
+      "    proxy_ssl_verify off;",
+    );
+    const serverName = String(options.sslClient.serverName || "").trim();
+    if (serverName) {
+      lines.push(
+        "    proxy_ssl_server_name on;",
+        `    proxy_ssl_name ${nginxConfigQuote(serverName)};`,
+      );
+    }
+  }
+  lines.push(`    proxy_pass ${options.upstream};`, "  }");
+  return lines.join("\n");
+}
+
+export function buildNginxStreamConfig(options: {
+  upstreams: string[];
+  servers: string[];
+  certFingerprints?: string[];
+}) {
+  const hasServers = options.servers.length > 0;
+  return [
+    `include ${NGINX_CONFIG_DIR}/modules.conf;`,
+    "worker_processes auto;",
+    `error_log ${NGINX_ERROR_LOG_PATH} notice;`,
+    "pid /run/forwardx-nginx.pid;",
+    ...(options.certFingerprints || []).sort(),
+    "",
+    "events {",
+    "  worker_connections 65535;",
+    "}",
+    "",
+    ...(hasServers ? [
+      "stream {",
+      "  log_format forwardx_session '$time_iso8601 status=$status protocol=$protocol listen=$server_port session_time=$session_time bytes_received=$bytes_received bytes_sent=$bytes_sent upstream=$upstream_addr upstream_connect_time=$upstream_connect_time';",
+      `  access_log ${NGINX_SESSION_LOG_PATH} forwardx_session buffer=32k flush=5s;`,
+      "  tcp_nodelay on;",
+      "  resolver 1.1.1.1 8.8.8.8 valid=60s ipv6=on;",
+      "",
+      ...options.upstreams.flatMap((block) => [block, ""]),
+      ...options.servers.flatMap((block) => [block, ""]),
+      "}",
+      "",
+    ] : []),
+  ].join("\n");
+}
+
+export function buildNginxTunnelTlsClientOptions(tunnel: any) {
+  const id = Number(tunnel?.id || 0);
+  const certPem = String(tunnel?.certPem || "").trim();
+  const keyPem = String(tunnel?.certKeyPem || "").trim();
+  if (!id || !certPem || !keyPem) return null;
+  return {
+    serverName: String(tunnel?.certDomain || "").trim() || null,
+  };
+}
+
+export function buildNginxTunnelServerCertificate(tunnel: any) {
+  const clientOptions = buildNginxTunnelTlsClientOptions(tunnel);
+  if (!clientOptions) return null;
+  const id = Number(tunnel.id);
+  const certPem = String(tunnel.certPem).trim();
+  const keyPem = String(tunnel.certKeyPem).trim();
+  const normalizedCertPem = certPem.endsWith("\n") ? certPem : `${certPem}\n`;
+  const normalizedKeyPem = keyPem.endsWith("\n") ? keyPem : `${keyPem}\n`;
+  const fingerprint = crypto.createHash("sha256").update(`${normalizedCertPem}\n${normalizedKeyPem}`).digest("hex");
+  const fileKey = fingerprint.slice(0, 16);
+  return {
+    certPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.crt`,
+    keyPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.key`,
+    certPem: normalizedCertPem,
+    keyPem: normalizedKeyPem,
+    fingerprint,
+    serverName: clientOptions.serverName,
+  };
+}
+
+export function buildNginxCertificateCleanupCmd(activePaths: string[]) {
+  const certDir = shQuote(NGINX_CERT_DIR);
+  const liveConfig = shQuote(NGINX_CONFIG_PATH);
+  const keepPatterns = Array.from(new Set(activePaths.filter(Boolean))).sort().map(shQuote).join("|");
+  const cleanup = keepPatterns
+    ? `case "$base_cert_file" in ${keepPatterns}) ;; *) rm -f -- "$cert_file" ;; esac`
+    : 'rm -f -- "$cert_file"';
+  return `for cert_file in ${certDir}/tunnel-*.crt ${certDir}/tunnel-*.key ${certDir}/tunnel-*.crt.forwardx-last-good ${certDir}/tunnel-*.key.forwardx-last-good; do [ -e "$cert_file" ] || continue; base_cert_file=\${cert_file%.forwardx-last-good}; if grep -Fq -- "$base_cert_file" ${liveConfig} 2>/dev/null; then continue; fi; ${cleanup}; done; rm -f ${certDir}/.forwardx-config-* ${certDir}/.forwardx-restore-* 2>/dev/null || true`;
+}
 
 type AgentDnsWatch = {
   host: string;
@@ -865,7 +1002,7 @@ export function buildNginxRuntimeRetirementPlan() {
   ].join("; ");
   const removeManagedCertificates = [
     `rm -f ${shQuote(NGINX_CERT_DIR)}/*.crt ${shQuote(NGINX_CERT_DIR)}/*.key ${shQuote(NGINX_CERT_DIR)}/*.crt.forwardx-last-good ${shQuote(NGINX_CERT_DIR)}/*.key.forwardx-last-good ${shQuote(NGINX_CERT_DIR)}/.forwardx-config-* ${shQuote(NGINX_CERT_DIR)}/.forwardx-restore-* 2>/dev/null || true`,
-    `rm -f ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-config-* ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-restore-* ${shQuote("/var/log/forwardx-agent/forwardx-nginx-error.log")} 2>/dev/null || true`,
+    `rm -f ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-config-* ${shQuote(NGINX_CONFIG_DIR)}/.forwardx-restore-* ${shQuote(NGINX_ERROR_LOG_PATH)} ${shQuote(NGINX_SESSION_LOG_PATH)} 2>/dev/null || true`,
     `rmdir ${shQuote(NGINX_CERT_DIR)} ${shQuote(NGINX_CONFIG_DIR)} 2>/dev/null || true`,
   ].join("; ");
   return {
@@ -3201,18 +3338,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
-    const nginxConfigQuote = (value: unknown) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
     const nginxEndpoint = (hostValue: unknown, portValue: unknown) => {
       const clean = cleanEndpointHost(hostValue);
       const port = Number(portValue) || 0;
       if (!clean || port <= 0 || port > 65535) return "";
       return isIpv6Literal(clean) ? `[${clean}]:${port}` : `${clean}:${port}`;
-    };
-    const nginxListenLine = (port: number, proto: "tcp" | "udp") => {
-      const parts = [`listen [::]:${port}`];
-      if (proto === "udp") parts.push("udp", "reuseport");
-      parts.push("ipv6only=off");
-      return `${parts.join(" ")};`;
     };
     const nginxProtocolsForRule = (rule: any): Array<"tcp" | "udp"> => {
       return forwardRuleProtocols(rule?.protocol);
@@ -3234,51 +3364,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         lines.push(`    server ${endpoint.addr} max_fails=2 fail_timeout=10s${backup};`);
       });
       lines.push("  }");
-      return lines.join("\n");
-    };
-    const nginxServerBlock = (options: {
-      name: string;
-      listenPort: number;
-      proto: "tcp" | "udp";
-      upstream: string;
-      sslServer?: {
-        certPath: string;
-        keyPath: string;
-      } | null;
-      sslClient?: {
-        serverName?: string | null;
-      } | null;
-    }) => {
-      const lines = [
-        "  server {",
-        `    # ${nginxConfigQuote(options.name)}`,
-        options.sslServer && options.proto === "tcp"
-          ? `    listen [::]:${options.listenPort} ssl ipv6only=off;`
-          : `    ${nginxListenLine(options.listenPort, options.proto)}`,
-        "    proxy_connect_timeout 10s;",
-        options.proto === "udp" ? "    proxy_timeout 2m;" : "    proxy_timeout 10m;",
-      ];
-      if (options.sslServer && options.proto === "tcp") {
-        lines.push(
-          `    ssl_certificate ${options.sslServer.certPath};`,
-          `    ssl_certificate_key ${options.sslServer.keyPath};`,
-          "    ssl_protocols TLSv1.2 TLSv1.3;",
-        );
-      }
-      if (options.sslClient && options.proto === "tcp") {
-        lines.push(
-          "    proxy_ssl on;",
-          "    proxy_ssl_verify off;",
-        );
-        const serverName = String(options.sslClient.serverName || "").trim();
-        if (serverName) {
-          lines.push(
-            "    proxy_ssl_server_name on;",
-            `    proxy_ssl_name ${nginxConfigQuote(serverName)};`,
-          );
-        }
-      }
-      lines.push(`    proxy_pass ${options.upstream};`, "  }");
       return lines.join("\n");
     };
     const buildNginxPortCleanupCmds = (rule: any) => [
@@ -3315,6 +3400,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const servers: string[] = [];
       const certFingerprints: string[] = [];
       const certKeys = new Set<string>();
+      const activeCertPaths = new Set<string>();
       const countingCmds: string[] = [];
       const routeSummaries: string[] = [];
       const warnNginxRoute = (message: string) => {
@@ -3329,27 +3415,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         tunnelRouteLogCache.set(key, message);
         appendPanelLog("info", message);
       };
-      const nginxTunnelCert = (tunnel: any) => {
-        const id = Number(tunnel?.id || 0);
-        const certPem = String(tunnel?.certPem || "").trim();
-        const keyPem = String(tunnel?.certKeyPem || "").trim();
-        if (!id || !certPem || !keyPem) return null;
-        const normalizedCertPem = certPem.endsWith("\n") ? certPem : `${certPem}\n`;
-        const normalizedKeyPem = keyPem.endsWith("\n") ? keyPem : `${keyPem}\n`;
-        const fingerprint = crypto.createHash("sha256").update(`${normalizedCertPem}\n${normalizedKeyPem}`).digest("hex");
-        const fileKey = fingerprint.slice(0, 16);
-        return {
-          certPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.crt`,
-          keyPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.key`,
-          certPem: normalizedCertPem,
-          keyPem: normalizedKeyPem,
-          fingerprint,
-          serverName: String(tunnel?.certDomain || "").trim() || null,
-        };
-      };
       const ensureNginxTunnelCert = (tunnel: any) => {
-        const cert = nginxTunnelCert(tunnel);
+        const cert = buildNginxTunnelServerCertificate(tunnel);
         if (!cert) return null;
+        activeCertPaths.add(cert.certPath);
+        activeCertPaths.add(cert.keyPath);
         const key = `${cert.certPath}:${cert.keyPath}`;
         if (!certKeys.has(key)) {
           certKeys.add(key);
@@ -3377,9 +3447,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         upstreams.push(block);
         return true;
       };
-      const addServer = (options: Parameters<typeof nginxServerBlock>[0]) => {
+      let tlsClientServers = 0;
+      let tlsServerServers = 0;
+      const addServer = (options: NginxStreamServerOptions) => {
         if (!options.listenPort || !options.upstream) return;
-        servers.push(nginxServerBlock(options));
+        if (options.sslClient && options.proto === "tcp") tlsClientServers += 1;
+        if (options.sslServer && options.proto === "tcp") tlsServerServers += 1;
+        servers.push(buildNginxStreamServerBlock(options));
       };
 
       for (const rule of agentHostRules as any[]) {
@@ -3407,7 +3481,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
         if (!tunnel || !tunnel.isEnabled || !isNginxTunnelMode(tunnel) || !isCurrentHostTunnelEntry(tunnel)) continue;
         if (!isTunnelProtocolEnabled(forwardProtocolSettings, tunnel) || !isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) continue;
-        const cert = ensureNginxTunnelCert(tunnel);
+        const tlsClient = buildNginxTunnelTlsClientOptions(tunnel);
         const endpoints: Array<{ addr: string; primary?: boolean }> = [];
         for (const endpoint of tunnelExitEndpointsForRule(rule, tunnel)) {
           const exitHost = endpoint.primary
@@ -3433,7 +3507,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: Number(rule.sourcePort),
             proto,
             upstream,
-            sslClient: proto === "tcp" && cert ? { serverName: cert.serverName } : null,
+            sslClient: proto === "tcp" ? tlsClient : null,
           });
         }
         countingCmds.push(...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
@@ -3444,13 +3518,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       for (const rule of nginxTunnelExitRules as any[]) {
         const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
         if (!tunnel || !isNginxTunnelMode(tunnel)) continue;
-        const cert = ensureNginxTunnelCert(tunnel);
-        for (const exitPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
+        const exitPorts = currentHostTunnelExitPortsForRule(rule, tunnel);
+        if (exitPorts.length === 0) continue;
+        let cert: ReturnType<typeof buildNginxTunnelServerCertificate> | null | undefined;
+        for (const exitPort of exitPorts) {
           nginxBusinessListenKeys.add(`${Number(host.id)}:${Number(exitPort)}`);
           routeSummaries.push(`exit rule=${rule.id} tunnel=${tunnel.id} host=${Number(host.id)} listen=${Number(exitPort)} target=${processTarget(rule)}:${Number(rule.targetPort) || 0}`);
           for (const proto of nginxProtocolsForRule(rule)) {
             const upstream = `fwx_texit_${Number(tunnel.id)}_${Number(rule.id)}_${Number(exitPort)}_${proto}`;
             if (!addUpstreamServer(upstream, [{ addr: nginxEndpoint(processTarget(rule), rule.targetPort), primary: true }])) continue;
+            if (proto === "tcp" && cert === undefined) cert = ensureNginxTunnelCert(tunnel);
             addServer({
               name: `tunnel exit ${Number(tunnel.id)} rule ${Number(rule.id)} port ${Number(exitPort)} ${proto}`,
               listenPort: Number(exitPort),
@@ -3465,16 +3542,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
       for (const tunnel of hostTunnels as any[]) {
         if (!tunnel || !tunnel.isEnabled || !isNginxTunnelMode(tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) continue;
-        const cert = ensureNginxTunnelCert(tunnel);
         const probePorts: number[] = [];
         if (Number(tunnel.exitHostId) === Number(host.id)) probePorts.push(Number(tunnel.listenPort) || 0);
         for (const exitNode of tunnelExtraExitNodes(tunnel)) {
           if (Number((exitNode as any).hostId || 0) === Number(host.id)) probePorts.push(Number((exitNode as any).listenPort || 0));
         }
-        for (const listenPort of Array.from(new Set(probePorts.filter((port) => port > 0)))) {
+        const activeProbePorts = Array.from(new Set(probePorts.filter((port) => port > 0)));
+        if (activeProbePorts.length === 0) continue;
+        let cert: ReturnType<typeof buildNginxTunnelServerCertificate> | null | undefined;
+        for (const listenPort of activeProbePorts) {
           if (nginxBusinessListenKeys.has(`${Number(host.id)}:${listenPort}`)) continue;
           const upstream = `fwx_tprobe_${Number(tunnel.id)}_${listenPort}`;
           if (!addUpstreamServer(upstream, [{ addr: "127.0.0.1:9", primary: true }])) continue;
+          if (cert === undefined) cert = ensureNginxTunnelCert(tunnel);
           addServer({
             name: `tunnel probe ${Number(tunnel.id)} port ${listenPort}`,
             listenPort,
@@ -3492,7 +3572,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const previousSignature = nginxRuntimeLogCache.get(Number(host.id));
       if (previousSignature !== configSignature) {
         nginxRuntimeLogCache.set(Number(host.id), configSignature);
-        logNginxRoute(`[NginxRuntime] host=${host.id} name=${String(host.name || "-")} servers=${servers.length} upstreams=${upstreams.length} certs=${certKeys.size} counting=${countingCmds.length} routes=${routeSummaries.length} elapsedMs=${Date.now() - startedAt}`);
+        logNginxRoute(`[NginxRuntime] host=${host.id} name=${String(host.name || "-")} servers=${servers.length} upstreams=${upstreams.length} tlsClients=${tlsClientServers} tlsServers=${tlsServerServers} certs=${certKeys.size} counting=${countingCmds.length} routes=${routeSummaries.length} elapsedMs=${Date.now() - startedAt}`);
         for (const summary of routeSummaries.slice(0, 20)) {
           logNginxRoute(`[NginxRuntime] host=${host.id} ${summary}`);
         }
@@ -3500,32 +3580,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           logNginxRoute(`[NginxRuntime] host=${host.id} routeDetailsOmitted=${routeSummaries.length - 20}`);
         }
       }
-      const config = [
-        `include ${NGINX_CONFIG_DIR}/modules.conf;`,
-        "worker_processes auto;",
-        "error_log /var/log/forwardx-agent/forwardx-nginx-error.log warn;",
-        "pid /run/forwardx-nginx.pid;",
-        ...certFingerprints.sort(),
-        "",
-        "events {",
-        "  worker_connections 65535;",
-        "}",
-        "",
-        ...(hasServers ? [
-          "stream {",
-          "  tcp_nodelay on;",
-          "  resolver 1.1.1.1 8.8.8.8 valid=60s ipv6=on;",
-          "",
-          ...upstreams.flatMap((block) => [block, ""]),
-          ...servers.flatMap((block) => [block, ""]),
-          "}",
-          "",
-        ] : []),
-      ].join("\n");
+      const config = buildNginxStreamConfig({ upstreams, servers, certFingerprints });
       const encodedConfig = Buffer.from(config, "utf8").toString("base64");
       const setupCmds = [
         `mkdir -p ${shQuote(NGINX_CONFIG_DIR)} ${shQuote(NGINX_CERT_DIR)} /var/log/forwardx-agent`,
         `modules_conf=${shQuote(`${NGINX_CONFIG_DIR}/modules.conf`)}; : > "$modules_conf"; for mod in /usr/lib/nginx/modules/ngx_stream_module.so /usr/lib64/nginx/modules/ngx_stream_module.so /usr/share/nginx/modules/ngx_stream_module.so modules/ngx_stream_module.so; do if [ -s "$mod" ]; then printf 'load_module %s;\\n' "$mod" > "$modules_conf"; break; fi; done`,
+        buildNginxCertificateCleanupCmd(Array.from(activeCertPaths)),
       ];
       const cmds: string[] = [];
       if (hasServers) {

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeAgentReportedAddress } from "./agentAddressState";
-import { buildNginxRuntimeRetirementPlan, stableDesiredStateHash } from "./agentHeartbeatRoute";
+import {
+  buildNginxCertificateCleanupCmd,
+  buildNginxRuntimeRetirementPlan,
+  buildNginxStreamConfig,
+  buildNginxStreamServerBlock,
+  buildNginxTunnelServerCertificate,
+  buildNginxTunnelTlsClientOptions,
+  stableDesiredStateHash,
+} from "./agentHeartbeatRoute";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
 import { HOST_ONLINE_TTL_MS } from "./repositories/hostRepository";
 import {
@@ -38,12 +46,93 @@ test("retires stale ForwardX Nginx state without requiring or reinstalling Nginx
   assert.match(commands, /kill -KILL/);
   assert.match(commands, /'\/etc\/forwardx\/nginx\/nginx\.conf\.forwardx-last-good'/);
   assert.match(commands, /\.crt\.forwardx-last-good/);
+  assert.match(commands, /forwardx-nginx-session\.log/);
   assert.match(commands, /config cleanup failed/);
   assert.doesNotMatch(commands, /\/usr\/sbin\/nginx|install -m 0755|chmod 0755/);
   assert.match(
     plan.commands[1],
     /managed process cleanup failed"; exit 1; fi; rm -f '\/etc\/forwardx\/nginx\/nginx\.conf'/,
   );
+});
+
+test("Nginx TCP streams retain idle sessions and enable socket keepalive", () => {
+  const config = buildNginxStreamServerBlock({
+    name: "tunnel entry 7",
+    listenPort: 443,
+    proto: "tcp",
+    upstream: "fwx_tentry_7_tcp",
+    sslClient: { serverName: "edge.example.test" },
+  });
+
+  assert.match(config, /listen \[::\]:443 so_keepalive=60s:15s:4 ipv6only=off;/);
+  assert.match(config, /proxy_timeout 24h;/);
+  assert.match(config, /proxy_socket_keepalive on;/);
+  assert.match(config, /proxy_ssl on;/);
+  assert.match(config, /proxy_ssl_verify off;/);
+  assert.match(config, /proxy_ssl_name edge\.example\.test;/);
+  assert.doesNotMatch(config, /proxy_timeout 10m;/);
+});
+
+test("Nginx UDP streams keep their short session timeout without TCP keepalive directives", () => {
+  const config = buildNginxStreamServerBlock({
+    name: "rule 8 udp",
+    listenPort: 5353,
+    proto: "udp",
+    upstream: "fwx_rule_8_udp",
+  });
+
+  assert.match(config, /listen \[::\]:5353 udp reuseport ipv6only=off;/);
+  assert.match(config, /proxy_timeout 2m;/);
+  assert.doesNotMatch(config, /proxy_socket_keepalive|so_keepalive/);
+});
+
+test("Nginx session diagnostics retain timeout duration and selected upstream", () => {
+  const config = buildNginxStreamConfig({
+    upstreams: ["  upstream fwx_test {\n    server 127.0.0.1:9;\n  }"],
+    servers: [buildNginxStreamServerBlock({
+      name: "test",
+      listenPort: 8443,
+      proto: "tcp",
+      upstream: "fwx_test",
+    })],
+  });
+
+  assert.match(config, /error_log \/var\/log\/forwardx-agent\/forwardx-nginx-error\.log notice;/);
+  assert.match(config, /session_time=\$session_time/);
+  assert.match(config, /upstream=\$upstream_addr/);
+  assert.match(config, /access_log \/var\/log\/forwardx-agent\/forwardx-nginx-session\.log forwardx_session buffer=32k flush=5s;/);
+  assert.doesNotMatch(config, /\$forwardx_log_abnormal|\$remote_addr/);
+});
+
+test("Nginx entry TLS options never contain certificate or private-key material", () => {
+  const tunnel = {
+    id: 9,
+    certDomain: "exit.example.test",
+    certPem: "TEST CERTIFICATE",
+    certKeyPem: "TEST PRIVATE KEY",
+  };
+
+  const clientOptions = buildNginxTunnelTlsClientOptions(tunnel);
+  assert.deepEqual(clientOptions, { serverName: "exit.example.test" });
+  assert.doesNotMatch(JSON.stringify(clientOptions), /CERTIFICATE|PRIVATE KEY/);
+
+  const serverCertificate = buildNginxTunnelServerCertificate(tunnel);
+  assert.ok(serverCertificate);
+  assert.equal(serverCertificate.keyPem, "TEST PRIVATE KEY\n");
+  assert.match(serverCertificate.keyPath, /\/etc\/forwardx\/nginx\/certs\/tunnel-9-[a-f0-9]{16}\.key$/);
+});
+
+test("Nginx certificate cleanup preserves only active TLS server files", () => {
+  const activeCert = "/etc/forwardx/nginx/certs/tunnel-9-active.crt";
+  const activeKey = "/etc/forwardx/nginx/certs/tunnel-9-active.key";
+  const command = buildNginxCertificateCleanupCmd([activeCert, activeKey]);
+
+  assert.match(command, /base_cert_file=\$\{cert_file%\.forwardx-last-good\}/);
+  assert.match(command, /grep -Fq -- "\$base_cert_file" '\/etc\/forwardx\/nginx\/nginx\.conf'/);
+  assert.match(command, /case "\$base_cert_file" in/);
+  assert.match(command, /tunnel-9-active\.crt/);
+  assert.match(command, /tunnel-9-active\.key/);
+  assert.match(command, /rm -f -- "\$cert_file"/);
 });
 
 test("traffic reports use the steady window unless live metrics or strict accounting require it", () => {

@@ -261,18 +261,25 @@ function AgentTokenCard({
   dragHandle?: any;
   sortableClassName?: string;
 }) {
+  const description = typeof tokenItem.description === "string" ? tokenItem.description.trim() : "";
+
   return (
     <Card className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", sortableClassName)}>
       <CardContent className="action-card-content space-y-4 p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
                 <Key className="h-4 w-4" />
               </span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Agent Token</p>
-                <p className="text-xs text-muted-foreground">{new Date(tokenItem.createdAt).toLocaleString()}</p>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium" title={description || "Agent Token"}>
+                  {description || "Agent Token"}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {description && "Agent Token · "}
+                  {new Date(tokenItem.createdAt).toLocaleString()}
+                </p>
               </div>
             </div>
           </div>
@@ -286,15 +293,9 @@ function AgentTokenCard({
           {tokenItem.token}
         </code>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-md bg-muted/25 p-3">
-            <p className="mb-1 text-xs text-muted-foreground">备注</p>
-            <p className="line-clamp-2 break-words text-sm">{tokenItem.description || "暂无备注"}</p>
-          </div>
-          <div className="rounded-md bg-muted/25 p-3">
-            <p className="mb-2 text-xs text-muted-foreground">对应主机</p>
-            <TokenHostInfo tokenItem={tokenItem} compact />
-          </div>
+        <div className="rounded-md bg-muted/25 p-3">
+          <p className="mb-2 text-xs text-muted-foreground">对应主机</p>
+          <TokenHostInfo tokenItem={tokenItem} compact />
         </div>
 
         <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">

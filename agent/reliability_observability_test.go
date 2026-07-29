@@ -104,3 +104,23 @@ func TestSupportOutputTotalLimit(t *testing.T) {
 		t.Fatalf("expected later result to be omitted, got %q", results[2].Output)
 	}
 }
+
+func TestSupportCommandsIncludeNginxDisconnectDiagnostics(t *testing.T) {
+	commands := map[string]string{}
+	for _, spec := range supportCommandSpecs() {
+		commands[spec.name] = spec.command
+	}
+	for _, name := range []string{"nginx-journal", "nginx-logs", "kernel-network-events", "network-sysctl"} {
+		if commands[name] == "" {
+			t.Fatalf("support command %q is missing", name)
+		}
+	}
+	if !strings.Contains(commands["nginx-logs"], "forwardx-nginx-error.log") ||
+		!strings.Contains(commands["nginx-logs"], "forwardx-nginx-session.log") {
+		t.Fatal("nginx runtime logs are not included in the support bundle")
+	}
+	if !strings.Contains(commands["network-sysctl"], "tcp_keepalive_time") ||
+		!strings.Contains(commands["network-sysctl"], "nf_conntrack_udp_timeout") {
+		t.Fatal("network timeout diagnostics are incomplete")
+	}
+}

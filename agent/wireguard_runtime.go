@@ -28,10 +28,12 @@ const (
 	wireGuardProxyDialTimeout      = 10 * time.Second
 	wireGuardUDPSessionIdleTimeout = 10 * time.Minute
 	wireGuardUDPIdlePollInterval   = 15 * time.Second
-	wireGuardUDPProxyQueueSize     = 512
+	wireGuardUDPProxyQueueSize     = 64
+	wireGuardUDPProxyQueueBytes    = 512 * 1024
+	wireGuardUDPProxyMaxSessions   = 1024
 	wireGuardUDPProxyMaxQueueDelay = 25 * time.Millisecond
 	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
-	wireGuardUDPSessionBufferBytes = 512 * 1024
+	wireGuardUDPSessionBufferBytes = 256 * 1024
 	wireGuardRuntimeReleaseDelay   = time.Minute
 	wireGuardProbeReadyPoll        = 100 * time.Millisecond
 	wireGuardProbeRetryDelay       = 250 * time.Millisecond
@@ -90,6 +92,8 @@ type wireGuardUDPProxySession struct {
 	conn         net.Conn
 	send         chan wireGuardUDPProxyPacket
 	done         chan struct{}
+	queueMu      sync.Mutex
+	queuedBytes  int
 	lastActivity atomic.Int64
 	closeOnce    sync.Once
 }
@@ -97,6 +101,38 @@ type wireGuardUDPProxySession struct {
 type wireGuardUDPProxyPacket struct {
 	payload  []byte
 	queuedAt time.Time
+}
+
+func oldestWireGuardUDPProxySession(sessions map[string]*wireGuardUDPProxySession) (string, *wireGuardUDPProxySession) {
+	var oldestKey string
+	var oldest *wireGuardUDPProxySession
+	var oldestActivity int64
+	for key, session := range sessions {
+		if session == nil {
+			continue
+		}
+		activity := session.lastActivity.Load()
+		if oldest == nil || activity < oldestActivity {
+			oldestKey = key
+			oldest = session
+			oldestActivity = activity
+		}
+	}
+	return oldestKey, oldest
+}
+
+// evictOldestWireGuardUDPProxySession must be called while the proxy's
+// sessions lock is held. The caller closes the returned session after
+// releasing that lock so its cleanup callback cannot deadlock on the map.
+func evictOldestWireGuardUDPProxySession(sessions map[string]*wireGuardUDPProxySession, limit int) *wireGuardUDPProxySession {
+	if limit <= 0 || len(sessions) < limit {
+		return nil
+	}
+	oldestKey, oldest := oldestWireGuardUDPProxySession(sessions)
+	if oldest != nil {
+		delete(sessions, oldestKey)
+	}
+	return oldest
 }
 
 type wireGuardRuntime struct {
@@ -111,6 +147,8 @@ type wireGuardRuntime struct {
 	outboundRefs map[string]int
 	refOutbound  map[string]map[string]struct{}
 	inbound      map[string]*wireGuardInboundProxy
+	inboundRefs  map[string]int
+	refInbound   map[string]map[string]struct{}
 	refs         map[string]int
 	releaseTimer *time.Timer
 	closed       bool
@@ -306,6 +344,8 @@ func newWireGuardRuntime(spec wireGuardSpec) (*wireGuardRuntime, error) {
 		outboundRefs: map[string]int{},
 		refOutbound:  map[string]map[string]struct{}{},
 		inbound:      map[string]*wireGuardInboundProxy{},
+		inboundRefs:  map[string]int{},
+		refInbound:   map[string]map[string]struct{}{},
 		refs:         map[string]int{},
 	}
 	for _, peer := range normalized.Peers {
@@ -456,9 +496,16 @@ func waitForWireGuardRuntime(tunnelID int, timeout time.Duration) (*wireGuardRun
 	}
 }
 
-func (runtime *wireGuardRuntime) addRef(id string, outboundKeys ...string) {
+func (runtime *wireGuardRuntime) addRef(id string, outboundKeys ...string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("wireguard runtime reference is required")
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return net.ErrClosed
+	}
 	if runtime.releaseTimer != nil {
 		runtime.releaseTimer.Stop()
 		runtime.releaseTimer = nil
@@ -471,6 +518,12 @@ func (runtime *wireGuardRuntime) addRef(id string, outboundKeys ...string) {
 	}
 	if runtime.outboundRefs == nil {
 		runtime.outboundRefs = map[string]int{}
+	}
+	if runtime.refInbound == nil {
+		runtime.refInbound = map[string]map[string]struct{}{}
+	}
+	if runtime.inboundRefs == nil {
+		runtime.inboundRefs = map[string]int{}
 	}
 	runtime.refs[id]++
 	keys := runtime.refOutbound[id]
@@ -489,6 +542,7 @@ func (runtime *wireGuardRuntime) addRef(id string, outboundKeys ...string) {
 		keys[key] = struct{}{}
 		runtime.outboundRefs[key]++
 	}
+	return nil
 }
 
 func releaseWireGuardRuntimeRef(tunnelID int, id string) {
@@ -498,8 +552,24 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 	if runtime == nil {
 		return
 	}
-	proxiesToClose := make([]*wireGuardOutboundProxy, 0)
+	releaseWireGuardRuntimeInstanceRef(runtime, tunnelID, id)
+}
+
+func releaseWireGuardRuntimeInstanceRef(runtime *wireGuardRuntime, tunnelID int, id string) {
+	if runtime == nil {
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	outboundToClose := make([]*wireGuardOutboundProxy, 0)
+	inboundToClose := make([]*wireGuardInboundProxy, 0)
 	runtime.mu.Lock()
+	if runtime.refs[id] <= 0 {
+		runtime.mu.Unlock()
+		return
+	}
 	if runtime.refs[id] <= 1 {
 		delete(runtime.refs, id)
 		for key := range runtime.refOutbound[id] {
@@ -507,13 +577,25 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 				delete(runtime.outboundRefs, key)
 				if proxy := runtime.outbound[key]; proxy != nil {
 					delete(runtime.outbound, key)
-					proxiesToClose = append(proxiesToClose, proxy)
+					outboundToClose = append(outboundToClose, proxy)
 				}
 			} else {
 				runtime.outboundRefs[key]--
 			}
 		}
 		delete(runtime.refOutbound, id)
+		for key := range runtime.refInbound[id] {
+			if runtime.inboundRefs[key] <= 1 {
+				delete(runtime.inboundRefs, key)
+				if proxy := runtime.inbound[key]; proxy != nil {
+					delete(runtime.inbound, key)
+					inboundToClose = append(inboundToClose, proxy)
+				}
+			} else {
+				runtime.inboundRefs[key]--
+			}
+		}
+		delete(runtime.refInbound, id)
 	} else {
 		runtime.refs[id]--
 	}
@@ -534,9 +616,13 @@ func releaseWireGuardRuntimeRef(tunnelID int, id string) {
 		})
 	}
 	runtime.mu.Unlock()
-	for _, proxy := range proxiesToClose {
+	for _, proxy := range outboundToClose {
 		proxy.close()
 		logf("wireguard outbound proxy stopped tunnel=%d target=%s", tunnelID, proxy.key)
+	}
+	for _, proxy := range inboundToClose {
+		proxy.close()
+		logf("wireguard inbound proxy stopped tunnel=%d target=%s", tunnelID, proxy.key)
 	}
 }
 
@@ -628,30 +714,42 @@ func (session *wireGuardUDPProxySession) enqueue(payload []byte) bool {
 		payload:  append([]byte(nil), payload...),
 		queuedAt: time.Now(),
 	}
+	packetBytes := len(packet.payload)
+	dropped := false
+	session.queueMu.Lock()
+	defer session.queueMu.Unlock()
+	for len(session.send) > 0 && (len(session.send) >= cap(session.send) || session.queuedBytes+packetBytes > wireGuardUDPProxyQueueBytes) {
+		select {
+		case displaced := <-session.send:
+			session.queuedBytes -= len(displaced.payload)
+			if session.queuedBytes < 0 {
+				session.queuedBytes = 0
+			}
+			dropped = true
+		default:
+		}
+	}
+	if session.queuedBytes+packetBytes > wireGuardUDPProxyQueueBytes {
+		return false
+	}
 	select {
 	case <-session.done:
 		return false
 	case session.send <- packet:
-		return true
+		session.queuedBytes += packetBytes
+		return !dropped
 	default:
+		return false
 	}
+}
 
-	// Keep real-time UDP traffic current during a brief writer stall. Retaining
-	// a full queue of older datagrams makes latency worse after the stall clears.
-	select {
-	case <-session.done:
-		return false
-	case <-session.send:
-	default:
-		return false
+func (session *wireGuardUDPProxySession) markDequeued(packet wireGuardUDPProxyPacket) {
+	session.queueMu.Lock()
+	session.queuedBytes -= len(packet.payload)
+	if session.queuedBytes < 0 {
+		session.queuedBytes = 0
 	}
-	select {
-	case <-session.done:
-		return false
-	case session.send <- packet:
-	default:
-	}
-	return false
+	session.queueMu.Unlock()
 }
 
 func (packet wireGuardUDPProxyPacket) expired(now time.Time) bool {
@@ -668,6 +766,7 @@ func (session *wireGuardUDPProxySession) writeLoop() {
 		case <-session.done:
 			return
 		case packet := <-session.send:
+			session.markDequeued(packet)
 			now := time.Now()
 			pendingNewer := len(session.send)
 			if packet.superseded(now, pendingNewer) {
@@ -723,6 +822,10 @@ func (runtime *wireGuardRuntime) ensureOutboundProxy(refID string, peerID string
 	}
 	key := wireGuardOutboundProxyKey(peerID, tcpPort, udpPort)
 	runtime.mu.Lock()
+	if runtime.closed {
+		runtime.mu.Unlock()
+		return "", 0, 0, net.ErrClosed
+	}
 	retain := func() error {
 		if runtime.refs[refID] <= 0 {
 			return fmt.Errorf("wireguard runtime reference %q is not registered", refID)
@@ -804,6 +907,7 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 			return
 		}
 		key := clientAddr.String()
+		var evicted *wireGuardUDPProxySession
 		proxy.sessionsMu.Lock()
 		session := proxy.sessions[key]
 		if session == nil {
@@ -813,6 +917,7 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 				logf("wireguard udp proxy dial failed tunnel=%d peer=%s port=%d: %v", runtime.spec.TunnelID, proxy.peerID, proxy.udpPort, dialErr)
 				continue
 			}
+			evicted = evictOldestWireGuardUDPProxySession(proxy.sessions, wireGuardUDPProxyMaxSessions)
 			session = newWireGuardUDPProxySession(remote)
 			proxy.sessions[key] = session
 			created := session
@@ -828,19 +933,58 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 			})
 		}
 		proxy.sessionsMu.Unlock()
+		if evicted != nil {
+			evicted.close()
+			if shouldLogAgentReport("wireguard-udp-outbound-session-evict:"+proxy.key, agentReportLogInterval) {
+				logf("wireguard udp outbound session limit reached tunnel=%d peer=%s limit=%d; evicted oldest session", runtime.spec.TunnelID, proxy.peerID, wireGuardUDPProxyMaxSessions)
+			}
+		}
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-outbound-queue:"+proxy.key, agentReportLogInterval) {
 			logf("wireguard udp outbound queue congested tunnel=%d peer=%s; dropping oldest packet", runtime.spec.TunnelID, proxy.peerID)
 		}
 	}
 }
 
-func (runtime *wireGuardRuntime) ensureInboundProxy(tcpPort, udpPort int) error {
+func (runtime *wireGuardRuntime) ensureInboundProxy(refID string, tcpPort, udpPort int) error {
+	refID = strings.TrimSpace(refID)
 	if tcpPort <= 0 || tcpPort > 65535 || udpPort <= 0 || udpPort > 65535 {
 		return errors.New("wireguard inbound proxy port is invalid")
 	}
+	if refID == "" {
+		return errors.New("wireguard inbound proxy reference is required")
+	}
 	key := fmt.Sprintf("%d:%d", tcpPort, udpPort)
 	runtime.mu.Lock()
+	if runtime.closed {
+		runtime.mu.Unlock()
+		return net.ErrClosed
+	}
+	retain := func() error {
+		if runtime.refs[refID] <= 0 {
+			return fmt.Errorf("wireguard runtime reference %q is not registered", refID)
+		}
+		if runtime.refInbound == nil {
+			runtime.refInbound = map[string]map[string]struct{}{}
+		}
+		if runtime.inboundRefs == nil {
+			runtime.inboundRefs = map[string]int{}
+		}
+		keys := runtime.refInbound[refID]
+		if keys == nil {
+			keys = map[string]struct{}{}
+			runtime.refInbound[refID] = keys
+		}
+		if _, exists := keys[key]; !exists {
+			keys[key] = struct{}{}
+			runtime.inboundRefs[key]++
+		}
+		return nil
+	}
 	if runtime.inbound[key] != nil {
+		if err := retain(); err != nil {
+			runtime.mu.Unlock()
+			return err
+		}
 		runtime.mu.Unlock()
 		return nil
 	}
@@ -861,6 +1005,12 @@ func (runtime *wireGuardRuntime) ensureInboundProxy(tcpPort, udpPort int) error 
 		tcpLn: tcpLn, udpConn: udpConn, done: make(chan struct{}), sessions: map[string]*wireGuardUDPProxySession{},
 	}
 	runtime.inbound[key] = proxy
+	if err := retain(); err != nil {
+		delete(runtime.inbound, key)
+		runtime.mu.Unlock()
+		proxy.close()
+		return err
+	}
 	runtime.mu.Unlock()
 	go runtime.serveInboundTCP(proxy)
 	go runtime.serveInboundUDP(proxy)
@@ -894,6 +1044,7 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 			return
 		}
 		key := peerAddr.String()
+		var evicted *wireGuardUDPProxySession
 		proxy.sessionsMu.Lock()
 		session := proxy.sessions[key]
 		if session == nil {
@@ -903,6 +1054,7 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 				logf("wireguard udp backend dial failed tunnel=%d port=%d: %v", runtime.spec.TunnelID, proxy.backendUDP, dialErr)
 				continue
 			}
+			evicted = evictOldestWireGuardUDPProxySession(proxy.sessions, wireGuardUDPProxyMaxSessions)
 			session = newWireGuardUDPProxySession(backend)
 			proxy.sessions[key] = session
 			created := session
@@ -918,6 +1070,12 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 			})
 		}
 		proxy.sessionsMu.Unlock()
+		if evicted != nil {
+			evicted.close()
+			if shouldLogAgentReport("wireguard-udp-inbound-session-evict:"+proxy.key, agentReportLogInterval) {
+				logf("wireguard udp inbound session limit reached tunnel=%d port=%d limit=%d; evicted oldest session", runtime.spec.TunnelID, proxy.backendUDP, wireGuardUDPProxyMaxSessions)
+			}
+		}
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-inbound-queue:"+proxy.key, agentReportLogInterval) {
 			logf("wireguard udp inbound queue congested tunnel=%d port=%d; dropping oldest packet", runtime.spec.TunnelID, proxy.backendUDP)
 		}
@@ -967,6 +1125,13 @@ func copyWireGuardPacketResponses(session *wireGuardUDPProxySession, target net.
 func (session *wireGuardUDPProxySession) close() {
 	session.closeOnce.Do(func() {
 		close(session.done)
+		session.queueMu.Lock()
+		for len(session.send) > 0 {
+			packet := <-session.send
+			session.queuedBytes -= len(packet.payload)
+		}
+		session.queuedBytes = 0
+		session.queueMu.Unlock()
 		_ = session.conn.Close()
 	})
 }
@@ -1027,6 +1192,13 @@ func (runtime *wireGuardRuntime) close() {
 	for _, proxy := range runtime.inbound {
 		inbound = append(inbound, proxy)
 	}
+	runtime.outbound = map[string]*wireGuardOutboundProxy{}
+	runtime.outboundRefs = map[string]int{}
+	runtime.refOutbound = map[string]map[string]struct{}{}
+	runtime.inbound = map[string]*wireGuardInboundProxy{}
+	runtime.inboundRefs = map[string]int{}
+	runtime.refInbound = map[string]map[string]struct{}{}
+	runtime.refs = map[string]int{}
 	runtime.mu.Unlock()
 	for _, proxy := range outbound {
 		proxy.close()
@@ -1054,15 +1226,17 @@ func prepareFXPWireGuard(spec fxpSpec, refID string) (prepared fxpSpec, err erro
 	if refID == "" {
 		return spec, errors.New("wireguard runtime reference is required")
 	}
-	runtime.addRef(refID)
+	if err := runtime.addRef(refID); err != nil {
+		return spec, err
+	}
 	committed := false
 	defer func() {
 		if !committed {
-			releaseWireGuardRuntimeRef(spec.TunnelID, refID)
+			releaseWireGuardRuntimeInstanceRef(runtime, spec.TunnelID, refID)
 		}
 	}()
 	if spec.Role == "exit" || spec.Role == "relay" {
-		if err := runtime.ensureInboundProxy(spec.ListenPort, spec.UDPListenPort); err != nil {
+		if err := runtime.ensureInboundProxy(refID, spec.ListenPort, spec.UDPListenPort); err != nil {
 			return spec, err
 		}
 		spec.ListenHost = "127.0.0.1"

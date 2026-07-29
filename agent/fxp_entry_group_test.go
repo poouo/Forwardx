@@ -353,6 +353,135 @@ func TestDesiredStateStagesOneV1EntryGroupForManyRuleActions(t *testing.T) {
 	}
 }
 
+func TestDesiredStateStagesLargeEntryBatchWithOneFinalSnapshot(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+
+	const entryCount = 2048
+	actions := make([]action, 0, entryCount)
+	for index := 0; index < entryCount; index++ {
+		spec := testV1EntrySpec(88, 10000+index, 20000+index)
+		actions = append(actions, action{Op: "apply", Fxp: &spec})
+	}
+
+	attachDesiredSharedFXPEntryGroups(actions)
+	for index := range actions {
+		group := actions[index].FXPEntryGroup
+		if group == nil || group.TunnelID != 88 || group.TransportVersion != "v1" || len(group.Entries) != entryCount {
+			t.Fatalf("action %d did not receive the final %d-member snapshot: %#v", index, entryCount, group)
+		}
+		if group.Entries[0].RuleID != 10000 || group.Entries[entryCount-1].RuleID != 10000+entryCount-1 {
+			t.Fatalf("action %d received an incomplete or unsorted snapshot", index)
+		}
+	}
+}
+
+func TestDesiredEntryGroupSequentialApplyReplacesRuleAndListenerConflicts(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+
+	const tunnelID = 89
+	sameRuleOld := testV1EntrySpec(tunnelID, 12001, 47001)
+	sameRuleNew := sameRuleOld
+	sameRuleNew.ListenPort = 47002
+	tcpConflict := testV1EntrySpec(tunnelID, 12002, 47010)
+	tcpConflict.Protocol = "tcp"
+	udpConflict := testV1EntrySpec(tunnelID, 12003, 47011)
+	udpConflict.Protocol = "udp"
+	udpConflict.UDPListenPort = 47012
+	unrelated := testV1EntrySpec(tunnelID, 12004, 47020)
+	replacement := testV1EntrySpec(tunnelID, 12005, tcpConflict.ListenPort)
+	replacement.Protocol = "both"
+	replacement.UDPListenPort = udpConflict.UDPListenPort
+	v2SameListeners := testV2EntrySpec(tunnelID, 12006, replacement.ListenPort, "exit-v2")
+	v2SameListeners.UDPListenPort = replacement.UDPListenPort
+
+	v1Group, ok := buildSharedFXPEntryGroup([]fxpSpec{sameRuleOld, tcpConflict, udpConflict, unrelated}, tunnelID, "v1")
+	if !ok {
+		t.Fatal("initial V1 entry group is invalid")
+	}
+	v2Group, ok := buildSharedFXPEntryGroup([]fxpSpec{v2SameListeners}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("initial V2 entry group is invalid")
+	}
+	for _, group := range []fxpSpec{v1Group, v2Group} {
+		if err := persistFXPSpec(group); err != nil {
+			t.Fatalf("persist %s group: %v", group.TransportVersion, err)
+		}
+	}
+
+	actions := []action{
+		{Op: "apply", Fxp: &sameRuleNew},
+		{Op: "apply", Fxp: &replacement},
+		{Op: "apply", Fxp: &v2SameListeners},
+	}
+	attachDesiredSharedFXPEntryGroups(actions)
+
+	for index := 0; index < 2; index++ {
+		if actions[index].FXPEntryGroup == nil {
+			t.Fatalf("V1 action %d has no final group", index)
+		}
+		requireFXPEntryGroupMembers(t, *actions[index].FXPEntryGroup, sameRuleNew, unrelated, replacement)
+		if fxpEntryGroupContains(*actions[index].FXPEntryGroup, sameRuleOld) ||
+			fxpEntryGroupContains(*actions[index].FXPEntryGroup, tcpConflict) ||
+			fxpEntryGroupContains(*actions[index].FXPEntryGroup, udpConflict) {
+			t.Fatalf("V1 action %d retained a replaced rule or listener conflict: %#v", index, actions[index].FXPEntryGroup.Entries)
+		}
+	}
+	if actions[2].FXPEntryGroup == nil {
+		t.Fatal("V2 action has no final group")
+	}
+	requireFXPEntryGroupMembers(t, *actions[2].FXPEntryGroup, v2SameListeners)
+}
+
+func TestDesiredEntryGroupRemoveSupportsWildcardFieldsWithinTransport(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+
+	const tunnelID = 90
+	tcpEntry := testV1EntrySpec(tunnelID, 13001, 47101)
+	tcpEntry.Protocol = "tcp"
+	bothEntry := testV1EntrySpec(tunnelID, 13002, 47102)
+	udpRemovedByPort := testV1EntrySpec(tunnelID, 13003, 47103)
+	udpRemovedByPort.Protocol = "udp"
+	udpRemovedByPort.UDPListenPort = 47203
+	udpRemaining := testV1EntrySpec(tunnelID, 13004, 47104)
+	udpRemaining.Protocol = "udp"
+	udpRemaining.UDPListenPort = 47204
+	v2Entry := testV2EntrySpec(tunnelID, 13005, tcpEntry.ListenPort, "exit-v2")
+
+	v1Group, ok := buildSharedFXPEntryGroup([]fxpSpec{tcpEntry, bothEntry, udpRemovedByPort, udpRemaining}, tunnelID, "v1")
+	if !ok {
+		t.Fatal("initial V1 entry group is invalid")
+	}
+	v2Group, ok := buildSharedFXPEntryGroup([]fxpSpec{v2Entry}, tunnelID, forwardXWireGuardVersion)
+	if !ok {
+		t.Fatal("initial V2 entry group is invalid")
+	}
+	for _, group := range []fxpSpec{v1Group, v2Group} {
+		if err := persistFXPSpec(group); err != nil {
+			t.Fatalf("persist %s group: %v", group.TransportVersion, err)
+		}
+	}
+
+	removeTCP := fxpSpec{Role: "entry", TransportVersion: "v1", TunnelID: tunnelID, Protocol: "tcp"}
+	removeUDPPort := fxpSpec{TransportVersion: "v1", TunnelID: tunnelID, ListenPort: udpRemovedByPort.ListenPort}
+	actions := []action{
+		{Op: "remove", Fxp: &removeTCP},
+		{Op: "remove", Fxp: &removeUDPPort},
+		{Op: "apply", Fxp: &v2Entry},
+	}
+	attachDesiredSharedFXPEntryGroups(actions)
+
+	for index := 0; index < 2; index++ {
+		if actions[index].FXPEntryGroup == nil {
+			t.Fatalf("V1 wildcard removal %d has no final group", index)
+		}
+		requireFXPEntryGroupMembers(t, *actions[index].FXPEntryGroup, udpRemaining)
+	}
+	if actions[2].FXPEntryGroup == nil {
+		t.Fatal("V2 action has no final group")
+	}
+	requireFXPEntryGroupMembers(t, *actions[2].FXPEntryGroup, v2Entry)
+}
+
 func TestPersistingV1EntryGroupReplacesOnlyThatTunnelSnapshots(t *testing.T) {
 	usePersistentRuntimeTestDirs(t)
 	first := testV1EntrySpec(91, 1, 51001)

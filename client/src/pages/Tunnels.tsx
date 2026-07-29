@@ -56,6 +56,7 @@ import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, get
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
+import { MAX_NGINX_PEM_FILES, MAX_NGINX_PEM_UPLOAD_BYTES, parseNginxPemFiles } from "@/lib/nginxPemFiles";
 import { pollingInterval } from "@/lib/polling";
 import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
@@ -82,10 +83,11 @@ import {
   ShieldCheck,
   Stethoscope,
   Trash2,
+  Upload,
   XCircle,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
-import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -518,7 +520,7 @@ function escapeTooltipHtml(value: unknown) {
 }
 
 function formatGlobeLatency(value: unknown, timeout?: unknown) {
-  if (timeout) return "不可达";
+  if (timeout) return "超时";
   const latency = Number(value);
   return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
 }
@@ -1418,7 +1420,7 @@ function TunnelLatencyDialog({
                                   <span className="truncate">{meta.label}</span>
                                 </span>
                                 <span className={timeout ? "font-semibold text-destructive" : "font-semibold tabular-nums"}>
-                                  {timeout ? "不通" : `${Number(item[meta.rawKey] || 0)}ms`}
+                                  {timeout ? "超时" : `${Number(item[meta.rawKey] || 0)}ms`}
                                 </span>
                               </div>
                             );
@@ -2162,6 +2164,10 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
+  const nginxCertFileInputRef = useRef<HTMLInputElement | null>(null);
+  const nginxCertDragDepthRef = useRef(0);
+  const nginxCertImportRequestRef = useRef(0);
+  const [nginxCertDragActive, setNginxCertDragActive] = useState(false);
   const [tunnelProxyPanelOpen, setTunnelProxyPanelOpen] = useState(false);
   const [tunnelAdvancedOpen, setTunnelAdvancedOpen] = useState(false);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
@@ -2181,6 +2187,12 @@ function TunnelsContent() {
   const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ mode: TunnelGroupMode; requestKey: number } | null>(null);
   const [deleteTunnel, setDeleteTunnel] = useState<any | null>(null);
+  useEffect(() => {
+    if (showDialog || showCreateTypeDialog) return;
+    nginxCertImportRequestRef.current += 1;
+    nginxCertDragDepthRef.current = 0;
+    setNginxCertDragActive(false);
+  }, [showCreateTypeDialog, showDialog]);
   const tunnelPageRequest = usePersistentPageRequest("forwardx.tunnels.page");
   const tunnelPageFilterKey = linkSearchQuery.trim();
   const previousTunnelPageFilterKey = useRef(tunnelPageFilterKey);
@@ -3156,12 +3168,112 @@ function TunnelsContent() {
       udpOverTcp: transportTuningSupported ? prev.udpOverTcp : false,
     }));
   };
+  const importNginxPemFiles = async (files: readonly File[]) => {
+    if (files.length === 0) return;
+    const requestId = ++nginxCertImportRequestRef.current;
+    try {
+      if (files.length > MAX_NGINX_PEM_FILES) throw new Error("一次最多选择一个证书链文件和一个私钥文件");
+      const totalBytes = files.reduce((total, file) => total + file.size, 0);
+      if (totalBytes > MAX_NGINX_PEM_UPLOAD_BYTES) throw new Error("所选文件总大小不能超过 128KB");
+      const parsed = parseNginxPemFiles(await Promise.all(files.map(async (file) => ({
+        name: file.name,
+        content: await file.text(),
+      }))));
+      if (requestId !== nginxCertImportRequestRef.current) return;
+      setForm((current) => ({
+        ...current,
+        certPem: parsed.certPem ?? current.certPem,
+        certKeyPem: parsed.certKeyPem ?? current.certKeyPem,
+      }));
+      if (parsed.certPem && parsed.certKeyPem) {
+        toast.success(parsed.certificateCount > 1 ? `已读取 ${parsed.certificateCount} 张证书和私钥` : "已读取证书和私钥");
+      } else if (parsed.certPem) {
+        toast.success(parsed.certificateCount > 1 ? `已读取 ${parsed.certificateCount} 张证书` : "已读取证书");
+      } else {
+        toast.success("已读取私钥");
+      }
+    } catch (error: any) {
+      if (requestId !== nginxCertImportRequestRef.current) return;
+      toast.error(error?.message || "读取证书文件失败");
+    }
+  };
+  const nginxCertDragHasFiles = (event: DragEvent<HTMLDivElement>) => (
+    Array.from(event.dataTransfer.types).some((type) => type.toLowerCase() === "files")
+    || Array.from(event.dataTransfer.items).some((item) => item.kind === "file")
+    || event.dataTransfer.files.length > 0
+  );
+  const handleNginxCertDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!nginxCertDragHasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    nginxCertDragDepthRef.current += 1;
+    setNginxCertDragActive(true);
+  };
+  const handleNginxCertDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!nginxCertDragHasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+  const handleNginxCertDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (nginxCertDragDepthRef.current === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    nginxCertDragDepthRef.current = Math.max(0, nginxCertDragDepthRef.current - 1);
+    if (nginxCertDragDepthRef.current === 0) setNginxCertDragActive(false);
+  };
+  const handleNginxCertDrop = (event: DragEvent<HTMLDivElement>) => {
+    const files = Array.from(event.dataTransfer.files);
+    if (!nginxCertDragHasFiles(event) && nginxCertDragDepthRef.current === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    nginxCertDragDepthRef.current = 0;
+    setNginxCertDragActive(false);
+    void importNginxPemFiles(files);
+  };
   const renderNginxCertFields = () => (
-    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+    <div
+      className={cn(
+        "space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors",
+        nginxCertDragActive && "border-primary bg-primary/5 ring-2 ring-primary/15",
+      )}
+      onDragEnter={handleNginxCertDragEnter}
+      onDragOver={handleNginxCertDragOver}
+      onDragLeave={handleNginxCertDragLeave}
+      onDrop={handleNginxCertDrop}
+    >
       <div className="space-y-2">
         <Label>证书域名 / SNI</Label>
         <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
       </div>
+      <input
+        ref={nginxCertFileInputRef}
+        type="file"
+        accept=".pem,.crt,.cer,.key,application/x-pem-file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          event.target.value = "";
+          void importNginxPemFiles(files);
+        }}
+      />
+      <button
+        type="button"
+        className={cn(
+          "flex min-h-16 w-full items-center gap-3 rounded-md border border-dashed border-border/70 bg-background/60 px-3 py-2.5 text-left transition-colors hover:border-primary/50 hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          nginxCertDragActive && "border-primary bg-primary/10",
+        )}
+        onClick={() => nginxCertFileInputRef.current?.click()}
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/40 text-muted-foreground">
+          <Upload className="h-4 w-4" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">{nginxCertDragActive ? "松开以读取证书文件" : "拖放或选择证书文件"}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">支持 PEM 编码的 .pem、.crt、.cer、.key；证书链与私钥可同时选择</span>
+        </span>
+      </button>
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="space-y-2">
           <Label>自定义证书 PEM</Label>
@@ -3669,7 +3781,7 @@ function TunnelsContent() {
       return <LatencyRating latencyMs={latency} className={compact ? "text-xs" : undefined} />;
     }
     if (tunnelLatencyIsTimeout(tunnel)) {
-      return <LatencyRating isTimeout timeoutText="不可达" className={compact ? "text-xs" : undefined} />;
+      return <LatencyRating isTimeout timeoutText="超时" className={compact ? "text-xs" : undefined} />;
     }
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };
@@ -3690,7 +3802,7 @@ function TunnelsContent() {
               latencyMs={item.latencyMs}
               isTimeout={item.isTimeout}
               icon="none"
-              timeoutText="不可达"
+              timeoutText="超时"
               className={compact ? "shrink-0 text-[10px]" : "shrink-0"}
             />
           </div>

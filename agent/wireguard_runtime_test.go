@@ -5,9 +5,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -261,6 +263,260 @@ func TestV2EntryGroupWireGuardPreparationFailureReclaimsCreatedProxies(t *testin
 	}
 }
 
+func newTestIsolatedWireGuardRuntime(t *testing.T, tunnelID int, address string) *wireGuardRuntime {
+	t.Helper()
+	privateKey, publicKey := testWireGuardKeyPair(t)
+	runtime, err := newWireGuardRuntime(wireGuardSpec{
+		TunnelID: tunnelID, PrivateKey: privateKey, PublicKey: publicKey,
+		Address: address, MTU: 1380,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime
+}
+
+func TestWireGuardClosedRuntimeRejectsNewReference(t *testing.T) {
+	runtime := &wireGuardRuntime{
+		closed: true,
+		refs:   map[string]int{}, inbound: map[string]*wireGuardInboundProxy{},
+	}
+	if err := runtime.addRef("late-reference"); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed runtime addRef error=%v, want net.ErrClosed", err)
+	}
+	if err := runtime.ensureInboundProxy("late-reference", 30001, 30001); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed runtime inbound preparation error=%v, want net.ErrClosed", err)
+	}
+	if len(runtime.refs) != 0 || len(runtime.inbound) != 0 {
+		t.Fatalf("closed runtime retained refs=%d inbound=%d", len(runtime.refs), len(runtime.inbound))
+	}
+}
+
+func TestWireGuardInstanceReleaseDoesNotAffectReplacementRuntime(t *testing.T) {
+	const tunnelID = 98508
+	oldRuntime := &wireGuardRuntime{spec: wireGuardSpec{TunnelID: tunnelID}}
+	if err := oldRuntime.addRef("old-process"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(oldRuntime.close)
+	replacement := &wireGuardRuntime{
+		spec: wireGuardSpec{TunnelID: tunnelID}, refs: map[string]int{},
+	}
+	setTestWireGuardRuntime(t, tunnelID, replacement)
+	t.Cleanup(replacement.close)
+
+	releaseWireGuardRuntimeInstanceRef(oldRuntime, tunnelID, "old-process")
+	oldRuntime.mu.RLock()
+	oldRefCount := len(oldRuntime.refs)
+	oldRuntime.mu.RUnlock()
+	replacement.mu.RLock()
+	replacementTimer := replacement.releaseTimer
+	replacementRefCount := len(replacement.refs)
+	replacement.mu.RUnlock()
+	if oldRefCount != 0 || replacementRefCount != 0 || replacementTimer != nil {
+		t.Fatalf("instance release left oldRefs=%d or changed replacement refs=%d timer=%v", oldRefCount, replacementRefCount, replacementTimer != nil)
+	}
+
+	// A delayed process exit referring to the old instance must also be a no-op
+	// against the replacement selected by tunnel ID.
+	releaseWireGuardRuntimeRef(tunnelID, "old-process")
+	replacement.mu.RLock()
+	replacementTimer = replacement.releaseTimer
+	replacement.mu.RUnlock()
+	if replacementTimer != nil {
+		t.Fatal("unknown old reference scheduled cleanup of the replacement runtime")
+	}
+}
+
+func TestV2WireGuardPreparationFailureReclaimsInboundProxy(t *testing.T) {
+	const tunnelID = 98506
+	runtime := newTestIsolatedWireGuardRuntime(t, tunnelID, "100.113.0.1")
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	servicePort := testUDPPort(t)
+	spec := fxpSpec{
+		TunnelID: tunnelID, TransportVersion: forwardXWireGuardVersion, Role: "relay",
+		ListenPort: servicePort, UDPListenPort: servicePort,
+		RelayPeerID: "missing-relay", RelayExitPort: 29001, UDPRelayExitPort: 29002,
+	}
+	if _, err := prepareFXPWireGuard(spec, "inbound-failure-test"); err == nil {
+		t.Fatal("V2 relay preparation unexpectedly succeeded without its relay peer")
+	}
+
+	runtime.mu.RLock()
+	inboundCount := len(runtime.inbound)
+	inboundRefCount := len(runtime.inboundRefs)
+	refInboundCount := len(runtime.refInbound)
+	refCount := len(runtime.refs)
+	runtime.mu.RUnlock()
+	if inboundCount != 0 || inboundRefCount != 0 || refInboundCount != 0 || refCount != 0 {
+		t.Fatalf("failed V2 relay preparation leaked inbound=%d inboundRefs=%d refInbound=%d refs=%d", inboundCount, inboundRefCount, refInboundCount, refCount)
+	}
+
+	// Binding the same virtual address again proves the failed preparation
+	// closed both netstack listeners rather than only removing their map entry.
+	const rebindRef = "inbound-failure-test:rebind"
+	runtime.addRef(rebindRef)
+	if err := runtime.ensureInboundProxy(rebindRef, servicePort, servicePort); err != nil {
+		t.Fatalf("failed preparation retained its inbound listeners: %v", err)
+	}
+	releaseWireGuardRuntimeRef(tunnelID, rebindRef)
+}
+
+func newTestWireGuardInboundProxy(t *testing.T, key string) *wireGuardInboundProxy {
+	t.Helper()
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		_ = tcpListener.Close()
+		t.Fatal(err)
+	}
+	return &wireGuardInboundProxy{
+		key: key, tcpLn: tcpListener, udpConn: udpConn,
+		done: make(chan struct{}), sessions: map[string]*wireGuardUDPProxySession{},
+	}
+}
+
+func TestWireGuardInboundProxyReplacementReclaimsOldPort(t *testing.T) {
+	const tunnelID = 98504
+	oldProxy := newTestWireGuardInboundProxy(t, "old")
+	newProxy := newTestWireGuardInboundProxy(t, "new")
+	runtime := &wireGuardRuntime{
+		spec:         wireGuardSpec{TunnelID: tunnelID},
+		outbound:     map[string]*wireGuardOutboundProxy{},
+		outboundRefs: map[string]int{},
+		refOutbound:  map[string]map[string]struct{}{},
+		inbound: map[string]*wireGuardInboundProxy{
+			"old": oldProxy,
+			"new": newProxy,
+		},
+		inboundRefs: map[string]int{"old": 1, "new": 1},
+		refInbound: map[string]map[string]struct{}{
+			"old-process": {"old": {}},
+			"new-process": {"new": {}},
+		},
+		refs: map[string]int{"old-process": 1, "new-process": 1},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	releaseWireGuardRuntimeRef(tunnelID, "old-process")
+	runtime.mu.RLock()
+	_, oldRetained := runtime.inbound["old"]
+	_, newRetained := runtime.inbound["new"]
+	runtime.mu.RUnlock()
+	if oldRetained || !newRetained {
+		t.Fatalf("inbound replacement retained old=%v new=%v", oldRetained, newRetained)
+	}
+	select {
+	case <-oldProxy.done:
+	default:
+		t.Fatal("removed inbound proxy was not closed")
+	}
+	select {
+	case <-newProxy.done:
+		t.Fatal("replacement inbound proxy was closed with old process")
+	default:
+	}
+}
+
+func TestWireGuardInboundProxyHandoffRetainsSharedPort(t *testing.T) {
+	const tunnelID = 98505
+	proxy := newTestWireGuardInboundProxy(t, "shared")
+	runtime := &wireGuardRuntime{
+		spec:         wireGuardSpec{TunnelID: tunnelID},
+		outbound:     map[string]*wireGuardOutboundProxy{},
+		outboundRefs: map[string]int{},
+		refOutbound:  map[string]map[string]struct{}{},
+		inbound:      map[string]*wireGuardInboundProxy{"shared": proxy},
+		inboundRefs:  map[string]int{"shared": 2},
+		refInbound: map[string]map[string]struct{}{
+			"old-process": {"shared": {}},
+			"new-process": {"shared": {}},
+		},
+		refs: map[string]int{"old-process": 1, "new-process": 1},
+	}
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	releaseWireGuardRuntimeRef(tunnelID, "old-process")
+	runtime.mu.RLock()
+	remainingRefs := runtime.inboundRefs["shared"]
+	_, retained := runtime.inbound["shared"]
+	runtime.mu.RUnlock()
+	if !retained || remainingRefs != 1 {
+		t.Fatalf("shared inbound handoff retained=%v refs=%d", retained, remainingRefs)
+	}
+	select {
+	case <-proxy.done:
+		t.Fatal("shared inbound proxy closed before replacement release")
+	default:
+	}
+
+	releaseWireGuardRuntimeRef(tunnelID, "new-process")
+	select {
+	case <-proxy.done:
+	default:
+		t.Fatal("shared inbound proxy remained open after final release")
+	}
+}
+
+func TestWireGuardInboundProxyRepeatedReplacementReclaimsResources(t *testing.T) {
+	baselineGoroutines := goruntime.NumGoroutine()
+	const tunnelID = 98507
+	runtime := newTestIsolatedWireGuardRuntime(t, tunnelID, "100.114.0.1")
+	setTestWireGuardRuntime(t, tunnelID, runtime)
+	t.Cleanup(runtime.close)
+
+	servicePort := testUDPPort(t)
+	const replacements = 24
+	for replacement := 0; replacement < replacements; replacement++ {
+		refID := fmt.Sprintf("inbound-replacement:%d", replacement)
+		runtime.addRef(refID)
+		if err := runtime.ensureInboundProxy(refID, servicePort, servicePort); err != nil {
+			t.Fatalf("replacement %d could not reuse inbound port: %v", replacement, err)
+		}
+
+		key := fmt.Sprintf("%d:%d", servicePort, servicePort)
+		runtime.mu.RLock()
+		proxy := runtime.inbound[key]
+		runtime.mu.RUnlock()
+		if proxy == nil {
+			t.Fatalf("replacement %d did not register its inbound proxy", replacement)
+		}
+
+		releaseWireGuardRuntimeRef(tunnelID, refID)
+		select {
+		case <-proxy.done:
+		default:
+			t.Fatalf("replacement %d did not close its inbound proxy", replacement)
+		}
+		runtime.mu.RLock()
+		inboundCount := len(runtime.inbound)
+		inboundRefCount := len(runtime.inboundRefs)
+		refInboundCount := len(runtime.refInbound)
+		refCount := len(runtime.refs)
+		runtime.mu.RUnlock()
+		if inboundCount != 0 || inboundRefCount != 0 || refInboundCount != 0 || refCount != 0 {
+			t.Fatalf("replacement %d leaked inbound=%d inboundRefs=%d refInbound=%d refs=%d", replacement, inboundCount, inboundRefCount, refInboundCount, refCount)
+		}
+	}
+
+	runtime.close()
+	deadline := time.Now().Add(3 * time.Second)
+	for goruntime.NumGoroutine() > baselineGoroutines+8 && time.Now().Before(deadline) {
+		goruntime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if remaining := goruntime.NumGoroutine(); remaining > baselineGoroutines+8 {
+		t.Fatalf("WireGuard replacements did not converge goroutines: baseline=%d remaining=%d", baselineGoroutines, remaining)
+	}
+}
+
 func TestWireGuardProbeTreatsMissingRuntimeOrPeerAsNotReady(t *testing.T) {
 	const tunnelID = 98001
 	setTestWireGuardRuntime(t, tunnelID, nil)
@@ -420,6 +676,97 @@ func TestWireGuardUDPProxyQueueKeepsNewestPacketWhenFull(t *testing.T) {
 	}
 }
 
+func TestWireGuardUDPProxyQueueEnforcesByteBudget(t *testing.T) {
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	session := newWireGuardUDPProxySession(connection)
+	defer session.close()
+
+	const packetBytes = 60 * 1024
+	packetsWithinBudget := wireGuardUDPProxyQueueBytes / packetBytes
+	for index := 0; index < packetsWithinBudget; index++ {
+		payload := make([]byte, packetBytes)
+		payload[0] = byte(index)
+		if !session.enqueue(payload) {
+			t.Fatalf("packet %d unexpectedly exceeded the byte budget", index)
+		}
+	}
+	newest := make([]byte, packetBytes)
+	newest[0] = byte(packetsWithinBudget)
+	if session.enqueue(newest) {
+		t.Fatal("byte-budget eviction did not report a displaced packet")
+	}
+	if session.queuedBytes > wireGuardUDPProxyQueueBytes {
+		t.Fatalf("queued bytes=%d exceeds budget=%d", session.queuedBytes, wireGuardUDPProxyQueueBytes)
+	}
+	if len(session.send) != packetsWithinBudget {
+		t.Fatalf("queue retained %d packets, want %d after byte-budget eviction", len(session.send), packetsWithinBudget)
+	}
+	first := <-session.send
+	session.markDequeued(first)
+	if first.payload[0] != 1 {
+		t.Fatalf("byte-budget eviction retained oldest packet marker=%d", first.payload[0])
+	}
+	for len(session.send) > 0 {
+		packet := <-session.send
+		session.markDequeued(packet)
+		newest = packet.payload
+	}
+	if newest[0] != byte(packetsWithinBudget) {
+		t.Fatalf("byte-budget eviction lost newest packet marker=%d", newest[0])
+	}
+	if session.queuedBytes != 0 {
+		t.Fatalf("drained queue retained %d accounted bytes", session.queuedBytes)
+	}
+}
+
+func TestWireGuardUDPProxySessionCloseReleasesQueuedPayloads(t *testing.T) {
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	session := newWireGuardUDPProxySession(connection)
+	for index := 0; index < 4; index++ {
+		if !session.enqueue(make([]byte, 32*1024)) {
+			t.Fatalf("packet %d unexpectedly congested the queue", index)
+		}
+	}
+	session.close()
+	if got := len(session.send); got != 0 {
+		t.Fatalf("closed session retained %d queued packets", got)
+	}
+	if session.queuedBytes != 0 {
+		t.Fatalf("closed session retained %d queued bytes", session.queuedBytes)
+	}
+}
+
+func TestWireGuardUDPProxySessionLimitEvictsLeastRecentlyActive(t *testing.T) {
+	sessions := make(map[string]*wireGuardUDPProxySession, wireGuardUDPProxyMaxSessions)
+	for index := 0; index < wireGuardUDPProxyMaxSessions; index++ {
+		session := &wireGuardUDPProxySession{}
+		session.lastActivity.Store(int64(index + 1))
+		sessions[strconv.Itoa(index)] = session
+	}
+
+	evicted := evictOldestWireGuardUDPProxySession(sessions, wireGuardUDPProxyMaxSessions)
+	if evicted == nil || evicted.lastActivity.Load() != 1 {
+		t.Fatalf("session limit evicted activity=%v, want oldest activity=1", func() any {
+			if evicted == nil {
+				return nil
+			}
+			return evicted.lastActivity.Load()
+		}())
+	}
+	if _, retained := sessions["0"]; retained {
+		t.Fatal("least recently active session remained in the map")
+	}
+	sessions["new"] = &wireGuardUDPProxySession{}
+	if len(sessions) != wireGuardUDPProxyMaxSessions {
+		t.Fatalf("session map size=%d, want hard limit=%d", len(sessions), wireGuardUDPProxyMaxSessions)
+	}
+	if evicted := evictOldestWireGuardUDPProxySession(sessions, wireGuardUDPProxyMaxSessions+1); evicted != nil {
+		t.Fatal("session was evicted below the configured limit")
+	}
+}
+
 func TestWireGuardUDPProxySessionsWriteIndependently(t *testing.T) {
 	blockedConnection, blockedPeer := net.Pipe()
 	fastConnection, fastPeer := net.Pipe()
@@ -538,7 +885,9 @@ func TestWireGuardRuntimeSupportsTwoIndependentEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer exit.close()
-	if err := exit.ensureInboundProxy(servicePort, servicePort); err != nil {
+	const exitInboundRef = "two-entry-exit"
+	exit.addRef(exitInboundRef)
+	if err := exit.ensureInboundProxy(exitInboundRef, servicePort, servicePort); err != nil {
 		t.Fatal(err)
 	}
 
@@ -656,7 +1005,9 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer right.close()
-	if err := right.ensureInboundProxy(servicePort, servicePort); err != nil {
+	const rightInboundRef = "tcp-udp-proxy-exit"
+	right.addRef(rightInboundRef)
+	if err := right.ensureInboundProxy(rightInboundRef, servicePort, servicePort); err != nil {
 		t.Fatal(err)
 	}
 
@@ -723,7 +1074,9 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		t.Fatalf("unexpected udp reply %q", udpReply[:n])
 	}
 
-	const burstPackets = 128
+	// Stay below the real-time proxy queue limit. Queue saturation and dropping
+	// stale datagrams is covered separately and is intentional backpressure.
+	const burstPackets = wireGuardUDPProxyQueueSize / 2
 	_ = udpClient.SetDeadline(time.Now().Add(15 * time.Second))
 	for i := 0; i < burstPackets; i++ {
 		payload := []byte("burst-" + strconv.Itoa(i))

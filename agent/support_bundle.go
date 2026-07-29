@@ -26,9 +26,15 @@ var supportSecretPattern = regexp.MustCompile(`(?i)((?:password|passwd|secret|to
 const (
 	supportJournalOutputLimit = 48 * 1024
 	supportCommandOutputLimit = 16 * 1024
-	supportTotalOutputLimit   = 176 * 1024
+	supportNginxOutputLimit   = 24 * 1024
+	supportTotalOutputLimit   = 224 * 1024
 	supportTruncationMarker   = "\n[TRUNCATED]"
 )
+
+type supportCommandSpec struct {
+	name, command string
+	outputLimit   int
+}
 
 func redactSupportOutput(value string) string {
 	return supportSecretPattern.ReplaceAllString(value, "${1}[REDACTED]")
@@ -81,22 +87,26 @@ func enforceSupportOutputTotalLimit(results []supportCommandResult, limit int) {
 	}
 }
 
-func collectSupportDiagnostics() map[string]any {
-	commands := []struct {
-		name, command string
-		outputLimit   int
-	}{
+func supportCommandSpecs() []supportCommandSpec {
+	return []supportCommandSpec{
 		{"agent-journal-current-boot", "journalctl -u forwardx-agent -b -n 600 --no-pager 2>&1 || tail -n 600 /var/log/forwardx-agent/agent-go.log 2>&1", supportJournalOutputLimit},
 		{"agent-journal-previous-boot", "journalctl -u forwardx-agent -b -1 -n 300 --no-pager 2>&1 || true", supportJournalOutputLimit},
 		{"service-status", "systemctl status forwardx-agent forwardx-runtime forwardx-tunnel-runtime forwardx-nginx --no-pager -l 2>&1 || true", supportCommandOutputLimit},
 		{"service-restarts", "systemctl show forwardx-agent forwardx-runtime forwardx-tunnel-runtime forwardx-nginx -p Id -p ActiveState -p SubState -p NRestarts -p ExecMainStartTimestamp 2>&1 || true", supportCommandOutputLimit},
+		{"nginx-journal", "journalctl -u forwardx-nginx -b -n 400 --no-pager 2>&1 || true", supportNginxOutputLimit},
+		{"nginx-logs", "for f in /var/log/forwardx-agent/forwardx-nginx-error.log /var/log/forwardx-agent/forwardx-nginx-session.log; do echo \"### $f\"; if [ -f \"$f\" ]; then tail -n 400 \"$f\"; else echo missing; fi; done 2>&1", supportNginxOutputLimit},
+		{"kernel-network-events", "journalctl -k -b --since '-2 hours' --no-pager 2>&1 | grep -Ei 'out of memory|oom|killed process|nf_conntrack.*(full|drop)|TCP:.*memory' | tail -n 300 || true", supportCommandOutputLimit},
 		{"mimic", "for f in /etc/mimic/*.conf; do [ -f \"$f\" ] || continue; i=${f##*/}; i=${i%.conf}; echo \"### $i\"; mimic show \"$i\" 2>&1 || true; ip -details -statistics link show dev \"$i\" 2>&1 || true; command -v ethtool >/dev/null 2>&1 && ethtool -k \"$i\" 2>&1 || true; tc filter show dev \"$i\" ingress 2>&1 || true; tc filter show dev \"$i\" egress 2>&1 || true; done", supportCommandOutputLimit},
 		{"listeners", "ss -H -ltnup 2>&1 | head -n 2000", supportCommandOutputLimit},
 		{"routes", "ip -4 route show 2>&1; ip -6 route show 2>&1", supportCommandOutputLimit},
 		{"qdisc", "tc qdisc show 2>&1 || true", supportCommandOutputLimit},
-		{"network-sysctl", "sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.core.rmem_max net.core.wmem_max 2>&1 || true", supportCommandOutputLimit},
+		{"network-sysctl", "sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.core.rmem_max net.core.wmem_max net.ipv4.tcp_keepalive_time net.ipv4.tcp_keepalive_intvl net.ipv4.tcp_keepalive_probes net.netfilter.nf_conntrack_tcp_timeout_established net.netfilter.nf_conntrack_udp_timeout net.netfilter.nf_conntrack_udp_timeout_stream 2>&1 || true", supportCommandOutputLimit},
 		{"nft-summary", "nft list ruleset 2>&1 | head -n 2500 || true", supportCommandOutputLimit},
 	}
+}
+
+func collectSupportDiagnostics() map[string]any {
+	commands := supportCommandSpecs()
 	results := make([]supportCommandResult, len(commands))
 	semaphore := make(chan struct{}, 4)
 	var wg sync.WaitGroup

@@ -37,6 +37,7 @@ type pendingTrafficBatch struct {
 var trafficBatchMu sync.Mutex
 var trafficBatchFlushMu sync.Mutex
 var trafficBatchWorkerOnce sync.Once
+var trafficBatchWake = make(chan struct{}, 1)
 var trafficBatches = map[trafficBatchKey]map[int]trafficBatchValue{}
 var trafficPendingReports = map[trafficBatchKey]pendingTrafficBatch{}
 var trafficReportSequence atomic.Uint64
@@ -68,11 +69,23 @@ func startTrafficBatchWorker() {
 		go func() {
 			ticker := time.NewTicker(trafficBatchInterval)
 			defer ticker.Stop()
-			for range ticker.C {
+			for {
+				select {
+				case <-ticker.C:
+				case <-trafficBatchWake:
+				}
 				flushTrafficBatches()
 			}
 		}()
 	})
+}
+
+func wakeTrafficBatchWorker() {
+	startTrafficBatchWorker()
+	select {
+	case trafficBatchWake <- struct{}{}:
+	default:
+	}
 }
 
 func trafficBatchSnapshot() map[trafficBatchKey]map[int]trafficBatchValue {
@@ -272,7 +285,7 @@ func startTrafficReporter(cfg config, counter *trafficCounter) func() {
 		once.Do(func() {
 			close(done)
 			reportDelta()
-			flushTrafficBatches()
+			wakeTrafficBatchWorker()
 		})
 	}
 }

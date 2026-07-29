@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.178"
+var Version = "2.2.179"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -7145,57 +7145,253 @@ func desiredSharedFXPEntryGroup(current *fxpSpec, removal *fxpSpec) (fxpSpec, bo
 	return buildSharedFXPEntryGroup(entries, tunnelID, transportVersion)
 }
 
-func attachDesiredSharedFXPEntryGroups(actions []action) {
-	touched := map[string]fxpSpec{}
-	entriesByGroup := map[string][]fxpSpec{}
-	for _, persisted := range loadPersistedFXPSpecs() {
-		if isSharedFXPEntry(persisted) {
-			key := fxpEntryGroupKey(persisted.TransportVersion, persisted.TunnelID)
-			entriesByGroup[key] = append(entriesByGroup[key], persisted)
+type sharedFXPEntryEndpoint struct {
+	protocol string
+	port     int
+}
+
+type sharedFXPEntrySlot struct {
+	entry  fxpSpec
+	active bool
+}
+
+type mutableSharedFXPEntryGroup struct {
+	tunnelID         int
+	transportVersion string
+	slots            []sharedFXPEntrySlot
+	active           map[int]struct{}
+	byRule           map[int][]int
+	byListenPort     map[int][]int
+	byEndpoint       map[sharedFXPEntryEndpoint][]int
+}
+
+func newMutableSharedFXPEntryGroup(tunnelID int, transportVersion string) *mutableSharedFXPEntryGroup {
+	return &mutableSharedFXPEntryGroup{
+		tunnelID:         tunnelID,
+		transportVersion: normalizeFXPTransportVersion(transportVersion),
+		active:           map[int]struct{}{},
+		byRule:           map[int][]int{},
+		byListenPort:     map[int][]int{},
+		byEndpoint:       map[sharedFXPEntryEndpoint][]int{},
+	}
+}
+
+func sharedFXPEntryEndpoints(spec fxpSpec) ([2]sharedFXPEntryEndpoint, int) {
+	var endpoints [2]sharedFXPEntryEndpoint
+	count := 0
+	switch normalizeRuntimeProtocol(spec.Protocol) {
+	case "udp":
+		if spec.UDPListenPort > 0 {
+			endpoints[count] = sharedFXPEntryEndpoint{protocol: "udp", port: spec.UDPListenPort}
+			count++
+		}
+	case "both":
+		if spec.ListenPort > 0 {
+			endpoints[count] = sharedFXPEntryEndpoint{protocol: "tcp", port: spec.ListenPort}
+			count++
+		}
+		if spec.UDPListenPort > 0 {
+			endpoints[count] = sharedFXPEntryEndpoint{protocol: "udp", port: spec.UDPListenPort}
+			count++
+		}
+	default:
+		if spec.ListenPort > 0 {
+			endpoints[count] = sharedFXPEntryEndpoint{protocol: "tcp", port: spec.ListenPort}
+			count++
 		}
 	}
-	for _, item := range actions {
-		if item.Fxp == nil {
-			continue
-		}
-		spec := normalizeFXPSpec(*item.Fxp)
-		if !isSharedFXPEntry(spec) {
-			continue
-		}
-		key := fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID)
-		touched[key] = spec
-		current := entriesByGroup[key]
-		next := make([]fxpSpec, 0, len(current)+1)
-		for _, existing := range current {
-			if fxpRemovalMatchesEntry(spec, existing) || (item.Op == "apply" && (existing.RuleID == spec.RuleID || fxpSpecsListenConflict(existing, spec))) {
-				continue
+	return endpoints, count
+}
+
+func (group *mutableSharedFXPEntryGroup) add(entry fxpSpec) {
+	entry = normalizeFXPSpec(entry)
+	if !isSharedFXPEntry(entry) || entry.TunnelID != group.tunnelID || entry.TransportVersion != group.transportVersion {
+		return
+	}
+	endpoints, endpointCount := sharedFXPEntryEndpoints(entry)
+	index := len(group.slots)
+	group.slots = append(group.slots, sharedFXPEntrySlot{
+		entry:  entry,
+		active: true,
+	})
+	group.active[index] = struct{}{}
+	group.byRule[entry.RuleID] = append(group.byRule[entry.RuleID], index)
+	group.byListenPort[entry.ListenPort] = append(group.byListenPort[entry.ListenPort], index)
+	for endpointIndex := 0; endpointIndex < endpointCount; endpointIndex++ {
+		endpoint := endpoints[endpointIndex]
+		group.byEndpoint[endpoint] = append(group.byEndpoint[endpoint], index)
+	}
+}
+
+func (group *mutableSharedFXPEntryGroup) removeSlot(index int) {
+	if index < 0 || index >= len(group.slots) || !group.slots[index].active {
+		return
+	}
+	group.slots[index].active = false
+	delete(group.active, index)
+}
+
+func (group *mutableSharedFXPEntryGroup) removeMatching(request fxpSpec) {
+	var candidates []int
+	selectedByRule := request.RuleID > 0
+	selectedByListenPort := !selectedByRule && request.ListenPort > 0
+	switch {
+	case selectedByRule:
+		candidates = group.byRule[request.RuleID]
+	case selectedByListenPort:
+		candidates = group.byListenPort[request.ListenPort]
+	default:
+		for index := range group.active {
+			if fxpRemovalMatchesEntry(request, group.slots[index].entry) {
+				group.removeSlot(index)
 			}
-			next = append(next, existing)
 		}
-		if strings.TrimSpace(item.Op) == "apply" {
-			next = append(next, spec)
-		}
-		entriesByGroup[key] = next
+		return
 	}
-	staged := map[string]fxpSpec{}
-	for key, seed := range touched {
-		group, _ := buildSharedFXPEntryGroup(entriesByGroup[key], seed.TunnelID, seed.TransportVersion)
-		staged[key] = group
-	}
-	for index := range actions {
-		if actions[index].Fxp == nil {
+
+	remaining := candidates[:0]
+	for _, index := range candidates {
+		if !group.slots[index].active {
 			continue
 		}
-		entry := normalizeFXPSpec(*actions[index].Fxp)
-		if !isSharedFXPEntry(entry) {
+		if fxpRemovalMatchesEntry(request, group.slots[index].entry) {
+			group.removeSlot(index)
 			continue
 		}
-		group, ok := staged[fxpEntryGroupKey(entry.TransportVersion, entry.TunnelID)]
+		remaining = append(remaining, index)
+	}
+	if selectedByRule {
+		if len(remaining) == 0 {
+			delete(group.byRule, request.RuleID)
+		} else {
+			group.byRule[request.RuleID] = remaining
+		}
+		return
+	}
+	if len(remaining) == 0 {
+		delete(group.byListenPort, request.ListenPort)
+	} else {
+		group.byListenPort[request.ListenPort] = remaining
+	}
+}
+
+func (group *mutableSharedFXPEntryGroup) removeRule(ruleID int) {
+	for _, index := range group.byRule[ruleID] {
+		group.removeSlot(index)
+	}
+	delete(group.byRule, ruleID)
+}
+
+func (group *mutableSharedFXPEntryGroup) removeListenConflicts(entry fxpSpec) {
+	endpoints, endpointCount := sharedFXPEntryEndpoints(entry)
+	for endpointIndex := 0; endpointIndex < endpointCount; endpointIndex++ {
+		endpoint := endpoints[endpointIndex]
+		for _, index := range group.byEndpoint[endpoint] {
+			group.removeSlot(index)
+		}
+		delete(group.byEndpoint, endpoint)
+	}
+}
+
+func (group *mutableSharedFXPEntryGroup) snapshot() fxpSpec {
+	entries := make([]fxpSpec, 0, len(group.active))
+	for index := range group.slots {
+		if group.slots[index].active {
+			entries = append(entries, group.slots[index].entry)
+		}
+	}
+	snapshot, _ := buildSharedFXPEntryGroup(entries, group.tunnelID, group.transportVersion)
+	return snapshot
+}
+
+type sharedFXPEntryGroupMutation struct {
+	actionIndex      int
+	key              string
+	spec             fxpSpec
+	appendEntry      bool
+	replaceConflicts bool
+}
+
+func sharedFXPEntryGroupMutationForAction(actionIndex int, item action) (sharedFXPEntryGroupMutation, bool) {
+	if item.Fxp == nil {
+		return sharedFXPEntryGroupMutation{}, false
+	}
+
+	op := strings.TrimSpace(item.Op)
+	raw := *item.Fxp
+	if op == "remove" {
+		role := strings.TrimSpace(raw.Role)
+		if raw.TunnelID <= 0 || (role != "" && !strings.EqualFold(role, "entry")) {
+			return sharedFXPEntryGroupMutation{}, false
+		}
+		transportVersion := normalizeFXPTransportVersion(raw.TransportVersion)
+		return sharedFXPEntryGroupMutation{
+			actionIndex: actionIndex,
+			key:         fxpEntryGroupKey(transportVersion, raw.TunnelID),
+			spec:        raw,
+		}, true
+	}
+
+	spec := normalizeFXPSpec(raw)
+	if !isSharedFXPEntry(spec) {
+		return sharedFXPEntryGroupMutation{}, false
+	}
+	return sharedFXPEntryGroupMutation{
+		actionIndex:      actionIndex,
+		key:              fxpEntryGroupKey(spec.TransportVersion, spec.TunnelID),
+		spec:             spec,
+		appendEntry:      op == "apply",
+		replaceConflicts: item.Op == "apply",
+	}, true
+}
+
+func attachDesiredSharedFXPEntryGroups(actions []action) {
+	mutations := make([]sharedFXPEntryGroupMutation, 0, len(actions))
+	groups := map[string]*mutableSharedFXPEntryGroup{}
+	for index, item := range actions {
+		mutation, ok := sharedFXPEntryGroupMutationForAction(index, item)
 		if !ok {
 			continue
 		}
+		mutations = append(mutations, mutation)
+		if groups[mutation.key] != nil {
+			continue
+		}
+		transportVersion := normalizeFXPTransportVersion(mutation.spec.TransportVersion)
+		groups[mutation.key] = newMutableSharedFXPEntryGroup(mutation.spec.TunnelID, transportVersion)
+	}
+	if len(mutations) == 0 {
+		return
+	}
+
+	for _, persisted := range loadPersistedFXPSpecs() {
+		if !isSharedFXPEntry(persisted) {
+			continue
+		}
+		if group := groups[fxpEntryGroupKey(persisted.TransportVersion, persisted.TunnelID)]; group != nil {
+			group.add(persisted)
+		}
+	}
+	for _, mutation := range mutations {
+		group := groups[mutation.key]
+		group.removeMatching(mutation.spec)
+		if mutation.replaceConflicts {
+			group.removeRule(mutation.spec.RuleID)
+			group.removeListenConflicts(mutation.spec)
+		}
+		if mutation.appendEntry {
+			group.add(mutation.spec)
+		}
+	}
+
+	staged := map[string]fxpSpec{}
+	for key, group := range groups {
+		staged[key] = group.snapshot()
+	}
+	for _, mutation := range mutations {
+		group := staged[mutation.key]
 		groupCopy := group
-		actions[index].FXPEntryGroup = &groupCopy
+		actions[mutation.actionIndex].FXPEntryGroup = &groupCopy
 	}
 }
 

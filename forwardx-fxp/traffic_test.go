@@ -3,8 +3,10 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func resetTrafficBatchesForTest() {
@@ -94,4 +96,48 @@ func TestFXPTrafficProducerIDIsStablePerRuntime(t *testing.T) {
 	if other := fxpTrafficProducerID(base); first == other {
 		t.Fatalf("different FXP runtimes share producer id %q", first)
 	}
+}
+
+func TestStopTrafficReporterDoesNotWaitForPanel(t *testing.T) {
+	resetTrafficBatchesForTest()
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var startedOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		startedOnce.Do(func() { close(requestStarted) })
+		<-releaseRequest
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	counter := &trafficCounter{}
+	counter.in.Store(123)
+	counter.out.Store(456)
+	stopReporting := startTrafficReporter(config{
+		PanelURL: server.URL,
+		Token:    "traffic-test-token",
+		RuleID:   42,
+	}, counter)
+	stopReturned := make(chan struct{})
+	go func() {
+		stopReporting()
+		close(stopReturned)
+	}()
+
+	select {
+	case <-stopReturned:
+	case <-time.After(250 * time.Millisecond):
+		close(releaseRequest)
+		<-stopReturned
+		t.Fatal("stopping traffic reporter waited for the panel request")
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		close(releaseRequest)
+		t.Fatal("stopping traffic reporter did not wake the batch worker")
+	}
+	close(releaseRequest)
+	trafficBatchFlushMu.Lock()
+	trafficBatchFlushMu.Unlock()
 }

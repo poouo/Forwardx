@@ -103,15 +103,26 @@ const (
 	fxpEntryToExit       = uint32(1)
 	fxpExitToEntry       = uint32(2)
 	fxpHandshakeWindow   = 5 * time.Minute
+	fxpHandshakeTimeout  = 10 * time.Second
+	fxpHelloTimeout      = 10 * time.Second
 	fxpTCPKeepAlive      = 30 * time.Second
 	fxpHalfCloseLinger   = 30 * time.Second
 	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.109"
+	fxpRuntimeVersion    = "2.2.110"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
+
+	// Exit and relay ports are reachable by other nodes and must remain bounded
+	// even when user-facing access limits are disabled. The active limits are
+	// intentionally well above the standard plan limits; the lower pending
+	// limits only cover the short handshake/hello phase.
+	fxpListenerMaxConnections        = 8192
+	fxpListenerMaxConnectionsPerIP   = 4096
+	fxpListenerMaxPendingConnections = 512
+	fxpListenerMaxPendingPerIP       = 256
 )
 
 var (
@@ -129,10 +140,15 @@ var (
 
 type connGate struct {
 	maxConnections int64
-	maxIPs         int
-	active         atomic.Int64
+	maxPerIP       int
+	active         int64
 	mu             sync.Mutex
 	ips            map[string]int
+}
+
+type listenerConnGates struct {
+	pending *connGate
+	active  *connGate
 }
 
 type exitEndpointSelector struct {
@@ -147,8 +163,25 @@ type exitEndpointSelector struct {
 func newConnGate(maxConnections, maxIPs int) *connGate {
 	return &connGate{
 		maxConnections: int64(maxConnections),
-		maxIPs:         maxIPs,
+		maxPerIP:       maxIPs,
 		ips:            make(map[string]int),
+	}
+}
+
+func newListenerConnGates(cfg config) *listenerConnGates {
+	maxConnections := cfg.MaxConnections
+	if maxConnections <= 0 || maxConnections > fxpListenerMaxConnections {
+		maxConnections = fxpListenerMaxConnections
+	}
+	// Exit and relay listeners see the entry/previous-hop node address rather
+	// than the end user's address. The user-facing per-IP limit is enforced at
+	// the entry; applying it here would cap an entire node as one user.
+	maxPerIP := minInt(maxConnections, fxpListenerMaxConnectionsPerIP)
+	pendingConnections := minInt(maxConnections, fxpListenerMaxPendingConnections)
+	pendingPerIP := minInt(pendingConnections, minInt(maxPerIP, fxpListenerMaxPendingPerIP))
+	return &listenerConnGates{
+		pending: newConnGate(pendingConnections, pendingPerIP),
+		active:  newConnGate(maxConnections, maxPerIP),
 	}
 }
 
@@ -377,31 +410,34 @@ func listenAddress(host string, port int) string {
 
 func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
 	ip := remoteIP(remoteAddr)
-	if g.maxConnections > 0 && g.active.Load() >= g.maxConnections {
+	trackIP := g.maxPerIP > 0 && ip != ""
+	g.mu.Lock()
+	if g.maxConnections > 0 && g.active >= g.maxConnections {
+		g.mu.Unlock()
 		return func() {}, false, "maxConnections"
 	}
-	g.mu.Lock()
-	if g.maxIPs > 0 && ip != "" {
-		if _, ok := g.ips[ip]; !ok && len(g.ips) >= g.maxIPs {
-			g.mu.Unlock()
-			return func() {}, false, "maxIPs"
-		}
+	if trackIP && g.ips[ip] >= g.maxPerIP {
+		g.mu.Unlock()
+		return func() {}, false, "maxIPs"
+	}
+	g.active++
+	if trackIP {
 		g.ips[ip]++
 	}
 	g.mu.Unlock()
-	g.active.Add(1)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			g.active.Add(-1)
-			if ip == "" {
-				return
-			}
 			g.mu.Lock()
-			if g.ips[ip] <= 1 {
-				delete(g.ips, ip)
-			} else {
-				g.ips[ip]--
+			if g.active > 0 {
+				g.active--
+			}
+			if trackIP {
+				if g.ips[ip] <= 1 {
+					delete(g.ips, ip)
+				} else {
+					g.ips[ip]--
+				}
 			}
 			g.mu.Unlock()
 		})
@@ -411,7 +447,36 @@ func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
 func (g *connGate) stats() (int64, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.active.Load(), len(g.ips)
+	return g.active, len(g.ips)
+}
+
+func (g *connGate) statsFor(remoteAddr net.Addr) (int64, int, int) {
+	ip := remoteIP(remoteAddr)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active, len(g.ips), g.ips[ip]
+}
+
+func (g *listenerConnGates) acquire(remoteAddr net.Addr) (func(), func(), bool, string) {
+	releasePending, ok, reason := g.pending.acquire(remoteAddr)
+	if !ok {
+		return func() {}, func() {}, false, "pending/" + reason
+	}
+	releaseActive, ok, reason := g.active.acquire(remoteAddr)
+	if !ok {
+		releasePending()
+		return func() {}, func() {}, false, "active/" + reason
+	}
+	return releasePending, func() {
+		releasePending()
+		releaseActive()
+	}, true, ""
+}
+
+func logListenerConnGateRejection(role string, cfg config, remoteAddr net.Addr, gates *listenerConnGates, reason string) {
+	pending, pendingIPs, pendingForIP := gates.pending.statsFor(remoteAddr)
+	active, activeIPs, activeForIP := gates.active.statsFor(remoteAddr)
+	log.Printf("%s tcp rejected by connection gate tunnel=%d client=%s reason=%s pending=%d/%d pendingIPs=%d pendingForIP=%d/%d active=%d/%d activeIPs=%d activeForIP=%d/%d", role, cfg.TunnelID, remoteAddr, reason, pending, gates.pending.maxConnections, pendingIPs, pendingForIP, gates.pending.maxPerIP, active, gates.active.maxConnections, activeIPs, activeForIP, gates.active.maxPerIP)
 }
 
 func main() {
@@ -794,8 +859,8 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitE
 		enableTCPKeepAlive(client)
 		release, ok, reason := gate.acquire(client.RemoteAddr())
 		if !ok {
-			active, ips := gate.stats()
-			log.Printf("entry tcp rejected by connection gate tunnel=%d rule=%d client=%s reason=%s active=%d maxConnections=%d distinctIPs=%d maxIPs=%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), reason, active, cfg.MaxConnections, ips, cfg.MaxIPs)
+			active, ips, connectionsForIP := gate.statsFor(client.RemoteAddr())
+			log.Printf("entry tcp rejected by connection gate tunnel=%d rule=%d client=%s reason=%s active=%d maxConnections=%d distinctIPs=%d connectionsForIP=%d maxIPs=%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), reason, active, cfg.MaxConnections, ips, connectionsForIP, cfg.MaxIPs)
 			_ = client.Close()
 			continue
 		}
@@ -876,7 +941,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		ProxyProtocolExitSend:    cfg.ProxyProtocolExitSend,
 		ProxyProtocolVersion:     normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion),
 	})
-	if err := sec.writeFrame(hello); err != nil {
+	if err := writeSecureHello(sec, hello); err != nil {
 		return err
 	}
 	fxpVerbosef("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
@@ -1229,15 +1294,34 @@ type udpEntrySession struct {
 	outLimiter    *limiter
 	counter       *trafficCounter
 	stopReporting func()
-	send          chan []byte
+	send          *fxpUDPQueue
 	done          chan struct{}
 	closeOnce     sync.Once
 	lastActivity  atomic.Int64
 	remove        func(*udpEntrySession)
 }
 
+func oldestUDPEntrySession(sessions map[string]*udpEntrySession, sourceIP string) (*udpEntrySession, int) {
+	var oldest *udpEntrySession
+	count := 0
+	for _, session := range sessions {
+		if session == nil || session.clientAddr == nil {
+			continue
+		}
+		if sourceIP != "" && session.clientAddr.IP.String() != sourceIP {
+			continue
+		}
+		count++
+		if oldest == nil || session.lastActivity.Load() < oldest.lastActivity.Load() {
+			oldest = session
+		}
+	}
+	return oldest, count
+}
+
 func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
 	sessions := map[string]*udpEntrySession{}
+	maxSessions, maxSessionsPerIP := fxpUDPSessionLimits(cfg)
 	var sessionsMu sync.Mutex
 	removeSession := func(session *udpEntrySession) {
 		sessionsMu.Lock()
@@ -1276,11 +1360,21 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 				continue
 			}
 			var closeCreated *udpEntrySession
+			var evicted *udpEntrySession
 			sessionsMu.Lock()
 			if existing := sessions[key]; existing != nil {
 				session = existing
 				closeCreated = created
 			} else {
+				sourceIP := created.clientAddr.IP.String()
+				if oldest, count := oldestUDPEntrySession(sessions, sourceIP); count >= maxSessionsPerIP {
+					evicted = oldest
+				} else if len(sessions) >= maxSessions {
+					evicted, _ = oldestUDPEntrySession(sessions, "")
+				}
+				if evicted != nil {
+					delete(sessions, evicted.key)
+				}
 				sessions[key] = created
 				session = created
 				startSession = true
@@ -1288,6 +1382,10 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 			sessionsMu.Unlock()
 			if closeCreated != nil {
 				closeCreated.close()
+			}
+			if evicted != nil {
+				evicted.close()
+				fxpUDPDropLog.Printf("entry udp stream session limit reached tunnel=%d rule=%d client=%s maxSessions=%d maxPerIP=%d; evicted oldest session", cfg.TunnelID, cfg.RuleID, clientAddr.IP, maxSessions, maxSessionsPerIP)
 			}
 		}
 		if startSession {
@@ -1311,7 +1409,7 @@ func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, 
 		RuleID:       cfg.RuleID,
 		SelectionKey: selectionKey,
 	})
-	if err := sec.writeFrame(hello); err != nil {
+	if err := writeSecureHello(sec, hello); err != nil {
 		_ = exit.Close()
 		return nil, err
 	}
@@ -1328,7 +1426,7 @@ func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, 
 		outLimiter:    outLimiter,
 		counter:       counter,
 		stopReporting: startTrafficReporter(cfg, counter),
-		send:          make(chan []byte, fxpUDPStreamQueueSize),
+		send:          newFXPUDPQueue(fxpUDPStreamQueueSize, fxpUDPQueueMaxBytes),
 		done:          make(chan struct{}),
 		remove:        remove,
 	}
@@ -1351,29 +1449,40 @@ func (s *udpEntrySession) enqueue(payload []byte) {
 	select {
 	case <-s.done:
 		return
-	case s.send <- payload:
 	default:
-		fxpUDPDropLog.Printf("entry udp session queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		if s.send.enqueue(payload) {
+			fxpUDPDropLog.Printf("entry udp session queue congested tunnel=%d rule=%d client=%s; dropping oldest packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		}
 	}
 }
 
 func (s *udpEntrySession) writeLoop() {
 	for {
-		select {
-		case <-s.done:
+		packet, ok := s.send.next(s.done)
+		if !ok {
 			return
-		case payload := <-s.send:
-			s.touch()
-			s.inLimiter.wait(len(payload))
-			if err := s.sec.writeFrame(payload); err != nil {
-				if !isClosedErr(err) {
-					log.Printf("entry udp write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
-				}
-				s.close()
-				return
-			}
-			s.counter.in.Add(uint64(len(payload)))
 		}
+		if packet.superseded(time.Now(), s.send.pending()) {
+			fxpUDPDropLog.Printf("entry udp queued packet expired tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+			continue
+		}
+		payload := packet.payload
+		s.touch()
+		if !s.inLimiter.waitDone(s.done, len(payload)) {
+			return
+		}
+		if packet.superseded(time.Now(), s.send.pending()) {
+			fxpUDPDropLog.Printf("entry udp queued packet expired after wait tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+			continue
+		}
+		if err := s.sec.writeFrame(payload); err != nil {
+			if !isClosedErr(err) {
+				log.Printf("entry udp write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
+			}
+			s.close()
+			return
+		}
+		s.counter.in.Add(uint64(len(payload)))
 	}
 }
 
@@ -1391,7 +1500,9 @@ func (s *udpEntrySession) readLoop() {
 			s.close()
 			return
 		}
-		s.outLimiter.wait(len(frame))
+		if !s.outLimiter.waitDone(s.done, len(frame)) {
+			return
+		}
 		if _, err := s.conn.WriteToUDP(frame, s.clientAddr); err != nil {
 			if !isClosedErr(err) {
 				log.Printf("entry udp client write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
@@ -1425,12 +1536,13 @@ func (s *udpEntrySession) idleLoop() {
 func (s *udpEntrySession) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.send.clear()
+		if s.remove != nil {
+			s.remove(s)
+		}
 		_ = s.exit.Close()
 		if s.stopReporting != nil {
 			s.stopReporting()
-		}
-		if s.remove != nil {
-			s.remove(s)
 		}
 	})
 }
@@ -1440,6 +1552,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 	var sessionWG sync.WaitGroup
 	errCh := make(chan error, 2)
 	if protocolHas(cfg, "tcp") {
+		gates := newListenerConnGates(cfg)
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("exit tcp listen :%d: %w", cfg.ListenPort, err)
@@ -1454,7 +1567,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptExitTCP(ln, cfg, &sessionWG)
+			errCh <- acceptExitTCP(ln, cfg, gates, &sessionWG)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -1494,7 +1607,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptExitTCP(ln net.Listener, cfg config, sessionWG *sync.WaitGroup) error {
+func acceptExitTCP(ln net.Listener, cfg config, gates *listenerConnGates, sessionWG *sync.WaitGroup) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -1504,24 +1617,35 @@ func acceptExitTCP(ln net.Listener, cfg config, sessionWG *sync.WaitGroup) error
 			return err
 		}
 		enableTCPKeepAlive(conn)
+		startupComplete, release, ok, reason := gates.acquire(conn.RemoteAddr())
+		if !ok {
+			logListenerConnGateRejection("exit", cfg, conn.RemoteAddr(), gates, reason)
+			_ = conn.Close()
+			continue
+		}
 		sessionWG.Add(1)
-		go func() {
+		go func(conn net.Conn) {
 			defer sessionWG.Done()
-			if err := handleExitSession(conn, cfg); err != nil && !isClosedErr(err) {
+			defer release()
+			if err := handleExitSessionWithStartup(conn, cfg, startupComplete); err != nil && !isClosedErr(err) {
 				log.Printf("exit session error: %v", err)
 			}
-		}()
+		}(conn)
 	}
 }
 
 func handleExitSession(conn net.Conn, cfg config) error {
+	return handleExitSessionWithStartup(conn, cfg, nil)
+}
+
+func handleExitSessionWithStartup(conn net.Conn, cfg config, startupComplete func()) error {
 	defer conn.Close()
 	sec, err := newExitSecureConn(conn, cfg)
 	if err != nil {
 		probeDelay()
 		return err
 	}
-	frame, err := sec.readFrame()
+	frame, err := readSecureHello(sec)
 	if err != nil {
 		probeDelay()
 		return err
@@ -1530,6 +1654,9 @@ func handleExitSession(conn net.Conn, cfg config) error {
 	if err := json.Unmarshal(frame, &hello); err != nil {
 		probeDelay()
 		return err
+	}
+	if startupComplete != nil {
+		startupComplete()
 	}
 	if hello.TargetIP == "" {
 		hello.TargetIP = cfg.TargetIP
@@ -1665,6 +1792,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		log.Printf("relay exit selector exits=%s strategy=%s", formatEndpointList(selector), normalizeExitStrategy(cfg.ExitStrategy))
 	}
 	if protocolHas(cfg, "tcp") {
+		gates := newListenerConnGates(cfg)
 		ln, err := listenTCP(cfg.ListenHost, cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
@@ -1679,7 +1807,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptRelayTCP(ln, cfg, selector, &sessionWG)
+			errCh <- acceptRelayTCP(ln, cfg, selector, gates, &sessionWG)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -1723,7 +1851,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector, sessionWG *sync.WaitGroup) error {
+func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector, gates *listenerConnGates, sessionWG *sync.WaitGroup) error {
 	for {
 		upConn, err := ln.Accept()
 		if err != nil {
@@ -1733,17 +1861,28 @@ func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector,
 			return err
 		}
 		enableTCPKeepAlive(upConn)
+		startupComplete, release, ok, reason := gates.acquire(upConn.RemoteAddr())
+		if !ok {
+			logListenerConnGateRejection("relay", cfg, upConn.RemoteAddr(), gates, reason)
+			_ = upConn.Close()
+			continue
+		}
 		sessionWG.Add(1)
-		go func() {
+		go func(upConn net.Conn) {
 			defer sessionWG.Done()
-			if err := handleRelaySession(upConn, cfg, selector); err != nil && !isClosedErr(err) {
+			defer release()
+			if err := handleRelaySessionWithStartup(upConn, cfg, selector, startupComplete); err != nil && !isClosedErr(err) {
 				log.Printf("relay session error: %v", err)
 			}
-		}()
+		}(upConn)
 	}
 }
 
 func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelector) error {
+	return handleRelaySessionWithStartup(upConn, cfg, selector, nil)
+}
+
+func handleRelaySessionWithStartup(upConn net.Conn, cfg config, selector *exitEndpointSelector, startupComplete func()) error {
 	defer upConn.Close()
 	// Accept upstream encrypted connection (like exit)
 	upSec, err := newExitSecureConn(upConn, cfg)
@@ -1751,7 +1890,7 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 		probeDelay()
 		return err
 	}
-	frame, err := upSec.readFrame()
+	frame, err := readSecureHello(upSec)
 	if err != nil {
 		probeDelay()
 		return err
@@ -1760,6 +1899,9 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 	if err := json.Unmarshal(frame, &hello); err != nil {
 		probeDelay()
 		return err
+	}
+	if startupComplete != nil {
+		startupComplete()
 	}
 	fxpVerbosef(
 		"relay proxy protocol tunnel=%d rule=%d upstream=%s downstream=%s:%d hasProxy=%v source=%s:%d dest=%s:%d",
@@ -1792,7 +1934,7 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 	defer downConn.Close()
 	// Re-send helloFrame to downstream
 	helloBytes, _ := json.Marshal(hello)
-	if err := downSec.writeFrame(helloBytes); err != nil {
+	if err := writeSecureHello(downSec, helloBytes); err != nil {
 		return err
 	}
 	fxpVerbosef("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), endpoint.Host, endpoint.Port, hello.TargetIP, hello.TargetPort)
@@ -1974,33 +2116,89 @@ func copySecureToPlain(dst net.Conn, src *secureConn, limiter *limiter, counter 
 }
 
 type limiter struct {
-	rate int64
-	mu   sync.Mutex
-	next time.Time
+	rate   int64
+	burst  int64
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
 }
 
 func newLimiter(rate int64) *limiter {
-	return &limiter{rate: rate}
+	limiter := &limiter{rate: rate}
+	if rate > 0 {
+		limiter.burst = rate
+		if limiter.burst < 64*1024 {
+			limiter.burst = 64 * 1024
+		}
+		limiter.tokens = float64(limiter.burst)
+		limiter.last = time.Now()
+	}
+	return limiter
 }
 
 func (l *limiter) wait(n int) {
+	_ = l.waitDone(nil, n)
+}
+
+func (l *limiter) waitDone(done <-chan struct{}, n int) bool {
 	if l == nil || l.rate <= 0 || n <= 0 {
-		return
+		return true
 	}
-	delay := time.Duration(int64(time.Second) * int64(n) / l.rate)
-	if delay <= 0 {
-		return
+	remaining := int64(n)
+	for remaining > 0 {
+		wanted := remaining
+		if wanted > l.burst {
+			wanted = l.burst
+		}
+		for {
+			select {
+			case <-done:
+				return false
+			default:
+			}
+			l.mu.Lock()
+			now := time.Now()
+			if l.last.IsZero() {
+				l.last = now
+			}
+			if now.After(l.last) {
+				l.tokens += now.Sub(l.last).Seconds() * float64(l.rate)
+				if l.tokens > float64(l.burst) {
+					l.tokens = float64(l.burst)
+				}
+				l.last = now
+			}
+			if l.tokens >= float64(wanted) {
+				l.tokens -= float64(wanted)
+				l.mu.Unlock()
+				break
+			}
+			deficit := float64(wanted) - l.tokens
+			waitFor := time.Duration(deficit * float64(time.Second) / float64(l.rate))
+			if waitFor <= 0 {
+				waitFor = time.Nanosecond
+			}
+			l.mu.Unlock()
+			timer := time.NewTimer(waitFor)
+			select {
+			case <-timer.C:
+			case <-done:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return false
+			}
+		}
+		remaining -= wanted
 	}
-	l.mu.Lock()
-	now := time.Now()
-	if l.next.IsZero() || l.next.Before(now) {
-		l.next = now
-	}
-	l.next = l.next.Add(delay)
-	sleepFor := time.Until(l.next)
-	l.mu.Unlock()
-	if sleepFor > 0 {
-		time.Sleep(sleepFor)
+	select {
+	case <-done:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -2030,6 +2228,9 @@ func newClientSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 }
 
 func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext) (*secureConn, error) {
+	if err := setFXPConnDeadline(conn, fxpHandshakeTimeout); err != nil {
+		return nil, err
+	}
 	salt := make([]byte, fxpSaltSize)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
@@ -2053,6 +2254,9 @@ func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext)
 	if err := json.Unmarshal(ack, &reply); err != nil || reply.V != fxpHandshakeVersion || reply.TunnelID != cfg.TunnelID {
 		return nil, errors.New("fxp handshake rejected")
 	}
+	if err := clearFXPConnDeadline(conn); err != nil && !isClosedErr(err) {
+		return nil, err
+	}
 	return sec, nil
 }
 
@@ -2061,6 +2265,9 @@ func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 }
 
 func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireContext) (*secureConn, error) {
+	if err := setFXPConnDeadline(conn, fxpHandshakeTimeout); err != nil {
+		return nil, err
+	}
 	salt := make([]byte, fxpSaltSize)
 	if _, err := io.ReadFull(conn, salt); err != nil {
 		return nil, err
@@ -2093,12 +2300,72 @@ func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireCont
 			return nil, err
 		}
 		sec.readCounter = 1
-		return finishServerHandshake(sec, cfg, ack, wire)
+		sec, err = finishServerHandshake(sec, cfg, ack, wire)
+		if err != nil {
+			return nil, err
+		}
+		if err := clearFXPConnDeadline(conn); err != nil && !isClosedErr(err) {
+			return nil, err
+		}
+		return sec, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("fxp handshake rejected")
 	}
 	return nil, lastErr
+}
+
+func setFXPConnDeadline(conn net.Conn, timeout time.Duration) error {
+	if conn == nil {
+		return errors.New("fxp connection is nil")
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set fxp connection deadline: %w", err)
+	}
+	return nil
+}
+
+func clearFXPConnDeadline(conn net.Conn) error {
+	if conn == nil {
+		return errors.New("fxp connection is nil")
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear fxp connection deadline: %w", err)
+	}
+	return nil
+}
+
+func writeSecureHello(sec *secureConn, hello []byte) error {
+	if sec == nil {
+		return errors.New("fxp secure connection is nil")
+	}
+	if err := setFXPConnDeadline(sec.conn, fxpHelloTimeout); err != nil {
+		return err
+	}
+	if err := sec.writeFrame(hello); err != nil {
+		return err
+	}
+	if err := clearFXPConnDeadline(sec.conn); err != nil && !isClosedErr(err) {
+		return err
+	}
+	return nil
+}
+
+func readSecureHello(sec *secureConn) ([]byte, error) {
+	if sec == nil {
+		return nil, errors.New("fxp secure connection is nil")
+	}
+	if err := setFXPConnDeadline(sec.conn, fxpHelloTimeout); err != nil {
+		return nil, err
+	}
+	hello, err := sec.readFrame()
+	if err != nil {
+		return nil, err
+	}
+	if err := clearFXPConnDeadline(sec.conn); err != nil && !isClosedErr(err) {
+		return nil, err
+	}
+	return hello, nil
 }
 
 func finishServerHandshake(sec *secureConn, cfg config, ack []byte, wire fxpWireContext) (*secureConn, error) {
@@ -2449,7 +2716,7 @@ func isClosedErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
