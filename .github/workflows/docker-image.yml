@@ -1,17 +1,26 @@
 name: Docker Image
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 env:
   IMAGE_NAME: ghcr.io/poouo/forwardx
 
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: forwardx-docker-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.package.outputs.version }}
 
     steps:
       - name: Checkout
@@ -24,8 +33,27 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build:
+    needs: prepare
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            node_arch: x64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            node_arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -35,32 +63,129 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=v${{ steps.package.outputs.version }}
-            type=raw,value=latest
-          labels: |
-            org.opencontainers.image.title=ForwardX
-            org.opencontainers.image.description=ForwardX port forwarding panel
-            org.opencontainers.image.version=${{ steps.package.outputs.version }}
-            org.forwardx.version=${{ steps.package.outputs.version }}
-
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=ForwardX
+            org.opencontainers.image.description=ForwardX port forwarding panel
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.forwardx.version=${{ needs.prepare.outputs.version }}
           build-args: |
-            FORWARDX_VERSION=${{ steps.package.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            FORWARDX_VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=forwardx-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=forwardx-${{ matrix.arch }}
+
+      - name: Verify native runtime
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_NODE_ARCH: ${{ matrix.node_arch }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker pull "${IMAGE_NAME}@${DIGEST}"
+          docker run --rm \
+            --platform "${PLATFORM}" \
+            --entrypoint node \
+            -e "EXPECTED_NODE_ARCH=${EXPECTED_NODE_ARCH}" \
+            -e "EXPECTED_VERSION=${VERSION}" \
+            "${IMAGE_NAME}@${DIGEST}" \
+            -e '
+              const Database = require("better-sqlite3");
+              const db = new Database(":memory:");
+              const value = db.prepare("select 1 as value").pluck().get();
+              db.close();
+              if (value !== 1) throw new Error("SQLite runtime check failed");
+              if (process.arch !== process.env.EXPECTED_NODE_ARCH) {
+                throw new Error(`Expected ${process.env.EXPECTED_NODE_ARCH}, got ${process.arch}`);
+              }
+              if (process.env.FORWARDX_IMAGE_VERSION !== process.env.EXPECTED_VERSION) {
+                throw new Error(`Expected version ${process.env.EXPECTED_VERSION}, got ${process.env.FORWARDX_IMAGE_VERSION}`);
+              }
+            '
+
+      - name: Export digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: forwardx-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: forwardx-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Create and verify multi-platform image
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t digest_files < <(find "${RUNNER_TEMP}/digests" -maxdepth 1 -type f | sort)
+          if [ "${#digest_files[@]}" -ne 2 ]; then
+            echo "::error::Expected 2 platform digests, found ${#digest_files[@]}"
+            exit 1
+          fi
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            sources+=("${IMAGE_NAME}@sha256:$(basename "${digest_file}")")
+          done
+
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:v${VERSION}" \
+            -t "${IMAGE_NAME}:latest" \
+            "${sources[@]}"
+
+          manifest_json="$(docker buildx imagetools inspect "${IMAGE_NAME}:v${VERSION}" --raw)"
+          echo "${manifest_json}" | jq -e '
+            ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length) == 1
+            and
+            ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1
+          '
+
+          version_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:v${VERSION}" | awk '$1 == "Digest:" { print $2; exit }')"
+          latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" | awk '$1 == "Digest:" { print $2; exit }')"
+          test -n "${version_digest}"
+          test "${version_digest}" = "${latest_digest}"
+          echo "Published ${IMAGE_NAME}:v${VERSION} and latest at ${version_digest}"

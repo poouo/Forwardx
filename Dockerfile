@@ -1,13 +1,13 @@
 # ---------- 1. Build stage: install dependencies and build frontend/backend ----------
 FROM node:22-alpine AS builder
 WORKDIR /app
-RUN npm install -g pnpm@10
+RUN npm install -g pnpm@10.28.1
 
 RUN apk add --no-cache bash python3 make g++ curl ca-certificates
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 COPY patches ./patches
-RUN pnpm install --prod=false
+RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . .
 RUN pnpm build
@@ -16,7 +16,7 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent-assets
 WORKDIR /app
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git g++ g++-aarch64-linux-gnu \
+  && apt-get install -y --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN bash scripts/build-agent-release.sh
@@ -24,11 +24,11 @@ RUN bash scripts/build-agent-release.sh
 # ---------- 2. Production dependencies ----------
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
-RUN npm install -g pnpm@10
+RUN npm install -g pnpm@10.28.1
 RUN apk add --no-cache python3 make g++ git
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 COPY patches ./patches
-RUN pnpm install --prod
+RUN pnpm install --frozen-lockfile --prod
 
 # ---------- 3. Runtime image ----------
 FROM node:22-alpine AS runner
