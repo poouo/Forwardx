@@ -85,14 +85,18 @@ export async function waitForTunnelLatencyRefresh<T>(input: {
   if (isNewTunnelLatency(latest, input.baselineId)) return latest;
 
   while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    const waitDurationMs = Math.min(crossProcessPollMs, remainingMs);
+    const isFinalWait = waitDurationMs >= remainingMs;
     const nextVersion = await signals.waitForChange(
       input.tunnelId,
       observedVersion,
-      Math.min(crossProcessPollMs, deadline - Date.now()),
+      waitDurationMs,
     );
     if (nextVersion !== null) observedVersion = nextVersion;
     latest = await input.loadLatest(input.tunnelId);
     if (isNewTunnelLatency(latest, input.baselineId)) return latest;
+    if (nextVersion === null && isFinalWait) return latest;
   }
 
   return latest;
