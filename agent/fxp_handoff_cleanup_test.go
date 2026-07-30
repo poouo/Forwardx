@@ -257,6 +257,127 @@ func TestStopStaleForwardXRuleRuntimeKeepsDisjointProtocolOwner(t *testing.T) {
 	}
 }
 
+func TestForwardXTunnelHandoffCommitRemovesOnlyMatchingPersistentRuntime(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	const sharedPort = 54121
+	exit := testV1TunnelExitSpec(153, sharedPort, "tcp")
+	udpRelay := testV1TunnelRelaySpec(exit.TunnelID, sharedPort, "udp")
+	for _, spec := range []fxpSpec{exit, udpRelay} {
+		if err := persistFXPSpec(spec); err != nil {
+			t.Fatalf("persist FXP tunnel runtime: %v", err)
+		}
+	}
+	exitID := fxpServerID(exit)
+	udpRelayID := fxpServerID(udpRelay)
+	withTestFXPServers(t, map[string]*fxpProcess{
+		exitID:     {spec: exit},
+		udpRelayID: {spec: udpRelay},
+	})
+
+	state := &actionHandoffState{}
+	if !stopStaleForwardXTunnelRuntimeWithRollback(
+		Config{},
+		"forwardx-tunnel",
+		exit.TunnelID,
+		sharedPort,
+		"tcp",
+		newActionMessage(),
+		state,
+	) {
+		t.Fatal("transactional FXP tunnel handoff failed")
+	}
+	if !state.managesFXPPersistence() {
+		t.Fatal("FXP tunnel handoff did not retain a recovery transaction")
+	}
+	fxpMu.Lock()
+	_, exitRunning := fxpServers[exitID]
+	_, udpRelayRunning := fxpServers[udpRelayID]
+	fxpMu.Unlock()
+	if exitRunning || !udpRelayRunning {
+		t.Fatalf("post-handoff runtimes exit=%v udpRelay=%v, want false/true", exitRunning, udpRelayRunning)
+	}
+
+	target := action{Op: "apply", StatusType: "tunnel", TunnelID: exit.TunnelID, SourcePort: sharedPort, Protocol: "tcp", ForwardType: "gost-tunnel"}
+	resolveActionJobHandoff(actionJob{
+		action:          target,
+		previousRuntime: localActionRuntimeSnapshot{handoffState: state},
+		resultReady:     true,
+	}, true)
+
+	loaded := loadPersistedFXPSpecs()
+	if matches := fxpSpecsMatchingSelector(fxpRuntimeSelector{tunnelID: exit.TunnelID, listenPort: sharedPort, protocol: "tcp"}, loaded); len(matches) != 0 {
+		t.Fatalf("successful GOST tunnel handoff left the old TCP FXP snapshot: %#v", matches)
+	}
+	if matches := fxpSpecsMatchingSelector(fxpRuntimeSelector{tunnelID: udpRelay.TunnelID, listenPort: sharedPort, protocol: "udp"}, loaded); len(matches) != 1 || fxpServerID(matches[0]) != udpRelayID {
+		t.Fatalf("successful TCP handoff removed the disjoint UDP FXP snapshot: %#v", matches)
+	}
+}
+
+func TestForwardXTunnelHandoffFailureRestoresPreviousRuntime(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	exit := testV1TunnelExitSpec(154, 54122, "tcp")
+	if err := persistFXPSpec(exit); err != nil {
+		t.Fatalf("persist FXP tunnel runtime: %v", err)
+	}
+	exitID := fxpServerID(exit)
+	withTestFXPServers(t, map[string]*fxpProcess{
+		exitID: {spec: exit},
+	})
+
+	previousRestore := restoreFXPHandoffOriginalsForHandoff
+	restored := make([]fxpSpec, 0)
+	restoreFXPHandoffOriginalsForHandoff = func(_ Config, originals []fxpSpec) {
+		restored = append(restored, originals...)
+		fxpMu.Lock()
+		for _, original := range originals {
+			fxpServers[fxpServerID(original)] = &fxpProcess{spec: original}
+		}
+		fxpMu.Unlock()
+	}
+	t.Cleanup(func() {
+		restoreFXPHandoffOriginalsForHandoff = previousRestore
+	})
+
+	state := &actionHandoffState{}
+	if !stopStaleForwardXTunnelRuntimeWithRollback(
+		Config{},
+		"forwardx-tunnel",
+		exit.TunnelID,
+		exit.ListenPort,
+		exit.Protocol,
+		newActionMessage(),
+		state,
+	) {
+		t.Fatal("transactional FXP tunnel handoff failed")
+	}
+	fxpMu.Lock()
+	_, runningBeforeRollback := fxpServers[exitID]
+	fxpMu.Unlock()
+	if runningBeforeRollback {
+		t.Fatal("old FXP tunnel runtime was not stopped before GOST sync")
+	}
+
+	target := action{Op: "apply", StatusType: "tunnel", TunnelID: exit.TunnelID, SourcePort: exit.ListenPort, Protocol: exit.Protocol, ForwardType: "gost-tunnel"}
+	resolveActionJobHandoff(actionJob{
+		action:          target,
+		previousRuntime: localActionRuntimeSnapshot{handoffState: state},
+		resultReady:     true,
+	}, false)
+
+	if len(restored) != 1 || fxpServerID(restored[0]) != exitID {
+		t.Fatalf("failed GOST tunnel handoff restored %#v, want %s", restored, exitID)
+	}
+	fxpMu.Lock()
+	_, runningAfterRollback := fxpServers[exitID]
+	fxpMu.Unlock()
+	if !runningAfterRollback {
+		t.Fatal("failed GOST tunnel handoff did not restore the old FXP runtime")
+	}
+	if matches := fxpSpecsMatchingSelector(fxpRuntimeSelector{tunnelID: exit.TunnelID, listenPort: exit.ListenPort, protocol: exit.Protocol}, loadPersistedFXPSpecs()); len(matches) != 1 {
+		t.Fatalf("failed GOST tunnel handoff lost its recovery snapshot: %#v", matches)
+	}
+}
+
 func TestFXPSpecsUsingListenPortPrefersCurrentRuntimeOverStaleSnapshot(t *testing.T) {
 	currentEntry := testV1EntrySpec(132, 6201, 54201)
 	currentGroup, ok := buildSharedFXPEntryGroup([]fxpSpec{currentEntry}, currentEntry.TunnelID, currentEntry.TransportVersion)
@@ -584,6 +705,31 @@ func TestFXPTransitionRollbackKeepsTransactionalRestoreOutOfPersistence(t *testi
 			t.Fatalf("transaction rollback restore %d overwrote the full recovery snapshot", index)
 		}
 	}
+}
+
+func testV1TunnelExitSpec(tunnelID int, listenPort int, protocol string) fxpSpec {
+	return normalizeFXPSpec(fxpSpec{
+		Role:             "exit",
+		TransportVersion: "v1",
+		TunnelID:         tunnelID,
+		ListenPort:       listenPort,
+		Protocol:         protocol,
+		Key:              "tunnel-handoff-exit-key",
+	})
+}
+
+func testV1TunnelRelaySpec(tunnelID int, listenPort int, protocol string) fxpSpec {
+	return normalizeFXPSpec(fxpSpec{
+		Role:             "relay",
+		TransportVersion: "v1",
+		TunnelID:         tunnelID,
+		ListenPort:       listenPort,
+		Protocol:         protocol,
+		RelayExitHost:    "198.51.100.20",
+		RelayExitPort:    24001,
+		RelayKey:         "tunnel-handoff-relay-key",
+		Key:              "tunnel-handoff-relay-listen-key",
+	})
 }
 
 func testFourMemberFXPHandoffGroup(t *testing.T, tunnelID int, firstRuleID int, firstPort int) (fxpSpec, []fxpRuntimeSelector) {

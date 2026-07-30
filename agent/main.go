@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.180"
+var Version = "2.2.181"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -5575,8 +5575,24 @@ func cleanupStaleRuntimeBeforeApply(cfg Config, a action, actionMessage *actionM
 			a.ForwardType,
 		)
 		if localForwardType == "forwardx-tunnel" && localTunnelID > 0 {
-			if !stopFXPByPort(localTunnelID, a.SourcePort, a.Protocol) {
-				actionMessage.set("fxp tunnel handoff failed tunnel=%d port=%d protocol=%s", localTunnelID, a.SourcePort, normalizeRuntimeProtocol(a.Protocol))
+			handoffProtocol := a.Protocol
+			var handoffState *actionHandoffState
+			if previousRuntime != nil {
+				handoffState = previousRuntime.handoffState
+				if previousRuntime.hasProtocol {
+					handoffProtocol = previousRuntime.protocol
+				}
+			}
+			if !stopStaleForwardXTunnelRuntimeWithRollback(
+				cfg,
+				localForwardType,
+				localTunnelID,
+				a.SourcePort,
+				handoffProtocol,
+				actionMessage,
+				handoffState,
+			) {
+				actionMessage.set("fxp tunnel handoff failed tunnel=%d port=%d protocol=%s", localTunnelID, a.SourcePort, normalizeRuntimeProtocol(handoffProtocol))
 				return staleRuntimeCleanupResult{}
 			}
 		}
@@ -5747,6 +5763,17 @@ func shouldUsePreviousRuleRuntime(a action, localRuleID int, localForwardType st
 
 func stopStaleForwardXRuleRuntime(cfg Config, localForwardType string, localRuleID int, localTunnelID int, listenPort int, protocol string, actionMessage *actionMessage) bool {
 	return stopStaleForwardXRuleRuntimeWithRollback(cfg, localForwardType, localRuleID, localTunnelID, listenPort, protocol, actionMessage, nil)
+}
+
+func stopStaleForwardXTunnelRuntimeWithRollback(cfg Config, localForwardType string, localTunnelID int, listenPort int, protocol string, actionMessage *actionMessage, handoffState *actionHandoffState) bool {
+	if strings.TrimSpace(localForwardType) != "forwardx-tunnel" || localTunnelID <= 0 || !validActionPort(listenPort) {
+		return true
+	}
+	return handoffFXPBySelectorWithRollback(cfg, fxpRuntimeSelector{
+		tunnelID:   localTunnelID,
+		listenPort: listenPort,
+		protocol:   protocol,
+	}, actionMessage, handoffState)
 }
 
 func stopStaleForwardXRuleRuntimeWithRollback(cfg Config, localForwardType string, localRuleID int, localTunnelID int, listenPort int, protocol string, actionMessage *actionMessage, handoffState *actionHandoffState) bool {
@@ -9223,11 +9250,7 @@ func handoffFXPBySelectorWithRollback(cfg Config, selector fxpRuntimeSelector, s
 
 	handoffState.setFinalizers(
 		func() { commitFXPHandoffPersistence(originals, selector) },
-		func() {
-			fxpControlMu.Lock()
-			defer fxpControlMu.Unlock()
-			restoreFXPHandoffOriginalsLocked(cfg, originals)
-		},
+		func() { restoreFXPHandoffOriginalsForHandoff(cfg, originals) },
 	)
 	return true
 }
@@ -9315,6 +9338,14 @@ func restoreFXPHandoffOriginalsLocked(cfg Config, originals []fxpSpec) {
 	}
 }
 
+func restoreFXPHandoffOriginals(cfg Config, originals []fxpSpec) {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	restoreFXPHandoffOriginalsLocked(cfg, originals)
+}
+
+var restoreFXPHandoffOriginalsForHandoff = restoreFXPHandoffOriginals
+
 type fxpHandoffStartFunc func(fxpSpec, *actionMessage) bool
 type fxpHandoffStopFunc func(fxpSpec) bool
 
@@ -9390,19 +9421,32 @@ func fxpEntryGroupWithoutSelector(group fxpSpec, selector fxpRuntimeSelector) (f
 }
 
 func fxpSpecsForSelectorLocked(selector fxpRuntimeSelector) []fxpSpec {
+	return fxpSpecsForSelectorLockedWithLiveFilter(selector, nil)
+}
+
+func runningFXPSpecsForSelectorLocked(selector fxpRuntimeSelector) []fxpSpec {
+	return fxpSpecsForSelectorLockedWithLiveFilter(selector, fxpProcessActive)
+}
+
+func fxpSpecsForSelectorLockedWithLiveFilter(selector fxpRuntimeSelector, liveFilter func(*fxpProcess) bool) []fxpSpec {
 	if !selector.valid() {
 		return nil
 	}
 
-	liveSpecs := make([]fxpSpec, 0)
+	tracked := make([]*fxpProcess, 0)
 	fxpMu.Lock()
 	for _, process := range fxpServers {
-		if process == nil {
+		tracked = append(tracked, process)
+	}
+	fxpMu.Unlock()
+
+	liveSpecs := make([]fxpSpec, 0, len(tracked))
+	for _, process := range tracked {
+		if process == nil || !selector.matches(process.spec) || (liveFilter != nil && !liveFilter(process)) {
 			continue
 		}
 		liveSpecs = append(liveSpecs, process.spec)
 	}
-	fxpMu.Unlock()
 
 	runtimeSpecs := make([]fxpSpec, 0)
 	paths, _ := filepath.Glob("/run/forwardx-agent/fxp-*.json")

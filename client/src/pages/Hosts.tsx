@@ -7,7 +7,7 @@ import DateTimePickerInput, {
   formatDateInputValue as formatDateTimeLocal,
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
-import HostCard from "@/components/hosts/HostCard";
+import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
@@ -29,7 +29,6 @@ import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableRe
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -79,8 +78,6 @@ import {
   Clock,
   Cpu,
   Plus,
-  Trash2,
-  Pencil,
   Server,
   HardDrive,
   LayoutGrid,
@@ -670,6 +667,28 @@ function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode
   return "both";
 }
 
+function hostTrafficMeasureModeLabel(value: unknown) {
+  const mode = normalizeHostTrafficMeasureMode(value);
+  if (mode === "outbound") return "仅出向";
+  if (mode === "max") return "取最大值";
+  return "双向合计";
+}
+
+function hostTrafficUsedBytes(host: any, traffic: any) {
+  const bytesIn = Math.max(0, Number(traffic?.bytesIn) || 0);
+  const bytesOut = Math.max(0, Number(traffic?.bytesOut) || 0);
+  const mode = normalizeHostTrafficMeasureMode(host?.trafficMeasureMode);
+  if (mode === "outbound") return bytesOut;
+  if (mode === "max") return Math.max(bytesIn, bytesOut);
+  return bytesIn + bytesOut;
+}
+
+function formatTrafficCorrectionGbInput(bytes: number) {
+  const gb = Math.max(0, Number(bytes) || 0) / HOST_TRAFFIC_GB_BYTES;
+  if (gb === 0) return "0";
+  return String(Number(gb.toFixed(6)));
+}
+
 function normalizeHostDdnsIpVersion(value: unknown, recordType?: unknown): "ipv4" | "ipv6" {
   if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
   return "ipv4";
@@ -988,6 +1007,7 @@ function HostTrafficDirectionStat({
   tone,
   loading,
   cacheKey,
+  animated = true,
   className,
 }: {
   label: string;
@@ -996,6 +1016,7 @@ function HostTrafficDirectionStat({
   tone: string;
   loading?: boolean;
   cacheKey: string;
+  animated?: boolean;
   className?: string;
 }) {
   return (
@@ -1006,15 +1027,24 @@ function HostTrafficDirectionStat({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
-          <AnimatedStatValue
-            as="p"
-            value={value}
-            loading={loading}
-            cacheKey={cacheKey}
-            fallbackValue="0 B/s"
-            className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
-            title={value}
-          />
+          {animated ? (
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue="0 B/s"
+              className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
+              title={value}
+            />
+          ) : (
+            <p
+              className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
+              title={value}
+            >
+              {value}
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -1030,6 +1060,7 @@ function HostTrafficSummaryCard({
   iconTone = "bg-chart-1/10 text-chart-1",
   loading,
   cacheKey,
+  animated = true,
   className,
 }: {
   title: string;
@@ -1040,6 +1071,7 @@ function HostTrafficSummaryCard({
   iconTone?: string;
   loading?: boolean;
   cacheKey: string;
+  animated?: boolean;
   className?: string;
 }) {
   return (
@@ -1060,6 +1092,7 @@ function HostTrafficSummaryCard({
             value={inValue}
             loading={loading}
             cacheKey={`${cacheKey}.in`}
+            animated={animated}
             icon={ArrowDownToLine}
             tone="bg-emerald-500"
           />
@@ -1068,6 +1101,7 @@ function HostTrafficSummaryCard({
             value={outValue}
             loading={loading}
             cacheKey={`${cacheKey}.out`}
+            animated={animated}
             icon={ArrowUpFromLine}
             tone="bg-amber-500"
           />
@@ -1276,7 +1310,6 @@ function HostGroupFilterBar({
 function HostsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
-  const confirmDialog = useConfirmDialog();
   const pageVisible = usePageVisible();
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
@@ -1404,6 +1437,9 @@ function HostsContent() {
   const [probeLatencyHost, setProbeLatencyHost] = useState<any>(null);
   const [resetTrafficHost, setResetTrafficHost] = useState<any>(null);
   const [resetTrafficHostId, setResetTrafficHostId] = useState<number | null>(null);
+  const [trafficCorrectionHost, setTrafficCorrectionHost] = useState<any>(null);
+  const [trafficCorrectionInput, setTrafficCorrectionInput] = useState("0");
+  const [trafficCorrectionCurrentBytes, setTrafficCorrectionCurrentBytes] = useState(0);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
@@ -1652,6 +1688,17 @@ function HostsContent() {
     },
     onError: (err) => toast.error(err.message || "重置流量统计失败"),
     onSettled: () => setResetTrafficHostId(null),
+  });
+
+  const correctHostTrafficMutation = trpc.hosts.correctTraffic.useMutation({
+    onSuccess: () => {
+      utils.hosts.traffic.invalidate();
+      utils.hosts.trafficSummary.invalidate();
+      utils.hosts.summary.invalidate();
+      setTrafficCorrectionHost(null);
+      toast.success("流量用量已修正");
+    },
+    onError: (err) => toast.error(err.message || "修正流量用量失败"),
   });
 
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
@@ -2041,6 +2088,7 @@ function HostsContent() {
       onUpgrade={requestAgentUpgrade}
       canUpgrade={user?.role === "admin"}
       onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+      onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
       onViewProbeLatency={setProbeLatencyHost}
       resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
       traffic={hostTrafficById.get(host.id)}
@@ -2062,6 +2110,29 @@ function HostsContent() {
     if (!Number.isInteger(hostId) || hostId <= 0) return;
     setResetTrafficHostId(hostId);
     resetHostTrafficMutation.mutate({ hostId });
+  };
+  const requestCorrectHostTraffic = (host: any) => {
+    const hostId = Number(host?.id);
+    if (!Number.isInteger(hostId) || hostId <= 0) return;
+    const currentBytes = hostTrafficUsedBytes(host, hostTrafficById.get(hostId));
+    setTrafficCorrectionHost(host);
+    setTrafficCorrectionCurrentBytes(currentBytes);
+    setTrafficCorrectionInput(formatTrafficCorrectionGbInput(currentBytes));
+  };
+  const confirmCorrectHostTraffic = () => {
+    const hostId = Number(trafficCorrectionHost?.id);
+    if (!Number.isInteger(hostId) || hostId <= 0) return;
+    const amountGb = Number(trafficCorrectionInput.trim());
+    if (!Number.isFinite(amountGb) || amountGb < 0) {
+      toast.error("请输入不小于 0 的流量用量");
+      return;
+    }
+    const usedBytes = Math.round(amountGb * HOST_TRAFFIC_GB_BYTES);
+    if (!Number.isSafeInteger(usedBytes) || usedBytes < 0) {
+      toast.error("流量用量超出可保存范围");
+      return;
+    }
+    correctHostTrafficMutation.mutate({ hostId, usedBytes });
   };
   const isAgentLatest = (host: any) => {
     if (!latestAgentVersion || !host?.agentVersion) return false;
@@ -2372,6 +2443,7 @@ function HostsContent() {
             iconTone="bg-chart-1/10 text-chart-1"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.currentTraffic"
+            animated={false}
           />
           <HostTrafficSummaryCard
             title="累计流量"
@@ -2520,11 +2592,11 @@ function HostsContent() {
                     <col className="w-[320px]" />
                     <col className="w-[128px]" />
                     {/* The center columns divide only the width left after the pinned columns. */}
-                    <col style={{ width: "calc(25% - 11px)" }} />
-                    <col style={{ width: "calc(25% - 207px)" }} />
-                    <col style={{ width: "calc(25% - 207px)" }} />
-                    <col style={{ width: "calc(25% - 207px)" }} />
-                    <col className="w-[184px]" />
+                    <col style={{ width: "calc(25% + 5px)" }} />
+                    <col style={{ width: "calc(25% - 191px)" }} />
+                    <col style={{ width: "calc(25% - 191px)" }} />
+                    <col style={{ width: "calc(25% - 191px)" }} />
+                    <col className="w-[120px]" />
                   </colgroup>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
@@ -2544,7 +2616,7 @@ function HostsContent() {
                       <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
                         <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{"\u7cfb\u7edf\u7d2f\u8ba1"}</span>
                       </TableHead>
-                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[184px] min-w-[184px] max-w-[184px] border-l border-border/60 bg-card px-2 text-right">
+                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 text-right">
                         操作
                       </TableHead>
                     </TableRow>
@@ -2555,7 +2627,6 @@ function HostsContent() {
                       const traffic = hostTrafficById.get(host.id);
                       const latestMetric = hostLatestMetricById.get(host.id);
                       const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
-                      const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
                       const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
                       const remainingDays = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
                       const primaryAddressText = hostPrimaryAddressText(host);
@@ -2672,64 +2743,20 @@ function HostsContent() {
                             outTitle={systemNetworkTotalTitle(latestMetric)}
                           />
                         </TableCell>
-                        <TableCell className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-20 w-[184px] min-w-[184px] max-w-[184px] border-l border-border/60 bg-card px-2 py-2.5 text-right">
-                          <div className="flex items-center justify-end gap-0.5">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="查看服务延迟"
-                              onClick={() => setProbeLatencyHost(host)}
-                            >
-                              <Activity className="h-3.5 w-3.5" />
-                            </Button>
-                            {user?.role === "admin" && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                disabled={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                                title={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? "正在重置流量统计" : "重置流量统计"}
-                                onClick={() => requestResetHostTraffic(host)}
-                              >
-                                {resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              disabled={user?.role !== "admin" || !host.isOnline}
-                              title={!host.isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
-                              onClick={() => requestAgentUpgrade(host)}
-                            >
-                              {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => openEdit(host)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive"
-                              onClick={async () => {
-                                if (await confirmDialog({
-                                  title: "删除主机",
-                                  description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
-                                  confirmText: "删除",
-                                  tone: "destructive",
-                                }))
-                                  deleteMutation.mutate({ id: host.id });
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
+                        <TableCell className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-20 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 py-2.5 text-right">
+                          <HostActionButtons
+                            host={host}
+                            onEdit={openEdit}
+                            onDelete={(id) => deleteMutation.mutate({ id })}
+                            onUpgrade={requestAgentUpgrade}
+                            onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+                            onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
+                            onViewProbeLatency={setProbeLatencyHost}
+                            resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                            canUpgrade={user?.role === "admin"}
+                            className="flex items-center justify-end gap-0.5"
+                            buttonClassName="h-8 w-8"
+                          />
                         </TableCell>
                       </TableRow>
                         )}
@@ -2861,6 +2888,78 @@ function HostsContent() {
             >
               {resetHostTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
               {resetHostTrafficMutation.isPending ? "重置中..." : "确认重置"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Correct Host Traffic Dialog */}
+      <Dialog
+        open={!!trafficCorrectionHost}
+        onOpenChange={(open) => !open && !correctHostTrafficMutation.isPending && setTrafficCorrectionHost(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Gauge className="h-5 w-5 text-primary" />
+              用量修正
+            </DialogTitle>
+            <DialogDescription>
+              手动调整该主机当前已使用的流量，后续上报将在修正后的用量上继续累计。
+            </DialogDescription>
+          </DialogHeader>
+          {trafficCorrectionHost && (
+            <div className="space-y-4">
+              <div className="space-y-2 rounded-md border border-border/40 bg-muted/20 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">主机</span>
+                  <span className="truncate font-medium" title={trafficCorrectionHost.name}>{trafficCorrectionHost.name}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">当前统计</span>
+                  <span className="font-medium tabular-nums">{formatBytes(trafficCorrectionCurrentBytes)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">计量方式</span>
+                  <span className="font-medium">{hostTrafficMeasureModeLabel(trafficCorrectionHost.trafficMeasureMode)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="host-traffic-correction">修正后已用流量</Label>
+                <div className="relative">
+                  <Input
+                    id="host-traffic-correction"
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    inputMode="decimal"
+                    value={trafficCorrectionInput}
+                    onChange={(event) => setTrafficCorrectionInput(event.target.value)}
+                    className="pr-14 tabular-nums"
+                    autoFocus
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">GB</span>
+                </div>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  仅修正面板累计用量，不会修改 Agent 的系统累计流量。
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setTrafficCorrectionHost(null)}
+              disabled={correctHostTrafficMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              className="gap-2"
+              onClick={confirmCorrectHostTraffic}
+              disabled={!trafficCorrectionInput.trim() || correctHostTrafficMutation.isPending}
+            >
+              {correctHostTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
+              {correctHostTrafficMutation.isPending ? "保存中..." : "保存修正"}
             </Button>
           </DialogFooter>
         </DialogContent>

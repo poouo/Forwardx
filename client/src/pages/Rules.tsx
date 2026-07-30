@@ -2221,6 +2221,7 @@ function RulesContent() {
   const [form, setForm] = useState<RuleFormData>(defaultForm);
   const filterHostStorageKey = ruleFilterStorageKey(RULE_FILTER_HOST_STORAGE_KEY, user);
   const filterUserStorageKey = ruleFilterStorageKey(RULE_FILTER_USER_STORAGE_KEY, user);
+  const ruleCategoryStorageKey = ruleFilterStorageKey(RULE_CATEGORY_STORAGE_KEY, user);
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(filterHostStorageKey, "all"));
   const [filterUser, setFilterUser] = useState<string>(() => getStoredString(filterUserStorageKey, "self"));
   const previousFilterIdentity = useRef(filterHostStorageKey);
@@ -2236,7 +2237,7 @@ function RulesContent() {
   const [ruleCategory, setRuleCategory] = useUrlTab<RuleCategory>({
     values: RULE_CATEGORIES,
     defaultValue: "all",
-    storageKey: RULE_CATEGORY_STORAGE_KEY,
+    storageKey: ruleCategoryStorageKey,
   });
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
@@ -4289,15 +4290,17 @@ function RulesContent() {
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const totalTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
   const dailyTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
-  const [stableRulePageMeta, setStableRulePageMeta] = useState({ activeItems: 0, totalItems: 0 });
+  const [stableRulePageMeta, setStableRulePageMeta] = useState({ activeItems: 0, totalItems: 0, scopeTotalItems: 0 });
   useEffect(() => {
     if (!rulePageQuery.data || rulePageQuery.isPlaceholderData) return;
     setStableRulePageMeta({
       activeItems: Math.max(0, Number(rulePageQuery.data.activeItems) || 0),
       totalItems: Math.max(0, Number(rulePageQuery.data.totalItems) || 0),
+      scopeTotalItems: Math.max(0, Number(rulePageQuery.data.scopeTotalItems) || 0),
     });
   }, [rulePageQuery.data, rulePageQuery.isPlaceholderData]);
   const rulePageMeta = rulePageQuery.data ?? stableRulePageMeta;
+  const ruleScopeTotal = Math.max(0, Number(rulePageMeta.scopeTotalItems) || 0);
   const activeCount = needsFullRuleList
     ? filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length
     : Math.max(0, Number(rulePageMeta.activeItems) || 0);
@@ -6156,6 +6159,17 @@ function RulesContent() {
     storeString(filterHostStorageKey, value);
   };
 
+  const clearRuleFilters = () => {
+    setRuleSearchQuery("");
+    setRuleCategory("all");
+    setFilterHost("all");
+    storeString(filterHostStorageKey, "all");
+    if (user?.role === "admin") {
+      setFilterUser("self");
+      storeString(filterUserStorageKey, "self");
+    }
+  };
+
   const handleRulePageSizeChange = (value: string) => {
     const nextPageSize = Number(value) as RulePageSize;
     if (!RULE_PAGE_SIZE_OPTIONS.includes(nextPageSize)) return;
@@ -6569,7 +6583,7 @@ function RulesContent() {
         </div>
       )}
 
-      {(user?.role === "admin" || (rules && rules.length > 0)) && (
+      {(user?.role === "admin" || ruleScopeTotal > 0 || hasActiveRuleFilter || (rules && rules.length > 0)) && (
         <div className="space-y-3">
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
             <div className="flex items-center gap-2">
@@ -6923,11 +6937,17 @@ function RulesContent() {
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardContent className="p-0">
-            {(rules && rules.length > 0) || hasActiveRuleFilter ? (
+            {(rules && rules.length > 0) || ruleScopeTotal > 0 || hasActiveRuleFilter ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Filter className="h-10 w-10 mb-3 opacity-30" />
                 <p className="text-base font-medium">没有匹配的规则</p>
                 <p className="text-sm mt-1 text-muted-foreground/60">尝试调整筛选条件</p>
+                {hasActiveRuleFilter && (
+                  <Button type="button" variant="outline" className="mt-4 gap-2" onClick={clearRuleFilters}>
+                    <XCircle className="h-4 w-4" />
+                    清除筛选
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">

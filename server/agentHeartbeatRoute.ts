@@ -35,6 +35,7 @@ import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAg
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
 import {
+  gostTunnelTransportType,
   planGostTunnelProbeListeners,
   shouldReconcileGostRuntime,
   shouldReconcileNginxRuntime,
@@ -44,7 +45,7 @@ import {
   tunnelRuntimeFamily,
 } from "./tunnelRuntimePlan";
 import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan, resolveRuleProxyProtocolOptions } from "./gostProxyProtocol";
-import { planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
+import { planGostTunnelHopRelay, planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
 import {
   buildCountingChainCmds,
   buildCountingCleanupCmds,
@@ -2237,17 +2238,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return undefined;
     };
-    const tunnelProtocolType = (mode: string) => {
-      if (mode === "wss" || mode === "mwss") return "ws";
-      if (mode === "tcp" || mode === "mtcp") return "tcp";
-      return "tls";
-    };
-    const tunnelProtocolMetadata = (mode: string) => (
-      mode === "mtls" || mode === "mwss" || mode === "mtcp"
-        ? { mux: "true" }
-        : undefined
-    );
-    const tunnelDialerMetadata = (mode: string) => tunnelProtocolMetadata(mode);
     const proxyProtocolOptions = (rule: any) => resolveRuleProxyProtocolOptions(
       rule,
       Number(rule?.tunnelId || 0) > 0 ? tunnelById.get(Number(rule.tunnelId)) : null,
@@ -2270,10 +2260,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       exitSend: proxyProtocolEnabled(rule, "exitSend"),
       version: proxyProtocolVersion(rule),
     });
-    const mergeMetadata = (...items: Array<Record<string, unknown> | undefined>) => {
-      const merged = Object.assign({}, ...items.filter(Boolean));
-      return Object.keys(merged).length > 0 ? merged : undefined;
-    };
     const tunnelForwardProtos = (protocol: string) => forwardRuleProtocols(protocol);
     const hostPublicAddress = (hostLike: any) => {
       const value = hostIngressAddress(hostLike);
@@ -2955,10 +2941,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     ) => ({
       name,
       addr,
-      connector: connector || { type: "relay", metadata: { nodelay: true } },
+      connector: connector || planGostTunnelHopRelay({
+        tunnelId: Number(tunnel.id),
+        secretSeed: tunnelSecretSeed(tunnel),
+      }),
       dialer: {
         type: dialerType,
-        ...(tunnelDialerMetadata(tunnel.mode) ? { metadata: tunnelDialerMetadata(tunnel.mode) } : {}),
       },
     });
     const buildLoadBalancedExitNodes = async (rule: any, tunnel: any, primaryHostOverride?: string) => {
@@ -2978,7 +2966,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         nodes.push(gostTunnelNode(
           `exit-${rule.id}-${exitKey}`,
           endpointHostPort(exitHost, endpoint.listenPort),
-          tunnelProtocolType(tunnel.mode),
+          gostTunnelTransportType(tunnel.mode),
           tunnel,
           protocolPlan.chainConnector,
         ));
@@ -2986,10 +2974,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return nodes;
     };
     const gostRelayFailoverHopMetadata = { strategy: "fifo", maxFails: 1, failTimeout: "5s" };
-    const gostRelayHandler = (metadata?: Record<string, unknown>) => ({
-      type: "relay",
-      metadata: { nodelay: true, ...(metadata || {}) },
-    });
     const gostTunnelExitTargetAddr = async (rule: any, tunnel: any) => {
       const policy = await tunnelProtocolPolicy(tunnel);
       const tunnelProxyPlan = tunnelProxyProtocolPlan(rule);
@@ -3117,7 +3101,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               return gostTunnelNode(
                 `relay-${r.id}-${Number(hop.seq)}`,
                 hopAddr,
-                tunnelProtocolType(tunnel.mode),
+                gostTunnelTransportType(tunnel.mode),
                 tunnel,
               );
             }));
@@ -3140,7 +3124,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 nodes: [gostTunnelNode(
                   `mhop-${r.id}-${Number(hop.seq)}`,
                   hopAddr,
-                  tunnelProtocolType(tunnel.mode),
+                  gostTunnelTransportType(tunnel.mode),
                   tunnel,
                 )],
               });
@@ -3248,8 +3232,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       addr: `:${probe.listenPort}`,
       handler: { type: "tcp" },
       listener: {
-        type: tunnelProtocolType(probe.mode),
-        ...(tunnelProtocolMetadata(probe.mode) ? { metadata: tunnelProtocolMetadata(probe.mode) } : {}),
+        type: gostTunnelTransportType(probe.mode),
       },
       forwarder: {
         nodes: [{
@@ -3279,8 +3262,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             addr: `:${exitPort}`,
             handler: protocolPlan.exitHandler,
             listener: {
-              type: tunnelProtocolType(tunnel.mode),
-              ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+              type: gostTunnelTransportType(tunnel.mode),
             },
             ...(protocolPlan.exitTargetDialType
               ? {
@@ -3304,17 +3286,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
         if (hostIdx < 0 || hostIdx >= hops.length - 1) return null; // not in chain or exit hop
         const currentHop = hops[hostIdx] as any;
-        const listenerMetadata = mergeMetadata(
-          Number(currentHop.seq) === 0 ? undefined : tunnelProtocolMetadata(tunnel.mode),
-        );
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
-          handler: gostRelayHandler(),
+          handler: planGostTunnelHopRelay({
+            tunnelId: Number(tunnel.id),
+            secretSeed: tunnelSecretSeed(tunnel),
+          }),
           listener: {
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
-            type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
-            ...(listenerMetadata ? { metadata: listenerMetadata } : {}),
+            type: Number(currentHop.seq) === 0 ? "tcp" : gostTunnelTransportType(tunnel.mode),
           },
         };
       }));
@@ -3336,7 +3317,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ) return [];
         return currentHostTunnelExitPortsForRule(rule, tunnel).map((exitPort) => buildProxyRuleDebugCmd("exit", rule, {
           exitPort: Number(exitPort),
-          listener: tunnelProtocolType(tunnel.mode),
+          listener: gostTunnelTransportType(tunnel.mode),
         }));
       }) : [];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");

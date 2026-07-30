@@ -12,6 +12,28 @@ type GostComponent = {
   metadata?: Record<string, unknown>;
 };
 
+function relayComponent(username: string, passwordSeed: string): GostComponent {
+  return {
+    type: "relay",
+    auth: {
+      username,
+      password: crypto.createHash("sha256").update(passwordSeed).digest("hex"),
+    },
+    metadata: { nodelay: true },
+  };
+}
+
+export function planGostTunnelHopRelay(input: {
+  tunnelId: number;
+  secretSeed: string;
+}): GostComponent {
+  const tunnelId = Math.max(0, Math.trunc(Number(input.tunnelId) || 0));
+  return relayComponent(
+    `fwx-hop-${tunnelId}`,
+    `forwardx-gost-hop-relay:v1|${String(input.secretSeed || "")}|${tunnelId}`,
+  );
+}
+
 export type GostTunnelRuleProtocolPlan = {
   protocol: "tcp" | "udp" | "both";
   entryNeedsTarget: boolean;
@@ -27,40 +49,18 @@ export function planGostTunnelRuleProtocol(input: {
   secretSeed: string;
 }): GostTunnelRuleProtocolPlan {
   const protocol = normalizeForwardRuleProtocol(input.protocol, "tcp");
-  if (protocol !== "both") {
-    return {
-      protocol,
-      entryNeedsTarget: false,
-      chainConnector: { type: "forward" },
-      exitHandler: { type: "forward" },
-      exitTargetDialType: protocol,
-    };
-  }
-
   const tunnelId = Math.max(0, Math.trunc(Number(input.tunnelId) || 0));
   const ruleId = Math.max(0, Math.trunc(Number(input.ruleId) || 0));
-  const password = crypto
-    .createHash("sha256")
-    .update(`forwardx-gost-relay:v1|${String(input.secretSeed || "")}|${tunnelId}|${ruleId}`)
-    .digest("hex");
-  const auth = {
-    username: `fwx-${tunnelId}-${ruleId}`,
-    password,
-  };
+  const component = relayComponent(
+    `fwx-${tunnelId}-${ruleId}`,
+    `forwardx-gost-relay:v1|${String(input.secretSeed || "")}|${tunnelId}|${ruleId}`,
+  );
 
   return {
     protocol,
     entryNeedsTarget: true,
-    chainConnector: {
-      type: "relay",
-      auth,
-      metadata: { nodelay: true },
-    },
-    exitHandler: {
-      type: "relay",
-      auth,
-      metadata: { nodelay: true },
-    },
+    chainConnector: component,
+    exitHandler: component,
     exitTargetDialType: null,
   };
 }

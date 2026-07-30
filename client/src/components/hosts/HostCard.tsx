@@ -2,6 +2,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
@@ -12,11 +19,13 @@ import {
   Clock,
   Cpu,
   Download,
+  Gauge,
   HardDrive,
   RotateCcw,
   Loader2,
   MemoryStick,
   Monitor,
+  MoreHorizontal,
   Pencil,
   Server,
   Trash2,
@@ -84,6 +93,7 @@ type HostCardProps = {
   onDelete: (id: number) => void;
   onUpgrade: (host: any) => void;
   onResetTraffic?: (host: any) => void;
+  onCorrectTraffic?: (host: any) => void;
   onViewProbeLatency?: (host: any) => void;
   resetTrafficPending?: boolean;
   traffic?: { bytesIn?: number | null; bytesOut?: number | null } | null;
@@ -96,12 +106,126 @@ type HostCardProps = {
   sortableClassName?: string;
 };
 
+type HostActionButtonsProps = Pick<
+  HostCardProps,
+  "host" | "onEdit" | "onDelete" | "onUpgrade" | "onResetTraffic" | "onCorrectTraffic" | "onViewProbeLatency" | "resetTrafficPending" | "canUpgrade"
+> & {
+  className?: string;
+  buttonClassName?: string;
+};
+
+export function HostActionButtons({
+  host,
+  onEdit,
+  onDelete,
+  onUpgrade,
+  onResetTraffic,
+  onCorrectTraffic,
+  onViewProbeLatency,
+  resetTrafficPending = false,
+  canUpgrade,
+  className = "flex shrink-0 items-center justify-end gap-1",
+  buttonClassName = "h-7 w-7",
+}: HostActionButtonsProps) {
+  const confirmDialog = useConfirmDialog();
+  const isOnline = !!host.isOnline;
+  const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
+  const upgradeTitle = !isOnline
+    ? "主机离线，无法下发升级任务"
+    : agentUpgradeTimedOut
+      ? "升级超时，可重新下发"
+      : "升级 Agent";
+
+  const confirmDelete = async () => {
+    if (await confirmDialog({
+      title: "删除主机",
+      description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
+      confirmText: "删除",
+      tone: "destructive",
+    })) onDelete(host.id);
+  };
+
+  return (
+    <div className={className}>
+      {onViewProbeLatency && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={buttonClassName}
+          title="查看服务延迟图表"
+          aria-label="查看服务延迟图表"
+          onClick={() => onViewProbeLatency(host)}
+        >
+          <Activity className="h-3.5 w-3.5" />
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className={buttonClassName}
+        title="编辑主机"
+        aria-label="编辑主机"
+        onClick={() => onEdit(host)}
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={buttonClassName}
+            title="更多操作"
+            aria-label="更多操作"
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40 min-w-40">
+          {onResetTraffic && (
+            <DropdownMenuItem
+              disabled={resetTrafficPending}
+              onSelect={() => onResetTraffic(host)}
+            >
+              {resetTrafficPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+              <span>{resetTrafficPending ? "正在重置流量" : "重置流量统计"}</span>
+            </DropdownMenuItem>
+          )}
+          {onCorrectTraffic && (
+            <DropdownMenuItem onSelect={() => onCorrectTraffic(host)}>
+              <Gauge />
+              <span>用量修正</span>
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
+            disabled={!canUpgrade || !isOnline}
+            title={upgradeTitle}
+            onSelect={() => onUpgrade(host)}
+          >
+            <Download />
+            <span>升级 Agent</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => void confirmDelete()}
+          >
+            <Trash2 />
+            <span>删除主机</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 export default function HostCard({
   host,
   onEdit,
   onDelete,
   onUpgrade,
   onResetTraffic,
+  onCorrectTraffic,
   onViewProbeLatency,
   resetTrafficPending = false,
   traffic = null,
@@ -113,7 +237,6 @@ export default function HostCard({
   dragHandle,
   sortableClassName,
 }: HostCardProps) {
-  const confirmDialog = useConfirmDialog();
   const hasExternalMetrics = externalMetrics !== undefined;
   const { data: queriedMetrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 2, live: !!refreshInterval },
@@ -256,7 +379,6 @@ export default function HostCard({
       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
-  const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
   const isOnline = !!host.isOnline;
   const trafficUsageProgressClass = trafficLimit > 0
     ? metricUsageProgressClass(trafficProgress, isOnline)
@@ -344,64 +466,17 @@ export default function HostCard({
               <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
               {dragHandle}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {onViewProbeLatency && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title="查看服务延迟"
-                  onClick={() => onViewProbeLatency(host)}
-                >
-                  <Activity className="h-3.5 w-3.5" />
-                </Button>
-              )}
-              {onResetTraffic && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  disabled={resetTrafficPending}
-                  title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
-                  onClick={() => onResetTraffic(host)}
-                >
-                  {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                disabled={!canUpgrade || !isOnline}
-                title={!isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
-                onClick={() => onUpgrade(host)}
-              >
-                {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => onEdit(host)}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-destructive hover:text-destructive"
-                onClick={async () => {
-                  if (await confirmDialog({
-                    title: "删除主机",
-                    description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
-                    confirmText: "删除",
-                    tone: "destructive",
-                  })) onDelete(host.id);
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+            <HostActionButtons
+              host={host}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onUpgrade={onUpgrade}
+              onResetTraffic={onResetTraffic}
+              onCorrectTraffic={onCorrectTraffic}
+              onViewProbeLatency={onViewProbeLatency}
+              resetTrafficPending={resetTrafficPending}
+              canUpgrade={canUpgrade}
+            />
           </div>
         ) : (
           <div className="flex min-w-0 items-start justify-between gap-2">
@@ -409,64 +484,17 @@ export default function HostCard({
               <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
               {dragHandle}
             </div>
-            <div className="flex shrink-0 items-center justify-end gap-1">
-              {onViewProbeLatency && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title="查看服务延迟"
-                  onClick={() => onViewProbeLatency(host)}
-                >
-                  <Activity className="h-3.5 w-3.5" />
-                </Button>
-              )}
-              {onResetTraffic && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  disabled={resetTrafficPending}
-                  title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
-                  onClick={() => onResetTraffic(host)}
-                >
-                  {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                disabled={!canUpgrade || !isOnline}
-                title={!isOnline ? "主机离线，无法下发升级任务" : agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
-                onClick={() => onUpgrade(host)}
-              >
-                {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => onEdit(host)}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-destructive hover:text-destructive"
-                onClick={async () => {
-                  if (await confirmDialog({
-                    title: "删除主机",
-                    description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
-                    confirmText: "删除",
-                    tone: "destructive",
-                  })) onDelete(host.id);
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+            <HostActionButtons
+              host={host}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onUpgrade={onUpgrade}
+              onResetTraffic={onResetTraffic}
+              onCorrectTraffic={onCorrectTraffic}
+              onViewProbeLatency={onViewProbeLatency}
+              resetTrafficPending={resetTrafficPending}
+              canUpgrade={canUpgrade}
+            />
           </div>
         )}
       </CardHeader>

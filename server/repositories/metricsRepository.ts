@@ -313,12 +313,42 @@ type HostTrafficSample = {
   reportedAt?: Date;
 };
 
+export type HostTrafficMeasureMode = "outbound" | "both" | "max";
+
 const hostTrafficBaselineCache = new Map<number, { bytesIn: number; bytesOut: number }>();
 
 function nonNegativeCounter(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER);
+}
+
+export function allocateHostTrafficCorrection(
+  current: { bytesIn?: unknown; bytesOut?: unknown },
+  usedBytes: unknown,
+  measureMode: HostTrafficMeasureMode,
+) {
+  const bytesIn = nonNegativeCounter(current?.bytesIn);
+  const bytesOut = nonNegativeCounter(current?.bytesOut);
+  const target = nonNegativeCounter(usedBytes);
+
+  if (measureMode === "outbound") {
+    return { bytesIn, bytesOut: target };
+  }
+
+  if (measureMode === "max") {
+    const currentMax = Math.max(bytesIn, bytesOut);
+    if (currentMax === 0) return { bytesIn: 0, bytesOut: target };
+    if (bytesIn >= bytesOut) {
+      return { bytesIn: target, bytesOut: Math.min(target, Math.floor(target * (bytesOut / bytesIn))) };
+    }
+    return { bytesIn: Math.min(target, Math.floor(target * (bytesIn / bytesOut))), bytesOut: target };
+  }
+
+  const currentTotal = bytesIn + bytesOut;
+  if (currentTotal === 0) return { bytesIn: 0, bytesOut: target };
+  const correctedIn = Math.min(target, Math.floor(target * (bytesIn / currentTotal)));
+  return { bytesIn: correctedIn, bytesOut: target - correctedIn };
 }
 
 function nullableRowDate(value: unknown) {
@@ -505,6 +535,53 @@ export async function resetHostTraffic(hostId: number) {
     `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
     [id, 0, 0, 0, 0, nowSec, nowSec, nowSec],
   ).catch(() => undefined);
+  return getHostTraffic(id);
+}
+
+export async function correctHostTraffic(
+  hostId: number,
+  usedBytes: number,
+  measureMode: HostTrafficMeasureMode,
+) {
+  const db = await getDb();
+  if (!db) return zeroHostTraffic(Number(hostId) || 0);
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return zeroHostTraffic(0);
+
+  const existing = await getHostTrafficRow(id);
+  const corrected = allocateHostTrafficCorrection(existing || {}, usedBytes, measureMode);
+  const nowSec = epochSeconds(nowDate());
+  const q = quoteIdentifier;
+  const table = q("host_traffic_counters");
+  const columns = ["hostId", "bytesIn", "bytesOut", "lastDeltaIn", "lastDeltaOut", "createdAt", "updatedAt"];
+  const values = [id, corrected.bytesIn, corrected.bytesOut, 0, 0, nowSec, nowSec];
+  const kind = getDatabaseKind();
+
+  if (kind === "mysql") {
+    await executeRaw(
+      `INSERT INTO ${table} (${columns.map(q).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
+       ON DUPLICATE KEY UPDATE
+         ${q("bytesIn")} = VALUES(${q("bytesIn")}),
+         ${q("bytesOut")} = VALUES(${q("bytesOut")}),
+         ${q("lastDeltaIn")} = 0,
+         ${q("lastDeltaOut")} = 0,
+         ${q("updatedAt")} = VALUES(${q("updatedAt")})`,
+      values,
+    );
+  } else {
+    const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
+    await executeRaw(
+      `INSERT INTO ${table} (${columns.map(q).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
+       ON CONFLICT (${q("hostId")}) DO UPDATE SET
+         ${q("bytesIn")} = ${excluded}.${q("bytesIn")},
+         ${q("bytesOut")} = ${excluded}.${q("bytesOut")},
+         ${q("lastDeltaIn")} = 0,
+         ${q("lastDeltaOut")} = 0,
+         ${q("updatedAt")} = ${excluded}.${q("updatedAt")}`,
+      values,
+    );
+  }
+
   return getHostTraffic(id);
 }
 // ==================== Traffic Stats Queries ====================

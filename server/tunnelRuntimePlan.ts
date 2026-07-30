@@ -3,8 +3,16 @@ import { exitGroupUsesMultipleExits } from "../shared/exitStrategy";
 export type TunnelRuntimeFamily = "forwardx" | "gost" | "nginx";
 export type TunnelRuntimeForwardType = "forwardx-tunnel" | "gost-tunnel" | "nginx-tunnel-exit";
 export type TunnelRuleRuntimeForwardType = "forwardx" | "gost" | "nginx-tunnel";
+export type GostTunnelTransportType = "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
 
-const GOST_TUNNEL_MODES = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+const GOST_TUNNEL_MODES: ReadonlySet<string> = new Set<GostTunnelTransportType>([
+  "tls",
+  "wss",
+  "tcp",
+  "mtls",
+  "mwss",
+  "mtcp",
+]);
 
 export type GostTunnelProbeListener = {
   tunnelId: number;
@@ -31,6 +39,13 @@ type GostTunnelProbeExitInput = {
   listenPort?: unknown;
   isEnabled?: unknown;
 };
+
+export function gostTunnelTransportType(mode: unknown): GostTunnelTransportType {
+  const normalized = String(mode || "").trim().toLowerCase();
+  return GOST_TUNNEL_MODES.has(normalized)
+    ? normalized as GostTunnelTransportType
+    : "tls";
+}
 
 export function tunnelRuntimeFamily(tunnel: any): TunnelRuntimeFamily | null {
   const mode = String(tunnel?.mode || "").trim().toLowerCase();

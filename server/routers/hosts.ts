@@ -1268,6 +1268,21 @@ export const hostsRouter = router({
         appendPanelLog("info", `[HostTraffic] reset host=${host.id} name=${host.name} reason=manual-admin-reset`);
         return db.resetHostTraffic(input.hostId);
       }),
+    correctTraffic: adminProcedure
+      .input(z.object({
+        hostId: z.number().int().positive(),
+        usedBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      }))
+      .mutation(async ({ input }) => {
+        const host = await db.getHostById(input.hostId);
+        if (!host) throw new Error("主机不存在");
+        const measureMode = normalizeHostTrafficMeasureMode((host as any).trafficMeasureMode);
+        appendPanelLog(
+          "info",
+          `[HostTraffic] correct host=${host.id} name=${host.name} usedBytes=${input.usedBytes} mode=${measureMode} reason=manual-admin-correction`,
+        );
+        return db.correctHostTraffic(input.hostId, input.usedBytes, measureMode);
+      }),
     watchMetrics: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(200) }))
       .mutation(async ({ input, ctx }) => {

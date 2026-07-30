@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,218 @@ func TestRuleActionNeedsPreRuntimeHandoff(t *testing.T) {
 	}
 	if !ruleActionNeedsPreRuntimeHandoff(desired, 8, "gost-tunnel", 20, "tcp", true) {
 		t.Fatal("protocol transition on the same port must perform a runtime handoff")
+	}
+}
+
+func TestMarkerlessRunningFXPEntryCreatesGostRuntimeHandoff(t *testing.T) {
+	entry := testV1EntrySpec(401, 10401, 60401)
+	entry.Protocol = "tcp"
+	sibling := testV1EntrySpec(entry.TunnelID, entry.RuleID+1, entry.ListenPort+1)
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{entry, sibling}, entry.TunnelID, entry.TransportVersion)
+	if !ok {
+		t.Fatal("entry group is invalid")
+	}
+	target := action{
+		Op:          "apply",
+		StatusType:  "rule",
+		RuleID:      entry.RuleID,
+		TunnelID:    entry.TunnelID,
+		SourcePort:  entry.ListenPort,
+		Protocol:    entry.Protocol,
+		ForwardType: "gost",
+	}
+	selector := fxpRuntimeSelector{listenPort: target.SourcePort, protocol: target.Protocol}
+	snapshot := localActionRuntimeSnapshotFromFXPSpecs(target, selector, []fxpSpec{group})
+	if !snapshot.valid || snapshot.tunnel || snapshot.ruleID != entry.RuleID || snapshot.tunnelID != entry.TunnelID ||
+		snapshot.forwardType != "forwardx" || snapshot.protocol != "tcp" || !snapshot.hasProtocol || snapshot.handoffState == nil {
+		t.Fatalf("recovered entry snapshot=%#v", snapshot)
+	}
+
+	prepared := prepareDesiredActionJobsWithOwnerResolver([]actionJob{
+		{action: action{Op: "apply", StatusType: "runtime", ForwardType: "gost-runtime-sync"}},
+		{action: target, previousRuntime: snapshot},
+	}, nil)
+	if len(prepared) != 3 || !prepared[0].action.HandoffOnly || prepared[1].action.ForwardType != "gost-runtime-sync" {
+		t.Fatalf("markerless entry handoff order=%#v", prepared)
+	}
+	if !actionJobHasResultPrerequisite(prepared[1], prepared[0].result) {
+		t.Fatal("GOST runtime sync does not wait for the recovered FXP entry handoff")
+	}
+	if prepared[0].previousRuntime.handoffState.handoffBatch() == nil {
+		t.Fatal("recovered FXP entry did not use the transactional entry-group handoff batch")
+	}
+	partialMarker := localActionRuntimeSnapshot{valid: true, ruleID: entry.RuleID, tunnelID: entry.TunnelID}
+	recovered := recoverMissingLocalActionRuntimeSnapshotWithResolver(target, partialMarker, func(action) localActionRuntimeSnapshot {
+		return snapshot
+	})
+	if recovered.forwardType != "forwardx" || recovered.ruleID != entry.RuleID {
+		t.Fatalf("partial entry marker was not recovered from the running FXP: %#v", recovered)
+	}
+}
+
+func TestMarkerlessRunningFXPTunnelCreatesGostWSSHandoff(t *testing.T) {
+	exit := normalizeFXPSpec(fxpSpec{
+		Role:             "exit",
+		TransportVersion: "v1",
+		TunnelID:         402,
+		ListenPort:       60402,
+		Protocol:         "both",
+		Key:              "markerless-exit-key",
+	})
+	target := action{
+		Op:          "apply",
+		StatusType:  "tunnel",
+		TunnelID:    exit.TunnelID,
+		SourcePort:  exit.ListenPort,
+		Protocol:    "tcp",
+		ForwardType: "gost-tunnel",
+	}
+	selector := fxpRuntimeSelector{listenPort: target.SourcePort, protocol: target.Protocol}
+	snapshot := localActionRuntimeSnapshotFromFXPSpecs(target, selector, []fxpSpec{exit})
+	if !snapshot.valid || !snapshot.tunnel || snapshot.tunnelID != exit.TunnelID ||
+		snapshot.forwardType != "forwardx-tunnel" || snapshot.handoffState == nil {
+		t.Fatalf("recovered tunnel snapshot=%#v", snapshot)
+	}
+
+	prepared := prepareDesiredActionJobsWithOwnerResolver([]actionJob{
+		{action: action{Op: "apply", StatusType: "runtime", ForwardType: "gost-runtime-sync"}},
+		{action: target, previousRuntime: snapshot},
+	}, nil)
+	if len(prepared) != 3 || !prepared[0].action.HandoffOnly || prepared[1].action.ForwardType != "gost-runtime-sync" {
+		t.Fatalf("markerless tunnel handoff order=%#v", prepared)
+	}
+	if !actionJobHasResultPrerequisite(prepared[1], prepared[0].result) {
+		t.Fatal("GOST WSS runtime sync does not wait for the recovered FXP tunnel handoff")
+	}
+	partialMarker := localActionRuntimeSnapshot{valid: true, tunnel: true, tunnelID: exit.TunnelID}
+	recovered := recoverMissingLocalActionRuntimeSnapshotWithResolver(target, partialMarker, func(action) localActionRuntimeSnapshot {
+		return snapshot
+	})
+	if recovered.forwardType != "forwardx-tunnel" || recovered.tunnelID != exit.TunnelID {
+		t.Fatalf("partial tunnel marker was not recovered from the running FXP: %#v", recovered)
+	}
+}
+
+func TestRunningFXPSnapshotFallbackRejectsWrongRoleAndProtocol(t *testing.T) {
+	entry := testV1EntrySpec(403, 10403, 60403)
+	entry.Protocol = "udp"
+	entry.UDPListenPort = entry.ListenPort
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{entry}, entry.TunnelID, entry.TransportVersion)
+	if !ok {
+		t.Fatal("entry group is invalid")
+	}
+	exit := normalizeFXPSpec(fxpSpec{
+		Role:             "exit",
+		TransportVersion: "v1",
+		TunnelID:         404,
+		ListenPort:       entry.ListenPort,
+		Protocol:         "tcp",
+		Key:              "wrong-role-exit-key",
+	})
+	specs := []fxpSpec{group, exit}
+
+	ruleAction := action{Op: "apply", StatusType: "rule", RuleID: entry.RuleID, TunnelID: entry.TunnelID, SourcePort: entry.ListenPort, Protocol: "tcp", ForwardType: "gost"}
+	ruleSelector := fxpRuntimeSelector{listenPort: ruleAction.SourcePort, protocol: ruleAction.Protocol}
+	if snapshot := localActionRuntimeSnapshotFromFXPSpecs(ruleAction, ruleSelector, specs); snapshot.valid {
+		t.Fatalf("TCP rule adopted UDP entry or tunnel exit: %#v", snapshot)
+	}
+
+	tunnelAction := action{StatusType: "tunnel", TunnelID: entry.TunnelID, SourcePort: entry.ListenPort, Protocol: "udp"}
+	tunnelSelector := fxpRuntimeSelector{listenPort: tunnelAction.SourcePort, protocol: tunnelAction.Protocol}
+	if snapshot := localActionRuntimeSnapshotFromFXPSpecs(tunnelAction, tunnelSelector, specs); snapshot.valid {
+		t.Fatalf("UDP tunnel adopted an entry-group member or TCP exit: %#v", snapshot)
+	}
+
+	for _, markerOwner := range []string{"gost", "realm"} {
+		marker := localActionRuntimeSnapshot{valid: true, ruleID: 999, forwardType: markerOwner}
+		resolverCalls := 0
+		recovered := recoverMissingLocalActionRuntimeSnapshotWithResolver(ruleAction, marker, func(action) localActionRuntimeSnapshot {
+			resolverCalls++
+			return localActionRuntimeSnapshot{valid: true, ruleID: entry.RuleID, tunnelID: entry.TunnelID, forwardType: "forwardx", protocol: "tcp", hasProtocol: true}
+		})
+		if recovered.ruleID != entry.RuleID || recovered.forwardType != "forwardx" || resolverCalls != 1 {
+			t.Fatalf("complete %s marker hid the active FXP owner: %#v calls=%d", markerOwner, recovered, resolverCalls)
+		}
+		unchanged := recoverMissingLocalActionRuntimeSnapshotWithResolver(ruleAction, marker, func(action) localActionRuntimeSnapshot {
+			return localActionRuntimeSnapshot{}
+		})
+		if unchanged.ruleID != marker.ruleID || unchanged.forwardType != marker.forwardType {
+			t.Fatalf("complete %s marker changed without an active FXP: %#v", markerOwner, unchanged)
+		}
+	}
+
+	fxpTarget := ruleAction
+	fxpTarget.ForwardType = "forwardx"
+	fxpTarget.Fxp = &entry
+	resolverCalls := 0
+	marker := localActionRuntimeSnapshot{valid: true, ruleID: 999, forwardType: "realm"}
+	unchanged := recoverMissingLocalActionRuntimeSnapshotWithResolver(fxpTarget, marker, func(action) localActionRuntimeSnapshot {
+		resolverCalls++
+		return localActionRuntimeSnapshot{valid: true, ruleID: entry.RuleID, forwardType: "forwardx"}
+	})
+	if unchanged.ruleID != marker.ruleID || unchanged.forwardType != marker.forwardType || resolverCalls != 0 {
+		t.Fatalf("normal FXP target overwrote its complete previous marker: %#v calls=%d", unchanged, resolverCalls)
+	}
+}
+
+func TestRunningFXPSnapshotDiscoveryRejectsInactiveTrackedRuntime(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	entry := testV1EntrySpec(405, 10405, 60405)
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{entry}, entry.TunnelID, entry.TransportVersion)
+	if !ok {
+		t.Fatal("entry group is invalid")
+	}
+	withTestFXPServers(t, map[string]*fxpProcess{
+		fxpServerID(group): {spec: group},
+	})
+	target := action{StatusType: "rule", RuleID: entry.RuleID, TunnelID: entry.TunnelID, SourcePort: entry.ListenPort, Protocol: entry.Protocol}
+	if snapshot := captureRunningFXPActionRuntimeSnapshot(target); snapshot.valid {
+		t.Fatalf("inactive tracked FXP was treated as a running listener: %#v", snapshot)
+	}
+}
+
+func TestCompleteSharedRuntimeMarkerYieldsToTrackedFXPOwner(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+	entry := testV1EntrySpec(406, 10406, 60406)
+	entry.Protocol = "tcp"
+	group, ok := buildSharedFXPEntryGroup([]fxpSpec{entry}, entry.TunnelID, entry.TransportVersion)
+	if !ok {
+		t.Fatal("entry group is invalid")
+	}
+	currentProcess, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("find test process: %v", err)
+	}
+	withTestFXPServers(t, map[string]*fxpProcess{
+		fxpServerID(group): {spec: group, cmd: &exec.Cmd{Process: currentProcess}},
+	})
+
+	target := action{
+		Op:          "apply",
+		StatusType:  "rule",
+		RuleID:      entry.RuleID,
+		TunnelID:    entry.TunnelID,
+		SourcePort:  entry.ListenPort,
+		Protocol:    entry.Protocol,
+		ForwardType: "gost",
+	}
+	marker := localActionRuntimeSnapshot{valid: true, ruleID: entry.RuleID, tunnelID: entry.TunnelID, forwardType: "gost", protocol: "tcp", hasProtocol: true}
+	recovered := recoverMissingLocalActionRuntimeSnapshot(target, marker)
+	if !recovered.valid || recovered.forwardType != "forwardx" || recovered.ruleID != entry.RuleID || recovered.tunnelID != entry.TunnelID {
+		t.Fatalf("complete GOST marker hid the tracked FXP owner: %#v", recovered)
+	}
+
+	disjointTarget := target
+	disjointTarget.Protocol = "udp"
+	if unchanged := recoverMissingLocalActionRuntimeSnapshot(disjointTarget, marker); unchanged.forwardType != marker.forwardType || unchanged.ruleID != marker.ruleID {
+		t.Fatalf("disjoint UDP action adopted a TCP-only FXP owner: %#v", unchanged)
+	}
+
+	fxpTarget := target
+	fxpTarget.ForwardType = "forwardx"
+	fxpTarget.Fxp = &entry
+	if unchanged := recoverMissingLocalActionRuntimeSnapshot(fxpTarget, marker); unchanged.forwardType != marker.forwardType || unchanged.ruleID != marker.ruleID {
+		t.Fatalf("normal FXP target replaced its complete previous marker: %#v", unchanged)
 	}
 }
 

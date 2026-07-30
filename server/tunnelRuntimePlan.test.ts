@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  gostTunnelTransportType,
   planGostTunnelProbeListeners,
   planManualTunnelTestRefresh,
   shouldReconcileGostRuntime,
@@ -14,6 +15,18 @@ import {
   selectEntryGroupTunnelTestAddress,
   selectTunnelDialAddress,
 } from "./tunnelAddressSelection";
+
+test("maps each GOST tunnel mode to its native transport", () => {
+  for (const mode of ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"] as const) {
+    assert.equal(gostTunnelTransportType(mode), mode);
+  }
+});
+
+test("normalizes GOST transport names and safely defaults unknown modes", () => {
+  assert.equal(gostTunnelTransportType("  MWSS  "), "mwss");
+  assert.equal(gostTunnelTransportType("unsupported"), "tls");
+  assert.equal(gostTunnelTransportType(null), "tls");
+});
 
 test("keeps a configured IPv6 endpoint after runtime restart", () => {
   const exit = {

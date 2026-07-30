@@ -130,6 +130,30 @@ test("traffic reports batch raw samples and counters without losing totals", () 
         [{ bytesIn: 300, bytesOut: 600, lastSystemIn: 100, lastSystemOut: 200, lastDeltaIn: 0, lastDeltaOut: 0 }],
       );
 
+      assert.deepEqual(metrics.allocateHostTrafficCorrection({ bytesIn: 300, bytesOut: 600 }, 450, "both"), { bytesIn: 150, bytesOut: 300 });
+      assert.deepEqual(metrics.allocateHostTrafficCorrection({ bytesIn: 300, bytesOut: 600 }, 450, "outbound"), { bytesIn: 300, bytesOut: 450 });
+      assert.deepEqual(metrics.allocateHostTrafficCorrection({ bytesIn: 300, bytesOut: 600 }, 450, "max"), { bytesIn: 225, bytesOut: 450 });
+      assert.deepEqual(metrics.allocateHostTrafficCorrection({ bytesIn: 0, bytesOut: 0 }, 450, "both"), { bytesIn: 0, bytesOut: 450 });
+
+      await metrics.correctHostTraffic(5, 450, "both");
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT bytesIn, bytesOut, lastSystemIn, lastSystemOut, lastDeltaIn, lastDeltaOut FROM host_traffic_counters WHERE hostId = 5"),
+        [{ bytesIn: 150, bytesOut: 300, lastSystemIn: 100, lastSystemOut: 200, lastDeltaIn: 0, lastDeltaOut: 0 }],
+      );
+      await metrics.recordHostTrafficSample(5, { bytesIn: 150, bytesOut: 300 });
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT bytesIn, bytesOut, lastSystemIn, lastSystemOut, lastDeltaIn, lastDeltaOut FROM host_traffic_counters WHERE hostId = 5"),
+        [{ bytesIn: 200, bytesOut: 400, lastSystemIn: 150, lastSystemOut: 300, lastDeltaIn: 50, lastDeltaOut: 100 }],
+      );
+
+      await metrics.correctHostTraffic(6, 700, "max");
+      await metrics.recordHostTrafficSample(6, { bytesIn: 1000, bytesOut: 2000 });
+      await metrics.recordHostTrafficSample(6, { bytesIn: 1100, bytesOut: 2200 });
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT bytesIn, bytesOut, lastSystemIn, lastSystemOut, lastDeltaIn, lastDeltaOut FROM host_traffic_counters WHERE hostId = 6"),
+        [{ bytesIn: 100, bytesOut: 900, lastSystemIn: 1100, lastSystemOut: 2200, lastDeltaIn: 100, lastDeltaOut: 200 }],
+      );
+
       await runtime.executeRaw("INSERT INTO users (id, username, password, trafficLimit, trafficUsed, expiresAt) VALUES (7, 'traffic-user', 'hash', 1000, 100, 2000000000)");
       const userUpdate = await countStatements(() => users.addUserTraffic(7, 150));
       const updatedUser = userUpdate.value;

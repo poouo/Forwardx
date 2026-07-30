@@ -1572,7 +1572,7 @@ func captureLocalActionRuntimeSnapshot(a action) localActionRuntimeSnapshot {
 			handoffState: &actionHandoffState{},
 		}
 		snapshot.valid = snapshot.tunnelID > 0 || snapshot.forwardType != ""
-		return snapshot
+		return recoverMissingLocalActionRuntimeSnapshot(a, snapshot)
 	}
 	_, _, protocol, hasProtocol := readTargetInfo(port)
 	snapshot := localActionRuntimeSnapshot{
@@ -1584,7 +1584,165 @@ func captureLocalActionRuntimeSnapshot(a action) localActionRuntimeSnapshot {
 		handoffState: &actionHandoffState{},
 	}
 	snapshot.valid = snapshot.ruleID > 0 || snapshot.forwardType != ""
-	return snapshot
+	return recoverMissingLocalActionRuntimeSnapshot(a, snapshot)
+}
+
+// Persistent FXP runtimes can survive an Agent restart after their lightweight
+// per-port marker files were removed. Recover the real listener owner so a
+// shared GOST/Nginx runtime cannot start before the old FXP process is handed
+// off transactionally.
+func recoverMissingLocalActionRuntimeSnapshot(a action, snapshot localActionRuntimeSnapshot) localActionRuntimeSnapshot {
+	if localActionRuntimeSnapshotComplete(snapshot) && actionNeedsRunningFXPOwnerCheck(a) && !hasRunningTrackedFXPForAction(a) {
+		return snapshot
+	}
+	return recoverMissingLocalActionRuntimeSnapshotWithResolver(a, snapshot, captureRunningFXPActionRuntimeSnapshot)
+}
+
+func recoverMissingLocalActionRuntimeSnapshotWithResolver(
+	a action,
+	snapshot localActionRuntimeSnapshot,
+	resolve func(action) localActionRuntimeSnapshot,
+) localActionRuntimeSnapshot {
+	if localActionRuntimeSnapshotComplete(snapshot) && !actionNeedsRunningFXPOwnerCheck(a) {
+		return snapshot
+	}
+	if resolve == nil {
+		return snapshot
+	}
+	recovered := resolve(a)
+	if !recovered.valid {
+		return snapshot
+	}
+	logf(
+		"local runtime snapshot recovered from running FXP port=%d oldRule=%d oldTunnel=%d oldForwardType=%s protocol=%s",
+		a.SourcePort,
+		recovered.ruleID,
+		recovered.tunnelID,
+		recovered.forwardType,
+		recovered.protocol,
+	)
+	return recovered
+}
+
+func localActionRuntimeSnapshotComplete(snapshot localActionRuntimeSnapshot) bool {
+	identityComplete := snapshot.ruleID > 0
+	if snapshot.tunnel {
+		identityComplete = snapshot.tunnelID > 0
+	}
+	return snapshot.valid && identityComplete && strings.TrimSpace(snapshot.forwardType) != ""
+}
+
+func actionNeedsRunningFXPOwnerCheck(a action) bool {
+	return strings.TrimSpace(a.Op) == "apply" && sharedRuntimeOwnsDesiredActionListener(a)
+}
+
+func hasRunningTrackedFXPForAction(a action) bool {
+	if !validActionPort(a.SourcePort) {
+		return false
+	}
+	selector := fxpRuntimeSelector{listenPort: a.SourcePort, protocol: a.Protocol}
+	tracked := make([]*fxpProcess, 0)
+	fxpMu.Lock()
+	for _, process := range fxpServers {
+		if process != nil && selector.matches(process.spec) {
+			tracked = append(tracked, process)
+		}
+	}
+	fxpMu.Unlock()
+	for _, process := range tracked {
+		if fxpProcessActive(process) {
+			return true
+		}
+	}
+	return false
+}
+
+func captureRunningFXPActionRuntimeSnapshot(a action) localActionRuntimeSnapshot {
+	if !validActionPort(a.SourcePort) || strings.TrimSpace(a.StatusType) == "runtime" {
+		return localActionRuntimeSnapshot{}
+	}
+	selector := fxpRuntimeSelector{
+		listenPort: a.SourcePort,
+		protocol:   a.Protocol,
+	}
+	fxpControlMu.Lock()
+	specs := runningFXPSpecsForSelectorLocked(selector)
+	fxpControlMu.Unlock()
+	return localActionRuntimeSnapshotFromFXPSpecs(a, selector, specs)
+}
+
+func localActionRuntimeSnapshotFromFXPSpecs(a action, selector fxpRuntimeSelector, specs []fxpSpec) localActionRuntimeSnapshot {
+	tunnelAction := strings.TrimSpace(a.StatusType) == "tunnel" || (a.TunnelID > 0 && a.RuleID <= 0)
+	if tunnelAction {
+		for _, candidate := range specs {
+			candidate = normalizeFXPSpec(candidate)
+			if candidate.Role != "exit" && candidate.Role != "relay" {
+				continue
+			}
+			if !selector.matches(candidate) {
+				continue
+			}
+			return localActionRuntimeSnapshot{
+				valid:        true,
+				tunnel:       true,
+				tunnelID:     candidate.TunnelID,
+				forwardType:  "forwardx-tunnel",
+				protocol:     candidate.Protocol,
+				hasProtocol:  true,
+				handoffState: &actionHandoffState{},
+			}
+		}
+		return localActionRuntimeSnapshot{}
+	}
+	if a.RuleID <= 0 {
+		return localActionRuntimeSnapshot{}
+	}
+	entries := make([]fxpSpec, 0)
+	for _, candidate := range specs {
+		candidate = normalizeFXPSpec(candidate)
+		if isFXPEntryGroup(candidate) {
+			entries = append(entries, candidate.Entries...)
+			continue
+		}
+		if candidate.Role == "entry" {
+			entries = append(entries, candidate)
+		}
+	}
+	var selected *fxpSpec
+	selectedScore := -1
+	for index := range entries {
+		entry := normalizeFXPSpec(entries[index])
+		if entry.Role != "entry" || !selector.matches(entry) {
+			continue
+		}
+		score := 0
+		if entry.RuleID == a.RuleID {
+			score += 4
+		}
+		if a.TunnelID > 0 && entry.TunnelID == a.TunnelID {
+			score += 2
+		}
+		if normalizeRuntimeProtocol(entry.Protocol) == normalizeRuntimeProtocol(a.Protocol) {
+			score++
+		}
+		if selected == nil || score > selectedScore {
+			entryCopy := entry
+			selected = &entryCopy
+			selectedScore = score
+		}
+	}
+	if selected == nil || selected.RuleID <= 0 || selected.TunnelID <= 0 {
+		return localActionRuntimeSnapshot{}
+	}
+	return localActionRuntimeSnapshot{
+		valid:        true,
+		ruleID:       selected.RuleID,
+		tunnelID:     selected.TunnelID,
+		forwardType:  "forwardx",
+		protocol:     selected.Protocol,
+		hasProtocol:  true,
+		handoffState: &actionHandoffState{},
+	}
 }
 
 func activeSharedRuntimeForwardType(port int, protocol string) string {

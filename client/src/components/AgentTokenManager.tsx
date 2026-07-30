@@ -262,6 +262,7 @@ function AgentTokenCard({
   sortableClassName?: string;
 }) {
   const description = typeof tokenItem.description === "string" ? tokenItem.description.trim() : "";
+  const createdAtText = new Date(tokenItem.createdAt).toLocaleString();
 
   return (
     <Card className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", sortableClassName)}>
@@ -276,9 +277,11 @@ function AgentTokenCard({
                 <p className="truncate text-sm font-medium" title={description || "Agent Token"}>
                   {description || "Agent Token"}
                 </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {description && "Agent Token · "}
-                  {new Date(tokenItem.createdAt).toLocaleString()}
+                <p
+                  className="truncate text-xs text-muted-foreground"
+                  title={`创建时间：${createdAtText}`}
+                >
+                  创建时间 · {createdAtText}
                 </p>
               </div>
             </div>
