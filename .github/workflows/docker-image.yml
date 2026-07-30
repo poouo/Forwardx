@@ -43,6 +43,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=v${{ steps.package.outputs.version }}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.title=ForwardX
