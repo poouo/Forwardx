@@ -184,8 +184,8 @@ jobs:
             ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1
           '
 
-          version_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:v${VERSION}" | awk '$1 == "Digest:" { print $2; exit }')"
-          latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" | awk '$1 == "Digest:" { print $2; exit }')"
+          version_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:v${VERSION}" | awk '$1 == "Digest:" { digest=$2 } END { print digest }')"
+          latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" | awk '$1 == "Digest:" { digest=$2 } END { print digest }')"
           test -n "${version_digest}"
           test "${version_digest}" = "${latest_digest}"
           echo "Published ${IMAGE_NAME}:v${VERSION} and latest at ${version_digest}"
