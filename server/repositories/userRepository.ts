@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import { InsertUser, users, forwardRules, userSubscriptions } from "../../drizzle/schema";
-import { getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions } from "../../drizzle/schema";
+import { getDatabaseKind, getDb, insertAndGetId, nowDate, withDatabaseTransaction } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
@@ -465,6 +465,18 @@ export async function migrateLegacyUserAvatars() {
 }
 
 function usersForListQuery(db: any) {
+  // Aggregate billing usage totals once for the whole list query.
+  // The reset column is only a presentation baseline; billing thresholds and
+  // historical charge rows remain untouched when an administrator resets stats.
+  const billingUsageByUser = db
+    .select({
+      userId: trafficBillingUsage.userId,
+      totalBytes: sql<number>`COALESCE(SUM(${trafficBillingUsage.totalBytes}), 0)`.as("totalBytes"),
+    })
+    .from(trafficBillingUsage)
+    .groupBy(trafficBillingUsage.userId)
+    .as("traffic_billing_usage_by_user");
+
   return db
     .select({
       id: users.id,
@@ -500,6 +512,11 @@ function usersForListQuery(db: any) {
       allowForwardXTunnel: users.allowForwardXTunnel,
       trafficLimit: users.trafficLimit,
       trafficUsed: users.trafficUsed,
+      trafficBillingUsed: sql<number>`CASE
+        WHEN COALESCE(${billingUsageByUser.totalBytes}, 0) > ${users.trafficBillingResetBytes}
+          THEN COALESCE(${billingUsageByUser.totalBytes}, 0) - ${users.trafficBillingResetBytes}
+        ELSE 0
+      END`.as("trafficBillingUsed"),
       gostRateLimitIn: users.gostRateLimitIn,
       gostRateLimitOut: users.gostRateLimitOut,
       expiresAt: users.expiresAt,
@@ -518,7 +535,8 @@ function usersForListQuery(db: any) {
       createdAt: users.createdAt,
       lastSignedIn: users.lastSignedIn,
     })
-    .from(users);
+    .from(users)
+    .leftJoin(billingUsageByUser, eq(users.id, billingUsageByUser.userId));
 }
 
 export async function getAllUsers() {
@@ -689,6 +707,31 @@ export async function resetUserTraffic(userId: number) {
     lastTrafficReset: nowDate(),
     updatedAt: nowDate(),
   }).where(eq(users.id, userId));
+}
+
+/**
+ * Reset the package quota and the account's displayed pay-as-you-go usage.
+ *
+ * `traffic_billing_usage` is also the billing threshold ledger, so it must not
+ * be cleared here. We snapshot its current total into a per-user baseline and
+ * subtract that baseline in list queries instead.
+ */
+export async function resetUserTrafficAndBillingUsage(userId: number) {
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return;
+    const rows = await db.select({
+      totalBytes: sql<number>`COALESCE(SUM(${trafficBillingUsage.totalBytes}), 0)`,
+    }).from(trafficBillingUsage).where(eq(trafficBillingUsage.userId, userId));
+    const totalBytes = Math.max(0, Number(rows[0]?.totalBytes || 0));
+    const now = nowDate();
+    await db.update(users).set({
+      trafficUsed: 0,
+      trafficBillingResetBytes: totalBytes,
+      lastTrafficReset: now,
+      updatedAt: now,
+    } as any).where(eq(users.id, userId));
+  });
 }
 
 /** 累加用户已用流量 */

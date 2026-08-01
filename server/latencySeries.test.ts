@@ -80,6 +80,20 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     const latestTunnelTotal = await forwardTests.getLatestTunnelLatency(31);
     assert.equal(latestTunnelTotal?.seriesKey, "total");
     assert.equal(latestTunnelTotal?.latencyMs, 15);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [32, 10, 0, "total", now + 60]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [32, 20, 0, "total", now - 60]);
+    assert.equal((await forwardTests.getLatestTunnelLatency(32))?.latencyMs, 20, "latest insertion id must win across a panel clock correction");
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [33, 11, 0, "primary", now]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [33, 11, 0, "total", now]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [33, 22, 0, "exit-2", now]);
+    await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [33, 22, 0, "total", now]);
+    const secondBatchTotal = await forwardTests.getLatestTunnelLatency(33);
+    assert.deepEqual(
+      (await metrics.getTunnelLatencyBranchSeriesForTotal(33, secondBatchTotal?.id)).map((row) => [row.seriesKey, row.latencyMs]),
+      [["exit-2", 22]],
+      "branch lookup must not reuse a same-second row from the previous total batch",
+    );
+    assert.deepEqual(await metrics.getTunnelLatencyBranchSeriesForTotal(31, secondBatchTotal?.id), [], "total id must belong to the requested tunnel");
     await tunnels.clearTunnelTestSnapshot(31, { clearHistory: true });
     assert.deepEqual(await metrics.getLatestTunnelLatencySeries([31]), new Map());
     assert.equal(await forwardTests.getLatestTunnelLatency(31), undefined);

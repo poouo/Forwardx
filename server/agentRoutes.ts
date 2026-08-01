@@ -33,11 +33,11 @@ import { getMigratedToPanelUrl, getPanelMigrationAgentDirective } from "./panelM
 import { recordAuthenticatedAgentActivity } from "./agentActivity";
 import { issueAgentAuthChallenges } from "./agentAuthChallenge";
 import { panelCryptoNowMs } from "./panelClock";
+import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
-const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 
 function parseForwardProtocolSettings(value: string | null | undefined) {
   if (!value) return null;
@@ -49,7 +49,6 @@ function parseForwardProtocolSettings(value: string | null | undefined) {
 }
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.178";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
-const lastRuntimeRecoveryByHost = new Map<number, number>();
 
 agentRouter.use((req, res, next) => {
   res.setHeader("X-ForwardX-Agent-Auth", "challenge-v2");
@@ -101,15 +100,13 @@ async function rejectAgentWhenPanelMigrated(_req: Request, res: Response, next: 
 }
 
 async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: string) {
-  const now = Date.now();
-  const last = lastRuntimeRecoveryByHost.get(hostId) || 0;
-  if (now - last < AGENT_RUNTIME_RECOVERY_COOLDOWN_MS) return;
-  lastRuntimeRecoveryByHost.set(hostId, now);
-  await db.resetAgentRuntimeStateForHost(hostId);
-  clearTunnelRuntimeStatusForHost(hostId);
-  invalidateAgentDesiredStateCache(hostId);
-  await refreshAgentsAffectedByHostAddress(hostId, reason);
-  appendPanelLog("info", `[AgentRecovery] host=${hostId} reason=${reason} runtime state marked for reapply`);
+  await runAgentRuntimeRecovery(hostId, { preserveReportedRuntime: false }, async () => {
+    await db.resetAgentRuntimeStateForHost(hostId);
+    clearTunnelRuntimeStatusForHost(hostId);
+    invalidateAgentDesiredStateCache(hostId);
+    await refreshAgentsAffectedByHostAddress(hostId, reason);
+    appendPanelLog("info", `[AgentRecovery] host=${hostId} reason=${reason} runtime state marked for reapply`);
+  });
 }
 
 function prepareAgentDesiredStateResync(hostId: number) {

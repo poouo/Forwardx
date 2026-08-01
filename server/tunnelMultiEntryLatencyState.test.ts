@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tunnelMultiEntryLatencyState";
+import { clearTunnelMultiEntryLatencyState, getTunnelMultiEntryHopDetails, getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tunnelMultiEntryLatencyState";
 
 test("multi-entry direct probe stays available when one entry succeeds", () => {
   const base = {
@@ -141,4 +141,122 @@ test("multi-entry relay candidates retain independent aggregates", () => {
     ],
   });
   assert.equal(getTunnelMultiEntryLatency({ ...base, pathKey: "relay-2" })?.success, false);
+});
+
+test("multi-entry state exposes entry and shared hop samples for the rule test", () => {
+  const base = {
+    tunnelId: 94003,
+    expectedEntryHostIds: [60, 61],
+    hopCount: 2,
+    generation: "details-v1",
+  };
+  recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 60,
+    sourceLabel: "entry-a",
+    hopIndex: 0,
+    toHostId: 70,
+    latencyMs: 9,
+    isTimeout: false,
+  });
+  recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 61,
+    sourceLabel: "entry-b",
+    hopIndex: 0,
+    toHostId: 70,
+    latencyMs: 13,
+    isTimeout: false,
+  });
+  recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 70,
+    hopIndex: 1,
+    toHostId: 80,
+    latencyMs: 24,
+    isTimeout: false,
+  });
+
+  const details = getTunnelMultiEntryHopDetails(base);
+  assert.ok(details);
+  assert.deepEqual(details.map(({ recordedAt: _recordedAt, ...detail }) => detail), [
+    { hopIndex: 0, hopCount: 2, fromHostId: 60, toHostId: 70, latencyMs: 9, isTimeout: false },
+    { hopIndex: 0, hopCount: 2, fromHostId: 61, toHostId: 70, latencyMs: 13, isTimeout: false },
+    { hopIndex: 1, hopCount: 2, fromHostId: 70, toHostId: 80, latencyMs: 24, isTimeout: false },
+  ]);
+  const newestRecordedAt = Math.max(...details.map((detail) => detail.recordedAt));
+  assert.equal(getTunnelMultiEntryHopDetails({
+    ...base,
+    referenceAt: newestRecordedAt + 30_001,
+  }), null);
+});
+
+test("multi-entry details do not turn an entry that has not reported into a timeout", () => {
+  const base = {
+    tunnelId: 94005,
+    expectedEntryHostIds: [60, 61],
+    hopCount: 1,
+    generation: "partial-details-v1",
+  };
+  recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 60,
+    sourceLabel: "entry-a",
+    hopIndex: 0,
+    toHostId: 70,
+    latencyMs: 9,
+    isTimeout: false,
+  });
+
+  const details = getTunnelMultiEntryHopDetails(base);
+  assert.ok(details);
+  assert.deepEqual(details.map(({ recordedAt: _recordedAt, ...detail }) => detail), [
+    { hopIndex: 0, hopCount: 1, fromHostId: 60, toHostId: 70, latencyMs: 9, isTimeout: false },
+  ]);
+});
+
+test("multi-entry details read only the requested relay branch", () => {
+  const base = {
+    tunnelId: 94007,
+    expectedEntryHostIds: [80, 81],
+    hopCount: 1,
+    generation: "relay-details-v1",
+  };
+  for (const [pathKey, toHostId, latencyMs] of [["relay-1", 90, 11], ["relay-2", 91, 22]] as const) {
+    recordTunnelMultiEntryLatency({
+      ...base,
+      pathKey,
+      sourceHostId: 80,
+      hopIndex: 0,
+      toHostId,
+      latencyMs,
+      isTimeout: false,
+    });
+  }
+
+  assert.equal(getTunnelMultiEntryHopDetails(base), null);
+  assert.deepEqual(
+    getTunnelMultiEntryHopDetails({ ...base, pathKey: "relay-2" })?.map(({ recordedAt: _recordedAt, ...detail }) => detail),
+    [{ hopIndex: 0, hopCount: 1, fromHostId: 80, toHostId: 91, latencyMs: 22, isTimeout: false }],
+  );
+});
+
+test("a forced multi-entry test clears every cached path for its tunnel", () => {
+  const base = {
+    tunnelId: 94009,
+    expectedEntryHostIds: [80, 81],
+    hopCount: 1,
+    generation: "clear-details-v1",
+  };
+  recordTunnelMultiEntryLatency({
+    ...base,
+    pathKey: "primary",
+    sourceHostId: 80,
+    hopIndex: 0,
+    toHostId: 90,
+    latencyMs: 10,
+    isTimeout: false,
+  });
+  clearTunnelMultiEntryLatencyState(base.tunnelId);
+  assert.equal(getTunnelMultiEntryHopDetails({ ...base, pathKey: "primary" }), null);
 });

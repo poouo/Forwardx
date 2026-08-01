@@ -46,11 +46,14 @@ import {
 import {
   MAX_CUSTOM_SIDEBAR_ICON_BYTES,
   MAX_CUSTOM_SIDEBAR_PAGES,
+  CUSTOM_SIDEBAR_OPEN_MODES,
   decodeCustomSidebarIconDataUrl,
   isSafeCustomSidebarSvg,
   isValidCustomSidebarUrl,
+  normalizeCustomSidebarUrl,
   normalizeCustomSidebarPages,
   type CustomSidebarPage,
+  type CustomSidebarOpenMode,
   type CustomSidebarVisibility,
 } from "@shared/customSidebarPages";
 import { panelMigrationScopeLabel, type PanelMigrationScope } from "@shared/panelMigration";
@@ -639,6 +642,7 @@ type CustomSidebarPageDraft = {
   name: string;
   url: string;
   visibility: CustomSidebarVisibility;
+  openMode: CustomSidebarOpenMode;
   svg: string;
 };
 
@@ -648,6 +652,7 @@ function createCustomSidebarPageDraft(): CustomSidebarPageDraft {
     name: "",
     url: "",
     visibility: "admin",
+    openMode: "embed",
     svg: "",
   };
 }
@@ -3356,6 +3361,7 @@ function PersonalizationSettingsSection() {
       name: page.name,
       url: page.url,
       visibility: page.visibility,
+      openMode: page.openMode,
       svg: decodeCustomSidebarIconDataUrl(page.iconDataUrl),
     } : createCustomSidebarPageDraft());
     setCustomSidebarDialogOpen(true);
@@ -3384,14 +3390,14 @@ function PersonalizationSettingsSection() {
 
   const handleSaveCustomSidebarPage = () => {
     const name = customSidebarDraft.name.trim();
-    const url = customSidebarDraft.url.trim();
+    const url = normalizeCustomSidebarUrl(customSidebarDraft.url);
     const svg = customSidebarDraft.svg.trim();
     if (!name) {
       toast.error("请填写菜单名称");
       return;
     }
     if (!isValidCustomSidebarUrl(url)) {
-      toast.error("页面 URL 必须是有效的 HTTP/HTTPS 地址");
+      toast.error("请输入有效的 HTTP/HTTPS 地址或面板路径（例如 /monitor）");
       return;
     }
     if (svg && !isSafeCustomSidebarSvg(svg)) {
@@ -3403,6 +3409,7 @@ function PersonalizationSettingsSection() {
       name: name.slice(0, 64),
       url,
       visibility: customSidebarDraft.visibility,
+      openMode: customSidebarDraft.openMode,
       ...(svg ? { iconDataUrl: encodeSvgDataUrl(svg) } : {}),
     };
     const exists = customSidebarPages.some((item) => item.id === page.id);
@@ -3536,7 +3543,7 @@ function PersonalizationSettingsSection() {
               <PanelLeft className="h-4 w-4 text-primary" />
               自定义菜单
             </CardTitle>
-            <CardDescription>在左侧导航中嵌入常用页面。</CardDescription>
+            <CardDescription>在左侧导航中嵌入常用页面；禁止 iframe 的网站可改为新窗口打开。</CardDescription>
           </div>
           <Button
             type="button"
@@ -3565,6 +3572,9 @@ function PersonalizationSettingsSection() {
                       <p className="max-w-full truncate text-sm font-medium">{page.name}</p>
                       <Badge variant="outline" className="shrink-0 text-[10px]">
                         {page.visibility === "admin" ? "仅管理员" : "所有用户"}
+                      </Badge>
+                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                        {page.openMode === "external" ? "新窗口" : "嵌入"}
                       </Badge>
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-foreground" title={page.url}>{page.url}</p>
@@ -4059,7 +4069,7 @@ function PersonalizationSettingsSection() {
             <DialogTitle>
               {customSidebarPages.some((page) => page.id === customSidebarDraft.id) ? "编辑菜单项" : "新增菜单项"}
             </DialogTitle>
-            <DialogDescription>配置左侧导航名称、嵌入地址和可见范围。</DialogDescription>
+            <DialogDescription>配置左侧导航名称、页面地址、打开方式和可见范围。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 overflow-y-auto px-4 py-2 sm:px-6">
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
@@ -4100,6 +4110,24 @@ function PersonalizationSettingsSection() {
                 onChange={(event) => setCustomSidebarDraft((current) => ({ ...current, url: event.target.value }))}
                 placeholder="https://example.com/dashboard"
               />
+              <p className="text-xs text-muted-foreground">支持完整网址、裸域名和面板相对路径（例如 /monitor）。</p>
+            </div>
+            <div className="space-y-2">
+              <Label>打开方式</Label>
+              <Select
+                value={customSidebarDraft.openMode}
+                onValueChange={(openMode) => setCustomSidebarDraft((current) => ({
+                  ...current,
+                  openMode: openMode as CustomSidebarOpenMode,
+                }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CUSTOM_SIDEBAR_OPEN_MODES[0]}>面板内嵌入</SelectItem>
+                  <SelectItem value={CUSTOM_SIDEBAR_OPEN_MODES[1]}>新窗口打开</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">目标网站设置了 X-Frame-Options 或 CSP 时，请选择新窗口打开。</p>
             </div>
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">

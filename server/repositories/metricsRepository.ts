@@ -2422,6 +2422,58 @@ export async function getLatestTunnelLatencySeries(tunnelIds: number[]) {
   return grouped;
 }
 
+export async function getTunnelLatencyBranchSeriesForTotal(tunnelId: number, totalId: number) {
+  const db = await getDb();
+  const normalizedTunnelId = Number(tunnelId);
+  const normalizedTotalId = Number(totalId);
+  if (
+    !db
+    || !Number.isInteger(normalizedTunnelId)
+    || normalizedTunnelId <= 0
+    || !Number.isInteger(normalizedTotalId)
+    || normalizedTotalId <= 0
+  ) {
+    return [] as Array<{ seriesKey: string; seriesLabel: string | null; latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  }
+  const q = quoteIdentifier;
+  const totalSeries = `(s.${q("seriesKey")} IS NULL OR s.${q("seriesKey")} = '' OR s.${q("seriesKey")} = 'total')`;
+  const previousTotalSeries = `(previous.${q("seriesKey")} IS NULL OR previous.${q("seriesKey")} = '' OR previous.${q("seriesKey")} = 'total')`;
+  const rows = await queryRaw<{ seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+    `SELECT s.${q("seriesKey")} AS ${q("seriesKey")},
+            s.${q("seriesLabel")} AS ${q("seriesLabel")},
+            s.${q("latencyMs")} AS ${q("latencyMs")},
+            s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("recordedAt")} AS ${q("recordedAt")}
+       FROM ${q("tunnel_latency_stats")} s
+      WHERE s.${q("tunnelId")} = ?
+        AND s.${q("id")} > COALESCE((
+          SELECT MAX(previous.${q("id")})
+            FROM ${q("tunnel_latency_stats")} previous
+           WHERE previous.${q("tunnelId")} = ?
+             AND previous.${q("id")} < ?
+             AND ${previousTotalSeries}
+        ), 0)
+        AND s.${q("id")} < ?
+        AND NOT ${totalSeries}
+        AND EXISTS (
+          SELECT 1
+            FROM ${q("tunnel_latency_stats")} current_total
+           WHERE current_total.${q("id")} = ?
+             AND current_total.${q("tunnelId")} = ?
+             AND (current_total.${q("seriesKey")} IS NULL OR current_total.${q("seriesKey")} = '' OR current_total.${q("seriesKey")} = 'total')
+        )
+      ORDER BY s.${q("id")} ASC`,
+    [normalizedTunnelId, normalizedTunnelId, normalizedTotalId, normalizedTotalId, normalizedTotalId, normalizedTunnelId],
+  );
+  return rows.map((row) => ({
+    seriesKey: normalizeTunnelLatencySeriesKey(row.seriesKey),
+    seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
+    latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
+    isTimeout: rowBool(row.isTimeout),
+    recordedAt: rowDate(row.recordedAt),
+  }));
+}
+
 export async function getTunnelLatencySeries(
   tunnelId: number,
   opts: { since?: Date; limit?: number } = {}

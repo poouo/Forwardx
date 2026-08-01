@@ -169,6 +169,8 @@ export const users = table("users", {
   // ===== 流量管理字段 =====
   trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),           // 流量额度（字节），0 = 不限制
   trafficUsed: bigint("trafficUsed", { mode: "number" }).notNull().default(0),             // 已用流量（字节）
+  // 按量计费统计的显示基线；不修改按量计费累计/结算表。
+  trafficBillingResetBytes: bigint("trafficBillingResetBytes", { mode: "number" }).notNull().default(0),
   expiresAt: epoch("expiresAt"),               // 到期时间，null = 永不过期
   trafficAutoReset: boolean("trafficAutoReset").notNull().default(false), // 月度自动重置开关
   trafficResetDay: int("trafficResetDay").notNull().default(1),     // 每月重置日（1-28）

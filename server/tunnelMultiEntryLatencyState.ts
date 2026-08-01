@@ -5,10 +5,23 @@ export type TunnelEntryLatencyDetail = {
   isTimeout: boolean;
 };
 
+export type TunnelMultiEntryHopDetail = {
+  hopIndex: number;
+  hopCount: number;
+  fromHostId: number | null;
+  toHostId: number | null;
+  latencyMs: number | null;
+  isTimeout: boolean;
+  recordedAt: number;
+};
+
 type ProbeResult = {
   latencyMs: number | null;
   isTimeout: boolean;
   label: string;
+  fromHostId: number;
+  toHostId: number | null;
+  hopIndex: number;
   recordedAt: number;
 };
 
@@ -41,6 +54,14 @@ function normalizeHostIds(values: number[]) {
 function pathStateKey(tunnelId: number, pathKey?: string | null) {
   const path = String(pathKey || "default").trim().toLowerCase() || "default";
   return `${tunnelId}:${path}`;
+}
+
+export function clearTunnelMultiEntryLatencyState(tunnelId: number) {
+  const prefix = `${Number(tunnelId)}:`;
+  if (!Number.isInteger(Number(tunnelId)) || Number(tunnelId) <= 0) return;
+  for (const key of states.keys()) {
+    if (key.startsWith(prefix)) states.delete(key);
+  }
 }
 
 function expectedSignature(hostIds: number[]) {
@@ -118,6 +139,7 @@ export function recordTunnelMultiEntryLatency(input: {
   isTimeout: boolean;
   generation?: string | null;
   pathKey?: string | null;
+  toHostId?: number | null;
 }): TunnelMultiEntryLatencyAggregate | null {
   const tunnelId = Number(input.tunnelId);
   const sourceHostId = Number(input.sourceHostId);
@@ -157,6 +179,9 @@ export function recordTunnelMultiEntryLatency(input: {
     latencyMs: typeof input.latencyMs === "number" && input.latencyMs > 0 ? input.latencyMs : null,
     isTimeout: !!input.isTimeout || !(typeof input.latencyMs === "number" && input.latencyMs > 0),
     label: String(input.sourceLabel || "").trim().slice(0, 96),
+    fromHostId: sourceHostId,
+    toHostId: Number.isInteger(Number(input.toHostId)) && Number(input.toHostId) > 0 ? Number(input.toHostId) : null,
+    hopIndex,
     recordedAt: now,
   };
   if (hopIndex === 0) state.entryHops.set(sourceHostId, result);
@@ -192,4 +217,71 @@ export function getTunnelMultiEntryLatency(input: {
     return null;
   }
   return aggregateMultiEntryState(state, now);
+}
+
+/** Returns only the fresh entry and shared-hop samples actually reported by Agents. */
+export function getTunnelMultiEntryHopDetails(input: {
+  tunnelId: number;
+  expectedEntryHostIds: number[];
+  hopCount: number;
+  generation?: string | null;
+  pathKey?: string | null;
+  referenceAt?: number | Date | null;
+  maxAgeMs?: number;
+}) {
+  const tunnelId = Number(input.tunnelId);
+  const hopCount = Number(input.hopCount);
+  const expectedEntryHostIds = normalizeHostIds(input.expectedEntryHostIds);
+  if (!Number.isInteger(tunnelId) || tunnelId <= 0 || !Number.isInteger(hopCount) || hopCount <= 0 || expectedEntryHostIds.length < 2) return null;
+  const key = pathStateKey(tunnelId, input.pathKey);
+  const now = Date.now();
+  cleanExpiredStates(now);
+  const state = states.get(key);
+  if (!state) return null;
+  const generation = String(input.generation || state.generation).slice(0, 1024);
+  if (
+    state.generation !== generation
+    || state.hopCount !== hopCount
+    || expectedSignature(state.expectedEntryHostIds) !== expectedSignature(expectedEntryHostIds)
+  ) return null;
+  cleanExpiredResults(state, now);
+  const referenceAt = input.referenceAt instanceof Date
+    ? input.referenceAt.getTime()
+    : Number(input.referenceAt || 0);
+  const maxAgeMs = Math.max(1_000, Number(input.maxAgeMs || MULTI_ENTRY_PROBE_TTL_MS));
+  const isFresh = (recordedAt: number) => (
+    now - recordedAt <= maxAgeMs
+    && (referenceAt <= 0 || Math.abs(recordedAt - referenceAt) <= 30_000)
+  );
+  const sharedFirstSource = state.sharedHops.get(1)?.fromHostId || null;
+  const details: TunnelMultiEntryHopDetail[] = [];
+  for (const hostId of expectedEntryHostIds) {
+    const entry = state.entryHops.get(hostId);
+    if (!entry) continue;
+    if (!isFresh(entry.recordedAt)) return null;
+    details.push({
+      hopIndex: 0,
+      hopCount,
+      fromHostId: hostId,
+      toHostId: entry.toHostId || sharedFirstSource,
+      latencyMs: entry.latencyMs,
+      isTimeout: entry.isTimeout,
+      recordedAt: entry.recordedAt,
+    });
+  }
+  for (let hopIndex = 1; hopIndex < hopCount; hopIndex += 1) {
+    const shared = state.sharedHops.get(hopIndex);
+    if (!shared) continue;
+    if (!isFresh(shared.recordedAt)) return null;
+    details.push({
+      hopIndex,
+      hopCount,
+      fromHostId: shared.fromHostId || null,
+      toHostId: shared.toHostId || null,
+      latencyMs: shared.latencyMs,
+      isTimeout: shared.isTimeout,
+      recordedAt: shared.recordedAt,
+    });
+  }
+  return details.length > 0 ? details : null;
 }

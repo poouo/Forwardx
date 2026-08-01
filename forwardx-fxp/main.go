@@ -960,6 +960,8 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		}
 	}
 	counter := &trafficCounter{}
+	// Count the accepted FXP client session even when it carries no payload.
+	counter.connections.Store(1)
 	counter.in.Add(uint64(len(first)))
 	stopReporting := startTrafficReporter(cfg, counter)
 	defer stopReporting()
@@ -1389,6 +1391,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 			}
 		}
 		if startSession {
+			session.counter.connections.Store(1)
 			session.start()
 		}
 		session.enqueue(payload)

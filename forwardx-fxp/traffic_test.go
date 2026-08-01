@@ -30,22 +30,22 @@ func TestTrafficBatchRetainsFailedReportsAndAcknowledgesSuccess(t *testing.T) {
 	defer server.Close()
 
 	cfg := config{PanelURL: server.URL, Token: "traffic-test-token", RuleID: 42}
-	enqueueTraffic(cfg, 100, 200)
-	enqueueTraffic(cfg, 7, 11)
+	enqueueTraffic(cfg, 100, 200, 1)
+	enqueueTraffic(cfg, 7, 11, 2)
 	flushTrafficBatches()
 	snapshot := trafficBatchSnapshot()
 	key := trafficBatchKey{panelURL: server.URL, token: cfg.Token, producerID: fxpTrafficProducerID(cfg)}
-	if got := snapshot[key][42]; got.bytesIn != 107 || got.bytesOut != 211 {
+	if got := snapshot[key][42]; got.bytesIn != 107 || got.bytesOut != 211 || got.connections != 3 {
 		t.Fatalf("failed report was not retained: %+v", got)
 	}
 
 	// Bytes arriving after a failed request must not expand that in-flight
 	// request. The original report ID is retried first; new bytes form the next
 	// report only after it is acknowledged.
-	enqueueTraffic(cfg, 13, 17)
+	enqueueTraffic(cfg, 13, 17, 4)
 	retrySnapshot := trafficBatchPendingSnapshot()[key]
 	pending := retrySnapshot.byRule[42]
-	if pending.bytesIn != 107 || pending.bytesOut != 211 {
+	if pending.bytesIn != 107 || pending.bytesOut != 211 || pending.connections != 3 {
 		t.Fatalf("pending retry changed after new traffic: %+v", pending)
 	}
 	if retrySnapshot.reportID == "" {
@@ -55,7 +55,7 @@ func TestTrafficBatchRetainsFailedReportsAndAcknowledgesSuccess(t *testing.T) {
 	fail.Store(false)
 	flushTrafficBatches()
 	remaining := trafficBatchSnapshot()[key][42]
-	if remaining.bytesIn != 13 || remaining.bytesOut != 17 {
+	if remaining.bytesIn != 13 || remaining.bytesOut != 17 || remaining.connections != 4 {
 		t.Fatalf("new traffic was not retained for the next report: %+v", remaining)
 	}
 	if len(trafficPendingReports) != 0 {
@@ -79,6 +79,21 @@ func TestEqualTrafficBatchesUseDifferentReportIDs(t *testing.T) {
 	second := trafficBatchPendingSnapshot()[key]
 	if first.reportID == "" || second.reportID == "" || first.reportID == second.reportID {
 		t.Fatalf("equal traffic batches must have distinct report ids: %q %q", first.reportID, second.reportID)
+	}
+}
+
+func TestTrafficBatchKeepsConnectionOnlyDelta(t *testing.T) {
+	resetTrafficBatchesForTest()
+	t.Cleanup(resetTrafficBatchesForTest)
+	cfg := config{PanelURL: "http://panel.invalid", Token: "traffic-test-token", RuleID: 42}
+	key := trafficBatchKey{panelURL: cfg.PanelURL, token: cfg.Token, producerID: fxpTrafficProducerID(cfg)}
+
+	// A connection can be established before its first payload arrives. The
+	// report must still be queued instead of being dropped as an empty batch.
+	enqueueTraffic(cfg, 0, 0, 1)
+	pending := trafficBatchPendingSnapshot()[key]
+	if got := pending.byRule[42]; got.connections != 1 || got.bytesIn != 0 || got.bytesOut != 0 {
+		t.Fatalf("connection-only traffic was not retained: %+v", got)
 	}
 }
 

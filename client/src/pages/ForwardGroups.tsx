@@ -730,40 +730,43 @@ function ForwardGroupSelfTestDialog({
     const targetRemark = String(group?.remark || "").trim();
     const targetLabel = targetRemark || hostDisplayName(lastHost) || groupName;
     const targetMeta = targetLabel ? { label: targetLabel } : undefined;
-    if (targetMeta) {
-      addNodeMetaAliases(meta, [targetLabel, "目标", "目的节点"], targetMeta);
-    }
+    if (targetMeta) addNodeMetaAliases(meta, [targetLabel, "目标", "目的节点"], targetMeta);
     const plannedSegments: LinkTestPlannedSegment[] = [];
+    const hopCount = (entryMembers.length > 0 ? 1 : 0) + Math.max(0, members.length - 1);
     if (entryMembers.length > 0 && members[0]) {
       const firstChainHost = hostById?.get(Number(members[0].hostId || 0));
       entryMembers.forEach((entryMember: any) => {
+        const entryHostId = Number(entryMember.hostId || 0);
+        const firstChainHostId = Number(members[0].hostId || 0);
         const entryHost = hostById?.get(Number(entryMember.hostId || 0));
         plannedSegments.push({
           from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
           to: hostDisplayName(firstChainHost) || `主机 #${members[0].hostId || "-"}`,
+          fromHostId: entryHostId || null,
+          toHostId: firstChainHostId || null,
+          hopIndex: 0,
+          hopCount,
           fromMeta: meta[hostDisplayName(entryHost)] || meta[String(entryMember.hostId || "")],
           toMeta: meta[hostDisplayName(firstChainHost)] || meta[String(members[0].hostId || "")],
         });
       });
     }
     members.slice(0, -1).forEach((member: any, index: number) => {
+      const fromHostId = Number(member.hostId || 0);
+      const toHostId = Number(members[index + 1]?.hostId || 0);
       const fromHost = hostById?.get(Number(member.hostId || 0));
       const toHost = hostById?.get(Number(members[index + 1]?.hostId || 0));
       plannedSegments.push({
         from: hostDisplayName(fromHost) || `主机 #${member.hostId || "-"}`,
         to: hostDisplayName(toHost) || `主机 #${members[index + 1]?.hostId || "-"}`,
+        fromHostId: fromHostId || null,
+        toHostId: toHostId || null,
+        hopIndex: index + (entryMembers.length > 0 ? 1 : 0),
+        hopCount,
         fromMeta: meta[hostDisplayName(fromHost)] || meta[String(member.hostId || "")],
         toMeta: meta[hostDisplayName(toHost)] || meta[String(members[index + 1]?.hostId || "")],
       });
     });
-    if (members.length > 0) {
-      plannedSegments.push({
-        from: hostDisplayName(lastHost) || `主机 #${members[members.length - 1]?.hostId || "-"}`,
-        to: targetLabel,
-        fromMeta: meta[hostDisplayName(lastHost)] || meta[String(members[members.length - 1]?.hostId || "")],
-        toMeta: meta[targetLabel] || targetMeta,
-      });
-    }
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstEntryHost) || hostDisplayName(firstHost) || groupName,

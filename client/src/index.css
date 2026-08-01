@@ -746,13 +746,13 @@
 
   .group[data-collapsible="icon"] [data-sidebar="menu-button"],
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
-    transform-origin: center;
     transition:
-      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      width 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      height 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      padding 160ms cubic-bezier(0.22, 1, 0.36, 1),
       background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
       color 160ms cubic-bezier(0.22, 1, 0.36, 1),
       box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
-    will-change: transform;
   }
 
   .group[data-collapsible="icon"] [data-sidebar="menu-button"] .sidebar-nav-icon,
@@ -769,7 +769,6 @@
   .group[data-collapsible="icon"] [data-sidebar="menu-button"]:focus-visible,
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:hover,
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:focus-visible {
-    transform: translate3d(0, -1px, 0);
     box-shadow:
       0 10px 24px color-mix(in oklch, var(--foreground) 10%, transparent),
       0 0 0 1px color-mix(in oklch, var(--sidebar-border) 55%, transparent);
@@ -1112,8 +1111,7 @@
     transition:
       color 180ms ease-out,
       background-color 180ms ease-out,
-      transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-    will-change: transform;
+      box-shadow 180ms ease-out;
   }
 
   .action-menu-item > svg {
@@ -1132,7 +1130,7 @@
   .action-menu-item[data-highlighted] {
     color: var(--primary-foreground);
     background-color: var(--primary);
-    transform: translate(1px, -1px);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary-foreground) 18%, transparent);
   }
 
   .action-menu-item-destructive[data-highlighted] {
@@ -1143,10 +1141,6 @@
   @media (prefers-reduced-motion: reduce) {
     .action-menu-item {
       transition: none;
-    }
-
-    .action-menu-item[data-highlighted] {
-      transform: none;
     }
   }
 
@@ -1431,7 +1425,6 @@
   .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:hover,
   .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:focus-visible {
     transition: none;
-    transform: none;
   }
 
 }

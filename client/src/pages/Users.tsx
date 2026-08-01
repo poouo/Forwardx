@@ -524,10 +524,14 @@ function UsersContent() {
   });
 
   const resetTrafficMutation = trpc.users.resetTraffic.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      patchCachedUser(variables.userId, {
+        trafficUsed: 0,
+        trafficBillingUsed: 0,
+      });
       utils.users.list.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("流量已重置");
+      toast.success("流量统计已重置");
       setShowResetTraffic(false);
       setResetTrafficUserId(null);
       setResetTrafficUserName("");
@@ -1170,7 +1174,7 @@ function UsersContent() {
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => openResetTrafficDialog(u)}>
           <RotateCcw />
-          <span>重置流量</span>
+          <span>重置流量统计</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.twoFactorEnabled} onSelect={() => openRemoveTwoFactorDialog(u)}>
           <ShieldOff />
@@ -1283,6 +1287,7 @@ function UsersContent() {
           {pagedUsers.map((u: any) => {
             const limit = Number(u.trafficLimit) || 0;
             const used = Number(u.trafficUsed) || 0;
+            const billingUsed = Number(u.trafficBillingUsed) || 0;
             const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
             const isExpired = u.expiresAt && new Date(u.expiresAt) <= new Date();
             const isOverLimit = limit > 0 && used >= limit;
@@ -1314,7 +1319,7 @@ function UsersContent() {
                 <div className="mt-3 grid gap-2">
                   <div className="rounded-md bg-muted/25 p-2">
                     <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="text-muted-foreground">流量</span>
+                      <span className="shrink-0 text-muted-foreground">套餐/分配</span>
                       <span className="min-w-0 truncate text-right tabular-nums">
                         {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : "不限"}
                       </span>
@@ -1327,6 +1332,10 @@ function UsersContent() {
                       {u.trafficAutoReset && (
                         <Badge variant="outline" className="h-5 px-1.5 text-[10px]">每月{u.trafficResetDay || 1}日重置</Badge>
                       )}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-xs">
+                      <span className="shrink-0 text-muted-foreground">按量计费</span>
+                      <span className="min-w-0 truncate text-right font-medium tabular-nums">{formatBytes(billingUsed)}</span>
                     </div>
                   </div>
 
@@ -1413,7 +1422,7 @@ function UsersContent() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[60px] whitespace-nowrap">ID</TableHead>
                     <TableHead className="w-[260px] whitespace-nowrap">用户</TableHead>
-                    <TableHead className="w-[170px] whitespace-nowrap">流量使用</TableHead>
+                    <TableHead className="w-[210px] whitespace-nowrap">流量使用</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap xl:table-cell">Telegram</TableHead>
                     <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
@@ -1427,6 +1436,7 @@ function UsersContent() {
                   {pagedUsers.map((u: any) => {
                     const limit = Number(u.trafficLimit) || 0;
                     const used = Number(u.trafficUsed) || 0;
+                    const billingUsed = Number(u.trafficBillingUsed) || 0;
                     const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
                     const isExpired = u.expiresAt && new Date(u.expiresAt) <= new Date();
                     const isOverLimit = limit > 0 && used >= limit;
@@ -1471,14 +1481,17 @@ function UsersContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <div className="space-y-1 min-w-[140px]">
-                            <div className="flex items-center gap-1">
-                              {isOverLimit && (
-                                <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5">超额</Badge>
-                              )}
-                              <span className="text-xs text-muted-foreground tabular-nums">
-                                {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : "不限"}
-                              </span>
+                          <div className="min-w-[190px] space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="shrink-0 text-[10px] text-muted-foreground">套餐/分配</span>
+                              <div className="flex min-w-0 items-center justify-end gap-1">
+                                {isOverLimit && (
+                                  <Badge variant="destructive" className="h-3.5 shrink-0 px-1 py-0 text-[9px]">超额</Badge>
+                                )}
+                                <span className="truncate text-xs tabular-nums">
+                                  {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : "不限"}
+                                </span>
+                              </div>
                             </div>
                             {limit > 0 && (
                               <Progress
@@ -1486,6 +1499,10 @@ function UsersContent() {
                                 className={`h-1 ${isOverLimit ? "[&>div]:bg-destructive" : ""}`}
                               />
                             )}
+                            <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-1.5">
+                              <span className="shrink-0 text-[10px] text-muted-foreground">按量计费</span>
+                              <span className="truncate text-xs font-medium tabular-nums">{formatBytes(billingUsed)}</span>
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell className="hidden xl:table-cell">
@@ -1836,9 +1853,9 @@ function UsersContent() {
       {/* Reset Traffic Dialog */}
       <Dialog open={showResetTraffic} onOpenChange={setShowResetTraffic}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>重置流量</DialogTitle>
+          <DialogTitle>重置流量统计</DialogTitle>
           <DialogDescription>
-            确认重置 "{resetTrafficUserName}" 的已用流量？
+            确认重置 "{resetTrafficUserName}" 的套餐/分配流量和按量计费流量统计？已产生的扣费记录不会撤销。
           </DialogDescription>
           <DialogFooter>
             <Button

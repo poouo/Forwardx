@@ -12,7 +12,7 @@ import {
   type LatencyTimeRangeHours,
 } from "@/components/LatencyTimeRangeSelect";
 import type { LinkCreateType } from "@/components/LinkCreateTypeSelector";
-import { LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
+import { getLinkTestDetailEndpointIds, LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1639,6 +1639,7 @@ function TunnelSelfTestDialog({
     });
     const firstHostId = Number(hopIds[0] || 0);
     const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
+    const hopCount = Math.max(0, hopIds.length - 1);
     const nodeMetaFor = (host: any, hostId: number) => meta[hostDisplayName(host)] || meta[String(hostId)] || undefined;
     let plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
       const nextHostId = Number(hopIds[index + 1] || 0);
@@ -1647,6 +1648,10 @@ function TunnelSelfTestDialog({
       return {
         from: labelForHostId(Number(hostId)),
         to: labelForHostId(nextHostId),
+        fromHostId: Number(hostId) || null,
+        toHostId: nextHostId || null,
+        hopIndex: index,
+        hopCount,
         fromMeta: nodeMetaFor(fromHost, Number(hostId)),
         toMeta: nodeMetaFor(toHost, nextHostId),
       };
@@ -1666,6 +1671,10 @@ function TunnelSelfTestDialog({
         return {
           from: labelForHostId(entryHostId),
           to: nextLabel,
+          fromHostId: entryHostId || null,
+          toHostId: nextHostId || null,
+          hopIndex: 0,
+          hopCount,
           fromMeta: nodeMetaFor(entryHost, entryHostId),
           toMeta: nodeMetaFor(nextHost, nextHostId),
         };
@@ -1677,6 +1686,10 @@ function TunnelSelfTestDialog({
         return {
           from: labelForHostId(Number(hostId)),
           to: labelForHostId(nextRestHostId),
+          fromHostId: Number(hostId) || null,
+          toHostId: nextRestHostId || null,
+          hopIndex: index + 1,
+          hopCount,
           fromMeta: nodeMetaFor(fromHost, Number(hostId)),
           toMeta: nodeMetaFor(toHost, nextRestHostId),
         };
@@ -1728,16 +1741,13 @@ function TunnelSelfTestDialog({
       });
       const detailByTarget = new Map<string, any>();
       const detailByHostId = new Map<number, any>();
-      const detailByIndex = new Map<number, any>();
       (parsedMessage.details || []).forEach((detail: any, index: number) => {
         const route = String(detail?.routeLabel || detail?.hopLabel || "").trim();
         const match = route.match(/->\s*(.+)$/);
         const target = String(match?.[1] || "").trim();
         if (target) detailByTarget.set(target.toLowerCase(), { detail, index });
-        const idMatch = String(detail?.hopLabel || "").match(/->\s*(\d+)\s*$/);
-        const targetHostId = Number(idMatch?.[1] || 0);
+        const targetHostId = Number(getLinkTestDetailEndpointIds(detail).toHostId || 0);
         if (targetHostId > 0) detailByHostId.set(targetHostId, { detail, index });
-        detailByIndex.set(index, { detail, index });
       });
       const latestSeries = Array.isArray(tunnel?.latestLatencySeries) ? tunnel.latestLatencySeries : [];
       const latestSeriesByKey = new Map<string, any>();
@@ -1745,10 +1755,9 @@ function TunnelSelfTestDialog({
         const key = String(item?.seriesKey || "").trim().toLowerCase();
         if (key) latestSeriesByKey.set(key, item);
       });
-      const detailForExitRow = (row: { hostId: number; label: string }, index: number) => (
+      const detailForExitRow = (row: { hostId: number; label: string }) => (
         detailByHostId.get(row.hostId)
         || detailByTarget.get(row.label.toLowerCase())
-        || detailByIndex.get(index)
         || null
       );
       const latestForExitRow = (index: number) => (
@@ -1763,7 +1772,7 @@ function TunnelSelfTestDialog({
           </div>
           <div className="space-y-1.5">
             {exitRows.map((row, index) => {
-              const detailRecord = detailForExitRow(row, index);
+              const detailRecord = detailForExitRow(row);
               const detail = detailRecord?.detail;
               const latest = latestForExitRow(index);
               const latestLatency = typeof latest?.latencyMs === "number" && Number.isFinite(latest.latencyMs) ? Number(latest.latencyMs) : null;
@@ -1817,6 +1826,10 @@ function TunnelSelfTestDialog({
       const branchSegments: LinkTestPlannedSegment[] = [{
         from: entryLabel,
         to: hostDisplayName(primaryExitHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
+        fromHostId: firstHostId || null,
+        toHostId: lastHostId || null,
+        hopIndex: 0,
+        hopCount: 1,
         fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
         toMeta: meta[hostDisplayName(primaryExitHost)] || meta[String(lastHostId)] || undefined,
         groupKey: branchGroupKey,
@@ -1829,6 +1842,10 @@ function TunnelSelfTestDialog({
         branchSegments.push({
           from: entryLabel,
           to: hostDisplayName(exitHost) || `主机${exitHostId}`,
+          fromHostId: firstHostId || null,
+          toHostId: exitHostId || null,
+          hopIndex: 0,
+          hopCount: 1,
           fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
           toMeta: meta[hostDisplayName(exitHost)] || meta[String(exitHostId)] || undefined,
           groupKey: branchGroupKey,

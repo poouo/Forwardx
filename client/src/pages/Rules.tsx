@@ -4673,24 +4673,29 @@ function RulesContent() {
       .map((hostId: number) => hostForRouteId(Number(hostId)))
       .filter(Boolean);
     const plannedSegments: LinkTestPlannedSegment[] = [];
+    const isChainRule = !!chainGroup && isForwardChainGroup(chainGroup);
+    const routeHopCount = Math.max(0, routeHostIds.length - 1);
+    const pathHopCount = isChainRule
+      ? (chainEntryMembers.length > 0 ? 1 : 0) + routeHopCount + 1
+      : routeHopCount;
     if (chainEntryMembers.length > 0 && routeHosts[0]) {
       const firstChainHost = routeHosts[0];
+      const firstChainHostId = Number(routeHostIds[0] || 0);
       chainEntryMembers.forEach((entryMember: any) => {
-        const entryHost = hostForRouteId(Number(entryMember.hostId || 0));
+        const entryHostId = Number(entryMember.hostId || 0);
+        const entryHost = hostForRouteId(entryHostId);
         plannedSegments.push({
           from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
           to: hostDisplayName(firstChainHost),
+          fromHostId: entryHostId || null,
+          toHostId: firstChainHostId || null,
+          hopIndex: 0,
+          hopCount: pathHopCount,
           fromMeta: meta[hostDisplayName(entryHost)] || meta[String(entryMember.hostId || "")],
           toMeta: meta[hostDisplayName(firstChainHost)],
         });
       });
     }
-    const tunnelParsedMessage = tunnel ? parseLinkTestMessage((tunnel as any).lastTestMessage) : null;
-    const tunnelTestStatus = String((tunnel as any)?.lastTestStatus || "");
-    const tunnelDetails = tunnelTestStatus !== "pending" && tunnelTestStatus !== "running"
-      ? (tunnelParsedMessage?.details || [])
-        .filter((detail) => !detail.pending && (detail.success || detail.message || typeof detail.latencyMs === "number"))
-      : [];
     const tunnelLatencyMs = typeof (tunnel as any)?.latestLatencyMs === "number" && Number.isFinite((tunnel as any).latestLatencyMs)
       ? Number((tunnel as any).latestLatencyMs)
       : typeof (tunnel as any)?.lastLatencyMs === "number" && Number.isFinite((tunnel as any).lastLatencyMs)
@@ -4704,28 +4709,26 @@ function RulesContent() {
     const createTunnelPlannedSegment = (
       fromHostId: number,
       toHostId: number,
-      tunnelDetail: any,
       useTunnelLatencyFallback: boolean,
+      hopIndex: number,
     ): LinkTestPlannedSegment => ({
       from: labelForRouteHostId(fromHostId),
       to: labelForRouteHostId(toHostId),
+      fromHostId: fromHostId || null,
+      toHostId: toHostId || null,
+      hopIndex,
+      hopCount: pathHopCount,
       fromMeta: nodeMetaForHostId(fromHostId),
       toMeta: nodeMetaForHostId(toHostId),
-      success: tunnelDetail
-        ? !!tunnelDetail.success
-        : tunnelLatencyMs !== null && useTunnelLatencyFallback
-          ? true
-          : tunnelLatencyIsTimeout
-            ? false
-            : undefined,
-      latencyMs: tunnelDetail && tunnelDetail.success && typeof tunnelDetail.latencyMs === "number"
-        ? tunnelDetail.latencyMs
-        : tunnelLatencyMs !== null && useTunnelLatencyFallback
-          ? tunnelLatencyMs
-          : null,
-      message: tunnelDetail?.message || (tunnelLatencyIsTimeout ? "隧道段失败" : null),
-      method: tunnelDetail?.method || null,
-      pending: tunnelDetail?.pending || false,
+      success: tunnelLatencyMs !== null && useTunnelLatencyFallback
+        ? true
+        : tunnelLatencyIsTimeout && useTunnelLatencyFallback
+          ? false
+          : undefined,
+      latencyMs: tunnelLatencyMs !== null && useTunnelLatencyFallback ? tunnelLatencyMs : null,
+      message: tunnelLatencyIsTimeout && useTunnelLatencyFallback ? "隧道段失败" : null,
+      method: null,
+      pending: false,
     });
     const tunnelEntryHostIds = tunnel
       ? Array.from(new Set([
@@ -4738,12 +4741,10 @@ function RulesContent() {
       const lastHostId = Number(routeHostIds[routeHostIds.length - 1] || (tunnel as any).exitHostId || 0);
       const restRouteHostIds = routeHostIds.filter((hostId: number) => !tunnelEntryHostIds.includes(Number(hostId)));
       const nextHostId = Number(restRouteHostIds[0] || lastHostId || (tunnel as any).exitHostId || 0);
-      let detailIndex = 0;
       if (nextHostId > 0) {
         tunnelEntryHostIds.forEach((entryHostId) => {
           if (entryHostId !== nextHostId) {
-            plannedSegments.push(createTunnelPlannedSegment(entryHostId, nextHostId, tunnelDetails[detailIndex], false));
-            detailIndex += 1;
+            plannedSegments.push(createTunnelPlannedSegment(entryHostId, nextHostId, false, 0));
           }
         });
       }
@@ -4751,10 +4752,9 @@ function RulesContent() {
         plannedSegments.push(createTunnelPlannedSegment(
           Number(restRouteHostIds[index]),
           Number(restRouteHostIds[index + 1]),
-          tunnelDetails[detailIndex],
           false,
+          index + 1,
         ));
-        detailIndex += 1;
       }
     } else {
       for (let index = 0; index < routeHostIds.length - 1; index += 1) {
@@ -4762,16 +4762,21 @@ function RulesContent() {
         plannedSegments.push(createTunnelPlannedSegment(
           Number(routeHostIds[index]),
           Number(routeHostIds[index + 1]),
-          tunnelDetails[index],
-          singleTunnelSegment || index === 0,
+          singleTunnelSegment,
+          index + (chainEntryMembers.length > 0 ? 1 : 0),
         ));
       }
     }
     const exitHostForTarget = routeHosts[routeHosts.length - 1] || sourceHost;
     if (exitHostForTarget) {
+      const exitHostId = Number(exitHostForTarget.id || routeHostIds[routeHostIds.length - 1] || 0);
       plannedSegments.push({
         from: hostDisplayName(exitHostForTarget),
         to: ruleLabel,
+        fromHostId: exitHostId || null,
+        toHostId: Number(targetHost?.id || 0) || null,
+        hopIndex: isChainRule ? Math.max(0, pathHopCount - 1) : null,
+        hopCount: isChainRule ? pathHopCount : null,
         fromMeta: meta[hostDisplayName(exitHostForTarget)],
         toMeta: meta[ruleLabel] || meta[targetText] || meta[targetIp],
       });
@@ -8398,6 +8403,7 @@ function SelfTestDialog({
           targetLabel={targetLabel}
           nodeMeta={nodeMeta}
           plannedSegments={plannedSegments}
+          ignorePlannedResultsWhenDetailsPresent
           compactFrom={3}
           roomyNodes
           mobileStacked

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -388,6 +389,18 @@ func TestForcedRuntimeSyncCannotBeAdoptedFromOldSuccessRecord(t *testing.T) {
 	ordinary := action{StatusType: "runtime", ForwardType: "nginx-runtime-sync"}
 	if !desiredActionRecordConsistent(ordinary, nil) {
 		t.Fatal("ordinary runtime action lost its idempotent record behavior")
+	}
+	missingManagedConfig := action{
+		Op:          "apply",
+		StatusType:  "runtime",
+		ForwardType: "gost-runtime-sync",
+		ManagedConfigs: []managedConfigSpec{{
+			Path:        filepath.Join(t.TempDir(), "missing.json"),
+			ServiceName: runtimeServiceName,
+		}},
+	}
+	if desiredActionRecordConsistent(missingManagedConfig, nil) {
+		t.Fatal("runtime action adopted an old success record after its managed config disappeared")
 	}
 }
 

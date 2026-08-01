@@ -98,6 +98,7 @@ const tables: TableDef[] = [
       c("manualGostRateLimitIn", "int", { notNull: true, default: 0 }), c("manualGostRateLimitOut", "int", { notNull: true, default: 0 }),
       c("manualTrafficLimit", "bigint", { notNull: true, default: 0 }), c("manualExpiresAt", "epoch"),
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficUsed", "bigint", { notNull: true, default: 0 }),
+      c("trafficBillingResetBytes", "bigint", { notNull: true, default: 0 }),
       c("expiresAt", "epoch"), c("trafficAutoReset", "bool", { notNull: true, default: false }),
       c("trafficResetDay", "int", { notNull: true, default: 1 }), c("lastTrafficReset", "epoch"),
       c("telegramId", "text"), c("telegramUsername", "text"), c("telegramFirstName", "text"), c("telegramLastName", "text"),

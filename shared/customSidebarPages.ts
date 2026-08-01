@@ -4,27 +4,54 @@ export const MAX_CUSTOM_SIDEBAR_ICON_DATA_URL_LENGTH = 40 * 1024;
 
 export const CUSTOM_SIDEBAR_VISIBILITIES = ["all", "admin"] as const;
 export type CustomSidebarVisibility = typeof CUSTOM_SIDEBAR_VISIBILITIES[number];
+export const CUSTOM_SIDEBAR_OPEN_MODES = ["embed", "external"] as const;
+export type CustomSidebarOpenMode = typeof CUSTOM_SIDEBAR_OPEN_MODES[number];
 
 export type CustomSidebarPage = {
   id: string;
   name: string;
   url: string;
   visibility: CustomSidebarVisibility;
+  /** Whether the panel should render the URL in an iframe or open it in a new tab. */
+  openMode: CustomSidebarOpenMode;
   iconDataUrl?: string;
 };
 
 const CUSTOM_PAGE_ID_RE = /^[a-z0-9][a-z0-9._:-]{0,95}$/i;
 const SVG_DATA_URL_RE = /^data:image\/svg\+xml;base64,([a-z0-9+/=]+)$/i;
 
-export function isValidCustomSidebarUrl(value: unknown): value is string {
+/**
+ * Normalize a custom menu URL while keeping panel-relative paths usable.
+ * Bare host names are treated as HTTPS URLs so they do not become relative
+ * links when used as an iframe source.
+ */
+export function normalizeCustomSidebarUrl(value: unknown) {
   const text = String(value || "").trim();
-  if (!text || text.length > 1000) return false;
-  try {
-    const url = new URL(text);
-    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
-  } catch {
-    return false;
+  if (!text || text.length > 1000 || /[\u0000-\u001f\u007f]/.test(text)) return "";
+  if (text.startsWith("/") && !text.startsWith("//")) {
+    try {
+      const parsed = new URL(text, "https://forwardx.invalid");
+      return parsed.origin === "https://forwardx.invalid" ? text : "";
+    } catch {
+      return "";
+    }
   }
+  const candidate = text.startsWith("//")
+    ? `https:${text}`
+    : /^[a-z][a-z\d+.-]*:\/\//i.test(text)
+      ? text
+      : `https://${text}`;
+  try {
+    const url = new URL(candidate);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return "";
+    return candidate;
+  } catch {
+    return "";
+  }
+}
+
+export function isValidCustomSidebarUrl(value: unknown): value is string {
+  return !!normalizeCustomSidebarUrl(value);
 }
 
 export function decodeCustomSidebarIconDataUrl(value: unknown) {
@@ -74,7 +101,7 @@ export function normalizeCustomSidebarPages(value: unknown): CustomSidebarPage[]
     const source = item as Record<string, unknown>;
     const id = String(source.id || "").trim().slice(0, 96);
     const name = String(source.name || "").trim().slice(0, 64);
-    const url = String(source.url || "").trim().slice(0, 1000);
+    const url = normalizeCustomSidebarUrl(String(source.url || "").slice(0, 1000));
     if (!CUSTOM_PAGE_ID_RE.test(id) || seen.has(id) || !name || !isValidCustomSidebarUrl(url)) continue;
     seen.add(id);
     const iconDataUrl = isSafeCustomSidebarIconDataUrl(source.iconDataUrl)
@@ -85,6 +112,7 @@ export function normalizeCustomSidebarPages(value: unknown): CustomSidebarPage[]
       name,
       url,
       visibility: source.visibility === "all" ? "all" : "admin",
+      openMode: source.openMode === "external" ? "external" : "embed",
       ...(iconDataUrl ? { iconDataUrl } : {}),
     });
   }

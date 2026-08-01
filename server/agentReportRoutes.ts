@@ -27,6 +27,7 @@ import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
+import { exitGroupUsesMultipleExits } from "../shared/exitStrategy";
 import { isRuleLatencyReportMethodCompatible } from "../shared/latencyProbe";
 import { completeSupportBundleHost } from "./supportBundle";
 import {
@@ -237,6 +238,51 @@ async function tunnelEntryHostIds(tunnel: any) {
     }
   }
   return ids;
+}
+
+export function tunnelProbeTargetHostId(
+  tunnel: any,
+  hops: any[],
+  exitNodes: any[],
+  report: AgentTunnelTcpingResult,
+  seriesKey = "",
+) {
+  const hopIndex = Number(report.hopIndex);
+  const hopCount = Number(report.hopCount);
+  if (Number.isInteger(hopIndex) && Number.isInteger(hopCount) && hopCount > 0) {
+    if (isTunnelRelayFailover(tunnel, hops) && /^relay-\d+$/.test(seriesKey)) {
+      const relayIndex = Number(seriesKey.slice("relay-".length)) - 1;
+      const relay = tunnelRelayCandidates(hops)[relayIndex] as any;
+      if (relay && hopIndex === 0) return Number(relay.hostId || 0) || null;
+      if (relay && hopIndex === 1) return Number(hops[hops.length - 1]?.hostId || 0) || null;
+    }
+    return Number(hops[hopIndex + 1]?.hostId || 0) || null;
+  }
+  if (seriesKey === "primary") return Number(tunnel?.exitHostId || 0) || null;
+  const exitMatch = seriesKey.match(/^exit-(\d+)$/);
+  if (exitMatch && tunnel?.loadBalanceEnabled && exitGroupUsesMultipleExits(tunnel?.loadBalanceStrategy)) {
+    const exitIndex = Number(exitMatch[1]) - 2;
+    const activeExits = [...(exitNodes || [])]
+      .filter((node) => node?.isEnabled !== false && Number(node?.hostId || 0) > 0 && Number(node?.listenPort || 0) > 0)
+      .sort((left, right) => Number(left?.seq || 0) - Number(right?.seq || 0));
+    if (exitIndex >= 0) return Number(activeExits[exitIndex]?.hostId || 0) || null;
+  }
+  return Number(tunnel?.exitHostId || 0) || null;
+}
+
+type TunnelRelayAggregate = {
+  key: string;
+  label: string;
+  aggregate: { success: boolean; latencyMs: number | null } | null;
+};
+
+export function readyTunnelRelayAggregates(aggregates: TunnelRelayAggregate[]) {
+  const completed = aggregates.filter((item): item is TunnelRelayAggregate & {
+    aggregate: { success: boolean; latencyMs: number | null };
+  } => item.aggregate !== null);
+  return completed.some((item) => item.aggregate.success) || completed.length === aggregates.length
+    ? completed
+    : [];
 }
 
 export async function validateTunnelProbeSource(
@@ -802,7 +848,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       rows.push(report);
       tunnelResultsById.set(tunnelId, rows);
     }
-    await mapWithConcurrency(Array.from(tunnelResultsById.entries()), 12, async ([tunnelId, reports]) => {
+    await mapWithConcurrency(Array.from(tunnelResultsById.entries()), 12, async ([tunnelId, reports]) => withKeyedTaskLock(`tunnel-latency:${tunnelId}`, async () => {
       const [tunnel, hops, exitNodes] = await Promise.all([
         db.getTunnelById(tunnelId),
         db.getTunnelHops(tunnelId),
@@ -837,6 +883,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
             isTimeout,
             generation: multiEntryGeneration,
             pathKey: seriesKey || "default",
+            toHostId: tunnelProbeTargetHostId(tunnel, hops, exitNodes, report, seriesKey),
           });
           if (!aggregate) continue;
           const recordedAt = new Date();
@@ -889,10 +936,23 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
             generation: topologyKey,
             pathKey: seriesKey,
             allowEarlyFailure: true,
+            fromHostId: Number(host.id),
+            toHostId: tunnelProbeTargetHostId(tunnel, hops, exitNodes, report, seriesKey),
           });
           continue;
         }
         if (seriesKey) {
+          recordTunnelAutoHopLatency({
+            tunnelId,
+            hopIndex: hasHop ? hopIndex : 0,
+            hopCount: hasHop ? hopCount : 1,
+            latencyMs: latencyValue,
+            isTimeout,
+            generation: topologyKey,
+            pathKey: seriesKey,
+            fromHostId: Number(host.id),
+            toHostId: tunnelProbeTargetHostId(tunnel, hops, exitNodes, report, seriesKey),
+          });
           const label = cleanTunnelSeriesLabel(report.seriesLabel, seriesKey === "primary" ? "主出口" : seriesKey);
           branchByKey.set(seriesKey, { key: seriesKey, label, latencyMs: latencyValue, isTimeout });
           continue;
@@ -905,6 +965,8 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
             latencyMs: latencyValue,
             isTimeout,
             generation: topologyKey,
+            fromHostId: Number(host.id),
+            toHostId: tunnelProbeTargetHostId(tunnel, hops, exitNodes, report, seriesKey),
           });
           if (!aggregate) continue;
           await db.insertTunnelLatencyStat({
@@ -950,13 +1012,14 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
               : getTunnelAutoHopAggregate(tunnelId, 2, topologyKey, key, true),
           };
         });
-        if (aggregates.some((item) => item.aggregate !== null)) {
-          for (const item of aggregates) {
+        const readyAggregates = readyTunnelRelayAggregates(aggregates);
+        if (readyAggregates.length > 0) {
+          for (const item of readyAggregates) {
             branchByKey.set(item.key, {
               key: item.key,
               label: item.label,
-              latencyMs: item.aggregate?.success ? item.aggregate.latencyMs : null,
-              isTimeout: !item.aggregate?.success,
+              latencyMs: item.aggregate.success ? item.aggregate.latencyMs : null,
+              isTimeout: !item.aggregate.success,
             });
           }
         }
@@ -985,7 +1048,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         recordedAt,
       }, { preserveMessage: true });
       if (!summary.unavailable && !tunnel.isRunning) await db.updateTunnelRunningStatus(tunnelId, true);
-    });
+    }));
     const needsForwardGroupHealthTopology = forwardGroupResults.some((report) => {
       const type = String(report.probeType || "");
       return type === "china" || type === "entry";

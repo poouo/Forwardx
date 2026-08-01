@@ -31,7 +31,7 @@ const DropdownMenuItem = React.forwardRef<React.ComponentRef<typeof DropdownMenu
     ref={ref}
     className={cn(
       "action-menu-item relative flex min-h-9 cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium leading-5 outline-none",
-      "active:scale-[0.99] data-[highlighted]:font-semibold data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
+      "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
       variant === "destructive" && "action-menu-item-destructive",
       inset && "pl-8",
       className,

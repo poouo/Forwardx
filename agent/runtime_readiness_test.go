@@ -236,6 +236,23 @@ func TestFXPListenerConflictsAreProtocolAware(t *testing.T) {
 	}
 }
 
+func TestFXPTransportVersionForLocalTunnelDistinguishesV1AndV2(t *testing.T) {
+	const tunnelID = 12007
+	const port = 52007
+	v1 := fxpSpec{Role: "relay", TransportVersion: "v1", TunnelID: tunnelID, ListenPort: port, Protocol: "tcp"}
+	v2 := fxpSpec{Role: "exit", TransportVersion: "v2", TunnelID: tunnelID + 1, ListenPort: port + 1, Protocol: "both"}
+
+	if got := fxpTransportVersionForLocalTunnel(tunnelID, port, []fxpSpec{v1, v2}); got != "v1" {
+		t.Fatalf("V1 tunnel transport=%q, want v1", got)
+	}
+	if got := fxpTransportVersionForLocalTunnel(v2.TunnelID, v2.ListenPort, []fxpSpec{v1, v2}); got != "v2" {
+		t.Fatalf("V2 tunnel transport=%q, want v2", got)
+	}
+	if got := fxpTransportVersionForLocalTunnel(tunnelID, port, []fxpSpec{{Role: "entry", TransportVersion: "v2", TunnelID: tunnelID, ListenPort: port}}); got != "" {
+		t.Fatalf("entry-only runtime incorrectly identified as tunnel transport=%q", got)
+	}
+}
+
 func TestLocalGostRuleReadinessDistinguishesTunnelTransportFromEntryProtocols(t *testing.T) {
 	const port = 61083
 	snapshot := &runtimeListenSnapshot{

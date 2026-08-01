@@ -512,9 +512,9 @@ func restoreWireGuardReplacementLocked(spec wireGuardSpec, fxpSpecs []fxpSpec) e
 
 func stopWireGuardRuntime(tunnelID int) {
 	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
 	stopFXPByTunnelTransport(tunnelID, forwardXWireGuardVersion)
 	stopWireGuardRuntimeOnly(tunnelID)
-	fxpControlMu.Unlock()
 	removePersistedWireGuardSpec(tunnelID)
 }
 

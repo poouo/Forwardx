@@ -12,6 +12,8 @@
 链路管理 -> 隧道
 ```
 
+![隧道页面展示链路拓扑、类型和当前运行状态](./images/tunnels-overview.png)
+
 ## 隧道类型
 
 | 类型 | 说明 |
@@ -77,7 +79,7 @@ Nginx 仅保留 Stream 模式：
 
 ## mimic UDP 混淆
 
-mimic 工作在物理网卡 XDP/TC 层，需要 Linux 6.1+ 内核，来自 [hack3ric/mimic](https://github.com/hack3ric/mimic)（GPL-2.0-only，v0.7.1）：
+mimic 在物理网卡使用 XDP ingress 与 TC egress，需要 Linux 6.1+ 内核；Agent 会在 XDP `native` 与 `skb` 模式之间自动回退。mimic 来自 [hack3ric/mimic](https://github.com/hack3ric/mimic)（GPL-2.0-only，v0.7.1）：
 
 - V1 对 FXP UDP 承载应用 `remote/local` filter。
 - V2 对 WireGuard 外层 UDP 端口应用 filter。

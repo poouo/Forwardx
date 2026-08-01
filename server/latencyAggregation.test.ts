@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  readyTunnelRelayAggregates,
   shouldAccountForwardRuleTraffic,
   summarizeTunnelBranches,
   trafficAccountingHostIds,
+  tunnelProbeTargetHostId,
   validateTunnelProbeSource,
 } from "./agentReportRoutes";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
@@ -142,6 +144,19 @@ test("tunnel relay paths aggregate independently and fail immediately", () => {
   assert.deepEqual(getTunnelAutoHopAggregate(tunnelId, 2, "relay-topology", "relay-2", true), { success: false, latencyMs: null });
 });
 
+test("tunnel relay summary waits for pending candidates after an early failure", () => {
+  const failed = { success: false, latencyMs: null };
+  const succeeded = { success: true, latencyMs: 25 };
+  assert.deepEqual(readyTunnelRelayAggregates([
+    { key: "relay-1", label: "relay 1", aggregate: failed },
+    { key: "relay-2", label: "relay 2", aggregate: null },
+  ]), []);
+  assert.deepEqual(readyTunnelRelayAggregates([
+    { key: "relay-1", label: "relay 1", aggregate: failed },
+    { key: "relay-2", label: "relay 2", aggregate: succeeded },
+  ]).map((item) => item.key), ["relay-1", "relay-2"]);
+});
+
 test("tunnel relay probe validation accepts every entry and its matching relay path", async () => {
   const tunnel = { id: 91003, isEnabled: true, mode: "forwardx", relayMode: "failover" };
   const hops = [
@@ -199,6 +214,24 @@ test("standard multi-hop probe validation accepts every configured entry for the
     targetPort: 10020,
     topologyKey: "multi-entry-hop",
   }, context), false);
+});
+
+test("direct multi-exit probes map each series to its actual exit host", () => {
+  const tunnel = {
+    entryHostId: 10,
+    exitHostId: 20,
+    loadBalanceEnabled: true,
+    loadBalanceStrategy: "round_robin",
+  };
+  const exitNodes = [
+    { seq: 0, hostId: 99, listenPort: 20099, isEnabled: false },
+    { seq: 2, hostId: 31, listenPort: 20031, isEnabled: true },
+    { seq: 1, hostId: 30, listenPort: 20030, isEnabled: true },
+  ];
+  const report = { tunnelId: 1 };
+  assert.equal(tunnelProbeTargetHostId(tunnel, [], exitNodes, report, "primary"), 20);
+  assert.equal(tunnelProbeTargetHostId(tunnel, [], exitNodes, report, "exit-2"), 30);
+  assert.equal(tunnelProbeTargetHostId(tunnel, [], exitNodes, report, "exit-3"), 31);
 });
 
 test("forward-chain hop aggregation never mixes topology generations", () => {

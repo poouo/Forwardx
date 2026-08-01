@@ -18,6 +18,8 @@ Agent 是安装在被管理服务器上的程序，负责执行转发规则、�
 
 **建议一个 Token 只绑定一台被控主机。** Token 泄露后，请在 Token 管理中删除或禁用旧 Token，再重新创建。
 
+![在 Token 管理中创建 Token 并获取 Agent 安装命令](./images/agent-token-management.png)
+
 ---
 
 ## 安装 Agent
@@ -58,7 +60,7 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install Y
 | 来源 | [hack3ric/mimic](https://github.com/hack3ric/mimic) |
 | 版本 | v0.7.1 |
 | 许可证 | GPL-2.0-only |
-| 内核要求 | Linux 6.1+（XDP/TC eBPF） |
+| 内核要求 | Linux 6.1+（XDP ingress + TC egress；XDP `native`/`skb` 自动回退） |
 
 ---
 

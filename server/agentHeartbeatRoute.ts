@@ -43,6 +43,7 @@ import {
   tunnelHopRuntimeForwardType,
   tunnelRuleRuntimeForwardType,
   tunnelRuntimeFamily,
+  isPassiveForwardXFirstHopMarker,
 } from "./tunnelRuntimePlan";
 import { effectiveTunnelProxyProtocolOptions, gostProxyProtocolMetadata, gostTunnelProxyProtocolPlan, resolveRuleProxyProtocolOptions } from "./gostProxyProtocol";
 import { planGostTunnelHopRelay, planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
@@ -102,6 +103,7 @@ import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 import { selectResolvedTargetIp } from "./dnsTargetResolution";
 import { buildForwardXMimicConfig } from "./mimicConfig";
 import { gateForwardRulesForRuntime } from "./linkAccessView";
+import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -154,7 +156,6 @@ const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
 const AGENT_GOST_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
 const AGENT_NGINX_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
 const AGENT_MIMIC_RUNTIME_RECONCILE_MS = 5 * 60 * 1000;
-const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
 const MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS = 5 * 60 * 1000;
@@ -337,6 +338,7 @@ type AgentLocalRuntimeTunnelState = {
   port: number;
   tunnelId: number;
   forwardType: string;
+  transportVersion?: "v1" | "v2";
   ready?: boolean;
 };
 type AgentLocalRuntimeServiceState = {
@@ -354,7 +356,6 @@ type AgentLocalRuntimeState = {
   services: AgentLocalRuntimeServiceState[];
 };
 const agentLocalRuntimeStateCache = new Map<number, { signature: string; state: AgentLocalRuntimeState; updatedAt: number }>();
-const agentRuntimeRecoveryByHost = new Map<number, number>();
 
 function stableActionSignature(actions: any[]) {
   return JSON.stringify(actions.map((action: any) => ({
@@ -501,6 +502,11 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
         port: Number(item?.port || 0),
         tunnelId: Number(item?.tunnelId || 0),
         forwardType: String(item?.forwardType || "").trim(),
+        transportVersion: String(item?.transportVersion || "").trim().toLowerCase() === "v2"
+          ? "v2" as const
+          : String(item?.transportVersion || "").trim().toLowerCase() === "v1"
+            ? "v1" as const
+            : undefined,
         ready: item?.ready !== false,
       }))
       .filter((item: AgentLocalRuntimeTunnelState) => item.port > 0 && item.tunnelId > 0)
@@ -597,23 +603,25 @@ async function resetAgentRuntimeStateForRecovery(
 ) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
-  const now = Date.now();
-  const last = agentRuntimeRecoveryByHost.get(id) || 0;
-  if (now - last < AGENT_RUNTIME_RECOVERY_COOLDOWN_MS) return;
-  agentRuntimeRecoveryByHost.set(id, now);
-  if (!options.preserveReportedRuntime) {
-    await db.resetAgentRuntimeStateForHost(id);
+  await runAgentRuntimeRecovery(id, options, async () => {
+    // A reboot/process restart invalidates the panel's in-memory per-host tunnel
+    // readiness even when the Agent supplied a local snapshot. The snapshot is
+    // used to avoid needless teardown, but it must not keep a stale multi-hop
+    // host marked ready and suppress the recovery action for that hop.
     clearTunnelRuntimeStatusForHost(id);
-  }
-  // resolveAgentLocalRuntimeState() runs before restart detection. Preserve the
-  // snapshot accepted in this heartbeat or the next request would need to
-  // upload it again before reconciliation can continue.
-  invalidateAgentDesiredStateCache(id, { preserveLocalRuntimeState: true });
-  await refreshAgentsAffectedByHostAddress(id, reason);
-  appendPanelLog(
-    "info",
-    `[AgentRecovery] host=${id} reason=${reason} runtime state ${options.preserveReportedRuntime ? "reconciling from local snapshot" : "marked for reapply"}`,
-  );
+    if (!options.preserveReportedRuntime) {
+      await db.resetAgentRuntimeStateForHost(id);
+    }
+    // resolveAgentLocalRuntimeState() runs before restart detection. Preserve the
+    // snapshot accepted in this heartbeat or the next request would need to
+    // upload it again before reconciliation can continue.
+    invalidateAgentDesiredStateCache(id, { preserveLocalRuntimeState: true });
+    await refreshAgentsAffectedByHostAddress(id, reason);
+    appendPanelLog(
+      "info",
+      `[AgentRecovery] host=${id} reason=${reason} runtime state ${options.preserveReportedRuntime ? "reconciling from local snapshot" : "marked for reapply"}`,
+    );
+  });
 }
 
 
@@ -1221,11 +1229,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const recoveredFromOffline = wasOnline === false;
     const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime, agentBootId);
     const previousProcessStartedAt = heartbeatTimestampMs(previousHost.agentProcessStartedAt);
-    const processRestartDetected = !!agentBootId
-      && agentBootId === normalizeAgentText(previousHost.agentBootId, 128)
-      && previousProcessStartedAt > 0
+    const processIdChanged = agentProcessId > 0
+      && Number(previousHost.agentProcessId || 0) > 0
+      && agentProcessId !== Number(previousHost.agentProcessId || 0);
+    const processStartChanged = previousProcessStartedAt > 0
       && agentProcessStartedAtSeconds > 0
-      && Math.abs(agentProcessStartedAtSeconds * 1000 - previousProcessStartedAt) > 5_000;
+      && agentProcessStartedAtSeconds * 1000 !== previousProcessStartedAt;
+    // boot_id identifies the host, not the Agent process. A quick systemd
+    // restart can keep the same boot_id and even the same Unix second; the PID
+    // change is the primary signal, with start time as the PID-reuse fallback.
+    const processRestartDetected = processIdChanged || processStartChanged;
     const recoveryTriggered = recoveredFromOffline || rebootDetected || processRestartDetected;
     const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
     const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
@@ -3918,6 +3931,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!localValue || !expectedValue) return true;
       return normalizeForwardRuleProtocol(localValue) === normalizeForwardRuleProtocol(expectedValue);
     };
+    const expectedForwardXTransportVersion = (tunnelId: number, expectedForwardType: string) => {
+      const normalizedType = String(expectedForwardType || "").trim();
+      if (normalizedType !== "forwardx" && normalizedType !== "forwardx-tunnel") return undefined;
+      const tunnel = tunnelById.get(Number(tunnelId || 0)) as any;
+      if (!isForwardXTunnelMode(tunnel)) return undefined;
+      return isForwardXWireGuardV2(tunnel) ? "v2" as const : "v1" as const;
+    };
+    const localForwardXTransportCompatible = (local: { transportVersion?: "v1" | "v2" }, expected: "v1" | "v2" | undefined) => {
+      if (!expected) return true;
+      // V2 must never adopt a V1 runtime. For V1, tolerate an omitted field
+      // from older Agents while still rejecting a clearly stale V2 process.
+      return expected === "v2"
+        ? local.transportVersion === "v2"
+        : local.transportVersion !== "v2";
+    };
     const findLocalRuleState = (port: number, protocol: unknown, ruleId?: number) => {
       const normalizedProtocol = normalizeForwardRuleProtocol(protocol, "both");
       const candidates = reportedLocalRules.filter((local: AgentLocalRuntimeRuleState) => Number(local.port || 0) === Number(port || 0));
@@ -3935,6 +3963,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && Number(local.ruleId || 0) === Number(rule.id)
         && (Number(local.tunnelId || 0) <= 0 || Number(local.tunnelId || 0) === Number(rule?.tunnelId || 0))
         && forwardTypeCompatible(local.forwardType, expectedForwardType)
+        && localForwardXTransportCompatible(local, expectedForwardXTransportVersion(Number(rule?.tunnelId || 0), expectedForwardType))
         && (localTextCompatible(local.targetIp, processTarget(rule)) || localTextCompatible(local.targetIp, rule.targetIp))
         && localNumberCompatible(local.targetPort, rule.targetPort)
         && localProtocolCompatible(local.protocol, rule.protocol);
@@ -3950,13 +3979,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }));
       protectedRuleRemoveActionKeys.add(ruleRuntimePortIdentityKey(ruleId, port));
     };
-    const localTunnelMatches = (tunnelId: number, expectedForwardType: string, port: number) => {
+    const localTunnelMatches = (
+      tunnelId: number,
+      expectedForwardType: string,
+      port: number,
+      options: { allowPassiveForwardXFirstHop?: boolean } = {},
+    ) => {
       if (!hasReportedRuntimeState || port <= 0) return true;
       const local = localTunnelsByPort.get(port);
+      const passiveForwardXFirstHop = isPassiveForwardXFirstHopMarker({
+        isFirstHop: !!options.allowPassiveForwardXFirstHop,
+        tunnelId,
+        port,
+        local,
+      });
       return !!local
-        && local.ready !== false
+        && (local.ready !== false || passiveForwardXFirstHop)
         && Number(local.tunnelId || 0) === Number(tunnelId)
-        && forwardTypeCompatible(local.forwardType, expectedForwardType);
+        && forwardTypeCompatible(local.forwardType, expectedForwardType)
+        && (passiveForwardXFirstHop || localForwardXTransportCompatible(local, expectedForwardXTransportVersion(tunnelId, expectedForwardType)));
     };
     const buildGenericLocalRuleRemovalAction = (local: AgentLocalRuntimeRuleState) => {
       const port = Number(local.port || 0);
@@ -4177,6 +4218,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
         const listenPortValue = Number((hops[hostIdx] as any)?.listenPort || 0);
         const isLastHop = hostIdx === hops.length - 1;
+        const isFirst = hostIdx === 0;
         const udpTargets = isFXP && isLastHop ? forwardXUDPTargets(tunnel) : [];
         const shouldSyncUDPTargets = isFXP
           && isLastHop
@@ -4187,7 +4229,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         const shouldRepairLocalHop = tunnel.isEnabled
           && listenPortValue > 0
-          && !localTunnelMatches(Number(tunnel.id), tunnelForwardType, listenPortValue);
+          && !localTunnelMatches(Number(tunnel.id), tunnelForwardType, listenPortValue, {
+            allowPassiveForwardXFirstHop: isFXP && isFirst,
+          });
         const shouldApply = tunnel.isEnabled && (!multiHopRuntimeReady || shouldRepairLocalHop || shouldSyncUDPTargets);
         const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
@@ -4195,7 +4239,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         const op = shouldApply ? "apply" : "remove";
         const { listenPort } = hops[hostIdx] as any;
-        const isFirst = hostIdx === 0;
 
         if (isFXP) {
           if (!isFirst && tunnelNeedsMimic(tunnel)) {
@@ -5576,7 +5619,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: 0,
         protocol: "tcp",
         knownRunning: false,
-        forceRuntimeSync: gostRuntimeServiceUnhealthy || runtimeSyncBootstrap || gostPeriodicReconcileDue,
+        forceRuntimeSync: gostRuntimeConfigChanged
+          || gostRuntimeServiceUnhealthy
+          || runtimeSyncBootstrap
+          || gostPeriodicReconcileDue,
         commands: await buildGostRuntimeSyncCmds(),
         managedConfigs: gostManagedConfigs,
       } as any;
@@ -5766,12 +5812,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return false;
     };
     const normalizedActions = effectiveActions.map((action: any) => {
+      const statusType = action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined));
       const normalized = {
         ...action,
         issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
         configRevision,
         knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
-        statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
+        statusType,
+        // A tunnel apply can be fully adopted by the Agent's persisted local
+        // runtime record. Ask it to report that adoption so a panel restart or
+        // a cleared in-memory runtime map becomes ready without restarting the
+        // healthy listener.
+        ...(statusType === "tunnel" && action.op === "apply" && action.reportStatus === undefined
+          ? { reportStatus: true }
+          : {}),
       };
       return { ...normalized, configHash: hashConfig(normalized) };
     });

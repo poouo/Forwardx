@@ -284,6 +284,7 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 			}
 		}
 		if startSession {
+			session.counter.connections.Store(1)
 			session.start()
 		}
 		session.enqueue(payload)

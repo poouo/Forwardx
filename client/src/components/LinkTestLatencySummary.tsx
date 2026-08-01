@@ -14,6 +14,10 @@ export type LinkTestDetail = {
   pending?: boolean | null;
   groupKey?: string | null;
   groupLabel?: string | null;
+  fromHostId?: number | null;
+  toHostId?: number | null;
+  hopIndex?: number | null;
+  hopCount?: number | null;
 };
 
 export type ParsedLinkTestMessage = {
@@ -26,6 +30,10 @@ export type ParsedLinkTestMessage = {
 type ProbeSegment = {
   from: string;
   to: string;
+  fromHostId?: number | null;
+  toHostId?: number | null;
+  hopIndex?: number | null;
+  hopCount?: number | null;
   fromMeta?: LinkTestNodeMeta;
   toMeta?: LinkTestNodeMeta;
   success: boolean;
@@ -51,7 +59,27 @@ export type LinkTestPlannedSegment = {
   pending?: boolean | null;
   groupKey?: string | null;
   groupLabel?: string | null;
+  fromHostId?: number | null;
+  toHostId?: number | null;
+  hopIndex?: number | null;
+  hopCount?: number | null;
 };
+
+function positiveInteger(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function nonNegativeInteger(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function positiveHostId(value: unknown) {
+  return positiveInteger(value);
+}
 
 export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
   const text = typeof raw === "string" ? raw.trim() : "";
@@ -71,6 +99,10 @@ export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
           pending: item?.pending === true,
           groupKey: typeof item?.groupKey === "string" ? item.groupKey : null,
           groupLabel: typeof item?.groupLabel === "string" ? item.groupLabel : null,
+          fromHostId: positiveHostId(item?.fromHostId),
+          toHostId: positiveHostId(item?.toHostId),
+          hopIndex: nonNegativeInteger(item?.hopIndex),
+          hopCount: positiveInteger(item?.hopCount),
         }))
         : [];
       return {
@@ -193,6 +225,40 @@ function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   };
 }
 
+export type LinkTestEndpointIds = {
+  fromHostId: number | null;
+  toHostId: number | null;
+  hopIndex: number | null;
+  hopCount: number | null;
+};
+
+export function getLinkTestDetailEndpointIds(detail: LinkTestDetail): LinkTestEndpointIds {
+  let fromHostId = positiveHostId(detail.fromHostId);
+  let toHostId = positiveHostId(detail.toHostId);
+  let hopIndex = nonNegativeInteger(detail.hopIndex);
+  let hopCount = positiveInteger(detail.hopCount);
+  const labels = [detail.hopLabel, detail.routeLabel]
+    .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  for (const label of labels) {
+    if (hopIndex === null || hopCount === null) {
+      const hopMatch = label.match(/^(\d+)\s*\/\s*(\d+)(?:\s|$)/);
+      if (hopMatch) {
+        hopIndex = Number(hopMatch[1]) - 1;
+        hopCount = Number(hopMatch[2]);
+      }
+    }
+    if (fromHostId !== null && toHostId !== null) continue;
+    const edgeMatch = label.match(/(?:^|\s)(\d+)\s*->\s*(\d+)(?:\s|$)/);
+    if (!edgeMatch) continue;
+    if (fromHostId === null) fromHostId = positiveHostId(edgeMatch[1]);
+    if (toHostId === null) toHostId = positiveHostId(edgeMatch[2]);
+  }
+
+  return { fromHostId, toHostId, hopIndex, hopCount };
+}
+
 function lookupNodeMeta(meta: Record<string, LinkTestNodeMeta | undefined> | undefined, label: string) {
   if (!meta) return undefined;
   const clean = cleanNodeLabel(label);
@@ -249,11 +315,13 @@ function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
   return initialLatency + restLatency;
 }
 
-function segmentResultKey(segment: Pick<ProbeSegment, "from" | "to" | "groupKey">) {
+function segmentResultKey(segment: Pick<ProbeSegment, "from" | "to" | "fromHostId" | "toHostId" | "hopIndex" | "hopCount" | "groupKey">) {
   return [
     normalizeEndpointLabel(segment.groupKey || ""),
-    normalizeEndpointLabel(segment.from),
-    normalizeEndpointLabel(segment.to),
+    segment.fromHostId ? `host:${segment.fromHostId}` : normalizeEndpointLabel(segment.from),
+    segment.toHostId ? `host:${segment.toHostId}` : normalizeEndpointLabel(segment.to),
+    segment.hopIndex ?? "",
+    segment.hopCount ?? "",
   ].join(">");
 }
 
@@ -286,6 +354,15 @@ function mergeProbeSegmentsWithCache(segments: ProbeSegment[], cachedSegments: P
       if (segmentResultKey(cached) === segmentResultKey(segment)) return true;
       return cachedIndexCandidate === index
         && (!segment.groupKey || !cached.groupKey || segment.groupKey === cached.groupKey)
+        && (
+          (!segment.fromHostId && !segment.toHostId)
+          || (!!segment.fromHostId && segment.fromHostId === cached.fromHostId)
+          || (!!segment.toHostId && segment.toHostId === cached.toHostId)
+        )
+        && (!segment.fromHostId || !cached.fromHostId || segment.fromHostId === cached.fromHostId)
+        && (!segment.toHostId || !cached.toHostId || segment.toHostId === cached.toHostId)
+        && (segment.hopIndex ?? null) === (cached.hopIndex ?? null)
+        && (segment.hopCount ?? null) === (cached.hopCount ?? null)
         && endpointLabelsMatch(segment.from, segment.fromMeta, cached.from, cached.fromMeta)
         && endpointLabelsMatch(segment.to, segment.toMeta, cached.to, cached.toMeta);
     });
@@ -317,6 +394,33 @@ function buildProbeSegments(input: {
 }) {
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
 
+  const detailSegments = (allowLabelAliases = true) => visibleDetails.map((detail, index): ProbeSegment => {
+    const endpoints = parseRouteEndpoints(detail, index);
+    const endpointIds = getLinkTestDetailEndpointIds(detail);
+    const fromMeta = (endpointIds.fromHostId ? lookupNodeMeta(input.nodeMeta, String(endpointIds.fromHostId)) : undefined)
+      || (allowLabelAliases ? lookupNodeMeta(input.nodeMeta, endpoints.from) : undefined);
+    const toMeta = (endpointIds.toHostId ? lookupNodeMeta(input.nodeMeta, String(endpointIds.toHostId)) : undefined)
+      || (allowLabelAliases ? lookupNodeMeta(input.nodeMeta, endpoints.to) : undefined);
+    return {
+      from: withNodeLabel(fromMeta, endpoints.from),
+      to: withNodeLabel(toMeta, endpoints.to),
+      fromHostId: endpointIds.fromHostId,
+      toHostId: endpointIds.toHostId,
+      hopIndex: endpointIds.hopIndex,
+      hopCount: endpointIds.hopCount,
+      fromMeta,
+      toMeta,
+      success: !!detail.success,
+      latencyMs: detail.success && hasLatencyValue(detail) ? detail.latencyMs : null,
+      message: detail.message || null,
+      method: detail.method || null,
+      pending: detail.pending === true,
+      idle: false,
+      groupKey: detail.groupKey || null,
+      groupLabel: detail.groupLabel || null,
+    };
+  });
+
   const plannedSegments = (input.plannedSegments || [])
     .map((segment) => ({
       from: cleanNodeLabel(segment.from),
@@ -330,6 +434,10 @@ function buildProbeSegments(input: {
       pending: segment.pending,
       groupKey: segment.groupKey || null,
       groupLabel: segment.groupLabel || null,
+      fromHostId: positiveHostId(segment.fromHostId),
+      toHostId: positiveHostId(segment.toHostId),
+      hopIndex: nonNegativeInteger(segment.hopIndex),
+      hopCount: positiveInteger(segment.hopCount),
     }))
     .filter((segment) => segment.from && segment.to && !isSelfLoopEndpoint(segment.from, segment.to));
 
@@ -342,81 +450,77 @@ function buildProbeSegments(input: {
     );
 
   if (visibleDetails.length > 0 && !usePlannedSegments) {
-    return visibleDetails.map((detail, index): ProbeSegment => {
-      const endpoints = parseRouteEndpoints(detail, index);
-      const fromMeta = lookupNodeMeta(input.nodeMeta, endpoints.from);
-      const toMeta = lookupNodeMeta(input.nodeMeta, endpoints.to);
-      return {
-        from: withNodeLabel(fromMeta, endpoints.from),
-        to: withNodeLabel(toMeta, endpoints.to),
-        fromMeta,
-        toMeta,
-        success: !!detail.success,
-        latencyMs: detail.success && hasLatencyValue(detail) ? detail.latencyMs : null,
-        message: detail.message || null,
-        method: detail.method || null,
-        pending: detail.pending === true,
-        idle: false,
-        groupKey: detail.groupKey || null,
-        groupLabel: detail.groupLabel || null,
-      };
-    });
+    return detailSegments();
   }
 
   if (plannedSegments.length > 0) {
     const detailRecords = visibleDetails.map((detail, index) => {
       const endpoints = parseRouteEndpoints(detail, index);
+      const endpointIds = getLinkTestDetailEndpointIds(detail);
       return {
         detail,
         index,
         endpoints,
-        fromMeta: lookupNodeMeta(input.nodeMeta, endpoints.from),
-        toMeta: lookupNodeMeta(input.nodeMeta, endpoints.to),
+        endpointIds,
+        fromMeta: lookupNodeMeta(input.nodeMeta, endpoints.from)
+          || (endpointIds.fromHostId ? lookupNodeMeta(input.nodeMeta, String(endpointIds.fromHostId)) : undefined),
+        toMeta: lookupNodeMeta(input.nodeMeta, endpoints.to)
+          || (endpointIds.toHostId ? lookupNodeMeta(input.nodeMeta, String(endpointIds.toHostId)) : undefined),
       };
     });
     const usedDetailIndexes = new Set<number>();
     const isGroupCompatible = (segment: (typeof plannedSegments)[number], record: (typeof detailRecords)[number]) => (
       !segment.groupKey || !record.detail.groupKey || record.detail.groupKey === segment.groupKey
     );
+    const endpointMatches = (
+      plannedLabel: string,
+      plannedMeta: LinkTestNodeMeta | undefined,
+      plannedHostId: number | null,
+      detailLabel: string,
+      detailMeta: LinkTestNodeMeta | undefined,
+      detailHostId: number | null,
+    ) => {
+      if (plannedHostId !== null && detailHostId !== null) return plannedHostId === detailHostId;
+      return endpointLabelsMatch(plannedLabel, plannedMeta, detailLabel, detailMeta);
+    };
     const findDetailRecordForSegment = (
       segment: (typeof plannedSegments)[number],
-      index: number,
       fromMeta: LinkTestNodeMeta | undefined,
       toMeta: LinkTestNodeMeta | undefined,
     ) => {
       const exactRecord = detailRecords.find((record) => (
         !usedDetailIndexes.has(record.index)
         && isGroupCompatible(segment, record)
-        && endpointLabelsMatch(segment.from, fromMeta, record.endpoints.from, record.fromMeta)
-        && endpointLabelsMatch(segment.to, toMeta, record.endpoints.to, record.toMeta)
+        && (
+          (segment.fromHostId === null && segment.toHostId === null)
+          || (segment.fromHostId !== null && record.endpointIds.fromHostId === segment.fromHostId)
+          || (segment.toHostId !== null && record.endpointIds.toHostId === segment.toHostId)
+        )
+        && (
+          !!segment.groupKey
+          || segment.hopIndex === null
+          || segment.hopIndex === record.endpointIds.hopIndex
+        )
+        && (
+          !!segment.groupKey
+          || segment.hopCount === null
+          || segment.hopCount === record.endpointIds.hopCount
+        )
+        && endpointMatches(segment.from, fromMeta, segment.fromHostId, record.endpoints.from, record.fromMeta, record.endpointIds.fromHostId)
+        && endpointMatches(segment.to, toMeta, segment.toHostId, record.endpoints.to, record.toMeta, record.endpointIds.toHostId)
       ));
       if (exactRecord) return exactRecord;
-
-      if (visibleDetails.length === plannedSegments.length) {
-        const indexedRecord = detailRecords[index];
-        if (indexedRecord && !usedDetailIndexes.has(indexedRecord.index) && isGroupCompatible(segment, indexedRecord)) return indexedRecord;
-      }
-
-      if (plannedSegments.length === 1) {
-        const onlyRecord = detailRecords.find((record) => !usedDetailIndexes.has(record.index) && isGroupCompatible(segment, record));
-        if (onlyRecord) return onlyRecord;
-      }
-
-      if (index === plannedSegments.length - 1) {
-        for (let detailIndex = detailRecords.length - 1; detailIndex >= 0; detailIndex -= 1) {
-          const tailRecord = detailRecords[detailIndex];
-          if (tailRecord && !usedDetailIndexes.has(tailRecord.index) && isGroupCompatible(segment, tailRecord)) return tailRecord;
-        }
-      }
 
       return null;
     };
 
-    return plannedSegments.map((segment, index): ProbeSegment => {
+    const renderedSegments = plannedSegments.map((segment, index): ProbeSegment => {
       const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
       const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
-      const detailRecord = findDetailRecordForSegment(segment, index, fromMeta, toMeta);
-      if (detailRecord) usedDetailIndexes.add(detailRecord.index);
+      const detailRecord = findDetailRecordForSegment(segment, fromMeta, toMeta);
+      if (detailRecord) {
+        usedDetailIndexes.add(detailRecord.index);
+      }
       const detail = detailRecord?.detail || null;
       const detailSuccess = detail && typeof detail.success === "boolean" ? !!detail.success : undefined;
       const detailLatency = detail?.success && hasLatencyValue(detail) ? detail.latencyMs : null;
@@ -427,13 +531,20 @@ function buildProbeSegments(input: {
       const isLastSegment = index === plannedSegments.length - 1;
       const idle = !hasExplicitState
         && !input.isTesting
-        && !input.isSuccess
-        && !input.parsed.message
-        && !hasUsableLatencyValue(input.fallbackLatencyMs);
+        && (
+          (visibleDetails.length > 0 && !detailRecord)
+          || (
+            !input.isSuccess
+            && !input.parsed.message
+            && !hasUsableLatencyValue(input.fallbackLatencyMs)
+          )
+        );
       const pending = segment.pending === true || detail?.pending === true
         || input.isTesting;
       const success = pending
         ? true
+        : idle
+          ? false
         : typeof detailSuccess === "boolean"
           ? detailSuccess
         : hasExplicitSuccess
@@ -446,6 +557,10 @@ function buildProbeSegments(input: {
       return {
         from: withNodeLabel(fromMeta, segment.from),
         to: withNodeLabel(toMeta, segment.to),
+        fromHostId: segment.fromHostId,
+        toHostId: segment.toHostId,
+        hopIndex: segment.hopIndex,
+        hopCount: segment.hopCount,
         fromMeta,
         toMeta,
         success,
@@ -464,6 +579,11 @@ function buildProbeSegments(input: {
         groupLabel: segment.groupLabel || null,
       };
     });
+
+    if (visibleDetails.length > 0 && usedDetailIndexes.size !== visibleDetails.length && !hasGroupedPlannedSegments) {
+      return detailSegments(false);
+    }
+    return renderedSegments;
   }
 
   const sourceFallback = input.sourceLabel || "源节点";
@@ -539,6 +659,7 @@ export function LinkTestProbeView({
   nodeMeta,
   nodeTooltips,
   plannedSegments,
+  ignorePlannedResultsWhenDetailsPresent = false,
   compactFrom = 4,
   roomyNodes = false,
   mobileStacked = true,
@@ -554,15 +675,26 @@ export function LinkTestProbeView({
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
   nodeTooltips?: Record<string, ReactNode>;
   plannedSegments?: LinkTestPlannedSegment[];
+  ignorePlannedResultsWhenDetailsPresent?: boolean;
   compactFrom?: number;
   roomyNodes?: boolean;
   mobileStacked?: boolean;
   wrapDesktopRows?: boolean;
   className?: string;
 }) {
+  const effectivePlannedSegments = useMemo(() => {
+    if (!ignorePlannedResultsWhenDetailsPresent || (parsed.details || []).length === 0) return plannedSegments;
+    return plannedSegments?.map((segment) => ({
+      ...segment,
+      success: undefined,
+      latencyMs: null,
+      message: null,
+      pending: false,
+    }));
+  }, [ignorePlannedResultsWhenDetailsPresent, parsed.details, plannedSegments]);
   const rawSegments = useMemo(
-    () => buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments }),
-    [fallbackLatencyMs, isSuccess, isTesting, nodeMeta, parsed, plannedSegments, sourceLabel, targetLabel],
+    () => buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments: effectivePlannedSegments }),
+    [effectivePlannedSegments, fallbackLatencyMs, isSuccess, isTesting, nodeMeta, parsed, sourceLabel, targetLabel],
   );
   const segmentCacheRef = useRef<{ topologyKey: string; segments: ProbeSegment[] } | null>(null);
   const topologyKey = useMemo(

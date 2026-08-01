@@ -121,7 +121,7 @@ export async function getLatestTunnelLatency(tunnelId: number) {
         eq(tunnelLatencyStats.seriesKey, "total"),
       ),
     ))
-    .orderBy(desc(tunnelLatencyStats.recordedAt), desc(tunnelLatencyStats.id))
+    .orderBy(desc(tunnelLatencyStats.id))
     .limit(1);
   return rows[0];
 }

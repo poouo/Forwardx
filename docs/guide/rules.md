@@ -18,6 +18,8 @@
 | 目标端口 | 最终服务端口 |
 | 所属用户 | 规则归属、权限和计费对象 |
 
+![添加规则时选择转发资源，并填写入口与最终目标](./images/rules-create.png)
+
 资源类型可以在编辑时切换。跨类型修改只保留名称、入口端口、协议、目标地址、目标端口等基础字段；原资源专属的出站策略、PROXY Protocol 或其他参数不会带到不支持它们的新资源。
 
 ## 资源类型
@@ -97,11 +99,11 @@ mimic 只用于 ForwardX 隧道，且规则协议需要包含 UDP：
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-mimic.sh | sudo bash
 ```
 
-ForwardX 安装器默认安装或升级到 `mimic v0.7.1`。该版本仍要求 Linux 6.1+ 和可用的 BPF/XDP/TC 环境；发行版没有对应二进制包时，上游安装器会尝试源码构建。
+ForwardX 安装器默认安装或升级到 `mimic v0.7.1`。该版本仍要求 Linux 6.1+、XDP 入站和 TC 出站 eBPF 钩子；Agent 会在 XDP `native` 与 `skb` 模式之间自动回退。发行版没有对应二进制包时，上游安装器会尝试源码构建。
 
 Agent 会只读检测 mimic 命令和内核模块，并把结果上报给面板。开启 UDP 混淆、重新启用隧道或更换链路主机时，面板会逐台校验；缺少环境时本次操作失败并提示手动安装，Agent 不会自行安装。
 
-mimic 依赖 Linux 内核和 XDP/TC 能力，只改变 UDP 包外观。它不会修复线路本身的丢包、抖动或 NAT 限制。
+mimic 依赖 Linux 内核、XDP 入站和 TC 出站能力，只改变 UDP 包外观。它不会修复线路本身的丢包、抖动或 NAT 限制。
 
 ## 排障
 

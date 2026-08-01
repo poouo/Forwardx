@@ -84,7 +84,14 @@ import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sideb
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
-type SidebarNavItem = { icon: LucideIcon; label: string; path: string; menuKey?: SidebarMenuKey; iconSrc?: string };
+type SidebarNavItem = {
+  icon: LucideIcon;
+  label: string;
+  path: string;
+  menuKey?: SidebarMenuKey;
+  iconSrc?: string;
+  externalUrl?: string;
+};
 
 const announcementsMenuItem: SidebarNavItem = { icon: Megaphone, label: "公告", path: "/announcements", menuKey: "announcements" };
 
@@ -1057,11 +1064,18 @@ function DashboardLayoutContent({
   const visibleAnnouncementsMenuItems = isSidebarNavItemVisible(announcementsMenuItem) ? [announcementsMenuItem] : [];
   const visibleProfileMenuItems = isSidebarNavItemVisible(profileMenuItem) ? [profileMenuItem] : [];
   const visibleAdminMenuItems = filterSidebarNavItems(adminMenuItems);
-  const customPageMenuItems: SidebarNavItem[] = customSidebarPages.map((page: { id: string; name: string; iconDataUrl?: string }) => ({
+  const customPageMenuItems: SidebarNavItem[] = customSidebarPages.map((page: {
+    id: string;
+    name: string;
+    url: string;
+    openMode: "embed" | "external";
+    iconDataUrl?: string;
+  }) => ({
     icon: Globe2,
     iconSrc: page.iconDataUrl,
     label: page.name,
     path: `/custom-pages/${page.id}`,
+    ...(page.openMode === "external" ? { externalUrl: page.url } : {}),
   }));
   const pluginPageMenuItems: SidebarNavItem[] = isAdmin
     ? pluginSidebarPages.map((page: { pluginId: string; label: string; icon?: string }) => ({
@@ -1194,13 +1208,21 @@ function DashboardLayoutContent({
   };
   const renderSidebarItems = (items: SidebarNavItem[]) => items.map((item) => {
     const isActive = currentPath === item.path;
+    const handleClick = () => {
+      if (!item.externalUrl) {
+        navigateFromSidebar(item.path);
+        return;
+      }
+      closeMobileNavigation();
+      window.open(item.externalUrl, "_blank", "noopener,noreferrer");
+    };
     return (
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton
           isActive={isActive}
-          onClick={() => navigateFromSidebar(item.path)}
+          onClick={handleClick}
           tooltip={item.label}
-          className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
+          className={cn("h-10 transition-[width,height,padding,background-color,color,box-shadow] font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
           {item.iconSrc ? (
             <img

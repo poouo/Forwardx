@@ -363,6 +363,12 @@ func loadPersistedFXPSpecs() []fxpSpec {
 }
 
 func migrateRuntimeFXPConfigsToPersistent() {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	migrateRuntimeFXPConfigsToPersistentLocked()
+}
+
+func migrateRuntimeFXPConfigsToPersistentLocked() {
 	paths, _ := filepath.Glob("/run/forwardx-agent/fxp-*.json")
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
@@ -456,6 +462,12 @@ func removePersistedWireGuardSpec(tunnelID int) {
 }
 
 func loadPersistedWireGuardSpecs() []wireGuardSpec {
+	persistentRuntimeMu.Lock()
+	defer persistentRuntimeMu.Unlock()
+	return loadPersistedWireGuardSpecsLocked()
+}
+
+func loadPersistedWireGuardSpecsLocked() []wireGuardSpec {
 	result := []wireGuardSpec{}
 	_ = readPersistentJSONFiles(persistentWireGuardDir, "wireguard-", ".json", func(raw []byte) error {
 		var stored struct {
@@ -509,6 +521,12 @@ func removePersistedFailoverSpec(ruleID int, sourcePort int) {
 }
 
 func loadPersistedFailovers() []persistedFailover {
+	persistentRuntimeMu.Lock()
+	defer persistentRuntimeMu.Unlock()
+	return loadPersistedFailoversLocked()
+}
+
+func loadPersistedFailoversLocked() []persistedFailover {
 	result := []persistedFailover{}
 	_ = readPersistentJSONFiles(persistentFailoverDir, "failover-", ".json", func(raw []byte) error {
 		var stored persistedFailover
@@ -531,20 +549,118 @@ func loadPersistedFailovers() []persistedFailover {
 	return result
 }
 
+// persistedFXPRestoreSpecCurrent is checked while fxpControlMu is held. It
+// deliberately reloads the snapshot instead of trusting the list captured at
+// startup: a desired-state remove/update may have committed while the restore
+// worker was waiting for the runtime control lock.
+func persistedFXPRestoreSpecCurrent(candidate fxpSpec) bool {
+	candidate = normalizeFXPSpec(candidate)
+	wantedID := fxpServerID(candidate)
+	wantedSignature := fxpServerSignature(candidate)
+	for _, current := range planPersistedFXPRestoreSpecs(loadPersistedFXPSpecs()) {
+		current = normalizeFXPSpec(current)
+		if fxpServerID(current) == wantedID && fxpServerSignature(current) == wantedSignature {
+			return true
+		}
+	}
+	return false
+}
+
+type persistedFXPRestoreStarter func(Config, fxpSpec, *actionMessage) bool
+
+// restorePersistedFXPSpecIfCurrent serializes the snapshot check and process
+// start. A false current value means the panel has already removed or replaced
+// the snapshot, so the stale startup item must be ignored without reporting a
+// restore failure.
+func restorePersistedFXPSpecIfCurrent(cfg Config, candidate fxpSpec, message *actionMessage, start persistedFXPRestoreStarter) (restored bool, current bool) {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	if !persistedFXPRestoreSpecCurrent(candidate) {
+		return false, false
+	}
+	if start == nil {
+		start = startFXPProcessLocked
+	}
+	return start(cfg, candidate, message), true
+}
+
+func persistedWireGuardSpecCurrent(candidate wireGuardSpec) bool {
+	candidate, err := normalizeWireGuardSpec(candidate)
+	if err != nil {
+		return false
+	}
+	wantedSignature := wireGuardSpecSignature(candidate)
+	for _, current := range loadPersistedWireGuardSpecs() {
+		if current.TunnelID == candidate.TunnelID && wireGuardSpecSignature(current) == wantedSignature {
+			return true
+		}
+	}
+	return false
+}
+
+func restorePersistedWireGuardSpecIfCurrent(candidate wireGuardSpec) (restored bool, current bool, err error) {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
+	if !persistedWireGuardSpecCurrent(candidate) {
+		return false, false, nil
+	}
+	if err := applyWireGuardRuntimeLocked(candidate); err != nil {
+		return false, true, err
+	}
+	return true, true, nil
+}
+
+func persistedFailoverSpecCurrent(candidate persistedFailover) bool {
+	candidate.Spec = normalizeFailoverSpec(candidate.Spec)
+	wantedSignature := failoverSignature(candidate.Spec)
+	for _, current := range loadPersistedFailovers() {
+		if current.RuleID == candidate.RuleID && current.SourcePort == candidate.SourcePort && failoverSignature(current.Spec) == wantedSignature {
+			return true
+		}
+	}
+	return false
+}
+
+type persistedFailoverRestoreStarter func(int, int, failoverSpec, *actionMessage) bool
+
+func restorePersistedFailoverIfCurrent(candidate persistedFailover, message *actionMessage, start persistedFailoverRestoreStarter) (restored bool, current bool) {
+	failoverControlMu.Lock()
+	defer failoverControlMu.Unlock()
+	if !persistedFailoverSpecCurrent(candidate) {
+		return false, false
+	}
+	if start == nil {
+		start = startFailoverProxyLocked
+	}
+	return start(candidate.RuleID, candidate.SourcePort, candidate.Spec, message), true
+}
+
 func restorePersistedForwardXRuntimes(cfg Config) {
 	migrateRuntimeFXPConfigsToPersistent()
 	restoredWireGuard := 0
 	for _, spec := range loadPersistedWireGuardSpecs() {
-		if err := applyWireGuardRuntime(spec); err != nil {
+		restored, current, err := restorePersistedWireGuardSpecIfCurrent(spec)
+		if !current {
+			logf("local WireGuard runtime restore skipped stale snapshot tunnel=%d", spec.TunnelID)
+			continue
+		}
+		if err != nil {
 			logf("local WireGuard runtime restore failed tunnel=%d: %v", spec.TunnelID, err)
 			continue
 		}
-		restoredWireGuard++
+		if restored {
+			restoredWireGuard++
+		}
 	}
 	restoredFXP := restorePersistedFXPSpecs(cfg, loadPersistedFXPSpecs())
 	restoredFailover := 0
 	for _, stored := range loadPersistedFailovers() {
-		if startFailoverProxy(stored.RuleID, stored.SourcePort, stored.Spec, nil) {
+		ok, current := restorePersistedFailoverIfCurrent(stored, nil, nil)
+		if !current {
+			logf("local failover restore skipped stale snapshot rule=%d source=%d", stored.RuleID, stored.SourcePort)
+			continue
+		}
+		if ok {
 			restoredFailover++
 		}
 	}
@@ -571,8 +687,10 @@ func restorePersistedFXPSpecs(cfg Config, specs []fxpSpec) int {
 			defer workers.Done()
 			for spec := range jobs {
 				message := &actionMessage{}
-				ok := startFXP(cfg, spec, nil, message)
-				if !ok {
+				ok, current := restorePersistedFXPSpecIfCurrent(cfg, spec, message, nil)
+				if !current {
+					logf("local FXP runtime restore skipped stale snapshot tunnel=%d rule=%d port=%d", spec.TunnelID, spec.RuleID, spec.ListenPort)
+				} else if !ok {
 					logf("local FXP runtime restore failed tunnel=%d rule=%d port=%d: %s", spec.TunnelID, spec.RuleID, spec.ListenPort, message.get())
 				}
 				results <- ok

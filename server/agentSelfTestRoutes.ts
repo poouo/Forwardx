@@ -10,6 +10,17 @@ import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } fr
 import { combineTunnelRuleLatencySample } from "./ruleLatency";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { waitForTunnelLatencyRefresh } from "./tunnelLatencyRefresh";
+import { getTunnelAutoHopDetails } from "./tunnelAutoLatencyState";
+import { getTunnelMultiEntryHopDetails } from "./tunnelMultiEntryLatencyState";
+import { tunnelProbeTopologyKey } from "./probeTopology";
+import { isTunnelRelayFailover } from "../shared/tunnelRelay";
+import {
+  selectTunnelLatencyDetailPathKey,
+  structuredTunnelMessageMatchesLatency,
+  timestampMs,
+  tunnelDetailsMatchTopology,
+  tunnelLatencySampleIsAfterBaseline,
+} from "./tunnelLatencyDetails";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
@@ -25,63 +36,108 @@ function tunnelSeriesLabel(value: unknown, fallback: string) {
   return (label || fallback).slice(0, 96);
 }
 
-function detailHostEdges(details: any[]) {
-  const edges: Array<[number, number]> = [];
-  for (const detail of details || []) {
-    const labels = [detail?.hopLabel, detail?.routeLabel]
-      .map((value) => String(value || ""))
-      .filter(Boolean);
-    for (const label of labels) {
-      const match = label.match(/(\d+)\s*->\s*(\d+)/);
-      if (!match) continue;
-      const from = Number(match[1]);
-      const to = Number(match[2]);
-      if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to <= 0) continue;
-      edges.push([from, to]);
-      break;
-    }
-  }
-  return edges;
+async function isTunnelDetailsCurrent(tunnel: any, details: any[]) {
+  const tunnelId = Number(tunnel?.id || 0);
+  if (!tunnelId) return false;
+  const [hops, exitNodes, entryHostIds] = await Promise.all([
+    db.getTunnelHops(tunnelId).catch(() => []) as Promise<any[]>,
+    db.getTunnelExitNodes(tunnelId).catch(() => []) as Promise<any[]>,
+    tunnelEntryHostIdList(tunnel),
+  ]);
+  return tunnelDetailsMatchTopology({ tunnel, hops, exitNodes, entryHostIds, details });
 }
 
-async function currentTunnelHostPath(tunnel: any) {
+async function tunnelEntryHostIdList(tunnel: any) {
+  const ids = new Set<number>();
+  const primary = Number(tunnel?.entryHostId || 0);
+  if (primary > 0) ids.add(primary);
+  const entryGroupId = Number(tunnel?.entryGroupId || 0);
+  if (entryGroupId > 0) {
+    const group = await db.getForwardGroupById(entryGroupId).catch(() => null) as any;
+    if (group?.isEnabled && String(group.groupMode || "") === "entry") {
+      for (const member of group.members || []) {
+        const hostId = member?.isEnabled !== false && member?.memberType === "host" ? Number(member.hostId || 0) : 0;
+        if (hostId > 0) ids.add(hostId);
+      }
+    }
+  }
+  return Array.from(ids).sort((left, right) => left - right);
+}
+
+async function loadFreshTunnelAutoDetails(tunnel: any, latestLatency: any) {
   const tunnelId = Number(tunnel?.id || 0);
   if (!tunnelId) return [];
-  const hops = await db.getTunnelHops(tunnelId).catch(() => []) as any[];
-  if (Array.isArray(hops) && hops.length >= 2) {
-    return hops
-      .map((hop) => Number(hop?.hostId || 0))
-      .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+  const [hops, exitNodes, entryHostIds] = await Promise.all([
+    db.getTunnelHops(tunnelId).catch(() => []) as Promise<any[]>,
+    db.getTunnelExitNodes(tunnelId).catch(() => []) as Promise<any[]>,
+    tunnelEntryHostIdList(tunnel),
+  ]);
+  const topologyKey = tunnelProbeTopologyKey(tunnel, hops, exitNodes);
+  const hopCount = isTunnelRelayFailover(tunnel, hops)
+    ? 2
+    : Array.isArray(hops) && hops.length >= 2 ? hops.length - 1 : 1;
+  const referenceAt = timestampMs(latestLatency?.recordedAt);
+  const batchSeries = await db.getTunnelLatencyBranchSeriesForTotal(
+    tunnelId,
+    Number(latestLatency?.id || 0),
+  ).catch(() => []) as any[];
+  const pathKey = selectTunnelLatencyDetailPathKey(latestLatency, batchSeries);
+  let rawDetails: Array<{
+    hopIndex: number;
+    hopCount: number;
+    fromHostId: number | null;
+    toHostId: number | null;
+    latencyMs: number | null;
+    isTimeout: boolean;
+  }> | null = null;
+  if (entryHostIds.length > 1) {
+    rawDetails = getTunnelMultiEntryHopDetails({
+      tunnelId,
+      expectedEntryHostIds: entryHostIds,
+      hopCount,
+      generation: `${topologyKey}:entries:${entryHostIds.join(",")}`,
+      pathKey,
+      referenceAt,
+    });
+  } else {
+    rawDetails = getTunnelAutoHopDetails({
+      tunnelId,
+      hopCount,
+      generation: topologyKey,
+      pathKey,
+      referenceAt,
+    });
   }
-  return [Number(tunnel?.entryHostId || 0), Number(tunnel?.exitHostId || 0)]
-    .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
-}
+  if (!rawDetails?.length) return [];
 
-async function isTunnelDetailsCurrent(tunnel: any, details: any[]) {
-  const detailEdges = detailHostEdges(details);
-  if (detailEdges.length === 0) return false;
-  const currentPath = await currentTunnelHostPath(tunnel);
-  if (currentPath.length < 2) return false;
-  const allowedEdges = new Set<string>();
-  for (let index = 0; index < currentPath.length - 1; index += 1) {
-    allowedEdges.add(`${currentPath[index]}->${currentPath[index + 1]}`);
-  }
-  const firstNextHostId = Number(currentPath[1] || currentPath[currentPath.length - 1] || 0);
-  const entryGroupId = Number(tunnel?.entryGroupId || 0);
-  if (entryGroupId > 0 && firstNextHostId > 0) {
-    const entryGroup = await db.getForwardGroupById(entryGroupId).catch(() => null) as any;
-    for (const member of entryGroup?.members || []) {
-      const hostId = Number(member?.hostId || 0);
-      if (member?.isEnabled !== false && hostId > 0) allowedEdges.add(`${hostId}->${firstNextHostId}`);
-    }
-  }
-  const extraExits = await db.getTunnelExitNodes(Number(tunnel?.id || 0)).catch(() => []) as any[];
-  const entryHostId = Number(currentPath[0] || tunnel?.entryHostId || 0);
-  for (const exit of extraExits || []) {
-    const exitHostId = Number(exit?.hostId || 0);
-    if (entryHostId > 0 && exitHostId > 0) allowedEdges.add(`${entryHostId}->${exitHostId}`);
-  }
-  return detailEdges.every(([from, to]) => allowedEdges.has(`${from}->${to}`));
+  const hostIds = Array.from(new Set(rawDetails.flatMap((detail) => [detail.fromHostId, detail.toHostId]
+    .map((value) => Number(value || 0))
+    .filter((value) => value > 0))));
+  const hostRows = await Promise.all(hostIds.map((hostId) => db.getHostById(hostId).catch(() => null)));
+  const hostNames = new Map(hostIds.map((hostId, index) => [
+    hostId,
+    String((hostRows[index] as any)?.name || `主机${hostId}`),
+  ]));
+  return rawDetails.map((detail, index) => {
+    const fromId = Number(detail.fromHostId || 0) || 0;
+    const toId = Number(detail.toHostId || 0) || 0;
+    const fromName = hostNames.get(fromId) || (fromId > 0 ? `主机${fromId}` : `节点 ${index + 1}`);
+    const toName = hostNames.get(toId) || (toId > 0 ? `主机${toId}` : `节点 ${index + 2}`);
+    const success = !detail.isTimeout && typeof detail.latencyMs === "number" && detail.latencyMs > 0;
+    return {
+      success,
+      latencyMs: success ? detail.latencyMs : null,
+      message: success ? null : "隧道跳探测超时",
+      fromHostId: fromId || null,
+      toHostId: toId || null,
+      hopIndex: detail.hopIndex,
+      hopCount: detail.hopCount,
+      hopLabel: `${detail.hopIndex + 1}/${detail.hopCount} ${fromId || fromName}->${toId || toName}`,
+      routeLabel: `${fromName} -> ${toName}`,
+      method: "tcp",
+      pending: false,
+    };
+  });
 }
 
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
@@ -107,10 +163,13 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
+    const tunnelLatencyBaselineId = meta?.kind === "forward-via-tunnel"
+      ? Number((meta as any).tunnelLatencyBaselineId || 0)
+      : 0;
     const refreshedTunnelLatency = meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number"
       ? await waitForTunnelLatencyRefresh({
         tunnelId: meta.tunnelId,
-        baselineId: Number((meta as any).tunnelLatencyBaselineId || 0),
+        baselineId: tunnelLatencyBaselineId,
         loadLatest: db.getLatestTunnelLatency,
       })
       : null;
@@ -217,7 +276,9 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
-      const tunnelLatency = refreshedTunnelLatency;
+      const tunnelLatency = tunnelLatencySampleIsAfterBaseline(refreshedTunnelLatency, tunnelLatencyBaselineId)
+        ? refreshedTunnelLatency
+        : null;
       const tunnel = await db.getTunnelById(meta.tunnelId);
       const combinedLatency = combineTunnelRuleLatencySample({
         targetLatencyMs: cleanLatency,
@@ -229,19 +290,31 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       const tunnelLatencyMs = combinedLatency && !combinedLatency.isTimeout && typeof (tunnelLatency as any)?.latencyMs === "number"
         ? Number((tunnelLatency as any).latencyMs)
         : 0;
-      let tunnelDetails: any[] = [];
+      let tunnelDetails: any[] = tunnelLatency
+        ? await loadFreshTunnelAutoDetails(tunnel, tunnelLatency)
+        : [];
       const tunnelMessage = typeof (tunnel as any)?.lastTestMessage === "string" ? String((tunnel as any).lastTestMessage).trim() : "";
       const tunnelTestStatus = String((tunnel as any)?.lastTestStatus || "");
-      if (tunnelMessage.startsWith("{") && tunnelTestStatus !== "pending" && tunnelTestStatus !== "running") {
+      if (tunnelLatency && tunnelDetails.length === 0 && tunnelMessage.startsWith("{") && tunnelTestStatus !== "pending" && tunnelTestStatus !== "running") {
         try {
           const parsedTunnelMessage = JSON.parse(tunnelMessage);
-          if (Array.isArray(parsedTunnelMessage?.details)) {
+          if (
+            Array.isArray(parsedTunnelMessage?.details)
+            && structuredTunnelMessageMatchesLatency(
+              parsedTunnelMessage?.generatedAt,
+              (tunnelLatency as any)?.recordedAt,
+            )
+          ) {
             tunnelDetails = parsedTunnelMessage.details
               .filter((detail: any) => !detail?.pending && (detail?.success || detail?.message || typeof detail?.latencyMs === "number"))
               .map((detail: any) => ({
                 success: !!detail.success,
                 latencyMs: typeof detail.latencyMs === "number" ? detail.latencyMs : null,
                 message: typeof detail.message === "string" ? detail.message : null,
+                fromHostId: Number(detail.fromHostId || 0) || null,
+                toHostId: Number(detail.toHostId || 0) || null,
+                hopIndex: typeof detail.hopIndex === "number" && Number.isInteger(detail.hopIndex) && detail.hopIndex >= 0 ? detail.hopIndex : null,
+                hopCount: typeof detail.hopCount === "number" && Number.isInteger(detail.hopCount) && detail.hopCount > 0 ? detail.hopCount : null,
                 hopLabel: typeof detail.hopLabel === "string" ? detail.hopLabel : null,
                 routeLabel: typeof detail.routeLabel === "string" ? detail.routeLabel : null,
                 method: typeof detail.method === "string" ? detail.method : "tcp",
@@ -278,6 +351,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           success,
           latencyMs: success ? cleanLatency : null,
           message: success && resolvedTargetText ? resolvedTargetText : success ? null : detailMessage,
+          fromHostId: Number(host.id) || null,
           hopLabel: `出口 -> 目标 ${target}`,
           routeLabel: `出口 -> 目标 ${target}`,
           method: targetMethod,

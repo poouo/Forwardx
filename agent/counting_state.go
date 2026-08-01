@@ -75,8 +75,14 @@ func restoreCountingChainStates(bootID string) {
 				_ = removeTrafficStateFile(path, trafficStateDir)
 				continue
 			}
+			// Keep the layout signature so the first desired-state heartbeat can
+			// reuse the rule identity, but force one post-restart verification.
+			// The persisted timestamp only proves that the previous process
+			// completed a repair; it cannot prove that the current process still
+			// has the kernel layout (iptables/nftables may have been reset while
+			// the Agent was stopped).
 			restoredSignatures[port] = state.Signature
-			restoredCheckedAt[port] = time.Unix(state.CheckedAt, 0)
+			restoredCheckedAt[port] = time.Time{}
 		}
 	}
 
@@ -101,6 +107,7 @@ func finishCountingChainRepair(rule runningRule, repaired bool) {
 
 	countingChainMu.Lock()
 	delete(countingChainRepairPending, port)
+	delete(countingChainRepairCleanup, port)
 	if countingChainSignatures[port] != signature {
 		countingChainMu.Unlock()
 		return
@@ -159,6 +166,7 @@ func forgetCountingChainState(port string) {
 	countingChainMu.Lock()
 	delete(countingChainSignatures, port)
 	delete(countingChainCheckedAt, port)
+	delete(countingChainRepairCleanup, port)
 	countingChainMu.Unlock()
 	removeCountingChainStateFile(port)
 }

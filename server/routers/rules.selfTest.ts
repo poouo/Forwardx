@@ -101,7 +101,10 @@ export const selfTestRulesRouter = router({
         const targetIp = rule.targetIp;
         if (!targetIp) throw new Error("目标地址不可用，请检查规则目标地址");
         const tunnelLatencyBaseline = await db.getLatestTunnelLatency(Number(tunnel.id));
-        const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
+        const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel", {
+          urgent: true,
+          forceTcping: true,
+        });
         message = JSON.stringify({
           kind: "forward-via-tunnel",
           tunnelId: tunnel.id,

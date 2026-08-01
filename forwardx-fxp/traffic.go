@@ -25,8 +25,9 @@ type trafficBatchKey struct {
 }
 
 type trafficBatchValue struct {
-	bytesIn  uint64
-	bytesOut uint64
+	bytesIn     uint64
+	bytesOut    uint64
+	connections uint64
 }
 
 type pendingTrafficBatch struct {
@@ -43,10 +44,14 @@ var trafficPendingReports = map[trafficBatchKey]pendingTrafficBatch{}
 var trafficReportSequence atomic.Uint64
 var trafficHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
-func enqueueTraffic(cfg config, bytesIn, bytesOut uint64) {
+func enqueueTraffic(cfg config, bytesIn, bytesOut uint64, connectionDeltas ...uint64) {
 	panelURL := strings.TrimRight(strings.TrimSpace(cfg.PanelURL), "/")
 	token := strings.TrimSpace(cfg.Token)
-	if panelURL == "" || token == "" || cfg.RuleID <= 0 || (bytesIn == 0 && bytesOut == 0) {
+	connections := uint64(0)
+	if len(connectionDeltas) > 0 {
+		connections = connectionDeltas[0]
+	}
+	if panelURL == "" || token == "" || cfg.RuleID <= 0 || (bytesIn == 0 && bytesOut == 0 && connections == 0) {
 		return
 	}
 	key := trafficBatchKey{panelURL: panelURL, token: token, producerID: fxpTrafficProducerID(cfg)}
@@ -59,6 +64,7 @@ func enqueueTraffic(cfg config, bytesIn, bytesOut uint64) {
 	current := byRule[cfg.RuleID]
 	current.bytesIn += bytesIn
 	current.bytesOut += bytesOut
+	current.connections += connections
 	byRule[cfg.RuleID] = current
 	trafficBatchMu.Unlock()
 	startTrafficBatchWorker()
@@ -95,7 +101,7 @@ func trafficBatchSnapshot() map[trafficBatchKey]map[int]trafficBatchValue {
 	for key, byRule := range trafficBatches {
 		copied := make(map[int]trafficBatchValue, len(byRule))
 		for ruleID, value := range byRule {
-			if value.bytesIn > 0 || value.bytesOut > 0 {
+			if value.bytesIn > 0 || value.bytesOut > 0 || value.connections > 0 {
 				copied[ruleID] = value
 			}
 		}
@@ -126,7 +132,12 @@ func acknowledgeTrafficBatch(key trafficBatchKey, sent map[int]trafficBatchValue
 		} else {
 			current.bytesOut = 0
 		}
-		if current.bytesIn == 0 && current.bytesOut == 0 {
+		if current.connections >= value.connections {
+			current.connections -= value.connections
+		} else {
+			current.connections = 0
+		}
+		if current.bytesIn == 0 && current.bytesOut == 0 && current.connections == 0 {
 			delete(byRule, ruleID)
 		} else {
 			byRule[ruleID] = current
@@ -170,7 +181,7 @@ func postTrafficBatch(key trafficBatchKey, pending pendingTrafficBatch) bool {
 	for _, ruleID := range ruleIDs {
 		value := byRule[ruleID]
 		stats = append(stats, map[string]any{
-			"ruleId": ruleID, "bytesIn": value.bytesIn, "bytesOut": value.bytesOut, "connections": 0,
+			"ruleId": ruleID, "bytesIn": value.bytesIn, "bytesOut": value.bytesOut, "connections": value.connections,
 		})
 	}
 	env, err := encryptEnvelope(map[string]any{
@@ -238,7 +249,7 @@ func trafficBatchPendingSnapshot() map[trafficBatchKey]pendingTrafficBatch {
 		}
 		copy := make(map[int]trafficBatchValue, len(current))
 		for ruleID, value := range current {
-			if value.bytesIn > 0 || value.bytesOut > 0 {
+			if value.bytesIn > 0 || value.bytesOut > 0 || value.connections > 0 {
 				copy[ruleID] = value
 			}
 		}
@@ -254,7 +265,7 @@ func trafficBatchPendingSnapshot() map[trafficBatchKey]pendingTrafficBatch {
 func startTrafficReporter(cfg config, counter *trafficCounter) func() {
 	done := make(chan struct{})
 	var reportMu sync.Mutex
-	var lastIn, lastOut uint64
+	var lastIn, lastOut, lastConnections uint64
 	reportDelta := func() {
 		reportMu.Lock()
 		defer reportMu.Unlock()
@@ -262,10 +273,13 @@ func startTrafficReporter(cfg config, counter *trafficCounter) func() {
 		curOut := counter.out.Load()
 		deltaIn := curIn - lastIn
 		deltaOut := curOut - lastOut
-		if deltaIn > 0 || deltaOut > 0 {
-			enqueueTraffic(cfg, deltaIn, deltaOut)
+		curConnections := counter.connections.Load()
+		deltaConnections := curConnections - lastConnections
+		if deltaIn > 0 || deltaOut > 0 || deltaConnections > 0 {
+			enqueueTraffic(cfg, deltaIn, deltaOut, deltaConnections)
 			lastIn = curIn
 			lastOut = curOut
+			lastConnections = curConnections
 		}
 	}
 	go func() {

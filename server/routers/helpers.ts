@@ -1,7 +1,10 @@
 import * as db from "../db";
-import { pushAgentRefresh } from "../agentEvents";
+import { pushAgentRefresh, requestHostTcping } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
+import { tunnelLatencyProbeSourceHostIds } from "../tunnelLatencyDetails";
+import { clearTunnelAutoHopLatencyState } from "../tunnelAutoLatencyState";
+import { clearTunnelMultiEntryLatencyState } from "../tunnelMultiEntryLatencyState";
 
 export function ensureAdminOrSelf(ctx: { user: { id: number; role: string } }, userId: number) {
   if (ctx.user.role !== "admin" && ctx.user.id !== userId) {
@@ -90,7 +93,11 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
   return { tunnel, isTrafficBillingResource };
 }
 
-export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, options?: { urgent?: boolean }) {
+export async function pushTunnelEndpointRefresh(
+  tunnel: any,
+  reason: string,
+  options?: { urgent?: boolean; forceTcping?: boolean },
+) {
   if (tunnel?.id) clearTunnelRuntimeStatus(Number(tunnel.id));
   const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
   const extraExitRows = tunnel?.id ? await db.getTunnelExitNodes(Number(tunnel.id)) : [];
@@ -119,6 +126,14 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, opt
     ...extraExitHostIds,
   ];
   const uniqueHostIds = Array.from(new Set(hostIds));
+  const tcpingHostIds = options?.forceTcping === true
+    ? tunnelLatencyProbeSourceHostIds(entryHostIds, hopRows)
+    : [];
+  if (options?.forceTcping === true) {
+    clearTunnelAutoHopLatencyState(Number(tunnel?.id));
+    clearTunnelMultiEntryLatencyState(Number(tunnel?.id));
+  }
+  for (const hostId of tcpingHostIds) requestHostTcping(hostId);
   const tunnelName = String(tunnel?.name || `隧道 #${tunnel?.id || "-"}`).trim();
   const pushed = uniqueHostIds.map((hostId) => ({
     hostId,
@@ -127,7 +142,7 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string, opt
   const allPushed = pushed.every((item) => item.pushed);
   appendPanelLog(
     allPushed ? "info" : "warn",
-    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} urgent=${options?.urgent === true} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
+    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} urgent=${options?.urgent === true} forceTcping=${options?.forceTcping === true} tcpingHosts=${tcpingHostIds.join(",") || "-"} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
   const entryHostIdSet = new Set(entryHostIds);
   return {

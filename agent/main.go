@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.181"
+var Version = "2.2.182"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -212,6 +212,7 @@ func fxpEndpointEventsSnapshot() []fxpEndpointEvent {
 
 var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
+var failoverControlMu sync.Mutex
 var failoverMu sync.Mutex
 var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
@@ -253,6 +254,7 @@ var countingChainMu sync.Mutex
 var countingChainSignatures = map[string]string{}
 var countingChainCheckedAt = map[string]time.Time{}
 var countingChainRepairPending = map[string]bool{}
+var countingChainRepairCleanup = map[string]bool{}
 var countingChainRepairQueue = make(chan runningRule, actionQueueCapacity)
 var countingChainRepairWorkersOnce sync.Once
 var runtimeActionMu sync.Mutex
@@ -865,10 +867,11 @@ type localRuntimeRuleState struct {
 }
 
 type localRuntimeTunnelState struct {
-	Port        int    `json:"port"`
-	TunnelID    int    `json:"tunnelId"`
-	ForwardType string `json:"forwardType"`
-	Ready       bool   `json:"ready"`
+	Port             int    `json:"port"`
+	TunnelID         int    `json:"tunnelId"`
+	ForwardType      string `json:"forwardType"`
+	TransportVersion string `json:"transportVersion,omitempty"`
+	Ready            bool   `json:"ready"`
 }
 
 type localRuntimeServiceState struct {
@@ -1309,7 +1312,14 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	case "nftables":
 		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
-		return readiness.gostReadyForPort(port, gostRuntimeListenProtocol(forwardType, state.Protocol))
+		// Main and tunnel GOST runtimes can briefly share a port during a
+		// rolling restart. Do not let a listener owned by the other runtime
+		// family make this rule look ready and suppress its recovery action.
+		return readiness.gostReadyForPortInScope(
+			port,
+			gostRuntimeListenProtocol(forwardType, state.Protocol),
+			desiredGostRuntimeScope(forwardType),
+		)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return readiness.nginxReadyForPort(port, state.Protocol)
 	case "forwardx":
@@ -1325,7 +1335,7 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 	}
 	switch strings.TrimSpace(forwardType) {
 	case "gost-tunnel":
-		return readiness.gostReadyForPort(port, "tcp")
+		return readiness.gostReadyForPortInScope(port, "tcp", desiredGostTunnelRuntimeScope)
 	case "nginx-tunnel", "nginx-tunnel-exit":
 		return readiness.nginxReadyForPort(port, "tcp")
 	case "forwardx-tunnel":
@@ -1379,7 +1389,94 @@ func (s *kernelForwardSnapshot) desiredActionConsistent(a action) bool {
 }
 
 func (s *kernelForwardSnapshot) actionApplyReady(a action) bool {
-	return s.kernelRuleApplyPresent(a.ForwardType, a.RuleID, a.SourcePort, a.TargetIP, a.TargetPort, a.Protocol)
+	return s.kernelRuleApplyPresent(a.ForwardType, a.RuleID, a.SourcePort, a.TargetIP, a.TargetPort, a.Protocol) &&
+		accessLimitActionReady(a)
+}
+
+var accessLimitRejectPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -A (FWX_LIMIT_[A-Za-z0-9_]+) -p tcp -m connlimit --connlimit-above ([0-9]+) --connlimit-mask ([0-9]+) -j REJECT --reject-with tcp-reset`)
+var accessLimitReturnPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -A (FWX_LIMIT_[A-Za-z0-9_]+) -j RETURN`)
+var accessLimitJumpPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -C (INPUT|FORWARD) -p tcp --dport ([0-9]+) -j (FWX_LIMIT_[A-Za-z0-9_]+)`)
+
+type accessLimitRuleExpectation struct {
+	binary string
+	chain  string
+	args   string
+}
+
+type accessLimitJumpExpectation struct {
+	binary string
+	base   string
+	port   string
+	chain  string
+}
+
+// accessLimitActionReady verifies only the auxiliary FWX_LIMIT rules emitted
+// by the panel. It intentionally uses -C checks and never flushes or rewrites
+// a chain, so existing iptables counters remain intact during recovery.
+func accessLimitActionReady(a action) bool {
+	commands := strings.Join(append(append(append([]string{}, a.PreCommands...), a.Commands...), a.PostCommands...), "\n")
+	if !strings.Contains(commands, "FWX_LIMIT_") {
+		return true
+	}
+
+	ruleExpectations := map[string]accessLimitRuleExpectation{}
+	for _, match := range accessLimitRejectPattern.FindAllStringSubmatch(commands, -1) {
+		if len(match) != 5 {
+			continue
+		}
+		expectation := accessLimitRuleExpectation{
+			binary: match[1],
+			chain:  match[2],
+			args:   fmt.Sprintf("-p tcp -m connlimit --connlimit-above %s --connlimit-mask %s -j REJECT --reject-with tcp-reset", match[3], match[4]),
+		}
+		key := expectation.binary + "|" + expectation.chain + "|" + expectation.args
+		ruleExpectations[key] = expectation
+	}
+	for _, match := range accessLimitReturnPattern.FindAllStringSubmatch(commands, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		expectation := accessLimitRuleExpectation{binary: match[1], chain: match[2], args: "-j RETURN"}
+		key := expectation.binary + "|" + expectation.chain + "|" + expectation.args
+		ruleExpectations[key] = expectation
+	}
+
+	jumps := map[string]accessLimitJumpExpectation{}
+	for _, match := range accessLimitJumpPattern.FindAllStringSubmatch(commands, -1) {
+		if len(match) != 5 {
+			continue
+		}
+		expectation := accessLimitJumpExpectation{binary: match[1], base: match[2], port: match[3], chain: match[4]}
+		key := expectation.binary + "|" + expectation.base + "|" + expectation.port + "|" + expectation.chain
+		jumps[key] = expectation
+	}
+
+	// A cleanup-only action has no expected chain rules and must leave all
+	// matching jumps absent. Apply actions, in contrast, expect every emitted
+	// reject/RETURN rule and jump to be present.
+	for _, expectation := range ruleExpectations {
+		if !commandExists(expectation.binary) {
+			continue
+		}
+		if !runShellQuiet(expectation.binary + " -C " + expectation.chain + " " + expectation.args + " 2>/dev/null") {
+			return false
+		}
+	}
+	for _, expectation := range jumps {
+		if !commandExists(expectation.binary) {
+			continue
+		}
+		command := expectation.binary + " -C " + expectation.base + " -p tcp --dport " + expectation.port + " -j " + expectation.chain + " 2>/dev/null"
+		hasJump := runShellQuiet(command)
+		if len(ruleExpectations) > 0 {
+			if !hasJump {
+				return false
+			}
+		} else if hasJump {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *kernelForwardSnapshot) actionRemoveDone(a action) bool {
@@ -1811,6 +1908,7 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 	readiness := readLocalRuntimeReadinessCached()
 	ruleStates := readLocalRuntimeRuleStates()
 	ruleStates = mergeDesiredDisjointRuleStates(ruleStates, desiredRunningRuleStatesSnapshot())
+	activeFXPSpecs := activeFXPSpecsSnapshot()
 	activeFXPEntries := activeFXPEntrySpecsSnapshot()
 	var persistedFXPEntries []fxpSpec
 	persistedFXPLoaded := false
@@ -1858,11 +1956,20 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 				continue
 			}
 			forwardType := strings.TrimSpace(readTunnelForwardTypeByPort(port))
+			transportVersion := fxpTransportVersionForLocalTunnel(tunnelID, portValue, activeFXPSpecs)
+			if transportVersion == "" {
+				if !persistedFXPLoaded {
+					persistedFXPEntries = loadPersistedFXPSpecs()
+					persistedFXPLoaded = true
+				}
+				transportVersion = fxpTransportVersionForLocalTunnel(tunnelID, portValue, persistedFXPEntries)
+			}
 			tunnels = append(tunnels, localRuntimeTunnelState{
-				Port:        portValue,
-				TunnelID:    tunnelID,
-				ForwardType: forwardType,
-				Ready:       localTunnelStateReady(tunnelID, portValue, forwardType, &readiness),
+				Port:             portValue,
+				TunnelID:         tunnelID,
+				ForwardType:      forwardType,
+				TransportVersion: transportVersion,
+				Ready:            localTunnelStateReady(tunnelID, portValue, forwardType, &readiness),
 			})
 		}
 	}
@@ -1882,15 +1989,19 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 }
 
 func activeFXPEntrySpecsSnapshot() []fxpSpec {
+	return flattenFXPEntrySpecs(activeFXPSpecsSnapshot())
+}
+
+func activeFXPSpecsSnapshot() []fxpSpec {
 	fxpMu.Lock()
 	specs := make([]fxpSpec, 0, len(fxpServers))
 	for _, process := range fxpServers {
 		if process != nil {
-			specs = append(specs, process.spec)
+			specs = append(specs, normalizeFXPSpec(process.spec))
 		}
 	}
 	fxpMu.Unlock()
-	return flattenFXPEntrySpecs(specs)
+	return specs
 }
 
 func flattenFXPEntrySpecs(specs []fxpSpec) []fxpSpec {
@@ -1928,6 +2039,34 @@ func fxpTransportVersionForLocalRule(state localRuleState, entries []fxpSpec) st
 			return ""
 		}
 		version = entry.TransportVersion
+	}
+	return version
+}
+
+func fxpTransportVersionForLocalTunnel(tunnelID int, port int, specs []fxpSpec) string {
+	if tunnelID <= 0 || port <= 0 {
+		return ""
+	}
+	version := ""
+	for _, raw := range specs {
+		raw = normalizeFXPSpec(raw)
+		candidates := []fxpSpec{raw}
+		if isFXPEntryGroup(raw) {
+			candidates = raw.Entries
+		}
+		for _, candidate := range candidates {
+			candidate = normalizeFXPSpec(candidate)
+			if candidate.TunnelID != tunnelID || candidate.Role != "relay" && candidate.Role != "exit" {
+				continue
+			}
+			if !fxpSpecUsesListenEndpoint(candidate, port, "both") {
+				continue
+			}
+			if version != "" && version != candidate.TransportVersion {
+				return ""
+			}
+			version = candidate.TransportVersion
+		}
 	}
 	return version
 }
@@ -2314,10 +2453,12 @@ func main() {
 	restoreCountingChainStates(agentBootID)
 
 	startAgentLogMaintenance()
-	// Restore Agent-owned forwarding runtimes before the first panel request.
-	// The panel remains the authority for later reconciliation, but an Agent
-	// restart must not create an avoidable forwarding outage.
-	restorePersistedForwardXRuntimes(cfg)
+	// Register and start the communication/reconciliation loops before restoring
+	// persisted runtimes. Runtime restore can involve many FXP listeners and
+	// several seconds of readiness checks; keeping it off the startup path lets
+	// the panel send the desired state immediately. The action queue and FXP
+	// control lock make restore and server-driven reconciliation idempotent when
+	// they overlap.
 	_ = register(cfg)
 	resetDesiredActionRecordsAfterAgentUpgrade()
 	startDesiredActionRecordsFlusher()
@@ -2329,6 +2470,10 @@ func main() {
 	go agentPresenceLoop(cfg)
 	go agentMetricsScheduler(cfg)
 	go agentDNSWatchScheduler()
+	go func() {
+		restorePersistedForwardXRuntimes(cfg)
+		wakeHeartbeat()
+	}()
 	lastFullHeartbeatAt := time.Time{}
 	heartbeatRetryInterval := time.Duration(0)
 	metricsOnlyMode := false
@@ -4409,13 +4554,17 @@ func cleanupSupersededFXPPersistence(a action, previousRuntime *localActionRunti
 		// snapshot on the same protocol lane. Keep it while this apply is
 		// failing so a later Agent restart can still restore the last good
 		// runtime.
+		fxpControlMu.Lock()
 		removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+		fxpControlMu.Unlock()
 		return
 	}
 	if a.Op == "remove" {
 		// Older panel actions may omit the FXP payload on remove. Remove the
 		// matching lane by port so such actions cannot resurrect stale FXP.
+		fxpControlMu.Lock()
 		removePersistedFXPSpec(fxpSpec{ListenPort: a.SourcePort, Protocol: normalizeRuntimeProtocol(a.Protocol)})
+		fxpControlMu.Unlock()
 	}
 }
 
@@ -4787,7 +4936,7 @@ func shouldSkipRuntimeAction(a action) bool {
 	state := runtimeActionCache[key]
 	recentMatch := state.Success && state.Signature == signature && !state.CheckedAt.IsZero() && now.Sub(state.CheckedAt) < runtimeActionRefreshInterval
 	runtimeActionMu.Unlock()
-	if recentMatch && runtimeActionServicesHealthy(a) {
+	if recentMatch && runtimeActionReady(a) {
 		return true
 	}
 	runtimeActionMu.Lock()
@@ -4864,6 +5013,13 @@ func runtimeActionServicesHealthy(a action) bool {
 		}
 	}
 	return true
+}
+
+func runtimeActionReady(a action) bool {
+	if shouldVerifyManagedRuntimeSync(a) {
+		return managedRuntimeSyncReady(a)
+	}
+	return runtimeActionServicesHealthy(a)
 }
 
 func shouldVerifyManagedRuntimeSync(a action) bool {
@@ -7518,6 +7674,26 @@ func nftProcessCountingCmds(port int, protocol string) []string {
 	return commands
 }
 
+func nftProcessCountingEnsureCmds(port int, protocol string) []string {
+	p := strconv.Itoa(port)
+	commands := []string{
+		"nft add table inet " + nftProcessTrafficTable + " 2>/dev/null || true",
+		"nft add chain inet " + nftProcessTrafficTable + " input '{ type filter hook input priority mangle; policy accept; }' 2>/dev/null || true",
+		"nft add chain inet " + nftProcessTrafficTable + " output '{ type filter hook output priority mangle; policy accept; }' 2>/dev/null || true",
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		inMarker := "fwx-stat-" + p + ":in"
+		outMarker := "fwx-stat-" + p + ":out"
+		inAdd := fmt.Sprintf("nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`))
+		outAdd := fmt.Sprintf("nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`))
+		commands = append(commands,
+			fmt.Sprintf("if nft list chain inet %s input 2>/dev/null | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(inMarker), inAdd),
+			fmt.Sprintf("if nft list chain inet %s output 2>/dev/null | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(outMarker), outAdd),
+		)
+	}
+	return commands
+}
+
 func iptablesProcessCountingCmds(port int, protocol string) []string {
 	if port <= 0 {
 		return nil
@@ -7608,6 +7784,10 @@ func countingRuleCleanupCmds(port int) []string {
 }
 
 func ensureCountingChains(rule runningRule) bool {
+	return ensureCountingChainsWithCleanup(rule, true)
+}
+
+func ensureCountingChainsWithCleanup(rule runningRule, cleanup bool) bool {
 	if rule.SourcePort <= 0 {
 		return true
 	}
@@ -7621,6 +7801,9 @@ func ensureCountingChains(rule runningRule) bool {
 			}
 			return false
 		}
+	}
+	if !cleanup {
+		return ensureCountingChainsNonDestructive(rule, mode)
 	}
 
 	cleanupOK := runShellBatch(countingRuleCleanupCmds(rule.SourcePort))
@@ -7653,6 +7836,24 @@ func ensureCountingChains(rule runningRule) bool {
 	return ok
 }
 
+// ensureCountingChainsNonDestructive repairs missing rules without flushing
+// existing chains. This preserves counters when only the Agent process was
+// restarted and the firewall layout is still present.
+func ensureCountingChainsNonDestructive(rule runningRule, mode countingRuleMode) bool {
+	if mode == countingRuleNone {
+		return true
+	}
+	if mode == countingRuleKernel {
+		target := iptablesAgentAddress(rule.TargetIP)
+		binary := iptablesAgentBinaryForTarget(target)
+		return runShellQuiet("command -v "+binary+" >/dev/null 2>&1") && runShellBatch(countingRuleInstallCmds(rule))
+	}
+	if runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingEnsureCmds(rule.SourcePort, rule.Protocol)) {
+		return true
+	}
+	return runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(iptablesProcessCountingCmds(rule.SourcePort, rule.Protocol))
+}
+
 func ensureCountingChainsIfNeeded(r runningRule) {
 	if r.SourcePort <= 0 {
 		return
@@ -7670,6 +7871,7 @@ func ensureCountingChainsIfNeeded(r runningRule) {
 	if lastSig != signature {
 		countingChainCheckedAt[key] = time.Time{}
 	}
+	countingChainRepairCleanup[key] = lastSig != signature
 	countingChainRepairPending[key] = true
 	countingChainMu.Unlock()
 	countingChainRepairWorkersOnce.Do(startCountingChainRepairWorkers)
@@ -7678,6 +7880,7 @@ func ensureCountingChainsIfNeeded(r runningRule) {
 	default:
 		countingChainMu.Lock()
 		delete(countingChainRepairPending, key)
+		delete(countingChainRepairCleanup, key)
 		countingChainCheckedAt[key] = time.Time{}
 		countingChainMu.Unlock()
 		if shouldLogAgentReport("traffic-counting-queue-full", agentReportLogInterval) {
@@ -7695,10 +7898,17 @@ func countingChainRepairWorker() {
 		for atomic.LoadInt64(&actionPendingCount) > 0 || time.Since(agentProcessStartedAt) < countingChainRepairInitialDelay {
 			time.Sleep(250 * time.Millisecond)
 		}
+		cleanup := true
+		key := strconv.Itoa(rule.SourcePort)
+		countingChainMu.Lock()
+		if value, exists := countingChainRepairCleanup[key]; exists {
+			cleanup = value
+		}
+		countingChainMu.Unlock()
 		ok := true
 		current, exists := desiredRunningRuleForStatePort(rule.RuleID, rule.SourcePort)
 		if exists && countingChainRuleSignature(current) == countingChainRuleSignature(rule) {
-			ok = ensureCountingChains(rule)
+			ok = ensureCountingChainsWithCleanup(rule, cleanup)
 		} else {
 			ok = false
 		}
@@ -8815,6 +9025,15 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 	}
 	if existingMatches {
 		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
+		// A tracked process can outlive its persistent snapshot (for example
+		// after a handoff or a partial state-directory cleanup). Refresh the
+		// last-known-good plan while reusing the healthy listener so the next
+		// Agent restart can restore it without disrupting traffic now.
+		if persistenceEnabled {
+			if err := persistFXPSpec(originalSpec); err != nil {
+				logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
+			}
+		}
 		return true
 	}
 	if existingActive && existing.signature == signature {
@@ -9267,6 +9486,8 @@ func persistFXPHandoffRecoverySnapshot(originals []fxpSpec) bool {
 }
 
 func commitFXPHandoffPersistence(originals []fxpSpec, selector fxpRuntimeSelector) {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
 	for _, original := range originals {
 		original = normalizeFXPSpec(original)
 		if isFXPEntryGroup(original) {
@@ -9286,6 +9507,8 @@ func commitFXPHandoffPersistence(originals []fxpSpec, selector fxpRuntimeSelecto
 }
 
 func commitFXPHandoffBatchPersistence(originals []fxpSpec, selectors []fxpRuntimeSelector) {
+	fxpControlMu.Lock()
+	defer fxpControlMu.Unlock()
 	for _, original := range originals {
 		original = normalizeFXPSpec(original)
 		if isFXPEntryGroup(original) {
@@ -10182,6 +10405,12 @@ func normalizeFailoverSpec(spec failoverSpec) failoverSpec {
 }
 
 func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMessage *actionMessage) bool {
+	failoverControlMu.Lock()
+	defer failoverControlMu.Unlock()
+	return startFailoverProxyLocked(ruleID, sourcePort, spec, actionMessage)
+}
+
+func startFailoverProxyLocked(ruleID int, sourcePort int, spec failoverSpec, actionMessage *actionMessage) bool {
 	spec = normalizeFailoverSpec(spec)
 	if !spec.Enabled || spec.ListenPort <= 0 || len(spec.Targets) < 2 {
 		removePersistedFailoverSpec(ruleID, sourcePort)
@@ -10245,6 +10474,12 @@ func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMes
 }
 
 func stopFailoverProxy(ruleID int, sourcePort int) {
+	failoverControlMu.Lock()
+	defer failoverControlMu.Unlock()
+	stopFailoverProxyLocked(ruleID, sourcePort)
+}
+
+func stopFailoverProxyLocked(ruleID int, sourcePort int) {
 	stopFailoverProxyRuntime(ruleID, sourcePort)
 	removePersistedFailoverSpec(ruleID, sourcePort)
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isSafeCustomSidebarIconDataUrl,
+  normalizeCustomSidebarUrl,
   normalizeCustomSidebarPages,
   visibleCustomSidebarPages,
 } from "../shared/customSidebarPages";
@@ -24,6 +25,25 @@ test("custom sidebar pages normalize URLs, duplicate IDs, and role visibility", 
   ]);
   assert.deepEqual(visibleCustomSidebarPages(pages, "user").map((page) => page.id), ["status"]);
   assert.deepEqual(visibleCustomSidebarPages(pages, "admin").map((page) => page.id), ["status", "admin"]);
+  assert.equal(pages[0].openMode, "embed");
+});
+
+test("custom sidebar URLs support panel paths and bare host names", () => {
+  assert.equal(normalizeCustomSidebarUrl("/monitor"), "/monitor");
+  assert.equal(normalizeCustomSidebarUrl("monitor.example.com/dashboard"), "https://monitor.example.com/dashboard");
+  assert.equal(normalizeCustomSidebarUrl("//monitor.example.com/dashboard"), "https://monitor.example.com/dashboard");
+  assert.equal(normalizeCustomSidebarUrl("javascript:alert(1)"), "");
+  assert.equal(normalizeCustomSidebarUrl("https://user:pass@example.com"), "");
+
+  const [external] = normalizeCustomSidebarPages([{
+    id: "external",
+    name: "External",
+    url: "monitor.example.com",
+    visibility: "all",
+    openMode: "external",
+  }]);
+  assert.equal(external.openMode, "external");
+  assert.equal(external.url, "https://monitor.example.com");
 });
 
 test("custom sidebar SVG icons reject active content and external resources", () => {

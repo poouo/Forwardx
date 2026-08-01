@@ -62,7 +62,7 @@ export function notifyTunnelLatencyRefresh(tunnelId: unknown) {
 
 function isNewTunnelLatency(row: any, baselineId: number) {
   const latestId = Number(row?.id || 0);
-  return latestId > 0 && (baselineId <= 0 || latestId !== baselineId);
+  return latestId > 0 && (baselineId <= 0 || latestId > baselineId);
 }
 
 export async function waitForTunnelLatencyRefresh<T>(input: {

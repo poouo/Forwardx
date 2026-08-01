@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   gostTunnelTransportType,
+  isPassiveForwardXFirstHopMarker,
   planGostTunnelProbeListeners,
   planManualTunnelTestRefresh,
   shouldReconcileGostRuntime,
@@ -208,6 +209,39 @@ test("keeps ForwardX and GOST tunnel action types unchanged", () => {
     assert.equal(tunnelHopRuntimeForwardType({ mode }), "gost-tunnel");
     assert.equal(tunnelRuleRuntimeForwardType({ mode }), "gost");
   }
+});
+
+test("recognizes only the passive ForwardX first-hop marker", () => {
+  const marker = {
+    tunnelId: 17,
+    port: 25117,
+    forwardType: "forwardx-tunnel",
+    ready: false,
+  };
+  assert.equal(isPassiveForwardXFirstHopMarker({
+    isFirstHop: true,
+    tunnelId: 17,
+    port: 25117,
+    local: marker,
+  }), true);
+  assert.equal(isPassiveForwardXFirstHopMarker({
+    isFirstHop: true,
+    tunnelId: 17,
+    port: 25117,
+    local: { ...marker, transportVersion: "v2" },
+  }), false);
+  assert.equal(isPassiveForwardXFirstHopMarker({
+    isFirstHop: false,
+    tunnelId: 17,
+    port: 25117,
+    local: marker,
+  }), false);
+  assert.equal(isPassiveForwardXFirstHopMarker({
+    isFirstHop: true,
+    tunnelId: 17,
+    port: 25117,
+    local: { ...marker, ready: true },
+  }), false);
 });
 
 test("rejects unknown tunnel modes instead of treating them as GOST", () => {

@@ -5,6 +5,42 @@ export type TunnelRuntimeForwardType = "forwardx-tunnel" | "gost-tunnel" | "ngin
 export type TunnelRuleRuntimeForwardType = "forwardx" | "gost" | "nginx-tunnel";
 export type GostTunnelTransportType = "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
 
+/**
+ * A multi-hop ForwardX entry host does not own a tunnel FXP listener. Its
+ * entry rule owns that process, while the tunnel action only persists a
+ * bookkeeping marker so the panel can track the hop. The Agent therefore
+ * reports this marker as not-ready even though that is the expected state.
+ */
+export function isPassiveForwardXFirstHopMarker(input: {
+  isFirstHop?: unknown;
+  tunnelId?: unknown;
+  port?: unknown;
+  local?: {
+    tunnelId?: unknown;
+    port?: unknown;
+    forwardType?: unknown;
+    transportVersion?: unknown;
+    ready?: unknown;
+  } | null;
+}) {
+  const local = input.local;
+  const tunnelId = Number(input.tunnelId || 0);
+  const port = Number(input.port || 0);
+  const localTunnelId = Number(local?.tunnelId || 0);
+  const localPort = Number(local?.port || 0);
+  const forwardType = String(local?.forwardType || "").trim().toLowerCase();
+  const transportVersion = String(local?.transportVersion || "").trim().toLowerCase();
+  return !!input.isFirstHop
+    && tunnelId > 0
+    && port > 0
+    && !!local
+    && localTunnelId === tunnelId
+    && localPort === port
+    && forwardType === "forwardx-tunnel"
+    && local.ready === false
+    && transportVersion === "";
+}
+
 const GOST_TUNNEL_MODES: ReadonlySet<string> = new Set<GostTunnelTransportType>([
   "tls",
   "wss",

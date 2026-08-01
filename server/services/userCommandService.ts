@@ -1,6 +1,7 @@
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "../routers/helpers";
+import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 
 type CommandActor = { id: number; role?: string };
 
@@ -103,7 +104,11 @@ export async function resetUserTrafficCommand(input: {
   reasonPrefix?: string;
 }) {
   const target = await requireTargetUser(input.targetUserId);
-  await db.resetUserTraffic(input.targetUserId);
+  // Serialize manual resets with agent billing reports. Scheduled package-only
+  // resets continue to call resetUserTraffic directly.
+  await withKeyedTaskLock(trafficBillingUserLockKey(input.targetUserId), () =>
+    db.resetUserTrafficAndBillingUsage(input.targetUserId)
+  );
   const recovery = await recoverForwardAccess(input.targetUserId, input.reasonPrefix || "user-traffic-reset");
   appendPanelLog("info", `[UserCommand] action=traffic.reset actor=${input.actor.id} target=${input.targetUserId}`);
   return { target, forwardAccessRestored: recovery.restored };

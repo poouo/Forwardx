@@ -5,6 +5,7 @@ import (
 )
 
 type trafficCounter struct {
-	in  atomic.Uint64
-	out atomic.Uint64
+	in          atomic.Uint64
+	out         atomic.Uint64
+	connections atomic.Uint64
 }

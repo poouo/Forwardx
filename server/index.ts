@@ -76,13 +76,18 @@ function installMobileCors(app: express.Express) {
 function installSecurityHeaders(app: express.Express) {
   app.disable("x-powered-by");
   app.use((req, res, next) => {
+    const customSidebarEmbed = String(req.query?.__forwardx_embed || "") === "1";
+    const frameAncestors = customSidebarEmbed ? "'self'" : "'none'";
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", "DENY");
+    // Only a custom sidebar iframe may opt the panel's own pages into
+    // same-origin framing. External sites still control their own
+    // X-Frame-Options/CSP response headers.
+    res.setHeader("X-Frame-Options", customSidebarEmbed ? "SAMEORIGIN" : "DENY");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net; script-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net https://cdn.jsdelivr.net https://cubism.live2d.com; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' data: https: http:; media-src 'self' data: blob: https: http:",
+      `default-src 'self'; base-uri 'self'; frame-ancestors ${frameAncestors}; object-src 'none'; img-src 'self' data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net; script-src 'self' 'unsafe-inline' https://fastly.jsdelivr.net https://cdn.jsdelivr.net https://cubism.live2d.com; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' data: https: http:; media-src 'self' data: blob: https: http:`,
     );
     if (req.secure) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     next();

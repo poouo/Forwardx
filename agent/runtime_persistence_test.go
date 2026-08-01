@@ -190,3 +190,79 @@ func TestPreparedWireGuardFXPConfigIsNotMigratedAsOriginalPlan(t *testing.T) {
 		t.Fatal("V1 config must remain migratable")
 	}
 }
+
+func TestPersistedRestoreRechecksSnapshotsBeforeStarting(t *testing.T) {
+	usePersistentRuntimeTestDirs(t)
+
+	fxp := fxpSpec{
+		Role: "entry", TransportVersion: "v1", TunnelID: 31, RuleID: 32,
+		ListenPort: 23031, Protocol: "tcp", ExitHost: "198.51.100.31",
+		ExitPort: 23032, Key: "runtime-secret",
+	}
+	if err := persistFXPSpec(fxp); err != nil {
+		t.Fatalf("persist FXP spec: %v", err)
+	}
+	plannedFXP := planPersistedFXPRestoreSpecs(loadPersistedFXPSpecs())
+	if len(plannedFXP) != 1 {
+		t.Fatalf("unexpected planned FXP snapshots: %#v", plannedFXP)
+	}
+	fxp = plannedFXP[0]
+	called := false
+	start := func(Config, fxpSpec, *actionMessage) bool {
+		called = true
+		return true
+	}
+	if restored, current := restorePersistedFXPSpecIfCurrent(Config{}, fxp, &actionMessage{}, start); !restored || !current || !called {
+		t.Fatalf("current FXP snapshot was not restored: restored=%v current=%v called=%v", restored, current, called)
+	}
+
+	called = false
+	removePersistedFXPSpec(fxp)
+	if restored, current := restorePersistedFXPSpecIfCurrent(Config{}, fxp, &actionMessage{}, start); restored || current || called {
+		t.Fatalf("removed FXP snapshot was restored: restored=%v current=%v called=%v", restored, current, called)
+	}
+
+	wireGuard := wireGuardSpec{
+		TunnelID: 33, PrivateKey: strings.Repeat("02", 32), Address: "10.77.0.33", ListenPort: 51833,
+	}
+	if err := persistWireGuardSpec(wireGuard); err != nil {
+		t.Fatalf("persist WireGuard spec: %v", err)
+	}
+	if !persistedWireGuardSpecCurrent(wireGuard) {
+		t.Fatal("current WireGuard snapshot was not found")
+	}
+	removePersistedWireGuardSpec(wireGuard.TunnelID)
+	if persistedWireGuardSpecCurrent(wireGuard) {
+		t.Fatal("removed WireGuard snapshot still looked current")
+	}
+
+	failover := persistedFailover{
+		RuleID: 34, SourcePort: 25034,
+		Spec: failoverSpec{
+			Enabled: true, ListenPort: 24034, BindAddress: "127.0.0.1", Protocol: "tcp", Strategy: "fallback",
+			Targets: []failoverTarget{{TargetIP: "198.51.100.34", TargetPort: 443}, {TargetIP: "198.51.100.35", TargetPort: 443}},
+		},
+	}
+	if err := persistFailoverSpec(failover.RuleID, failover.SourcePort, failover.Spec); err != nil {
+		t.Fatalf("persist failover spec: %v", err)
+	}
+	if !persistedFailoverSpecCurrent(failover) {
+		t.Fatal("current failover snapshot was not found")
+	}
+	failoverCalled := false
+	failoverStart := func(int, int, failoverSpec, *actionMessage) bool {
+		failoverCalled = true
+		return true
+	}
+	if restored, current := restorePersistedFailoverIfCurrent(failover, nil, failoverStart); !restored || !current || !failoverCalled {
+		t.Fatalf("current failover snapshot was not restored: restored=%v current=%v called=%v", restored, current, failoverCalled)
+	}
+	removePersistedFailoverSpec(failover.RuleID, failover.SourcePort)
+	failoverCalled = false
+	if restored, current := restorePersistedFailoverIfCurrent(failover, nil, failoverStart); restored || current || failoverCalled {
+		t.Fatalf("removed failover snapshot was restored: restored=%v current=%v called=%v", restored, current, failoverCalled)
+	}
+	if persistedFailoverSpecCurrent(failover) {
+		t.Fatal("removed failover snapshot still looked current")
+	}
+}

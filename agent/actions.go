@@ -295,6 +295,10 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		if desiredActionRecordMatches(record, hasRecord, signature) {
 			if record.Success {
 				if !forceWireGuardReapply && desiredActionRecordConsistent(a, kernelSnapshot) {
+					if shouldReportExistingDesiredActionStatus(a) {
+						writeState(a)
+						adoptedStatusReports = append(adoptedStatusReports, a)
+					}
 					continue
 				}
 				delete(records, key)
@@ -447,7 +451,7 @@ func desiredActionRecordConsistent(a action, kernelSnapshot *kernelForwardSnapsh
 			}
 			return wireGuardRuntimeReady(a.TunnelID, a.WireGuard)
 		}
-		return !a.ForceRuntimeSync
+		return !a.ForceRuntimeSync && runtimeActionReady(a)
 	}
 	if strings.TrimSpace(a.Op) == "apply" {
 		return canAdoptDesiredAction(a)
@@ -463,6 +467,13 @@ func reportAdoptedDesiredActions(cfg Config, actions []action) {
 
 func shouldReportDesiredAdoptionStatus(a action) bool {
 	return strings.TrimSpace(a.StatusType) != "runtime" && shouldReportActionStatus(a)
+}
+
+func shouldReportExistingDesiredActionStatus(a action) bool {
+	return strings.TrimSpace(a.Op) == "apply" &&
+		a.ReportStatus != nil &&
+		*a.ReportStatus &&
+		shouldReportDesiredAdoptionStatus(a)
 }
 
 func desiredActionKey(a action) string {
@@ -536,6 +547,9 @@ func canAdoptDesiredAction(a action) bool {
 }
 
 func desiredActionLocalRuntimeReady(a action) bool {
+	if !accessLimitActionReady(a) {
+		return false
+	}
 	if a.KnownRunning {
 		return desiredKnownRunningActionReady(a)
 	}
@@ -573,6 +587,10 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
+	case "forwardx-tunnel":
+		// A multi-hop ForwardX first hop is represented by a passive marker;
+		// there is intentionally no local FXP listener to probe.
+		return true
 	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
 		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	}
@@ -580,6 +598,9 @@ func desiredActionLocalRuntimeReady(a action) bool {
 }
 
 func desiredKnownRunningActionReady(a action) bool {
+	if !accessLimitActionReady(a) {
+		return false
+	}
 	if !desiredManagedServiceReady(a, a.ServiceName, a.Unit) {
 		return false
 	}
@@ -603,6 +624,8 @@ func desiredKnownRunningActionReady(a action) bool {
 		return desiredNginxRuntimeReady(a.SourcePort, a.Protocol)
 	case "iptables", "nftables":
 		return newKernelForwardSnapshot().actionApplyReady(a)
+	case "forwardx-tunnel":
+		return true
 	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
 		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	default:

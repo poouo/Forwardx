@@ -12,6 +12,7 @@ export function structuredLinkTestMessage(input: {
     kind: input.kind,
     ...(input.groupId ? { groupId: input.groupId } : {}),
     ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+    generatedAt: new Date().toISOString(),
     message: input.message,
     details: input.details || [],
     totalLatencyMs: input.totalLatencyMs ?? null,

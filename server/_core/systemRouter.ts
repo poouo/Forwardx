@@ -51,6 +51,7 @@ import {
 import {
   MAX_CUSTOM_SIDEBAR_ICON_DATA_URL_LENGTH,
   MAX_CUSTOM_SIDEBAR_PAGES,
+  CUSTOM_SIDEBAR_OPEN_MODES,
   isSafeCustomSidebarIconDataUrl,
   isValidCustomSidebarUrl,
   normalizeCustomSidebarPages,
@@ -131,8 +132,9 @@ const sidebarMenuSettingsSchema = z.object(
 const customSidebarPagesSchema = z.array(z.object({
   id: z.string().trim().regex(/^[a-z0-9][a-z0-9._:-]{0,95}$/i, "菜单项 ID 格式不正确"),
   name: z.string().trim().min(1, "请填写菜单名称").max(64),
-  url: z.string().trim().max(1000).refine(isValidCustomSidebarUrl, "页面 URL 必须是有效的 HTTP/HTTPS 地址"),
+  url: z.string().trim().max(1000).refine(isValidCustomSidebarUrl, "页面 URL 必须是有效的 HTTP/HTTPS 地址或面板路径"),
   visibility: z.enum(["all", "admin"]),
+  openMode: z.enum(CUSTOM_SIDEBAR_OPEN_MODES).optional(),
   iconDataUrl: z.string().trim().max(MAX_CUSTOM_SIDEBAR_ICON_DATA_URL_LENGTH).optional()
     .refine((value) => !value || isSafeCustomSidebarIconDataUrl(value), "SVG 图标包含不支持的内容"),
 }).strict()).max(MAX_CUSTOM_SIDEBAR_PAGES);

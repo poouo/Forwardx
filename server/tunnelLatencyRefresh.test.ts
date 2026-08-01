@@ -94,6 +94,24 @@ test("tunnel latency wait performs one final query after an empty timeout", asyn
   assert.equal(signals.pendingWaiterCount(10), 0);
 });
 
+test("a row older than the baseline id cannot satisfy the refresh wait", async () => {
+  const signals = new TunnelLatencyRefreshSignals();
+  let queries = 0;
+  const result = await waitForTunnelLatencyRefresh({
+    tunnelId: 13,
+    baselineId: 70,
+    waitMs: 20,
+    signals,
+    loadLatest: async () => {
+      queries += 1;
+      return { id: 69 };
+    },
+  });
+
+  assert.equal(result.id, 69);
+  assert.equal(queries, 2);
+});
+
 test("tunnel latency wait discovers a cross-process refresh on a sparse poll", async () => {
   const signals = new TunnelLatencyRefreshSignals();
   let queries = 0;

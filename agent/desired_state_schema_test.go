@@ -47,3 +47,22 @@ func TestMissingDesiredActionRecordStillAllowsNormalAdoptionPath(t *testing.T) {
 		t.Fatal("a fresh install without a record must not be treated as a schema migration")
 	}
 }
+
+func TestExistingDesiredActionStatusReportRequiresExplicitRequest(t *testing.T) {
+	report := true
+	action := action{Op: "apply", StatusType: "tunnel", ReportStatus: &report}
+	if !shouldReportExistingDesiredActionStatus(action) {
+		t.Fatal("explicit tunnel status report was not accepted for an existing record")
+	}
+
+	report = false
+	if shouldReportExistingDesiredActionStatus(action) {
+		t.Fatal("disabled tunnel status report was emitted")
+	}
+
+	report = true
+	action.StatusType = "runtime"
+	if shouldReportExistingDesiredActionStatus(action) {
+		t.Fatal("runtime actions must not use tunnel adoption status reporting")
+	}
+}

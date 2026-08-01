@@ -44,6 +44,15 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 升级会保留 `.env`、部署目录数据和 Docker 数据卷。如果 `latest` 镜像尚未构建到目标版本，脚本会提示稍后重试并保留旧容器运行。
 
+升级完成后不要只看镜像拉取提示，可核对运行容器实际使用的镜像和程序版本：
+
+```bash
+docker inspect --format '{{.Config.Image}} {{.Image}}' forwardx-panel
+docker exec forwardx-panel node -p "require('./package.json').version"
+```
+
+第一项是镜像标签和镜像 ID，第二项是容器内程序版本。如果仍显示旧版本，检查是否操作了同名的另一套 compose 项目、脚本是否复用了旧部署目录，以及目标 Release 镜像是否已构建完成。
+
 ### 本地 systemd 部署
 
 ```bash
@@ -67,8 +76,19 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 查看 Agent 日志：
 
 ```bash
+tail -n 300 /var/log/forwardx-agent/agent-go.log
 journalctl -u forwardx-agent -n 300 --no-pager
 ```
+
+## 浏览器未保存已生成的加密备份
+
+Safari 等浏览器可能在服务器已经完成加密导出后，因站点下载权限或浏览器策略阻止本地保存。这种情况不会导致服务器持续生成备份，也不需要重新开始导出：
+
+1. 保持当前“系统设置 → 备份与恢复”页面打开。
+2. 允许该站点下载文件。
+3. 点击页面中的“再次保存已生成备份”。
+
+只有页面明确提示服务器导出失败时才重新导出。导出期间 CPU 短时升高通常来自数据库读取、裁剪和加密；浏览器保存失败发生在生成完成之后，不会让服务器继续加密。若任务结束后面板宿主机仍持续满载，使用 `docker stats forwardx-panel` 和 `ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head` 确认实际占用，再结合面板日志排查。
 
 ## 跨兼容边界升级
 

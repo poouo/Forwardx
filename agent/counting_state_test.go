@@ -14,6 +14,7 @@ func isolateCountingStateTest(t *testing.T, bootID string) {
 	previousSignatures := countingChainSignatures
 	previousCheckedAt := countingChainCheckedAt
 	previousPending := countingChainRepairPending
+	previousCleanup := countingChainRepairCleanup
 	previousQueue := countingChainRepairQueue
 	previousDesiredByPort := desiredRunningRulesByPort
 	previousDesiredByRulePort := desiredRunningRulesByRulePort
@@ -23,7 +24,11 @@ func isolateCountingStateTest(t *testing.T, bootID string) {
 	countingChainSignatures = map[string]string{}
 	countingChainCheckedAt = map[string]time.Time{}
 	countingChainRepairPending = map[string]bool{}
+	countingChainRepairCleanup = map[string]bool{}
 	countingChainRepairQueue = make(chan runningRule, 4)
+	// Keep this test synchronous. The queueing assertion below must not start
+	// a background worker that can outlive the temporary global test state.
+	countingChainRepairWorkersOnce.Do(func() {})
 	desiredRunningRulesByPort = map[string]runningRule{}
 	desiredRunningRulesByRulePort = map[string]runningRule{}
 
@@ -33,6 +38,7 @@ func isolateCountingStateTest(t *testing.T, bootID string) {
 		countingChainSignatures = previousSignatures
 		countingChainCheckedAt = previousCheckedAt
 		countingChainRepairPending = previousPending
+		countingChainRepairCleanup = previousCleanup
 		countingChainRepairQueue = previousQueue
 		desiredRunningRulesByPort = previousDesiredByPort
 		desiredRunningRulesByRulePort = previousDesiredByRulePort
@@ -70,12 +76,12 @@ func TestCountingChainStateRestoresOnlyWithinTheSameSystemBoot(t *testing.T) {
 	countingChainSignatures = map[string]string{}
 	countingChainCheckedAt = map[string]time.Time{}
 	restoreCountingChainStates("boot-a")
-	if countingChainSignatures["22022"] != signature || countingChainCheckedAt["22022"].IsZero() {
+	if countingChainSignatures["22022"] != signature || !countingChainCheckedAt["22022"].IsZero() {
 		t.Fatalf("same-boot state was not restored: signature=%q checkedAt=%s", countingChainSignatures["22022"], countingChainCheckedAt["22022"])
 	}
 	ensureCountingChainsIfNeeded(rule)
-	if got := len(countingChainRepairQueue); got != 0 {
-		t.Fatalf("same-boot Agent restart queued %d unnecessary repairs", got)
+	if got := len(countingChainRepairQueue); got != 1 {
+		t.Fatalf("same-boot Agent restart queued %d repairs, want one verification", got)
 	}
 
 	restoreCountingChainStates("boot-b")

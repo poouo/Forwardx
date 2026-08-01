@@ -69,6 +69,8 @@ MySQL 和 PostgreSQL 需要填写：
 
 填写"面板公开地址"。
 
+![在系统信息中填写 Agent 实际可访问的面板公开地址](./images/setup-public-address.png)
+
 没有域名时填写：
 
 ```text
