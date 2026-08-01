@@ -734,7 +734,7 @@ async function expireStalePendingOrders() {
   const orders = await db.listPaymentOrders(200);
   const now = Date.now();
   for (const order of orders) {
-    if (order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() < now) {
+    if (order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() <= now) {
       await closePaymentOrderAndReleaseDiscount(order.outTradeNo, "expired");
     }
   }
@@ -743,7 +743,10 @@ async function expireStalePendingOrders() {
 async function closePaymentOrderAndReleaseDiscount(outTradeNo: string, status: "expired" | "failed" | "cancelled", rawNotify?: string) {
   await db.withDatabaseTransaction(async () => {
     const order = await db.getPaymentOrderByOutTradeNoForUpdate(outTradeNo);
-    if (!order || !["pending", "failed", "expired", "cancelled"].includes(String(order.status))) return;
+    // Closing is a one-way transition. In particular, do not rewrite an
+    // already paid/processing/completed order when a late provider callback
+    // or an order-creation failure races with payment finalization.
+    if (!order || order.status !== "pending") return;
     if ((order as any).discountCodeId && (order as any).discountConsumed) {
       await db.releaseDiscountCode(Number((order as any).discountCodeId));
     }
@@ -868,6 +871,13 @@ async function processPaidNotification(outTradeNo: string, notification: PaidNot
     } as any);
     return { ignored: true, reason: "completed" as const };
   }
+  if (order.status === "failed" || order.status === "expired" || order.status === "cancelled") {
+    return { ignored: true, reason: "closed" as const };
+  }
+  if (order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() <= Date.now()) {
+    await closePaymentOrderAndReleaseDiscount(outTradeNo, "expired", notification.rawNotify);
+    return { ignored: true, reason: "expired" as const };
+  }
   try {
     assertPaidNotificationMatchesOrder(order, notification);
   } catch (error: any) {
@@ -876,12 +886,18 @@ async function processPaidNotification(outTradeNo: string, notification: PaidNot
     appendPanelLog("error", `[Payment] ${notification.provider} notify rejected: ${error?.message || error}`);
     return { ignored: true, reason: "mismatch" as const };
   }
-  await db.markPaymentOrderPaid(outTradeNo, {
+  const paidOrder = await db.markPaymentOrderPaid(outTradeNo, {
     tradeNo: notification.tradeNo,
     amountCents: notification.amountCents,
     currency: notification.currency,
     rawNotify: notification.rawNotify,
   });
+  // The conditional repository update can lose a race with expiry,
+  // cancellation, or another callback. Only the callback that claimed the
+  // pending order may run entitlement/balance finalization.
+  if (!paidOrder || paidOrder.status !== "paid") {
+    return { ignored: true, reason: "closed" as const };
+  }
   await finalizePaidOrder(outTradeNo);
   return { ignored: false };
 }
@@ -1130,13 +1146,9 @@ export const paymentRouter = router({
         appendPanelLog("info", `[Payment] order created user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo} return=${returnPath}`);
         return order || pendingOrder;
       } catch (error: any) {
-        await db.withDatabaseTransaction(async () => {
-          const failedOrder = await db.getPaymentOrderByOutTradeNo(outTradeNo);
-          if ((failedOrder as any)?.discountCodeId && (failedOrder as any)?.discountConsumed) {
-            await db.releaseDiscountCode(Number((failedOrder as any).discountCodeId));
-          }
-          await db.updatePaymentOrder(outTradeNo, { status: "failed", discountConsumed: false } as any);
-        }).catch(() => undefined);
+        // Only a still-pending order may be closed as failed. A provider
+        // callback can complete the order while the create request is unwinding.
+        await closePaymentOrderAndReleaseDiscount(outTradeNo, "failed").catch(() => undefined);
         appendPanelLog("error", `[Payment] order create failed user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo}: ${error?.message || error}`);
         throw error;
       }

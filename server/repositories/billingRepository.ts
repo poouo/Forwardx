@@ -2493,6 +2493,32 @@ export async function resetStaleProcessingPaymentOrder(outTradeNo: string, befor
 }
 
 export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?: string | null; rawNotify?: string | null; amountCents?: number; currency?: string }) {
+  const now = nowDate();
+  const result = await executeRaw(
+    `UPDATE ${quoteDbIdentifier("payment_orders")}
+     SET ${quoteDbIdentifier("status")} = ?,
+         ${quoteDbIdentifier("tradeNo")} = COALESCE(?, ${quoteDbIdentifier("tradeNo")}),
+         ${quoteDbIdentifier("rawNotify")} = COALESCE(?, ${quoteDbIdentifier("rawNotify")}),
+         ${quoteDbIdentifier("currency")} = COALESCE(?, ${quoteDbIdentifier("currency")}),
+         ${quoteDbIdentifier("paidAt")} = ?,
+         ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("outTradeNo")} = ?
+       AND ${quoteDbIdentifier("status")} = ?`,
+    [
+      "paid",
+      data.tradeNo || null,
+      data.rawNotify || null,
+      data.currency || null,
+      now,
+      now,
+      outTradeNo,
+      "pending",
+    ],
+  );
+  if (affectedRows(result) > 0) return getPaymentOrderByOutTradeNo(outTradeNo);
+
+  // A duplicate callback for an already claimed/completed order is harmless,
+  // but terminal failed/expired/cancelled orders must never be reactivated.
   const existing = await getPaymentOrderByOutTradeNo(outTradeNo);
   if (!existing) return undefined;
   if (existing.status === "paid" || existing.status === "processing" || existing.status === "completed") {
@@ -2501,13 +2527,7 @@ export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?:
       rawNotify: data.rawNotify || existing.rawNotify,
     } as Partial<InsertPaymentOrder>);
   }
-  return updatePaymentOrder(outTradeNo, {
-    status: "paid",
-    tradeNo: data.tradeNo || existing.tradeNo,
-    rawNotify: data.rawNotify || existing.rawNotify,
-    currency: data.currency || existing.currency,
-    paidAt: nowDate(),
-  } as Partial<InsertPaymentOrder>);
+  return existing;
 }
 
 export async function getBalanceTransactionByPaymentOrderNo(paymentOrderNo: string) {

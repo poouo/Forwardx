@@ -462,7 +462,9 @@ function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
     idleTimeoutMillis: pool.idleTimeoutMillis,
     connectionTimeoutMillis: pool.connectTimeoutMillis,
     maxLifetimeSeconds: pool.maxLifetimeSeconds,
-    ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
+    // Let node-postgres use its default CA validation when TLS is enabled.
+    // Passing rejectUnauthorized=false would allow a man-in-the-middle attack.
+    ssl: config.ssl ? true : undefined,
   };
   return options;
 }

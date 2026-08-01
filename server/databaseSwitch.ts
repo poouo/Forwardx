@@ -358,7 +358,8 @@ function postgresqlPoolOptions(config: DatabaseConfig & { type: "postgresql" }):
     idleTimeoutMillis: pool.idleTimeoutMillis,
     connectionTimeoutMillis: pool.connectTimeoutMillis,
     maxLifetimeSeconds: pool.maxLifetimeSeconds,
-    ssl: postgresqlConfig.ssl ? { rejectUnauthorized: false } : undefined,
+    // Keep PostgreSQL TLS certificate verification enabled by default.
+    ssl: postgresqlConfig.ssl ? true : undefined,
   };
   return options;
 }

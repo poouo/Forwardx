@@ -340,7 +340,8 @@ async function openDatabase(
     password: config.config.password,
     database: config.config.database,
     connectionTimeoutMillis: 10_000,
-    ssl: config.config.ssl ? { rejectUnauthorized: false } : undefined,
+    // Use node-postgres' default CA verification for TLS connections.
+    ssl: config.config.ssl ? true : undefined,
   });
   await client.connect();
   const db: LegacyMigrationDatabase = {
