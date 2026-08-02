@@ -368,6 +368,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		enqueueActionJob(job)
 	}
 	rememberDesiredStateAppliedAfterActions(state, done)
+	scheduleAccessLimitMaintenance(state.Actions, done)
 	return done
 }
 
@@ -410,6 +411,19 @@ func desiredStateActionRecordsApplied(state *desiredState) bool {
 		}
 	}
 	return true
+}
+
+func desiredActionRecordIsCurrent(a action) bool {
+	key := desiredActionKey(a)
+	signature := desiredActionSignature(a)
+	if key == "" || signature == "" {
+		return false
+	}
+	desiredActionRecordMu.Lock()
+	defer desiredActionRecordMu.Unlock()
+	records := readDesiredActionRecordsLocked()
+	record, ok := records[key]
+	return record.Success && desiredActionRecordMatches(record, ok, signature)
 }
 
 func rememberDesiredStateAppliedAfterActions(state *desiredState, done []<-chan struct{}) {
@@ -547,9 +561,6 @@ func canAdoptDesiredAction(a action) bool {
 }
 
 func desiredActionLocalRuntimeReady(a action) bool {
-	if !accessLimitActionReady(a) {
-		return false
-	}
 	if a.KnownRunning {
 		return desiredKnownRunningActionReady(a)
 	}
@@ -598,9 +609,6 @@ func desiredActionLocalRuntimeReady(a action) bool {
 }
 
 func desiredKnownRunningActionReady(a action) bool {
-	if !accessLimitActionReady(a) {
-		return false
-	}
 	if !desiredManagedServiceReady(a, a.ServiceName, a.Unit) {
 		return false
 	}
@@ -1937,6 +1945,7 @@ func actionSerialKeys(a action) []string {
 	if a.Fxp != nil && isSharedFXPEntry(*a.Fxp) {
 		keys = append(keys, fmt.Sprintf("fxp-entry-group:%d", a.Fxp.TunnelID))
 	}
+	keys = append(keys, accessLimitActionSerialKeys(a)...)
 	sort.Strings(keys)
 	return keys
 }

@@ -106,11 +106,16 @@ func TestCountingChainStateInvalidationDoesNotDisruptPendingRepair(t *testing.T)
 	if !invalidateCountingChainState("22023") {
 		t.Fatal("missing layout did not invalidate a completed counting state")
 	}
-	if _, ok := countingChainSignatures["22023"]; ok {
-		t.Fatal("invalidated counting signature remained in memory")
+	if countingChainSignatures["22023"] != signature {
+		t.Fatal("missing layout invalidation lost the known counting signature")
+	}
+	if !countingChainCheckedAt["22023"].IsZero() {
+		t.Fatal("missing layout invalidation retained the completed check timestamp")
+	}
+	if _, err := os.Stat(countingChainStatePath("22023")); !os.IsNotExist(err) {
+		t.Fatalf("invalidated counting state remained persisted: %v", err)
 	}
 
-	countingChainSignatures["22023"] = signature
 	countingChainRepairPending["22023"] = true
 	if invalidateCountingChainState("22023") {
 		t.Fatal("an in-flight repair was invalidated a second time")

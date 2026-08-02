@@ -32,6 +32,7 @@ import {
   disableForwardRulesByTunnel,
   findAvailablePort,
   findAvailableTunnelExitPort,
+  getUsedPortsOnHost,
   getTunnelById,
   getTunnelExitNodes,
   getTunnelHops,
@@ -195,8 +196,11 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
 }
 
 async function syncPreservedChildRuleMetadata(existing: any, payload: any) {
-  if (String(existing?.name || "") === String(payload?.name || "")) return;
-  await updateForwardRule(Number(existing.id), { name: payload.name } as any);
+  const patch: Record<string, unknown> = {};
+  if (String(existing?.name || "") !== String(payload?.name || "")) patch.name = payload.name;
+  if (Number(existing?.userId || 0) !== Number(payload?.userId || 0)) patch.userId = Number(payload.userId);
+  if (Object.keys(patch).length === 0) return;
+  await updateForwardRule(Number(existing.id), patch as any);
 }
 
 type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
@@ -1803,7 +1807,15 @@ async function memberEntryHostId(member: any) {
 export async function getForwardGroupDefaultHostId(groupId: number) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
-  if (isCollectionGroupMode(groupModeOf(group))) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
+  const groupMode = groupModeOf(group);
+  if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
+  if (groupMode === "chain") {
+    const entryMembers = await chainEntryMembers(group);
+    for (const member of entryMembers) {
+      const hostId = await memberEntryHostId(member);
+      if (hostId) return hostId;
+    }
+  }
   const members = sortedMembers(group);
   for (const member of members) {
     if (!member.isEnabled) continue;
@@ -1832,7 +1844,8 @@ export async function getForwardGroupRuleEntryHostIds(groupId: number) {
   const hostIds = await Promise.all(portMembers
     .filter((member: any) => member?.isEnabled !== false)
     .map((member: any) => memberEntryHostId(member)));
-  return Array.from(new Set(hostIds.filter((hostId) => Number.isInteger(hostId) && hostId > 0)));
+  return Array.from(new Set(hostIds.filter((hostId) => Number.isInteger(hostId) && hostId > 0)))
+    .sort((left, right) => left - right);
 }
 
 async function existingChildRule(templateRuleId: number, memberId: number, hostId?: number | null) {
@@ -1846,20 +1859,8 @@ async function existingChildRule(templateRuleId: number, memberId: number, hostI
   return rows[0];
 }
 
-async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number, ignoreRuleIds: number[], _protocol?: unknown) {
-  const table = quoteIdentifier("forward_rules");
-  const idCol = quoteIdentifier("id");
-  const hostCol = quoteIdentifier("hostId");
-  const portCol = quoteIdentifier("sourcePort");
-  const pendingCol = quoteIdentifier("pendingDelete");
-  const enabledCol = quoteIdentifier("isEnabled");
-  const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
-  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
-  const rows = await queryRaw<{ count: number }>(
-    `SELECT ${countAll()} FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    [hostId, sourcePort, boolValue(false), boolValue(true), ...ignore],
-  );
-  return (Number(rows[0]?.count) || 0) > 0;
+async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number, ignoreRuleIds: number[], protocol?: unknown) {
+  return isPortUsedOnHost(hostId, sourcePort, ignoreRuleIds, protocol, undefined, false);
 }
 
 async function entryPortPolicyForMember(member: any): Promise<{ hostId: number; policy: PortPolicy }> {
@@ -1892,25 +1893,6 @@ async function assertEntryPortAllowed(member: any, sourcePort: number) {
   if (!isPortAllowedByPolicy(sourcePort, entry.policy)) {
     throw new Error(portPolicyErrorMessage(entry.policy, "入口端口"));
   }
-}
-
-async function usedPortsOnEntryHost(hostId: number, ignoreRuleIds: number[], range?: { start: number; end: number } | null, _protocol?: unknown) {
-  const table = quoteIdentifier("forward_rules");
-  const idCol = quoteIdentifier("id");
-  const hostCol = quoteIdentifier("hostId");
-  const portCol = quoteIdentifier("sourcePort");
-  const pendingCol = quoteIdentifier("pendingDelete");
-  const enabledCol = quoteIdentifier("isEnabled");
-  const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
-  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
-  const rangeSql = range ? ` AND ${portCol} BETWEEN ? AND ?` : "";
-  const rows = await queryRaw<{ port: number }>(
-    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ?${rangeSql} AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    range
-      ? [hostId, range.start, range.end, boolValue(false), boolValue(true), ...ignore]
-      : [hostId, boolValue(false), boolValue(true), ...ignore],
-  );
-  return new Set(rows.map((row) => Number(row.port)).filter((port) => Number.isInteger(port)));
 }
 
 function policyHasRestrictionForGroup(policy: PortPolicy) {
@@ -1994,6 +1976,7 @@ export async function findAvailableForwardGroupPort(
   excludeTemplateRuleId?: number | null,
   allowedRange?: { start: number; end: number } | null,
   protocol?: unknown,
+  unavailablePorts: Iterable<number> = [],
 ) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
@@ -2007,6 +1990,11 @@ export async function findAvailableForwardGroupPort(
   }
 
   const entries: Array<{ hostId: number; ignoreRuleIds: number[] }> = [];
+  const excludedChildRuleIds = excludeTemplateRuleId
+    ? (await getForwardGroupChildRulesForTemplate(Number(excludeTemplateRuleId)))
+      .map((rule: any) => Number(rule.id))
+      .filter((id: number) => Number.isInteger(id) && id > 0)
+    : [];
   let policy = portPolicyFrom(null);
 
   const candidateMembers = groupMode === "chain"
@@ -2023,7 +2011,11 @@ export async function findAvailableForwardGroupPort(
       : null;
     entries.push({
       hostId: entry.hostId,
-      ignoreRuleIds: [Number(excludeTemplateRuleId || 0), Number(existing?.id || 0)].filter(Boolean),
+      ignoreRuleIds: [
+        Number(excludeTemplateRuleId || 0),
+        ...excludedChildRuleIds,
+        Number(existing?.id || 0),
+      ].filter(Boolean),
     });
     policy = combinePortPolicies(policy, entry.policy);
   }
@@ -2034,9 +2026,10 @@ export async function findAvailableForwardGroupPort(
   if (candidates.length === 0) return null;
 
   const usedPortSets = await Promise.all(
-    entries.map((entry) => usedPortsOnEntryHost(entry.hostId, entry.ignoreRuleIds, null, protocol)),
+    entries.map((entry) => getUsedPortsOnHost(entry.hostId, entry.ignoreRuleIds, protocol, undefined, false)),
   );
-  const isAvailable = (port: number) => usedPortSets.every((usedPorts) => !usedPorts.has(port));
+  const unavailable = new Set(Array.from(unavailablePorts, Number).filter((port) => Number.isInteger(port) && port > 0));
+  const isAvailable = (port: number) => !unavailable.has(port) && usedPortSets.every((usedPorts) => !usedPorts.has(port));
 
   const randomAttempts = Math.min(120, candidates.length);
   for (let i = 0; i < randomAttempts; i++) {
@@ -2106,6 +2099,11 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
   const firstChainMember = groupMode === "chain"
     ? members.filter((member: any) => !!member.isEnabled)[0] || null
     : null;
+  const excludedChildRuleIds = config.excludeTemplateRuleId
+    ? (await getForwardGroupChildRulesForTemplate(Number(config.excludeTemplateRuleId)))
+      .map((rule: any) => Number(rule.id))
+      .filter((id: number) => Number.isInteger(id) && id > 0)
+    : [];
   for (const member of portCheckMembers) {
     if (!member.isEnabled) continue;
     const hostId = await memberEntryHostId(member);
@@ -2120,7 +2118,11 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
     const used = await isPortUsedOnHostForGroupChild(
       hostId,
       sourcePort,
-      [Number(config.excludeTemplateRuleId || 0), Number(existing?.id || 0)].filter(Boolean),
+      [
+        Number(config.excludeTemplateRuleId || 0),
+        ...excludedChildRuleIds,
+        Number(existing?.id || 0),
+      ].filter(Boolean),
       protocol,
     );
     if (used) throw new Error(`Entry agent port ${sourcePort} is already used`);
@@ -2639,7 +2641,7 @@ async function reserveChainMemberListenerPort(
       hostId,
       port: preferredPort,
       protocol,
-      isUsed: (port) => isPortUsedOnHost(hostId, port, ignoreRuleIds, protocol),
+      isUsed: (port) => isPortUsedOnHost(hostId, port, ignoreRuleIds, protocol, undefined, false),
     });
     if (preserved) return preserved;
   }
@@ -2648,7 +2650,7 @@ async function reserveChainMemberListenerPort(
     hostId,
     protocol,
     findPort: (reservedPorts) => findAvailablePort(hostId, null, null, protocol, reservedPorts),
-    isUsed: (port) => isPortUsedOnHost(hostId, port, ignoreRuleIds, protocol),
+    isUsed: (port) => isPortUsedOnHost(hostId, port, ignoreRuleIds, protocol, undefined, false),
   });
   if (!reservation) {
     throw new Error(`转发链成员主机 ${hostId} 的端口区间内已无可用监听端口`);

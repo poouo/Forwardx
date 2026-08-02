@@ -172,8 +172,10 @@ func forgetCountingChainState(port string) {
 }
 
 // invalidateCountingChainState makes a missing firewall layout eligible for
-// repair. An already queued repair keeps ownership of the in-memory signature
-// so its completion cannot strand the port in a permanently pending state.
+// verification and repair. Keep the known signature so a partial layout for
+// the same desired rule is filled in without flushing counters that still
+// exist. An actual signature change is still handled destructively by
+// ensureCountingChainsIfNeeded.
 func invalidateCountingChainState(port string) bool {
 	if _, ok := countingChainStatePort(countingChainStatePrefix + port + countingChainStateSuffix); !ok {
 		return false
@@ -186,7 +188,6 @@ func invalidateCountingChainState(port string) bool {
 		countingChainMu.Unlock()
 		return false
 	}
-	delete(countingChainSignatures, port)
 	delete(countingChainCheckedAt, port)
 	countingChainMu.Unlock()
 	removeCountingChainStateFile(port)

@@ -97,6 +97,30 @@ func TestTrafficBatchKeepsConnectionOnlyDelta(t *testing.T) {
 	}
 }
 
+func TestTrafficReporterCountsSessionOnceWithoutChangingBytes(t *testing.T) {
+	resetTrafficBatchesForTest()
+	t.Cleanup(resetTrafficBatchesForTest)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	cfg := config{PanelURL: server.URL, Token: "traffic-test-token", RuleID: 42}
+	key := trafficBatchKey{panelURL: server.URL, token: cfg.Token, producerID: fxpTrafficProducerID(cfg)}
+	counter := &trafficCounter{}
+	counter.in.Store(123)
+	counter.out.Store(456)
+	counter.connections.Store(1)
+	stopReporting := startTrafficReporter(cfg, counter)
+	stopReporting()
+	stopReporting()
+
+	got := trafficBatchSnapshot()[key][42]
+	if got.bytesIn != 123 || got.bytesOut != 456 || got.connections != 1 {
+		t.Fatalf("session report changed byte totals or duplicated the connection: %+v", got)
+	}
+}
+
 func TestFXPTrafficProducerIDIsStablePerRuntime(t *testing.T) {
 	base := config{
 		PanelURL: "https://panel.example.test/", Token: "token-a", Role: "entry",

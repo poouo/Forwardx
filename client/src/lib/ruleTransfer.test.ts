@@ -86,14 +86,14 @@ test("rule transfer parser enforces the import count limit", () => {
   assert.match(parsed.ok ? "" : parsed.error, /500/);
 });
 
-test("rule transfer conflict detection follows TCP and UDP listener overlap", () => {
+test("rule transfer conflict detection treats a listener port as one runtime identity", () => {
   assert.deepEqual(
     findRuleTransferPortConflict([validRule(), validRule({ protocol: "both" })]),
     { port: 10001, firstIndex: 0, secondIndex: 1 },
   );
-  assert.equal(
+  assert.deepEqual(
     findRuleTransferPortConflict([validRule({ protocol: "tcp" }), validRule({ protocol: "udp" })]),
-    null,
+    { port: 10001, firstIndex: 0, secondIndex: 1 },
   );
   assert.equal(
     findRuleTransferPortConflict([validRule({ sourcePort: 0 }), validRule({ sourcePort: 0 })]),

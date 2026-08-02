@@ -12,7 +12,7 @@ import {
   tunnelLatencyStats, InsertTunnelLatencyStat,
   forwardGroupLatencyStats, InsertForwardGroupLatencyStat,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
+import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { boolLiteral, bucketExpression, limitOffset, quoteIdentifier } from "../dbCompat";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 import { getSetting, setSetting } from "./settingsRepository";
@@ -28,9 +28,18 @@ const LEGACY_TRAFFIC_REPORT_RETENTION_HOURS = 7 * 24;
 const TRAFFIC_BUCKET_BACKFILL_MARKER = "v3";
 const TRAFFIC_BUCKET_BACKFILL_SETTING = "trafficStatBucketsBackfilled";
 const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_SETTING = "traffic-billing-rule-usage-v1";
-const USER_TRAFFIC_COUNTER_BACKFILL_SETTING = "user-traffic-counters-v1";
+const USER_TRAFFIC_COUNTER_BACKFILL_SETTING = "user-traffic-counters-v2";
+const USER_TRAFFIC_COUNTER_BACKFILL_MARKER = "v2";
 let trafficBucketUpsertWarned = false;
 let userTrafficCounterUpsertWarned = false;
+
+function managedParentRuleJoin(childAlias: string, parentAlias = "parent") {
+  const q = quoteIdentifier;
+  return `LEFT JOIN ${q("forward_rules")} ${parentAlias}
+          ON ${parentAlias}.${q("id")} = ${childAlias}.${q("forwardGroupRuleId")}
+         AND ${parentAlias}.${q("forwardGroupId")} = ${childAlias}.${q("forwardGroupId")}
+         AND ${parentAlias}.${q("isForwardGroupTemplate")} = ${boolLiteral(true)}`;
+}
 
 function rowDate(value: unknown) {
   if (value instanceof Date) return value;
@@ -951,6 +960,69 @@ async function rebuildUserTrafficCountersFromRuleCounters(userIds?: number[]) {
   return rawAffectedRows(result);
 }
 
+async function repairTrafficCounterOwnership() {
+  const db = await getDb();
+  if (!db) return { counterRows: 0, bucketRows: 0 };
+  const ruleRows = await db.select({
+    id: forwardRules.id,
+    userId: forwardRules.userId,
+    groupId: forwardRules.forwardGroupId,
+    parentRuleId: forwardRules.forwardGroupRuleId,
+    isTemplate: forwardRules.isForwardGroupTemplate,
+  }).from(forwardRules);
+  const ruleById = new Map<number, { userId: number; groupId: number; isTemplate: boolean }>();
+  for (const row of ruleRows as any[]) {
+    const id = Number(row.id || 0);
+    const userId = Number(row.userId || 0);
+    if (id > 0 && userId > 0) {
+      ruleById.set(id, {
+        userId,
+        groupId: Number(row.groupId || 0),
+        isTemplate: row.isTemplate === true || row.isTemplate === 1 || row.isTemplate === "1",
+      });
+    }
+  }
+
+  const ruleIdsByOwner = new Map<number, number[]>();
+  for (const row of ruleRows as any[]) {
+    const ruleId = Number(row.id || 0);
+    const parentRuleId = Number(row.parentRuleId || 0);
+    const groupId = Number(row.groupId || 0);
+    const parent = ruleById.get(parentRuleId);
+    const ownerId = parent?.isTemplate && parent.groupId > 0 && parent.groupId === groupId
+      ? parent.userId
+      : Number(row.userId || 0);
+    if (ruleId <= 0 || ownerId <= 0) continue;
+    const ids = ruleIdsByOwner.get(ownerId) || [];
+    ids.push(ruleId);
+    ruleIdsByOwner.set(ownerId, ids);
+  }
+
+  const q = quoteIdentifier;
+  let counterRows = 0;
+  let bucketRows = 0;
+  for (const [ownerId, ruleIds] of ruleIdsByOwner) {
+    for (let index = 0; index < ruleIds.length; index += 500) {
+      const batch = ruleIds.slice(index, index + 500);
+      const placeholders = batch.map(() => "?").join(",");
+      const params = [ownerId, ...batch, ownerId];
+      counterRows += rawAffectedRows(await executeRaw(
+        `UPDATE ${q("forward_rule_traffic_counters")}
+            SET ${q("userId")} = ?
+          WHERE ${q("ruleId")} IN (${placeholders}) AND ${q("userId")} <> ?`,
+        params,
+      ));
+      bucketRows += rawAffectedRows(await executeRaw(
+        `UPDATE ${q("traffic_stat_buckets")}
+            SET ${q("userId")} = ?
+          WHERE ${q("ruleId")} IN (${placeholders}) AND ${q("userId")} <> ?`,
+        params,
+      ));
+    }
+  }
+  return { counterRows, bucketRows };
+}
+
 export async function getTrafficStats(ruleId: number, limit = 60) {
   const db = await getDb();
   if (!db) return [];
@@ -1084,13 +1156,14 @@ async function getRuleWithCreatedAt(ruleId: number): Promise<{ id: number; creat
 }
 
 async function getRuleUserId(ruleId: number) {
-  const db = await getDb();
-  if (!db) return 0;
-  const rows = await db
-    .select({ userId: forwardRules.userId })
-    .from(forwardRules)
-    .where(eq(forwardRules.id, ruleId))
-    .limit(1);
+  const q = quoteIdentifier;
+  const rows = await queryRaw<{ userId: number }>(
+    `SELECT COALESCE(parent.${q("userId")}, fr.${q("userId")}) AS ${q("userId")}
+       FROM ${q("forward_rules")} fr
+       ${managedParentRuleJoin("fr")}
+      WHERE fr.${q("id")} = ?`,
+    [ruleId],
+  );
   return Number((rows[0] as any)?.userId || 0);
 }
 
@@ -1148,7 +1221,7 @@ export async function ensureTrafficStatBucketsBackfilled(options: {
        (${q("bucketStart")}, ${q("bucketMinutes")}, ${q("userId")}, ${q("ruleId")}, ${q("hostId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("connections")}, ${q("updatedAt")})
      SELECT ${bucketSql} AS ${q("bucketStart")},
             ? AS ${q("bucketMinutes")},
-            fr.${q("userId")} AS ${q("userId")},
+             COALESCE(parent.${q("userId")}, fr.${q("userId")}) AS ${q("userId")},
             ts.${q("ruleId")} AS ${q("ruleId")},
             ts.${q("hostId")} AS ${q("hostId")},
             COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
@@ -1157,7 +1230,8 @@ export async function ensureTrafficStatBucketsBackfilled(options: {
             ? AS ${q("updatedAt")}
        FROM ${q("traffic_stats")} ts
        INNER JOIN ${q("forward_rules")} fr ON fr.${q("id")} = ts.${q("ruleId")}
-      GROUP BY ${bucketSql}, fr.${q("userId")}, ts.${q("ruleId")}, ts.${q("hostId")}`,
+       ${managedParentRuleJoin("fr")}
+      GROUP BY ${bucketSql}, COALESCE(parent.${q("userId")}, fr.${q("userId")}), ts.${q("ruleId")}, ts.${q("hostId")}`,
     [TRAFFIC_BUCKET_MINUTES, epochSeconds(nowDate())],
   );
   const rows = rawAffectedRows(result);
@@ -1182,80 +1256,93 @@ export async function ensureUserTrafficCountersBackfilled(options: {
       tableRowCount("user_traffic_counters"),
     ]);
     if (ruleRows > 0 || userRows > 0) {
-      await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, "v1");
-      logger.info?.(`[TrafficCounter] Imported cumulative counters preserved ruleRows=${ruleRows} userRows=${userRows}`);
-      return { skipped: true, rows: ruleRows + userRows };
+      const repaired = await withDatabaseTransaction(async () => {
+        const ownership = await repairTrafficCounterOwnership();
+        const rebuiltUserRows = ruleRows > 0 ? await rebuildUserTrafficCountersFromRuleCounters() : userRows;
+        return { ...ownership, rebuiltUserRows };
+      });
+      await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, USER_TRAFFIC_COUNTER_BACKFILL_MARKER);
+      logger.info?.(`[TrafficCounter] Imported cumulative counters preserved ruleRows=${ruleRows} userRows=${userRows} repairedRules=${repaired.counterRows} repairedBuckets=${repaired.bucketRows}`);
+      return { skipped: true, rows: ruleRows + repaired.rebuiltUserRows };
     }
   }
   const marker = await getSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING).catch(() => null);
-  if (!options.force && marker === "v1") {
+  if (!options.force && marker === USER_TRAFFIC_COUNTER_BACKFILL_MARKER) {
     logger.info?.("[TrafficCounter] User/rule counter backfill already completed; skipping");
     return { skipped: true, rows: 0 };
   }
   const existingCounterRows = await tableRowCount("forward_rule_traffic_counters");
   if (!options.force && existingCounterRows > 0) {
-    const rebuiltUserRows = await rebuildUserTrafficCountersFromRuleCounters().catch((error) => {
-      logger.warn?.("[TrafficCounter] User counter rebuild from existing rule counters skipped:", error instanceof Error ? error.message : String(error));
-      return 0;
+    const repaired = await withDatabaseTransaction(async () => {
+      const ownership = await repairTrafficCounterOwnership();
+      const rebuiltUserRows = await rebuildUserTrafficCountersFromRuleCounters();
+      return { ...ownership, rebuiltUserRows };
     });
-    await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, "v1");
-    logger.info?.(`[TrafficCounter] Existing cumulative counters detected rows=${existingCounterRows}; preserving`);
-    return { skipped: true, rows: existingCounterRows + rebuiltUserRows };
+    await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, USER_TRAFFIC_COUNTER_BACKFILL_MARKER);
+    logger.info?.(`[TrafficCounter] Existing cumulative counters detected rows=${existingCounterRows}; preserving repairedRules=${repaired.counterRows} repairedBuckets=${repaired.bucketRows}`);
+    return { skipped: true, rows: existingCounterRows + repaired.rebuiltUserRows };
   }
 
   const startedAt = Date.now();
   const q = quoteIdentifier;
-  const nowSec = epochSeconds(nowDate());
-  await executeRaw(`DELETE FROM ${q("forward_rule_traffic_counters")}`);
-  await executeRaw(`DELETE FROM ${q("user_traffic_counters")}`);
+  const rebuilt = await withDatabaseTransaction(async () => {
+    const nowSec = epochSeconds(nowDate());
+    await executeRaw(`DELETE FROM ${q("forward_rule_traffic_counters")}`);
+    await executeRaw(`DELETE FROM ${q("user_traffic_counters")}`);
 
-  let ruleRows = 0;
-  const statRows = await tableRowCount("traffic_stats");
-  if (statRows > 0) {
-    const result = await executeRaw(
-      `INSERT INTO ${q("forward_rule_traffic_counters")}
-         (${q("ruleId")}, ${q("hostId")}, ${q("userId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("connections")}, ${q("createdAt")}, ${q("updatedAt")})
-       SELECT ts.${q("ruleId")} AS ${q("ruleId")},
-              ts.${q("hostId")} AS ${q("hostId")},
-              fr.${q("userId")} AS ${q("userId")},
-              COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
-              COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")},
-              COALESCE(SUM(ts.${q("connections")}), 0) AS ${q("connections")},
-              ? AS ${q("createdAt")},
-              ? AS ${q("updatedAt")}
-         FROM ${q("traffic_stats")} ts
-         INNER JOIN ${q("forward_rules")} fr ON fr.${q("id")} = ts.${q("ruleId")}
-        GROUP BY ts.${q("ruleId")}, ts.${q("hostId")}, fr.${q("userId")}`,
-      [nowSec, nowSec],
-    );
-    ruleRows = rawAffectedRows(result);
-  } else {
-    const bucketRows = await tableRowCount("traffic_stat_buckets");
-    if (bucketRows > 0) {
+    let ruleRows = 0;
+    const statRows = await tableRowCount("traffic_stats");
+    if (statRows > 0) {
       const result = await executeRaw(
         `INSERT INTO ${q("forward_rule_traffic_counters")}
            (${q("ruleId")}, ${q("hostId")}, ${q("userId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("connections")}, ${q("createdAt")}, ${q("updatedAt")})
-         SELECT b.${q("ruleId")} AS ${q("ruleId")},
-                b.${q("hostId")} AS ${q("hostId")},
-                b.${q("userId")} AS ${q("userId")},
-                COALESCE(SUM(b.${q("bytesIn")}), 0) AS ${q("bytesIn")},
-                COALESCE(SUM(b.${q("bytesOut")}), 0) AS ${q("bytesOut")},
-                COALESCE(SUM(b.${q("connections")}), 0) AS ${q("connections")},
+         SELECT ts.${q("ruleId")} AS ${q("ruleId")},
+                ts.${q("hostId")} AS ${q("hostId")},
+                COALESCE(parent.${q("userId")}, fr.${q("userId")}) AS ${q("userId")},
+                COALESCE(SUM(ts.${q("bytesIn")}), 0) AS ${q("bytesIn")},
+                COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")},
+                COALESCE(SUM(ts.${q("connections")}), 0) AS ${q("connections")},
                 ? AS ${q("createdAt")},
                 ? AS ${q("updatedAt")}
-           FROM ${q("traffic_stat_buckets")} b
-          WHERE b.${q("bucketMinutes")} = ?
-          GROUP BY b.${q("ruleId")}, b.${q("hostId")}, b.${q("userId")}`,
-        [nowSec, nowSec, TRAFFIC_BUCKET_MINUTES],
+           FROM ${q("traffic_stats")} ts
+           INNER JOIN ${q("forward_rules")} fr ON fr.${q("id")} = ts.${q("ruleId")}
+           ${managedParentRuleJoin("fr")}
+          GROUP BY ts.${q("ruleId")}, ts.${q("hostId")}, COALESCE(parent.${q("userId")}, fr.${q("userId")})`,
+        [nowSec, nowSec],
       );
       ruleRows = rawAffectedRows(result);
+    } else {
+      const bucketRows = await tableRowCount("traffic_stat_buckets");
+      if (bucketRows > 0) {
+        const result = await executeRaw(
+          `INSERT INTO ${q("forward_rule_traffic_counters")}
+             (${q("ruleId")}, ${q("hostId")}, ${q("userId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("connections")}, ${q("createdAt")}, ${q("updatedAt")})
+           SELECT b.${q("ruleId")} AS ${q("ruleId")},
+                  b.${q("hostId")} AS ${q("hostId")},
+                  COALESCE(parent.${q("userId")}, fr.${q("userId")}, b.${q("userId")}) AS ${q("userId")},
+                  COALESCE(SUM(b.${q("bytesIn")}), 0) AS ${q("bytesIn")},
+                  COALESCE(SUM(b.${q("bytesOut")}), 0) AS ${q("bytesOut")},
+                  COALESCE(SUM(b.${q("connections")}), 0) AS ${q("connections")},
+                  ? AS ${q("createdAt")},
+                  ? AS ${q("updatedAt")}
+             FROM ${q("traffic_stat_buckets")} b
+             LEFT JOIN ${q("forward_rules")} fr ON fr.${q("id")} = b.${q("ruleId")}
+             ${managedParentRuleJoin("fr")}
+            WHERE b.${q("bucketMinutes")} = ?
+            GROUP BY b.${q("ruleId")}, b.${q("hostId")}, COALESCE(parent.${q("userId")}, fr.${q("userId")}, b.${q("userId")})`,
+          [nowSec, nowSec, TRAFFIC_BUCKET_MINUTES],
+        );
+        ruleRows = rawAffectedRows(result);
+      }
     }
-  }
-  const userRows = await rebuildUserTrafficCountersFromRuleCounters();
-  await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, "v1");
+    const repaired = await repairTrafficCounterOwnership();
+    const userRows = await rebuildUserTrafficCountersFromRuleCounters();
+    return { ...repaired, ruleRows, userRows };
+  });
+  await setSetting(USER_TRAFFIC_COUNTER_BACKFILL_SETTING, USER_TRAFFIC_COUNTER_BACKFILL_MARKER);
   await setSetting("userTrafficCountersBackfilledAt", String(epochSeconds(nowDate())));
-  logger.info?.(`[TrafficCounter] User/rule counter backfill complete ruleRows=${ruleRows} userRows=${userRows} elapsedMs=${Date.now() - startedAt}`);
-  return { skipped: false, rows: ruleRows + userRows };
+  logger.info?.(`[TrafficCounter] User/rule counter backfill complete ruleRows=${rebuilt.ruleRows} userRows=${rebuilt.userRows} repairedRules=${rebuilt.counterRows} repairedBuckets=${rebuilt.bucketRows} elapsedMs=${Date.now() - startedAt}`);
+  return { skipped: false, rows: rebuilt.ruleRows + rebuilt.userRows };
 }
 
 type RuleTrafficIdentity = {
@@ -1303,7 +1390,7 @@ async function getTrafficSummaryRowsFromBuckets(opts: {
     params.push(bucketStartFor(epochSeconds(opts.since)));
   }
   if (opts.userId) {
-    conditions.push(`b.${q("userId")} = ?`);
+    conditions.push(`COALESCE(parent.${q("userId")}, fr.${q("userId")}, b.${q("userId")}) = ?`);
     params.push(opts.userId);
   }
   if (opts.ruleIds?.length) {
@@ -1317,6 +1404,8 @@ async function getTrafficSummaryRowsFromBuckets(opts: {
             COALESCE(SUM(b.${q("bytesOut")}), 0) AS ${q("bytesOut")},
             COALESCE(SUM(b.${q("connections")}), 0) AS ${q("connections")}
        FROM ${q("traffic_stat_buckets")} b
+       ${opts.userId ? `LEFT JOIN ${q("forward_rules")} fr ON fr.${q("id")} = b.${q("ruleId")}
+       ${managedParentRuleJoin("fr")}` : ""}
       WHERE ${conditions.join(" AND ")}
       GROUP BY b.${q("ruleId")}, b.${q("hostId")}`,
     params,
@@ -1344,7 +1433,7 @@ async function getTrafficSummaryRowsFromStats(opts: {
     params.push(epochSeconds(opts.since));
   }
   if (opts.userId) {
-    conditions.push(`fr.${q("userId")} = ?`);
+    conditions.push(`COALESCE(parent.${q("userId")}, fr.${q("userId")}) = ?`);
     params.push(opts.userId);
   }
   if (opts.ruleIds?.length) {
@@ -1360,6 +1449,7 @@ async function getTrafficSummaryRowsFromStats(opts: {
             COALESCE(SUM(ts.${q("connections")}), 0) AS ${q("connections")}
        FROM ${q("traffic_stats")} ts
        INNER JOIN ${q("forward_rules")} fr ON fr.${q("id")} = ts.${q("ruleId")}
+       ${managedParentRuleJoin("fr")}
       ${where}
       GROUP BY ts.${q("ruleId")}, ts.${q("hostId")}`,
     params,
@@ -1577,7 +1667,7 @@ async function getTrafficSummaryRowsFromCounters(opts: {
     params.push(opts.hostId);
   }
   if (opts.userId) {
-    conditions.push(`c.${q("userId")} = ?`);
+    conditions.push(`COALESCE(parent.${q("userId")}, fr.${q("userId")}, c.${q("userId")}) = ?`);
     params.push(opts.userId);
   }
   if (opts.ruleIds?.length) {
@@ -1592,6 +1682,8 @@ async function getTrafficSummaryRowsFromCounters(opts: {
             COALESCE(SUM(c.${q("bytesOut")}), 0) AS ${q("bytesOut")},
             COALESCE(SUM(c.${q("connections")}), 0) AS ${q("connections")}
        FROM ${q("forward_rule_traffic_counters")} c
+       ${opts.userId ? `LEFT JOIN ${q("forward_rules")} fr ON fr.${q("id")} = c.${q("ruleId")}
+       ${managedParentRuleJoin("fr")}` : ""}
       ${where}
       GROUP BY c.${q("ruleId")}, c.${q("hostId")}`,
     params,
@@ -2220,10 +2312,12 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
       `SELECT b.${q("bucketStart")} AS ${q("bucket")},
               COALESCE(SUM(b.${q("bytesIn")}), 0) AS ${q("bytesIn")},
               COALESCE(SUM(b.${q("bytesOut")}), 0) AS ${q("bytesOut")}
-         FROM ${q("traffic_stat_buckets")} b
-        WHERE b.${q("bucketMinutes")} = ?
-          AND b.${q("bucketStart")} >= ?
-          ${opts.userId ? `AND b.${q("userId")} = ?` : ""}
+       FROM ${q("traffic_stat_buckets")} b
+       ${opts.userId ? `LEFT JOIN ${rulesTable} fr ON fr.${q("id")} = b.${q("ruleId")}
+       ${managedParentRuleJoin("fr")}` : ""}
+      WHERE b.${q("bucketMinutes")} = ?
+        AND b.${q("bucketStart")} >= ?
+          ${opts.userId ? `AND COALESCE(parent.${q("userId")}, fr.${q("userId")}, b.${q("userId")}) = ?` : ""}
         GROUP BY b.${q("bucketStart")}
         ORDER BY b.${q("bucketStart")} ASC`,
       opts.userId ? [TRAFFIC_BUCKET_MINUTES, startBucketSec, opts.userId] : [TRAFFIC_BUCKET_MINUTES, startBucketSec],
@@ -2236,7 +2330,8 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
                 COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")}
            FROM ${trafficTable} ts
            INNER JOIN ${rulesTable} fr ON fr.${q("id")} = ts.${q("ruleId")}
-          WHERE ts.${q("recordedAt")} >= ? AND fr.${q("userId")} = ?
+           ${managedParentRuleJoin("fr")}
+          WHERE ts.${q("recordedAt")} >= ? AND COALESCE(parent.${q("userId")}, fr.${q("userId")}) = ?
           GROUP BY ${bucketExprSql("ts", bucketSec)}
           ORDER BY ${q("bucket")} ASC`,
         [sinceSec, opts.userId],

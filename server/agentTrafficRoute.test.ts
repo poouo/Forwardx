@@ -19,6 +19,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
     const runtime = await import(url("server/dbRuntime.ts"));
     const schema = await import(url("server/dbSchema.ts"));
     const reports = await import(url("server/agentReportRoutes.ts"));
+    const metrics = await import(url("server/repositories/metricsRepository.ts"));
 
     const hostIds = [
       1,
@@ -65,7 +66,11 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
 
       await runtime.executeRaw(
         'INSERT INTO "users" ("id", "username", "password", "name", "role", "trafficUsed") VALUES (?, ?, ?, ?, ?, ?)',
-        [1, "route-user", "hash", "Route User", "user", 0],
+        [1, "route-admin", "hash", "Route Admin", "admin", 0],
+      );
+      await runtime.executeRaw(
+        'INSERT INTO "users" ("id", "username", "password", "name", "role", "trafficUsed") VALUES (?, ?, ?, ?, ?, ?)',
+        [2, "ordinary-rule-user", "hash", "Ordinary Rule User", "user", 0],
       );
       for (const hostId of hostIds) {
         await runtime.executeRaw(
@@ -81,6 +86,14 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       await runtime.executeRaw(
         'INSERT INTO "forward_group_members" ("id", "groupId", "memberType", "hostId", "priority", "isEnabled") VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)',
         [2011, 201, "host", 11, 10, 1, 2012, 201, "host", 12, 20, 0],
+      );
+      await runtime.executeRaw(
+        'INSERT INTO "forward_groups" ("id", "name", "groupMode", "targetIp", "isEnabled", "userId") VALUES (?, ?, ?, ?, ?, ?)',
+        [700, "admin-owned-shared-group", "failover", "127.0.0.1", 1, 1],
+      );
+      await runtime.executeRaw(
+        'INSERT INTO "forward_group_members" ("id", "groupId", "memberType", "hostId", "priority", "isEnabled") VALUES (?, ?, ?, ?, ?, ?)',
+        [7001, 700, "host", 20, 10, 1],
       );
 
       const tunnels = [
@@ -129,6 +142,14 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
           [id, hostId, name, id === 400 || id === 600 ? "nginx" : "gost", "tcp", tunnelId, 10000 + id, "127.0.0.1", 80, 1],
         );
       }
+      await runtime.executeRaw(
+        'INSERT INTO "forward_rules" ("id", "hostId", "name", "forwardType", "protocol", "tunnelId", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [700, 20, "ordinary-template", "gost", "tcp", 300, 700, 1, 10700, "127.0.0.1", 80, 2],
+      );
+      await runtime.executeRaw(
+        'INSERT INTO "forward_rules" ("id", "hostId", "name", "forwardType", "protocol", "tunnelId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "sourcePort", "targetIp", "targetPort", "userId") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [701, 20, "stale-admin-child", "gost", "tcp", 300, 700, 700, 7001, 10700, "127.0.0.1", 80, 1],
+      );
 
       const app = express();
       app.use(express.json());
@@ -204,6 +225,13 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       assert.equal(topologyRetry.status, 200);
       assert.equal(topologyRetry.body.success, true);
 
+      const ordinaryFirst = await postTraffic(baseUrl, 21, "ordinary-owner-first", 701, 37, 43);
+      const ordinarySecond = await postTraffic(baseUrl, 21, "ordinary-owner-second", 701, 5, 7);
+      assert.equal(ordinaryFirst.status, 200);
+      assert.equal(ordinaryFirst.body.success, true);
+      assert.equal(ordinarySecond.status, 200);
+      assert.equal(ordinarySecond.body.success, true);
+
       for (const request of [
         [10, "forwardx-primary", 200],
         [11, "forwardx-enabled-member", 200],
@@ -243,12 +271,39 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       assert.deepEqual(await trafficRows(600), [
         { hostId: 51, bytesIn: 10, bytesOut: 20, connections: 1 },
       ]);
+      assert.deepEqual(await trafficRows(701), [
+        { hostId: 21, bytesIn: 42, bytesOut: 50, connections: 2 },
+      ]);
+      assert.deepEqual(
+        await runtime.queryRaw('SELECT "userId", "bytesIn", "bytesOut", "connections" FROM "forward_rule_traffic_counters" WHERE "ruleId" = ?', [701]),
+        [{ userId: 2, bytesIn: 42, bytesOut: 50, connections: 2 }],
+      );
+      assert.deepEqual(
+        await runtime.queryRaw('SELECT "bytesIn", "bytesOut", "connections" FROM "user_traffic_counters" WHERE "userId" = ?', [2]),
+        [{ bytesIn: 42, bytesOut: 50, connections: 2 }],
+      );
+      const ordinarySummary = await metrics.getTrafficCounterSummaryByRule({
+        userId: 2,
+        ruleIds: [700],
+        includeLatency: false,
+      });
+      assert.deepEqual(
+        ordinarySummary.map(({ ruleId, bytesIn, bytesOut, connections }) => ({ ruleId, bytesIn, bytesOut, connections })),
+        [{ ruleId: 700, bytesIn: 42, bytesOut: 50, connections: 2 }],
+      );
 
-      const summed = (await runtime.queryRaw(
-        'SELECT COALESCE(SUM("bytesIn" + "bytesOut"), 0) AS "total" FROM "traffic_stats"',
+      const adminSummed = (await runtime.queryRaw(
+        'SELECT COALESCE(SUM("bytesIn" + "bytesOut"), 0) AS "total" FROM "traffic_stats" WHERE "ruleId" <> ?',
+        [701],
       ))[0].total;
-      const user = (await runtime.queryRaw('SELECT "trafficUsed" FROM "users" WHERE "id" = 1'))[0];
-      assert.equal(user.trafficUsed, summed, "quota traffic must equal accepted route traffic exactly once");
+      const ordinarySummed = (await runtime.queryRaw(
+        'SELECT COALESCE(SUM("bytesIn" + "bytesOut"), 0) AS "total" FROM "traffic_stats" WHERE "ruleId" = ?',
+        [701],
+      ))[0].total;
+      const admin = (await runtime.queryRaw('SELECT "trafficUsed" FROM "users" WHERE "id" = 1'))[0];
+      const ordinary = (await runtime.queryRaw('SELECT "trafficUsed" FROM "users" WHERE "id" = 2'))[0];
+      assert.equal(admin.trafficUsed, adminSummed, "admin quota traffic must include only admin-owned rules");
+      assert.equal(ordinary.trafficUsed, ordinarySummed, "ordinary quota traffic must include its shared-resource rules");
     } finally {
       if (server) await new Promise((resolve) => server.close(() => resolve()));
       await runtime.closeDatabase();

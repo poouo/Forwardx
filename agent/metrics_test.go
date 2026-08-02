@@ -861,6 +861,73 @@ func TestCollectableRuleTrafficStatesDriveIntervalsAndConntrackPorts(t *testing.
 	}
 }
 
+func TestConntrackFlowSnapshotUsesOriginalTupleOnly(t *testing.T) {
+	protocolsByPort := map[string]map[string]bool{
+		"22022": {"tcp": true, "udp": true},
+		"443":   {"tcp": true},
+	}
+	raw := strings.Join([]string{
+		"ipv4 2 tcp 6 431999 ESTABLISHED src=198.51.100.10 dst=192.0.2.20 sport=51000 dport=22022 packets=3 bytes=180 src=203.0.113.30 dst=198.51.100.10 sport=443 dport=51000 packets=2 bytes=120 [ASSURED] mark=0 use=1",
+		"ipv4 2 udp 17 29 src=198.51.100.11 dst=192.0.2.20 sport=52000 dport=22022 packets=1 bytes=80 src=203.0.113.30 dst=198.51.100.11 sport=443 dport=52000 packets=1 bytes=100 mark=0 use=1",
+	}, "\n")
+
+	flows := parseConntrackFlowSnapshot(raw, protocolsByPort)
+	if got := len(flows["22022"]); got != 2 {
+		t.Fatalf("listener flow count=%d want=2", got)
+	}
+	if got := len(flows["443"]); got != 0 {
+		t.Fatalf("reply tuple target leaked into port 443: %d", got)
+	}
+}
+
+func TestConntrackConnectionDeltaTracksFlowIdentityInsteadOfActiveGauge(t *testing.T) {
+	protocolsByPort := map[string]map[string]bool{"22022": {"tcp": true}}
+	first := parseConntrackFlowSnapshot(
+		"ipv4 2 tcp 6 30 ESTABLISHED src=198.51.100.10 dst=192.0.2.20 sport=51000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.10 sport=22022 dport=51000 packets=1 bytes=60",
+		protocolsByPort,
+	)
+	second := parseConntrackFlowSnapshot(
+		"ipv4 2 tcp 6 30 ESTABLISHED src=198.51.100.11 dst=192.0.2.20 sport=52000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.11 sport=22022 dport=52000 packets=1 bytes=60",
+		protocolsByPort,
+	)
+
+	if len(first["22022"]) != 1 || len(second["22022"]) != 1 {
+		t.Fatal("fixture must keep the active connection gauge at one")
+	}
+	baselines := map[string]uint64{"22022": 7}
+	active, totals := updateConntrackConnectionTotals(nil, first, nil, baselines, protocolsByPort)
+	if active["22022"] != 1 || totals["22022"] != 7 {
+		t.Fatalf("initial snapshot active/total=%d/%d want=1/7", active["22022"], totals["22022"])
+	}
+	_, unchangedTotals := updateConntrackConnectionTotals(first, first, totals, baselines, protocolsByPort)
+	if unchangedTotals["22022"] != 7 {
+		t.Fatalf("unchanged active flow was counted again: %d", unchangedTotals["22022"])
+	}
+	active, replacementTotals := updateConntrackConnectionTotals(first, second, unchangedTotals, baselines, protocolsByPort)
+	if active["22022"] != 1 || replacementTotals["22022"] != 8 {
+		t.Fatalf("replacement snapshot active/total=%d/%d want=1/8", active["22022"], replacementTotals["22022"])
+	}
+	if got := delta(replacementTotals["22022"], baselines["22022"]); got != 1 {
+		t.Fatalf("uncommitted replacement was not retained for a later report: %d", got)
+	}
+}
+
+func TestConntrackFlowSnapshotFiltersRuleProtocol(t *testing.T) {
+	raw := strings.Join([]string{
+		"ipv4 2 tcp 6 30 ESTABLISHED src=198.51.100.10 dst=192.0.2.20 sport=51000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.10 sport=22022 dport=51000 packets=1 bytes=60",
+		"ipv4 2 udp 17 30 src=198.51.100.11 dst=192.0.2.20 sport=52000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.11 sport=22022 dport=52000 packets=1 bytes=60",
+	}, "\n")
+
+	tcpOnly := parseConntrackFlowSnapshot(raw, map[string]map[string]bool{"22022": {"tcp": true}})
+	if got := len(tcpOnly["22022"]); got != 1 {
+		t.Fatalf("TCP-only rule included a UDP flow: %d", got)
+	}
+	both := parseConntrackFlowSnapshot(raw, map[string]map[string]bool{"22022": {"tcp": true, "udp": true}})
+	if got := len(both["22022"]); got != 2 {
+		t.Fatalf("combined rule flow count=%d want=2", got)
+	}
+}
+
 func TestTrafficSnapshotRequirementsFollowForwardTypes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -919,10 +986,13 @@ func TestProcessTrafficRequestsIptablesOnlyWhenNftLayoutIsMissing(t *testing.T) 
 
 func TestCountingLayoutPresenceUsesTheExpectedSingleBackend(t *testing.T) {
 	diagnostics := trafficDiagnosticsSnapshot{
-		iptablesMarkers:   map[string]bool{"22001": true, "22004": true},
-		ip6tablesMarkers:  map[string]bool{"22002": true},
-		nftMarkers:        map[int]bool{},
-		nftProcessMarkers: map[string]bool{"22003": true},
+		iptablesMarkers:  map[string]bool{"22001": true, "22004": true},
+		ip6tablesMarkers: map[string]bool{"22002": true},
+		nftMarkers:       map[int]bool{},
+		nftProcessMarkers: map[string]bool{
+			"22003": true, "22003:tcp:in": true, "22003:tcp:out": true,
+			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true,
+		},
 	}
 	tests := []struct {
 		name  string
@@ -932,6 +1002,7 @@ func TestCountingLayoutPresenceUsesTheExpectedSingleBackend(t *testing.T) {
 		{name: "IPv4 kernel marker", state: localRuleState{Port: "22001", RuleID: 1, ForwardType: "iptables", TargetIP: "192.0.2.10", TargetPort: 443}, want: true},
 		{name: "IPv6 kernel marker", state: localRuleState{Port: "22002", RuleID: 2, ForwardType: "iptables", TargetIP: "2001:db8::10", TargetPort: 443}, want: true},
 		{name: "process nft marker", state: localRuleState{Port: "22003", RuleID: 3, ForwardType: "gost"}, want: true},
+		{name: "partial process protocol layout", state: localRuleState{Port: "22009", RuleID: 9, ForwardType: "gost", Protocol: "both"}, want: false},
 		{name: "process iptables fallback", state: localRuleState{Port: "22004", RuleID: 4, ForwardType: "realm"}, want: true},
 		{name: "missing process layout", state: localRuleState{Port: "22005", RuleID: 5, ForwardType: "socat"}, want: false},
 		{name: "missing IPv4 kernel layout", state: localRuleState{Port: "22006", RuleID: 6, ForwardType: "iptables", TargetIP: "192.0.2.20", TargetPort: 443}, want: false},
@@ -945,6 +1016,87 @@ func TestCountingLayoutPresenceUsesTheExpectedSingleBackend(t *testing.T) {
 				t.Fatalf("layout present=%v want=%v state=%+v", got, tc.want, tc.state)
 			}
 		})
+	}
+}
+
+func TestPartialNftLayoutQueuesNonDestructiveRepairWithoutAdvancingBaseline(t *testing.T) {
+	isolateCountingStateTest(t, "boot-a")
+	rule := runningRule{
+		RuleID:      91,
+		SourcePort:  22009,
+		TargetIP:    "203.0.113.10",
+		TargetPort:  443,
+		Protocol:    "both",
+		ForwardType: "gost",
+	}
+	rememberDesiredRunningRules([]runningRule{rule})
+	signature := countingChainRuleSignature(rule)
+	countingChainSignatures["22009"] = signature
+	countingChainCheckedAt["22009"] = time.Now()
+	writePrev("22009", rule.RuleID, 800, 500, 12)
+
+	diagnostics := trafficDiagnosticsSnapshot{
+		iptablesMarkers:  map[string]bool{},
+		ip6tablesMarkers: map[string]bool{},
+		nftProcessMarkers: map[string]bool{
+			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true,
+			"22009:udp:in": true,
+		},
+	}
+	missing := repairMissingCountingLayouts([]localRuleState{{
+		Port: "22009", RuleID: rule.RuleID, TargetIP: rule.TargetIP, TargetPort: rule.TargetPort,
+		Protocol: rule.Protocol, ForwardType: rule.ForwardType,
+	}}, diagnostics)
+
+	if !missing["22009"] {
+		t.Fatal("partial TCP/UDP nft layout was not held out of traffic collection")
+	}
+	if countingChainSignatures["22009"] != signature {
+		t.Fatal("partial layout repair replaced the existing counting signature")
+	}
+	if cleanup := countingChainRepairCleanup["22009"]; cleanup {
+		t.Fatal("partial layout repair would flush counters instead of filling missing rules")
+	}
+	if got := len(countingChainRepairQueue); got != 1 {
+		t.Fatalf("partial layout queued %d repair jobs, want one", got)
+	}
+	if ruleID, in, out, conns := readPrev("22009"); ruleID != rule.RuleID || in != 800 || out != 500 || conns != 12 {
+		t.Fatalf("partial layout advanced baseline to %d/%d/%d/%d", ruleID, in, out, conns)
+	}
+
+	// A repeated snapshot while the repair is pending must neither enqueue a
+	// duplicate nor change ownership of the non-destructive repair.
+	repairMissingCountingLayouts([]localRuleState{{
+		Port: "22009", RuleID: rule.RuleID, TargetIP: rule.TargetIP, TargetPort: rule.TargetPort,
+		Protocol: rule.Protocol, ForwardType: rule.ForwardType,
+	}}, diagnostics)
+	if got := len(countingChainRepairQueue); got != 1 {
+		t.Fatalf("pending partial layout queued %d repair jobs, want one", got)
+	}
+	if countingChainRepairCleanup["22009"] {
+		t.Fatal("repeated partial layout changed repair to destructive cleanup")
+	}
+
+	queued := <-countingChainRepairQueue
+	finishCountingChainRepair(queued, true)
+	completeDiagnostics := diagnostics
+	completeDiagnostics.nftProcessMarkers["22009:udp:out"] = true
+	if stillMissing := repairMissingCountingLayouts([]localRuleState{{
+		Port: "22009", RuleID: rule.RuleID, TargetIP: rule.TargetIP, TargetPort: rule.TargetPort,
+		Protocol: rule.Protocol, ForwardType: rule.ForwardType,
+	}}, completeDiagnostics); stillMissing["22009"] {
+		t.Fatal("completed non-destructive repair remained excluded from collection")
+	}
+
+	_, previousIn, previousOut, _ := readPrev("22009")
+	firstComplete := trafficCounters{In: 825, Out: 530}
+	if in, out := delta(firstComplete.In, previousIn), delta(firstComplete.Out, previousOut); in != 25 || out != 30 {
+		t.Fatalf("first complete snapshot delta=%d/%d want=25/30", in, out)
+	}
+	writePrev("22009", rule.RuleID, firstComplete.In, firstComplete.Out, 12)
+	_, previousIn, previousOut, _ = readPrev("22009")
+	if in, out := delta(firstComplete.In, previousIn), delta(firstComplete.Out, previousOut); in != 0 || out != 0 {
+		t.Fatalf("unchanged second snapshot was counted again: %d/%d", in, out)
 	}
 }
 

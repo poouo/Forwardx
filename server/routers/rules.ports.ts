@@ -106,7 +106,7 @@ export const portsRulesRouter = router({
             ...((await db.getForwardGroupChildRulesForTemplate(input.excludeRuleId)) as any[]).map((rule: any) => Number(rule.id)),
           ]
         : [];
-      const used = await db.isPortUsedOnHost(hostId, input.sourcePort, excludeRuleIds, input.protocol);
+      const used = await db.isPortUsedOnHost(hostId, input.sourcePort, excludeRuleIds, input.protocol, undefined, false);
       return { used };
     }),
   randomPort: protectedProcedure
@@ -143,7 +143,13 @@ export const portsRulesRouter = router({
           rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
         }
       }
-      const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd, input.protocol);
+      const excludeRuleIds = input.excludeRuleId
+        ? [
+            input.excludeRuleId,
+            ...((await db.getForwardGroupChildRulesForTemplate(input.excludeRuleId)) as any[]).map((rule: any) => Number(rule.id)),
+          ]
+        : [];
+      const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd, input.protocol, [], excludeRuleIds);
       if (!port) throw new Error("该主机端口区间内已无可用端口");
       return { port };
     }),

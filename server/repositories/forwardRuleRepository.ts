@@ -589,6 +589,28 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
   const groupIds = Array.from(new Set(rows
     .map((row) => Number(row.trafficGroupId || 0))
     .filter((id) => Number.isInteger(id) && id > 0)));
+  const parentRuleIds = Array.from(new Set(rows
+    .map((row) => Number(row.forwardGroupRuleId || 0))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const parentByRuleId = new Map<number, { userId: number; groupId: number; isTemplate: boolean }>();
+  for (let index = 0; index < parentRuleIds.length; index += 400) {
+    const parents = await db
+      .select({
+        id: forwardRules.id,
+        userId: forwardRules.userId,
+        groupId: forwardRules.forwardGroupId,
+        isTemplate: forwardRules.isForwardGroupTemplate,
+      })
+      .from(forwardRules)
+      .where(inArray(forwardRules.id, parentRuleIds.slice(index, index + 400)));
+    for (const parent of parents as any[]) {
+      parentByRuleId.set(Number(parent.id), {
+        userId: Number(parent.userId),
+        groupId: Number(parent.groupId || 0),
+        isTemplate: parent.isTemplate === true || parent.isTemplate === 1 || parent.isTemplate === "1",
+      });
+    }
+  }
   const membersByGroupId = new Map<number, any[]>();
   for (let index = 0; index < groupIds.length; index += 400) {
     const members = await db
@@ -615,36 +637,46 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
     members.sort((a, b) => Number(a.priority) - Number(b.priority));
   }
 
-  return rows.map((row) => ({
-    rule: {
-      id: row.id,
-      hostId: row.hostId,
-      tunnelId: row.tunnelId,
-      forwardGroupId: row.forwardGroupId,
-      forwardGroupRuleId: row.forwardGroupRuleId,
-      forwardGroupMemberId: row.forwardGroupMemberId,
-      userId: row.userId,
-      isEnabled: row.isEnabled,
-      isRunning: row.isRunning,
-      pendingDelete: row.pendingDelete,
-    },
-    tunnel: Number(row.trafficTunnelId || 0) > 0 ? {
-      id: row.trafficTunnelId,
-      entryHostId: row.trafficTunnelEntryHostId,
-      entryGroupId: row.trafficTunnelEntryGroupId,
-      exitHostId: row.trafficTunnelExitHostId,
-      mode: row.trafficTunnelMode,
-      trafficMultiplier: row.trafficTunnelMultiplier,
-      loadBalanceEnabled: row.trafficTunnelLoadBalanceEnabled,
-      loadBalanceStrategy: row.trafficTunnelLoadBalanceStrategy,
-    } : null,
-    group: Number(row.trafficGroupId || 0) > 0 ? {
-      id: row.trafficGroupId,
-      groupMode: row.trafficGroupMode,
-      trafficMultiplier: row.trafficGroupMultiplier,
-      members: membersByGroupId.get(Number(row.trafficGroupId)) || [],
-    } : null,
-  }));
+  return rows.map((row) => {
+    const parent = parentByRuleId.get(Number(row.forwardGroupRuleId || 0));
+    const inheritedUserId = parent?.isTemplate
+      && parent.groupId > 0
+      && parent.groupId === Number(row.forwardGroupId || 0)
+      ? parent.userId
+      : Number(row.userId);
+    return {
+      rule: {
+        id: row.id,
+        hostId: row.hostId,
+        tunnelId: row.tunnelId,
+        forwardGroupId: row.forwardGroupId,
+        forwardGroupRuleId: row.forwardGroupRuleId,
+        forwardGroupMemberId: row.forwardGroupMemberId,
+        // Managed group children inherit ownership from the visible template.
+        // Older restores and preserved runtimes can retain a stale child userId.
+        userId: inheritedUserId,
+        isEnabled: row.isEnabled,
+        isRunning: row.isRunning,
+        pendingDelete: row.pendingDelete,
+      },
+      tunnel: Number(row.trafficTunnelId || 0) > 0 ? {
+        id: row.trafficTunnelId,
+        entryHostId: row.trafficTunnelEntryHostId,
+        entryGroupId: row.trafficTunnelEntryGroupId,
+        exitHostId: row.trafficTunnelExitHostId,
+        mode: row.trafficTunnelMode,
+        trafficMultiplier: row.trafficTunnelMultiplier,
+        loadBalanceEnabled: row.trafficTunnelLoadBalanceEnabled,
+        loadBalanceStrategy: row.trafficTunnelLoadBalanceStrategy,
+      } : null,
+      group: Number(row.trafficGroupId || 0) > 0 ? {
+        id: row.trafficGroupId,
+        groupMode: row.trafficGroupMode,
+        trafficMultiplier: row.trafficGroupMultiplier,
+        members: membersByGroupId.get(Number(row.trafficGroupId)) || [],
+      } : null,
+    };
+  });
 }
 
 async function hydrateForwardRuleListIds(ids: number[]) {

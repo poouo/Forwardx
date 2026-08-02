@@ -1031,6 +1031,105 @@ function protocolConflictCondition(_protocol: unknown) {
   return null;
 }
 
+export async function getUsedPortsOnHost(
+  hostId: number,
+  excludeRuleId?: number | number[],
+  protocol?: unknown,
+  excludeTunnelId?: number,
+  excludeRuleExitPorts = true,
+): Promise<Set<number>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  const excludedIds = Array.from(new Set(
+    (Array.isArray(excludeRuleId) ? excludeRuleId : [excludeRuleId])
+      .map((id) => Number(id || 0))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  ));
+  const excludedTunnelId = Number(excludeTunnelId || 0);
+  const excludeRulesSql = excludedIds.length > 0
+    ? sql`${forwardRules.id} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`
+    : undefined;
+  const excludeMappingsSql = excludedIds.length > 0
+    ? sql`${forwardRuleTunnelExits.ruleId} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`
+    : undefined;
+  const protocolCond = protocolConflictCondition(protocol);
+
+  const usedRuleConds: any[] = [
+    eq(forwardRules.hostId, hostId),
+    eq(forwardRules.isForwardGroupTemplate, false),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ];
+  if (excludeRulesSql) usedRuleConds.push(excludeRulesSql);
+  if (protocolCond) usedRuleConds.push(protocolCond);
+
+  const usedPrimaryExitConds: any[] = [
+    eq(tunnels.exitHostId, hostId),
+    eq(forwardRules.isForwardGroupTemplate, false),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ];
+  if (excludeRuleExitPorts && excludeRulesSql) usedPrimaryExitConds.push(excludeRulesSql);
+  if (protocolCond) usedPrimaryExitConds.push(protocolCond);
+
+  const usedExitConds: any[] = [eq(forwardRuleTunnelExits.exitHostId, hostId)];
+  if (excludeRuleExitPorts && excludeMappingsSql) usedExitConds.push(excludeMappingsSql);
+  if (protocolCond) usedExitConds.push(protocolCond);
+
+  const [
+    usedRules,
+    usedPrimaryExits,
+    usedMappedExits,
+    usedTunnels,
+    usedExtraTunnelNodes,
+    usedHops,
+  ] = await Promise.all([
+    db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedRuleConds)),
+    db.select({ port: forwardRules.tunnelExitPort })
+      .from(forwardRules)
+      .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
+      .where(and(...usedPrimaryExitConds)),
+    db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
+      .from(forwardRuleTunnelExits)
+      .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+      .where(and(...usedExitConds)),
+    db.select({ id: tunnels.id, listenPort: tunnels.listenPort, mimicPort: tunnels.mimicPort })
+      .from(tunnels)
+      .where(eq(tunnels.exitHostId, hostId)),
+    db.select({ tunnelId: tunnelExitNodes.tunnelId, listenPort: tunnelExitNodes.listenPort, mimicPort: tunnelExitNodes.mimicPort })
+      .from(tunnelExitNodes)
+      .where(eq(tunnelExitNodes.hostId, hostId)),
+    db.select({ tunnelId: tunnelHops.tunnelId, listenPort: tunnelHops.listenPort, mimicPort: tunnelHops.mimicPort })
+      .from(tunnelHops)
+      .where(eq(tunnelHops.hostId, hostId)),
+  ]);
+
+  const used = new Set<number>();
+  const addPort = (value: unknown) => {
+    const port = Number(value);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) used.add(port);
+  };
+  usedRules.forEach((row: any) => addPort(row.port));
+  usedPrimaryExits.forEach((row: any) => addPort(row.port));
+  usedMappedExits.forEach((row: any) => addPort(row.port));
+  usedTunnels.forEach((row: any) => {
+    if (Number(row.id) === excludedTunnelId) return;
+    addPort(row.listenPort);
+    addPort(row.mimicPort);
+  });
+  usedExtraTunnelNodes.forEach((row: any) => {
+    if (Number(row.tunnelId) === excludedTunnelId) return;
+    addPort(row.listenPort);
+    addPort(row.mimicPort);
+  });
+  usedHops.forEach((row: any) => {
+    if (Number(row.tunnelId) === excludedTunnelId) return;
+    addPort(row.listenPort);
+    addPort(row.mimicPort);
+  });
+  return used;
+}
+
 /** 检查某主机上的某端口是否已被占用 */
 export async function isPortUsedOnHost(
   hostId: number,
@@ -1038,6 +1137,7 @@ export async function isPortUsedOnHost(
   excludeRuleId?: number | number[],
   protocol?: unknown,
   excludeTunnelId?: number,
+  excludeRuleExitPorts = true,
 ): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
@@ -1068,7 +1168,7 @@ export async function isPortUsedOnHost(
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ];
-  if (excludedIds.length > 0) {
+  if (excludeRuleExitPorts && excludedIds.length > 0) {
     primaryExitConds.push(sql`${forwardRules.id} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`);
   }
   if (protocolCond) primaryExitConds.push(protocolCond);
@@ -1081,7 +1181,7 @@ export async function isPortUsedOnHost(
     eq(forwardRuleTunnelExits.exitHostId, hostId),
     eq(forwardRuleTunnelExits.tunnelExitPort, sourcePort),
   ];
-  if (excludedIds.length > 0) {
+  if (excludeRuleExitPorts && excludedIds.length > 0) {
     exitConds.push(sql`${forwardRuleTunnelExits.ruleId} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`);
   }
   if (protocolCond) exitConds.push(protocolCond);
@@ -1114,6 +1214,7 @@ export async function findAvailablePort(
   rangeEnd?: number | null,
   protocol?: unknown,
   reservedPorts: number[] = [],
+  excludeRuleIds: number | number[] = [],
 ): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
@@ -1123,52 +1224,7 @@ export async function findAvailablePort(
     ? portPolicyFrom({ portRangeStart: rangeStart, portRangeEnd: rangeEnd })
     : null;
   const policy = explicitPolicy ? combinePortPolicies(hostPolicy, explicitPolicy) : hostPolicy;
-  // 获取该主机已占用的端口
-  const usedConds: any[] = [
-    eq(forwardRules.hostId, hostId),
-    eq(forwardRules.isForwardGroupTemplate, false),
-    eq(forwardRules.isEnabled, true),
-    eq(forwardRules.pendingDelete, false),
-  ];
-  const protocolCond = protocolConflictCondition(protocol);
-  if (protocolCond) usedConds.push(protocolCond);
-  const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedConds));
-  const usedPrimaryExitConds: any[] = [
-    eq(tunnels.exitHostId, hostId),
-    eq(forwardRules.isForwardGroupTemplate, false),
-    eq(forwardRules.isEnabled, true),
-    eq(forwardRules.pendingDelete, false),
-  ];
-  if (protocolCond) usedPrimaryExitConds.push(protocolCond);
-  const usedPrimaryExitRows = await db.select({ port: forwardRules.tunnelExitPort })
-    .from(forwardRules)
-    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
-    .where(and(...usedPrimaryExitConds));
-  const exitConds: any[] = [
-    eq(forwardRuleTunnelExits.exitHostId, hostId),
-  ];
-  if (protocolCond) exitConds.push(protocolCond);
-  const usedExitRows = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
-    .from(forwardRuleTunnelExits)
-    .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
-    .where(and(...exitConds));
-  const usedTunnelPorts = await db.select({ port: tunnels.listenPort }).from(tunnels).where(eq(tunnels.exitHostId, hostId));
-  const usedTunnelMimicPorts = await db.select({ port: tunnels.mimicPort }).from(tunnels).where(eq(tunnels.exitHostId, hostId));
-  const usedExtraTunnelPorts = await db.select({ port: tunnelExitNodes.listenPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId));
-  const usedExtraTunnelMimicPorts = await db.select({ port: tunnelExitNodes.mimicPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId));
-  const usedHopPorts = await db.select({ port: tunnelHops.listenPort }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
-  const usedHopMimicPorts = await db.select({ port: tunnelHops.mimicPort }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
-  const usedPorts = new Set<number>([
-    ...usedRows,
-    ...usedPrimaryExitRows,
-    ...usedExitRows,
-    ...usedTunnelPorts,
-    ...usedTunnelMimicPorts,
-    ...usedExtraTunnelPorts,
-    ...usedExtraTunnelMimicPorts,
-    ...usedHopPorts,
-    ...usedHopMimicPorts,
-  ].map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port) && port > 0));
+  const usedPorts = await getUsedPortsOnHost(hostId, excludeRuleIds, protocol, undefined, false);
   for (const reservedPort of reservedPorts) {
     const port = Number(reservedPort);
     if (Number.isInteger(port) && port > 0 && port <= 65535) usedPorts.add(port);

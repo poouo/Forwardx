@@ -144,26 +144,20 @@ export function parseRuleTransferFile(raw: unknown): RuleTransferParseResult {
   };
 }
 
-function protocolsOverlap(left: ForwardRuleProtocol, right: ForwardRuleProtocol) {
-  return left === "both" || right === "both" || left === right;
-}
-
 export function findRuleTransferPortConflict(rules: readonly RuleTransferFileRule[]) {
-  const seen = new Map<number, Array<{ index: number; protocol: ForwardRuleProtocol }>>();
+  const seen = new Map<number, number>();
   for (let index = 0; index < rules.length; index += 1) {
     const rule = rules[index];
     if (rule.sourcePort === 0) continue;
-    const previous = seen.get(rule.sourcePort) || [];
-    const conflict = previous.find((item) => protocolsOverlap(item.protocol, rule.protocol));
-    if (conflict) {
+    const previousIndex = seen.get(rule.sourcePort);
+    if (previousIndex !== undefined) {
       return {
         port: rule.sourcePort,
-        firstIndex: conflict.index,
+        firstIndex: previousIndex,
         secondIndex: index,
       };
     }
-    previous.push({ index, protocol: rule.protocol });
-    seen.set(rule.sourcePort, previous);
+    seen.set(rule.sourcePort, index);
   }
   return null;
 }

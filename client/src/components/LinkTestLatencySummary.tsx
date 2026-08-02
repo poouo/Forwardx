@@ -139,6 +139,28 @@ function hasUsableLatencyValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function currentTotalBacksPlannedResult(
+  parsed: ParsedLinkTestMessage,
+  plannedSegments: LinkTestPlannedSegment[],
+) {
+  if (parsed.kind !== "forward-via-tunnel" || !hasUsableLatencyValue(parsed.totalLatencyMs)) return -1;
+  const details = parsed.details || [];
+  if (
+    details.length === 0
+    || details.some((detail) => detail.pending || !detail.success || !hasUsableLatencyValue(detail.latencyMs))
+  ) return -1;
+
+  const candidates = plannedSegments
+    .map((segment, index) => ({ segment, index }))
+    .filter(({ segment }) => segment.success === true && hasUsableLatencyValue(segment.latencyMs) && segment.pending !== true);
+  if (candidates.length !== 1) return -1;
+
+  const detailTotal = details.reduce((sum, detail) => sum + Number(detail.latencyMs), 0);
+  const candidate = candidates[0];
+  const reconciledTotal = detailTotal + Number(candidate.segment.latencyMs);
+  return Math.abs(reconciledTotal - Number(parsed.totalLatencyMs)) <= 0.11 ? candidate.index : -1;
+}
+
 function formatLatencyMs(value: number | null | undefined) {
   if (!hasUsableLatencyValue(value)) return "--";
   const rounded = Math.round(Number(value) * 10) / 10;
@@ -684,14 +706,17 @@ export function LinkTestProbeView({
 }) {
   const effectivePlannedSegments = useMemo(() => {
     if (!ignorePlannedResultsWhenDetailsPresent || (parsed.details || []).length === 0) return plannedSegments;
-    return plannedSegments?.map((segment) => ({
-      ...segment,
-      success: undefined,
-      latencyMs: null,
-      message: null,
-      pending: false,
-    }));
-  }, [ignorePlannedResultsWhenDetailsPresent, parsed.details, plannedSegments]);
+    const backedResultIndex = currentTotalBacksPlannedResult(parsed, plannedSegments || []);
+    return plannedSegments?.map((segment, index) => index === backedResultIndex
+      ? segment
+      : {
+        ...segment,
+        success: undefined,
+        latencyMs: null,
+        message: null,
+        pending: false,
+      });
+  }, [ignorePlannedResultsWhenDetailsPresent, parsed, plannedSegments]);
   const rawSegments = useMemo(
     () => buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments: effectivePlannedSegments }),
     [effectivePlannedSegments, fallbackLatencyMs, isSuccess, isTesting, nodeMeta, parsed, sourceLabel, targetLabel],

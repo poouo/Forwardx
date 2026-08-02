@@ -221,6 +221,11 @@ test("forward chain allocates independent downstream listener ports", () => {
           [id, 40, "host", hostId, priority, 1],
         );
       }
+      assert.equal(
+        await forwardGroups.getForwardGroupDefaultHostId(40),
+        4,
+        "an external-entry chain template must belong to its public entry host",
+      );
       await insert(
         "forward_rules",
         ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],

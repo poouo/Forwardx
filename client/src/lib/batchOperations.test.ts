@@ -25,6 +25,8 @@ test("only port allocation failures use batch conflict handling", () => {
   assert.equal(isBatchPortConflictError(new Error("端口 10001 已被其他规则占用")), true);
   assert.equal(isBatchPortConflictError(new Error("Entry agent port 10001 is already used")), true);
   assert.equal(isBatchPortConflictError(new Error("Port 10001 is already used or being allocated")), true);
+  assert.equal(isBatchPortConflictError(new Error("源端口必须在允许范围内：20000-20999")), true);
+  assert.equal(isBatchPortConflictError(new Error("套餐端口必须在 20000-20999 内")), true);
   assert.equal(isBatchPortConflictError(new Error("无权使用该转发组")), false);
   assert.equal(isBatchPortConflictError(new Error("主机不存在")), false);
 });

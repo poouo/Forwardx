@@ -17,6 +17,7 @@ import {
   releaseHostPortReservations,
   reserveAvailableHostPort,
   reserveSpecificHostPort,
+  reservedHostPorts,
   tryReserveHostPort,
   type HostPortReservation,
 } from "../portReservations";
@@ -796,7 +797,7 @@ export async function toggleForwardRuleForActor(
           hostId: Number(rule.hostId),
           port: Number(rule.sourcePort),
           protocol: (rule as any).protocol,
-          isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol),
+          isUsed: (port) => db.isPortUsedOnHost(Number(rule.hostId), port, Number(rule.id), (rule as any).protocol, undefined, false),
         });
         if (!sourcePortReservation) throw new Error(`端口 ${rule.sourcePort} 已被占用，请更换端口后再启用`);
         await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any);
@@ -986,8 +987,9 @@ export const crudRulesRouter = router({
         const groupReservations: HostPortReservation[] = [];
         let quotaReservation: RuleQuotaReservation | null = null;
         try {
-        if (input.sourcePort === 0) throw new Error("转发组规则需要指定固定入口端口");
-        const sourcePort = input.sourcePort;
+        const randomSourcePort = input.sourcePort === 0;
+        let sourcePort = input.sourcePort;
+        let planRange: { start: number; end: number } | null = null;
         let groupAccess = { isTrafficBillingResource: false };
         if (ctx.user.role !== "admin") {
           groupAccess = await requireForwardGroupUseAccess(ctx, forwardGroupId);
@@ -995,10 +997,57 @@ export const crudRulesRouter = router({
           if (currentUser?.expiresAt && new Date(currentUser.expiresAt) <= new Date()) {
             throw new Error("您的账户已到期，无法添加规则");
           }
-          const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, forwardGroupId);
-          if (planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
+          planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, forwardGroupId);
+          if (sourcePort > 0 && planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
             throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
           }
+        }
+        const entryHostIds = await db.getForwardGroupRuleEntryHostIds(forwardGroupId);
+        const reserveEntryPort = async (port: number) => {
+          const reservations: HostPortReservation[] = [];
+          try {
+            for (const entryHostId of entryHostIds) {
+              const reservation = await reserveSpecificHostPort({
+                hostId: entryHostId,
+                port,
+                protocol: input.protocol,
+                isUsed: (candidate) => db.isPortUsedOnHost(entryHostId, candidate, undefined, input.protocol),
+              });
+              if (!reservation) {
+                releaseHostPortReservations(reservations);
+                return null;
+              }
+              reservations.push(reservation);
+            }
+            return reservations;
+          } catch (error) {
+            releaseHostPortReservations(reservations);
+            throw error;
+          }
+        };
+        if (randomSourcePort) {
+          const unavailablePorts = new Set(entryHostIds.flatMap((hostId) => reservedHostPorts(hostId, input.protocol)));
+          for (let attempt = 0; attempt < 256; attempt += 1) {
+            const availablePort = await db.findAvailableForwardGroupPort(
+              forwardGroupId,
+              undefined,
+              planRange,
+              input.protocol,
+              unavailablePorts,
+            );
+            if (!availablePort) break;
+            unavailablePorts.add(availablePort);
+            const reservations = await reserveEntryPort(availablePort);
+            if (!reservations) continue;
+            sourcePort = availablePort;
+            groupReservations.push(...reservations);
+            break;
+          }
+          if (sourcePort === 0) throw new Error("转发组入口端口区间内已无可用端口");
+        } else {
+          const reservations = await reserveEntryPort(sourcePort);
+          if (!reservations) throw new Error(`入口 Agent 端口 ${sourcePort} 已被占用或正在分配`);
+          groupReservations.push(...reservations);
         }
         const group = await db.validateForwardGroupRuleConfig(forwardGroupId, { sourcePort, protocol: input.protocol });
         const isForwardChain = (group as any).groupMode === "chain";
@@ -1041,17 +1090,6 @@ export const crudRulesRouter = router({
           });
         }
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
-        const entryHostIds = await db.getForwardGroupRuleEntryHostIds(forwardGroupId);
-        for (const entryHostId of entryHostIds) {
-          const reservation = await reserveSpecificHostPort({
-            hostId: entryHostId,
-            port: sourcePort,
-            protocol: input.protocol,
-            isUsed: (port) => db.isPortUsedOnHost(entryHostId, port, undefined, input.protocol),
-          });
-          if (!reservation) throw new Error(`入口 Agent 端口 ${sourcePort} 已被占用或正在分配`);
-          groupReservations.push(reservation);
-        }
         const createTemplateRule = () => db.createForwardRule({
           hostId,
           name: input.name,
@@ -1129,7 +1167,7 @@ export const crudRulesRouter = router({
       tunnelId: z.number().nullable().optional(),
       tunnelExitPort: z.number().min(1).max(65535).nullable().optional(),
       forwardGroupId: z.number().nullable().optional(),
-      sourcePort: z.number().min(1).max(65535).optional(),
+      sourcePort: z.number().min(0).max(65535).optional(),
       targetIp: z.string().min(1).max(253).refine(
         (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
         "请输入有效的 IP 地址或域名"
@@ -1157,7 +1195,7 @@ export const crudRulesRouter = router({
           hostId,
           port,
           protocol,
-          isUsed: (candidate) => db.isPortUsedOnHost(hostId, candidate, excludeRuleIds, protocol),
+          isUsed: (candidate) => db.isPortUsedOnHost(hostId, candidate, excludeRuleIds, protocol, undefined, false),
         });
         if (reservation) heldReservations.push(reservation);
         return reservation;
@@ -1184,6 +1222,106 @@ export const crudRulesRouter = router({
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
       if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接修改");
       await requireRuleTelegramNotifyReady(input.telegramErrorNotifyEnabled);
+
+      if (input.sourcePort === 0) {
+        const nextProtocol = input.protocol ?? (rule as any).protocol;
+        const childRules = (rule as any).isForwardGroupTemplate
+          ? await db.getForwardGroupChildRulesForTemplate(Number(rule.id))
+          : [];
+        const excludeRuleIds = [
+          Number(rule.id),
+          ...(childRules as any[]).map((child: any) => Number(child.id)),
+        ].filter((id) => Number.isInteger(id) && id > 0);
+        const nextForwardGroupId = input.forwardGroupId !== undefined
+          ? Number(input.forwardGroupId || 0)
+          : (rule as any).isForwardGroupTemplate
+            ? Number((rule as any).forwardGroupId || 0)
+            : 0;
+
+        if (nextForwardGroupId > 0) {
+          let planRange: { start: number; end: number } | null = null;
+          if (ctx.user.role !== "admin") {
+            await requireForwardGroupUseAccess(ctx, nextForwardGroupId);
+            planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, nextForwardGroupId);
+          }
+          const entryHostIds = await db.getForwardGroupRuleEntryHostIds(nextForwardGroupId);
+          const unavailablePorts = new Set(entryHostIds.flatMap((hostId) => reservedHostPorts(hostId, nextProtocol)));
+          let selectedPort = 0;
+          for (let attempt = 0; attempt < 256; attempt += 1) {
+            const candidate = await db.findAvailableForwardGroupPort(
+              nextForwardGroupId,
+              Number(rule.id),
+              planRange,
+              nextProtocol,
+              unavailablePorts,
+            );
+            if (!candidate) break;
+            unavailablePorts.add(candidate);
+            const candidateReservations: HostPortReservation[] = [];
+            let reservedEveryEntry = true;
+            try {
+              for (const hostId of entryHostIds) {
+                const reservation = await reserveSpecificHostPort({
+                  hostId,
+                  port: candidate,
+                  protocol: nextProtocol,
+                  isUsed: (port) => db.isPortUsedOnHost(hostId, port, excludeRuleIds, nextProtocol, undefined, false),
+                });
+                if (!reservation) {
+                  reservedEveryEntry = false;
+                  break;
+                }
+                candidateReservations.push(reservation);
+              }
+            } catch (error) {
+              releaseHostPortReservations(candidateReservations);
+              throw error;
+            }
+            if (!reservedEveryEntry) {
+              releaseHostPortReservations(candidateReservations);
+              continue;
+            }
+            heldReservations.push(...candidateReservations);
+            selectedPort = candidate;
+            break;
+          }
+          if (!selectedPort) throw new Error("转发组入口端口区间内已无可用端口");
+          input.sourcePort = selectedPort;
+        } else {
+          const nextForwardType = input.forwardType ?? (rule as any).forwardType;
+          const nextTunnelId = nextForwardType === "gost"
+            ? Number(input.tunnelId !== undefined ? input.tunnelId : (rule as any).tunnelId) || null
+            : null;
+          let nextHostId = Number(input.hostId ?? (rule as any).hostId);
+          let rangeStart: number | null | undefined;
+          let rangeEnd: number | null | undefined;
+          if (nextTunnelId) {
+            const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId);
+            nextHostId = Number((tunnel as any).entryHostId || 0);
+            rangeStart = (tunnel as any).portRangeStart;
+            rangeEnd = (tunnel as any).portRangeEnd;
+          } else {
+            await requireHostUseAccess(ctx, nextHostId);
+          }
+          if (ctx.user.role !== "admin") {
+            const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostId, nextTunnelId || undefined);
+            if (planRange) {
+              rangeStart = Math.max(Number(rangeStart || planRange.start), planRange.start);
+              rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
+            }
+          }
+          const reservation = await reserveAvailableHostPort({
+            hostId: nextHostId,
+            protocol: nextProtocol,
+            findPort: (reservedPorts) => db.findAvailablePort(nextHostId, rangeStart, rangeEnd, nextProtocol, reservedPorts, excludeRuleIds),
+            isUsed: (port) => db.isPortUsedOnHost(nextHostId, port, excludeRuleIds, nextProtocol, undefined, false),
+            maxAttempts: 256,
+          });
+          if (!reservation) throw new Error("入口 Agent 端口区间内已无可用端口");
+          heldReservations.push(reservation);
+          input.sourcePort = reservation.port;
+        }
+      }
 
       if ((rule as any).isForwardGroupTemplate) {
         const groupId = Number((rule as any).forwardGroupId || 0);

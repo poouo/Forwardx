@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.182"
+var Version = "2.2.183"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 
@@ -1389,13 +1389,13 @@ func (s *kernelForwardSnapshot) desiredActionConsistent(a action) bool {
 }
 
 func (s *kernelForwardSnapshot) actionApplyReady(a action) bool {
-	return s.kernelRuleApplyPresent(a.ForwardType, a.RuleID, a.SourcePort, a.TargetIP, a.TargetPort, a.Protocol) &&
-		accessLimitActionReady(a)
+	return s.kernelRuleApplyPresent(a.ForwardType, a.RuleID, a.SourcePort, a.TargetIP, a.TargetPort, a.Protocol)
 }
 
 var accessLimitRejectPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -A (FWX_LIMIT_[A-Za-z0-9_]+) -p tcp -m connlimit --connlimit-above ([0-9]+) --connlimit-mask ([0-9]+) -j REJECT --reject-with tcp-reset`)
 var accessLimitReturnPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -A (FWX_LIMIT_[A-Za-z0-9_]+) -j RETURN`)
 var accessLimitJumpPattern = regexp.MustCompile(`(?i)(iptables|ip6tables) -C (INPUT|FORWARD) -p tcp --dport ([0-9]+) -j (FWX_LIMIT_[A-Za-z0-9_]+)`)
+var accessLimitChainPattern = regexp.MustCompile(`\bFWX_LIMIT_[A-Za-z0-9_]+\b`)
 
 type accessLimitRuleExpectation struct {
 	binary string
@@ -1408,6 +1408,126 @@ type accessLimitJumpExpectation struct {
 	base   string
 	port   string
 	chain  string
+}
+
+const accessLimitMaintenanceInterval = 30 * time.Minute
+
+var (
+	accessLimitMaintenanceMu    sync.Mutex
+	accessLimitMaintenanceLast  = map[string]time.Time{}
+	accessLimitMaintenanceRunMu sync.Mutex
+)
+
+func accessLimitCommands(a action) []string {
+	commands := make([]string, 0)
+	for _, command := range append(append(append([]string{}, a.PreCommands...), a.Commands...), a.PostCommands...) {
+		if strings.Contains(command, "FWX_LIMIT_") {
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func accessLimitActionSerialKeys(a action) []string {
+	seen := map[string]bool{}
+	keys := make([]string, 0)
+	for _, command := range accessLimitCommands(a) {
+		for _, chain := range accessLimitChainPattern.FindAllString(command, -1) {
+			key := "access-limit:" + chain
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func hasConfiguredAccessLimits(a action) bool {
+	for _, command := range accessLimitCommands(a) {
+		if strings.Contains(command, "--connlimit-above") {
+			return true
+		}
+	}
+	return false
+}
+
+func needsAccessLimitMaintenance(a action) bool {
+	return len(accessLimitCommands(a)) > 0
+}
+
+func claimAccessLimitMaintenance(a action, now time.Time) bool {
+	actionKey := desiredActionKey(a)
+	if actionKey == "" {
+		return false
+	}
+	key := actionKey + ":" + desiredActionSignature(a)
+	accessLimitMaintenanceMu.Lock()
+	defer accessLimitMaintenanceMu.Unlock()
+	if previous := accessLimitMaintenanceLast[key]; !previous.IsZero() && now.Sub(previous) < accessLimitMaintenanceInterval {
+		return false
+	}
+	accessLimitMaintenanceLast[key] = now
+	if len(accessLimitMaintenanceLast) > 4096 {
+		cutoff := now.Add(-2 * accessLimitMaintenanceInterval)
+		for existingKey, checkedAt := range accessLimitMaintenanceLast {
+			if checkedAt.Before(cutoff) {
+				delete(accessLimitMaintenanceLast, existingKey)
+			}
+		}
+	}
+	return true
+}
+
+func maintainAccessLimitAction(
+	a action,
+	now time.Time,
+	ready func(action) bool,
+	run func([]string) bool,
+) (attempted bool, ok bool) {
+	unlock, current := acquireCurrentActionSerialLocks(a)
+	if !current {
+		return false, true
+	}
+	if unlock != nil {
+		defer unlock()
+	}
+	if !desiredActionRecordIsCurrent(a) || !claimAccessLimitMaintenance(a, now) || ready(a) {
+		return false, true
+	}
+	commands := accessLimitCommands(a)
+	runOK := run(commands)
+	return true, runOK && ready(a)
+}
+
+func scheduleAccessLimitMaintenance(actions []action, completed []<-chan struct{}) {
+	candidates := make([]action, 0)
+	for _, a := range actions {
+		if strings.TrimSpace(a.Op) == "apply" && needsAccessLimitMaintenance(a) {
+			candidates = append(candidates, a)
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	waits := append([]<-chan struct{}(nil), completed...)
+	go func() {
+		for _, done := range waits {
+			if done != nil {
+				<-done
+			}
+		}
+		accessLimitMaintenanceRunMu.Lock()
+		defer accessLimitMaintenanceRunMu.Unlock()
+		for _, a := range candidates {
+			commands := accessLimitCommands(a)
+			attempted, ok := maintainAccessLimitAction(a, time.Now(), accessLimitActionReady, runShellBatch)
+			if attempted && !ok && shouldLogAgentReport("access-limit-maintenance:"+desiredActionKey(a), accessLimitMaintenanceInterval) {
+				logf("optional access limit maintenance incomplete rule=%d tunnel=%d port=%d commands=%d; forwarding runtime remains active", a.RuleID, a.TunnelID, a.SourcePort, len(commands))
+			}
+		}
+	}()
 }
 
 // accessLimitActionReady verifies only the auxiliary FWX_LIMIT rules emitted
@@ -7684,11 +7804,13 @@ func nftProcessCountingEnsureCmds(port int, protocol string) []string {
 	for _, proto := range runtimeProtocols(protocol) {
 		inMarker := "fwx-stat-" + p + ":in"
 		outMarker := "fwx-stat-" + p + ":out"
+		inMatch := proto + " dport " + p
+		outMatch := proto + " sport " + p
 		inAdd := fmt.Sprintf("nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`))
 		outAdd := fmt.Sprintf("nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`))
 		commands = append(commands,
-			fmt.Sprintf("if nft list chain inet %s input 2>/dev/null | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(inMarker), inAdd),
-			fmt.Sprintf("if nft list chain inet %s output 2>/dev/null | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(outMarker), outAdd),
+			fmt.Sprintf("if nft list chain inet %s input 2>/dev/null | grep -F %s | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(inMarker), shellQuote(inMatch), inAdd),
+			fmt.Sprintf("if nft list chain inet %s output 2>/dev/null | grep -F %s | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(outMarker), shellQuote(outMatch), outAdd),
 		)
 	}
 	return commands

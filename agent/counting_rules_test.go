@@ -174,6 +174,249 @@ func TestProcessCountersInstallOnlyInputAndOutputHooks(t *testing.T) {
 	}
 }
 
+func TestProcessCounterRepairChecksEveryProtocolSeparately(t *testing.T) {
+	commands := strings.Join(nftProcessCountingEnsureCmds(22022, "both"), "\n")
+	for _, want := range []string{
+		"grep -F 'tcp dport 22022'",
+		"grep -F 'tcp sport 22022'",
+		"grep -F 'udp dport 22022'",
+		"grep -F 'udp sport 22022'",
+	} {
+		if !strings.Contains(commands, want) {
+			t.Fatalf("non-destructive repair does not distinguish %q:\n%s", want, commands)
+		}
+	}
+}
+
+func TestAccessLimitMaintenanceExtractsOnlyAuxiliaryCommandsAndThrottles(t *testing.T) {
+	a := action{
+		Op:         "apply",
+		StatusType: "rule",
+		RuleID:     42,
+		SourcePort: 22022,
+		Commands: []string{
+			"systemctl restart forwardx-rule-42",
+			"iptables -A FWX_LIMIT_u7_t3 -p tcp -m connlimit --connlimit-above 100 --connlimit-mask 0 -j REJECT --reject-with tcp-reset; true",
+			"iptables -A FWX_LIMIT_u7_t3 -j RETURN; true",
+		},
+		PostCommands: []string{
+			"iptables -C INPUT -p tcp --dport 22022 -j FWX_LIMIT_u7_t3; true",
+		},
+	}
+	commands := accessLimitCommands(a)
+	if len(commands) != 3 {
+		t.Fatalf("auxiliary command count=%d want=3: %v", len(commands), commands)
+	}
+	if !hasConfiguredAccessLimits(a) {
+		t.Fatal("configured connlimit rules were not selected for maintenance")
+	}
+	cleanupOnly := a
+	cleanupOnly.Commands = []string{"iptables -C INPUT -p tcp --dport 22022 -j FWX_LIMIT_u7_t3; true"}
+	cleanupOnly.PostCommands = nil
+	if hasConfiguredAccessLimits(cleanupOnly) {
+		t.Fatal("cleanup-only action was mistaken for a configured access limit")
+	}
+	if !needsAccessLimitMaintenance(cleanupOnly) {
+		t.Fatal("cleanup-only action would leave a stale access-limit jump behind")
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "systemctl") || !strings.Contains(command, "FWX_LIMIT_") {
+			t.Fatalf("maintenance included a disruptive command: %q", command)
+		}
+	}
+
+	accessLimitMaintenanceMu.Lock()
+	previous := accessLimitMaintenanceLast
+	accessLimitMaintenanceLast = map[string]time.Time{}
+	accessLimitMaintenanceMu.Unlock()
+	t.Cleanup(func() {
+		accessLimitMaintenanceMu.Lock()
+		accessLimitMaintenanceLast = previous
+		accessLimitMaintenanceMu.Unlock()
+	})
+	now := time.Unix(1_800_000_000, 0)
+	if !claimAccessLimitMaintenance(a, now) {
+		t.Fatal("first maintenance pass was unexpectedly throttled")
+	}
+	if claimAccessLimitMaintenance(a, now.Add(accessLimitMaintenanceInterval-time.Second)) {
+		t.Fatal("maintenance repeated before its cooldown elapsed")
+	}
+	if !claimAccessLimitMaintenance(a, now.Add(accessLimitMaintenanceInterval)) {
+		t.Fatal("maintenance remained throttled after its cooldown elapsed")
+	}
+}
+
+func accessLimitMaintenanceTestAction(ruleID, port int, issuedAt int64, chain string) action {
+	return action{
+		Op:          "apply",
+		StatusType:  "rule",
+		RuleID:      ruleID,
+		SourcePort:  port,
+		Protocol:    "tcp",
+		ForwardType: "gost",
+		IssuedAt:    issuedAt,
+		Commands: []string{
+			"iptables -F " + chain + "; true",
+			"iptables -A " + chain + " -p tcp -m connlimit --connlimit-above 100 --connlimit-mask 0 -j REJECT --reject-with tcp-reset; true",
+			"iptables -A " + chain + " -j RETURN; true",
+			fmt.Sprintf("iptables -C INPUT -p tcp --dport %d -j %s; true", port, chain),
+		},
+	}
+}
+
+func isolateAccessLimitMaintenanceState(t *testing.T) {
+	t.Helper()
+	accessLimitMaintenanceMu.Lock()
+	previousMaintenance := accessLimitMaintenanceLast
+	accessLimitMaintenanceLast = map[string]time.Time{}
+	accessLimitMaintenanceMu.Unlock()
+
+	desiredActionRecordMu.Lock()
+	previousRecords := desiredActionRecordsMem
+	previousLoaded := desiredActionRecordsLoaded
+	desiredActionRecordsMem = map[string]desiredActionRecord{}
+	desiredActionRecordsLoaded = true
+	desiredActionRecordMu.Unlock()
+
+	actionEpochMu.Lock()
+	previousIssuedAt := latestActionIssuedAt
+	latestActionIssuedAt = map[string]int64{}
+	actionEpochMu.Unlock()
+
+	t.Cleanup(func() {
+		accessLimitMaintenanceMu.Lock()
+		accessLimitMaintenanceLast = previousMaintenance
+		accessLimitMaintenanceMu.Unlock()
+		desiredActionRecordMu.Lock()
+		desiredActionRecordsMem = previousRecords
+		desiredActionRecordsLoaded = previousLoaded
+		desiredActionRecordMu.Unlock()
+		actionEpochMu.Lock()
+		latestActionIssuedAt = previousIssuedAt
+		actionEpochMu.Unlock()
+	})
+}
+
+func setCurrentDesiredActionRecordForMaintenanceTest(a action) {
+	desiredActionRecordMu.Lock()
+	desiredActionRecordsMem[desiredActionKey(a)] = newDesiredActionRecord(desiredActionSignature(a), true)
+	desiredActionRecordMu.Unlock()
+}
+
+func TestAccessLimitMaintenanceWaitsForActionsSharingTheSameChain(t *testing.T) {
+	isolateAccessLimitMaintenanceState(t)
+	chain := "FWX_LIMIT_u7_t3"
+	inFlight := accessLimitMaintenanceTestAction(41, 22021, 100, chain)
+	maintenance := accessLimitMaintenanceTestAction(42, 22022, 100, chain)
+	setCurrentDesiredActionRecordForMaintenanceTest(maintenance)
+
+	unlockInFlight := acquireActionSerialLocks(actionSerialKeys(inFlight))
+	if unlockInFlight == nil {
+		t.Fatal("in-flight access-limit action did not acquire serial locks")
+	}
+	type result struct {
+		attempted bool
+		ok        bool
+	}
+	resultCh := make(chan result, 1)
+	runCalled := make(chan struct{}, 1)
+	go func() {
+		installed := false
+		attempted, ok := maintainAccessLimitAction(
+			maintenance,
+			time.Unix(1_800_000_000, 0),
+			func(action) bool { return installed },
+			func([]string) bool {
+				installed = true
+				runCalled <- struct{}{}
+				return true
+			},
+		)
+		resultCh <- result{attempted: attempted, ok: ok}
+	}()
+
+	select {
+	case <-runCalled:
+		unlockInFlight()
+		t.Fatal("maintenance interleaved with an in-flight action on the same FWX_LIMIT chain")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockInFlight()
+
+	select {
+	case got := <-resultCh:
+		if !got.attempted || !got.ok {
+			t.Fatalf("serialized maintenance result=%+v want attempted and ready", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not resume after the in-flight action completed")
+	}
+}
+
+func TestAccessLimitMaintenanceRunsCleanupForCurrentDesiredAction(t *testing.T) {
+	isolateAccessLimitMaintenanceState(t)
+	a := accessLimitMaintenanceTestAction(42, 22022, 0, "FWX_LIMIT_u7_t3")
+	a.Commands = []string{
+		"while iptables -C INPUT -p tcp --dport 22022 -j FWX_LIMIT_u7_t3 2>/dev/null; do iptables -D INPUT -p tcp --dport 22022 -j FWX_LIMIT_u7_t3; done; true",
+	}
+	if hasConfiguredAccessLimits(a) || !needsAccessLimitMaintenance(a) {
+		t.Fatal("cleanup-only desired action was not selected exclusively for maintenance")
+	}
+	setCurrentDesiredActionRecordForMaintenanceTest(a)
+	cleaned := false
+	attempted, ok := maintainAccessLimitAction(
+		a,
+		time.Unix(1_800_000_000, 0),
+		func(action) bool { return cleaned },
+		func(commands []string) bool {
+			cleaned = len(commands) == 1
+			return cleaned
+		},
+	)
+	if !attempted || !ok || !cleaned {
+		t.Fatalf("cleanup maintenance attempted=%v ok=%v cleaned=%v", attempted, ok, cleaned)
+	}
+}
+
+func TestAccessLimitMaintenanceSkipsSupersededDesiredActions(t *testing.T) {
+	t.Run("newer removal", func(t *testing.T) {
+		isolateAccessLimitMaintenanceState(t)
+		old := accessLimitMaintenanceTestAction(42, 22022, 100, "FWX_LIMIT_u7_t3")
+		setCurrentDesiredActionRecordForMaintenanceTest(old)
+		remove := old
+		remove.Op = "remove"
+		remove.IssuedAt = 101
+		if isOlderAction(remove, true) {
+			t.Fatal("newer removal was unexpectedly considered stale")
+		}
+		runs := 0
+		attempted, ok := maintainAccessLimitAction(old, time.Unix(1_800_000_000, 0), func(action) bool { return false }, func([]string) bool {
+			runs++
+			return true
+		})
+		if attempted || !ok || runs != 0 {
+			t.Fatalf("superseded maintenance attempted=%v ok=%v runs=%d", attempted, ok, runs)
+		}
+	})
+
+	t.Run("changed desired signature", func(t *testing.T) {
+		isolateAccessLimitMaintenanceState(t)
+		old := accessLimitMaintenanceTestAction(42, 22022, 0, "FWX_LIMIT_u7_t3")
+		changed := old
+		changed.Commands = append([]string(nil), old.Commands...)
+		changed.Commands[1] = strings.Replace(changed.Commands[1], "--connlimit-above 100", "--connlimit-above 200", 1)
+		setCurrentDesiredActionRecordForMaintenanceTest(changed)
+		runs := 0
+		attempted, ok := maintainAccessLimitAction(old, time.Unix(1_800_000_000, 0), func(action) bool { return false }, func([]string) bool {
+			runs++
+			return true
+		})
+		if attempted || !ok || runs != 0 {
+			t.Fatalf("outdated signature maintenance attempted=%v ok=%v runs=%d", attempted, ok, runs)
+		}
+	})
+}
+
 func TestProcessIptablesFallbackUsesOnlyListenerHooks(t *testing.T) {
 	commands := strings.Join(countingAddCommands(iptablesProcessCountingCmds(22022, "both")), "\n")
 	for _, proto := range []string{"tcp", "udp"} {

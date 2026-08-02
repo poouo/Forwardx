@@ -349,6 +349,7 @@ test("an entry that has not reported remains visible after a partial multi-entry
 
 test("current rule details discard an older planned tunnel latency fallback", () => {
   const parsed = parseLinkTestMessage(JSON.stringify({
+    kind: "forward-via-tunnel",
     details: [{
       success: true,
       latencyMs: 5,
@@ -377,4 +378,39 @@ test("current rule details discard an older planned tunnel latency fallback", ()
   assert.match(html, /Target/);
   assert.doesNotMatch(html, /77 ms/);
   assert.equal(html.match(/5 ms/g)?.length, 2);
+});
+
+test("a tunnel rule keeps the current tunnel segment when it reconciles with the test total", () => {
+  const parsed = parseLinkTestMessage(JSON.stringify({
+    kind: "forward-via-tunnel",
+    details: [{
+      success: true,
+      latencyMs: 33,
+      routeLabel: "GGY Shanghai -> Ali Shanghai",
+      fromHostId: 2,
+    }],
+    totalLatencyMs: 41,
+  }));
+  const html = renderToStaticMarkup(
+    <LinkTestProbeView
+      parsed={parsed}
+      fallbackLatencyMs={41}
+      isSuccess
+      isTesting={false}
+      mobileStacked={false}
+      ignorePlannedResultsWhenDetailsPresent
+      plannedSegments={[
+        { from: "Ali Hangzhou", to: "GGY Shanghai", fromHostId: 1, toHostId: 2, hopIndex: 0, hopCount: 1, success: true, latencyMs: 8 },
+        { from: "GGY Shanghai", to: "Ali Shanghai", fromHostId: 2 },
+      ]}
+    />,
+  );
+
+  assert.match(html, /Ali Hangzhou/);
+  assert.match(html, /GGY Shanghai/);
+  assert.match(html, /Ali Shanghai/);
+  assert.equal(html.match(/8 ms/g)?.length, 1);
+  assert.equal(html.match(/33 ms/g)?.length, 1);
+  assert.equal(html.match(/41 ms/g)?.length, 1);
+  assert.doesNotMatch(html, /等待探测|探测中/);
 });

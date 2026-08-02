@@ -57,7 +57,6 @@ import {
   RULE_TRANSFER_FILE_VERSION,
   RULE_TRANSFER_MAX_FILE_SIZE,
   RULE_TRANSFER_MAX_IMPORT_COUNT,
-  findRuleTransferPortConflict,
   parseRuleTransferFile,
   type RuleTransferFile,
   type RuleTransferFileRule,
@@ -2271,7 +2270,7 @@ function RulesContent() {
   const [copyTargetScopeType, setCopyTargetScopeType] = useState<RuleTransferScopeType>("local");
   const [copyTargetResourceIds, setCopyTargetResourceIds] = useState<number[]>([]);
   const [copyTargetSearch, setCopyTargetSearch] = useState("");
-  const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("skip");
+  const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("auto");
   const [copyWorking, setCopyWorking] = useState(false);
   const [batchEditForm, setBatchEditForm] = useState<BatchEditFormData>({
     routeMode: "local",
@@ -2684,7 +2683,7 @@ function RulesContent() {
     setCopyTargetResourceIds([]);
     setCopyTargetSearch("");
     setCopyRuleIds([]);
-    setCopyConflictStrategy("skip");
+    setCopyConflictStrategy("auto");
     const preferredImportType: RuleTransferScopeType = canUseSavedLocalForward
       ? "local"
       : canUseGost
@@ -3322,22 +3321,6 @@ function RulesContent() {
     return payload;
   };
 
-  const getBatchCopyRandomPort = async (rule: any, targetType: RuleTransferScopeType, resource: any) => {
-    const input = targetType === "tunnel"
-      ? { hostId: Number(resource.entryHostId), tunnelId: Number(resource.id), protocol: rule.protocol || "both" }
-      : { forwardGroupId: Number(resource.id), protocol: rule.protocol || "both" };
-    const result = await utils.rules.randomPort.fetch(input as any);
-    return Number(result.port || 0);
-  };
-
-  const getBatchEditRandomPort = async (rule: any) => {
-    const input = batchEditForm.routeMode === "tunnel" && selectedBatchEditTunnel
-      ? { hostId: Number(selectedBatchEditTunnel.entryHostId), tunnelId: Number(selectedBatchEditTunnel.id), excludeRuleId: Number(rule.id), protocol: rule.protocol || "both" }
-      : { forwardGroupId: Number(selectedBatchEditForwardGroup?.id || 0), excludeRuleId: Number(rule.id), protocol: rule.protocol || "both" };
-    const result = await utils.rules.randomPort.fetch(input as any);
-    return Number(result.port || 0);
-  };
-
   const createBatchCopyRule = async (rule: any, targetType: RuleTransferScopeType, resource: any) => {
     const sourcePort = Number(rule.sourcePort || 0);
     try {
@@ -3346,9 +3329,7 @@ function RulesContent() {
     } catch (error: any) {
       if (copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
       if (copyConflictStrategy === "auto") {
-        const nextPort = await getBatchCopyRandomPort(rule, targetType, resource);
-        if (!nextPort) throw error;
-        await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, nextPort) as any);
+        await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, 0) as any);
         return { copied: true, skipped: false };
       }
       return { copied: false, skipped: true };
@@ -3363,9 +3344,7 @@ function RulesContent() {
     } catch (error: any) {
       if (!hasBatchEditRouteSelection || copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
       if (copyConflictStrategy === "auto") {
-        const nextPort = await getBatchEditRandomPort(rule);
-        if (!nextPort) throw error;
-        await batchUpdateMutation.mutateAsync(buildBatchEditRulePayload(rule, nextPort) as any);
+        await batchUpdateMutation.mutateAsync(buildBatchEditRulePayload(rule, 0) as any);
         return { updated: true, skipped: false };
       }
       return { updated: false, skipped: true };
@@ -3611,8 +3590,8 @@ function RulesContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
-    if (!isValidPort(form.sourcePort, !isForwardGroupRouteMode && !editingId)) {
-      toast.error(isForwardGroupRouteMode || editingId ? "源端口必须在 1-65535 之间" : "源端口必须为 0 或 1-65535，0 表示随机分配");
+    if (!isValidPort(form.sourcePort, !editingId)) {
+      toast.error(editingId ? "源端口必须在 1-65535 之间" : "源端口必须为 0 或 1-65535，0 表示随机分配");
       return;
     }
     if (!isValidPort(form.targetPort)) {
@@ -5117,7 +5096,7 @@ function RulesContent() {
         name: formatAddressWithPort(targetIp, targetPort),
         forwardType: defaultForm.forwardType,
         protocol: defaultForm.protocol,
-        sourcePort: targetPort,
+        sourcePort: 0,
         targetIp,
         targetPort,
         isEnabled: true,
@@ -5140,36 +5119,16 @@ function RulesContent() {
       });
     }
     return { ok: true, message: `已识别 ${rules.length} 条手动输入规则`, rules };
-  }, [importManualText]);
+  }, [defaultForm.forwardType, defaultForm.protocol, importManualText]);
 
   const importValidation = useMemo<{ ok: boolean; message: string; rules: RuleTransferFileRule[] }>(() => {
     if (!importResourceId) return { ok: false, message: `请选择${ruleTransferScopeLabels[importScopeType]}`, rules: [] };
     if (importSourceMode === "manual") {
       if (!manualImportValidation.ok) return manualImportValidation;
-      const conflict = findRuleTransferPortConflict(manualImportValidation.rules);
-      if (conflict) {
-        return {
-          ok: false,
-          message: `第 ${conflict.firstIndex + 1} 行与第 ${conflict.secondIndex + 1} 行的监听端口 ${conflict.port} 和协议冲突`,
-          rules: [],
-        };
-      }
       return manualImportValidation;
     }
     if (importFileError) return { ok: false, message: importFileError, rules: [] };
     if (!importFile) return { ok: false, message: "请选择导入文件", rules: [] };
-    const zeroPortIndex = importFile.rules.findIndex((rule) => rule.sourcePort <= 0);
-    if (importScopeType !== "tunnel" && zeroPortIndex >= 0) {
-      return { ok: false, message: `第 ${zeroPortIndex + 1} 条规则缺少监听端口`, rules: [] };
-    }
-    const conflict = findRuleTransferPortConflict(importFile.rules);
-    if (conflict) {
-      return {
-        ok: false,
-        message: `第 ${conflict.firstIndex + 1} 条与第 ${conflict.secondIndex + 1} 条规则的监听端口 ${conflict.port} 和协议冲突`,
-        rules: [],
-      };
-    }
     return { ok: true, message: `已识别 ${importFile.rules.length} 条${ruleTransferScopeLabels[importScopeType]}规则`, rules: importFile.rules };
   }, [importFile, importFileError, importResourceId, importScopeType, importSourceMode, manualImportValidation]);
 
@@ -5295,9 +5254,15 @@ function RulesContent() {
     importingRulesRef.current = true;
     setImportingRules(true);
     try {
-      const results = await runBatchOperations(importValidation.rules, 6, (rule) => (
-        importCreateMutation.mutateAsync(buildImportRulePayload(rule))
-      ));
+      const results = await runBatchOperations(importValidation.rules, 6, async (rule) => {
+        const payload = buildImportRulePayload(rule);
+        try {
+          return await importCreateMutation.mutateAsync(payload);
+        } catch (error) {
+          if (rule.sourcePort <= 0 || !isBatchPortConflictError(error)) throw error;
+          return importCreateMutation.mutateAsync({ ...payload, sourcePort: 0 });
+        }
+      });
       const importedCount = results.filter((result) => result.status === "fulfilled").length;
       const failures = results.filter((result) => result.status === "rejected");
       await Promise.all([
@@ -7717,7 +7682,7 @@ function RulesContent() {
                             <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
                           </div>
                           <div className="mt-1 truncate text-xs text-muted-foreground">
-                            :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)}
+                            {rule.sourcePort > 0 ? `:${rule.sourcePort}` : "随机端口"} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)}
                           </div>
                         </div>
                       ))}

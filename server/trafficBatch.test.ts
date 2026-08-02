@@ -154,7 +154,7 @@ test("traffic reports batch raw samples and counters without losing totals", () 
         [{ bytesIn: 100, bytesOut: 900, lastSystemIn: 1100, lastSystemOut: 2200, lastDeltaIn: 100, lastDeltaOut: 200 }],
       );
 
-      await runtime.executeRaw("INSERT INTO users (id, username, password, trafficLimit, trafficUsed, expiresAt) VALUES (7, 'traffic-user', 'hash', 1000, 100, 2000000000)");
+      await runtime.executeRaw("INSERT INTO users (id, username, password, role, trafficLimit, trafficUsed, expiresAt) VALUES (1, 'traffic-admin', 'hash', 'admin', 0, 0, 2000000000), (7, 'traffic-user', 'hash', 'user', 1000, 100, 2000000000)");
       const userUpdate = await countStatements(() => users.addUserTraffic(7, 150));
       const updatedUser = userUpdate.value;
       assert.equal(userUpdate.count, 1);
@@ -168,7 +168,7 @@ test("traffic reports batch raw samples and counters without losing totals", () 
 
       const contextQuery = await countStatements(() => rules.getForwardRuleTrafficContextsByIds([12, 11, 11, 0]));
       const contexts = contextQuery.value;
-      assert.equal(contextQuery.count, 2);
+      assert.equal(contextQuery.count, 3);
       assert.equal(contexts.length, 2);
       const contextsById = new Map(contexts.map((context) => [Number(context.rule.id), context]));
       assert.deepEqual(
@@ -252,6 +252,74 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       await settings.setSetting("trafficStatBucketsBackfilled", "v3");
       await runtime.executeRaw("DELETE FROM traffic_stat_buckets WHERE ruleId = 12");
       await runtime.executeRaw("UPDATE traffic_stat_buckets SET bytesIn = 1, bytesOut = 2, connections = 1 WHERE ruleId = 11");
+
+      await runtime.executeRaw("INSERT INTO forward_groups (id, name, groupMode, targetIp, userId) VALUES (32, 'shared-failover', 'failover', '127.0.0.1', 1)");
+      await runtime.executeRaw("INSERT INTO forward_groups (id, name, groupMode, targetIp, userId) VALUES (33, 'unrelated-group', 'failover', '127.0.0.1', 1)");
+      await runtime.executeRaw("INSERT INTO forward_group_members (id, groupId, memberType, hostId, priority) VALUES (321, 32, 'host', 5, 10)");
+      await runtime.executeRaw("INSERT INTO forward_rules (id, hostId, name, forwardGroupId, forwardGroupRuleId, forwardGroupMemberId, isForwardGroupTemplate, sourcePort, targetIp, targetPort, userId, createdAt) VALUES (13, 5, 'ordinary-template', 32, NULL, NULL, 1, 12013, '127.0.0.1', 80, 7, ?), (14, 5, 'stale-admin-child', 32, 13, 321, 0, 12013, '127.0.0.1', 80, 1, ?), (15, 5, 'invalid-cross-group-parent', 33, 13, NULL, 0, 12015, '127.0.0.1', 80, 1, ?)", [Math.floor(trafficSince.getTime() / 1000), Math.floor(trafficSince.getTime() / 1000), Math.floor(trafficSince.getTime() / 1000)]);
+      const ownershipContexts = await rules.getForwardRuleTrafficContextsByIds([14, 15]);
+      assert.deepEqual(
+        ownershipContexts.map((context) => ({ id: Number(context.rule.id), userId: Number(context.rule.userId) })).sort((a, b) => a.id - b.id),
+        [{ id: 14, userId: 7 }, { id: 15, userId: 1 }],
+      );
+      const currentSeconds = Math.floor(Date.now() / 1000);
+      const currentBucket = Math.floor(currentSeconds / (30 * 60)) * (30 * 60);
+      await runtime.executeRaw("INSERT INTO traffic_stats (ruleId, hostId, bytesIn, bytesOut, connections, recordedAt) VALUES (14, 5, 31, 47, 2, ?)", [currentSeconds]);
+      await runtime.executeRaw("INSERT INTO forward_rule_traffic_counters (ruleId, hostId, userId, bytesIn, bytesOut, connections) VALUES (14, 5, 1, 31, 47, 2), (999, 5, 1, 53, 59, 3)");
+      await runtime.executeRaw("INSERT INTO user_traffic_counters (userId, bytesIn, bytesOut, connections) VALUES (1, 84, 106, 5)");
+      await runtime.executeRaw("INSERT INTO traffic_stat_buckets (bucketStart, bucketMinutes, userId, ruleId, hostId, bytesIn, bytesOut, connections) VALUES (?, 30, 1, 14, 5, 31, 47, 2)", [currentBucket]);
+
+      const ordinaryDaily = await metrics.getTrafficSummaryByRule({ userId: 7, ruleIds: [13], since: trafficSince, includeLatency: false });
+      const ordinaryTotal = await metrics.getTrafficCounterSummaryByRule({ userId: 7, ruleIds: [13], includeLatency: false });
+      assert.deepEqual(ordinaryDaily.map(({ ruleId, bytesIn, bytesOut, connections }) => ({ ruleId, bytesIn, bytesOut, connections })), [
+        { ruleId: 13, bytesIn: 31, bytesOut: 47, connections: 2 },
+      ]);
+      assert.deepEqual(ordinaryTotal.map(({ ruleId, bytesIn, bytesOut, connections }) => ({ ruleId, bytesIn, bytesOut, connections })), [
+        { ruleId: 13, bytesIn: 31, bytesOut: 47, connections: 2 },
+      ]);
+      assert.deepEqual(await metrics.getTrafficSummaryByRule({ userId: 1, ruleIds: [13], since: trafficSince, includeLatency: false }), []);
+
+      await metrics.ensureUserTrafficCountersBackfilled();
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT userId FROM forward_rule_traffic_counters WHERE ruleId = 14"),
+        [{ userId: 7 }],
+      );
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT DISTINCT userId FROM traffic_stat_buckets WHERE ruleId = 14"),
+        [{ userId: 7 }],
+      );
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT userId, bytesIn, bytesOut, connections FROM user_traffic_counters ORDER BY userId"),
+        [
+          { userId: 1, bytesIn: 53, bytesOut: 59, connections: 3 },
+          { userId: 7, bytesIn: 183, bytesOut: 161, connections: 27 },
+        ],
+      );
+
+      const countersBeforeFailedBackfill = await runtime.queryRaw(
+        "SELECT ruleId, hostId, userId, bytesIn, bytesOut, connections FROM forward_rule_traffic_counters ORDER BY ruleId, hostId",
+      );
+      const usersBeforeFailedBackfill = await runtime.queryRaw(
+        "SELECT userId, bytesIn, bytesOut, connections FROM user_traffic_counters ORDER BY userId",
+      );
+      await runtime.executeRaw("CREATE TRIGGER traffic_counter_backfill_fail BEFORE INSERT ON forward_rule_traffic_counters BEGIN SELECT RAISE(FAIL, 'forced traffic counter backfill failure'); END");
+      try {
+        await assert.rejects(
+          metrics.ensureUserTrafficCountersBackfilled({ force: true }),
+          /forced traffic counter backfill failure/,
+        );
+      } finally {
+        await runtime.executeRaw("DROP TRIGGER traffic_counter_backfill_fail");
+      }
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT ruleId, hostId, userId, bytesIn, bytesOut, connections FROM forward_rule_traffic_counters ORDER BY ruleId, hostId"),
+        countersBeforeFailedBackfill,
+      );
+      assert.deepEqual(
+        await runtime.queryRaw("SELECT userId, bytesIn, bytesOut, connections FROM user_traffic_counters ORDER BY userId"),
+        usersBeforeFailedBackfill,
+      );
+
       const partialBucketSummary = await metrics.getTrafficSummaryByRule({
         userId: 7,
         ruleIds: [11, 12],
@@ -283,8 +351,8 @@ test("traffic reports batch raw samples and counters without losing totals", () 
         [{ bytesIn: 7, bytesOut: 8, connections: 1 }],
       );
       const emptyBucketGlobalSeries = await metrics.getGlobalTrafficSeries({ bucketMinutes: 30, since: trafficSince, userId: 7 });
-      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 152);
-      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 114);
+      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 183);
+      assert.equal(emptyBucketGlobalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 161);
 
       await runtime.executeRaw("DROP TABLE traffic_stat_buckets");
       const ruleSeries = await metrics.getTrafficSeriesByRule(12, { bucketMinutes: 30, since: trafficSince });
@@ -293,8 +361,8 @@ test("traffic reports batch raw samples and counters without losing totals", () 
         [{ bytesIn: 7, bytesOut: 8, connections: 1 }],
       );
       const globalSeries = await metrics.getGlobalTrafficSeries({ bucketMinutes: 30, since: trafficSince, userId: 7 });
-      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 152);
-      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 114);
+      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesIn, 0), 183);
+      assert.equal(globalSeries.reduce((sum, row) => sum + row.bytesOut, 0), 161);
     } finally {
       await runtime.closeDatabase();
     }

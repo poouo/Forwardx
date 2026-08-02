@@ -55,6 +55,9 @@ var (
 	dialNetworkTimeout       = net.DialTimeout
 	trafficPrevMu            sync.Mutex
 	trafficPrevCache         = map[string]trafficPrevState{}
+	conntrackFlowMu          sync.Mutex
+	conntrackFlowsByPort     = map[string]map[string]struct{}{}
+	conntrackTotalsByPort    = map[string]uint64{}
 	trafficStateDir          = agentStateDir
 	lastRuleTrafficReportAt  time.Time
 	lastHostTrafficReportAt  time.Time
@@ -142,6 +145,22 @@ func collectableRuleTrafficPorts(states []localRuleState) map[string]bool {
 	return ports
 }
 
+func collectableRuleTrafficProtocols(states []localRuleState) map[string]map[string]bool {
+	protocolsByPort := map[string]map[string]bool{}
+	for _, state := range states {
+		if !shouldCollectRuleTraffic(state) || state.Port == "" {
+			continue
+		}
+		if protocolsByPort[state.Port] == nil {
+			protocolsByPort[state.Port] = map[string]bool{}
+		}
+		for _, protocol := range runtimeProtocols(state.Protocol) {
+			protocolsByPort[state.Port][protocol] = true
+		}
+	}
+	return protocolsByPort
+}
+
 type trafficSnapshotRequirements struct {
 	iptables   bool
 	nativeNFT  bool
@@ -221,7 +240,7 @@ func countingLayoutPresentForTrafficState(state localRuleState, diagnostics traf
 		}
 		return diagnostics.iptablesMarkers[state.Port]
 	case trafficCounterFamilyProcess:
-		return diagnostics.nftProcessMarkers[state.Port] ||
+		return hasCompleteNftProcessLayout(state, diagnostics.nftProcessMarkers) ||
 			diagnostics.iptablesMarkers[state.Port] ||
 			diagnostics.ip6tablesMarkers[state.Port]
 	default:
@@ -229,11 +248,17 @@ func countingLayoutPresentForTrafficState(state localRuleState, diagnostics traf
 	}
 }
 
-func repairMissingCountingLayouts(states []localRuleState, diagnostics trafficDiagnosticsSnapshot) {
+func repairMissingCountingLayouts(states []localRuleState, diagnostics trafficDiagnosticsSnapshot) map[string]bool {
+	missing := map[string]bool{}
 	for _, state := range states {
 		if state.Port == "" || countingLayoutPresentForTrafficState(state, diagnostics) {
 			continue
 		}
+		// Do not advance this port's traffic baseline from an incomplete
+		// counter backend. The repair worker may run after this snapshot; using
+		// a fallback zero here would make the next complete snapshot replay all
+		// existing counters.
+		missing[state.Port] = true
 		if !invalidateCountingChainState(state.Port) {
 			continue
 		}
@@ -250,6 +275,7 @@ func repairMissingCountingLayouts(states []localRuleState, diagnostics trafficDi
 			ForwardType: state.ForwardType,
 		})
 	}
+	return missing
 }
 
 type trafficDiagnosticsSnapshot struct {
@@ -716,6 +742,10 @@ func clearTrafficBaselinesForIdentityChange() error {
 	trafficPrevMu.Lock()
 	trafficPrevCache = map[string]trafficPrevState{}
 	trafficPrevMu.Unlock()
+	conntrackFlowMu.Lock()
+	conntrackFlowsByPort = map[string]map[string]struct{}{}
+	conntrackTotalsByPort = map[string]uint64{}
+	conntrackFlowMu.Unlock()
 	lastRuleTrafficReportAt = time.Time{}
 	lastHostTrafficReportAt = time.Time{}
 	return nil
@@ -953,19 +983,24 @@ func collectTraffic(cfg Config) time.Duration {
 			diagnostics.iptablesMarkers = iptablesDiagnostics.iptablesMarkers
 			diagnostics.ip6tablesMarkers = iptablesDiagnostics.ip6tablesMarkers
 		}
-		repairMissingCountingLayouts(states, diagnostics)
-		connCounts := conntrackConnectionsSnapshot(states)
+		missingCountingLayouts := repairMissingCountingLayouts(states, diagnostics)
+		connCounts, connTotals := conntrackConnectionsSnapshot(states)
 		for _, state := range states {
+			if missingCountingLayouts[state.Port] {
+				continue
+			}
 			counters := countersForRuleTrafficState(state, iptablesCounters, nftCounters, nftProcessCounters, diagnostics.nftProcessMarkers)
 			curConns := connCounts[state.Port]
 			prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
 			initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
 			if initialBaseline {
 				prevIn, prevOut = counters.In, counters.Out
-				prevConns = curConns
 			}
-			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(curConns, prevConns)
-			nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: curConns}
+			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(connTotals[state.Port], prevConns)
+			if initialBaseline {
+				dconns = 0
+			}
+			nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: connTotals[state.Port]}
 			if din > 0 || dout > 0 || dconns > 0 {
 				stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 				pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
@@ -2318,34 +2353,129 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	}
 }
 
-func conntrackConnectionsSnapshot(states []localRuleState) map[string]uint64 {
-	out := map[string]uint64{}
-	ports := collectableRuleTrafficPorts(states)
-	if len(ports) == 0 {
-		return out
+func conntrackConnectionsSnapshot(states []localRuleState) (map[string]uint64, map[string]uint64) {
+	active := map[string]uint64{}
+	totals := map[string]uint64{}
+	protocolsByPort := collectableRuleTrafficProtocols(states)
+	if len(protocolsByPort) == 0 {
+		conntrackFlowMu.Lock()
+		conntrackFlowsByPort = map[string]map[string]struct{}{}
+		conntrackTotalsByPort = map[string]uint64{}
+		conntrackFlowMu.Unlock()
+		return active, totals
+	}
+	baselines := make(map[string]uint64, len(protocolsByPort))
+	for port := range protocolsByPort {
+		_, _, _, baselines[port] = readPrev(port)
 	}
 	raw, err := os.ReadFile("/proc/net/nf_conntrack")
 	if err != nil {
 		raw, err = os.ReadFile("/proc/net/ip_conntrack")
 		if err != nil {
-			return out
+			conntrackFlowMu.Lock()
+			for port := range protocolsByPort {
+				total, ok := conntrackTotalsByPort[port]
+				if !ok {
+					total = baselines[port]
+					conntrackTotalsByPort[port] = total
+				}
+				totals[port] = total
+			}
+			pruneConntrackState(protocolsByPort)
+			conntrackFlowMu.Unlock()
+			return active, totals
 		}
 	}
-	dportPattern := regexp.MustCompile(`\bdport=([0-9]+)\b`)
-	for _, line := range strings.Split(string(raw), "\n") {
-		if line == "" {
+	current := parseConntrackFlowSnapshot(string(raw), protocolsByPort)
+	conntrackFlowMu.Lock()
+	active, totals = updateConntrackConnectionTotals(conntrackFlowsByPort, current, conntrackTotalsByPort, baselines, protocolsByPort)
+	conntrackFlowsByPort = current
+	conntrackTotalsByPort = totals
+	conntrackFlowMu.Unlock()
+	return active, totals
+}
+
+func updateConntrackConnectionTotals(previous, current map[string]map[string]struct{}, existingTotals, baselines map[string]uint64, protocolsByPort map[string]map[string]bool) (map[string]uint64, map[string]uint64) {
+	active := make(map[string]uint64, len(protocolsByPort))
+	totals := make(map[string]uint64, len(protocolsByPort))
+	for port := range protocolsByPort {
+		flows := current[port]
+		active[port] = uint64(len(flows))
+		total, totalInitialized := existingTotals[port]
+		if !totalInitialized {
+			total = baselines[port]
+		}
+		previousFlows, initialized := previous[port]
+		if initialized {
+			for flow := range flows {
+				if _, existed := previousFlows[flow]; !existed {
+					total++
+				}
+			}
+		}
+		totals[port] = total
+	}
+	return active, totals
+}
+
+func pruneConntrackState(protocolsByPort map[string]map[string]bool) {
+	for port := range conntrackFlowsByPort {
+		if _, keep := protocolsByPort[port]; !keep {
+			delete(conntrackFlowsByPort, port)
+		}
+	}
+	for port := range conntrackTotalsByPort {
+		if _, keep := protocolsByPort[port]; !keep {
+			delete(conntrackTotalsByPort, port)
+		}
+	}
+}
+
+// parseConntrackFlowSnapshot uses the original tuple only. A NAT entry also
+// contains a reply tuple; treating every dport in the line as a listener can
+// attribute one connection to an unrelated rule whose source port happens to
+// match the translated target port.
+func parseConntrackFlowSnapshot(raw string, protocolsByPort map[string]map[string]bool) map[string]map[string]struct{} {
+	out := make(map[string]map[string]struct{}, len(protocolsByPort))
+	for port := range protocolsByPort {
+		out[port] = map[string]struct{}{}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		protocol, sourceIP, targetIP, sourcePort, targetPort, ok := conntrackOriginalTuple(line)
+		if !ok || !protocolsByPort[targetPort][protocol] {
 			continue
 		}
-		seen := map[string]bool{}
-		for _, match := range dportPattern.FindAllStringSubmatch(line, -1) {
-			if len(match) < 2 || !ports[match[1]] || seen[match[1]] {
-				continue
-			}
-			out[match[1]]++
-			seen[match[1]] = true
-		}
+		flow := strings.Join([]string{protocol, sourceIP, targetIP, sourcePort, targetPort}, "|")
+		out[targetPort][flow] = struct{}{}
 	}
 	return out
+}
+
+func conntrackOriginalTuple(line string) (protocol, sourceIP, targetIP, sourcePort, targetPort string, ok bool) {
+	for _, field := range strings.Fields(line) {
+		if protocol == "" && (field == "tcp" || field == "udp") {
+			protocol = field
+			continue
+		}
+		if sourceIP == "" && strings.HasPrefix(field, "src=") {
+			sourceIP = strings.TrimPrefix(field, "src=")
+			continue
+		}
+		if sourceIP != "" && targetIP == "" && strings.HasPrefix(field, "dst=") {
+			targetIP = strings.TrimPrefix(field, "dst=")
+			continue
+		}
+		if targetIP != "" && sourcePort == "" && strings.HasPrefix(field, "sport=") {
+			sourcePort = strings.TrimPrefix(field, "sport=")
+			continue
+		}
+		if sourcePort != "" && strings.HasPrefix(field, "dport=") {
+			targetPort = strings.TrimPrefix(field, "dport=")
+			break
+		}
+	}
+	ok = protocol != "" && sourceIP != "" && targetIP != "" && sourcePort != "" && targetPort != ""
+	return
 }
 
 func conntrackConnections(port string) uint64 {
