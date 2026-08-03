@@ -4,6 +4,19 @@ import { protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { maskToken } from "./helpers";
 
+function ruleOwnerSummary(owners: Array<{ userId: number; username: string | null; name: string | null; ruleCount: number }>) {
+  const visibleOwners = owners.slice(0, 5);
+  const labels = visibleOwners.map((owner) => {
+    const username = owner.username || `用户 ID ${owner.userId}`;
+    const label = owner.name && owner.name !== username ? `${owner.name}（${username}）` : username;
+    return `用户 ${label}：${owner.ruleCount} 条`;
+  });
+  const hiddenRuleCount = owners.slice(visibleOwners.length)
+    .reduce((total, owner) => total + owner.ruleCount, 0);
+  if (hiddenRuleCount > 0) labels.push(`其他用户 ${hiddenRuleCount} 条`);
+  return labels.join("、");
+}
+
 export const agentTokensRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const isAdmin = ctx.user.role === "admin";
@@ -60,10 +73,14 @@ export const agentTokensRouter = router({
       for (const hostId of hostIds) {
         const blockers = await db.getHostRuleDeleteBlockers(hostId);
         if (blockers.ruleCount > 0) {
-          throw new Error(`该 Token 关联主机下还有 ${blockers.ruleCount} 条转发规则，请先删除所有规则后再删除 Token`);
+          const ownerSummary = ctx.user.role === "admin" ? ruleOwnerSummary(blockers.ruleOwners) : "";
+          const ownerHint = ownerSummary ? `：${ownerSummary}` : "";
+          throw new Error(`该 Token 关联主机下还有 ${blockers.ruleCount} 条未删除的转发规则${ownerHint}。请先删除这些规则后再删除 Token`);
         }
         if (blockers.managedRuleCount > 0) {
-          throw new Error(`该 Token 关联主机仍被 ${blockers.managedRuleCount} 条转发组/转发链规则引用，请先移除引用后再删除 Token`);
+          const ownerSummary = ctx.user.role === "admin" ? ruleOwnerSummary(blockers.managedRuleOwners) : "";
+          const ownerHint = ownerSummary ? `：${ownerSummary}` : "";
+          throw new Error(`该 Token 关联主机仍被 ${blockers.managedRuleCount} 条未删除的转发组/转发链规则引用${ownerHint}。请先移除引用后再删除 Token`);
         }
         releasedPendingCleanup += await db.releaseHostPendingRuleCleanup(hostId);
       }

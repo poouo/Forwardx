@@ -161,6 +161,9 @@ func TestProcessCountersInstallOnlyInputAndOutputHooks(t *testing.T) {
 				if !strings.Contains(joined, "output meta l4proto "+proto+" "+proto+" sport 22022") {
 					t.Fatalf("%s missing %s listener output counter:\n%s", forwardType, proto, joined)
 				}
+				if !strings.Contains(joined, proto+" dport 22022 ct state new") || !strings.Contains(joined, "fwx-stat-22022:conn") {
+					t.Fatalf("%s missing %s persistent connection counter:\n%s", forwardType, proto, joined)
+				}
 			}
 			for _, forbiddenHook := range []string{"PREROUTING", "FORWARD", "POSTROUTING", "forward meta l4proto"} {
 				if strings.Contains(joined, forbiddenHook) {
@@ -181,6 +184,9 @@ func TestProcessCounterRepairChecksEveryProtocolSeparately(t *testing.T) {
 		"grep -F 'tcp sport 22022'",
 		"grep -F 'udp dport 22022'",
 		"grep -F 'udp sport 22022'",
+		"grep -F 'fwx-stat-22022:conn'",
+		"grep -F 'ct state new'",
+		"grep -F 'ct status != confirmed'",
 	} {
 		if !strings.Contains(commands, want) {
 			t.Fatalf("non-destructive repair does not distinguish %q:\n%s", want, commands)
@@ -425,6 +431,9 @@ func TestProcessIptablesFallbackUsesOnlyListenerHooks(t *testing.T) {
 		}
 		if !strings.Contains(commands, "OUTPUT -p "+proto+" --sport 22022") {
 			t.Fatalf("iptables fallback missing %s output listener counter:\n%s", proto, commands)
+		}
+		if !strings.Contains(commands, "INPUT -p "+proto+" --dport 22022 -m conntrack --ctstate NEW") || !strings.Contains(commands, "fwx-stat-22022:conn") {
+			t.Fatalf("iptables fallback missing %s persistent connection counter:\n%s", proto, commands)
 		}
 	}
 	for _, forbiddenHook := range []string{"PREROUTING", "FORWARD", "POSTROUTING"} {

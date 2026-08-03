@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -268,19 +270,96 @@ func TestPresenceIntervalHonorsPanelWithinAvailabilityBounds(t *testing.T) {
 	}
 }
 
-func TestPresenceFailurePathRetainsFastTimeoutAndBackoff(t *testing.T) {
+func TestPresenceFailurePathRetainsFastTimeoutAndBoundedRetries(t *testing.T) {
 	if agentPresenceHTTPClient.Timeout != 8*time.Second {
 		t.Fatalf("presence timeout=%s want=8s", agentPresenceHTTPClient.Timeout)
 	}
-	if got := nextHeartbeatRetryInterval(0); got != 5*time.Second {
-		t.Fatalf("first retry=%s want=5s", got)
+	var retries heartbeatRetryState
+	wantDelays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+	for index, want := range wantDelays {
+		got, retrying := retries.failure(context.DeadlineExceeded)
+		if !retrying || got != want {
+			t.Fatalf("retry %d delay=%s retrying=%v want=%s,true", index+1, got, retrying, want)
+		}
 	}
-	if got := nextHeartbeatRetryInterval(5 * time.Second); got != 10*time.Second {
-		t.Fatalf("second retry=%s want=10s", got)
+	if got, retrying := retries.failure(context.DeadlineExceeded); retrying || got != agentHeartbeatRetryCooldown {
+		t.Fatalf("exhausted retry delay=%s retrying=%v want=%s,false", got, retrying, agentHeartbeatRetryCooldown)
 	}
-	if got := nextHeartbeatRetryInterval(30 * time.Second); got != 30*time.Second {
-		t.Fatalf("retry ceiling=%s want=30s", got)
+	if !retries.active() {
+		t.Fatal("exhausted retry cooldown was not cancelable")
 	}
+	if got, retrying := retries.failure(context.DeadlineExceeded); !retrying || got != agentHeartbeatRetryMinInterval {
+		t.Fatalf("new retry burst delay=%s retrying=%v want=%s,true", got, retrying, agentHeartbeatRetryMinInterval)
+	}
+	retries.reset()
+	if got, retrying := retries.failure(agentHTTPStatusError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized"}); retrying || got != agentHeartbeatRetryCooldown {
+		t.Fatalf("permanent failure delay=%s retrying=%v want=%s,false", got, retrying, agentHeartbeatRetryCooldown)
+	}
+	if !retries.active() {
+		t.Fatal("permanent failure cooldown was not cancelable")
+	}
+}
+
+func TestHeartbeatRequestCoordinatorSerializesAndBroadcastsSuccess(t *testing.T) {
+	coordinator := newHeartbeatRequestCoordinator()
+	generation, successCh := coordinator.successSnapshot()
+	finish, ok := coordinator.tryStart()
+	if !ok {
+		t.Fatal("first heartbeat request was rejected")
+	}
+	if _, ok := coordinator.tryStart(); ok {
+		t.Fatal("overlapping heartbeat request was accepted")
+	}
+	finish(false)
+	if got, _ := coordinator.successSnapshot(); got != generation {
+		t.Fatalf("failed request changed success generation: got=%d want=%d", got, generation)
+	}
+	select {
+	case <-successCh:
+		t.Fatal("failed request broadcast a success")
+	default:
+	}
+
+	finish, ok = coordinator.tryStart()
+	if !ok {
+		t.Fatal("request gate was not released after failure")
+	}
+	finish(true)
+	select {
+	case <-successCh:
+	default:
+		t.Fatal("successful heartbeat did not cancel pending retry waiters")
+	}
+	if got, nextSuccessCh := coordinator.successSnapshot(); got != generation+1 {
+		t.Fatalf("success generation=%d want=%d", got, generation+1)
+	} else {
+		select {
+		case <-nextSuccessCh:
+			t.Fatal("next success signal started closed")
+		default:
+		}
+	}
+	if _, err := coordinator.tryStartIfGeneration(generation); !errors.Is(err, errHeartbeatRetrySuperseded) {
+		t.Fatalf("stale retry generation err=%v want=%v", err, errHeartbeatRetrySuperseded)
+	}
+
+	currentGeneration, _ := coordinator.successSnapshot()
+	finish, startedGeneration, ok := coordinator.tryStartTracked()
+	if !ok {
+		t.Fatal("request gate was not available for in-flight retry test")
+	}
+	if startedGeneration != currentGeneration {
+		t.Fatalf("request start generation=%d want=%d", startedGeneration, currentGeneration)
+	}
+	if _, err := coordinator.tryStartIfGeneration(currentGeneration); !errors.Is(err, errHeartbeatRequestInFlight) {
+		t.Fatalf("retry during in-flight request err=%v want=%v", err, errHeartbeatRequestInFlight)
+	}
+	finish(false)
+	finishRetry, err := coordinator.tryStartIfGeneration(currentGeneration)
+	if err != nil {
+		t.Fatalf("retry after failed in-flight request: %v", err)
+	}
+	finishRetry(false)
 }
 
 func TestPresenceSchedulingSpreadsLoadWithoutExtendingTheDeadline(t *testing.T) {

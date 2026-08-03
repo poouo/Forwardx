@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const trafficBatchInterval = 10 * time.Second
+const (
+	trafficBatchInterval      = 10 * time.Second
+	trafficDiagnosticInterval = time.Minute
+)
 
 type trafficBatchKey struct {
 	panelURL   string
@@ -43,6 +46,10 @@ var trafficBatches = map[trafficBatchKey]map[int]trafficBatchValue{}
 var trafficPendingReports = map[trafficBatchKey]pendingTrafficBatch{}
 var trafficReportSequence atomic.Uint64
 var trafficHTTPClient = &http.Client{Timeout: 10 * time.Second}
+var trafficDiagnostics = struct {
+	sync.Mutex
+	last map[string]time.Time
+}{last: make(map[string]time.Time)}
 
 func enqueueTraffic(cfg config, bytesIn, bytesOut uint64, connectionDeltas ...uint64) {
 	panelURL := strings.TrimRight(strings.TrimSpace(cfg.PanelURL), "/")
@@ -51,7 +58,29 @@ func enqueueTraffic(cfg config, bytesIn, bytesOut uint64, connectionDeltas ...ui
 	if len(connectionDeltas) > 0 {
 		connections = connectionDeltas[0]
 	}
-	if panelURL == "" || token == "" || cfg.RuleID <= 0 || (bytesIn == 0 && bytesOut == 0 && connections == 0) {
+	if bytesIn == 0 && bytesOut == 0 && connections == 0 {
+		return
+	}
+	missing := make([]string, 0, 3)
+	if panelURL == "" {
+		missing = append(missing, "panelUrl")
+	}
+	if token == "" {
+		missing = append(missing, "token")
+	}
+	if cfg.RuleID <= 0 {
+		missing = append(missing, "ruleId")
+	}
+	if len(missing) > 0 {
+		logTrafficDiagnostic(
+			trafficConfigDiagnosticKey(cfg, missing),
+			"traffic report skipped role=%q tunnel=%d rule=%d listen=%d missing=%s",
+			strings.ToLower(strings.TrimSpace(cfg.Role)),
+			cfg.TunnelID,
+			cfg.RuleID,
+			cfg.ListenPort,
+			strings.Join(missing, ","),
+		)
 		return
 	}
 	key := trafficBatchKey{panelURL: panelURL, token: token, producerID: fxpTrafficProducerID(cfg)}
@@ -68,6 +97,48 @@ func enqueueTraffic(cfg config, bytesIn, bytesOut uint64, connectionDeltas ...ui
 	byRule[cfg.RuleID] = current
 	trafficBatchMu.Unlock()
 	startTrafficBatchWorker()
+}
+
+func trafficConfigDiagnosticKey(cfg config, missing []string) string {
+	return fmt.Sprintf(
+		"config:%s:%d:%d:%d:%s",
+		strings.ToLower(strings.TrimSpace(cfg.Role)),
+		cfg.TunnelID,
+		cfg.RuleID,
+		cfg.ListenPort,
+		strings.Join(missing, ","),
+	)
+}
+
+func logTrafficDiagnostic(key, format string, args ...any) {
+	now := time.Now()
+	trafficDiagnostics.Lock()
+	last := trafficDiagnostics.last[key]
+	if !last.IsZero() && now.Sub(last) < trafficDiagnosticInterval {
+		trafficDiagnostics.Unlock()
+		return
+	}
+	trafficDiagnostics.last[key] = now
+	if len(trafficDiagnostics.last) > 1024 {
+		for diagnosticKey, loggedAt := range trafficDiagnostics.last {
+			if now.Sub(loggedAt) >= trafficDiagnosticInterval {
+				delete(trafficDiagnostics.last, diagnosticKey)
+			}
+		}
+	}
+	trafficDiagnostics.Unlock()
+	log.Printf(format, args...)
+}
+
+func safeTrafficReportError(err error, token string) string {
+	if err == nil {
+		return "unknown error"
+	}
+	message := err.Error()
+	if token = strings.TrimSpace(token); token != "" {
+		message = strings.ReplaceAll(message, token, "[redacted]")
+	}
+	return message
 }
 
 func startTrafficBatchWorker() {
@@ -190,7 +261,12 @@ func postTrafficBatch(key trafficBatchKey, pending pendingTrafficBatch) bool {
 		"reportProducerId": key.producerID,
 	}, key.token)
 	if err != nil {
-		log.Printf("traffic batch encrypt failed rules=%d: %v", len(stats), err)
+		logTrafficDiagnostic(
+			"encrypt:"+key.producerID,
+			"traffic batch encrypt failed rules=%d: %s",
+			len(stats),
+			safeTrafficReportError(err, key.token),
+		)
 		return false
 	}
 	body, _ := json.Marshal(env)
@@ -202,15 +278,34 @@ func postTrafficBatch(key trafficBatchKey, pending pendingTrafficBatch) bool {
 		body,
 	)
 	if err != nil {
-		log.Printf("traffic batch report failed rules=%d: %v", len(stats), err)
+		logTrafficDiagnostic(
+			"request:"+key.producerID,
+			"traffic batch report request failed firstRule=%d rules=%d: %s",
+			firstTrafficRuleID(ruleIDs),
+			len(stats),
+			safeTrafficReportError(err, key.token),
+		)
 		return false
 	}
-	if resp.StatusCode >= 300 {
-		log.Printf("traffic batch report status rules=%d status=%s", len(stats), resp.Status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logTrafficDiagnostic(
+			"status:"+key.producerID,
+			"traffic batch report rejected firstRule=%d rules=%d status=%d",
+			firstTrafficRuleID(ruleIDs),
+			len(stats),
+			resp.StatusCode,
+		)
 		return false
 	}
 	return true
 
+}
+
+func firstTrafficRuleID(ruleIDs []int) int {
+	if len(ruleIDs) == 0 {
+		return 0
+	}
+	return ruleIDs[0]
 }
 
 func flushTrafficBatches() {

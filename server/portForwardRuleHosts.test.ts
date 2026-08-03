@@ -39,13 +39,15 @@ test("repairs persisted port-forward hosts before host deletion checks", () => {
     const hostRepository = await import(moduleUrl("server/repositories/hostRepository.ts"));
 
     await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+    await runtime.executeRaw('CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "username" TEXT NOT NULL, "name" TEXT)');
     await runtime.executeRaw('CREATE TABLE "forward_groups" ("id" INTEGER PRIMARY KEY, "groupMode" TEXT NOT NULL)');
     await runtime.executeRaw('CREATE TABLE "forward_group_members" ("id" INTEGER PRIMARY KEY, "groupId" INTEGER NOT NULL, "memberType" TEXT NOT NULL, "hostId" INTEGER, "priority" INTEGER NOT NULL, "ruleId" INTEGER)');
-    await runtime.executeRaw('CREATE TABLE "forward_rules" ("id" INTEGER PRIMARY KEY, "hostId" INTEGER NOT NULL, "forwardGroupId" INTEGER, "forwardGroupRuleId" INTEGER, "forwardGroupMemberId" INTEGER, "isForwardGroupTemplate" INTEGER NOT NULL, "isEnabled" INTEGER NOT NULL, "pendingDelete" INTEGER NOT NULL, "isRunning" INTEGER NOT NULL, "updatedAt" INTEGER NOT NULL)');
+    await runtime.executeRaw('CREATE TABLE "forward_rules" ("id" INTEGER PRIMARY KEY, "hostId" INTEGER NOT NULL, "userId" INTEGER NOT NULL, "forwardGroupId" INTEGER, "forwardGroupRuleId" INTEGER, "forwardGroupMemberId" INTEGER, "isForwardGroupTemplate" INTEGER NOT NULL, "isEnabled" INTEGER NOT NULL, "pendingDelete" INTEGER NOT NULL, "isRunning" INTEGER NOT NULL, "updatedAt" INTEGER NOT NULL)');
     await runtime.executeRaw('CREATE TABLE "forward_rule_tunnel_exits" ("id" INTEGER PRIMARY KEY, "ruleId" INTEGER NOT NULL)');
+    await runtime.executeRaw('INSERT INTO "users" ("id", "username", "name") VALUES (9, \'owner\', \'Owner\')');
     await runtime.executeRaw('INSERT INTO "forward_groups" ("id", "groupMode") VALUES (5, \'port\')');
     await runtime.executeRaw('INSERT INTO "forward_group_members" ("id", "groupId", "memberType", "hostId", "priority", "ruleId") VALUES (20, 5, \'host\', 2, 0, NULL)');
-    await runtime.executeRaw('INSERT INTO "forward_rules" ("id", "hostId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "isEnabled", "pendingDelete", "isRunning", "updatedAt") VALUES (10, 1, 5, NULL, NULL, 1, 1, 0, 1, 1)');
+    await runtime.executeRaw('INSERT INTO "forward_rules" ("id", "hostId", "userId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "isEnabled", "pendingDelete", "isRunning", "updatedAt") VALUES (10, 1, 9, 5, NULL, NULL, 1, 1, 0, 1, 1)');
 
     const repairs = await repairModule.repairPortForwardRuleHostReferences(5);
     assert.deepEqual(repairs, [{ ruleId: 10, groupId: 5, fromHostId: 1, toHostId: 2 }]);
@@ -53,19 +55,97 @@ test("repairs persisted port-forward hosts before host deletion checks", () => {
     assert.deepEqual(rows, [{ hostId: 2, isRunning: 0 }]);
 
     const oldHostBlockers = await hostRepository.getHostRuleDeleteBlockers(1);
-    assert.deepEqual(oldHostBlockers, { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 });
+    assert.deepEqual(oldHostBlockers, { ruleCount: 0, ruleOwners: [], managedRuleCount: 0, managedRuleOwners: [], pendingCleanupCount: 0 });
     const currentHostBlockers = await hostRepository.getHostRuleDeleteBlockers(2);
-    assert.deepEqual(currentHostBlockers, { ruleCount: 0, managedRuleCount: 1, pendingCleanupCount: 0 });
+    assert.deepEqual(currentHostBlockers, {
+      ruleCount: 0,
+      ruleOwners: [],
+      managedRuleCount: 1,
+      managedRuleOwners: [{ userId: 9, username: "owner", name: "Owner", ruleCount: 1 }],
+      pendingCleanupCount: 0,
+    });
 
     await runtime.executeRaw('DELETE FROM "forward_groups" WHERE "id" = 5');
     const orphanBlockers = await hostRepository.getHostRuleDeleteBlockers(2);
-    assert.deepEqual(orphanBlockers, { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 });
+    assert.deepEqual(orphanBlockers, { ruleCount: 0, ruleOwners: [], managedRuleCount: 0, managedRuleOwners: [], pendingCleanupCount: 0 });
     const orphanRows = await runtime.queryRaw('SELECT "pendingDelete", "isRunning" FROM "forward_rules" WHERE "id" = 10');
     assert.deepEqual(orphanRows, [{ pendingDelete: 1, isRunning: 0 }]);
 
     await runtime.executeRaw('DELETE FROM "forward_rules" WHERE "hostId" = 1');
     const retained = await runtime.queryRaw('SELECT "id", "hostId" FROM "forward_rules" WHERE "id" = 10');
     assert.deepEqual(retained, [{ id: 10, hostId: 2 }]);
+    await runtime.closeDatabase();
+  `;
+
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: databasePath,
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("pending rule cleanup never remains an active host delete blocker", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-rule-cleanup-"));
+  const databasePath = path.join(directory, "cleanup.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const hostRepository = await import(moduleUrl("server/repositories/hostRepository.ts"));
+    const ruleRepository = await import(moduleUrl("server/repositories/forwardRuleRepository.ts"));
+
+    await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+    await runtime.executeRaw('CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "username" TEXT NOT NULL, "name" TEXT)');
+    await runtime.executeRaw('CREATE TABLE "forward_groups" ("id" INTEGER PRIMARY KEY, "groupMode" TEXT NOT NULL)');
+    await runtime.executeRaw('CREATE TABLE "forward_group_members" ("id" INTEGER PRIMARY KEY, "groupId" INTEGER NOT NULL, "memberType" TEXT NOT NULL, "hostId" INTEGER, "priority" INTEGER NOT NULL, "ruleId" INTEGER, "updatedAt" INTEGER)');
+    await runtime.executeRaw('CREATE TABLE "forward_rules" ("id" INTEGER PRIMARY KEY, "hostId" INTEGER NOT NULL, "userId" INTEGER NOT NULL, "forwardGroupId" INTEGER, "forwardGroupRuleId" INTEGER, "forwardGroupMemberId" INTEGER, "isForwardGroupTemplate" INTEGER NOT NULL, "isEnabled" INTEGER NOT NULL, "pendingDelete" INTEGER NOT NULL, "isRunning" INTEGER NOT NULL, "updatedAt" INTEGER NOT NULL)');
+    await runtime.executeRaw('CREATE TABLE "forward_rule_tunnel_exits" ("id" INTEGER PRIMARY KEY, "ruleId" INTEGER NOT NULL)');
+    await runtime.executeRaw('INSERT INTO "users" ("id", "username", "name") VALUES (99, \'customer-a\', \'Customer A\')');
+    await runtime.executeRaw('INSERT INTO "forward_rules" ("id", "hostId", "userId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "isEnabled", "pendingDelete", "isRunning", "updatedAt") VALUES (10, 2, 99, NULL, NULL, NULL, 0, 1, 0, 1, 1)');
+
+    assert.deepEqual(await hostRepository.getHostRuleDeleteBlockers(2), {
+      ruleCount: 1,
+      ruleOwners: [{ userId: 99, username: "customer-a", name: "Customer A", ruleCount: 1 }],
+      managedRuleCount: 0,
+      managedRuleOwners: [],
+      pendingCleanupCount: 0,
+    });
+
+    await ruleRepository.markForwardRulePendingDelete(10);
+    assert.deepEqual(await hostRepository.getHostRuleDeleteBlockers(2), {
+      ruleCount: 0,
+      ruleOwners: [],
+      managedRuleCount: 0,
+      managedRuleOwners: [],
+      pendingCleanupCount: 1,
+    });
+
+    assert.equal(await hostRepository.releaseHostPendingRuleCleanup(2), 1);
+    assert.deepEqual(await hostRepository.getHostRuleDeleteBlockers(2), {
+      ruleCount: 0,
+      ruleOwners: [],
+      managedRuleCount: 0,
+      managedRuleOwners: [],
+      pendingCleanupCount: 0,
+    });
+    assert.deepEqual(await runtime.queryRaw('SELECT "pendingDelete", "isRunning" FROM "forward_rules" WHERE "id" = 10'), [
+      { pendingDelete: 1, isRunning: 0 },
+    ]);
+
+    assert.equal(await ruleRepository.purgeSettledPendingForwardRuleDeletes(), 1);
+    assert.deepEqual(await runtime.queryRaw('SELECT "id" FROM "forward_rules" WHERE "id" = 10'), []);
     await runtime.closeDatabase();
   `;
 

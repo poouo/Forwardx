@@ -368,13 +368,28 @@ func TestFXPMatchesRunningRequiresTheExpectedListener(t *testing.T) {
 		t.Fatal("failed to build test FXP entry group")
 	}
 	id := fxpServerID(group)
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testExecutableInfo, err := os.Stat(testExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFXPRuntimeExecutableHooks(
+		t,
+		func() (string, error) { return testExecutable, nil },
+		func(string) []int { return []int{os.Getpid()} },
+		func(pid int, runtimePath string) bool { return pid == os.Getpid() && runtimePath == testExecutable },
+	)
 
 	fxpMu.Lock()
 	previousProcess, hadPreviousProcess := fxpServers[id]
 	fxpServers[id] = &fxpProcess{
-		signature: fxpServerSignature(group),
-		cmd:       &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}},
-		spec:      group,
+		signature:         fxpServerSignature(group),
+		cmd:               &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}},
+		spec:              group,
+		runtimeExecutable: testExecutableInfo,
 	}
 	fxpMu.Unlock()
 

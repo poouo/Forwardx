@@ -18,6 +18,10 @@ func isolateCountingStateTest(t *testing.T, bootID string) {
 	previousQueue := countingChainRepairQueue
 	previousDesiredByPort := desiredRunningRulesByPort
 	previousDesiredByRulePort := desiredRunningRulesByRulePort
+	freshProcessConnMu.Lock()
+	previousFreshProcessConnRule := freshProcessConnRule
+	freshProcessConnRule = map[string]int{}
+	freshProcessConnMu.Unlock()
 
 	trafficStateDir = t.TempDir()
 	agentBootID = bootID
@@ -42,6 +46,9 @@ func isolateCountingStateTest(t *testing.T, bootID string) {
 		countingChainRepairQueue = previousQueue
 		desiredRunningRulesByPort = previousDesiredByPort
 		desiredRunningRulesByRulePort = previousDesiredByRulePort
+		freshProcessConnMu.Lock()
+		freshProcessConnRule = previousFreshProcessConnRule
+		freshProcessConnMu.Unlock()
 	})
 }
 
@@ -82,6 +89,9 @@ func TestCountingChainStateRestoresOnlyWithinTheSameSystemBoot(t *testing.T) {
 	ensureCountingChainsIfNeeded(rule)
 	if got := len(countingChainRepairQueue); got != 1 {
 		t.Fatalf("same-boot Agent restart queued %d repairs, want one verification", got)
+	}
+	if countingChainRepairCleanup["22022"] {
+		t.Fatal("same-layout Agent upgrade would clear existing traffic counters")
 	}
 
 	restoreCountingChainStates("boot-b")

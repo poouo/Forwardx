@@ -8,6 +8,8 @@ import {
   buildNginxStreamServerBlock,
   buildNginxTunnelServerCertificate,
   buildNginxTunnelTlsClientOptions,
+  buildGostRuleListener,
+  forwardXUDPTargetAddress,
   selectForwardChainListenerPort,
   stableDesiredStateHash,
 } from "./agentHeartbeatRoute";
@@ -85,6 +87,40 @@ test("Nginx UDP streams keep their short session timeout without TCP keepalive d
   assert.match(config, /listen \[::\]:5353 udp reuseport ipv6only=off;/);
   assert.match(config, /proxy_timeout 2m;/);
   assert.doesNotMatch(config, /proxy_socket_keepalive|so_keepalive/);
+});
+
+test("GOST UDP rule listeners retain active game sessions with bounded buffers", () => {
+  const listener = buildGostRuleListener("udp");
+  assert.deepEqual(listener, {
+    type: "udp",
+    metadata: {
+      keepalive: true,
+      ttl: "30s",
+      readBufferSize: "8192",
+      readQueueSize: "64",
+      backlog: "128",
+    },
+  });
+
+  const decoded = JSON.parse(JSON.stringify(listener));
+  assert.equal(typeof decoded.metadata.keepalive, "boolean");
+  for (const key of ["ttl", "readBufferSize", "readQueueSize", "backlog"]) {
+    assert.equal(typeof decoded.metadata[key], "string", `${key} must survive JSON decoding as GOST metadata`);
+  }
+});
+
+test("GOST TCP rule listeners remain free of UDP session metadata", () => {
+  assert.deepEqual(buildGostRuleListener("tcp"), { type: "tcp" });
+});
+
+test("ForwardX UDP targets prefer the heartbeat-resolved address", () => {
+  assert.equal(forwardXUDPTargetAddress({
+    targetIp: "192.0.2.20",
+    _originalTargetIp: "game.example.com",
+  }), "192.0.2.20");
+  assert.equal(forwardXUDPTargetAddress({
+    _originalTargetIp: "game.example.com",
+  }), "game.example.com");
 });
 
 test("Nginx session diagnostics retain timeout duration and selected upstream", () => {

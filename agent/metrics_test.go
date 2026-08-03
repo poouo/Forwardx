@@ -167,7 +167,10 @@ func TestPendingTrafficReportPersistsPayloadAndCommitsSnapshot(t *testing.T) {
 	report := testRulePendingTrafficReport(
 		"agent-stable-report",
 		identity,
-		persistedTrafficBaseline{Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3},
+		persistedTrafficBaseline{
+			Port: "22022", RuleID: 42, In: 1200, Out: 800, Conns: 3,
+			ConnSource: trafficConnectionSourceProcessNFT,
+		},
 	)
 	if err := os.WriteFile(trafficStateDir+"/port_22022.rule", []byte("42"), 0600); err != nil {
 		t.Fatalf("write current rule state: %v", err)
@@ -182,14 +185,46 @@ func TestPendingTrafficReportPersistsPayloadAndCommitsSnapshot(t *testing.T) {
 	if !ok || loaded.Payload["reportId"] != "agent-stable-report" || loaded.StatCount != 1 {
 		t.Fatalf("pending traffic report did not round trip: %+v ok=%v", loaded, ok)
 	}
+	if got := loaded.Baselines[0].ConnSource; got != trafficConnectionSourceProcessNFT {
+		t.Fatalf("pending traffic connection source=%q want=%q", got, trafficConnectionSourceProcessNFT)
+	}
 	if err := completePendingTrafficReport(loaded); err != nil {
 		t.Fatalf("complete pending traffic report: %v", err)
 	}
 	if _, err := os.Stat(pendingTrafficReportPath()); !os.IsNotExist(err) {
 		t.Fatalf("completed pending report was not removed: %v", err)
 	}
-	if ruleID, in, out, conns := readPrev("22022"); ruleID != 42 || in != 1200 || out != 800 || conns != 3 {
-		t.Fatalf("pending report baseline was not committed: rule=%d in=%d out=%d conns=%d", ruleID, in, out, conns)
+	trafficPrevMu.Lock()
+	delete(trafficPrevCache, "22022")
+	trafficPrevMu.Unlock()
+	state := readPrevState("22022")
+	if state.ruleID != 42 || state.in != 1200 || state.out != 800 || state.conns != 3 || state.connSource != trafficConnectionSourceProcessNFT {
+		t.Fatalf("pending report baseline was not committed from disk: %+v", state)
+	}
+}
+
+func TestTrafficConnectionBaselineFormatsRemainCompatible(t *testing.T) {
+	stateDir := useIsolatedTrafficState(t)
+	if err := os.WriteFile(stateDir+"/traffic_22022.prev", []byte("42\n1200\n800\n3\n"), 0600); err != nil {
+		t.Fatalf("write legacy four-line baseline: %v", err)
+	}
+	legacy := readPrevState("22022")
+	if legacy.ruleID != 42 || legacy.in != 1200 || legacy.out != 800 || legacy.conns != 3 || legacy.connSource != trafficConnectionSourceConntrack {
+		t.Fatalf("legacy four-line baseline decoded incorrectly: %+v", legacy)
+	}
+
+	current := trafficPrevState{
+		ruleID: 43, in: 2400, out: 1600, conns: 9,
+		connSource: trafficConnectionSourceProcessIptables,
+	}
+	if err := writePrevState("22023", current); err != nil {
+		t.Fatalf("write current five-line baseline: %v", err)
+	}
+	trafficPrevMu.Lock()
+	delete(trafficPrevCache, "22023")
+	trafficPrevMu.Unlock()
+	if restored := readPrevState("22023"); restored != current {
+		t.Fatalf("five-line baseline decoded as %+v want %+v", restored, current)
 	}
 }
 
@@ -735,7 +770,9 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	chain input {
 		type filter hook input priority mangle; policy accept;
 		tcp dport 22022 counter packets 3 bytes 1200 comment "fwx-stat-22022:in" # handle 4
+		tcp dport 22022 ct state new ct status != confirmed counter packets 3 bytes 180 comment "fwx-stat-22022:conn" # handle 9
 		udp dport 22022 comment "fwx-stat-22022:in" counter packets 2 bytes 300 # handle 5
+		udp dport 22022 ct state new ct status != confirmed counter packets 2 bytes 160 comment "fwx-stat-22022:conn" # handle 10
 	}
 	chain output {
 		tcp sport 22022 counter packets 4 bytes 2400 comment "fwx-stat-22022:out" # handle 6
@@ -749,7 +786,7 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	if !markers["22022"] {
 		t.Fatal("nft process traffic marker was not detected")
 	}
-	for _, marker := range []string{"22022:tcp:in", "22022:tcp:out", "22022:udp:in"} {
+	for _, marker := range []string{"22022:tcp:in", "22022:tcp:out", "22022:tcp:conn", "22022:udp:in", "22022:udp:conn"} {
 		if !markers[marker] {
 			t.Fatalf("nft process layout marker %q was not detected", marker)
 		}
@@ -757,8 +794,13 @@ func TestParseNftProcessCounterSnapshot(t *testing.T) {
 	if markers["22022:udp:out"] {
 		t.Fatal("missing udp output rule was reported as installed")
 	}
-	if got := counters["22022"]; got.In != 1500 || got.Out != 2400 {
+	if got := counters["22022"]; got.In != 1500 || got.Out != 2400 || got.Connections != 5 {
 		t.Fatalf("unexpected nft process counters: %+v", got)
+	}
+
+	_, malformedMarkers := parseNftProcessCounterSnapshot(strings.Replace(raw, "ct state new ct status != confirmed", "ct state new", 1))
+	if malformedMarkers["22022:tcp:conn"] {
+		t.Fatal("broad nft NEW rule was accepted as an exact connection counter")
 	}
 }
 
@@ -785,6 +827,8 @@ func TestNftProcessCountingCmdsUseOnlyListenerHooks(t *testing.T) {
 	for _, want := range []string{
 		"input meta l4proto tcp tcp dport 22022",
 		"output meta l4proto tcp tcp sport 22022",
+		"tcp dport 22022 ct state new",
+		"fwx-stat-22022:conn",
 	} {
 		if !strings.Contains(commands, want) {
 			t.Fatalf("nft process commands missing %q:\n%s", want, commands)
@@ -799,7 +843,7 @@ func TestRuleTrafficCountersUseExactlyOneBackend(t *testing.T) {
 	iptables := map[string]trafficCounters{"22022": {In: 9000, Out: 8000}}
 	nativeNFT := map[int]trafficCounters{7: {In: 7000, Out: 6000}}
 	processNFT := map[string]trafficCounters{"22022": {In: 1500, Out: 2400}}
-	processMarkers := map[string]bool{"22022:tcp:in": true, "22022:tcp:out": true}
+	processMarkers := map[string]bool{"22022:tcp:in": true, "22022:tcp:out": true, "22022:tcp:conn": true}
 
 	process := localRuleState{Port: "22022", RuleID: 7, ForwardType: "gost", Protocol: "tcp"}
 	if got := countersForRuleTrafficState(process, iptables, nativeNFT, processNFT, processMarkers); got != processNFT["22022"] {
@@ -912,6 +956,100 @@ func TestConntrackConnectionDeltaTracksFlowIdentityInsteadOfActiveGauge(t *testi
 	}
 }
 
+func TestProcessConnectionCounterKeepsShortConnectionsBetweenSnapshots(t *testing.T) {
+	isolateCountingStateTest(t, "boot-a")
+	state := localRuleState{Port: "22022", RuleID: 7, ForwardType: "gost", Protocol: "tcp"}
+	diagnostics := trafficDiagnosticsSnapshot{
+		nftProcessMarkers: map[string]bool{
+			"22022:tcp:in": true, "22022:tcp:out": true, "22022:tcp:conn": true,
+		},
+	}
+
+	// No flow remains in the next conntrack snapshot, but the persistent NEW
+	// packet counter still records every connection that arrived in the window.
+	current := connectionTotalForTrafficState(state, trafficCounters{Connections: 19}, 0, diagnostics)
+	if got := delta(current, 12); got != 7 {
+		t.Fatalf("short-lived process connections delta=%d want=7", got)
+	}
+
+	delete(diagnostics.nftProcessMarkers, "22022:tcp:conn")
+	if got := connectionTotalForTrafficState(state, trafficCounters{Connections: 19}, 5, diagnostics); got != 5 {
+		t.Fatalf("incomplete persistent layout did not fall back to conntrack total: %d", got)
+	}
+
+	legacy := trafficPrevState{
+		ruleID: state.RuleID, conns: 12, connSource: trafficConnectionSourceConntrack,
+	}
+	total, source, previous := prepareConnectionCounterBaseline(state, legacy, 7, trafficConnectionSourceProcessNFT)
+	if total != 7 || source != trafficConnectionSourceProcessNFT || previous != 0 || delta(total, previous) != 7 {
+		t.Fatalf("legacy-to-kernel transition total/source/previous=%d/%s/%d", total, source, previous)
+	}
+
+	kernel := trafficPrevState{
+		ruleID: state.RuleID, conns: 19, connSource: trafficConnectionSourceProcessNFT,
+	}
+	total, source, previous = prepareConnectionCounterBaseline(state, kernel, 0, trafficConnectionSourceConntrack)
+	if total != 19 || source != trafficConnectionSourceProcessNFT || previous != 19 {
+		t.Fatalf("temporary marker loss changed kernel epoch total/source/previous=%d/%s/%d", total, source, previous)
+	}
+
+	markFreshProcessConnectionCounter(22022, state.RuleID)
+	if !shouldCountFreshInitialConnections(true, state, trafficConnectionSourceProcessNFT) {
+		t.Fatal("new process rule would discard connections counted before its first collection")
+	}
+	for _, tc := range []struct {
+		name     string
+		previous trafficPrevState
+		source   string
+	}{
+		{
+			name: "same rule rebuild",
+			previous: trafficPrevState{
+				ruleID: state.RuleID, conns: 5, connSource: trafficConnectionSourceProcessNFT,
+			},
+			source: trafficConnectionSourceProcessNFT,
+		},
+		{
+			name: "reused port with new rule",
+			previous: trafficPrevState{
+				ruleID: state.RuleID - 1, conns: 5, connSource: trafficConnectionSourceProcessNFT,
+			},
+			source: trafficConnectionSourceProcessNFT,
+		},
+		{
+			name: "persistent backend switch",
+			previous: trafficPrevState{
+				ruleID: state.RuleID, conns: 5, connSource: trafficConnectionSourceProcessNFT,
+			},
+			source: trafficConnectionSourceProcessIptables,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total, source, previous := prepareConnectionCounterBaseline(state, tc.previous, 7, tc.source)
+			if total != 7 || source != tc.source || previous != 0 || delta(total, previous) != 7 {
+				t.Fatalf("fresh epoch total/source/previous=%d/%s/%d want=7/%s/0", total, source, previous, tc.source)
+			}
+		})
+	}
+	if err := writePrevState(state.Port, trafficPrevState{
+		ruleID: state.RuleID, conns: 7, connSource: trafficConnectionSourceProcessNFT,
+	}); err != nil {
+		t.Fatalf("persist kernel connection source: %v", err)
+	}
+	if freshProcessConnectionCounter(state.Port, state.RuleID) {
+		t.Fatal("fresh connection epoch remained active after its baseline was persisted")
+	}
+	markFreshProcessConnectionCounter(22022, state.RuleID)
+	if err := writePrevState(state.Port, trafficPrevState{
+		ruleID: state.RuleID, conns: 7, connSource: trafficConnectionSourceProcessNFT,
+	}); err != nil {
+		t.Fatalf("commit numerically unchanged fresh baseline: %v", err)
+	}
+	if freshProcessConnectionCounter(state.Port, state.RuleID) {
+		t.Fatal("unchanged persisted baseline did not close the fresh connection epoch")
+	}
+}
+
 func TestConntrackFlowSnapshotFiltersRuleProtocol(t *testing.T) {
 	raw := strings.Join([]string{
 		"ipv4 2 tcp 6 30 ESTABLISHED src=198.51.100.10 dst=192.0.2.20 sport=51000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.10 sport=22022 dport=51000 packets=1 bytes=60",
@@ -964,6 +1102,29 @@ func TestTrafficSnapshotRequirementsFollowForwardTypes(t *testing.T) {
 	}
 }
 
+func TestConntrackSnapshotSkipsProcessRulesWithPersistentCounters(t *testing.T) {
+	states := []localRuleState{
+		{Port: "22001", RuleID: 1, ForwardType: "gost", Protocol: "tcp"},
+		{Port: "22002", RuleID: 2, ForwardType: "realm", Protocol: "both"},
+		{Port: "22003", RuleID: 3, ForwardType: "socat", Protocol: "udp"},
+		{Port: "22004", RuleID: 4, ForwardType: "iptables", Protocol: "tcp"},
+		{Port: "22005", RuleID: 5, ForwardType: "nftables", Protocol: "tcp"},
+	}
+	diagnostics := trafficDiagnosticsSnapshot{
+		nftProcessMarkers: map[string]bool{
+			"22001:tcp:in": true, "22001:tcp:out": true, "22001:tcp:conn": true,
+			"22002:tcp:in": true, "22002:tcp:out": true, "22002:tcp:conn": true,
+			"22002:udp:in": true, "22002:udp:out": true, "22002:udp:conn": true,
+			"22003:udp:in": true, "22003:udp:out": true,
+		},
+	}
+
+	fallback := conntrackFallbackTrafficStates(states, diagnostics)
+	if len(fallback) != 3 || fallback[0].Port != "22003" || fallback[1].Port != "22004" || fallback[2].Port != "22005" {
+		t.Fatalf("unexpected conntrack fallback states: %+v", fallback)
+	}
+}
+
 func TestProcessTrafficRequestsIptablesOnlyWhenNftLayoutIsMissing(t *testing.T) {
 	states := []localRuleState{
 		{Port: "22001", RuleID: 1, ForwardType: "gost", Protocol: "tcp"},
@@ -971,9 +1132,9 @@ func TestProcessTrafficRequestsIptablesOnlyWhenNftLayoutIsMissing(t *testing.T) 
 		{Port: "22003", RuleID: 3, ForwardType: "nftables"},
 	}
 	completeMarkers := map[string]bool{
-		"22001:tcp:in": true, "22001:tcp:out": true,
-		"22002:tcp:in": true, "22002:tcp:out": true,
-		"22002:udp:in": true, "22002:udp:out": true,
+		"22001:tcp:in": true, "22001:tcp:out": true, "22001:tcp:conn": true,
+		"22002:tcp:in": true, "22002:tcp:out": true, "22002:tcp:conn": true,
+		"22002:udp:in": true, "22002:udp:out": true, "22002:udp:conn": true,
 	}
 	if processTrafficNeedsIptablesFallback(states, completeMarkers) {
 		t.Fatal("complete process nft layouts unnecessarily requested iptables")
@@ -986,12 +1147,15 @@ func TestProcessTrafficRequestsIptablesOnlyWhenNftLayoutIsMissing(t *testing.T) 
 
 func TestCountingLayoutPresenceUsesTheExpectedSingleBackend(t *testing.T) {
 	diagnostics := trafficDiagnosticsSnapshot{
-		iptablesMarkers:  map[string]bool{"22001": true, "22004": true},
+		iptablesMarkers: map[string]bool{
+			"22001": true,
+			"22004": true, "22004:tcp:in": true, "22004:tcp:out": true, "22004:tcp:conn": true,
+		},
 		ip6tablesMarkers: map[string]bool{"22002": true},
 		nftMarkers:       map[int]bool{},
 		nftProcessMarkers: map[string]bool{
-			"22003": true, "22003:tcp:in": true, "22003:tcp:out": true,
-			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true,
+			"22003": true, "22003:tcp:in": true, "22003:tcp:out": true, "22003:tcp:conn": true,
+			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true, "22009:tcp:conn": true,
 		},
 	}
 	tests := []struct {
@@ -1039,8 +1203,8 @@ func TestPartialNftLayoutQueuesNonDestructiveRepairWithoutAdvancingBaseline(t *t
 		iptablesMarkers:  map[string]bool{},
 		ip6tablesMarkers: map[string]bool{},
 		nftProcessMarkers: map[string]bool{
-			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true,
-			"22009:udp:in": true,
+			"22009": true, "22009:tcp:in": true, "22009:tcp:out": true, "22009:tcp:conn": true,
+			"22009:udp:in": true, "22009:udp:conn": true,
 		},
 	}
 	missing := repairMissingCountingLayouts([]localRuleState{{
@@ -1097,6 +1261,56 @@ func TestPartialNftLayoutQueuesNonDestructiveRepairWithoutAdvancingBaseline(t *t
 	_, previousIn, previousOut, _ = readPrev("22009")
 	if in, out := delta(firstComplete.In, previousIn), delta(firstComplete.Out, previousOut); in != 0 || out != 0 {
 		t.Fatalf("unchanged second snapshot was counted again: %d/%d", in, out)
+	}
+}
+
+func TestMissingProcessConnectionMarkerRepairsWithoutPausingBytes(t *testing.T) {
+	isolateCountingStateTest(t, "boot-a")
+	rule := runningRule{
+		RuleID: 92, SourcePort: 22010, Protocol: "tcp", ForwardType: "gost",
+		TargetIP: "203.0.113.10", TargetPort: 443,
+	}
+	rememberDesiredRunningRules([]runningRule{rule})
+	signature := countingChainRuleSignature(rule)
+	countingChainSignatures["22010"] = signature
+	countingChainCheckedAt["22010"] = time.Now()
+	writePrev("22010", rule.RuleID, 800, 500, 12)
+	diagnostics := trafficDiagnosticsSnapshot{
+		nftProcessMarkers: map[string]bool{
+			"22010": true, "22010:tcp:in": true, "22010:tcp:out": true,
+		},
+	}
+
+	missing := repairMissingCountingLayouts([]localRuleState{{
+		Port: "22010", RuleID: rule.RuleID, TargetIP: rule.TargetIP, TargetPort: rule.TargetPort,
+		Protocol: rule.Protocol, ForwardType: rule.ForwardType,
+	}}, diagnostics)
+	if missing["22010"] {
+		t.Fatal("a missing connection marker paused an otherwise complete byte counter layout")
+	}
+	if len(countingChainRepairQueue) != 1 || countingChainRepairCleanup["22010"] {
+		t.Fatalf("connection marker repair queue=%d cleanup=%v want one non-destructive repair", len(countingChainRepairQueue), countingChainRepairCleanup["22010"])
+	}
+	if !freshProcessConnectionCounter("22010", rule.RuleID) {
+		t.Fatal("connection marker repair did not record a fresh counter epoch")
+	}
+	if got := connectionTotalForTrafficState(localRuleState{
+		Port: "22010", RuleID: rule.RuleID, Protocol: rule.Protocol, ForwardType: rule.ForwardType,
+	}, trafficCounters{Connections: 99}, 14, diagnostics); got != 14 {
+		t.Fatalf("missing connection marker did not retain conntrack fallback: %d", got)
+	}
+	if in, out := delta(825, 800), delta(530, 500); in != 25 || out != 30 {
+		t.Fatalf("connection marker repair paused byte deltas: %d/%d", in, out)
+	}
+	repaired := trafficPrevState{
+		ruleID: rule.RuleID, in: 800, out: 500, conns: 12,
+		connSource: trafficConnectionSourceProcessNFT,
+	}
+	if total, source, previous := prepareConnectionCounterBaseline(
+		localRuleState{Port: "22010", RuleID: rule.RuleID, Protocol: rule.Protocol, ForwardType: rule.ForwardType},
+		repaired, 4, trafficConnectionSourceProcessNFT,
+	); total != 4 || source != trafficConnectionSourceProcessNFT || previous != 0 {
+		t.Fatalf("repaired connection epoch total/source/previous=%d/%s/%d want=4/%s/0", total, source, previous, trafficConnectionSourceProcessNFT)
 	}
 }
 

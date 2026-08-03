@@ -110,7 +110,7 @@ const (
 	fxpUDPIdleTimeout    = 10 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.111"
+	fxpRuntimeVersion    = "2.2.112"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -1285,53 +1285,98 @@ func formatProxyProtocolV1(hello helloFrame) string {
 }
 
 type udpEntrySession struct {
-	key           string
-	clientAddr    *net.UDPAddr
-	conn          *net.UDPConn
-	exit          net.Conn
-	sec           *secureConn
-	cfg           config
-	endpoint      exitEndpoint
-	inLimiter     *limiter
-	outLimiter    *limiter
-	counter       *trafficCounter
-	stopReporting func()
-	send          *fxpUDPQueue
-	done          chan struct{}
-	closeOnce     sync.Once
-	lastActivity  atomic.Int64
-	remove        func(*udpEntrySession)
+	key          string
+	clientAddr   *net.UDPAddr
+	conn         *net.UDPConn
+	exit         net.Conn
+	sec          *secureConn
+	cfg          config
+	endpoint     exitEndpoint
+	inLimiter    *limiter
+	outLimiter   *limiter
+	counter      *trafficCounter
+	send         *fxpUDPQueue
+	done         chan struct{}
+	closeOnce    sync.Once
+	lastActivity atomic.Int64
+	inFlight     atomic.Int64
+	remove       func(*udpEntrySession)
 }
 
-func oldestUDPEntrySession(sessions map[string]*udpEntrySession, sourceIP string) (*udpEntrySession, int) {
-	var oldest *udpEntrySession
-	count := 0
-	for _, session := range sessions {
-		if session == nil || session.clientAddr == nil {
-			continue
-		}
-		if sourceIP != "" && session.clientAddr.IP.String() != sourceIP {
-			continue
-		}
-		count++
-		if oldest == nil || session.lastActivity.Load() < oldest.lastActivity.Load() {
-			oldest = session
-		}
+func udpEntrySessionSnapshot(session *udpEntrySession) fxpUDPSessionSnapshot {
+	state := fxpUDPSessionSnapshot{}
+	if session == nil {
+		return state
 	}
-	return oldest, count
+	if session.clientAddr != nil {
+		state.sourceIP = session.clientAddr.IP.String()
+	}
+	state.lastActivity = session.lastActivity.Load()
+	if session.send != nil {
+		state.pending = session.send.pending()
+	}
+	state.pending += int(session.inFlight.Load())
+	return state
 }
 
 func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
 	sessions := map[string]*udpEntrySession{}
-	maxSessions, maxSessionsPerIP := fxpUDPSessionLimits(cfg)
+	sessionsPerIP := map[string]int{}
+	policy := defaultFXPUDPSessionPolicy()
 	var sessionsMu sync.Mutex
+	var workerWG sync.WaitGroup
+	counter := &trafficCounter{}
+	stopReporting := startTrafficReporter(cfg, counter)
+	defer stopReporting()
+	queueBudget := newDefaultFXPUDPQueueRuleBudget()
+	detachSessionLocked := func(session *udpEntrySession) bool {
+		if session == nil || sessions[session.key] != session {
+			return false
+		}
+		delete(sessions, session.key)
+		if session.clientAddr != nil {
+			sourceIP := session.clientAddr.IP.String()
+			if sessionsPerIP[sourceIP] <= 1 {
+				delete(sessionsPerIP, sourceIP)
+			} else {
+				sessionsPerIP[sourceIP]--
+			}
+		}
+		return true
+	}
 	removeSession := func(session *udpEntrySession) {
 		sessionsMu.Lock()
-		if sessions[session.key] == session {
-			delete(sessions, session.key)
-		}
+		detachSessionLocked(session)
 		sessionsMu.Unlock()
 	}
+	stopSweeper, wakeSweeper := startFXPUDPSessionSweeper(func(now time.Time) {
+		var expired []*udpEntrySession
+		var reclaimed []*udpEntrySession
+		sessionsMu.Lock()
+		for key, session := range sessions {
+			state := udpEntrySessionSnapshot(session)
+			if session != nil && state.pending == 0 && fxpUDPSessionIdleAt(now, state.lastActivity) {
+				if sessions[key] == session && detachSessionLocked(session) {
+					expired = append(expired, session)
+				}
+			}
+		}
+		for _, victim := range planFXPUDPPressureReclamation(now, sessions, policy, udpEntrySessionSnapshot) {
+			if sessions[victim.key] == victim.session && detachSessionLocked(victim.session) {
+				reclaimed = append(reclaimed, victim.session)
+			}
+		}
+		sessionsMu.Unlock()
+		for _, session := range expired {
+			fxpVerbosef("entry udp session idle timeout tunnel=%d rule=%d client=%s", session.cfg.TunnelID, session.cfg.RuleID, session.clientAddr)
+			session.close()
+		}
+		for _, session := range reclaimed {
+			session.close()
+			fxpUDPDropLog.Printf("entry udp stream reclaimed idle session tunnel=%d rule=%d client=%s reason=capacity-pressure", session.cfg.TunnelID, session.cfg.RuleID, session.clientAddr)
+		}
+	})
+	defer stopSweeper()
 	buf := make([]byte, 65535)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
@@ -1345,16 +1390,29 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 			for _, session := range closing {
 				session.close()
 			}
+			workerWG.Wait()
 			return err
 		}
-		payload := append([]byte(nil), buf[:n]...)
 		key := clientAddr.String()
+		sourceIP := clientAddr.IP.String()
 		sessionsMu.Lock()
 		session := sessions[key]
+		if session != nil {
+			session.touch()
+		}
+		preflight := fxpUDPAdmission{allow: true}
+		if session == nil {
+			preflight = checkFXPUDPSessionCapacity(len(sessions), sessionsPerIP[sourceIP], sourceIP, policy)
+		}
 		sessionsMu.Unlock()
+		if !preflight.allow {
+			wakeSweeper()
+			fxpUDPDropLog.Printf("entry udp stream rejected new session tunnel=%d rule=%d client=%s reason=%s sessions=%d perIP=%d hardSessions=%d hardPerIP=%d", cfg.TunnelID, cfg.RuleID, clientAddr, preflight.reason, preflight.total, preflight.perIP, policy.hardSessions, policy.hardPerIP)
+			continue
+		}
 		startSession := false
 		if session == nil {
-			created, err := newUDPEntrySession(conn, clientAddr, cfg, selector, inLimiter, outLimiter, removeSession)
+			created, err := newUDPEntrySession(conn, clientAddr, cfg, selector, inLimiter, outLimiter, counter, queueBudget, removeSession)
 			if err != nil {
 				if !isClosedErr(err) {
 					log.Printf("entry udp session create failed tunnel=%d rule=%d client=%s: %v", cfg.TunnelID, cfg.RuleID, clientAddr, err)
@@ -1362,43 +1420,49 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 				continue
 			}
 			var closeCreated *udpEntrySession
-			var evicted *udpEntrySession
+			var admission fxpUDPAdmission
+			rejected := false
+			pressure := false
 			sessionsMu.Lock()
 			if existing := sessions[key]; existing != nil {
 				session = existing
+				session.touch()
 				closeCreated = created
 			} else {
-				sourceIP := created.clientAddr.IP.String()
-				if oldest, count := oldestUDPEntrySession(sessions, sourceIP); count >= maxSessionsPerIP {
-					evicted = oldest
-				} else if len(sessions) >= maxSessions {
-					evicted, _ = oldestUDPEntrySession(sessions, "")
+				admission = checkFXPUDPSessionCapacity(len(sessions), sessionsPerIP[sourceIP], sourceIP, policy)
+				if !admission.allow {
+					closeCreated = created
+					rejected = true
+				} else {
+					sessions[key] = created
+					sessionsPerIP[sourceIP]++
+					session = created
+					startSession = true
+					pressure = fxpUDPSessionPressure(len(sessions), sessionsPerIP[sourceIP], sourceIP, policy)
 				}
-				if evicted != nil {
-					delete(sessions, evicted.key)
-				}
-				sessions[key] = created
-				session = created
-				startSession = true
 			}
 			sessionsMu.Unlock()
 			if closeCreated != nil {
 				closeCreated.close()
 			}
-			if evicted != nil {
-				evicted.close()
-				fxpUDPDropLog.Printf("entry udp stream session limit reached tunnel=%d rule=%d client=%s maxSessions=%d maxPerIP=%d; evicted oldest session", cfg.TunnelID, cfg.RuleID, clientAddr.IP, maxSessions, maxSessionsPerIP)
+			if rejected {
+				wakeSweeper()
+				fxpUDPDropLog.Printf("entry udp stream rejected new session tunnel=%d rule=%d client=%s reason=%s sessions=%d perIP=%d hardSessions=%d hardPerIP=%d", cfg.TunnelID, cfg.RuleID, clientAddr, admission.reason, admission.total, admission.perIP, policy.hardSessions, policy.hardPerIP)
+				continue
+			}
+			if pressure {
+				wakeSweeper()
 			}
 		}
 		if startSession {
-			session.counter.connections.Store(1)
-			session.start()
+			session.counter.connections.Add(1)
+			session.start(&workerWG)
 		}
-		session.enqueue(payload)
+		session.enqueue(append([]byte(nil), buf[:n]...))
 	}
 }
 
-func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, remove func(*udpEntrySession)) (*udpEntrySession, error) {
+func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, counter *trafficCounter, queueBudget *fxpUDPQueueRuleBudget, remove func(*udpEntrySession)) (*udpEntrySession, error) {
 	selectionKey := clientAddr.IP.String()
 	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg, selectionKey)
 	if err != nil {
@@ -1416,22 +1480,23 @@ func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, 
 		_ = exit.Close()
 		return nil, err
 	}
-	counter := &trafficCounter{}
+	if counter == nil {
+		counter = &trafficCounter{}
+	}
 	session := &udpEntrySession{
-		key:           clientAddr.String(),
-		clientAddr:    clientAddr,
-		conn:          conn,
-		exit:          exit,
-		sec:           sec,
-		cfg:           cfg,
-		endpoint:      endpoint,
-		inLimiter:     inLimiter,
-		outLimiter:    outLimiter,
-		counter:       counter,
-		stopReporting: startTrafficReporter(cfg, counter),
-		send:          newFXPUDPQueue(fxpUDPStreamQueueSize, fxpUDPQueueMaxBytes),
-		done:          make(chan struct{}),
-		remove:        remove,
+		key:        clientAddr.String(),
+		clientAddr: clientAddr,
+		conn:       conn,
+		exit:       exit,
+		sec:        sec,
+		cfg:        cfg,
+		endpoint:   endpoint,
+		inLimiter:  inLimiter,
+		outLimiter: outLimiter,
+		counter:    counter,
+		send:       newFXPUDPQueueWithBudget(fxpUDPStreamQueueSize, fxpUDPQueueMaxBytes, queueBudget),
+		done:       make(chan struct{}),
+		remove:     remove,
 	}
 	session.touch()
 	return session, nil
@@ -1441,51 +1506,56 @@ func (s *udpEntrySession) touch() {
 	s.lastActivity.Store(time.Now().UnixNano())
 }
 
-func (s *udpEntrySession) start() {
-	go s.writeLoop()
-	go s.readLoop()
-	go s.idleLoop()
+func (s *udpEntrySession) start(workerWG *sync.WaitGroup) {
+	startFXPUDPSessionWorker(workerWG, s.writeLoop)
+	startFXPUDPSessionWorker(workerWG, s.readLoop)
 	fxpVerbosef("entry udp session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort)
 }
 
 func (s *udpEntrySession) enqueue(payload []byte) {
+	s.touch()
 	select {
 	case <-s.done:
 		return
 	default:
 		if s.send.enqueue(payload) {
-			fxpUDPDropLog.Printf("entry udp session queue congested tunnel=%d rule=%d client=%s; dropping oldest packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+			fxpUDPDropLog.Printf("entry udp session queue congested tunnel=%d rule=%d client=%s; packet dropped", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 		}
 	}
 }
 
 func (s *udpEntrySession) writeLoop() {
 	for {
-		packet, ok := s.send.next(s.done)
+		packet, ok := s.send.nextTracked(s.done, &s.inFlight)
 		if !ok {
 			return
 		}
 		if packet.superseded(time.Now(), s.send.pending()) {
 			fxpUDPDropLog.Printf("entry udp queued packet expired tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+			packet.done()
 			continue
 		}
 		payload := packet.payload
 		s.touch()
 		if !s.inLimiter.waitDone(s.done, len(payload)) {
+			packet.done()
 			return
 		}
 		if packet.superseded(time.Now(), s.send.pending()) {
 			fxpUDPDropLog.Printf("entry udp queued packet expired after wait tunnel=%d rule=%d client=%s; dropping stale packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+			packet.done()
 			continue
 		}
 		if err := s.sec.writeFrame(payload); err != nil {
 			if !isClosedErr(err) {
 				log.Printf("entry udp write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
 			}
+			packet.done()
 			s.close()
 			return
 		}
 		s.counter.in.Add(uint64(len(payload)))
+		packet.done()
 	}
 }
 
@@ -1503,50 +1573,34 @@ func (s *udpEntrySession) readLoop() {
 			s.close()
 			return
 		}
+		s.touch()
+		s.inFlight.Add(1)
 		if !s.outLimiter.waitDone(s.done, len(frame)) {
+			s.inFlight.Add(-1)
 			return
 		}
 		if _, err := s.conn.WriteToUDP(frame, s.clientAddr); err != nil {
 			if !isClosedErr(err) {
 				log.Printf("entry udp client write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
 			}
+			s.inFlight.Add(-1)
 			s.close()
 			return
 		}
 		s.counter.out.Add(uint64(len(frame)))
 		s.touch()
-	}
-}
-
-func (s *udpEntrySession) idleLoop() {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.done:
-			return
-		case <-ticker.C:
-			last := time.Unix(0, s.lastActivity.Load())
-			if time.Since(last) >= fxpUDPIdleTimeout {
-				fxpVerbosef("entry udp session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
-				s.close()
-				return
-			}
-		}
+		s.inFlight.Add(-1)
 	}
 }
 
 func (s *udpEntrySession) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		s.send.clear()
+		s.send.close()
 		if s.remove != nil {
 			s.remove(s)
 		}
 		_ = s.exit.Close()
-		if s.stopReporting != nil {
-			s.stopReporting()
-		}
 	})
 }
 

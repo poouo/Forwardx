@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"net"
 	"sync"
@@ -206,7 +207,11 @@ func TestServerHandshakeTimesOutWhenPeerStalls(t *testing.T) {
 				errCh <- err
 			}()
 			if len(test.partial) > 0 {
-				if _, err := client.Write(test.partial); err != nil {
+				partial := append([]byte(nil), test.partial...)
+				if _, err := rand.Read(partial[:fxpSaltSize]); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.Write(partial); err != nil {
 					t.Fatal(err)
 				}
 			}

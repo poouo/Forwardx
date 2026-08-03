@@ -35,9 +35,10 @@ import (
 	"time"
 )
 
-var Version = "2.2.183"
+var Version = "2.2.184"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
+var runtimeAgentToken atomic.Value
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -78,6 +79,8 @@ const agentIdleHeartbeatIntervalSeconds = 60
 const agentInteractiveHeartbeatMaxIntervalSeconds = 3
 const agentHeartbeatRetryMinInterval = 5 * time.Second
 const agentHeartbeatRetryMaxInterval = 30 * time.Second
+const agentHeartbeatRetryLimit = 4
+const agentHeartbeatRetryCooldown = time.Minute
 const agentMetricsSchedulerResolution = 5 * time.Second
 const agentForwardGroupHealthProbeMaxInterval = 30 * time.Second
 const actionQueueCapacity = 4096
@@ -2557,6 +2560,7 @@ func main() {
 	cfg.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
 	activeConfigPath = resolvedConfigPath
 	setRuntimePanelURL(cfg.PanelURL)
+	runtimeAgentToken.Store(cfg.Token)
 	initializePanelMigration(cfg)
 
 	if *onceRegister {
@@ -2595,7 +2599,6 @@ func main() {
 		wakeHeartbeat()
 	}()
 	lastFullHeartbeatAt := time.Time{}
-	heartbeatRetryInterval := time.Duration(0)
 	metricsOnlyMode := false
 	for {
 		pending := atomic.LoadInt64(&actionPendingCount)
@@ -2614,15 +2617,25 @@ func main() {
 		useMetricsOnlyHeartbeat := shouldUseMetricsOnlyHeartbeat(metricsOnlyMode, fromSSE, urgentRefresh, forceReconcileWake, pending, lastFullHeartbeatAt, now)
 		if useActionBacklogKeepalive || useMetricsOnlyHeartbeat {
 			result, err := heartbeatKeepalive(cfg)
-			if err != nil {
+			requestSkipped := errors.Is(err, errHeartbeatRequestInFlight)
+			if requestSkipped {
+				restoreHeartbeatWakeIntent(fromSSE, urgentRefresh, forceReconcileWake)
+			}
+			if err != nil && !requestSkipped {
 				recordPanelMigrationHeartbeatFailure(cfg, err)
 				logAgentCommError("heartbeat-keepalive", err)
 			} else {
-				recordPanelMigrationHeartbeatSuccess()
-				metricsOnlyMode = result.MetricsOnly
+				if err == nil {
+					recordPanelMigrationHeartbeatSuccess()
+					metricsOnlyMode = result.MetricsOnly
+				}
 			}
 			nextInterval := result.NextInterval
-			if err != nil || nextInterval < 2 {
+			if requestSkipped {
+				nextInterval = int(agentPresenceInterval / time.Second)
+			} else if err != nil {
+				nextInterval = cfg.Interval
+			} else if nextInterval < 2 {
 				nextInterval = cfg.Interval
 			}
 			if nextInterval < 2 {
@@ -2636,21 +2649,27 @@ func main() {
 		} else {
 			forceFullAudit := metricsOnlyMode && !lastFullHeartbeatAt.IsZero() && now.Sub(lastFullHeartbeatAt) >= agentFullHeartbeatInterval
 			result, err := heartbeat(cfg, fromSSE || urgentRefresh || forceReconcileWake || forceFullAudit)
-			if err != nil {
+			requestSkipped := errors.Is(err, errHeartbeatRequestInFlight)
+			if requestSkipped {
+				restoreHeartbeatWakeIntent(fromSSE, urgentRefresh, forceReconcileWake || forceFullAudit)
+			}
+			if err != nil && !requestSkipped {
 				recordPanelMigrationHeartbeatFailure(cfg, err)
 				logAgentCommError("heartbeat", err)
-				heartbeatRetryInterval = nextHeartbeatRetryInterval(heartbeatRetryInterval)
 			} else {
-				recordPanelMigrationHeartbeatSuccess()
-				heartbeatRetryInterval = 0
-				metricsOnlyMode = result.MetricsOnly
-				if !result.ReconciliationCoalesced {
-					lastFullHeartbeatAt = time.Now()
+				if err == nil {
+					recordPanelMigrationHeartbeatSuccess()
+					metricsOnlyMode = result.MetricsOnly
+					if !result.ReconciliationCoalesced {
+						lastFullHeartbeatAt = time.Now()
+					}
 				}
 			}
 			nextInterval := result.NextInterval
-			if err != nil {
-				nextInterval = int(heartbeatRetryInterval / time.Second)
+			if requestSkipped {
+				nextInterval = int(agentPresenceInterval / time.Second)
+			} else if err != nil {
+				nextInterval = cfg.Interval
 			} else if result.ReconciliationCoalesced {
 				nextInterval = 5
 			} else {
@@ -2730,10 +2749,123 @@ func nextHeartbeatRetryInterval(previous time.Duration) time.Duration {
 	return next
 }
 
+type heartbeatRetryState struct {
+	failures int
+	delay    time.Duration
+	pending  bool
+}
+
+func (state *heartbeatRetryState) active() bool {
+	return state.pending
+}
+
+var errHeartbeatRequestInFlight = errors.New("another heartbeat request is already in flight")
+var errHeartbeatRetrySuperseded = errors.New("heartbeat retry canceled by a successful heartbeat")
+
+type heartbeatRequestCoordinator struct {
+	mu                sync.Mutex
+	inFlight          bool
+	successGeneration uint64
+	successCh         chan struct{}
+}
+
+func newHeartbeatRequestCoordinator() *heartbeatRequestCoordinator {
+	return &heartbeatRequestCoordinator{successCh: make(chan struct{})}
+}
+
+func (coordinator *heartbeatRequestCoordinator) tryStart() (func(bool), bool) {
+	finish, _, ok := coordinator.tryStartTracked()
+	return finish, ok
+}
+
+func (coordinator *heartbeatRequestCoordinator) tryStartTracked() (func(bool), uint64, bool) {
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if coordinator.inFlight {
+		return nil, coordinator.successGeneration, false
+	}
+	return coordinator.startLocked(), coordinator.successGeneration, true
+}
+
+func (coordinator *heartbeatRequestCoordinator) tryStartIfGeneration(expected uint64) (func(bool), error) {
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if coordinator.successGeneration != expected {
+		return nil, errHeartbeatRetrySuperseded
+	}
+	if coordinator.inFlight {
+		return nil, errHeartbeatRequestInFlight
+	}
+	return coordinator.startLocked(), nil
+}
+
+func (coordinator *heartbeatRequestCoordinator) startLocked() func(bool) {
+	coordinator.inFlight = true
+	var once sync.Once
+	return func(success bool) {
+		once.Do(func() {
+			coordinator.mu.Lock()
+			coordinator.inFlight = false
+			if success {
+				coordinator.successGeneration++
+				close(coordinator.successCh)
+				coordinator.successCh = make(chan struct{})
+			}
+			coordinator.mu.Unlock()
+		})
+	}
+}
+
+func (coordinator *heartbeatRequestCoordinator) successSnapshot() (uint64, <-chan struct{}) {
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	return coordinator.successGeneration, coordinator.successCh
+}
+
+var heartbeatRequests = newHeartbeatRequestCoordinator()
+
+func (state *heartbeatRetryState) reset() {
+	state.failures = 0
+	state.delay = 0
+	state.pending = false
+}
+
+// failure returns the next delay and whether the next request belongs to the
+// current retry burst. Four retries plus the initial request bound each burst
+// to five attempts; a later scheduled heartbeat starts a fresh burst.
+func (state *heartbeatRetryState) failure(err error) (time.Duration, bool) {
+	state.pending = true
+	if !isRetryableHeartbeatError(err) {
+		state.failures = 0
+		state.delay = 0
+		return agentHeartbeatRetryCooldown, false
+	}
+	state.failures++
+	if state.failures > agentHeartbeatRetryLimit {
+		state.failures = 0
+		state.delay = 0
+		return agentHeartbeatRetryCooldown, false
+	}
+	state.delay = nextHeartbeatRetryInterval(state.delay)
+	return state.delay, true
+}
+
 func signalHeartbeatWake() {
 	select {
 	case heartbeatWakeCh <- struct{}{}:
 	default:
+	}
+}
+
+func restoreHeartbeatWakeIntent(fromSSE bool, urgentRefresh bool, forceReconcile bool) {
+	if fromSSE {
+		heartbeatWakeFromSSE.Store(true)
+	}
+	if urgentRefresh {
+		heartbeatUrgentWakeFromSSE.Store(true)
+	}
+	if forceReconcile {
+		heartbeatForceReconcileWake.Store(true)
 	}
 }
 
@@ -2771,27 +2903,83 @@ func wakeAgentMetricsScheduler() {
 
 func agentPresenceLoop(cfg Config) {
 	delay := scheduledAgentPresenceInterval(0)
-	retryDelay := time.Duration(0)
+	var retries heartbeatRetryState
+	retryGeneration := uint64(0)
 	for {
 		timer := time.NewTimer(delay)
-		<-timer.C
+		if retries.active() {
+			generation, successCh := heartbeatRequests.successSnapshot()
+			if generation != retryGeneration {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				retries.reset()
+				delay = scheduledAgentPresenceInterval(0)
+				continue
+			}
+			select {
+			case <-timer.C:
+			case <-successCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				retries.reset()
+				delay = scheduledAgentPresenceInterval(0)
+				continue
+			}
+		} else {
+			<-timer.C
+		}
 		if !agentPresenceSupported.Load() {
 			delay = scheduledAgentPresenceInterval(0)
-			retryDelay = 0
+			retries.reset()
 			continue
 		}
-		nextInterval, err := heartbeatPresence(cfg)
+		retryAttempt := retries.active()
+		var nextInterval int
+		var attemptGeneration uint64
+		var err error
+		if retryAttempt {
+			nextInterval, attemptGeneration, err = heartbeatPresenceRetry(cfg, retryGeneration)
+		} else {
+			nextInterval, attemptGeneration, err = heartbeatPresence(cfg)
+		}
+		if errors.Is(err, errHeartbeatRetrySuperseded) {
+			retries.reset()
+			delay = scheduledAgentPresenceInterval(0)
+			continue
+		}
+		if errors.Is(err, errHeartbeatRequestInFlight) {
+			if retryAttempt {
+				delay = agentPresenceMinInterval
+			} else {
+				delay = scheduledAgentPresenceInterval(0)
+			}
+			continue
+		}
 		if err != nil {
 			logAgentCommError("presence", err)
-			// Presence is the liveness path while full reconciliation is slowed
-			// to five minutes. Any failure must wake the full heartbeat so the
-			// database TTL cannot expire before another authenticated attempt.
-			wakeHeartbeat()
-			retryDelay = nextHeartbeatRetryInterval(retryDelay)
-			delay = retryDelay
+			currentGeneration, _ := heartbeatRequests.successSnapshot()
+			if currentGeneration != attemptGeneration {
+				retries.reset()
+				delay = scheduledAgentPresenceInterval(0)
+				continue
+			}
+			var retrying bool
+			delay, retrying = retries.failure(err)
+			retryGeneration = currentGeneration
+			if !retrying && shouldLogAgentReport("presence-retry-paused", agentReportLogInterval) {
+				logf("presence retry burst stopped; next scheduled attempt in %s: %v", delay, err)
+			}
 			continue
 		}
-		retryDelay = 0
+		retries.reset()
 		delay = scheduledAgentPresenceInterval(nextInterval)
 	}
 }
@@ -3411,7 +3599,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		}
 	}
 	var resp heartbeatResp
-	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
+	if err := postHeartbeat(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
 		queuePendingDNSChanges(dnsChanges)
 		var migrated migratedPanelError
 		if errors.As(err, &migrated) {
@@ -3608,7 +3796,7 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 		payload["defaultNetworkInterface"] = currentStatic.DefaultNetworkInterface
 	}
 	var resp heartbeatResp
-	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
+	if err := postHeartbeat(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
 		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
 	compactAgentReports.Store(resp.CompactReports)
@@ -3634,7 +3822,15 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 // heartbeatPresence only proves that the authenticated Agent is alive. It is
 // intentionally separate from heartbeatKeepalive: no local readiness probes,
 // metrics collection, plugin inventory or runtime plan is performed here.
-func heartbeatPresence(cfg Config) (int, error) {
+func heartbeatPresence(cfg Config) (int, uint64, error) {
+	return heartbeatPresenceRequest(cfg, nil)
+}
+
+func heartbeatPresenceRetry(cfg Config, expectedGeneration uint64) (int, uint64, error) {
+	return heartbeatPresenceRequest(cfg, &expectedGeneration)
+}
+
+func heartbeatPresenceRequest(cfg Config, expectedGeneration *uint64) (int, uint64, error) {
 	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
 	payload := map[string]any{
 		"mode":                      "presence",
@@ -3650,16 +3846,24 @@ func heartbeatPresence(cfg Config) (int, error) {
 	// Use the short-lived presence client, but retain the shared clock recovery
 	// path so an authentication timestamp error cannot leave presence broken
 	// until the next five-minute full heartbeat.
-	if err := postWithClient(agentPresenceHTTPClient, cfg, "/api/agent/presence", payload, &resp); err != nil {
+	requestGeneration := uint64(0)
+	var err error
+	if expectedGeneration == nil {
+		requestGeneration, err = postHeartbeatWithClientTracked(agentPresenceHTTPClient, cfg, "/api/agent/presence", payload, &resp)
+	} else {
+		requestGeneration = *expectedGeneration
+		err = postHeartbeatWithClientIfGeneration(agentPresenceHTTPClient, cfg, "/api/agent/presence", payload, &resp, *expectedGeneration)
+	}
+	if err != nil {
 		var statusErr agentHTTPStatusError
 		if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusBadRequest ||
 			statusErr.StatusCode == http.StatusNotFound ||
 			statusErr.StatusCode == http.StatusMethodNotAllowed) {
 			agentPresenceSupported.Store(false)
 			wakeHeartbeat()
-			return 0, nil
+			return 0, requestGeneration, nil
 		}
-		return 0, err
+		return 0, requestGeneration, err
 	}
 	if !resp.Presence || !resp.PresenceSupported {
 		// A panel older than the presence capability may return a normal
@@ -3667,14 +3871,14 @@ func heartbeatPresence(cfg Config) (int, error) {
 		// sending presence and let the legacy full-heartbeat path take over.
 		agentPresenceSupported.Store(false)
 		wakeHeartbeat()
-		return 0, nil
+		return 0, requestGeneration, nil
 	}
 	agentPresenceSupported.Store(true)
 	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
-		return resp.NextPresenceInterval, nil
+		return resp.NextPresenceInterval, requestGeneration, nil
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
-	return resp.NextPresenceInterval, nil
+	return resp.NextPresenceInterval, requestGeneration, nil
 }
 
 func tcpingDueInterval(serviceProbes []hostProbeServiceProbe, ruleCount int, linkProbeCount int) time.Duration {
@@ -6717,15 +6921,26 @@ func fxpMatchesRunning(spec *fxpSpec, desiredGroups ...*fxpSpec) bool {
 			delete(fxpServers, id)
 		}
 		fxpMu.Unlock()
+		if matches {
+			matches = fxpProcessMatchesCurrentRuntime(existing)
+		}
 		if !matches {
 			raw, err := os.ReadFile(configPath)
 			if err == nil {
 				var group fxpSpec
 				if json.Unmarshal(raw, &group) == nil {
 					group = normalizeFXPSpec(group)
-					if fxpEntryGroupContains(group, normalized) && matchesDesiredGroup(group) && fxpRuntimeProcessExists(configPath) {
+					if fxpEntryGroupContains(group, normalized) && matchesDesiredGroup(group) &&
+						fxpRuntimeUsesCurrentExecutable(configPath) && fxpRuntimeUsesCurrentPanelCredentials(configPath) {
+						credentialDigest, _ := fxpSpecPanelCredentialDigest(group)
 						fxpMu.Lock()
-						fxpServers[id] = &fxpProcess{signature: fxpServerSignature(group), configPath: configPath, spec: group}
+						fxpServers[id] = &fxpProcess{
+							signature:             fxpServerSignature(group),
+							configPath:            configPath,
+							spec:                  group,
+							runtimeExecutable:     currentFXPRuntimeExecutableInfo(),
+							panelCredentialDigest: credentialDigest,
+						}
 						fxpMu.Unlock()
 						matches = true
 					}
@@ -6750,6 +6965,9 @@ func fxpMatchesRunning(spec *fxpSpec, desiredGroups ...*fxpSpec) bool {
 		delete(fxpServers, id)
 	}
 	fxpMu.Unlock()
+	if matches {
+		matches = fxpProcessMatchesCurrentRuntime(existing)
+	}
 	if !matches {
 		matches = adoptExistingFXP(normalized, signature, configPath)
 	}
@@ -7786,9 +8004,11 @@ func nftProcessCountingCmds(port int, protocol string) []string {
 	for _, proto := range runtimeProtocols(protocol) {
 		inComment := shellQuote(`"fwx-stat-` + p + `:in"`)
 		outComment := shellQuote(`"fwx-stat-` + p + `:out"`)
+		connectionComment := shellQuote(`"fwx-stat-` + p + `:conn"`)
 		commands = append(commands,
 			fmt.Sprintf(`nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, inComment, nftProcessTrafficTable, proto, proto, p, inComment),
 			fmt.Sprintf(`nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter`, nftProcessTrafficTable, proto, proto, p, outComment, nftProcessTrafficTable, proto, proto, p, outComment),
+			fmt.Sprintf(`nft add rule inet %s input meta l4proto %s %s dport %s ct state new ct status != confirmed counter comment %s`, nftProcessTrafficTable, proto, proto, p, connectionComment),
 		)
 	}
 	return commands
@@ -7804,16 +8024,68 @@ func nftProcessCountingEnsureCmds(port int, protocol string) []string {
 	for _, proto := range runtimeProtocols(protocol) {
 		inMarker := "fwx-stat-" + p + ":in"
 		outMarker := "fwx-stat-" + p + ":out"
+		connectionMarker := "fwx-stat-" + p + ":conn"
 		inMatch := proto + " dport " + p
 		outMatch := proto + " sport " + p
 		inAdd := fmt.Sprintf("nft add rule inet %s input meta l4proto %s %s dport %s counter comment %s 2>/dev/null || nft add rule inet %s input meta l4proto %s %s dport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+inMarker+`"`))
 		outAdd := fmt.Sprintf("nft add rule inet %s output meta l4proto %s %s sport %s counter comment %s 2>/dev/null || nft add rule inet %s output meta l4proto %s %s sport %s comment %s counter", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`), nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+outMarker+`"`))
+		connectionAdd := fmt.Sprintf("nft add rule inet %s input meta l4proto %s %s dport %s ct state new ct status != confirmed counter comment %s", nftProcessTrafficTable, proto, proto, p, shellQuote(`"`+connectionMarker+`"`))
 		commands = append(commands,
 			fmt.Sprintf("if nft list chain inet %s input 2>/dev/null | grep -F %s | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(inMarker), shellQuote(inMatch), inAdd),
 			fmt.Sprintf("if nft list chain inet %s output 2>/dev/null | grep -F %s | grep -F %s >/dev/null 2>&1; then :; else %s; fi", nftProcessTrafficTable, shellQuote(outMarker), shellQuote(outMatch), outAdd),
+			fmt.Sprintf("if %s; then :; else %s; fi", nftProcessConnectionRuleCheckCmd(port, proto), connectionAdd),
 		)
 	}
 	return commands
+}
+
+func nftProcessConnectionRuleCheckCmd(port int, protocol string) string {
+	p := strconv.Itoa(port)
+	marker := "fwx-stat-" + p + ":conn"
+	inMatch := protocol + " dport " + p
+	return fmt.Sprintf(
+		"nft list chain inet %s input 2>/dev/null | grep -F %s | grep -F %s | grep -F %s | grep -F %s >/dev/null 2>&1",
+		nftProcessTrafficTable, shellQuote(marker), shellQuote(inMatch), shellQuote("ct state new"), shellQuote("ct status != confirmed"),
+	)
+}
+
+func nftProcessConnectionLayoutPresent(port int, protocol string) bool {
+	if port <= 0 {
+		return false
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if !runShellQuiet(nftProcessConnectionRuleCheckCmd(port, proto)) {
+			return false
+		}
+	}
+	return true
+}
+
+func iptablesProcessConnectionRule(port int, protocol string) string {
+	marker := "fwx-stat-" + strconv.Itoa(port) + ":conn"
+	return fmt.Sprintf(`INPUT -p %s --dport %d -m conntrack --ctstate NEW ! --ctstatus CONFIRMED -m comment --comment %q`, protocol, port, marker)
+}
+
+func iptablesProcessConnectionLayoutPresent(port int, protocol string) bool {
+	if port <= 0 {
+		return false
+	}
+	for _, binary := range iptablesAgentBinaries() {
+		if !runShellQuiet("command -v " + binary + " >/dev/null 2>&1") {
+			continue
+		}
+		complete := true
+		for _, proto := range runtimeProtocols(protocol) {
+			if !runShellQuiet(binary + " -t mangle -C " + iptablesProcessConnectionRule(port, proto) + " 2>/dev/null") {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			return true
+		}
+	}
+	return false
 }
 
 func iptablesProcessCountingCmds(port int, protocol string) []string {
@@ -7829,6 +8101,7 @@ func iptablesProcessCountingCmds(port int, protocol string) []string {
 			commands = append(commands,
 				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`INPUT -p %s --dport %s -m comment --comment %q`, proto, p, inMarker)),
 				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`OUTPUT -p %s --sport %s -m comment --comment %q`, proto, p, outMarker)),
+				iptablesAgentEnsure(binary, "mangle", iptablesProcessConnectionRule(port, proto)),
 			)
 		}
 	}
@@ -7952,6 +8225,9 @@ func ensureCountingChainsWithCleanup(rule runningRule, cleanup bool) bool {
 		}
 	}
 	ok := cleanupOK && installOK
+	if ok && cleanup && mode == countingRuleProcess {
+		markFreshProcessConnectionCounter(rule.SourcePort, rule.RuleID)
+	}
 	if !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
 		logf("traffic counting repair failed port=%s target=%s:%d protocol=%s type=%s mode=%s backend=%s cleanup=%v install=%v", p, rule.TargetIP, rule.TargetPort, rule.Protocol, rule.ForwardType, mode, backend, cleanupOK, installOK)
 	}
@@ -7970,10 +8246,26 @@ func ensureCountingChainsNonDestructive(rule runningRule, mode countingRuleMode)
 		binary := iptablesAgentBinaryForTarget(target)
 		return runShellQuiet("command -v "+binary+" >/dev/null 2>&1") && runShellBatch(countingRuleInstallCmds(rule))
 	}
-	if runShellQuiet("command -v nft >/dev/null 2>&1") && runShellBatch(nftProcessCountingEnsureCmds(rule.SourcePort, rule.Protocol)) {
+	nftAvailable := runShellQuiet("command -v nft >/dev/null 2>&1")
+	nftConnectionLayoutPresent := nftAvailable && nftProcessConnectionLayoutPresent(rule.SourcePort, rule.Protocol)
+	if nftAvailable && runShellBatch(nftProcessCountingEnsureCmds(rule.SourcePort, rule.Protocol)) {
+		if nftConnectionLayoutPresent {
+			clearFreshProcessConnectionCounter(strconv.Itoa(rule.SourcePort), rule.RuleID)
+		} else {
+			markFreshProcessConnectionCounter(rule.SourcePort, rule.RuleID)
+		}
 		return true
 	}
-	return runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(iptablesProcessCountingCmds(rule.SourcePort, rule.Protocol))
+	iptablesConnectionLayoutPresent := iptablesProcessConnectionLayoutPresent(rule.SourcePort, rule.Protocol)
+	ok := runShellQuiet("command -v iptables >/dev/null 2>&1") && runShellBatch(iptablesProcessCountingCmds(rule.SourcePort, rule.Protocol))
+	if ok {
+		if iptablesConnectionLayoutPresent {
+			clearFreshProcessConnectionCounter(strconv.Itoa(rule.SourcePort), rule.RuleID)
+		} else {
+			markFreshProcessConnectionCounter(rule.SourcePort, rule.RuleID)
+		}
+	}
+	return ok
 }
 
 func ensureCountingChainsIfNeeded(r runningRule) {
@@ -8061,11 +8353,13 @@ func removeState(port int) {
 }
 
 type fxpProcess struct {
-	signature      string
-	cmd            *exec.Cmd
-	configPath     string
-	spec           fxpSpec
-	wireGuardRefID string
+	signature             string
+	cmd                   *exec.Cmd
+	configPath            string
+	spec                  fxpSpec
+	wireGuardRefID        string
+	runtimeExecutable     os.FileInfo
+	panelCredentialDigest string
 }
 
 const fxpEntryGroupRole = "entry-group"
@@ -8732,6 +9026,189 @@ func fxpRuntimeProcessExists(configPath string) bool {
 	return len(fxpRuntimePIDs(configPath)) > 0
 }
 
+var resolveFXPRuntimeExecutable = findFXPRuntimeExecutable
+var listFXPRuntimePIDs = fxpRuntimePIDs
+var fxpPIDUsesExecutable = fxpPIDUsesCurrentExecutable
+
+func findFXPRuntimeExecutable() (string, error) {
+	runtimePath, err := exec.LookPath("forwardx-fxp")
+	if err == nil && strings.TrimSpace(runtimePath) != "" {
+		return runtimePath, nil
+	}
+	for _, candidate := range []string{"/usr/local/bin/forwardx-fxp", "/opt/forwardx-agent/forwardx-fxp"} {
+		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", err
+}
+
+func fxpPIDUsesCurrentExecutable(pid int, runtimePath string) bool {
+	if pid <= 0 || strings.TrimSpace(runtimePath) == "" {
+		return false
+	}
+	installed, err := os.Stat(runtimePath)
+	if err != nil || installed.IsDir() {
+		return false
+	}
+	running, err := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
+	return err == nil && os.SameFile(installed, running)
+}
+
+// An FXP process can outlive the Agent that launched it. Reuse it only when it
+// still maps the installed runtime binary; package upgrades replace that file
+// while the old process continues forwarding with outdated reporting/auth code.
+func fxpRuntimeUsesCurrentExecutable(configPath string) bool {
+	runtimePath, err := resolveFXPRuntimeExecutable()
+	if err != nil || strings.TrimSpace(runtimePath) == "" {
+		return false
+	}
+	pids := listFXPRuntimePIDs(configPath)
+	if len(pids) == 0 {
+		return false
+	}
+	for _, pid := range pids {
+		if fxpPIDUsesExecutable(pid, runtimePath) {
+			continue
+		}
+		if shouldLogAgentReport("fxp-runtime-executable-drift:"+configPath, agentReportLogInterval) {
+			logf("fxp runtime executable drift detected; replacement required config=%s pid=%d runtime=%s", configPath, pid, runtimePath)
+		}
+		return false
+	}
+	return true
+}
+
+func currentFXPRuntimeExecutableInfo() os.FileInfo {
+	runtimePath, err := resolveFXPRuntimeExecutable()
+	if err != nil || strings.TrimSpace(runtimePath) == "" {
+		return nil
+	}
+	info, err := os.Stat(runtimePath)
+	if err != nil || info.IsDir() {
+		return nil
+	}
+	return info
+}
+
+func fxpProcessUsesCurrentExecutable(process *fxpProcess) bool {
+	if process == nil {
+		return false
+	}
+	if process.runtimeExecutable != nil {
+		installed := currentFXPRuntimeExecutableInfo()
+		return installed != nil && os.SameFile(process.runtimeExecutable, installed)
+	}
+	if process.cmd != nil && process.cmd.Process != nil {
+		runtimePath, err := resolveFXPRuntimeExecutable()
+		return err == nil && fxpPIDUsesExecutable(process.cmd.Process.Pid, runtimePath)
+	}
+	return fxpRuntimeUsesCurrentExecutable(process.configPath)
+}
+
+func fxpPanelCredentialDigest(panelURL string, token string) string {
+	panelURL = normalizePanelURL(panelURL)
+	if panelURL == "" || token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(panelURL + "\x00" + token))
+	return hex.EncodeToString(sum[:])
+}
+
+func fxpSpecNeedsPanelCredentials(spec fxpSpec) bool {
+	spec = normalizeFXPSpec(spec)
+	return spec.Role == "entry" || isFXPEntryGroup(spec)
+}
+
+func fxpSpecPanelCredentialDigest(spec fxpSpec) (string, bool) {
+	spec = normalizeFXPSpec(spec)
+	if !fxpSpecNeedsPanelCredentials(spec) {
+		return "", true
+	}
+	if isFXPEntryGroup(spec) {
+		digest := ""
+		for _, entry := range spec.Entries {
+			candidate := fxpPanelCredentialDigest(entry.PanelURL, entry.Token)
+			if candidate == "" || (digest != "" && digest != candidate) {
+				return "", false
+			}
+			digest = candidate
+		}
+		return digest, digest != ""
+	}
+	digest := fxpPanelCredentialDigest(spec.PanelURL, spec.Token)
+	return digest, digest != ""
+}
+
+func currentFXPPanelCredentialDigest() (string, bool) {
+	panelURL := currentPanelURL(Config{})
+	token, _ := runtimeAgentToken.Load().(string)
+	if panelURL != "" && token != "" {
+		return fxpPanelCredentialDigest(panelURL, token), true
+	}
+	path := strings.TrimSpace(activeConfigPath)
+	if path == "" {
+		return "", false
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return "", false
+	}
+	digest := fxpPanelCredentialDigest(currentPanelURL(cfg), cfg.Token)
+	return digest, digest != ""
+}
+
+func fxpRuntimeUsesPanelCredentialDigest(configPath string, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+	var spec fxpSpec
+	if json.Unmarshal(raw, &spec) != nil {
+		return false
+	}
+	if !fxpSpecNeedsPanelCredentials(spec) {
+		return true
+	}
+	digest, ok := fxpSpecPanelCredentialDigest(spec)
+	return ok && hmac.Equal([]byte(digest), []byte(expected))
+}
+
+func fxpRuntimeUsesCurrentPanelCredentials(configPath string) bool {
+	expected, known := currentFXPPanelCredentialDigest()
+	if !known {
+		return true
+	}
+	return fxpRuntimeUsesPanelCredentialDigest(configPath, expected)
+}
+
+func fxpProcessUsesPanelCredentialDigest(process *fxpProcess, expected string) bool {
+	if process == nil || !fxpSpecNeedsPanelCredentials(process.spec) {
+		return process != nil
+	}
+	if expected == "" {
+		var known bool
+		expected, known = currentFXPPanelCredentialDigest()
+		if !known {
+			return true
+		}
+	}
+	if process.panelCredentialDigest != "" {
+		return hmac.Equal([]byte(process.panelCredentialDigest), []byte(expected))
+	}
+	if strings.TrimSpace(process.configPath) != "" {
+		return fxpRuntimeUsesPanelCredentialDigest(process.configPath, expected)
+	}
+	return false
+}
+
+func fxpProcessMatchesCurrentRuntime(process *fxpProcess) bool {
+	return fxpProcessUsesCurrentExecutable(process) && fxpProcessUsesPanelCredentialDigest(process, "")
+}
+
 func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSnapshot *runtimeListenSnapshot) bool {
 	if ruleID <= 0 || port <= 0 {
 		return false
@@ -8743,7 +9220,7 @@ func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSna
 	}
 	fxpMu.Unlock()
 	for _, process := range tracked {
-		if process == nil || !fxpProcessActive(process) {
+		if process == nil || !fxpProcessActive(process) || !fxpProcessMatchesCurrentRuntime(process) {
 			continue
 		}
 		for _, candidate := range fxpRuleReadinessCandidates(process.spec) {
@@ -8772,7 +9249,7 @@ func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSna
 		if json.Unmarshal(raw, &spec) == nil {
 			spec = normalizeFXPSpec(spec)
 			if spec.TransportVersion != forwardXWireGuardVersion && runtimeProtocolsOverlap(spec.Protocol, protocol) &&
-				fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
+				fxpRuntimeUsesCurrentExecutable(path) && fxpRuntimeUsesCurrentPanelCredentials(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
 				return true
 			}
 		}
@@ -8793,7 +9270,7 @@ func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSna
 		}
 		for _, entry := range group.Entries {
 			if entry.RuleID == ruleID && entry.ListenPort == port && runtimeProtocolsOverlap(entry.Protocol, protocol) &&
-				fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(entry, listenSnapshot) {
+				fxpRuntimeUsesCurrentExecutable(path) && fxpRuntimeUsesCurrentPanelCredentials(path) && fxpRuntimeListenersReady(entry, listenSnapshot) {
 				return true
 			}
 		}
@@ -8834,7 +9311,7 @@ func fxpRuntimeReadyForTunnelPort(tunnelID int, port int, listenSnapshot *runtim
 	}
 	fxpMu.Unlock()
 	for _, process := range tracked {
-		if process == nil || !fxpProcessActive(process) {
+		if process == nil || !fxpProcessActive(process) || !fxpProcessMatchesCurrentRuntime(process) {
 			continue
 		}
 		spec := normalizeFXPSpec(process.spec)
@@ -8861,7 +9338,8 @@ func fxpRuntimeReadyForTunnelPort(tunnelID int, port int, listenSnapshot *runtim
 			continue
 		}
 		spec = normalizeFXPSpec(spec)
-		if spec.TransportVersion != forwardXWireGuardVersion && fxpRuntimeProcessExists(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
+		if spec.TransportVersion != forwardXWireGuardVersion && fxpRuntimeUsesCurrentExecutable(path) &&
+			fxpRuntimeUsesCurrentPanelCredentials(path) && fxpRuntimeListenersReady(spec, listenSnapshot) {
 			return true
 		}
 	}
@@ -8876,7 +9354,7 @@ func killFXPByConfigPath(configPath string) {
 	}
 }
 
-func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
+func adoptExistingFXP(spec fxpSpec, signature string, configPath string, expectedCredentialDigests ...string) bool {
 	if spec.TransportVersion == forwardXWireGuardVersion {
 		return false
 	}
@@ -8892,7 +9370,18 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 	if fxpServerSignature(existing) != signature {
 		return false
 	}
-	if !fxpRuntimeProcessExists(configPath) {
+	if !fxpRuntimeUsesCurrentExecutable(configPath) {
+		return false
+	}
+	credentialDigest, credentialsValid := fxpSpecPanelCredentialDigest(existing)
+	expectedCredentialDigest := ""
+	if len(expectedCredentialDigests) > 0 {
+		expectedCredentialDigest = expectedCredentialDigests[0]
+	} else if current, known := currentFXPPanelCredentialDigest(); known {
+		expectedCredentialDigest = current
+	}
+	if fxpSpecNeedsPanelCredentials(existing) && expectedCredentialDigest != "" &&
+		(!credentialsValid || !hmac.Equal([]byte(credentialDigest), []byte(expectedCredentialDigest))) {
 		return false
 	}
 	readiness := readLocalRuntimeReadinessCached()
@@ -8901,7 +9390,13 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
 	}
 	id := fxpServerID(spec)
 	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{signature: signature, configPath: configPath, spec: spec}
+	fxpServers[id] = &fxpProcess{
+		signature:             signature,
+		configPath:            configPath,
+		spec:                  spec,
+		runtimeExecutable:     currentFXPRuntimeExecutableInfo(),
+		panelCredentialDigest: credentialDigest,
+	}
 	fxpMu.Unlock()
 	logf("fxp %s adopted existing runtime tunnel=%d rule=%d listen=:%d protocol=%s config=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, configPath)
 	return true
@@ -9107,21 +9602,14 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		actionMessage.set("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 		return false
 	}
-	runtimePath, err := exec.LookPath("forwardx-fxp")
-	if err != nil {
-		for _, p := range []string{"/usr/local/bin/forwardx-fxp", "/opt/forwardx-agent/forwardx-fxp"} {
-			if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
-				runtimePath = p
-				err = nil
-				break
-			}
-		}
-	}
+	runtimePath, err := resolveFXPRuntimeExecutable()
 	if err != nil || runtimePath == "" {
 		actionMessage.set("fxp runtime missing: install /usr/local/bin/forwardx-fxp to use custom encrypted tunnels")
 		return false
 	}
 	originalSpec := spec
+	runtimeExecutable := currentFXPRuntimeExecutableInfo()
+	expectedCredentialDigest := fxpPanelCredentialDigest(currentPanelURL(cfg), cfg.Token)
 
 	id := fxpServerID(spec)
 	wireGuardRefID := id
@@ -9140,6 +9628,10 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		previousSame = &copy
 	}
 	fxpMu.Unlock()
+	if existingMatches {
+		existingMatches = fxpProcessUsesCurrentExecutable(existing) &&
+			fxpProcessUsesPanelCredentialDigest(existing, expectedCredentialDigest)
+	}
 	if existingMatches {
 		readiness := readLocalRuntimeReadinessCached()
 		existingMatches = fxpRuntimeListenersReady(spec, readiness.listenSnapshot) &&
@@ -9161,7 +9653,7 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 	if existingActive && existing.signature == signature {
 		logf("fxp dependency or listener drift detected; rebuilding role=%s version=%s tunnel=%d rule=%d", spec.Role, spec.TransportVersion, spec.TunnelID, spec.RuleID)
 	}
-	if adoptExistingFXP(spec, signature, configPath) {
+	if adoptExistingFXP(spec, signature, configPath, expectedCredentialDigest) {
 		if persistenceEnabled {
 			if err := persistFXPSpec(originalSpec); err != nil {
 				logf("fxp persistent snapshot refresh failed tunnel=%d rule=%d port=%d: %v", originalSpec.TunnelID, originalSpec.RuleID, originalSpec.ListenPort, err)
@@ -9318,11 +9810,13 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 
 	fxpMu.Lock()
 	fxpServers[id] = &fxpProcess{
-		signature:      signature,
-		cmd:            cmd,
-		configPath:     configPath,
-		spec:           originalSpec,
-		wireGuardRefID: wireGuardRefID,
+		signature:             signature,
+		cmd:                   cmd,
+		configPath:            configPath,
+		spec:                  originalSpec,
+		wireGuardRefID:        wireGuardRefID,
+		runtimeExecutable:     runtimeExecutable,
+		panelCredentialDigest: expectedCredentialDigest,
 	}
 	fxpMu.Unlock()
 	desiredStarted = true
@@ -11776,6 +12270,40 @@ func post(cfg Config, path string, payload any, out any) error {
 	return postWithClient(agentSyncHTTPClient, cfg, path, payload, out)
 }
 
+func postHeartbeat(cfg Config, path string, payload any, out any) error {
+	return postHeartbeatWithClient(agentSyncHTTPClient, cfg, path, payload, out)
+}
+
+func postHeartbeatWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
+	finish, ok := heartbeatRequests.tryStart()
+	if !ok {
+		return errHeartbeatRequestInFlight
+	}
+	return postHeartbeatAfterStart(client, cfg, path, payload, out, finish)
+}
+
+func postHeartbeatWithClientTracked(client *http.Client, cfg Config, path string, payload any, out any) (uint64, error) {
+	finish, generation, ok := heartbeatRequests.tryStartTracked()
+	if !ok {
+		return generation, errHeartbeatRequestInFlight
+	}
+	return generation, postHeartbeatAfterStart(client, cfg, path, payload, out, finish)
+}
+
+func postHeartbeatWithClientIfGeneration(client *http.Client, cfg Config, path string, payload any, out any, expectedGeneration uint64) error {
+	finish, err := heartbeatRequests.tryStartIfGeneration(expectedGeneration)
+	if err != nil {
+		return err
+	}
+	return postHeartbeatAfterStart(client, cfg, path, payload, out, finish)
+}
+
+func postHeartbeatAfterStart(client *http.Client, cfg Config, path string, payload any, out any, finish func(bool)) error {
+	err := postWithClient(client, cfg, path, payload, out)
+	finish(err == nil)
+	return err
+}
+
 func postWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
 	return postWithClientToPanelURL(client, cfg, currentPanelURL(cfg), path, payload, out)
 }
@@ -12000,6 +12528,27 @@ func isTransientAgentCommError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isRetryableHeartbeatError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+		return true
+	}
+	var statusErr agentHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode == http.StatusRequestTimeout ||
+			statusErr.StatusCode == http.StatusTooEarly ||
+			statusErr.StatusCode == http.StatusTooManyRequests ||
+			statusErr.StatusCode >= http.StatusInternalServerError
+	}
+	return isTransientAgentCommError(err)
 }
 
 func isClockSyncCandidateError(err error) bool {

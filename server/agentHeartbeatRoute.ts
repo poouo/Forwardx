@@ -170,6 +170,14 @@ const SHARED_NGINX_FORWARD_TYPES = new Set(["nginx", "nginx-tunnel", "nginx-tunn
 const GOST_TUNNEL_MODES = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
+const GOST_UDP_LISTENER_METADATA = {
+  keepalive: true,
+  ttl: "30s",
+  // GOST v3.2.6 GetInt ignores JSON numbers decoded as float64, so integer metadata stays string-encoded.
+  readBufferSize: "8192",
+  readQueueSize: "64",
+  backlog: "128",
+} as const;
 const AGENT_STATE_SECTION_NAMES = [
   "runningRules",
   "ruleLatencyProbes",
@@ -180,6 +188,16 @@ const AGENT_STATE_SECTION_NAMES = [
   "dnsWatch",
 ] as const;
 const AGENT_STATE_SIGNATURE_SCHEMA = "v2";
+
+export function buildGostRuleListener(protocol: "tcp" | "udp") {
+  return protocol === "udp"
+    ? { type: protocol, metadata: { ...GOST_UDP_LISTENER_METADATA } }
+    : { type: protocol };
+}
+
+export function forwardXUDPTargetAddress(rule: any): string {
+  return String(rule?.targetIp || rule?._originalTargetIp || "").trim();
+}
 
 type NginxStreamServerOptions = {
   name: string;
@@ -2049,7 +2067,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (Number(rule.tunnelId || 0) !== Number(tunnel.id || 0)) continue;
         if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel) || !isForwardRuleProtocolUdpEnabled(rule.protocol)) continue;
         const ruleId = Number(rule.id || 0);
-        const targetIp = String(processTarget(rule) || "").trim();
+        // The heartbeat resolver already preserves the last known-good IP and
+        // dnsGeneration restarts FXP when it changes. Passing that IP avoids a
+        // blocking DNS lookup in the shared UDP receive loop for every session.
+        const targetIp = forwardXUDPTargetAddress(rule);
         const targetPort = Number(rule.targetPort || 0);
         if (!Number.isInteger(ruleId) || ruleId <= 0 || !targetIp || !Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) continue;
         targets.set(ruleId, { ruleId, targetIp, targetPort });
@@ -3041,7 +3062,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                   ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}),
                 }
               : { type: proto, ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}) },
-            listener: { type: proto },
+            listener: buildGostRuleListener(proto),
           };
           if (proto === "tcp" && tunnelProxyPlan?.entryListener) {
             service.metadata = tunnelProxyPlan.entryListener;

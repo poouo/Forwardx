@@ -58,12 +58,37 @@ var (
 	conntrackFlowMu          sync.Mutex
 	conntrackFlowsByPort     = map[string]map[string]struct{}{}
 	conntrackTotalsByPort    = map[string]uint64{}
+	freshProcessConnMu       sync.Mutex
+	freshProcessConnRule     = map[string]int{}
 	trafficStateDir          = agentStateDir
 	lastRuleTrafficReportAt  time.Time
 	lastHostTrafficReportAt  time.Time
 	activeTrafficReportNanos atomic.Int64
 	trafficReportSequence    atomic.Uint64
 )
+
+func markFreshProcessConnectionCounter(port int, ruleID int) {
+	if port <= 0 || ruleID <= 0 {
+		return
+	}
+	freshProcessConnMu.Lock()
+	freshProcessConnRule[strconv.Itoa(port)] = ruleID
+	freshProcessConnMu.Unlock()
+}
+
+func freshProcessConnectionCounter(port string, ruleID int) bool {
+	freshProcessConnMu.Lock()
+	defer freshProcessConnMu.Unlock()
+	return ruleID > 0 && freshProcessConnRule[port] == ruleID
+}
+
+func clearFreshProcessConnectionCounter(port string, ruleID int) {
+	freshProcessConnMu.Lock()
+	if freshProcessConnRule[port] == ruleID {
+		delete(freshProcessConnRule, port)
+	}
+	freshProcessConnMu.Unlock()
+}
 
 const (
 	pendingTrafficReportFile  = "traffic_report.pending"
@@ -91,8 +116,35 @@ type localRuleState struct {
 }
 
 type trafficCounters struct {
-	In  uint64
-	Out uint64
+	In          uint64
+	Out         uint64
+	Connections uint64
+}
+
+const (
+	trafficConnectionSourceConntrack       = "conntrack-snapshot-v1"
+	trafficConnectionSourceProcessNFT      = "process-nft-v1"
+	trafficConnectionSourceProcessIptables = "process-iptables-v1"
+)
+
+func validTrafficConnectionSource(source string) bool {
+	switch source {
+	case "", trafficConnectionSourceConntrack, trafficConnectionSourceProcessNFT, trafficConnectionSourceProcessIptables:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeTrafficConnectionSource(source string) string {
+	if validTrafficConnectionSource(source) && source != "" {
+		return source
+	}
+	return trafficConnectionSourceConntrack
+}
+
+func isPersistentProcessConnectionSource(source string) bool {
+	return source == trafficConnectionSourceProcessNFT || source == trafficConnectionSourceProcessIptables
 }
 
 func shouldCollectRuleTraffic(state localRuleState) bool {
@@ -206,6 +258,111 @@ func hasCompleteNftProcessLayout(state localRuleState, markers map[string]bool) 
 	return true
 }
 
+func hasCompleteIptablesProcessLayout(state localRuleState, markers map[string]bool) bool {
+	if state.Port == "" {
+		return false
+	}
+	for _, protocol := range runtimeProtocols(state.Protocol) {
+		if !markers[state.Port+":"+protocol+":in"] || !markers[state.Port+":"+protocol+":out"] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCompleteProcessConnectionLayout(state localRuleState, markers map[string]bool) bool {
+	if state.Port == "" {
+		return false
+	}
+	for _, protocol := range runtimeProtocols(state.Protocol) {
+		if !markers[state.Port+":"+protocol+":conn"] {
+			return false
+		}
+	}
+	return true
+}
+
+func processConnectionCounterSource(state localRuleState, diagnostics trafficDiagnosticsSnapshot) string {
+	if trafficCounterFamilyForForwardType(state.ForwardType) != trafficCounterFamilyProcess {
+		return ""
+	}
+	if hasCompleteNftProcessLayout(state, diagnostics.nftProcessMarkers) {
+		if hasCompleteProcessConnectionLayout(state, diagnostics.nftProcessMarkers) {
+			return trafficConnectionSourceProcessNFT
+		}
+		return ""
+	}
+	if (hasCompleteIptablesProcessLayout(state, diagnostics.iptablesMarkers) &&
+		hasCompleteProcessConnectionLayout(state, diagnostics.iptablesMarkers)) ||
+		(hasCompleteIptablesProcessLayout(state, diagnostics.ip6tablesMarkers) &&
+			hasCompleteProcessConnectionLayout(state, diagnostics.ip6tablesMarkers)) {
+		return trafficConnectionSourceProcessIptables
+	}
+	return ""
+}
+
+func processConnectionCounterAvailable(state localRuleState, diagnostics trafficDiagnosticsSnapshot) bool {
+	return processConnectionCounterSource(state, diagnostics) != ""
+}
+
+func conntrackFallbackTrafficStates(states []localRuleState, diagnostics trafficDiagnosticsSnapshot) []localRuleState {
+	fallback := make([]localRuleState, 0, len(states))
+	for _, state := range states {
+		if trafficCounterFamilyForForwardType(state.ForwardType) == trafficCounterFamilyProcess &&
+			processConnectionCounterAvailable(state, diagnostics) {
+			continue
+		}
+		fallback = append(fallback, state)
+	}
+	return fallback
+}
+
+func connectionCounterForTrafficState(state localRuleState, counters trafficCounters, conntrackTotal uint64, diagnostics trafficDiagnosticsSnapshot) (uint64, string) {
+	if source := processConnectionCounterSource(state, diagnostics); source != "" {
+		return counters.Connections, source
+	}
+	return conntrackTotal, trafficConnectionSourceConntrack
+}
+
+func connectionTotalForTrafficState(state localRuleState, counters trafficCounters, conntrackTotal uint64, diagnostics trafficDiagnosticsSnapshot) uint64 {
+	total, _ := connectionCounterForTrafficState(state, counters, conntrackTotal, diagnostics)
+	return total
+}
+
+func prepareConnectionCounterBaseline(state localRuleState, previous trafficPrevState, total uint64, source string) (uint64, string, uint64) {
+	previousTotal := previous.conns
+	freshCounterEpoch := isPersistentProcessConnectionSource(source) && freshProcessConnectionCounter(state.Port, state.RuleID)
+	if freshCounterEpoch {
+		// A freshly installed kernel counter always starts a new epoch. This also
+		// covers same-rule rebuilds and backend switches where rule identity alone
+		// cannot reveal that the old counter was reset.
+		previousTotal = 0
+	}
+	if trafficCounterFamilyForForwardType(state.ForwardType) == trafficCounterFamilyProcess &&
+		isPersistentProcessConnectionSource(previous.connSource) && source == trafficConnectionSourceConntrack {
+		// A missing kernel marker is a temporary capability loss, not a new
+		// counter epoch. Freeze connections while byte counting and repair continue.
+		return previous.conns, previous.connSource, previous.conns
+	}
+	if previous.ruleID > 0 && previous.ruleID == state.RuleID && previous.connSource != "" && previous.connSource != source &&
+		!freshCounterEpoch {
+		if previous.connSource == trafficConnectionSourceConntrack && isPersistentProcessConnectionSource(source) {
+			// The marker was added after the previous conntrack snapshot, so the
+			// new persistent epoch starts at zero and does not replay that snapshot.
+			previousTotal = 0
+		} else {
+			// Persistent backends do not share an epoch. Establish the replacement
+			// baseline without replaying an older kernel counter.
+			previousTotal = total
+		}
+	}
+	return total, source, previousTotal
+}
+
+func shouldCountFreshInitialConnections(initial bool, state localRuleState, source string) bool {
+	return initial && isPersistentProcessConnectionSource(source) && freshProcessConnectionCounter(state.Port, state.RuleID)
+}
+
 func countersForRuleTrafficState(
 	state localRuleState,
 	iptablesCounters map[string]trafficCounters,
@@ -241,8 +398,8 @@ func countingLayoutPresentForTrafficState(state localRuleState, diagnostics traf
 		return diagnostics.iptablesMarkers[state.Port]
 	case trafficCounterFamilyProcess:
 		return hasCompleteNftProcessLayout(state, diagnostics.nftProcessMarkers) ||
-			diagnostics.iptablesMarkers[state.Port] ||
-			diagnostics.ip6tablesMarkers[state.Port]
+			hasCompleteIptablesProcessLayout(state, diagnostics.iptablesMarkers) ||
+			hasCompleteIptablesProcessLayout(state, diagnostics.ip6tablesMarkers)
 	default:
 		return true
 	}
@@ -251,20 +408,33 @@ func countingLayoutPresentForTrafficState(state localRuleState, diagnostics traf
 func repairMissingCountingLayouts(states []localRuleState, diagnostics trafficDiagnosticsSnapshot) map[string]bool {
 	missing := map[string]bool{}
 	for _, state := range states {
-		if state.Port == "" || countingLayoutPresentForTrafficState(state, diagnostics) {
+		if state.Port == "" {
 			continue
 		}
-		// Do not advance this port's traffic baseline from an incomplete
-		// counter backend. The repair worker may run after this snapshot; using
-		// a fallback zero here would make the next complete snapshot replay all
-		// existing counters.
-		missing[state.Port] = true
-		if !invalidateCountingChainState(state.Port) {
+		layoutPresent := countingLayoutPresentForTrafficState(state, diagnostics)
+		connectionLayoutMissing := trafficCounterFamilyForForwardType(state.ForwardType) == trafficCounterFamilyProcess &&
+			layoutPresent && !processConnectionCounterAvailable(state, diagnostics)
+		if layoutPresent && !connectionLayoutMissing {
 			continue
+		}
+		if !layoutPresent {
+			// Do not advance the byte baseline from an incomplete backend. The
+			// repair worker may run after this snapshot; using a fallback zero here
+			// would replay existing counters once the layout becomes complete.
+			missing[state.Port] = true
 		}
 		port, err := strconv.Atoi(state.Port)
 		if err != nil || port <= 0 {
 			continue
+		}
+		if !invalidateCountingChainState(state.Port) {
+			continue
+		}
+		if connectionLayoutMissing {
+			// The repair adds a new zero-based connection counter while retaining
+			// byte counters. Remember that epoch change so an old persistent
+			// connection baseline cannot suppress the first repaired window.
+			markFreshProcessConnectionCounter(port, state.RuleID)
 		}
 		ensureCountingChainsIfNeeded(runningRule{
 			RuleID:      state.RuleID,
@@ -286,10 +456,11 @@ type trafficDiagnosticsSnapshot struct {
 }
 
 type trafficPrevState struct {
-	ruleID int
-	in     uint64
-	out    uint64
-	conns  uint64
+	ruleID     int
+	in         uint64
+	out        uint64
+	conns      uint64
+	connSource string
 }
 
 type trafficBaselineUpdate struct {
@@ -298,11 +469,12 @@ type trafficBaselineUpdate struct {
 }
 
 type persistedTrafficBaseline struct {
-	Port   string `json:"port"`
-	RuleID int    `json:"ruleId"`
-	In     uint64 `json:"in"`
-	Out    uint64 `json:"out"`
-	Conns  uint64 `json:"conns"`
+	Port       string `json:"port"`
+	RuleID     int    `json:"ruleId"`
+	In         uint64 `json:"in"`
+	Out        uint64 `json:"out"`
+	Conns      uint64 `json:"conns"`
+	ConnSource string `json:"connSource,omitempty"`
 }
 
 type pendingTrafficReport struct {
@@ -669,6 +841,9 @@ func validatePendingTrafficReport(report pendingTrafficReport) error {
 			return fmt.Errorf("traffic report contains duplicate baseline port %s", portText)
 		}
 		ports[portText] = struct{}{}
+		if !validTrafficConnectionSource(baseline.ConnSource) {
+			return fmt.Errorf("traffic report baseline connection source is invalid")
+		}
 		if baseline.RuleID <= 0 || ruleCounts[baseline.RuleID] <= 0 {
 			return fmt.Errorf("traffic report baseline rule does not match payload")
 		}
@@ -688,6 +863,7 @@ func persistedTrafficBaselines(updates []trafficBaselineUpdate) []persistedTraff
 		baselines = append(baselines, persistedTrafficBaseline{
 			Port: update.port, RuleID: update.state.ruleID,
 			In: update.state.in, Out: update.state.out, Conns: update.state.conns,
+			ConnSource: update.state.connSource,
 		})
 	}
 	return baselines
@@ -703,6 +879,7 @@ func pendingTrafficBaselineUpdates(baselines []persistedTrafficBaseline) []traff
 			port: baseline.Port,
 			state: trafficPrevState{
 				ruleID: baseline.RuleID, in: baseline.In, out: baseline.Out, conns: baseline.Conns,
+				connSource: normalizeTrafficConnectionSource(baseline.ConnSource),
 			},
 		})
 	}
@@ -746,6 +923,9 @@ func clearTrafficBaselinesForIdentityChange() error {
 	conntrackFlowsByPort = map[string]map[string]struct{}{}
 	conntrackTotalsByPort = map[string]uint64{}
 	conntrackFlowMu.Unlock()
+	freshProcessConnMu.Lock()
+	freshProcessConnRule = map[string]int{}
+	freshProcessConnMu.Unlock()
 	lastRuleTrafficReportAt = time.Time{}
 	lastHostTrafficReportAt = time.Time{}
 	return nil
@@ -983,24 +1163,36 @@ func collectTraffic(cfg Config) time.Duration {
 			diagnostics.iptablesMarkers = iptablesDiagnostics.iptablesMarkers
 			diagnostics.ip6tablesMarkers = iptablesDiagnostics.ip6tablesMarkers
 		}
+		connCounts, connTotals := conntrackConnectionsSnapshot(conntrackFallbackTrafficStates(states, diagnostics))
+		// Capture the fallback snapshot before queuing a missing connection rule.
+		// The new persistent counter starts after this point, so the migration
+		// cannot report the same connection from both sources.
 		missingCountingLayouts := repairMissingCountingLayouts(states, diagnostics)
-		connCounts, connTotals := conntrackConnectionsSnapshot(states)
 		for _, state := range states {
 			if missingCountingLayouts[state.Port] {
 				continue
 			}
 			counters := countersForRuleTrafficState(state, iptablesCounters, nftCounters, nftProcessCounters, diagnostics.nftProcessMarkers)
 			curConns := connCounts[state.Port]
-			prevRuleID, prevIn, prevOut, prevConns := readPrev(state.Port)
-			initialBaseline := prevRuleID <= 0 || prevRuleID != state.RuleID
+			previous := readPrevState(state.Port)
+			prevIn, prevOut, prevConns := previous.in, previous.out, previous.conns
+			initialBaseline := previous.ruleID <= 0 || previous.ruleID != state.RuleID
 			if initialBaseline {
 				prevIn, prevOut = counters.In, counters.Out
 			}
-			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(connTotals[state.Port], prevConns)
-			if initialBaseline {
+			connectionTotal, connectionSource := connectionCounterForTrafficState(state, counters, connTotals[state.Port], diagnostics)
+			connectionTotal, connectionSource, prevConns = prepareConnectionCounterBaseline(
+				state, previous, connectionTotal, connectionSource,
+			)
+			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(connectionTotal, prevConns)
+			countFreshInitialConnections := shouldCountFreshInitialConnections(initialBaseline, state, connectionSource)
+			if initialBaseline && !countFreshInitialConnections {
 				dconns = 0
 			}
-			nextBaseline := trafficPrevState{ruleID: state.RuleID, in: counters.In, out: counters.Out, conns: connTotals[state.Port]}
+			nextBaseline := trafficPrevState{
+				ruleID: state.RuleID, in: counters.In, out: counters.Out,
+				conns: connectionTotal, connSource: connectionSource,
+			}
 			if din > 0 || dout > 0 || dconns > 0 {
 				stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 				pendingBaselines = append(pendingBaselines, trafficBaselineUpdate{port: state.Port, state: nextBaseline})
@@ -2120,8 +2312,10 @@ func iptablesCounterSnapshotWithDiagnostics() (map[string]trafficCounters, traff
 		counters := out[port]
 		if direction == "in" {
 			counters.In = maxBytes
-		} else {
+		} else if direction == "out" {
 			counters.Out = maxBytes
+		} else {
+			counters.Connections = maxBytes
 		}
 		out[port] = counters
 	}
@@ -2133,7 +2327,7 @@ func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[st
 	if err != nil {
 		return
 	}
-	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out)`)
+	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out|conn)`)
 	currentChain := ""
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -2151,20 +2345,28 @@ func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[st
 		if len(match) < 3 || currentChain == "" {
 			continue
 		}
-		markers[match[1]] = true
+		port, direction := match[1], match[2]
+		markers[port] = true
+		if protocol := nftProcessCounterProtocol(line); protocol != "" {
+			markers[port+":"+protocol+":"+direction] = true
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
-		bytesValue, err := strconv.ParseUint(fields[1], 10, 64)
+		counterField := 1
+		if direction == "conn" {
+			counterField = 0
+		}
+		counterValue, err := strconv.ParseUint(fields[counterField], 10, 64)
 		if err != nil {
 			continue
 		}
-		marker := match[1] + ":" + match[2]
+		marker := port + ":" + direction
 		if chainCounters[marker] == nil {
 			chainCounters[marker] = map[string]uint64{}
 		}
-		chainCounters[marker][currentChain] += bytesValue
+		chainCounters[marker][currentChain] += counterValue
 	}
 }
 
@@ -2250,7 +2452,7 @@ func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map
 	out := map[string]trafficCounters{}
 	markers := map[string]bool{}
 	markerDirections := map[string]uint8{}
-	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out)`)
+	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out|conn)`)
 	currentChain := ""
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -2267,7 +2469,12 @@ func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map
 			continue
 		}
 		port, direction := match[1], match[2]
-		if (direction == "in" && currentChain != "input") || (direction == "out" && currentChain != "output") {
+		if ((direction == "in" || direction == "conn") && currentChain != "input") || (direction == "out" && currentChain != "output") {
+			continue
+		}
+		if direction == "conn" && (!strings.Contains(line, "ct state new") || !strings.Contains(line, "ct status != confirmed")) {
+			// A broad NEW rule also sees retransmits and unreplied UDP packets.
+			// Ignore it so the repair path installs the exact first-packet rule.
 			continue
 		}
 		protocol := nftProcessCounterProtocol(line)
@@ -2277,23 +2484,35 @@ func parseNftProcessCounterSnapshot(raw string) (map[string]trafficCounters, map
 		markers[port+":"+protocol+":"+direction] = true
 		if direction == "in" {
 			markerDirections[port] |= 1
-		} else {
+		} else if direction == "out" {
 			markerDirections[port] |= 2
-		}
-		bytesValue, ok := nftCounterBytes(line)
-		if !ok {
-			continue
+		} else {
+			markerDirections[port] |= 4
 		}
 		counters := out[port]
-		if direction == "in" {
+		if direction == "conn" {
+			packetsValue, ok := nftCounterPackets(line)
+			if !ok {
+				continue
+			}
+			counters.Connections += packetsValue
+		} else if direction == "in" {
+			bytesValue, ok := nftCounterBytes(line)
+			if !ok {
+				continue
+			}
 			counters.In += bytesValue
 		} else {
+			bytesValue, ok := nftCounterBytes(line)
+			if !ok {
+				continue
+			}
 			counters.Out += bytesValue
 		}
 		out[port] = counters
 	}
 	for port, directions := range markerDirections {
-		markers[port] = directions == 3
+		markers[port] = directions == 7
 	}
 	return out, markers
 }
@@ -2308,9 +2527,17 @@ func nftProcessCounterProtocol(line string) string {
 }
 
 func nftCounterBytes(line string) (uint64, bool) {
+	return nftCounterValue(line, "bytes")
+}
+
+func nftCounterPackets(line string) (uint64, bool) {
+	return nftCounterValue(line, "packets")
+}
+
+func nftCounterValue(line string, name string) (uint64, bool) {
 	fields := strings.Fields(line)
 	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] != "bytes" {
+		if fields[i] != name {
 			continue
 		}
 		value, err := strconv.ParseUint(fields[i+1], 10, 64)
@@ -2579,63 +2806,88 @@ func nftablesChainBytes(chain string) uint64 {
 	return v
 }
 
-func readPrev(port string) (int, uint64, uint64, uint64) {
+func readPrevState(port string) trafficPrevState {
 	trafficPrevMu.Lock()
 	if cached, ok := trafficPrevCache[port]; ok {
 		trafficPrevMu.Unlock()
-		return cached.ruleID, cached.in, cached.out, cached.conns
+		return cached
 	}
 	trafficPrevMu.Unlock()
 	raw, err := os.ReadFile(trafficStateDir + "/traffic_" + port + ".prev")
 	if err != nil {
-		cacheTrafficPrev(port, trafficPrevState{})
-		return 0, 0, 0, 0
+		state := trafficPrevState{}
+		cacheTrafficPrev(port, state)
+		return state
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) < 2 {
-		return 0, 0, 0, 0
+		state := trafficPrevState{}
+		cacheTrafficPrev(port, state)
+		return state
 	}
-	// 4-line format (current): ruleID, in, out, conns
+	// 5-line format (current): ruleID, in, out, conns, connSource.
 	if len(lines) >= 4 {
 		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
 		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
 		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
 		prevConns, _ := strconv.ParseUint(strings.TrimSpace(lines[3]), 10, 64)
-		cacheTrafficPrev(port, trafficPrevState{ruleID: rid, in: prevIn, out: prevOut, conns: prevConns})
-		return rid, prevIn, prevOut, prevConns
+		connSource := trafficConnectionSourceConntrack
+		if len(lines) >= 5 && validTrafficConnectionSource(strings.TrimSpace(lines[4])) {
+			connSource = normalizeTrafficConnectionSource(strings.TrimSpace(lines[4]))
+		}
+		state := trafficPrevState{ruleID: rid, in: prevIn, out: prevOut, conns: prevConns, connSource: connSource}
+		cacheTrafficPrev(port, state)
+		return state
 	}
 	// 3-line legacy format: ruleID, in, out (no conns)
 	if len(lines) >= 3 {
 		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
 		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
 		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
-		cacheTrafficPrev(port, trafficPrevState{ruleID: rid, in: prevIn, out: prevOut})
-		return rid, prevIn, prevOut, 0
+		state := trafficPrevState{ruleID: rid, in: prevIn, out: prevOut, connSource: trafficConnectionSourceConntrack}
+		cacheTrafficPrev(port, state)
+		return state
 	}
 	// 2-line legacy format: in, out (no ruleID, no conns)
 	prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
 	prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
-	cacheTrafficPrev(port, trafficPrevState{in: prevIn, out: prevOut})
-	return 0, prevIn, prevOut, 0
+	state := trafficPrevState{in: prevIn, out: prevOut, connSource: trafficConnectionSourceConntrack}
+	cacheTrafficPrev(port, state)
+	return state
+}
+
+func readPrev(port string) (int, uint64, uint64, uint64) {
+	state := readPrevState(port)
+	return state.ruleID, state.in, state.out, state.conns
 }
 
 func writePrev(port string, ruleID int, in, out, conns uint64) {
-	_ = writePrevState(port, trafficPrevState{ruleID: ruleID, in: in, out: out, conns: conns})
+	_ = writePrevState(port, trafficPrevState{
+		ruleID: ruleID, in: in, out: out, conns: conns,
+		connSource: trafficConnectionSourceConntrack,
+	})
 }
 
 func writePrevState(port string, next trafficPrevState) error {
+	next.connSource = normalizeTrafficConnectionSource(next.connSource)
 	trafficPrevMu.Lock()
 	previous, exists := trafficPrevCache[port]
 	trafficPrevMu.Unlock()
 	if exists && previous == next {
+		if isPersistentProcessConnectionSource(next.connSource) {
+			clearFreshProcessConnectionCounter(port, next.ruleID)
+		}
 		return nil
 	}
 	path := trafficStateDir + "/traffic_" + port + ".prev"
-	data := []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", next.ruleID, next.in, next.out, next.conns))
+	data := []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n%s\n", next.ruleID, next.in, next.out, next.conns, next.connSource))
 	if err := writeTrafficStateFile(path, data, 0644); err != nil {
 		return err
 	}
 	cacheTrafficPrev(port, next)
+	if isPersistentProcessConnectionSource(next.connSource) {
+		clearFreshProcessConnectionCounter(port, next.ruleID)
+	}
 	return nil
 }
 

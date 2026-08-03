@@ -19,6 +19,7 @@ import {
   tunnelHops,
   tunnels,
   userHostPermissions,
+  users,
 } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows, refreshDatabasePoolSettings, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
@@ -778,7 +779,13 @@ export async function getHostAgentPresenceById(id: number) {
 
 export async function getHostRuleDeleteBlockers(hostId: number) {
   const db = await getDb();
-  if (!db) return { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 };
+  if (!db) return {
+    ruleCount: 0,
+    ruleOwners: [],
+    managedRuleCount: 0,
+    managedRuleOwners: [],
+    pendingCleanupCount: 0,
+  };
   await repairPortForwardRuleHostReferences();
   await markOrphanedForwardGroupTemplatesPendingDelete(hostId);
   const managedRuleSql = sql`
@@ -788,26 +795,57 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
     OR ${forwardRules.isForwardGroupTemplate} = ${sqlBool(true)}
     OR ${forwardRules.id} IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)
   `;
-  const [ruleRows, managedRows, pendingRows] = await Promise.all([
-    db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`
-      ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
-      AND NOT (${managedRuleSql})
-    `),
-    db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`
-      ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
-      AND (${managedRuleSql})
-    `),
+  const [ruleOwnerRows, managedOwnerRows, pendingRows] = await Promise.all([
+    db.select({
+      userId: forwardRules.userId,
+      username: users.username,
+      name: users.name,
+      count: sqlCountAll(),
+    })
+      .from(forwardRules)
+      .leftJoin(users, eq(users.id, forwardRules.userId))
+      .where(sql`
+        ${forwardRules.hostId} = ${hostId}
+        AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
+        AND NOT (${managedRuleSql})
+      `)
+      .groupBy(forwardRules.userId, users.username, users.name),
+    db.select({
+      userId: forwardRules.userId,
+      username: users.username,
+      name: users.name,
+      count: sqlCountAll(),
+    })
+      .from(forwardRules)
+      .leftJoin(users, eq(users.id, forwardRules.userId))
+      .where(sql`
+        ${forwardRules.hostId} = ${hostId}
+        AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
+        AND (${managedRuleSql})
+      `)
+      .groupBy(forwardRules.userId, users.username, users.name),
     db.select({ count: sqlCountAll() }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
       AND ${forwardRules.pendingDelete} = ${sqlBool(true)}
       AND ${forwardRules.isRunning} = ${sqlBool(true)}
     `),
   ]);
+  const normalizeOwners = (rows: any[]) => rows
+    .map((row: any) => ({
+      userId: Number(row.userId) || 0,
+      username: String(row.username || "").trim() || null,
+      name: String(row.name || "").trim() || null,
+      ruleCount: Number(row.count) || 0,
+    }))
+    .filter((owner) => owner.ruleCount > 0)
+    .sort((a, b) => b.ruleCount - a.ruleCount || a.userId - b.userId);
+  const ruleOwners = normalizeOwners(ruleOwnerRows as any[]);
+  const managedRuleOwners = normalizeOwners(managedOwnerRows as any[]);
   return {
-    ruleCount: Number(ruleRows[0]?.count) || 0,
-    managedRuleCount: Number(managedRows[0]?.count) || 0,
+    ruleCount: ruleOwners.reduce((total, owner) => total + owner.ruleCount, 0),
+    ruleOwners,
+    managedRuleCount: managedRuleOwners.reduce((total, owner) => total + owner.ruleCount, 0),
+    managedRuleOwners,
     pendingCleanupCount: Number(pendingRows[0]?.count) || 0,
   };
 }
