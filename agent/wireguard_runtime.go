@@ -1074,6 +1074,11 @@ func (session *wireGuardUDPProxySession) enqueue(payload []byte) bool {
 	dropped := false
 	session.queueMu.Lock()
 	defer session.queueMu.Unlock()
+	select {
+	case <-session.done:
+		return false
+	default:
+	}
 	for len(session.send) > 0 && (len(session.send) >= cap(session.send) || session.queuedBytes+packetBytes > wireGuardUDPProxyQueueBytes) {
 		select {
 		case displaced := <-session.send:
@@ -1089,8 +1094,6 @@ func (session *wireGuardUDPProxySession) enqueue(payload []byte) bool {
 		return false
 	}
 	select {
-	case <-session.done:
-		return false
 	case session.send <- packet:
 		session.queuedBytes += packetBytes
 		return !dropped
@@ -1504,13 +1507,20 @@ func (session *wireGuardUDPProxySession) close() {
 	session.closeOnce.Do(func() {
 		close(session.done)
 		session.queueMu.Lock()
-		for len(session.send) > 0 {
-			packet := <-session.send
-			session.queuedBytes -= len(packet.payload)
+		// The write loop can dequeue a packet between observing the channel and
+		// acquiring this lock. Drain without a blocking receive so it cannot
+		// wait for a packet whose consumer is waiting for queueMu.
+		for {
+			select {
+			case packet := <-session.send:
+				session.queuedBytes -= len(packet.payload)
+			default:
+				session.queuedBytes = 0
+				session.queueMu.Unlock()
+				_ = session.conn.Close()
+				return
+			}
 		}
-		session.queuedBytes = 0
-		session.queueMu.Unlock()
-		_ = session.conn.Close()
 	})
 }
 
