@@ -1569,13 +1569,20 @@ func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes 
 	serviceProbesCopy := append([]hostProbeServiceProbe(nil), serviceProbes...)
 	go func() {
 		started := time.Now()
-		defer atomic.StoreInt32(&tcpingCollectRunning, 0)
+		defer finishTCPingCollection()
 		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force, startActionEpoch, startedWithActionsPending)
 		if elapsed := time.Since(started); elapsed >= 5*time.Second && shouldLogAgentReport("tcping-collect-slow-async", 5*time.Minute) {
 			logf("tcping collect slow duration=%s ruleProbes=%d tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(ruleProbesCopy), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
 		}
 	}()
 	return true
+}
+
+func finishTCPingCollection() {
+	atomic.StoreInt32(&tcpingCollectRunning, 0)
+	if agentMetricsForceTCPing.Load() {
+		wakeAgentMetricsScheduler()
+	}
 }
 
 func tcpingDynamicBatchLimit(total, minimum, targetRounds, maximum int) int {

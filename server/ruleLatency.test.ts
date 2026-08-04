@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildTunnelRuleLatencyProbe,
   combineTunnelRuleLatencySample,
+  tunnelRuleLatencySampleSucceeded,
   tunnelRuleLatencyTopologyKey,
   validateTunnelRuleLatencyReport,
 } from "./ruleLatency";
@@ -84,4 +85,28 @@ test("tunnel rule latency is the fresh tunnel path plus exit-to-target latency",
     targetIsTimeout: true,
     nowMs,
   }), { latencyMs: null, isTimeout: true });
+});
+
+test("a tunnel rule cannot succeed from the target segment alone", () => {
+  assert.equal(tunnelRuleLatencySampleSucceeded(true, null), false);
+  assert.equal(tunnelRuleLatencySampleSucceeded(true, { latencyMs: null, isTimeout: true }), false);
+  assert.equal(tunnelRuleLatencySampleSucceeded(true, { latencyMs: null, isTimeout: false }), false);
+  assert.equal(tunnelRuleLatencySampleSucceeded(false, { latencyMs: 47, isTimeout: false }), false);
+  assert.equal(tunnelRuleLatencySampleSucceeded(true, { latencyMs: 47, isTimeout: false }), true);
+});
+
+test("missing latency values cannot become a synthetic zero-millisecond path", () => {
+  const recordedAt = new Date();
+  assert.deepEqual(combineTunnelRuleLatencySample({
+    targetLatencyMs: null,
+    targetIsTimeout: false,
+    tunnelLatencyMs: 12,
+    tunnelRecordedAt: recordedAt,
+  }), { latencyMs: null, isTimeout: true });
+  assert.equal(combineTunnelRuleLatencySample({
+    targetLatencyMs: 15,
+    targetIsTimeout: false,
+    tunnelLatencyMs: null,
+    tunnelRecordedAt: recordedAt,
+  }), null);
 });

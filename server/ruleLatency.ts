@@ -27,6 +27,8 @@ function validPort(value: unknown) {
 }
 
 function validLatency(value: unknown) {
+  if (value === null || value === undefined || typeof value === "boolean") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const latency = Number(value);
   return Number.isFinite(latency) && latency >= 0 ? latency : null;
 }
@@ -117,4 +119,14 @@ export function combineTunnelRuleLatencySample(input: {
     latencyMs: Math.round((targetLatencyMs + tunnelLatencyMs) * 10) / 10,
     isTimeout: false,
   } as const;
+}
+
+export function tunnelRuleLatencySampleSucceeded(
+  targetSucceeded: boolean,
+  combinedLatency: { latencyMs: number | null; isTimeout: boolean } | null | undefined,
+) {
+  return !!targetSucceeded
+    && !!combinedLatency
+    && !combinedLatency.isTimeout
+    && validLatency(combinedLatency.latencyMs) !== null;
 }

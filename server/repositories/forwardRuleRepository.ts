@@ -7,6 +7,7 @@ import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHa
 import { sqlBool } from "./repositoryUtils";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 // ==================== Forward Rule Queries ====================
 
@@ -1128,13 +1129,31 @@ export async function markOrphanedForwardGroupTemplatesPendingDelete(hostId?: nu
   for (const template of templates as any[]) {
     const id = Number(template.id || 0);
     if (id <= 0) continue;
-    const children = await db
-      .select({ id: forwardRules.id, pendingDelete: forwardRules.pendingDelete })
-      .from(forwardRules)
-      .where(eq(forwardRules.forwardGroupRuleId, id));
-    if ((children as any[]).some((child: any) => !boolValue(child.pendingDelete))) continue;
-    await deleteForwardRule(id);
-    count += 1;
+    await withKeyedTaskLock(`rule:${id}`, async () => {
+      const currentRows = await db.select({
+        id: forwardRules.id,
+        forwardGroupId: forwardRules.forwardGroupId,
+        isForwardGroupTemplate: forwardRules.isForwardGroupTemplate,
+        pendingDelete: forwardRules.pendingDelete,
+      }).from(forwardRules).where(eq(forwardRules.id, id)).limit(1);
+      const current = currentRows[0];
+      if (!current || boolValue((current as any).pendingDelete) || !boolValue((current as any).isForwardGroupTemplate)) return;
+      const currentGroupId = Number((current as any).forwardGroupId || 0);
+      if (currentGroupId > 0) {
+        const groups = await db.select({ id: forwardGroups.id })
+          .from(forwardGroups)
+          .where(eq(forwardGroups.id, currentGroupId))
+          .limit(1);
+        if (groups.length > 0) return;
+      }
+      const children = await db
+        .select({ id: forwardRules.id, pendingDelete: forwardRules.pendingDelete })
+        .from(forwardRules)
+        .where(eq(forwardRules.forwardGroupRuleId, id));
+      if ((children as any[]).some((child: any) => !boolValue(child.pendingDelete))) return;
+      await deleteForwardRule(id);
+      count += 1;
+    });
   }
   return count;
 }

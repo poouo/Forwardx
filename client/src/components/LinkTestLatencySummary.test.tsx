@@ -380,6 +380,42 @@ test("current rule details discard an older planned tunnel latency fallback", ()
   assert.equal(html.match(/5 ms/g)?.length, 2);
 });
 
+test("a tunnel timeout marks the missing first segment and never totals only the target segment", () => {
+  const parsed = parseLinkTestMessage(JSON.stringify({
+    kind: "forward-via-tunnel",
+    message: "隧道整体链路测试失败; 隧道段探测超时",
+    tunnelProbeTimedOut: true,
+    details: [{
+      success: true,
+      latencyMs: 39,
+      routeLabel: "Exit -> Target",
+      fromHostId: 2,
+    }],
+    totalLatencyMs: null,
+  }));
+  const html = renderToStaticMarkup(
+    <LinkTestProbeView
+      parsed={parsed}
+      fallbackLatencyMs={null}
+      isSuccess={false}
+      isTesting={false}
+      mobileStacked={false}
+      ignorePlannedResultsWhenDetailsPresent
+      plannedSegments={[
+        { from: "Entry", to: "Exit", fromHostId: 1, toHostId: 2, hopIndex: 0, hopCount: 1 },
+        { from: "Exit", to: "Target", fromHostId: 2 },
+      ]}
+    />,
+  );
+
+  assert.match(html, /Entry/);
+  assert.match(html, /Exit/);
+  assert.match(html, /Target/);
+  assert.match(html, /超时/);
+  assert.doesNotMatch(html, /等待探测|探测中/);
+  assert.equal(html.match(/39 ms/g)?.length, 1);
+});
+
 test("a tunnel rule keeps the current tunnel segment when it reconciles with the test total", () => {
   const parsed = parseLinkTestMessage(JSON.stringify({
     kind: "forward-via-tunnel",

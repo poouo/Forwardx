@@ -7,8 +7,17 @@ import {
   AGENT_AUTH_RESULT_ACCEPTED,
   AGENT_AUTH_RESULT_HEADER,
   AGENT_AUTH_RESULT_REJECTED,
+  getAgentAuthRequestPath,
 } from "./agentAuth";
-import { decryptPayload, encryptPayload, resetAgentCryptoCaches } from "./agentCrypto";
+import {
+  agentTokenFingerprint,
+  decryptPayload,
+  encryptPayload,
+  resetAgentCryptoCaches,
+  signAgentChallengeAuthProof,
+  verifyAgentAuthProofDetails,
+} from "./agentCrypto";
+import { issueAgentAuthChallenge, resetAgentAuthChallengesForTests } from "./agentAuthChallenge";
 import { agentEncryptionMiddleware } from "./agentEncryptionMiddleware";
 
 async function withAgentMiddlewareServer(
@@ -50,6 +59,66 @@ test("Agent middleware marks pre-auth failures as rejected", async () => {
     assert.equal(response.status, 401);
     assert.equal(response.headers.get(AGENT_AUTH_RESULT_HEADER), AGENT_AUTH_RESULT_REJECTED);
   });
+});
+
+test("Agent auth proof keeps the full path inside the mounted Agent API router", async () => {
+  resetAgentAuthChallengesForTests();
+  const token = "mounted-agent-api-token";
+  const bodyText = JSON.stringify(encryptPayload({ stats: [] }, token));
+  const challenge = issueAgentAuthChallenge();
+  const nonce = "00112233445566778899aabbccddeeff";
+  const signature = signAgentChallengeAuthProof({
+    token,
+    method: "POST",
+    path: "/api/agent/traffic",
+    bodyText,
+    challenge,
+    nonce,
+  });
+  const proof = `v2.${agentTokenFingerprint(token)}.${challenge}.${nonce}.${signature}`;
+  const app = express();
+  app.use("/api/agent", (req, res) => {
+    const authPath = getAgentAuthRequestPath(req);
+    const truncatedPathResult = verifyAgentAuthProofDetails({
+      raw: proof,
+      candidateTokens: [token],
+      method: req.method,
+      path: req.path,
+      bodyText,
+    });
+    const fullPathResult = verifyAgentAuthProofDetails({
+      raw: proof,
+      candidateTokens: [token],
+      method: req.method,
+      path: authPath,
+      bodyText,
+    });
+    res.json({ expressPath: req.path, authPath, truncatedPathResult, fullPathResult });
+  });
+  const server = createServer(app);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not expose a TCP port");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/agent/traffic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: bodyText,
+    });
+    assert.deepEqual(await response.json(), {
+      expressPath: "/traffic",
+      authPath: "/api/agent/traffic",
+      truncatedPathResult: null,
+      fullPathResult: { token, version: "v2" },
+    });
+  } finally {
+    const closed = once(server, "close");
+    server.close();
+    await closed;
+    resetAgentAuthChallengesForTests();
+    resetAgentCryptoCaches();
+  }
 });
 
 test("authenticated business 403 stays accepted and encrypted", async () => {

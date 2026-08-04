@@ -36,6 +36,14 @@ export function hasSignedAgentAuthAttempt(req: Request) {
   return (req as any).agentSignedAuthAttempted === true;
 }
 
+export function getAgentAuthRequestPath(req: Request) {
+  const baseUrl = String(req.baseUrl || "").replace(/\/+$/, "");
+  const path = String(req.path || "");
+  if (!baseUrl) return path || "/";
+  if (!path) return baseUrl || "/";
+  return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export async function getAgentHostFromRequest(req: Request) {
   const token = getResolvedAgentToken(req);
   if (!token) return null;
@@ -81,7 +89,7 @@ export async function resolveAgentTokenFromAuthorization(
       raw: credential,
       candidateTokens: [candidate],
       method: req.method,
-      path: req.path,
+      path: getAgentAuthRequestPath(req),
       bodyText: credential.startsWith("v2.") ? challengeBodyText : bodyText,
       nowMs,
     });

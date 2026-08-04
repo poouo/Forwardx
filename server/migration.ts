@@ -1156,7 +1156,7 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.forwardGroupRuleId = null;
       row.forwardGroupMemberId = mapOptionalId(maps, "forward_group_members", source.forwardGroupMemberId);
       row.isRunning = false;
-      row.pendingDelete = false;
+      row.pendingDelete = source.pendingDelete ?? false;
       return { row };
 
     case "forward_rule_tunnel_exits":
@@ -1532,7 +1532,8 @@ async function resetImportedRuntimeState(maps: ImportMaps) {
       updatedAt: now,
     });
     await updateByIds("tunnels", tunnelIds, { isRunning: false, updatedAt: now });
-    await updateByIds("forward_rules", ruleIds, { isRunning: false, pendingDelete: false, updatedAt: now });
+    // Deletion tombstones are durable data; only the Agent runtime state resets after import.
+    await updateByIds("forward_rules", ruleIds, { isRunning: false, updatedAt: now });
   });
 }
 

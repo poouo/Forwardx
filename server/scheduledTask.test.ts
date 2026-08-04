@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
 import {
+  FORWARD_TUNNEL_LATENCY_WAIT_MS,
   SELF_TEST_SWEEP_ACTIVE_WINDOW_MS,
   SELF_TEST_SWEEP_INTERVAL_MS,
   SELF_TEST_TIMEOUT_SECONDS,
@@ -13,8 +14,14 @@ import {
 
 test("manual self-tests outlive the Agent runtime readiness budget", () => {
   assert.equal(SELF_TEST_TIMEOUT_SECONDS, 8);
-  assert.equal(RUNTIME_SELF_TEST_TIMEOUT_SECONDS, 30);
+  assert.equal(RUNTIME_SELF_TEST_TIMEOUT_SECONDS, 45);
   assert.ok(RUNTIME_SELF_TEST_TIMEOUT_SECONDS > 4 + 20);
+  assert.ok(FORWARD_TUNNEL_LATENCY_WAIT_MS > 8_000);
+  assert.ok(FORWARD_TUNNEL_LATENCY_WAIT_MS < RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000);
+  assert.ok(
+    RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000
+      > (4 + 20) * 1000 + FORWARD_TUNNEL_LATENCY_WAIT_MS + SELF_TEST_SWEEP_INTERVAL_MS,
+  );
   assert.equal(
     SELF_TEST_SWEEP_ACTIVE_WINDOW_MS,
     RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2,

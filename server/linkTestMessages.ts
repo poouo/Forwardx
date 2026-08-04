@@ -7,11 +7,13 @@ export function structuredLinkTestMessage(input: {
   totalLatencyMs?: number | null;
   groupId?: number | null;
   tunnelId?: number | null;
+  tunnelProbeTimedOut?: boolean;
 }) {
   return JSON.stringify({
     kind: input.kind,
     ...(input.groupId ? { groupId: input.groupId } : {}),
     ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+    ...(input.tunnelProbeTimedOut ? { tunnelProbeTimedOut: true } : {}),
     generatedAt: new Date().toISOString(),
     message: input.message,
     details: input.details || [],

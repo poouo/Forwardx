@@ -7,7 +7,7 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
-import { combineTunnelRuleLatencySample } from "./ruleLatency";
+import { combineTunnelRuleLatencySample, tunnelRuleLatencySampleSucceeded } from "./ruleLatency";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { waitForTunnelLatencyRefresh } from "./tunnelLatencyRefresh";
 import { getTunnelAutoHopDetails } from "./tunnelAutoLatencyState";
@@ -21,6 +21,7 @@ import {
   tunnelDetailsMatchTopology,
   tunnelLatencySampleIsAfterBaseline,
 } from "./tunnelLatencyDetails";
+import { FORWARD_TUNNEL_LATENCY_WAIT_MS } from "./selfTestTiming";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
@@ -171,19 +172,23 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         tunnelId: meta.tunnelId,
         baselineId: tunnelLatencyBaselineId,
         loadLatest: db.getLatestTunnelLatency,
+        waitMs: FORWARD_TUNNEL_LATENCY_WAIT_MS,
       })
       : null;
-    const accepted = await db.completeForwardTestIfActive(testId, {
-      status: success ? "success" : "failed",
-      listenOk: true,
-      targetReachable: !!targetReachable,
-      forwardOk: success,
-      latencyMs: cleanLatency,
-      message: cleanMessage,
-    });
-    if (!accepted) {
-      res.json({ success: true, ignored: true });
-      return;
+    const deferTunnelRuleCompletion = meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number";
+    if (!deferTunnelRuleCompletion) {
+      const accepted = await db.completeForwardTestIfActive(testId, {
+        status: success ? "success" : "failed",
+        listenOk: true,
+        targetReachable: !!targetReachable,
+        forwardOk: success,
+        latencyMs: cleanLatency,
+        message: cleanMessage,
+      });
+      if (!accepted) {
+        res.json({ success: true, ignored: true });
+        return;
+      }
     }
     if (meta?.kind === "tunnel" && typeof meta.tunnelId === "number") {
       if (success) await db.updateTunnelRunningStatus(meta.tunnelId, true);
@@ -328,7 +333,9 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           tunnelDetails = [];
         }
       }
-      const overallSuccess = success && combinedLatency?.isTimeout !== true;
+      const overallSuccess = tunnelRuleLatencySampleSucceeded(success, combinedLatency);
+      const tunnelProbeTimedOut = !tunnelLatency || !!(tunnelLatency as any).isTimeout;
+      const overallTimedOut = success && (!combinedLatency || combinedLatency.isTimeout);
       const totalLatency = combinedLatency && !combinedLatency.isTimeout ? combinedLatency.latencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
       const targetMethod = normalizeLinkProbeMethod(meta.method);
@@ -336,11 +343,11 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         ? `解析到 ${cleanResolvedTargetIp}`
         : "";
       const messageParts = [
-        `隧道整体链路测试 ${overallSuccess ? "成功" : "失败"}`,
+        `隧道整体链路测试 ${overallSuccess ? "成功" : overallTimedOut ? "超时" : "失败"}`,
         `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}${resolvedTargetText ? `，${resolvedTargetText}` : ""}`,
       ];
       if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
-      if (success && !combinedLatency) messageParts.push("隧道段暂无新鲜探测结果");
+      if (tunnelProbeTimedOut) messageParts.push("隧道段探测超时");
       if (cleanMessage && !success) messageParts.push(cleanMessage);
       const detailMessage = cleanMessage || messageParts.join("; ");
       const structuredMessage = structuredLinkTestMessage({
@@ -357,15 +364,20 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           method: targetMethod,
         }],
         totalLatencyMs: totalLatency,
+        tunnelProbeTimedOut,
       });
-      await db.updateForwardTestResult(testId, {
-        status: overallSuccess ? "success" : "failed",
+      const accepted = await db.completeForwardTestIfActive(testId, {
+        status: overallSuccess ? "success" : overallTimedOut ? "timeout" : "failed",
         listenOk: true,
         targetReachable: success,
         forwardOk: overallSuccess,
         latencyMs: totalLatency,
         message: structuredMessage,
       });
+      if (!accepted) {
+        res.json({ success: true, ignored: true });
+        return;
+      }
       if (combinedLatency) {
         await db.insertTcpingStat({
           ruleId: Number(t.ruleId),

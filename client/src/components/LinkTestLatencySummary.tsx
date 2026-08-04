@@ -25,6 +25,7 @@ export type ParsedLinkTestMessage = {
   message: string;
   details: LinkTestDetail[];
   totalLatencyMs: number | null;
+  tunnelProbeTimedOut?: boolean;
 };
 
 type ProbeSegment = {
@@ -110,6 +111,7 @@ export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
         message: typeof source.message === "string" ? source.message : text,
         details,
         totalLatencyMs: typeof source.totalLatencyMs === "number" ? source.totalLatencyMs : null,
+        tunnelProbeTimedOut: source.tunnelProbeTimedOut === true,
       };
     }
   } catch {
@@ -662,7 +664,7 @@ export function getLinkTestTotalLatency(input: {
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   if (visibleDetails.length > 0) {
     const successfulLatencyDetails = visibleDetails.filter((detail) => detail.success && hasLatencyValue(detail));
-    if (successfulLatencyDetails.length === visibleDetails.length) {
+    if (input.isSuccess && successfulLatencyDetails.length === visibleDetails.length) {
       return successfulLatencyDetails.reduce((sum, detail) => sum + Number(detail.latencyMs || 0), 0);
     }
     return null;
@@ -711,9 +713,9 @@ export function LinkTestProbeView({
       ? segment
       : {
         ...segment,
-        success: undefined,
+        success: parsed.tunnelProbeTimedOut ? false : undefined,
         latencyMs: null,
-        message: null,
+        message: parsed.tunnelProbeTimedOut ? "探测超时" : null,
         pending: false,
       });
   }, [ignorePlannedResultsWhenDetailsPresent, parsed, plannedSegments]);
@@ -771,6 +773,7 @@ export function LinkTestProbeView({
     const testing = effectiveTesting && (isTesting || segment.pending);
     const idle = !testing && !!segment.idle;
     const ok = testing || segment.success;
+    const timedOut = !testing && !idle && !ok && /(?:超时|timeout)/i.test(String(segment.message || ""));
     const label = testing
       ? "探测中"
       : idle
@@ -783,7 +786,9 @@ export function LinkTestProbeView({
             ? formatLatencyMs(segment.latencyMs)
             : ok
               ? "--"
-              : "失败";
+              : timedOut
+                ? "超时"
+                : "失败";
     return {
       testing,
       idle,
@@ -1240,7 +1245,13 @@ export function LinkTestProbeView({
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
         )}>
-          {effectiveTesting ? "探测中" : !hasResult ? "等待探测" : formatLatencyMs(totalLatency)}
+          {effectiveTesting
+            ? "探测中"
+            : !hasResult
+              ? "等待探测"
+              : parsed.tunnelProbeTimedOut && totalLatency === null
+                ? "超时"
+                : formatLatencyMs(totalLatency)}
         </span>
       </div>
     </div>

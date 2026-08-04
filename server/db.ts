@@ -26,6 +26,7 @@ import { markLocalSetupComplete } from "./setupState";
 import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
+import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
 
 export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -34,6 +35,7 @@ export * from "./repositories/forwardRuleRepository";
 export * from "./repositories/tunnelRepository";
 export * from "./repositories/metricsRepository";
 export * from "./repositories/tokenRepository";
+export * from "./forwardGroupRuleIntegrity";
 export * from "./repositories/dashboardRepository";
 export * from "./repositories/forwardTestRepository";
 export * from "./repositories/permissionRepository";
@@ -249,6 +251,18 @@ export async function initDatabase() {
       if (repairs.length > 0) console.warn(`[Database] Disabled conflicting same-port rules count=${repairs.length}`);
     }).catch((error) => {
       console.warn("[Database] Same-port rule conflict repair skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await repairForwardGroupRuleIntegrity().then((repair) => {
+      const total = repair.orphanRules + repair.legacyRules + repair.legacyPointers + repair.orphanTemplates;
+      if (total > 0) {
+        console.warn(
+          `[Database] Repaired historical forward-group rule references orphanRules=${repair.orphanRules}`
+          + ` legacyRules=${repair.legacyRules} legacyPointers=${repair.legacyPointers}`
+          + ` orphanTemplates=${repair.orphanTemplates}`,
+        );
+      }
+    }).catch((error) => {
+      console.warn("[Database] Forward-group rule integrity repair skipped:", error instanceof Error ? error.message : String(error));
     });
     await purgeSettledPendingForwardRuleDeletes().then((count) => {
       if (count > 0) console.log(`[Database] Purged settled pending forward rules count=${count}`);

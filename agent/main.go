@@ -35,7 +35,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.184"
+var Version = "2.2.185"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2901,6 +2901,14 @@ func wakeAgentMetricsScheduler() {
 	}
 }
 
+func retainForcedTCPingRequest() {
+	agentMetricsForceTCPing.Store(true)
+	// Pair with finishTCPingCollection so either side wakes after a busy collector releases.
+	if atomic.LoadInt32(&tcpingCollectRunning) == 0 && atomic.LoadInt64(&actionPendingCount) == 0 {
+		wakeAgentMetricsScheduler()
+	}
+}
+
 func agentPresenceLoop(cfg Config) {
 	delay := scheduledAgentPresenceInterval(0)
 	var retries heartbeatRetryState
@@ -3020,7 +3028,7 @@ func agentMetricsScheduler(cfg Config) {
 			scheduleTrafficCollection(cfg)
 			force := agentMetricsForceTCPing.Swap(false)
 			if !scheduleAgentTCPing(cfg, force) && force {
-				agentMetricsForceTCPing.Store(true)
+				retainForcedTCPingRequest()
 			}
 		case <-agentMetricsWakeCh:
 			force := agentMetricsForceTCPing.Swap(false)
@@ -3028,7 +3036,7 @@ func agentMetricsScheduler(cfg Config) {
 			prioritizeTrafficCollectionForRules(len(state.RunningRules))
 			scheduleTrafficCollection(cfg)
 			if force && !scheduleAgentTCPing(cfg, true) {
-				agentMetricsForceTCPing.Store(true)
+				retainForcedTCPingRequest()
 			}
 		}
 	}

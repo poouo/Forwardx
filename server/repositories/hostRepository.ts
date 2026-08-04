@@ -25,7 +25,7 @@ import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows, 
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { sqlBool } from "./repositoryUtils";
-import { markOrphanedForwardGroupTemplatesPendingDelete } from "./forwardRuleRepository";
+import { repairForwardGroupRuleIntegrity } from "../forwardGroupRuleIntegrity";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
@@ -787,7 +787,7 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
     pendingCleanupCount: 0,
   };
   await repairPortForwardRuleHostReferences();
-  await markOrphanedForwardGroupTemplatesPendingDelete(hostId);
+  await repairForwardGroupRuleIntegrity(hostId);
   const managedRuleSql = sql`
     ${forwardRules.forwardGroupId} IS NOT NULL
     OR ${forwardRules.forwardGroupRuleId} IS NOT NULL

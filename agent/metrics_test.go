@@ -1341,6 +1341,106 @@ func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
 	}
 }
 
+func TestFinishTCPingCollectionImmediatelyWakesDeferredForceRun(t *testing.T) {
+	for {
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	previousForce := agentMetricsForceTCPing.Swap(true)
+	previousRunning := atomic.SwapInt32(&tcpingCollectRunning, 1)
+	t.Cleanup(func() {
+		agentMetricsForceTCPing.Store(previousForce)
+		atomic.StoreInt32(&tcpingCollectRunning, previousRunning)
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+		}
+	})
+
+	finishTCPingCollection()
+	if atomic.LoadInt32(&tcpingCollectRunning) != 0 {
+		t.Fatal("finished tcping collector remained marked active")
+	}
+	select {
+	case <-agentMetricsWakeCh:
+	default:
+		t.Fatal("deferred forced tcping run was not woken immediately")
+	}
+}
+
+func TestRetainForcedTCPingRequestWakesAfterCollectorAlreadyFinished(t *testing.T) {
+	for {
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	previousForce := agentMetricsForceTCPing.Swap(false)
+	previousRunning := atomic.SwapInt32(&tcpingCollectRunning, 0)
+	previousPending := atomic.SwapInt64(&actionPendingCount, 0)
+	t.Cleanup(func() {
+		agentMetricsForceTCPing.Store(previousForce)
+		atomic.StoreInt32(&tcpingCollectRunning, previousRunning)
+		atomic.StoreInt64(&actionPendingCount, previousPending)
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+		}
+	})
+
+	retainForcedTCPingRequest()
+	if !agentMetricsForceTCPing.Load() {
+		t.Fatal("deferred forced tcping request was not retained")
+	}
+	select {
+	case <-agentMetricsWakeCh:
+	default:
+		t.Fatal("finished tcping collector did not wake the retained forced run")
+	}
+}
+
+func TestRetainForcedTCPingRequestDoesNotSpinWhileActionsArePending(t *testing.T) {
+	for {
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	previousForce := agentMetricsForceTCPing.Swap(false)
+	previousRunning := atomic.SwapInt32(&tcpingCollectRunning, 0)
+	previousPending := atomic.SwapInt64(&actionPendingCount, 1)
+	t.Cleanup(func() {
+		agentMetricsForceTCPing.Store(previousForce)
+		atomic.StoreInt32(&tcpingCollectRunning, previousRunning)
+		atomic.StoreInt64(&actionPendingCount, previousPending)
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+		}
+	})
+
+	retainForcedTCPingRequest()
+	if !agentMetricsForceTCPing.Load() {
+		t.Fatal("forced tcping request was not retained while actions were pending")
+	}
+	select {
+	case <-agentMetricsWakeCh:
+		t.Fatal("forced tcping request spun while runtime actions were still pending")
+	default:
+	}
+}
+
 func TestScheduleTCPingCollectionDefersTopologyProbeWhileActionsPending(t *testing.T) {
 	atomic.StoreInt64(&actionPendingCount, 1)
 	atomic.StoreInt32(&tcpingCollectRunning, 0)
