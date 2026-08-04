@@ -64,6 +64,23 @@ test("native nft return counters keep shared targets isolated by original listen
   assert.doesNotMatch(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct state established,related counter accept comment/);
 });
 
+test("nft forwarding has compatibility fallbacks for selector and masquerade failures", () => {
+  const commands = buildNftForwardCmds({
+    id: 42,
+    sourcePort: 22022,
+    targetIp: "203.0.113.10",
+    targetPort: 443,
+    protocol: "tcp",
+  }).join("\n");
+
+  assert.match(commands, /forward selector failed, fallback=fwx-rule-42/);
+  assert.match(commands, /forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 accept comment/);
+  assert.match(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct state established,related accept comment/);
+  assert.match(commands, /rule failed, fallback=fwx-rule-42-masquerade-tcp/);
+  assert.match(commands, /postrouting meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 masquerade comment/);
+  assert.match(commands, /forwarding chains are unavailable/);
+});
+
 test("process counters do not attribute shared target traffic to every listener", () => {
   const commands = buildCountingChainCmds(22022, "203.0.113.10", 443, "tcp", "gost").join("\n");
 

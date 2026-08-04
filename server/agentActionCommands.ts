@@ -206,7 +206,7 @@ function nftOptional(command: string) {
 }
 
 function nftCounterRuleWithFallback(counterRule: string, alternateCounterRule: string, commentedRule: string, bareRule: string, label: string) {
-  return `${counterRule} || { echo "[nftables] counter rule failed, fallback=${label}"; ${alternateCounterRule} || { echo "[nftables] alternate counter rule failed, fallback=${label}:comment"; ${commentedRule} || { echo "[nftables] commented rule failed, fallback=${label}:bare"; ${bareRule} || true; }; }; }`;
+  return `${counterRule} || { echo "[nftables] counter rule failed, fallback=${label}"; ${alternateCounterRule} || { echo "[nftables] alternate counter rule failed, fallback=${label}:comment"; ${commentedRule} || { echo "[nftables] commented rule failed, fallback=${label}:bare"; ${bareRule}; }; }; }`;
 }
 
 function nftDnatCounterRuleWithFallback(counterRule: string, alternateCounterRule: string, commentedDnatRule: string, bareDnatRule: string, fallbackCounterRule: string, label: string) {
@@ -217,8 +217,17 @@ function nftEnsureCommentedRuleCmd(chain: string, comment: string, ruleBody: str
   return `if nft list chain inet ${nftTable} ${chain} >/dev/null 2>&1 && nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='comment "${comment}"' 'index($0, c) {found=1} END{exit found ? 0 : 1}'; then :; else nft add rule inet ${nftTable} ${chain} ${ruleBody} comment ${nftCommentLiteral(comment)} 2>/dev/null || true; fi; true`;
 }
 
-function nftEnsureDnatMasqueradeCmd() {
-  return nftEnsureCommentedRuleCmd("postrouting", nftDnatMasqueradeComment, "ct status dnat masquerade");
+function nftEnsureCommentedRuleWithFallbackCmd(
+  chain: string,
+  comment: string,
+  ruleBody: string,
+  fallbackComment: string,
+  fallbackRuleBody: string,
+) {
+  const hasRule = `nft list chain inet ${nftTable} ${chain} >/dev/null 2>&1 && nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='comment "${comment}"' 'index($0, c) {found=1} END{exit found ? 0 : 1}'`;
+  const primary = `nft add rule inet ${nftTable} ${chain} ${ruleBody} comment ${nftCommentLiteral(comment)} 2>/dev/null`;
+  const fallback = `nft add rule inet ${nftTable} ${chain} ${fallbackRuleBody} comment ${nftCommentLiteral(fallbackComment)} 2>/dev/null`;
+  return `if ${hasRule}; then :; else if ${primary}; then :; else echo "[nftables] rule failed, fallback=${fallbackComment}"; ${fallback}; fi; fi`;
 }
 
 function buildNftIpv6RoutefixCmds(family: string): string[] {
@@ -322,25 +331,34 @@ export function buildNftForwardCmds(rule: any): string[] {
     nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
+    `if nft list chain inet ${nftTable} prerouting >/dev/null 2>&1 && nft list chain inet ${nftTable} postrouting >/dev/null 2>&1 && nft list chain inet ${nftTable} forward >/dev/null 2>&1; then :; else echo "[nftables] forwarding chains are unavailable"; exit 1; fi`,
     ...buildNftCleanupCmds(rule),
     nftOptional(`nft add table inet ${nftTable}`),
     nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
-    nftEnsureDnatMasqueradeCmd(),
     ...buildNftIpv6RoutefixCmds(family),
   ];
   for (const proto of protos) {
     const inComment = nftDirectionComment(comment, "in");
     const outComment = nftDirectionComment(comment, "out");
     const originalPortMatch = `ct original proto-dst ${rule.sourcePort}`;
+    const targetOnlyInAccept = `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment ${nftCommentLiteral(inComment)}`;
+    const targetOnlyOutAccept = `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment ${nftCommentLiteral(outComment)}`;
     const fallbackInCounterRule = nftCounterRuleWithFallback(
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} counter accept comment ${nftCommentLiteral(inComment)}`,
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} comment ${nftCommentLiteral(inComment)} counter accept`,
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} comment ${nftCommentLiteral(inComment)} accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} accept`,
+      targetOnlyInAccept,
       `${inComment}:${proto}`,
     );
+    cmds.push(nftEnsureCommentedRuleWithFallbackCmd(
+      "postrouting",
+      nftDnatMasqueradeComment,
+      "ct status dnat masquerade",
+      `${comment}-masquerade-${proto}`,
+      `meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade`,
+    ));
     cmds.push(nftDnatCounterRuleWithFallback(
       `nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} counter dnat ${family} to ${dnatTarget} comment ${nftCommentLiteral(inComment)}`,
       `nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} comment ${nftCommentLiteral(inComment)} counter dnat ${family} to ${dnatTarget}`,
@@ -353,10 +371,10 @@ export function buildNftForwardCmds(rule: any): string[] {
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related counter accept comment ${nftCommentLiteral(outComment)}`,
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related comment ${nftCommentLiteral(outComment)} counter accept`,
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} ct state established,related comment ${nftCommentLiteral(outComment)} accept`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ${originalPortMatch} accept`,
+      targetOnlyOutAccept,
       `${outComment}:${proto}`,
     ));
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} accept comment ${nftCommentLiteral(comment)}`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} ${originalPortMatch} accept comment ${nftCommentLiteral(comment)} || { echo "[nftables] forward selector failed, fallback=fwx-rule-${ruleId}"; ${targetOnlyInAccept}; }`);
   }
   return cmds;
 }
