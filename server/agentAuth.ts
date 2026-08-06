@@ -44,11 +44,14 @@ export function getAgentAuthRequestPath(req: Request) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-export async function getAgentHostFromRequest(req: Request) {
+export async function getAgentHostFromRequest(
+  req: Request,
+  options: { recordActivity?: boolean } = {},
+) {
   const token = getResolvedAgentToken(req);
   if (!token) return null;
   const host = await db.getHostByAgentToken(token);
-  if (host) recordAuthenticatedAgentActivity((host as any).id);
+  if (host && options.recordActivity !== false) recordAuthenticatedAgentActivity((host as any).id);
   return host;
 }
 
@@ -61,7 +64,12 @@ export async function getAgentHostIdentityFromRequest(req: Request) {
 }
 
 export async function getAgentPresenceHostFromRequest(req: Request) {
-  const identity = await getAgentHostIdentityFromRequest(req);
+  const token = getResolvedAgentToken(req);
+  if (!token) return null;
+  // The presence route must inspect the pre-request liveness state before this
+  // request records activity, otherwise it can miss an offline -> online
+  // recovery transition and skip runtime reconciliation.
+  const identity = await db.getAgentAuthHostIdentity(token);
   if (!identity) return null;
   return db.getHostAgentPresenceById(identity.id);
 }

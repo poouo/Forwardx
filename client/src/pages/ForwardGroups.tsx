@@ -139,6 +139,7 @@ type GroupForm = {
   recordType: "A" | "AAAA" | "CNAME";
   failoverSeconds: string;
   recoverSeconds: string;
+  rateLimitMbps: string;
   trafficMultiplier: string;
   chinaHealthCheckEnabled: boolean;
   chinaHealthCheckTarget: string;
@@ -171,6 +172,7 @@ const makeDefaultForm = (): GroupForm => ({
   recordType: "A",
   failoverSeconds: "60",
   recoverSeconds: "120",
+  rateLimitMbps: "0",
   trafficMultiplier: "1",
   chinaHealthCheckEnabled: false,
   chinaHealthCheckTarget: "",
@@ -1138,6 +1140,7 @@ export function ForwardGroupsContent({
       recordType: group.recordType || "A",
       failoverSeconds: String(Number(group.failoverSeconds || 60)),
       recoverSeconds: String(Number(group.recoverSeconds || 120)),
+      rateLimitMbps: String(Math.max(0, Number(group.rateLimitMbps) || 0)),
       trafficMultiplier: String(trafficMultiplierToInputValue(group.trafficMultiplier)).replace(/\.?0+$/, ""),
       chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: group.chinaHealthCheckTarget || "",
@@ -1495,6 +1498,10 @@ export function ForwardGroupsContent({
     if ((isPortMode || isChainGroup || isFailoverMode) && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
       return toast.error("流量倍率必须在 0.01 - 50 之间");
     }
+    const rateLimitMbps = Number(form.rateLimitMbps);
+    if ((isPortMode || isChainGroup || isFailoverMode) && (!Number.isInteger(rateLimitMbps) || rateLimitMbps < 0 || rateLimitMbps > 1_000_000)) {
+      return toast.error("限速必须为 0 - 1000000 之间的整数 Mbps");
+    }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     const runtimeConfigSupported = isPortMode || isChainGroup || isFailoverMode;
     const runtimeTcpOptionsSupported = runtimeConfigSupported && form.protocol !== "udp";
@@ -1516,6 +1523,7 @@ export function ForwardGroupsContent({
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
       recoverSeconds,
+      rateLimitMbps: runtimeConfigSupported ? rateLimitMbps : 0,
       trafficMultiplier: runtimeConfigSupported ? trafficMultiplier : 100,
       protocol: runtimeConfigSupported ? form.protocol : "both",
       forwardType: form.forwardType,
@@ -2402,46 +2410,72 @@ export function ForwardGroupsContent({
             )}
 
             {runtimeConfigMode && (
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_112px] sm:items-end">
-                <div className="space-y-2">
-                  <Label>转发工具</Label>
-                  <Select
-                    value={form.forwardType}
-                    disabled={availableForwardTypes.length === 0}
-                    onValueChange={(value) => {
-                      const forwardType = value as ForwardType;
-                      const tcpSupported = form.protocol !== "udp";
-                      setForm({
-                        ...form,
-                        forwardType,
-                        proxyProtocolReceive: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolReceive,
-                        proxyProtocolSend: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolSend,
-                        tcpFastOpen: tcpSupported && forwardType === "realm" && form.tcpFastOpen,
-                        zeroCopy: tcpSupported && forwardType === "realm" && form.zeroCopy,
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择转发工具" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableForwardTypes.map((type) => (
-                        <SelectItem key={type} value={type}>{FORWARD_TYPE_LABELS[type]}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              <div className="space-y-2.5 border-t border-border/60 pt-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">运行配置</p>
+                  <p id="forward-group-rate-limit-help" className="text-xs text-muted-foreground">0 表示不限速</p>
                 </div>
-                <div className="space-y-2">
-                  <Label>流量倍率</Label>
-                  <Input
-                    type="number"
-                    min={0.01}
-                    max={50}
-                    step={0.01}
-                    value={form.trafficMultiplier}
-                    onChange={(event) => setForm({ ...form, trafficMultiplier: event.target.value })}
-                    placeholder="1"
-                  />
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(132px,160px)_112px] sm:items-end">
+                  <div className="space-y-2">
+                    <Label>转发工具</Label>
+                    <Select
+                      value={form.forwardType}
+                      disabled={availableForwardTypes.length === 0}
+                      onValueChange={(value) => {
+                        const forwardType = value as ForwardType;
+                        const tcpSupported = form.protocol !== "udp";
+                        setForm({
+                          ...form,
+                          forwardType,
+                          proxyProtocolReceive: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolReceive,
+                          proxyProtocolSend: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolSend,
+                          tcpFastOpen: tcpSupported && forwardType === "realm" && form.tcpFastOpen,
+                          zeroCopy: tcpSupported && forwardType === "realm" && form.zeroCopy,
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="选择转发工具" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableForwardTypes.map((type) => (
+                          <SelectItem key={type} value={type}>{FORWARD_TYPE_LABELS[type]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="forward-group-rate-limit">资源限速</Label>
+                    <div className="flex h-10 min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:border-ring focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
+                      <Input
+                        id="forward-group-rate-limit"
+                        aria-describedby="forward-group-rate-limit-help"
+                        className="h-10 min-w-0 flex-1 rounded-none border-0 bg-transparent px-3 tabular-nums focus-visible:border-0 focus-visible:ring-0"
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        max={1000000}
+                        step={1}
+                        value={form.rateLimitMbps}
+                        onChange={(event) => setForm({ ...form, rateLimitMbps: event.target.value })}
+                        placeholder="0"
+                      />
+                      <span className="flex h-full shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground">Mbps</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>流量倍率</Label>
+                    <Input
+                      className="tabular-nums"
+                      type="number"
+                      min={0.01}
+                      max={50}
+                      step={0.01}
+                      value={form.trafficMultiplier}
+                      onChange={(event) => setForm({ ...form, trafficMultiplier: event.target.value })}
+                      placeholder="1"
+                    />
+                  </div>
                 </div>
               </div>
             )}

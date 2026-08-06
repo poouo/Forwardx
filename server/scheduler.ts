@@ -72,10 +72,13 @@ async function refreshUserRuleAgents(userId: number, reason: string) {
 
 async function runMonthlyTrafficReset() {
   try {
-    const today = new Date().getDate();
+    const now = new Date();
+    const today = now.getDate();
     const usersToReset = await db.getUsersForAutoReset(today);
     for (const user of usersToReset) {
-      await db.resetUserTraffic(user.id);
+      const resetDay = Math.min(28, Math.max(1, Math.floor(Number(user.trafficResetDay) || 1)));
+      const boundary = new Date(now.getFullYear(), now.getMonth(), resetDay);
+      if (!await db.resetUserTrafficForCycle(user.id, boundary, now)) continue;
       const recovery = await db.recoverUserForwardAccessIfEligible(user.id);
       if (recovery.restored) {
         await refreshUserRuleAgents(user.id, "traffic-reset-forward-restored");
@@ -100,6 +103,7 @@ async function runMonthlyTrafficReset() {
     if (recharged > 0) {
       console.log(`[Scheduler] Subscription traffic recharge: ${recharged} user(s) reset`);
     }
+
   } catch (error) {
     console.error("[Scheduler] Monthly traffic reset error:", error);
   }
@@ -533,6 +537,29 @@ async function runHostStatusSweep() {
   }
 }
 
+const FORWARD_GROUP_LIVENESS_PRIME_RETRY_MS = [0, 1_000, 3_000, 7_000, 15_000] as const;
+
+async function primeForwardGroupLivenessWithRetry() {
+  for (let attempt = 0; attempt < FORWARD_GROUP_LIVENESS_PRIME_RETRY_MS.length; attempt += 1) {
+    const delayMs = FORWARD_GROUP_LIVENESS_PRIME_RETRY_MS[attempt];
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, delayMs);
+        timer.unref?.();
+      });
+    }
+    try {
+      await db.primeForwardGroupHostLivenessDeadlines();
+      return;
+    } catch (error) {
+      const finalAttempt = attempt === FORWARD_GROUP_LIVENESS_PRIME_RETRY_MS.length - 1;
+      console.warn(
+        `[ForwardGroup] Liveness deadline prime failed attempt=${attempt + 1}/${FORWARD_GROUP_LIVENESS_PRIME_RETRY_MS.length}${finalAttempt ? " giving-up=true" : ""}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 async function runUpdateAutoCheck() {
   try {
     await checkPanelUpdateTask(false);
@@ -573,9 +600,7 @@ export function startScheduler() {
   hostStatusPrimePromise = primeHostStatusNotifier().finally(() => {
     hostStatusPrimePromise = null;
   });
-  void db.primeForwardGroupHostLivenessDeadlines().catch((error) => {
-    console.warn(`[ForwardGroup] Liveness deadline prime failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  void primeForwardGroupLivenessWithRetry();
 
   const monthlyTrafficReset = createNonOverlappingScheduledTask("monthly traffic reset", async () => {
     await runMonthlyTrafficReset();

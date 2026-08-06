@@ -17,6 +17,7 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
     const runtime = await import(moduleUrl("server/dbRuntime.ts"));
     const schema = await import(moduleUrl("server/dbSchema.ts"));
     const trafficBilling = await import(moduleUrl("server/repositories/trafficBillingRepository.ts"));
+    const ruleRepository = await import(moduleUrl("server/repositories/forwardRuleRepository.ts"));
     const linkAccess = await import(moduleUrl("server/linkAccessView.ts"));
     const { usersRouter } = await import(moduleUrl("server/routers/users.ts"));
     const { rulesRouter } = await import(moduleUrl("server/routers/rules.ts"));
@@ -125,6 +126,9 @@ test("revoked resource grants stop owned rules without hiding or deleting them",
         ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
         [103, 1, "managed-child", "iptables", "tcp", 20, 102, 220, 0, 11300, "203.0.113.12", 80, 2, 1, 1],
       );
+      const syncRuleIds = (await ruleRepository.getForwardRulesForUserSync(2)).map((rule) => Number(rule.id));
+      assert.ok(syncRuleIds.includes(103), "user runtime refresh must include managed group children");
+      assert.equal(syncRuleIds.includes(102), false, "user runtime refresh must not treat the visible template as a listener");
       for (const [id, hostId, name, groupId, sourcePort] of [
         [108, 3, "public-billing-group-rule", 22, 11800],
         [109, 4, "private-billing-group-rule", 23, 11900],

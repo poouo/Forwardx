@@ -6,7 +6,7 @@ import {
   type InsertHostProbeServiceStat,
 } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
-import { inList, limitOffset, quoteIdentifier } from "../dbCompat";
+import { boolLiteral, bucketExpression, inList, quoteIdentifier } from "../dbCompat";
 import { clampPositiveInt, epochSeconds } from "./repositoryUtils";
 
 export type HostProbeMethod = "tcping" | "ping";
@@ -197,11 +197,16 @@ export async function insertHostProbeServiceStats(stats: InsertHostProbeServiceS
   await db.insert(hostProbeServiceStats).values(stats);
 }
 
-export async function getLatestHostProbeServiceStats(serviceIds: number[]) {
+export async function getLatestHostProbeServiceStats(serviceIds: number[], hostId?: number) {
   const ids = Array.from(new Set(serviceIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
   if (ids.length === 0) return new Map<number, any>();
+  const scopedHostId = Number(hostId || 0);
   const q = quoteIdentifier;
   const list = inList(ids);
+  const hostCondition = Number.isInteger(scopedHostId) && scopedHostId > 0
+    ? ` AND ${q("hostId")} = ?`
+    : "";
+  const params = hostCondition ? [...list.params, scopedHostId] : list.params;
   const rows = await queryRaw<any>(
     `SELECT s.${q("serviceId")} AS ${q("serviceId")},
             s.${q("hostId")} AS ${q("hostId")},
@@ -213,9 +218,10 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[]) {
          SELECT ${q("serviceId")}, MAX(${q("id")}) AS ${q("id")}
            FROM ${q("host_probe_service_stats")}
           WHERE ${q("serviceId")} IN ${list.sql}
+            ${hostCondition}
           GROUP BY ${q("serviceId")}
        ) latest ON latest.${q("serviceId")} = s.${q("serviceId")} AND latest.${q("id")} = s.${q("id")}`,
-    list.params,
+    params,
   );
   const latest = new Map<number, any>();
   for (const row of rows) {
@@ -240,33 +246,89 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
   const limit = clampPositiveInt(opts.limit, 20_000, 100_000);
   const since = new Date(Date.now() - hours * 3600 * 1000);
   const q = quoteIdentifier;
-  const conditions = [`${q("recordedAt")} >= ?`];
+  const conditions = [`s.${q("recordedAt")} >= ?`];
   const params: any[] = [epochSeconds(since)];
   if (ids.length > 0) {
     const list = inList(ids);
-    conditions.push(`${q("serviceId")} IN ${list.sql}`);
+    conditions.push(`s.${q("serviceId")} IN ${list.sql}`);
     params.push(...list.params);
   }
   if (Number.isInteger(hostId) && hostId > 0) {
-    conditions.push(`${q("hostId")} = ?`);
+    conditions.push(`s.${q("hostId")} = ?`);
     params.push(hostId);
   }
-  const page = limitOffset(limit);
-  const rows = await queryRaw<any>(
-    `SELECT ${q("serviceId")}, ${q("hostId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
-       FROM ${q("host_probe_service_stats")}
-      WHERE ${conditions.join(" AND ")}
-      ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
-      ${page.sql}`,
-    [...params, ...page.params],
+  // The client already renders one point per minute.  Coarser buckets for
+  // longer ranges keep a busy panel from returning millions of raw probes,
+  // while retaining the complete requested time window.
+  const baseBucketSeconds = hours <= 1
+    ? 60
+    : hours <= 6
+      ? 120
+      : hours <= 24
+        ? 300
+        : 600;
+  // `limit` used to be applied to the raw rows globally, which made a 24h
+  // request contain only the last few hours when several services reported
+  // frequently. Use it to choose a safe bucket width instead. Host-scoped
+  // requests with explicit services can be estimated directly; for all other
+  // calls count the actual service/host series so the response stays bounded
+  // without truncating the beginning of the requested window.
+  let seriesCount = hostId > 0 && ids.length > 0 ? ids.length : 0;
+  if (seriesCount === 0) {
+    const countRows = await queryRaw<{ count: unknown }>(
+      `SELECT COUNT(*) AS ${q("count")}
+         FROM (
+           SELECT s.${q("serviceId")}, s.${q("hostId")}
+             FROM ${q("host_probe_service_stats")} s
+            WHERE ${conditions.join(" AND ")}
+            GROUP BY s.${q("serviceId")}, s.${q("hostId")}
+         ) series_scope`,
+      params,
+    );
+    seriesCount = Math.max(1, Number(countRows[0]?.count) || 1);
+  }
+  const maxBucketsPerSeries = Math.max(1, Math.floor(limit / seriesCount));
+  const durationSeconds = hours * 3600;
+  const bucketForLimit = Math.ceil(durationSeconds / Math.max(1, maxBucketsPerSeries - 1));
+  const bucketSeconds = Math.max(
+    baseBucketSeconds,
+    Math.max(1, Math.ceil(bucketForLimit / 60) * 60),
   );
-  return rows.reverse().map((row) => ({
-    serviceId: Number(row.serviceId),
-    hostId: Number(row.hostId),
-    latencyMs: row.latencyMs == null ? null : Number(row.latencyMs),
-    isTimeout: rowBool(row.isTimeout),
-    recordedAt: rowDate(row.recordedAt),
-  }));
+  const bucketExpr = bucketExpression("s", "recordedAt", bucketSeconds);
+  const successful = boolLiteral(false);
+  const timedOut = boolLiteral(true);
+  const rows = await queryRaw<any>(
+    `SELECT s.${q("serviceId")},
+            s.${q("hostId")},
+            ${bucketExpr} AS ${q("bucketStart")},
+            AVG(CASE WHEN s.${q("isTimeout")} = ${successful}
+                          AND s.${q("latencyMs")} IS NOT NULL
+                     THEN s.${q("latencyMs")} END) AS ${q("avgLatency")},
+            SUM(CASE WHEN s.${q("isTimeout")} = ${successful}
+                          AND s.${q("latencyMs")} IS NOT NULL
+                     THEN 1 ELSE 0 END) AS ${q("sampleCount")},
+            SUM(CASE WHEN s.${q("isTimeout")} = ${timedOut}
+                     THEN 1 ELSE 0 END) AS ${q("timeoutCount")}
+       FROM ${q("host_probe_service_stats")} s
+      WHERE ${conditions.join(" AND ")}
+      GROUP BY s.${q("serviceId")}, s.${q("hostId")}, ${bucketExpr}
+      ORDER BY ${q("bucketStart")} ASC, s.${q("serviceId")} ASC, s.${q("hostId")} ASC`,
+    params,
+  );
+  return rows.map((row) => {
+    const sampleCount = Number(row.sampleCount) || 0;
+    const timeoutCount = Number(row.timeoutCount) || 0;
+    const hasLatency = sampleCount > 0 && row.avgLatency != null;
+    return {
+      serviceId: Number(row.serviceId),
+      hostId: Number(row.hostId),
+      latencyMs: hasLatency ? Math.round(Number(row.avgLatency)) : null,
+      // A bucket is a timeout only when it has no successful latency sample.
+      // This keeps a single transient timeout from hiding otherwise good data.
+      isTimeout: !hasLatency && timeoutCount > 0,
+      recordedAt: rowDate(row.bucketStart),
+    };
+  });
 }
 export async function cleanOldHostProbeServiceStats(retainHours = 72) {
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);

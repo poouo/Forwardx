@@ -780,8 +780,8 @@ test("entry group health windows suppress transient DDNS flaps", () => {
       await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ? WHERE "id" = 1', [now - 300]);
       await runtime.executeRaw('UPDATE "forward_group_members" SET "chinaHealthStatus" = \'unknown\', "chinaHealthCheckedAt" = NULL, "failureSince" = ? WHERE "id" = 701', [now - 11]);
       await groups.runForwardGroupFailover(70);
-      assert.equal(requests.length, beforePendingHealth, "panel communication loss must not change DDNS while health is pending");
-      assert.deepEqual(requests.at(-1).values, ["198.51.100.10", "198.51.100.20"]);
+      assert.equal(requests.length, beforePendingHealth + 1, "confirmed host offline must override a pending health snapshot");
+      assert.deepEqual(requests.at(-1).values, ["198.51.100.20"]);
 
       await runtime.executeRaw(
         'UPDATE "forward_group_members" SET "chinaHealthStatus" = \'unhealthy\', "chinaHealthCheckedAt" = ?, "failureSince" = ? WHERE "id" = 701',
@@ -793,7 +793,7 @@ test("entry group health windows suppress transient DDNS flaps", () => {
       const oneEntry = requests.length;
       await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ? WHERE "id" = 2', [now - 300]);
       await groups.runForwardGroupFailover(70);
-      assert.equal(requests.length, oneEntry, "host communication flags alone must not remove a healthy entry");
+      assert.equal(requests.length, oneEntry, "an all-offline group must retain its last managed record");
       await runtime.executeRaw(
         'UPDATE "forward_group_members" SET "chinaHealthStatus" = \'unhealthy\', "chinaHealthCheckedAt" = ?, "failureSince" = ? WHERE "id" = 702',
         [now, now - 11],

@@ -827,7 +827,6 @@ export async function getForwardRulesForUserSync(userId: number) {
     eq(forwardRules.userId, userId),
     sql`COALESCE(${forwardRules.pendingDelete}, ${sqlBool(false)}) = ${sqlBool(false)}`,
     sql`COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(false)}`,
-    sql`COALESCE(${forwardRules.forwardGroupRuleId}, 0) = 0`,
   )).orderBy(sql`${forwardRules.sortOrder} ASC`, desc(forwardRules.createdAt), desc(forwardRules.id));
 }
 

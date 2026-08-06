@@ -61,6 +61,7 @@ const baseSchema = z.object({
   recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),
   failoverSeconds: z.number().int().min(10).max(3600).default(60),
   recoverSeconds: z.number().int().min(10).max(3600).default(120),
+  rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
   trafficMultiplier: z.number().int().min(1).max(5000).optional().default(100),
   chinaHealthCheckEnabled: z.boolean().default(false),
   chinaHealthCheckTarget: z.string().max(253).nullable().optional(),

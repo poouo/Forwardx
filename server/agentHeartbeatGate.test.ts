@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeAgentReportedAddress } from "./agentAddressState";
 import {
+  allocateProtocolGuardPorts,
   buildNginxCertificateCleanupCmd,
   buildNginxRuntimeRetirementPlan,
   buildNginxStreamConfig,
@@ -10,7 +11,11 @@ import {
   buildNginxTunnelTlsClientOptions,
   buildGostRuleListener,
   forwardXUDPTargetAddress,
+  selectEffectiveForwardRateLimit,
+  selectProtocolGuardRateLimit,
+  selectProtocolGuardProxyProtocol,
   selectForwardChainListenerPort,
+  shouldReconcileProtocolGuardBackend,
   stableDesiredStateHash,
 } from "./agentHeartbeatRoute";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
@@ -87,6 +92,193 @@ test("Nginx UDP streams keep their short session timeout without TCP keepalive d
   assert.match(config, /listen \[::\]:5353 udp reuseport ipv6only=off;/);
   assert.match(config, /proxy_timeout 2m;/);
   assert.doesNotMatch(config, /proxy_socket_keepalive|so_keepalive/);
+});
+
+test("guarded Nginx backends are reachable only through the Agent loopback proxy", () => {
+  const tcpConfig = buildNginxStreamServerBlock({
+    name: "guarded rule 9 tcp",
+    listenPort: 43009,
+    proto: "tcp",
+    upstream: "fwx_rule_9_tcp",
+    loopbackOnly: true,
+  });
+  const udpConfig = buildNginxStreamServerBlock({
+    name: "guarded rule 9 udp",
+    listenPort: 43009,
+    proto: "udp",
+    upstream: "fwx_rule_9_udp",
+    loopbackOnly: true,
+  });
+
+  assert.match(tcpConfig, /listen 127\.0\.0\.1:43009 so_keepalive=60s:15s:4;/);
+  assert.match(udpConfig, /listen 127\.0\.0\.1:43009 udp reuseport;/);
+  assert.doesNotMatch(`${tcpConfig}\n${udpConfig}`, /\[::\]|ipv6only=off/);
+});
+
+test("protocol guard rate limits require a supported rule and a current Agent", () => {
+  const enabled = selectProtocolGuardRateLimit({
+    agentVersion: "2.2.187",
+    hostId: 3,
+    rule: { forwardType: "realm", userId: 7 },
+    limitIn: 125_000,
+    limitOut: 250_000,
+  });
+  assert.deepEqual(enabled, {
+    rateLimitScope: "user-7-host-3",
+    limitIn: 125_000,
+    limitOut: 250_000,
+  });
+
+  const resourceLimited = selectProtocolGuardRateLimit({
+    agentVersion: "2.2.187",
+    hostId: 3,
+    rule: { forwardType: "nftables", userId: 7 },
+    rateLimitScope: "user-7-host-3-group-19",
+    limitIn: 125_000,
+    limitOut: 125_000,
+  });
+  assert.equal(resourceLimited.rateLimitScope, "user-7-host-3-group-19");
+
+  const nginxTunnelEntry = selectProtocolGuardRateLimit({
+    agentVersion: "2.2.187",
+    hostId: 3,
+    rule: { forwardType: "gost", userId: 7, tunnelId: 11, tunnelMode: "nginx_stream", tunnelEntry: true },
+    limitIn: 125_000,
+    limitOut: 125_000,
+  });
+  assert.deepEqual(nginxTunnelEntry, {
+    rateLimitScope: "user-7-host-3-tunnel-11",
+    limitIn: 125_000,
+    limitOut: 125_000,
+  });
+
+  for (const options of [
+    { agentVersion: "2.2.186", rule: { forwardType: "iptables", userId: 7 }, limitIn: 125_000 },
+    { agentVersion: "2.2.187", rule: { forwardType: "gost", userId: 7 }, limitIn: 125_000 },
+    { agentVersion: "2.2.187", rule: { forwardType: "gost", userId: 7, tunnelId: 11, tunnelMode: "nginx_stream", tunnelEntry: false }, limitIn: 125_000 },
+    { agentVersion: "2.2.187", rule: { forwardType: "nftables", userId: 7, tunnelId: 8 }, limitIn: 125_000 },
+    { agentVersion: "2.2.187", rule: { forwardType: "nginx", userId: 7 }, limitIn: 0 },
+  ]) {
+    assert.deepEqual(selectProtocolGuardRateLimit({
+      hostId: 3,
+      limitOut: 0,
+      ...options,
+    }), { rateLimitScope: "", limitIn: 0, limitOut: 0 });
+  }
+});
+
+test("resource rate limits use the strictest configured scope", () => {
+  const base = { userId: 7, hostId: 3, forwardGroupId: 19 };
+  assert.deepEqual(selectEffectiveForwardRateLimit(base), { mbps: 0, scope: "" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({
+    ...base,
+    userLimitMbps: 200,
+    forwardGroupLimitMbps: 80,
+  }), { mbps: 80, scope: "user-7-host-3-group-19" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({
+    ...base,
+    userLimitMbps: 80,
+    forwardGroupLimitMbps: 200,
+  }), { mbps: 80, scope: "user-7-host-3" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({
+    ...base,
+    userLimitMbps: 80,
+    forwardGroupLimitMbps: 80,
+  }), { mbps: 80, scope: "user-7-host-3" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({
+    ...base,
+    userLimitMbps: 300,
+    tunnelId: 11,
+    tunnelLimitMbps: 160,
+    forwardGroupLimitMbps: 120,
+  }), { mbps: 120, scope: "user-7-host-3-group-19" });
+});
+
+test("running process-backed Guards remain in desired reconciliation", () => {
+  for (const forwardType of ["gost", "realm", "socat", "nginx"]) {
+    assert.equal(shouldReconcileProtocolGuardBackend(true, forwardType), true, forwardType);
+  }
+  assert.equal(shouldReconcileProtocolGuardBackend(false, "realm"), false);
+  assert.equal(shouldReconcileProtocolGuardBackend(true, "iptables"), false);
+});
+
+test("Nginx guard strips received PROXY headers unless downstream sending is enabled", () => {
+  const nginxBackend = {
+    backendPort: 43009,
+    backendForwardType: "nginx",
+  };
+
+  assert.deepEqual(selectProtocolGuardProxyProtocol({
+    ...nginxBackend,
+    receive: true,
+    send: false,
+  }), {
+    proxyProtocolReceive: true,
+    proxyProtocolSend: false,
+  });
+  assert.deepEqual(selectProtocolGuardProxyProtocol({
+    ...nginxBackend,
+    receive: false,
+    send: true,
+  }), {
+    proxyProtocolReceive: false,
+    proxyProtocolSend: true,
+  });
+  assert.deepEqual(selectProtocolGuardProxyProtocol({
+    ...nginxBackend,
+    receive: true,
+    send: true,
+  }), {
+    proxyProtocolReceive: true,
+    proxyProtocolSend: true,
+  });
+});
+
+test("PROXY-aware Guard backends receive internal metadata before applying their send setting", () => {
+  for (const backendForwardType of ["gost", "realm"]) {
+    assert.deepEqual(selectProtocolGuardProxyProtocol({
+      backendPort: 43009,
+      backendForwardType,
+      receive: true,
+      send: false,
+    }), {
+      proxyProtocolReceive: true,
+      proxyProtocolSend: true,
+    });
+  }
+});
+
+test("protocol guard internal ports avoid public listeners and each other deterministically", () => {
+  const rules = [
+    { id: 1, sourcePort: 43001, targetPort: 39001 },
+    { id: 2001, sourcePort: 39001 },
+    { id: 4001, sourcePort: 45001 },
+  ];
+  const reservedPorts = [41001, 61000];
+  const plans = allocateProtocolGuardPorts(rules, reservedPorts);
+  const reversedPlans = allocateProtocolGuardPorts([...rules].reverse(), [...reservedPorts].reverse());
+
+  assert.deepEqual(Array.from(plans.entries()), Array.from(reversedPlans.entries()));
+  const publicPorts = new Set([
+    ...rules.map((rule) => rule.sourcePort),
+    ...rules.map((rule) => rule.targetPort).filter((port): port is number => Number.isInteger(port)),
+    ...reservedPorts,
+  ]);
+  const internalPorts = Array.from(plans.values()).flatMap((plan) => [
+    plan.guardListenPort,
+    plan.failoverProxyPort,
+    plan.guardBackendPort,
+  ]);
+  assert.equal(new Set(internalPorts).size, internalPorts.length);
+  for (const port of internalPorts) assert.equal(publicPorts.has(port), false, `port ${port} is publicly reserved`);
+  assert.notEqual(plans.get(1)?.guardBackendPort, 43001);
+  assert.notEqual(plans.get(2001)?.guardListenPort, 41001);
+
+  assert.deepEqual(allocateProtocolGuardPorts([{ id: 7, sourcePort: 10007 }]).get(7), {
+    guardListenPort: 39007,
+    failoverProxyPort: 41007,
+    guardBackendPort: 43007,
+  });
 });
 
 test("GOST UDP rule listeners retain active game sessions with bounded buffers", () => {

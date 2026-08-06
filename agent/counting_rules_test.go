@@ -38,12 +38,14 @@ func TestCountingRuleModesSeparateSelfReportedNativeAndAgentCounters(t *testing.
 	}
 	if fmt.Sprint(countingRuleModeForForwardType("realm")) != process ||
 		fmt.Sprint(countingRuleModeForForwardType("socat")) != process ||
-		fmt.Sprint(countingRuleModeForForwardType("nginx")) != process {
-		t.Fatalf("process forwarders must share the listener counting layout, got gost=%q realm=%q socat=%q nginx=%q",
+		fmt.Sprint(countingRuleModeForForwardType("nginx")) != process ||
+		fmt.Sprint(countingRuleModeForForwardType("guard")) != process {
+		t.Fatalf("process forwarders must share the listener counting layout, got gost=%q realm=%q socat=%q nginx=%q guard=%q",
 			process,
 			fmt.Sprint(countingRuleModeForForwardType("realm")),
 			fmt.Sprint(countingRuleModeForForwardType("socat")),
 			fmt.Sprint(countingRuleModeForForwardType("nginx")),
+			fmt.Sprint(countingRuleModeForForwardType("guard")),
 		)
 	}
 }

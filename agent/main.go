@@ -33,9 +33,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.186"
+var Version = "2.2.187"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -127,6 +129,17 @@ const protocolGuardSampleMaxBytes = 512
 const protocolGuardTLSMinRecordSize = 64
 const protocolGuardSOCKS5MaxMethods = 16
 const protocolGuardUDPIdleTimeout = 2 * time.Minute
+
+// Each UDP session owns a socket, goroutine and maximum-size datagram buffer.
+// Bound each rule so a source flood cannot reserve hundreds of megabytes before cleanup.
+const protocolGuardUDPMaxSessions = 512
+
+// Protocol guard copies use 32 KiB chunks while UDP packets may be almost
+// 64 KiB. Keep the bucket burst large enough for either without allowing an
+// unbounded one-time burst when a very high rate is configured.
+const protocolGuardRateBurstMin = 64 * 1024
+const protocolGuardRateBurstMax = 1024 * 1024
+const protocolGuardRateWaitChunk = 16 * 1024
 const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
@@ -215,6 +228,10 @@ func fxpEndpointEventsSnapshot() []fxpEndpointEvent {
 
 var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
+var protocolGuardSyncMu sync.Mutex
+var protocolGuardSyncGeneration atomic.Uint64
+var protocolGuardRateMu sync.Mutex
+var protocolGuardRates = map[protocolGuardRateKey]*protocolGuardSharedRateLimiter{}
 var failoverControlMu sync.Mutex
 var failoverMu sync.Mutex
 var failoverProxies = map[string]*failoverProxy{}
@@ -1308,6 +1325,8 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 	}
 	forwardType := strings.TrimSpace(state.ForwardType)
 	switch forwardType {
+	case "guard":
+		return protocolGuardRuleStateReady(state, readiness)
 	case "realm", "socat":
 		return managedRuleServiceListenReady(forwardType, port, state.Protocol, readiness)
 	case "iptables":
@@ -2265,40 +2284,41 @@ type selfTestResp struct {
 }
 
 type action struct {
-	TunnelID                 int                 `json:"tunnelId"`
-	StatusType               string              `json:"statusType"`
-	RuleID                   int                 `json:"ruleId"`
-	PluginID                 string              `json:"pluginId,omitempty"`
-	IssuedAt                 int64               `json:"issuedAt,omitempty"`
-	ConfigRevision           int64               `json:"configRevision,omitempty"`
-	ConfigHash               string              `json:"configHash,omitempty"`
-	KnownRunning             bool                `json:"knownRunning,omitempty"`
-	Op                       string              `json:"op"`
-	ForwardType              string              `json:"forwardType"`
-	SourcePort               int                 `json:"sourcePort"`
-	TargetIP                 string              `json:"targetIp"`
-	TargetPort               int                 `json:"targetPort"`
-	Protocol                 string              `json:"protocol"`
-	PreCommands              []string            `json:"preCommands"`
-	ServiceName              string              `json:"svcName"`
-	ServiceNameExtra         string              `json:"svcNameExtra"`
-	Unit                     string              `json:"unit"`
-	UnitExtra                string              `json:"unitExtra"`
-	Commands                 []string            `json:"commands"`
-	RemovalCommands          []string            `json:"removalCommands,omitempty"`
-	RemovalToken             string              `json:"removalToken,omitempty"`
-	ManagedConfigs           []managedConfigSpec `json:"managedConfigs,omitempty"`
-	RollbackCommands         []string            `json:"rollbackCommands,omitempty"`
-	PostCommands             []string            `json:"postCommands"`
-	Fxp                      *fxpSpec            `json:"fxp,omitempty"`
-	FXPEntryGroup            *fxpSpec            `json:"-"`
-	WireGuard                *wireGuardSpec      `json:"wireGuard,omitempty"`
-	Failover                 *failoverSpec       `json:"failover,omitempty"`
-	ReportStatus             *bool               `json:"reportStatus,omitempty"`
-	FailureMessage           string              `json:"failureMessage,omitempty"`
-	ForceRuntimeSync         bool                `json:"forceRuntimeSync,omitempty"`
-	RequiresMimicEnvironment bool                `json:"requiresMimicEnvironment,omitempty"`
-	HandoffOnly              bool                `json:"-"`
+	TunnelID                  int                 `json:"tunnelId"`
+	StatusType                string              `json:"statusType"`
+	RuleID                    int                 `json:"ruleId"`
+	PluginID                  string              `json:"pluginId,omitempty"`
+	IssuedAt                  int64               `json:"issuedAt,omitempty"`
+	ConfigRevision            int64               `json:"configRevision,omitempty"`
+	ConfigHash                string              `json:"configHash,omitempty"`
+	KnownRunning              bool                `json:"knownRunning,omitempty"`
+	Op                        string              `json:"op"`
+	ForwardType               string              `json:"forwardType"`
+	RuntimeBackendForwardType string              `json:"runtimeBackendForwardType,omitempty"`
+	SourcePort                int                 `json:"sourcePort"`
+	TargetIP                  string              `json:"targetIp"`
+	TargetPort                int                 `json:"targetPort"`
+	Protocol                  string              `json:"protocol"`
+	PreCommands               []string            `json:"preCommands"`
+	ServiceName               string              `json:"svcName"`
+	ServiceNameExtra          string              `json:"svcNameExtra"`
+	Unit                      string              `json:"unit"`
+	UnitExtra                 string              `json:"unitExtra"`
+	Commands                  []string            `json:"commands"`
+	RemovalCommands           []string            `json:"removalCommands,omitempty"`
+	RemovalToken              string              `json:"removalToken,omitempty"`
+	ManagedConfigs            []managedConfigSpec `json:"managedConfigs,omitempty"`
+	RollbackCommands          []string            `json:"rollbackCommands,omitempty"`
+	PostCommands              []string            `json:"postCommands"`
+	Fxp                       *fxpSpec            `json:"fxp,omitempty"`
+	FXPEntryGroup             *fxpSpec            `json:"-"`
+	WireGuard                 *wireGuardSpec      `json:"wireGuard,omitempty"`
+	Failover                  *failoverSpec       `json:"failover,omitempty"`
+	ReportStatus              *bool               `json:"reportStatus,omitempty"`
+	FailureMessage            string              `json:"failureMessage,omitempty"`
+	ForceRuntimeSync          bool                `json:"forceRuntimeSync,omitempty"`
+	RequiresMimicEnvironment  bool                `json:"requiresMimicEnvironment,omitempty"`
+	HandoffOnly               bool                `json:"-"`
 }
 
 type desiredState struct {
@@ -2534,6 +2554,7 @@ type guardRule struct {
 	RuleID               int            `json:"ruleId"`
 	TunnelID             int            `json:"tunnelId"`
 	ListenPort           int            `json:"listenPort"`
+	BindAddress          string         `json:"bindAddress"`
 	TargetIP             string         `json:"targetIp"`
 	TargetPort           int            `json:"targetPort"`
 	BackendPort          int            `json:"backendPort"`
@@ -2543,6 +2564,9 @@ type guardRule struct {
 	ProxyProtocolReceive bool           `json:"proxyProtocolReceive"`
 	ProxyProtocolSend    bool           `json:"proxyProtocolSend"`
 	ProxyProtocolVersion int            `json:"proxyProtocolVersion"`
+	LimitIn              int64          `json:"limitIn"`
+	LimitOut             int64          `json:"limitOut"`
+	RateLimitScope       string         `json:"rateLimitScope"`
 }
 
 func main() {
@@ -3706,7 +3730,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		writeRunningRuleState(r)
 		ensureCountingChainsIfNeeded(r)
 	}
-	syncProtocolGuards(cfg, state.GuardRules)
+	syncProtocolGuardsAfterActions(cfg, state.GuardRules, actionDone)
 	if resp.ForceTCPing {
 		agentMetricsForceTCPing.Store(true)
 	}
@@ -4853,6 +4877,14 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 	if ok && !skippedStaleRemove {
 		cleanupSupersededFXPPersistence(a, previousRuntime)
 	}
+	if ok && !skippedStaleRemove && a.Op == "apply" {
+		if desired, exists := desiredRunningRuleForAction(a); exists && countingRuleModeForForwardType(desired.ForwardType) == countingRuleProcess {
+			// Heartbeat reconciliation defers counter work while this action owns
+			// the listener. Schedule it as soon as the apply completes so a
+			// stable next heartbeat cannot leave the new process path uncounted.
+			ensureCountingChainsIfNeeded(desired)
+		}
+	}
 
 	if ok && !skippedStaleRemove && a.Op == "remove" && shouldReportActionStatus(a) && actionRequiresKernelForwardConsistency(a) {
 		removeState(a.SourcePort)
@@ -5810,6 +5842,7 @@ func actionCommandSignature(a action) string {
 	write(a.Op)
 	write(a.StatusType)
 	write(a.ForwardType)
+	write(strings.TrimSpace(a.RuntimeBackendForwardType))
 	write(strconv.Itoa(a.RuleID))
 	write(strconv.Itoa(a.TunnelID))
 	write(strconv.Itoa(a.SourcePort))
@@ -5910,7 +5943,7 @@ func sharedRuntimeOwnerTransition(a action, previousRuntime *localActionRuntimeS
 		return "", "", false
 	}
 	previousOwner := sharedRuntimeOwnerForForwardType(previousRuntime.forwardType)
-	desiredOwner := sharedRuntimeOwnerForForwardType(a.ForwardType)
+	desiredOwner := sharedRuntimeOwnerForAction(a)
 	return previousOwner, desiredOwner, previousOwner != "" && previousOwner != desiredOwner
 }
 
@@ -7616,7 +7649,12 @@ func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 		wanted[strconv.Itoa(r.SourcePort)] = true
 		if r.Failover != nil && r.Failover.Enabled {
 			wantedFailover[failoverID(r.RuleID, r.SourcePort)] = true
-			startFailoverProxy(r.RuleID, r.SourcePort, *r.Failover, nil)
+			port := strconv.Itoa(r.SourcePort)
+			if protectedActionMatchesPort(protectedPorts, port, r.Protocol) {
+				logVerbosef("failover reconcile deferred for pending action rule=%d port=%d protocol=%s", r.RuleID, r.SourcePort, normalizeRuntimeProtocol(r.Protocol))
+			} else {
+				startFailoverProxy(r.RuleID, r.SourcePort, *r.Failover, nil)
+			}
 		}
 	}
 	failoverMu.Lock()
@@ -10667,12 +10705,367 @@ func runtimeProtocolsOverlap(left string, right string) bool {
 	return leftProtocol == "both" || rightProtocol == "both" || leftProtocol == rightProtocol
 }
 
+type protocolGuardRateDirection string
+
+const (
+	protocolGuardRateIn  protocolGuardRateDirection = "in"
+	protocolGuardRateOut protocolGuardRateDirection = "out"
+)
+
+type protocolGuardRateKey struct {
+	scope     string
+	direction protocolGuardRateDirection
+}
+
+// protocolGuardSharedRateLimiter is shared by all guards using the same
+// scope and direction. rate.Limiter is safe for concurrent use; the mutex
+// protects the small amount of configuration metadata used for hot updates.
+type protocolGuardSharedRateLimiter struct {
+	mu             sync.Mutex
+	limiter        *rate.Limiter
+	changed        chan struct{}
+	bytesPerSecond int64
+	burst          int
+	refs           int
+}
+
+var errProtocolGuardRateLimiterChanged = errors.New("protocol guard rate limiter changed")
+
+func normalizeProtocolGuardRateLimit(value int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return value
+}
+
+func protocolGuardRateBurst(bytesPerSecond int64) int {
+	bytesPerSecond = normalizeProtocolGuardRateLimit(bytesPerSecond)
+	if bytesPerSecond <= 0 {
+		return protocolGuardRateBurstMin
+	}
+	// A 100 ms burst keeps the limiter smooth at normal rates while the
+	// minimum still admits one maximum-sized UDP datagram or copy chunk.
+	burst := bytesPerSecond / 10
+	if burst < protocolGuardRateBurstMin {
+		burst = protocolGuardRateBurstMin
+	}
+	if burst > protocolGuardRateBurstMax {
+		burst = protocolGuardRateBurstMax
+	}
+	return int(burst)
+}
+
+func normalizeProtocolGuardRateLimitScope(scope string, ruleID, listenPort int) string {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope != "" {
+		return scope
+	}
+	// Empty scopes must not accidentally pool unrelated rules. Rule IDs are
+	// stable across heartbeats and therefore provide a deterministic fallback.
+	return fmt.Sprintf("guard:%d:%d", ruleID, listenPort)
+}
+
+func (l *protocolGuardSharedRateLimiter) setRate(bytesPerSecond int64) {
+	if l == nil {
+		return
+	}
+	bytesPerSecond = normalizeProtocolGuardRateLimit(bytesPerSecond)
+	burst := protocolGuardRateBurst(bytesPerSecond)
+	l.mu.Lock()
+	if l.bytesPerSecond == bytesPerSecond && l.burst == burst {
+		l.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	// SetBurstAt before SetLimitAt preserves accumulated tokens as much as
+	// possible when a user changes the value while traffic is flowing.
+	l.limiter.SetBurstAt(now, burst)
+	l.limiter.SetLimitAt(now, rate.Limit(bytesPerSecond))
+	l.bytesPerSecond = bytesPerSecond
+	l.burst = burst
+	oldChanged := l.changed
+	l.changed = make(chan struct{})
+	l.mu.Unlock()
+	if oldChanged != nil {
+		// Cancel reservations made against the previous configuration. Waiters
+		// retry against the new rate without tearing down their TCP connection.
+		close(oldChanged)
+	}
+}
+
+func acquireProtocolGuardRateLimiter(scope string, direction protocolGuardRateDirection, bytesPerSecond int64) *protocolGuardSharedRateLimiter {
+	bytesPerSecond = normalizeProtocolGuardRateLimit(bytesPerSecond)
+	if bytesPerSecond <= 0 {
+		return nil
+	}
+	key := protocolGuardRateKey{scope: scope, direction: direction}
+	protocolGuardRateMu.Lock()
+	defer protocolGuardRateMu.Unlock()
+	limiter := protocolGuardRates[key]
+	if limiter == nil {
+		burst := protocolGuardRateBurst(bytesPerSecond)
+		limiter = &protocolGuardSharedRateLimiter{
+			limiter:        rate.NewLimiter(rate.Limit(bytesPerSecond), burst),
+			changed:        make(chan struct{}),
+			bytesPerSecond: bytesPerSecond,
+			burst:          burst,
+		}
+		protocolGuardRates[key] = limiter
+	} else {
+		limiter.setRate(bytesPerSecond)
+	}
+	limiter.refs++
+	return limiter
+}
+
+func releaseProtocolGuardRateLimiter(scope string, direction protocolGuardRateDirection, limiter *protocolGuardSharedRateLimiter) {
+	if limiter == nil {
+		return
+	}
+	key := protocolGuardRateKey{scope: scope, direction: direction}
+	protocolGuardRateMu.Lock()
+	current := protocolGuardRates[key]
+	if current != limiter {
+		protocolGuardRateMu.Unlock()
+		return
+	}
+	if limiter.refs > 0 {
+		limiter.refs--
+	}
+	if limiter.refs == 0 {
+		delete(protocolGuardRates, key)
+	}
+	shouldCancel := limiter.refs == 0
+	protocolGuardRateMu.Unlock()
+	if shouldCancel {
+		limiter.cancelWaiters()
+	}
+}
+
+func (l *protocolGuardSharedRateLimiter) cancelWaiters() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	changed := l.changed
+	l.changed = nil
+	l.mu.Unlock()
+	if changed != nil {
+		close(changed)
+	}
+}
+
+func (l *protocolGuardSharedRateLimiter) wait(ctx context.Context, guardChanged <-chan struct{}, bytes int) error {
+	if l == nil || bytes <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The configured burst is intentionally at least the largest payload we
+	// pass here. Keep a defensive split for future callers with larger chunks.
+	for bytes > 0 {
+		n := bytes
+		// Every configured bucket has at least this burst. Using the stable
+		// minimum prevents a concurrent burst decrease from invalidating a
+		// WaitN request that was sized using stale configuration.
+		if n > protocolGuardRateWaitChunk {
+			n = protocolGuardRateWaitChunk
+		}
+		for {
+			l.mu.Lock()
+			limiter, limiterChanged := l.limiter, l.changed
+			l.mu.Unlock()
+			if limiter == nil || limiterChanged == nil {
+				return errProtocolGuardRateLimiterChanged
+			}
+			now := time.Now()
+			reservation := limiter.ReserveN(now, n)
+			if !reservation.OK() {
+				return fmt.Errorf("protocol guard rate reservation exceeds burst: bytes=%d", n)
+			}
+			delay := reservation.DelayFrom(now)
+			if delay <= 0 {
+				break
+			}
+			readyAt := now.Add(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+				break
+			case <-ctx.Done():
+				stopProtocolGuardRateTimer(timer)
+				reservation.CancelAt(time.Now())
+				return ctx.Err()
+			case <-guardChanged:
+				now = time.Now()
+				stopProtocolGuardRateTimer(timer)
+				if !now.Before(readyAt) {
+					break
+				}
+				reservation.CancelAt(now)
+				return errProtocolGuardRateLimiterChanged
+			case <-limiterChanged:
+				now = time.Now()
+				stopProtocolGuardRateTimer(timer)
+				if !now.Before(readyAt) {
+					break
+				}
+				reservation.CancelAt(now)
+				continue
+			}
+			break
+		}
+		bytes -= n
+	}
+	return nil
+}
+
+func stopProtocolGuardRateTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
 type protocolGuardServer struct {
-	rule     guardRule
-	tcpLn    net.Listener
-	udpConn  net.PacketConn
-	done     chan struct{}
-	doneOnce sync.Once
+	rule        guardRule
+	tcpLn       net.Listener
+	udpConn     net.PacketConn
+	done        chan struct{}
+	doneOnce    sync.Once
+	ctx         context.Context
+	cancel      context.CancelFunc
+	rateMu      sync.RWMutex
+	rateScope   string
+	rateIn      *protocolGuardSharedRateLimiter
+	rateOut     *protocolGuardSharedRateLimiter
+	rateChanged chan struct{}
+	closed      bool
+}
+
+func newProtocolGuardServer(rule guardRule) *protocolGuardServer {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &protocolGuardServer{
+		rule:   rule,
+		done:   make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	server.updateRateLimits(rule)
+	return server
+}
+
+func (s *protocolGuardServer) updateRateLimits(rule guardRule) {
+	if s == nil {
+		return
+	}
+	scope := normalizeProtocolGuardRateLimitScope(rule.RateLimitScope, rule.RuleID, rule.ListenPort)
+	limitIn := normalizeProtocolGuardRateLimit(rule.LimitIn)
+	limitOut := normalizeProtocolGuardRateLimit(rule.LimitOut)
+	in := acquireProtocolGuardRateLimiter(scope, protocolGuardRateIn, limitIn)
+	out := acquireProtocolGuardRateLimiter(scope, protocolGuardRateOut, limitOut)
+	s.rateMu.Lock()
+	if s.closed {
+		s.rateMu.Unlock()
+		releaseProtocolGuardRateLimiter(scope, protocolGuardRateIn, in)
+		releaseProtocolGuardRateLimiter(scope, protocolGuardRateOut, out)
+		return
+	}
+	oldScope, oldIn, oldOut := s.rateScope, s.rateIn, s.rateOut
+	changed := oldScope != scope || oldIn != in || oldOut != out
+	var oldRateChanged chan struct{}
+	if changed {
+		oldRateChanged = s.rateChanged
+		s.rateChanged = make(chan struct{})
+	}
+	s.rateScope, s.rateIn, s.rateOut = scope, in, out
+	s.rateMu.Unlock()
+	if oldRateChanged != nil {
+		close(oldRateChanged)
+	}
+	if oldIn != nil {
+		releaseProtocolGuardRateLimiter(oldScope, protocolGuardRateIn, oldIn)
+	}
+	if oldOut != nil {
+		releaseProtocolGuardRateLimiter(oldScope, protocolGuardRateOut, oldOut)
+	}
+}
+
+func (s *protocolGuardServer) rateLimiter(direction protocolGuardRateDirection) *protocolGuardSharedRateLimiter {
+	if s == nil {
+		return nil
+	}
+	s.rateMu.RLock()
+	defer s.rateMu.RUnlock()
+	if direction == protocolGuardRateOut {
+		return s.rateOut
+	}
+	return s.rateIn
+}
+
+func (s *protocolGuardServer) rateWaitState(direction protocolGuardRateDirection) (*protocolGuardSharedRateLimiter, <-chan struct{}) {
+	if s == nil {
+		return nil, nil
+	}
+	s.rateMu.RLock()
+	defer s.rateMu.RUnlock()
+	if direction == protocolGuardRateOut {
+		return s.rateOut, s.rateChanged
+	}
+	return s.rateIn, s.rateChanged
+}
+
+func (s *protocolGuardServer) waitRate(ctx context.Context, direction protocolGuardRateDirection, bytes int) error {
+	if s == nil || bytes <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = s.ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for bytes > 0 {
+		n := bytes
+		if n > protocolGuardRateWaitChunk {
+			n = protocolGuardRateWaitChunk
+		}
+		for {
+			if s.ctx != nil {
+				if serverErr := s.ctx.Err(); serverErr != nil {
+					return serverErr
+				}
+			}
+			limiter, rateChanged := s.rateWaitState(direction)
+			if limiter == nil {
+				return nil
+			}
+			err := limiter.wait(ctx, rateChanged, n)
+			if err == nil {
+				break
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if s.ctx != nil {
+				if serverErr := s.ctx.Err(); serverErr != nil {
+					return serverErr
+				}
+			}
+			if errors.Is(err, errProtocolGuardRateLimiterChanged) {
+				// The guard switched scope, enabled/disabled a direction, or changed
+				// rate. Fetch the current limiter and retry only this unfinished chunk.
+				continue
+			}
+			return err
+		}
+		bytes -= n
+	}
+	return nil
 }
 
 type protocolGuardInspection struct {
@@ -11051,11 +11444,34 @@ func startFailoverProxyLocked(ruleID int, sourcePort int, spec failoverSpec, act
 		}
 		return true
 	}
-	failoverMu.Unlock()
-	// Replacing a proxy must keep the previous snapshot until the new listener
-	// has been created successfully. Explicit remove paths call the deleting
-	// stopFailoverProxy wrapper below.
-	stopFailoverProxyRuntime(ruleID, sourcePort)
+	if existing != nil {
+		existing.mu.Lock()
+		sameEndpoint := existing.spec.ListenPort == spec.ListenPort && existing.spec.BindAddress == spec.BindAddress
+		if !sameEndpoint {
+			existing.mu.Unlock()
+			failoverMu.Unlock()
+		} else {
+			existing.spec = spec
+			existing.activeIndex = 0
+			existing.roundRobinNext = 0
+			existing.targetHealth = make([]bool, len(spec.Targets))
+			for i := range existing.targetHealth {
+				existing.targetHealth[i] = true
+			}
+			existing.failureSince = make([]time.Time, len(spec.Targets))
+			existing.recoveredSince = make([]time.Time, len(spec.Targets))
+			existing.mu.Unlock()
+			existing.signature = signature
+			failoverMu.Unlock()
+			if err := persistFailoverSpec(ruleID, sourcePort, spec); err != nil {
+				logf("failover persistent snapshot write failed rule=%d port=%d: %v", ruleID, sourcePort, err)
+			}
+			logf("failover proxy updated rule=%d source=%d listen=%s:%d strategy=%s targets=%d", ruleID, sourcePort, spec.BindAddress, spec.ListenPort, spec.Strategy, len(spec.Targets))
+			return true
+		}
+	} else {
+		failoverMu.Unlock()
+	}
 
 	addr := net.JoinHostPort(spec.BindAddress, strconv.Itoa(spec.ListenPort))
 	ln, err := net.Listen("tcp", addr)
@@ -11086,13 +11502,21 @@ func startFailoverProxyLocked(ruleID int, sourcePort int, spec failoverSpec, act
 		done:           make(chan struct{}),
 	}
 	failoverMu.Lock()
+	previous := failoverProxies[id]
 	failoverProxies[id] = p
 	failoverMu.Unlock()
+	// The new socket is already listening before the old one is retired. This
+	// keeps a failed bind from tearing down the working proxy and makes dynamic
+	// internal-port handoffs continuous once the backend action completes.
+	go p.healthLoop()
+	go p.acceptLoop()
+	if previous != nil {
+		close(previous.done)
+		_ = previous.ln.Close()
+	}
 	if err := persistFailoverSpec(ruleID, sourcePort, spec); err != nil {
 		logf("failover persistent snapshot write failed rule=%d port=%d: %v", ruleID, sourcePort, err)
 	}
-	go p.healthLoop()
-	go p.acceptLoop()
 	logf("failover proxy started rule=%d source=%d listen=%s strategy=%s targets=%d", ruleID, sourcePort, addr, spec.Strategy, len(spec.Targets))
 	return true
 }
@@ -11290,6 +11714,7 @@ func (p *failoverProxy) checkHealth() {
 	targets := append([]failoverTarget(nil), p.spec.Targets...)
 	failoverSeconds := p.spec.FailoverSeconds
 	recoverSeconds := p.spec.RecoverSeconds
+	specSignature := failoverSignature(p.spec)
 	p.mu.RUnlock()
 	if len(targets) == 0 {
 		return
@@ -11300,6 +11725,9 @@ func (p *failoverProxy) checkHealth() {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if failoverSignature(p.spec) != specSignature {
+		return
+	}
 	p.ensureHealthStateLocked()
 	for i, ok := range results {
 		if i >= len(p.spec.Targets) {
@@ -11411,11 +11839,12 @@ func guardID(rule guardRule) string {
 	return strconv.Itoa(rule.RuleID) + ":" + strconv.Itoa(rule.ListenPort)
 }
 
-func guardSignature(rule guardRule) string {
+func guardRoutingSignature(rule guardRule) string {
 	return strings.Join([]string{
 		strconv.Itoa(rule.RuleID),
 		strconv.Itoa(rule.TunnelID),
 		strconv.Itoa(rule.ListenPort),
+		protocolGuardBindAddress(rule),
 		rule.TargetIP,
 		strconv.Itoa(rule.TargetPort),
 		strconv.Itoa(rule.BackendPort),
@@ -11430,6 +11859,71 @@ func guardSignature(rule guardRule) string {
 	}, "|")
 }
 
+func protocolGuardBindAddress(rule guardRule) string {
+	return strings.Trim(strings.TrimSpace(rule.BindAddress), "[]")
+}
+
+func protocolGuardListenAddress(rule guardRule) string {
+	return net.JoinHostPort(protocolGuardBindAddress(rule), strconv.Itoa(rule.ListenPort))
+}
+
+func protocolGuardBackendReady(rule guardRule, readiness *localRuntimeReadiness) bool {
+	if rule.BackendPort <= 0 {
+		return true
+	}
+	if readiness == nil {
+		return false
+	}
+	backendType := strings.TrimSpace(rule.BackendForwardType)
+	switch backendType {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return readiness.nginxReadyForPort(rule.BackendPort, rule.Protocol)
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
+		return readiness.gostReadyForPortInScope(
+			rule.BackendPort,
+			gostRuntimeListenProtocol(backendType, rule.Protocol),
+			desiredGostRuntimeScope(backendType),
+		)
+	case "realm", "socat":
+		return runtimeListenPortReady(readiness.listenSnapshot, rule.BackendPort, rule.Protocol, managedRuleListenProcessNeedles(backendType))
+	default:
+		return runtimeListenPortReady(readiness.listenSnapshot, rule.BackendPort, rule.Protocol, nil)
+	}
+}
+
+func protocolGuardRuleStateReady(state localRuleState, readiness *localRuntimeReadiness) bool {
+	port := atoi(state.Port)
+	if state.RuleID <= 0 || port <= 0 {
+		return false
+	}
+	id := guardID(guardRule{RuleID: state.RuleID, ListenPort: port})
+	protocolGuardMu.Lock()
+	server := protocolGuards[id]
+	protocolGuardMu.Unlock()
+	if server == nil {
+		return false
+	}
+	select {
+	case <-server.done:
+		return false
+	default:
+	}
+	expected := guardRule{Protocol: state.Protocol}
+	if guardTCPEnabled(expected) && server.tcpLn == nil {
+		return false
+	}
+	if guardUDPEnabled(expected) && server.udpConn == nil {
+		return false
+	}
+	return protocolGuardBackendReady(server.rule, readiness)
+}
+
+// guardSignature is retained for tests and callers that only need the stable
+// route identity. Rate configuration is intentionally hot-swappable.
+func guardSignature(rule guardRule) string {
+	return guardRoutingSignature(rule)
+}
+
 func guardTCPEnabled(rule guardRule) bool {
 	return normalizeRuntimeProtocol(rule.Protocol) != "udp"
 }
@@ -11438,19 +11932,86 @@ func guardUDPEnabled(rule guardRule) bool {
 	return normalizeRuntimeProtocol(rule.Protocol) != "tcp"
 }
 
+func protocolGuardTargetsOwnListener(rule guardRule) bool {
+	if rule.ListenPort <= 0 || rule.TargetPort != rule.ListenPort {
+		return false
+	}
+	host := strings.Trim(strings.TrimSpace(rule.TargetIP), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
 func syncProtocolGuards(cfg Config, rules []guardRule) {
+	protocolGuardSyncMu.Lock()
+	defer protocolGuardSyncMu.Unlock()
+	syncProtocolGuardsLocked(cfg, rules)
+}
+
+func syncProtocolGuardsAfterActions(cfg Config, rules []guardRule, completed []<-chan struct{}) {
+	generation := protocolGuardSyncGeneration.Add(1)
+	rules = append([]guardRule(nil), rules...)
+	if len(completed) == 0 {
+		syncProtocolGuardsForGeneration(cfg, rules, generation)
+		return
+	}
+	waits := append([]<-chan struct{}(nil), completed...)
+	go func() {
+		for _, done := range waits {
+			if done != nil {
+				<-done
+			}
+		}
+		// Keep the existing route until its backend action completes. The final
+		// sync also verifies the new backend listener before switching the Guard.
+		syncProtocolGuardsForGeneration(cfg, rules, generation)
+	}()
+}
+
+func syncProtocolGuardsForGeneration(cfg Config, rules []guardRule, generation uint64) {
+	protocolGuardSyncMu.Lock()
+	defer protocolGuardSyncMu.Unlock()
+	if protocolGuardSyncGeneration.Load() != generation {
+		return
+	}
+	syncProtocolGuardsLocked(cfg, rules)
+}
+
+func syncProtocolGuardsLocked(cfg Config, rules []guardRule) {
 	wanted := map[string]string{}
+	readiness := readLocalRuntimeReadinessCached()
 	for _, rule := range rules {
 		if rule.RuleID <= 0 || rule.ListenPort <= 0 || rule.TargetIP == "" || rule.TargetPort <= 0 {
 			continue
 		}
+		if protocolGuardTargetsOwnListener(rule) {
+			if shouldLogAgentReport(fmt.Sprintf("protocol-guard-self-target:%d:%d", rule.RuleID, rule.ListenPort), agentReportLogInterval) {
+				logf("protocol guard rejected self target rule=%d listen=:%d target=%s:%d", rule.RuleID, rule.ListenPort, rule.TargetIP, rule.TargetPort)
+			}
+			continue
+		}
 		id := guardID(rule)
-		sig := guardSignature(rule)
+		sig := guardRoutingSignature(rule)
 		wanted[id] = sig
 		protocolGuardMu.Lock()
 		existing := protocolGuards[id]
 		protocolGuardMu.Unlock()
-		if existing != nil && guardSignature(existing.rule) == sig {
+		if existing != nil && guardRoutingSignature(existing.rule) == sig {
+			// Rate values and scope are deliberately outside the routing
+			// signature. Update the token buckets in place so active listeners
+			// and connections do not flap when a user changes a limit.
+			existing.updateRateLimits(rule)
+			continue
+		}
+		if !protocolGuardBackendReady(rule, &readiness) {
+			if existing != nil && !protocolGuardBackendReady(existing.rule, &readiness) {
+				stopProtocolGuard(id)
+			}
+			if shouldLogAgentReport(fmt.Sprintf("protocol-guard-backend-not-ready:%d:%d", rule.RuleID, rule.ListenPort), agentReportLogInterval) {
+				logf("protocol guard backend not ready rule=%d listen=%d backend=%s:%d protocol=%s", rule.RuleID, rule.ListenPort, rule.BackendForwardType, rule.BackendPort, normalizeRuntimeProtocol(rule.Protocol))
+			}
 			continue
 		}
 		stopProtocolGuard(id)
@@ -11472,27 +12033,28 @@ func syncProtocolGuards(cfg Config, rules []guardRule) {
 
 func startProtocolGuard(cfg Config, rule guardRule) {
 	prepareProtocolGuardPort(rule)
-	server := &protocolGuardServer{rule: rule, done: make(chan struct{})}
+	server := newProtocolGuardServer(rule)
+	listenAddress := protocolGuardListenAddress(rule)
 	if guardTCPEnabled(rule) {
-		ln, err := net.Listen("tcp", ":"+strconv.Itoa(rule.ListenPort))
+		ln, err := net.Listen("tcp", listenAddress)
 		if err != nil {
+			server.close()
 			logf("protocol guard tcp listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
 			return
 		}
 		server.tcpLn = ln
 	}
 	if guardUDPEnabled(rule) {
-		conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(rule.ListenPort))
+		conn, err := net.ListenPacket("udp", listenAddress)
 		if err != nil {
-			if server.tcpLn != nil {
-				_ = server.tcpLn.Close()
-			}
+			server.close()
 			logf("protocol guard udp listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
 			return
 		}
 		server.udpConn = conn
 	}
 	if server.tcpLn == nil && server.udpConn == nil {
+		server.close()
 		logf("protocol guard no protocol enabled rule=%d port=%d protocol=%s", rule.RuleID, rule.ListenPort, rule.Protocol)
 		return
 	}
@@ -11505,7 +12067,7 @@ func startProtocolGuard(cfg Config, rule guardRule) {
 	if server.udpConn != nil {
 		go server.serveUDP()
 	}
-	logf("protocol guard started rule=%d tunnel=%d listen=:%d protocol=%s target=%s:%d proxyReceive=%v proxySend=%v proxyVersion=%d", rule.RuleID, rule.TunnelID, rule.ListenPort, normalizeRuntimeProtocol(rule.Protocol), rule.TargetIP, rule.TargetPort, rule.ProxyProtocolReceive, rule.ProxyProtocolSend, normalizeProxyProtocolVersion(rule.ProxyProtocolVersion))
+	logf("protocol guard started rule=%d tunnel=%d listen=%s protocol=%s target=%s:%d proxyReceive=%v proxySend=%v proxyVersion=%d", rule.RuleID, rule.TunnelID, listenAddress, normalizeRuntimeProtocol(rule.Protocol), rule.TargetIP, rule.TargetPort, rule.ProxyProtocolReceive, rule.ProxyProtocolSend, normalizeProxyProtocolVersion(rule.ProxyProtocolVersion))
 }
 
 func prepareProtocolGuardPort(rule guardRule) {
@@ -11564,13 +12126,30 @@ func stopProtocolGuard(id string) {
 
 func (s *protocolGuardServer) close() {
 	s.doneOnce.Do(func() {
-		close(s.done)
+		if s.done != nil {
+			close(s.done)
+		}
+		if s.cancel != nil {
+			s.cancel()
+		}
 		if s.tcpLn != nil {
 			_ = s.tcpLn.Close()
 		}
 		if s.udpConn != nil {
 			_ = s.udpConn.Close()
 		}
+		s.rateMu.Lock()
+		scope, in, out := s.rateScope, s.rateIn, s.rateOut
+		rateChanged := s.rateChanged
+		s.closed = true
+		s.rateScope, s.rateIn, s.rateOut = "", nil, nil
+		s.rateChanged = nil
+		s.rateMu.Unlock()
+		if rateChanged != nil {
+			close(rateChanged)
+		}
+		releaseProtocolGuardRateLimiter(scope, protocolGuardRateIn, in)
+		releaseProtocolGuardRateLimiter(scope, protocolGuardRateOut, out)
 	})
 }
 
@@ -11591,7 +12170,15 @@ func (s *protocolGuardServer) serveTCP(cfg Config) {
 }
 
 func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
+	baseCtx := s.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	connCtx, cancelConn := context.WithCancel(baseCtx)
+	defer cancelConn()
 	defer client.Close()
+	stopClientClose := context.AfterFunc(connCtx, func() { _ = client.Close() })
+	defer stopClientClose()
 	proxyInfo := proxyProtocolInfoFromConn(client)
 	first := []byte(nil)
 	if s.rule.ProxyProtocolReceive {
@@ -11615,12 +12202,17 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 			first = remaining
 		}
 	}
-	target, err := net.DialTimeout("tcp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)), 10*time.Second)
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	target, err := dialer.DialContext(connCtx, "tcp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)))
 	if err != nil {
-		logf("protocol guard dial target rule=%d: %v", s.rule.RuleID, err)
+		if connCtx.Err() == nil {
+			logf("protocol guard dial target rule=%d: %v", s.rule.RuleID, err)
+		}
 		return
 	}
 	defer target.Close()
+	stopTargetClose := context.AfterFunc(connCtx, func() { _ = target.Close() })
+	defer stopTargetClose()
 	if s.rule.ProxyProtocolSend {
 		header := buildProxyProtocol(s.rule.ProxyProtocolVersion, proxyInfo, client.RemoteAddr(), target.LocalAddr(), target.RemoteAddr())
 		if len(header) > 0 {
@@ -11631,12 +12223,19 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 	}
 	inspection := newProtocolGuardInspection(s.rule.Policy)
 	errCh := make(chan error, 2)
-	go func() { errCh <- s.copyTCPToTargetWithGuard(cfg, client, target, first, inspection) }()
-	go func() { errCh <- s.copyTCPToClientWithGuard(cfg, client, target, inspection) }()
+	go func() { errCh <- s.copyTCPToTargetWithGuard(connCtx, cfg, client, target, first, inspection) }()
+	go func() { errCh <- s.copyTCPToClientWithGuard(connCtx, cfg, client, target, inspection) }()
+	<-errCh
+	// A failure, EOF, or policy block in either direction owns the whole
+	// connection. Cancel rate reservations and close both sockets so the other
+	// copy goroutine cannot remain blocked in WaitN or network I/O.
+	cancelConn()
+	_ = client.Close()
+	_ = target.Close()
 	<-errCh
 }
 
-func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Conn, target net.Conn, initial []byte, inspection *protocolGuardInspection) error {
+func (s *protocolGuardServer) copyTCPToTargetWithGuard(ctx context.Context, cfg Config, client net.Conn, target net.Conn, initial []byte, inspection *protocolGuardInspection) error {
 	writeChunk := func(chunk []byte) error {
 		if len(chunk) == 0 {
 			return nil
@@ -11644,6 +12243,9 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Co
 		if proto, blocked := inspection.inspectClient(chunk); blocked {
 			go reportProtocolBlock(cfg, s.rule, proto)
 			return fmt.Errorf("protocol blocked: %s", proto)
+		}
+		if err := s.waitRate(ctx, protocolGuardRateIn, len(chunk)); err != nil {
+			return err
 		}
 		_, err := target.Write(chunk)
 		return err
@@ -11665,11 +12267,7 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Co
 	}
 }
 
-func (s *protocolGuardServer) copyTCPToClientWithGuard(cfg Config, client net.Conn, target net.Conn, inspection *protocolGuardInspection) error {
-	if !s.rule.Policy.enabled() {
-		_, err := io.Copy(client, target)
-		return err
-	}
+func (s *protocolGuardServer) copyTCPToClientWithGuard(ctx context.Context, cfg Config, client net.Conn, target net.Conn, inspection *protocolGuardInspection) error {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := target.Read(buf)
@@ -11678,6 +12276,9 @@ func (s *protocolGuardServer) copyTCPToClientWithGuard(cfg Config, client net.Co
 			if proto, blocked := inspection.inspectServer(chunk); blocked {
 				go reportProtocolBlock(cfg, s.rule, proto)
 				return fmt.Errorf("protocol blocked: %s", proto)
+			}
+			if err := s.waitRate(ctx, protocolGuardRateOut, len(chunk)); err != nil {
+				return err
 			}
 			if _, writeErr := client.Write(chunk); writeErr != nil {
 				return writeErr
@@ -11751,10 +12352,25 @@ func (s *protocolGuardServer) serveUDP() {
 			continue
 		}
 		packet := append([]byte(nil), buf[:n]...)
+		if err := s.waitRate(s.ctx, protocolGuardRateIn, len(packet)); err != nil {
+			select {
+			case <-s.done:
+				return
+			default:
+			}
+			continue
+		}
 		key := clientAddr.String()
 		sessionMu.Lock()
 		session := sessions[key]
 		if session == nil {
+			if len(sessions) >= protocolGuardUDPMaxSessions {
+				sessionMu.Unlock()
+				if shouldLogAgentReport(fmt.Sprintf("protocol-guard-udp-session-limit:%d", s.rule.RuleID), agentReportLogInterval) {
+					logf("protocol guard udp session limit reached rule=%d sessions=%d", s.rule.RuleID, protocolGuardUDPMaxSessions)
+				}
+				continue
+			}
 			target, err := net.DialTimeout("udp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)), 10*time.Second)
 			if err != nil {
 				sessionMu.Unlock()
@@ -11793,6 +12409,9 @@ func (s *protocolGuardServer) copyUDPToClient(key string, clientAddr net.Addr, t
 			break
 		}
 		if n > 0 {
+			if err := s.waitRate(s.ctx, protocolGuardRateOut, n); err != nil {
+				break
+			}
 			_, _ = s.udpConn.WriteTo(buf[:n], clientAddr)
 		}
 		sessionMu.Lock()

@@ -18,7 +18,7 @@ const planInput = z.object({
   ]).default(30),
   portCount: z.number().int().min(1).max(1024).default(20),
   trafficLimit: z.number().int().min(0).default(0),
-  rateLimitMbps: z.number().int().min(0).default(0),
+  rateLimitMbps: z.number().int().min(0).max(1_000_000).default(0),
   maxRules: z.number().int().min(0).default(20),
   maxConnections: z.number().int().min(0).max(1_000_000).default(2000),
   maxIPs: z.number().int().min(0).max(100_000).default(10),

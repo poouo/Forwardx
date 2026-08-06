@@ -2641,7 +2641,7 @@ function DeepSeekSettingsCard() {
   }, [settings]);
 
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       utils.system.getSettings.invalidate();
       utils.system.listAiModels.invalidate();
       setProviderConfigs((prev) => ({
@@ -2649,6 +2649,22 @@ function DeepSeekSettingsCard() {
         siliconflow: { ...prev.siliconflow, apiKeyInput: "" },
         custom: { ...prev.custom, apiKeyInput: "" },
       }));
+      if (variables.deepseek?.clearApiKey) {
+        const clearedProvider = normalizeAiProviderValue(variables.deepseek.provider);
+        setDeepseekEnabled(false);
+        setProviderConfigs((prev) => ({
+          ...prev,
+          [clearedProvider]: {
+            ...(prev[clearedProvider] || createDefaultAiProviderConfig(clearedProvider)),
+            configured: false,
+            apiKeyMasked: "",
+            apiKeyInput: "",
+          },
+        }));
+        setShowDeleteDeepSeekKey(false);
+        toast.success("AI API Key 已删除");
+        return;
+      }
       toast.success("AI 配置已保存");
     },
     onError: (err) => toast.error(err.message || "保存失败"),
@@ -2733,9 +2749,6 @@ function DeepSeekSettingsCard() {
         clearApiKey: true,
       },
     });
-    setDeepseekEnabled(false);
-    updateActiveProviderConfig({ apiKeyInput: "" });
-    setShowDeleteDeepSeekKey(false);
   };
 
   const deepseekKeyLocked = providerConfigured;
@@ -2989,29 +3002,46 @@ function DeepSeekSettingsCard() {
         </CardContent>
       </Card>
 
-      <Dialog open={showDeleteDeepSeekKey} onOpenChange={setShowDeleteDeepSeekKey}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
-              删除 AI API Key
-            </DialogTitle>
-            <DialogDescription>
-              删除后会同时关闭 AI 助手，需要重新填写 API Key 后才能启用。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
-            <p className="text-xs text-muted-foreground">当前配置</p>
-            <p className="mt-1 font-medium">{providerLabel}</p>
-            <p className="mt-1 font-medium">{deepseekModel || activeProviderDefaults.model}</p>
-            <p className="mt-2 font-mono text-xs text-muted-foreground">{activeProviderConfig.apiKeyMasked || "-"}</p>
+      <Dialog
+        open={showDeleteDeepSeekKey}
+        onOpenChange={(open) => {
+          if (!updateSettingsMutation.isPending) setShowDeleteDeepSeekKey(open);
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100svh-1.5rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 pr-12 sm:p-6 sm:pr-12">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                删除 AI API Key
+              </DialogTitle>
+              <DialogDescription>
+                删除后会同时关闭 AI 助手，需要重新填写 API Key 后才能启用。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+              <p className="text-xs text-muted-foreground">当前配置</p>
+              <p className="mt-1 truncate font-medium">{providerLabel}</p>
+              <p className="mt-1 truncate font-medium">{deepseekModel || activeProviderDefaults.model}</p>
+              <p
+                className="mt-2 truncate font-mono text-xs text-muted-foreground"
+                title={activeProviderConfig.apiKeyMasked || undefined}
+              >
+                {activeProviderConfig.apiKeyMasked || "-"}
+              </p>
+            </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDeepSeekKey(false)}>
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/40 p-4 sm:px-6">
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteDeepSeekKey(false)}
+              disabled={updateSettingsMutation.isPending}
+            >
               取消
             </Button>
             <Button variant="destructive" onClick={handleClearDeepSeekKey} disabled={updateSettingsMutation.isPending}>
-              确认删除
+              {updateSettingsMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {updateSettingsMutation.isPending ? "正在删除..." : "确认删除"}
             </Button>
           </DialogFooter>
         </DialogContent>

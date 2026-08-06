@@ -22,12 +22,12 @@ const HOST_SERVICE_CHART_POINT_BUDGET = 3200;
 const HOST_SERVICE_CHART_MIN_POINTS = 260;
 const HOST_SERVICE_CHART_MAX_POINTS = 720;
 
-function formatTime(value: string | Date) {
+function formatTime(value: string | number | Date) {
   const d = new Date(value);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function formatFullTime(value: string | Date) {
+function formatFullTime(value: string | number | Date) {
   const d = new Date(value);
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${formatTime(d)}`;
 }
@@ -237,6 +237,11 @@ export default function HostProbeServiceLatencyDialog({
     () => compactHostServiceChart(processedChart, visibleServiceIds),
     [processedChart, visibleServiceIds],
   );
+  const chartTimeDomain = useMemo<[number, number]>(() => {
+    const end = Date.now();
+    const rangeMs = Math.max(0.5, Number(timeRangeHours) || DEFAULT_LATENCY_TIME_RANGE_HOURS) * 60 * 60 * 1000;
+    return [end - rangeMs, end];
+  }, [data, timeRangeHours]);
   const yMax = useMemo(() => {
     const maxLatency = Math.max(0, ...chart.flatMap((point) => (
       visibleServiceIds.map((id) => {
@@ -319,7 +324,15 @@ export default function HostProbeServiceLatencyDialog({
             <ResponsiveContainer key={chartAnimationKey} width="100%" height="100%">
               <LineChart data={chart} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={46} />
+                <XAxis
+                  dataKey="at"
+                  type="number"
+                  scale="time"
+                  domain={chartTimeDomain}
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(value) => formatTime(Number(value))}
+                  minTickGap={46}
+                />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}ms`} width={52} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
                 <RTooltip content={<ChartTooltip services={visibleServices} allServices={hostServices} />} cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }} />
                 {visibleServices.map((service) => {

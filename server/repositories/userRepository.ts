@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions } from "../../drizzle/schema";
-import { getDatabaseKind, getDb, insertAndGetId, nowDate, withDatabaseTransaction } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
@@ -709,6 +709,24 @@ export async function resetUserTraffic(userId: number) {
   }).where(eq(users.id, userId));
 }
 
+/** Reset once for a concrete traffic-cycle boundary, including across panel instances. */
+export async function resetUserTrafficForCycle(userId: number, boundary: Date, resetAt = nowDate()) {
+  const boundarySec = Math.floor(boundary.getTime() / 1000);
+  const resetSec = Math.floor(resetAt.getTime() / 1000);
+  if (!Number.isFinite(boundarySec) || !Number.isFinite(resetSec)) return false;
+  const q = quoteDbIdentifier;
+  const result = await executeRaw(
+    `UPDATE ${q("users")}
+     SET ${q("trafficUsed")} = 0,
+         ${q("lastTrafficReset")} = ?,
+         ${q("updatedAt")} = ?
+     WHERE ${q("id")} = ?
+       AND (${q("lastTrafficReset")} IS NULL OR ${q("lastTrafficReset")} < ?)`,
+    [resetSec, resetSec, userId, boundarySec],
+  );
+  return rawAffectedRows(result) > 0;
+}
+
 /**
  * Reset the package quota and the account's displayed pay-as-you-go usage.
  *
@@ -789,7 +807,11 @@ export async function disableAllUserRules(userId: number) {
     isEnabled: false,
     disabledByUser: true,
     updatedAt: nowDate(),
-  }).where(eq(forwardRules.userId, userId));
+  }).where(and(
+    eq(forwardRules.userId, userId),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ));
 }
 
 /** 获取用户流量汇总信息（用于仪表盘展示） */

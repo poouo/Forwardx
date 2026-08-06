@@ -27,7 +27,7 @@ import {
   markForwardRulePendingDelete,
   updateForwardRule,
 } from "./forwardRuleRepository";
-import { getHostById, getHosts, isFreshHostHeartbeat } from "./hostRepository";
+import { getHostById, getHosts, HOST_ONLINE_TTL_MS, isFreshHostHeartbeat } from "./hostRepository";
 import {
   disableForwardRulesByTunnel,
   findAvailablePort,
@@ -72,6 +72,11 @@ import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+import { getLastAuthenticatedAgentActivity } from "../agentActivity";
+import {
+  getPresenceCapableHostLivenessSnapshot,
+  primePresenceCapableHosts,
+} from "../agentFastLiveness";
 
 async function settleAndMarkForwardGroupRulePendingDelete(
   rule: any,
@@ -145,7 +150,7 @@ async function updateForwardGroupRuntimeIfChanged(db: any, group: any, patch: Re
 function managedChildControlState(templateRule: any, existing: any) {
   return {
     disabledByUser: !!templateRule?.disabledByUser,
-    disabledByTunnel: !!templateRule?.disabledByTunnel,
+    disabledByTunnel: !!templateRule?.disabledByTunnel || !!existing?.disabledByTunnel,
     // Protocol blocks are host-specific. A routine group sync must not clear a
     // real block reported by an Agent just because the visible template is on.
     protocolBlockReason: nullableString(templateRule?.protocolBlockReason)
@@ -244,9 +249,7 @@ const forwardGroupHealthRechecks = new ForwardGroupHealthRecheckScheduler(
 );
 
 export async function primeForwardGroupHostLivenessDeadlines() {
-  // Communication silence is not a forwarding-health signal. Keep this
-  // startup hook as a no-op for callers compiled against older releases.
-  return 0;
+  return primePresenceCapableHosts(await getHosts() as any[]);
 }
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
@@ -318,6 +321,69 @@ function freshForwardGroupRuleProbe(stat: any, now: Date) {
   const age = now.getTime() - recordedAt.getTime();
   if (age < -60_000 || age > forwardGroupRuleProbeFreshMs) return null;
   return stat;
+}
+
+type MemberAgentLiveness = {
+  hostId: number;
+  available: boolean;
+  failureSince: Date | null;
+  lastOfflineAt: number | null;
+  signature: string;
+};
+
+async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Promise<MemberAgentLiveness> {
+  const hostId = await memberEntryHostId(member).catch(() => 0);
+  const host = hostId > 0 ? await getHostById(hostId).catch(() => null) : null;
+  const fastState = hostId > 0 ? getPresenceCapableHostLivenessSnapshot(hostId) : null;
+  const authenticatedAt = hostId > 0 ? getLastAuthenticatedAgentActivity(hostId) || 0 : 0;
+  const heartbeatAt = toDate((host as any)?.lastHeartbeat)?.getTime() || 0;
+  // Once a host advertises lightweight presence, only that explicit signal is
+  // allowed to move its failure window. A delayed log/traffic report is still
+  // useful to the legacy 150-second UI fallback, but must not postpone DDNS
+  // failover after the presence loop has stopped.
+  const lastSeenAt = fastState
+    ? Number(fastState.lastSeenAt || 0)
+    : Math.max(authenticatedAt, heartbeatAt);
+  const legacyActivityRecently = lastSeenAt > 0 && nowMs - Math.min(lastSeenAt, nowMs) <= HOST_ONLINE_TTL_MS;
+  const lifecycleAt = toDate((host as any)?.createdAt)?.getTime()
+    || toDate((host as any)?.updatedAt)?.getTime()
+    || nowMs;
+  const confirmedOffline = fastState?.confirmedOffline === true;
+  // A registered presence-capable host remains indeterminate/available during
+  // startup grace. Only its generation-safe timer may confirm it offline.
+  // Legacy hosts have no such timer, so their last known activity keeps the
+  // existing 150-second compatibility window. A lone DB status flag is not a
+  // hard health signal while that activity is still fresh.
+  const available = !!host && (fastState
+    ? !confirmedOffline
+    : legacyActivityRecently);
+  const failureAt = lastSeenAt > 0 ? Math.min(lastSeenAt, nowMs) : Math.min(lifecycleAt, nowMs);
+  const lastOfflineAt = Number(fastState?.lastOfflineAt || 0) || null;
+  return {
+    hostId,
+    available,
+    failureSince: available ? null : new Date(failureAt),
+    lastOfflineAt,
+    signature: [
+      hostId,
+      available ? 1 : 0,
+      confirmedOffline ? 1 : 0,
+      Number(fastState?.transitionEpoch || 0),
+      lastOfflineAt || 0,
+    ].join(":"),
+  };
+}
+
+function agentHealthSampleIsCurrent(liveness: MemberAgentLiveness, sampleAt: unknown) {
+  if (!liveness.lastOfflineAt) return true;
+  const sampleTime = toDate(sampleAt)?.getTime() || 0;
+  return sampleTime > liveness.lastOfflineAt;
+}
+
+async function memberAgentSelectionStillCurrent(member: any) {
+  if (!member?.agentLivenessSignature) return true;
+  const current = await resolveMemberAgentLiveness(member);
+  return current.signature === String(member.agentLivenessSignature);
 }
 
 function entryAddressForHost(host: any) {
@@ -1499,6 +1565,7 @@ export async function getForwardGroupHealthConfigs(groupIds: number[]) {
     id: forwardGroups.id,
     groupMode: forwardGroups.groupMode,
     isEnabled: forwardGroups.isEnabled,
+    rateLimitMbps: forwardGroups.rateLimitMbps,
     failoverSeconds: forwardGroups.failoverSeconds,
     recoverSeconds: forwardGroups.recoverSeconds,
   }).from(forwardGroups).where(inArray(forwardGroups.id, ids));
@@ -1701,8 +1768,15 @@ async function failoverAgentSelectionStillCurrent(group: any, active: any, next:
   const enabledMemberIds = new Set((latest.members || [])
     .filter((member: any) => dbBool(member?.isEnabled))
     .map((member: any) => Number(member.id || 0)));
-  return (!active || enabledMemberIds.has(Number(active.id || 0)))
-    && (!next || enabledMemberIds.has(Number(next.id || 0)));
+  if ((active && !enabledMemberIds.has(Number(active.id || 0)))
+    || (next && !enabledMemberIds.has(Number(next.id || 0)))) return false;
+  if (active && !(await memberAgentSelectionStillCurrent(active))) return false;
+  if (next && !(await memberAgentSelectionStillCurrent(next))) return false;
+  if (next && Number(next.id || 0) !== Number(active?.id || 0)) {
+    const nextLiveness = await resolveMemberAgentLiveness(next);
+    if (!nextLiveness.available) return false;
+  }
+  return true;
 }
 
 export async function updateForwardGroupMemberAgentHealth(input: {
@@ -1741,12 +1815,32 @@ export async function updateForwardGroupMemberAgentHealth(input: {
 async function firstAvailableResolvableMember(members: any[], group: any, recordType: ForwardGroupRecordType) {
   const chinaHealthEnabled = dbBool(group?.chinaHealthCheckEnabled);
   const now = Date.now();
+  const failoverMs = forwardGroupFailoverDelayMs(group);
+  const activeMemberId = Number(group?.activeMemberId || 0);
   let pendingChinaHealth = false;
   for (const member of members) {
     if (member?.isEnabled === false) continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
+    const liveness = await resolveMemberAgentLiveness(member, now);
+    if (!liveness.available) {
+      const failoverAt = (liveness.failureSince?.getTime() || now) + failoverMs;
+      if (Number(member.id || 0) === activeMemberId && now < failoverAt) {
+        return {
+          member: { ...member, agentLivenessSignature: liveness.signature },
+          value,
+          pendingChinaHealth,
+          agentFailurePending: true,
+          agentLivenessRecheckAt: failoverAt,
+        };
+      }
+      continue;
+    }
     if (chinaHealthEnabled) {
+      if (!agentHealthSampleIsCurrent(liveness, member.chinaHealthCheckedAt)) {
+        pendingChinaHealth = true;
+        continue;
+      }
       const state = forwardGroupChinaHealthStateAt(member, now);
       if (state === "pending") {
         pendingChinaHealth = true;
@@ -1754,9 +1848,21 @@ async function firstAvailableResolvableMember(members: any[], group: any, record
       }
       if (state !== "healthy") continue;
     }
-    return { member, value, pendingChinaHealth };
+    return {
+      member: { ...member, agentLivenessSignature: liveness.signature },
+      value,
+      pendingChinaHealth,
+      agentFailurePending: false,
+      agentLivenessRecheckAt: null,
+    };
   }
-  return { member: null, value: "", pendingChinaHealth };
+  return {
+    member: null,
+    value: "",
+    pendingChinaHealth,
+    agentFailurePending: false,
+    agentLivenessRecheckAt: null,
+  };
 }
 
 export async function validateForwardGroupRecordMembers(group: any, members: ForwardGroupMemberInput[] | any[]) {
@@ -2298,6 +2404,13 @@ async function refreshControlledForwardRules(rules: any[], reason: string) {
     const tunnel = await getTunnelById(tunnelId);
     if (tunnel) await refreshControlledTunnelRuntime(tunnel, reason);
   }
+}
+
+export async function refreshForwardGroupRuntime(groupId: number, reason = "forward-group-runtime-updated") {
+  const rules = (await getForwardGroupChildRules(Number(groupId)) as any[])
+    .filter((rule) => !rule?.pendingDelete);
+  await refreshControlledForwardRules(rules, reason);
+  return rules.length;
 }
 
 async function disableForwardRulesByGroupIds(groupIds: number[], reason: string) {
@@ -3409,8 +3522,9 @@ export async function runForwardGroupsForHostAddressChange(hostId: number, reaso
 }
 
 export async function scheduleForwardGroupsForHostHealthChange(hostId: number) {
-  void hostId;
-  return 0;
+  const activeGroupIds = await activeForwardGroupIdsForHost(hostId);
+  scheduleForwardGroupFailover(activeGroupIds);
+  return activeGroupIds.length;
 }
 
 async function latestTcping(ruleId: number) {
@@ -3425,6 +3539,7 @@ async function latestTcping(ruleId: number) {
 async function evaluateMemberHealth(member: any, group: any) {
   const db = await getDb();
   const now = nowDate();
+  const agentLiveness = await resolveMemberAgentLiveness(member, now.getTime());
   const childRules = await getForwardGroupChildRulesForMember(Number(member.id));
   let healthy = false;
   let chinaHealthPending = false;
@@ -3463,6 +3578,9 @@ async function evaluateMemberHealth(member: any, group: any) {
 
     if (activeChildRules.length === 0) {
       message = "No enabled forwarding rule is using this group member";
+    } else if (!agentLiveness.available) {
+      observedFailureSince = agentLiveness.failureSince || now;
+      message = "Member Agent offline";
     } else {
       healthy = true;
       allRuleHealthAgentFinal = true;
@@ -3479,6 +3597,13 @@ async function evaluateMemberHealth(member: any, group: any) {
           break;
         }
         const latestStat = await latestTcping(Number(rule.id));
+        if (!agentHealthSampleIsCurrent(agentLiveness, latestStat?.recordedAt)) {
+          healthy = false;
+          allRuleHealthAgentFinal = false;
+          agentHealthPending = true;
+          message = "Waiting for Agent health result after reconnect";
+          break;
+        }
         const stat = freshForwardGroupRuleProbe(latestStat, now);
         if (!stat) {
           healthy = false;
@@ -3533,7 +3658,9 @@ async function evaluateMemberHealth(member: any, group: any) {
         }
       }
       if (healthy && dbBool(group.chinaHealthCheckEnabled)) {
-        const chinaStatus = forwardGroupChinaHealthStateAt(member, now.getTime());
+        const chinaStatus = agentHealthSampleIsCurrent(agentLiveness, member.chinaHealthCheckedAt)
+          ? forwardGroupChinaHealthStateAt(member, now.getTime())
+          : "pending";
         if (chinaStatus === "unhealthy") {
           healthy = false;
           message = "国内健康度检测超时";
@@ -3575,14 +3702,15 @@ async function evaluateMemberHealth(member: any, group: any) {
   const healthStateChanged = String(member.healthStatus || "unknown") !== nextHealthStatus
     || !sameTime(member.failureSince, failureSince)
     || !sameTime(member.healthySince, healthySince);
-  const healthSnapshotDue = !lastCheckedAt || now.getTime() - lastCheckedAt.getTime() >= 5 * 60 * 1000;
+  const healthSnapshotDue = agentLiveness.available
+    && (!lastCheckedAt || now.getTime() - lastCheckedAt.getTime() >= 5 * 60 * 1000);
   if (healthStateChanged || healthSnapshotDue) {
     await db.update(forwardGroupMembers).set({
       healthStatus: nextHealthStatus,
       lastLatencyMs: latencyMs,
       failureSince,
       healthySince,
-      lastCheckedAt: now,
+      ...(agentLiveness.available ? { lastCheckedAt: now } : {}),
       updatedAt: now,
     } as any).where(eq(forwardGroupMembers.id, member.id));
   }
@@ -3603,6 +3731,7 @@ async function evaluateMemberHealth(member: any, group: any) {
     failedLongEnough,
     recoveredLongEnough,
     nextProbeExpiryAt,
+    agentLivenessSignature: agentLiveness.signature,
   };
 }
 
@@ -3720,6 +3849,8 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   const excluded: string[] = [];
   const healthWindows: any[] = [];
   const initialHealthSnapshot = new Map<number, string>();
+  const initialAgentLivenessSnapshot = new Map<number, string>();
+  const agentLivenessByMemberId = new Map<number, MemberAgentLiveness>();
   const pendingHealthExpiryCandidates: number[] = [];
   let activeMemberId: number | null = null;
   const chinaHealthEnabled = dbBool(group.chinaHealthCheckEnabled);
@@ -3739,18 +3870,29 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
     const previouslyIncluded = previousValues.has(value);
-    let healthStatus = chinaHealthEnabled
-      ? forwardGroupChinaHealthStateAt(member, chinaHealthNow)
-      : forwardGroupAgentHealthStateAt(member, chinaHealthNow);
+    const liveness = await resolveMemberAgentLiveness(member, chinaHealthNow);
+    const memberId = Number(member.id);
+    initialAgentLivenessSnapshot.set(memberId, liveness.signature);
+    agentLivenessByMemberId.set(memberId, liveness);
     const checkedAt = chinaHealthEnabled ? member.chinaHealthCheckedAt : member.lastCheckedAt;
     const storedStatus = chinaHealthEnabled ? member.chinaHealthStatus : member.healthStatus;
     initialHealthSnapshot.set(
-      Number(member.id),
+      memberId,
       `${String(storedStatus || "unknown")}:${toDate(checkedAt)?.getTime() || 0}`,
     );
     let observedFailureSince: Date | null = null;
-    if (healthStatus === "pending" && !toDate(checkedAt)) {
-      const waitingSince = toDate(member.updatedAt) || toDate(member.createdAt) || toDate(group.updatedAt) || toDate(group.createdAt) || new Date(chinaHealthNow);
+    let healthStatus = !liveness.available
+      ? "offline"
+      : !agentHealthSampleIsCurrent(liveness, checkedAt)
+        ? "pending"
+        : chinaHealthEnabled
+          ? forwardGroupChinaHealthStateAt(member, chinaHealthNow)
+          : forwardGroupAgentHealthStateAt(member, chinaHealthNow);
+    if (!liveness.available) observedFailureSince = liveness.failureSince || healthNow;
+    if (healthStatus === "pending" && (!toDate(checkedAt) || !agentHealthSampleIsCurrent(liveness, checkedAt))) {
+      const waitingSince = liveness.lastOfflineAt
+        ? new Date(liveness.lastOfflineAt)
+        : toDate(member.updatedAt) || toDate(member.createdAt) || toDate(group.updatedAt) || toDate(group.createdAt) || new Date(chinaHealthNow);
       const expiresAt = waitingSince.getTime() + FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS;
       if (chinaHealthNow >= expiresAt) {
         healthStatus = "stale";
@@ -3829,9 +3971,14 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     recoverMs,
     now: chinaHealthNow,
   });
+  const expiryEligibleMembers = members.filter((member: any) => {
+    const liveness = agentLivenessByMemberId.get(Number(member.id));
+    const checkedAt = chinaHealthEnabled ? member.chinaHealthCheckedAt : member.lastCheckedAt;
+    return !!liveness?.available && agentHealthSampleIsCurrent(liveness, checkedAt);
+  });
   const healthExpiryAt = chinaHealthEnabled
-    ? nextForwardGroupChinaHealthExpiryAt({ enabled: true, members, now: chinaHealthNow })
-    : members
+    ? nextForwardGroupChinaHealthExpiryAt({ enabled: true, members: expiryEligibleMembers, now: chinaHealthNow })
+    : expiryEligibleMembers
       .filter((member: any) => forwardGroupAgentHealthStateAt(member, chinaHealthNow) === "healthy")
       .map((member: any) => (toDate(member.lastCheckedAt)?.getTime() || 0) + FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS)
       .filter((value: number) => value > chinaHealthNow)
@@ -3844,6 +3991,12 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     .sort((left, right) => left - right)[0] ?? null;
   forwardGroupHealthRechecks.replace(Number(group.id), nextHealthRecheckAt);
   const agentSelectionStillCurrent = async () => {
+    for (const member of members) {
+      const initial = initialAgentLivenessSnapshot.get(Number(member.id));
+      if (initial === undefined) continue;
+      const current = await resolveMemberAgentLiveness(member);
+      if (current.signature !== initial) return false;
+    }
     if (initialHealthSnapshot.size > 0) {
       const currentRows = await db.select({
         id: forwardGroupMembers.id,
@@ -3954,6 +4107,10 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
       values,
       ttl: Number(ddnsSettings.ttl || 600),
     });
+    if (!(await agentSelectionStillCurrent())) {
+      retryChangedAgentSelection();
+      return;
+    }
     rememberExactDdnsReconciliation(group, joined);
     await db.update(forwardGroups).set({
       activeMemberId,
@@ -4072,6 +4229,7 @@ async function syncSingleForwardGroupDdns(
       values: [value],
       ttl: Number(ddnsSettings.ttl || 600),
     });
+    if (options.beforeCommit && !(await options.beforeCommit())) return false;
     rememberExactDdnsReconciliation(group, value);
     await db.update(forwardGroups).set({
       activeMemberId: memberId,
@@ -4150,16 +4308,32 @@ async function runForwardGroupFailoverForGroups(
     });
     const templates = await getForwardGroupTemplateRules(Number(group.id));
     if (templates.length === 0) {
-      forwardGroupHealthRechecks.replace(Number(group.id), chinaHealthExpiryAt);
-      const { member: firstMember, value: firstValue, pendingChinaHealth } = await firstAvailableResolvableMember(members, group, recordType);
+      const {
+        member: firstMember,
+        value: firstValue,
+        pendingChinaHealth,
+        agentFailurePending,
+        agentLivenessRecheckAt,
+      } = await firstAvailableResolvableMember(members, group, recordType);
+      const nextNoTemplateRecheckAt = [chinaHealthExpiryAt, agentLivenessRecheckAt]
+        .filter((value): value is number => typeof value === "number" && value > Date.now())
+        .sort((left, right) => left - right)[0] ?? null;
+      forwardGroupHealthRechecks.replace(Number(group.id), nextNoTemplateRecheckAt);
       if (group.domain) {
-        if (firstMember && firstValue) {
-          await syncSingleForwardGroupDdns(group, firstMember, firstValue, ddnsSettings, {
+        if (firstMember && firstValue && !agentFailurePending) {
+          const committed = await syncSingleForwardGroupDdns(group, firstMember, firstValue, ddnsSettings, {
             forceSync: !!options.forceSync,
             eventType: options.forcePriority ? "failover" : "ddns-update",
             successMessage: "DDNS 已切换",
             currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
             suppressSwitchNotify: true,
+            beforeCommit: () => memberAgentSelectionStillCurrent(firstMember),
+          });
+          if (committed === false) scheduleForwardGroupFailover([Number(group.id)]);
+        } else if (agentFailurePending) {
+          await updateForwardGroupRuntimeIfChanged(db, group, {
+            lastStatus: "unknown",
+            lastMessage: "活动 Agent 已离线，等待故障转移观察时间",
           });
         } else if (pendingChinaHealth) {
           await updateForwardGroupRuntimeIfChanged(db, group, {
@@ -4174,7 +4348,7 @@ async function runForwardGroupFailoverForGroups(
       await updateForwardGroupRuntimeIfChanged(db, group, {
         activeMemberId: Number(firstMember?.id || 0) || null,
         lastDdnsValue: firstValue || null,
-        lastStatus: firstValue ? "healthy" : "unknown",
+        lastStatus: agentFailurePending ? "unknown" : firstValue ? "healthy" : "unknown",
         lastMessage: group.domain
           ? `当前还没有转发规则使用这个组；${firstValue ? `建议入口 ${firstValue}` : `没有可用${recordTypeRequirementLabel(recordType)}。`}`
           : "当前还没有转发规则使用这个组。",

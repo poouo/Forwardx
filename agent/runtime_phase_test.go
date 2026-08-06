@@ -98,6 +98,10 @@ func TestSharedRuntimeActionRequiredByCurrentAndPreviousOwners(t *testing.T) {
 		{name: "gost transition ignores nginx", runtime: nginxRuntime, dependent: realm, oldOwner: "gost", required: false},
 		{name: "nginx target keeps existing direction", runtime: nginxRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "nginx", SourcePort: 15993}, oldOwner: "realm", required: true},
 		{name: "gost target keeps existing direction", runtime: gostRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "gost", SourcePort: 15994}, oldOwner: "socat", required: true},
+		{name: "nginx-backed guard follows nginx", runtime: nginxRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "guard", RuntimeBackendForwardType: "nginx", SourcePort: 15995}, oldOwner: "realm", required: true},
+		{name: "nginx-backed guard ignores gost", runtime: gostRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "guard", RuntimeBackendForwardType: "nginx", SourcePort: 15995}, oldOwner: "realm", required: false},
+		{name: "gost-backed guard follows gost", runtime: gostRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "guard", RuntimeBackendForwardType: "gost", SourcePort: 15996}, oldOwner: "realm", required: true},
+		{name: "kernel guard has no shared runtime", runtime: gostRuntime, dependent: action{Op: "apply", StatusType: "rule", ForwardType: "guard", SourcePort: 15997}, oldOwner: "realm", required: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -550,6 +550,43 @@ func TestRuntimeSyncGatesAreIndependentByRuntimeFamily(t *testing.T) {
 	}
 }
 
+func TestGuardRuntimeSyncGateFollowsBackendFamily(t *testing.T) {
+	guardAction := action{StatusType: "rule", ForwardType: "guard", RuntimeBackendForwardType: "nginx"}
+	releaseGuardRead := acquireSharedRuntimeSyncGate(guardAction)
+	if releaseGuardRead == nil {
+		t.Fatal("nginx-backed guard did not acquire its shared runtime gate")
+	}
+
+	gostRuntime := action{StatusType: "runtime", ForwardType: "gost-runtime-sync"}
+	releaseGost := acquireSharedRuntimeSyncGate(gostRuntime)
+	if releaseGost == nil {
+		releaseGuardRead()
+		t.Fatal("unrelated gost runtime did not acquire its gate")
+	}
+	releaseGost()
+
+	nginxRuntime := action{StatusType: "runtime", ForwardType: "nginx-runtime-sync"}
+	nginxAcquired := make(chan func(), 1)
+	go func() { nginxAcquired <- acquireSharedRuntimeSyncGate(nginxRuntime) }()
+	select {
+	case release := <-nginxAcquired:
+		release()
+		releaseGuardRead()
+		t.Fatal("nginx runtime sync acquired its write gate while a backed guard was active")
+	case <-time.After(75 * time.Millisecond):
+	}
+	releaseGuardRead()
+	select {
+	case release := <-nginxAcquired:
+		if release == nil {
+			t.Fatal("nginx runtime sync did not acquire its gate")
+		}
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("nginx runtime sync remained blocked after guard action completed")
+	}
+}
+
 func TestManagedRuntimeReadinessSignalBroadcastsToAllWaiters(t *testing.T) {
 	const waiterCount = 32
 	ready := make(chan struct{}, waiterCount)

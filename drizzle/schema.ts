@@ -385,6 +385,7 @@ export const forwardGroups = table("forward_groups", {
   protocol: varchar("protocol", { length: 16 }).notNull().default("both"),
   targetIp: text("targetIp").notNull(),
   targetPort: int("targetPort").notNull().default(1),
+  rateLimitMbps: int("rateLimitMbps").notNull().default(0),
   trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
   proxyProtocolReceive: boolean("proxyProtocolReceive").notNull().default(false),
   proxyProtocolSend: boolean("proxyProtocolSend").notNull().default(false),

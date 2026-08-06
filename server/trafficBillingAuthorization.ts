@@ -40,7 +40,6 @@ export async function reconcileTrafficBillingAuthorization(reason: string) {
         const authorization = await reconcileUserRuleResourceAuthorization(userId);
         await refreshUserForwardEndpoints(userId, reason, {
           urgent: true,
-          includeForwardGroups: true,
         });
         return { recovery, authorization };
       });

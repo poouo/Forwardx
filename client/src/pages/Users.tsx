@@ -108,7 +108,7 @@ function formatSpeedMbps(mbps: number | string | null | undefined): string {
   return `${parseFloat(num.toFixed(2))} Mbps`;
 }
 
-function formatTunnelRateLimit(inMbps: unknown, outMbps: unknown): string {
+function formatForwardRateLimit(inMbps: unknown, outMbps: unknown): string {
   const speed = Math.max(0, Math.floor(Number(inMbps) || 0), Math.floor(Number(outMbps) || 0));
   return speed > 0 ? `上下行 ${formatSpeedMbps(speed)}` : "不限";
 }
@@ -1370,7 +1370,7 @@ function UsersContent() {
                     <span>端口: {u.maxPorts ? `${u.maxPorts} 个` : "不限"}</span>
                     <span>连接: {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
                     <span>单 IP: {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
-                    {speedLimit > 0 && <span className="col-span-2">隧道限速: {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
+                    {speedLimit > 0 && <span className="col-span-2">转发限速: {formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
                   </div>
 
                   <div className="grid gap-2">
@@ -1579,7 +1579,7 @@ function UsersContent() {
                             <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">连接 {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
                             <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">单 IP {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
-                              <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">隧道限速 {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
+                              <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">转发限速 {formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
                             )}
                           </div>
                         </TableCell>
@@ -2257,10 +2257,10 @@ function UsersContent() {
                 <div className="space-y-1">
                   <Label className="flex items-center gap-1.5 text-sm">
                     <Gauge className="h-3.5 w-3.5" />
-                    隧道限速
+                    转发限速
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    对隧道转发的上下行同时生效。
+                    对普通端口转发和隧道入口的上下行同时生效。
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -2270,6 +2270,7 @@ function UsersContent() {
                       type="number"
                       inputMode="decimal"
                       min={0}
+                      max={1000000}
                       step="1"
                       value={gostRateLimitInInput}
                       onChange={(e) => {
@@ -2281,7 +2282,7 @@ function UsersContent() {
                     <span className="text-xs text-muted-foreground select-none whitespace-nowrap">Mbps</span>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新隧道配置时生效。</p>
+                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新转发配置时生效。</p>
               </div>
 
               <Separator />

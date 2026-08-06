@@ -602,10 +602,22 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		// A multi-hop ForwardX first hop is represented by a passive marker;
 		// there is intentionally no local FXP listener to probe.
 		return true
-	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+	case "guard":
+		return desiredGuardActionReady(a)
+	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
 		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	}
 	return checkedService
+}
+
+func desiredGuardActionReady(a action) bool {
+	readiness := readLocalRuntimeReadinessCached()
+	return protocolGuardRuleStateReady(localRuleState{
+		Port:        strconv.Itoa(a.SourcePort),
+		RuleID:      a.RuleID,
+		ForwardType: "guard",
+		Protocol:    a.Protocol,
+	}, &readiness)
 }
 
 func desiredKnownRunningActionReady(a action) bool {
@@ -634,7 +646,9 @@ func desiredKnownRunningActionReady(a action) bool {
 		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "forwardx-tunnel":
 		return true
-	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+	case "guard":
+		return desiredGuardActionReady(a)
+	case "gost", "forwardx", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
 		return desiredGostRuntimeReady(a.SourcePort, a.Protocol, a.ForwardType)
 	default:
 		return true
@@ -1277,7 +1291,7 @@ func finalizeActionHandoffStateUnlocked(state *actionHandoffState, finalization 
 }
 
 func sharedRuntimeOwnsDesiredActionListener(a action) bool {
-	return a.Fxp == nil && sharedRuntimeOwnerForForwardType(a.ForwardType) != ""
+	return a.Fxp == nil && sharedRuntimeOwnerForAction(a) != ""
 }
 
 func startActionWorkerLoops(count int) {
@@ -1413,7 +1427,7 @@ func prepareDesiredActionJobsWithOwnerResolver(jobs []actionJob, resolveOwner fu
 			continue
 		}
 		previousOwner := sharedRuntimeOwnerForForwardType(previousForwardType)
-		desiredOwner := sharedRuntimeOwnerForForwardType(job.action.ForwardType)
+		desiredOwner := sharedRuntimeOwnerForAction(job.action)
 		if previousOwner == "" || desiredOwner == "" || previousOwner == desiredOwner {
 			continue
 		}
@@ -1801,11 +1815,18 @@ func sharedRuntimeOwnerForForwardType(forwardType string) string {
 	switch strings.TrimSpace(forwardType) {
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return "nginx-runtime-sync"
-	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
 		return "gost-runtime-sync"
 	default:
 		return ""
 	}
+}
+
+func sharedRuntimeOwnerForAction(a action) string {
+	if strings.TrimSpace(a.ForwardType) == "guard" {
+		return sharedRuntimeOwnerForForwardType(a.RuntimeBackendForwardType)
+	}
+	return sharedRuntimeOwnerForForwardType(a.ForwardType)
 }
 
 func sharedRuntimeActionRequiredBy(runtimeAction action, dependent action, previousForwardType string) bool {
@@ -1813,7 +1834,7 @@ func sharedRuntimeActionRequiredBy(runtimeAction action, dependent action, previ
 		return false
 	}
 	runtimeType := strings.TrimSpace(runtimeAction.ForwardType)
-	if runtimeType == sharedRuntimeOwnerForForwardType(dependent.ForwardType) ||
+	if runtimeType == sharedRuntimeOwnerForAction(dependent) ||
 		runtimeType == sharedRuntimeOwnerForForwardType(previousForwardType) {
 		return true
 	}
@@ -1914,12 +1935,12 @@ func acquireSharedRuntimeSyncGate(a action) func() {
 	if statusType == "runtime" {
 		return nil
 	}
-	switch forwardType {
-	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop", "guard":
+	switch sharedRuntimeOwnerForAction(a) {
+	case "gost-runtime-sync":
 		// 共享读锁：与同类 worker 并发，但阻塞 gost-runtime-sync 写锁。
 		sharedGostRuntimeSyncGate.RLock()
 		return sharedGostRuntimeSyncGate.RUnlock
-	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+	case "nginx-runtime-sync":
 		sharedNginxRuntimeSyncGate.RLock()
 		return sharedNginxRuntimeSyncGate.RUnlock
 	default:

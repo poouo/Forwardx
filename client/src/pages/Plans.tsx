@@ -1322,7 +1322,7 @@ export default function Plans() {
             </div>
             <div className="space-y-2">
               <Label>限速（Mbps，0 为不限）</Label>
-              <Input type="number" min={0} step={1} value={form.rateLimitMbps} onChange={(e) => setForm({ ...form, rateLimitMbps: e.target.value })} />
+              <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps} onChange={(e) => setForm({ ...form, rateLimitMbps: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label>最大规则数（0 为不限）</Label>

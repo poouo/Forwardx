@@ -45,6 +45,7 @@ export type ForwardGroupInput = {
   recordType?: "A" | "AAAA" | "CNAME";
   failoverSeconds: number;
   recoverSeconds: number;
+  rateLimitMbps?: number;
   trafficMultiplier?: number;
   chinaHealthCheckEnabled?: boolean;
   chinaHealthCheckTarget?: string | null;
@@ -204,6 +205,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     failoverTargets: null,
     domain,
     recordType,
+    rateLimitMbps: runtimeConfigSupported ? Math.max(0, Math.floor(Number(input.rateLimitMbps) || 0)) : 0,
     trafficMultiplier: runtimeConfigSupported ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
     failoverSeconds: input.failoverSeconds,
     recoverSeconds: input.recoverSeconds,
@@ -248,6 +250,7 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     !== memberPrioritySignature(normalized.members as ForwardGroupMemberRequest[]);
   const membersChanged = memberRuntimeSignature((existing?.members || []) as ForwardGroupMemberRequest[])
     !== memberRuntimeSignature(normalized.members as ForwardGroupMemberRequest[]);
+  const rateLimitChanged = Number(existing?.rateLimitMbps || 0) !== Number(normalized.data.rateLimitMbps || 0);
   const previousHostIds = ((existing?.members || []) as ForwardGroupMemberRequest[])
     .filter((member) => member.memberType === "host")
     .map((member) => Number(member.hostId || 0))
@@ -308,6 +311,9 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
       forceSync: memberPriorityChanged,
       manual: true,
     });
+  }
+  if (rateLimitChanged && (normalized.data.groupMode === "port" || normalized.data.groupMode === "failover")) {
+    await db.refreshForwardGroupRuntime(id, "forward-group-rate-limit-updated");
   }
   return db.getForwardGroupById(id);
 }

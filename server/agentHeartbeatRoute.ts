@@ -104,6 +104,8 @@ import { selectResolvedTargetIp } from "./dnsTargetResolution";
 import { buildForwardXMimicConfig } from "./mimicConfig";
 import { gateForwardRulesForRuntime } from "./linkAccessView";
 import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
+import { observePresenceCapableHostActivity, registerPresenceCapableHost } from "./agentFastLiveness";
+import { recordAuthenticatedAgentActivity } from "./agentActivity";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -148,6 +150,8 @@ const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const MIMIC_CONFIG_DIR = "/etc/mimic";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.178";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
+export const AGENT_RATE_LIMIT_GUARD_VERSION = "2.2.187";
+const RATE_LIMIT_GUARD_FORWARD_TYPES = new Set(["iptables", "nftables", "realm", "socat", "nginx"]);
 const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_STATE_SIGNATURE_VERSION = "2.2.137";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
@@ -204,6 +208,7 @@ type NginxStreamServerOptions = {
   listenPort: number;
   proto: "tcp" | "udp";
   upstream: string;
+  loopbackOnly?: boolean;
   sslServer?: {
     certPath: string;
     keyPath: string;
@@ -215,11 +220,11 @@ type NginxStreamServerOptions = {
 
 const nginxConfigQuote = (value: unknown) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
 
-const nginxListenLine = (port: number, proto: "tcp" | "udp") => {
-  const parts = [`listen [::]:${port}`];
+const nginxListenLine = (port: number, proto: "tcp" | "udp", loopbackOnly = false) => {
+  const parts = [`listen ${loopbackOnly ? "127.0.0.1" : "[::]"}:${port}`];
   if (proto === "udp") parts.push("udp", "reuseport");
   else parts.push("so_keepalive=60s:15s:4");
-  parts.push("ipv6only=off");
+  if (!loopbackOnly) parts.push("ipv6only=off");
   return `${parts.join(" ")};`;
 };
 
@@ -228,8 +233,8 @@ export function buildNginxStreamServerBlock(options: NginxStreamServerOptions) {
     "  server {",
     `    # ${nginxConfigQuote(options.name)}`,
     options.sslServer && options.proto === "tcp"
-      ? `    listen [::]:${options.listenPort} ssl so_keepalive=60s:15s:4 ipv6only=off;`
-      : `    ${nginxListenLine(options.listenPort, options.proto)}`,
+      ? `    listen ${options.loopbackOnly ? "127.0.0.1" : "[::]"}:${options.listenPort} ssl so_keepalive=60s:15s:4${options.loopbackOnly ? "" : " ipv6only=off"};`
+      : `    ${nginxListenLine(options.listenPort, options.proto, options.loopbackOnly)}`,
     "    proxy_connect_timeout 10s;",
     options.proto === "udp" ? "    proxy_timeout 2m;" : "    proxy_timeout 24h;",
   ];
@@ -458,6 +463,67 @@ export function selectForwardChainListenerPort(
   });
   const port = Number(child?.sourcePort || 0);
   return port > 0 ? port : fallbackPort;
+}
+
+export type ProtocolGuardPortPlan = {
+  guardListenPort: number;
+  failoverProxyPort: number;
+  guardBackendPort: number;
+};
+
+const PROTOCOL_GUARD_PORT_MIN = 20000;
+const PROTOCOL_GUARD_PORT_MAX = 65535;
+const PROTOCOL_GUARD_LEGACY_SPAN = 20000;
+const PROTOCOL_GUARD_PROCESS_BACKENDS = new Set(["gost", "realm", "socat", "nginx"]);
+
+export function shouldReconcileProtocolGuardBackend(useRuleGuard: boolean, forwardType: unknown) {
+  return useRuleGuard && PROTOCOL_GUARD_PROCESS_BACKENDS.has(String(forwardType || ""));
+}
+
+export function allocateProtocolGuardPorts(
+  rules: Array<{ id?: unknown; sourcePort?: unknown; targetPort?: unknown }>,
+  reservedPorts: Iterable<unknown> = [],
+): Map<number, ProtocolGuardPortPlan> {
+  const used = new Set<number>();
+  const reserve = (value: unknown) => {
+    const port = Number(value || 0);
+    if (Number.isInteger(port) && port > 0 && port <= PROTOCOL_GUARD_PORT_MAX) used.add(port);
+  };
+  for (const port of reservedPorts) reserve(port);
+  for (const rule of rules) {
+    reserve(rule?.sourcePort);
+    // A target may be a service on this Agent. Reserving every target port is
+    // conservative, but prevents a loopback Guard backend from taking over a
+    // real local service before the target address has been resolved.
+    reserve(rule?.targetPort);
+  }
+
+  const ruleIds = Array.from(new Set(rules
+    .map((rule) => Number(rule?.id || 0))
+    .filter((id) => Number.isInteger(id) && id > 0)))
+    .sort((left, right) => left - right);
+  const poolSize = PROTOCOL_GUARD_PORT_MAX - PROTOCOL_GUARD_PORT_MIN + 1;
+  const allocate = (preferredPort: number) => {
+    const preferredOffset = preferredPort - PROTOCOL_GUARD_PORT_MIN;
+    for (let offset = 0; offset < poolSize; offset += 1) {
+      const port = PROTOCOL_GUARD_PORT_MIN + ((preferredOffset + offset) % poolSize);
+      if (used.has(port)) continue;
+      used.add(port);
+      return port;
+    }
+    throw new Error("No free protocol guard internal port is available");
+  };
+
+  const plans = new Map<number, ProtocolGuardPortPlan>();
+  for (const ruleId of ruleIds) {
+    const legacyOffset = ruleId % PROTOCOL_GUARD_LEGACY_SPAN;
+    plans.set(ruleId, {
+      guardListenPort: allocate(39000 + legacyOffset),
+      failoverProxyPort: allocate(41000 + legacyOffset),
+      guardBackendPort: allocate(43000 + legacyOffset),
+    });
+  }
+  return plans;
 }
 
 function agentPluginInventorySignature(inventory: ReturnType<typeof getAgentPluginInventory>) {
@@ -819,7 +885,8 @@ function actionMayAffectRuntimeFamily(action: any, forwardTypes: Set<string>) {
   const op = String(action.op || "").trim();
   if (op !== "apply" && op !== "remove") return false;
   if (action.fxp) return false;
-  return forwardTypes.has(String(action.forwardType || "").trim());
+  const runtimeForwardType = String(action.runtimeBackendForwardType || action.forwardType || "").trim();
+  return forwardTypes.has(runtimeForwardType);
 }
 
 function cleanEndpointHost(value: unknown) {
@@ -938,7 +1005,7 @@ function normalizeRateLimitMbps(value: unknown) {
   return Math.max(0, Math.floor(num));
 }
 
-function userTunnelRateLimitMbps(user: any) {
+function userForwardRateLimitMbps(user: any) {
   return Math.max(
     normalizeRateLimitMbps(user?.gostRateLimitIn),
     normalizeRateLimitMbps(user?.gostRateLimitOut),
@@ -949,13 +1016,106 @@ function tunnelRateLimitMbps(tunnel: any) {
   return normalizeRateLimitMbps(tunnel?.rateLimitMbps);
 }
 
-function effectiveTunnelRateLimitMbps(user: any, tunnel?: any | null) {
-  const limits = [userTunnelRateLimitMbps(user), tunnelRateLimitMbps(tunnel)].filter((limit) => limit > 0);
-  return limits.length > 0 ? Math.min(...limits) : 0;
+function forwardGroupRateLimitMbps(group: any) {
+  return normalizeRateLimitMbps(group?.rateLimitMbps);
+}
+
+export function selectEffectiveForwardRateLimit(options: {
+  userId: number;
+  hostId: number;
+  userLimitMbps?: unknown;
+  tunnelId?: unknown;
+  tunnelLimitMbps?: unknown;
+  forwardGroupId?: unknown;
+  forwardGroupLimitMbps?: unknown;
+}) {
+  const userId = Math.max(0, Number(options.userId) || 0);
+  const hostId = Math.max(0, Number(options.hostId) || 0);
+  const tunnelId = Math.max(0, Number(options.tunnelId) || 0);
+  const forwardGroupId = Math.max(0, Number(options.forwardGroupId) || 0);
+  const candidates = [
+    {
+      mbps: normalizeRateLimitMbps(options.userLimitMbps),
+      scope: `user-${userId}-host-${hostId}`,
+    },
+    {
+      mbps: normalizeRateLimitMbps(options.tunnelLimitMbps),
+      scope: `user-${userId}-host-${hostId}-tunnel-${tunnelId}`,
+      enabled: tunnelId > 0,
+    },
+    {
+      mbps: normalizeRateLimitMbps(options.forwardGroupLimitMbps),
+      scope: `user-${userId}-host-${hostId}-group-${forwardGroupId}`,
+      enabled: forwardGroupId > 0,
+    },
+  ].filter((candidate) => candidate.enabled !== false && candidate.mbps > 0);
+  if (candidates.length === 0) return { mbps: 0, scope: "" };
+  // Keep the broader user scope on equal limits so multiple resources still
+  // share the user's aggregate bucket. A stricter resource limit gets its own
+  // shared bucket across that resource's generated rules.
+  const selected = candidates.reduce((current, candidate) => (
+    candidate.mbps < current.mbps ? candidate : current
+  ));
+  return { mbps: selected.mbps, scope: selected.scope };
 }
 
 function mbpsToBytesPerSecond(mbps: unknown) {
   return Math.max(0, Math.floor(normalizeRateLimitMbps(mbps) * BYTES_PER_MEGABIT));
+}
+
+export function selectProtocolGuardRateLimit(options: {
+  agentVersion: string;
+  hostId: number;
+  rule: { forwardType?: unknown; tunnelId?: unknown; userId?: unknown; tunnelMode?: unknown; tunnelEntry?: unknown };
+  limitIn: number;
+  limitOut: number;
+  rateLimitScope?: unknown;
+}) {
+  const forwardType = String(options.rule?.forwardType || "").trim();
+  const tunnelId = Number(options.rule?.tunnelId || 0);
+  const nginxTunnelEntry = tunnelId > 0
+    && String(options.rule?.tunnelMode || "").trim().toLowerCase() === "nginx_stream"
+    && options.rule?.tunnelEntry === true;
+  const userId = Number(options.rule?.userId || 0);
+  const limitIn = Math.max(0, Math.floor(Number(options.limitIn) || 0));
+  const limitOut = Math.max(0, Math.floor(Number(options.limitOut) || 0));
+  if (
+    !isAgentVersionAtLeast(options.agentVersion, AGENT_RATE_LIMIT_GUARD_VERSION)
+    || (tunnelId > 0 && !nginxTunnelEntry)
+    || (!RATE_LIMIT_GUARD_FORWARD_TYPES.has(forwardType) && !nginxTunnelEntry)
+    || (nginxTunnelEntry && forwardType !== "gost")
+    || userId <= 0
+    || (limitIn <= 0 && limitOut <= 0)
+  ) {
+    return { rateLimitScope: "", limitIn: 0, limitOut: 0 };
+  }
+  return {
+    rateLimitScope: String(options.rateLimitScope || "").trim() || (nginxTunnelEntry
+      ? `user-${userId}-host-${Math.max(0, Number(options.hostId) || 0)}-tunnel-${tunnelId}`
+      : `user-${userId}-host-${Math.max(0, Number(options.hostId) || 0)}`),
+    limitIn,
+    limitOut,
+  };
+}
+
+export function selectProtocolGuardProxyProtocol(options: {
+  backendPort: number;
+  backendForwardType?: unknown;
+  receive: boolean;
+  send: boolean;
+}) {
+  const receive = options.receive === true;
+  const send = options.send === true;
+  const backendForwardType = String(options.backendForwardType || "").trim().toLowerCase();
+  const backendConsumesProxyProtocol = Number(options.backendPort) > 0
+    && (backendForwardType === "gost" || backendForwardType === "realm");
+  return {
+    proxyProtocolReceive: receive,
+    // GOST and Realm consume the Guard's internal PROXY header before applying
+    // their own send setting. Transparent backends such as Nginx must only see
+    // a header when the user explicitly enabled sending it downstream.
+    proxyProtocolSend: send || (receive && backendConsumesProxyProtocol),
+  };
 }
 
 function isHostnameAddress(value: string) {
@@ -1074,6 +1234,8 @@ agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
       return;
     }
     const wasOnline = isHostStatusOnline(host);
+    recordAuthenticatedAgentActivity(host.id);
+    registerPresenceCapableHost(host.id);
     if (shouldPersistAgentPresence({ wasOnline, lastHeartbeat: (host as any).lastHeartbeat })) {
       await db.touchHostHeartbeat(host.id);
     }
@@ -1097,7 +1259,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
   let releaseHeartbeatReconciliation: (() => void) | null = null;
   try {
     const token = getResolvedAgentToken(req);
-    const host = await getAgentHostFromRequest(req);
+    const host = await getAgentHostFromRequest(req, { recordActivity: false });
     if (!host) {
       const migratedTo = await db.getSetting("migratedToPanelUrl");
       if (migratedTo) {
@@ -1111,6 +1273,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       res.status(401).json({ error: "Invalid token" });
       return;
     }
+    const wasOnline = isHostStatusOnline(host);
+    recordAuthenticatedAgentActivity(host.id);
+    observePresenceCapableHostActivity(host.id);
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
     updateAgentPluginInventory(logHostId, req.body?.pluginVersions, req.body?.pluginSyncSignatures);
@@ -1122,6 +1287,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       releaseHeartbeatReconciliation = agentHeartbeatGate.tryAcquire(logHostId, { force: forceReconcile });
       if (!releaseHeartbeatReconciliation) {
         await db.touchHostHeartbeat(logHostId);
+        if (!wasOnline) {
+          await resetAgentRuntimeStateForRecovery(logHostId, "agent-reconnected-heartbeat-coalesced");
+          void notifyHostOnlineIfNeeded({ ...host, isOnline: true, lastHeartbeat: new Date() }).catch((error) => {
+            console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
         const panelMigration = await getPanelMigrationAgentDirective(logHostId);
         res.json({
           success: true,
@@ -1165,7 +1336,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const agentLastAppliedHash = normalizeAgentText(req.body?.agentLastAppliedHash, 64);
     const reportedDefaultNetworkInterface = normalizeNetworkInterface(req.body?.defaultNetworkInterface);
     const previousHost = { ...(host as any) };
-    const wasOnline = isHostStatusOnline(host);
     const reportedAddress = mergeAgentReportedAddress(req.body, host);
     const dnsChangedReports = Array.isArray(req.body?.dnsChanged) ? req.body.dnsChanged : [];
     const agentStateSignatures = normalizeAgentStateSignatures(req.body?.stateSignatures);
@@ -1843,8 +2013,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       (hostTunnels as any[]).map((tunnel: any) => Number(tunnel.id)),
     );
     const agentAllRules = await gateForwardRulesForRuntime(rawAgentAllRules as any[]);
-    const forwardGroupHealthConfigs = await db.getForwardGroupHealthConfigs((agentAllRules as any[])
+    const forwardGroupHealthConfigs = await db.getForwardGroupHealthConfigs(([...agentAllRules, ...agentHostRules] as any[])
       .map((rule: any) => Number(rule?.forwardGroupId || 0)));
+    const forwardGroupRuntimeConfigById = new Map((forwardGroupHealthConfigs as any[])
+      .map((group: any) => [Number(group.id), group]));
     const forwardGroupHealthConfigById = new Map((forwardGroupHealthConfigs as any[])
       .filter((group: any) => group?.isEnabled && String(group.groupMode || "failover") === "failover")
       .map((group: any) => [Number(group.id), group]));
@@ -2114,9 +2286,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (tunnel && isNginxTunnelMode(tunnel)) return false;
         return isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel);
       });
-    const gostRuleUserIds = Array.from(new Set(agentHostRules.map((r: any) => Number(r.userId)).filter((id: number) => Number.isFinite(id) && id > 0))) as number[];
-    const gostUsers = await Promise.all(gostRuleUserIds.map((id) => db.getUserById(id)));
-    const gostUserById = new Map(gostUsers.filter(Boolean).map((u: any) => [u.id, u]));
+    const rateLimitUserIds = Array.from(new Set([...agentHostRules, ...agentAllRules]
+      .map((rule: any) => Number(rule.userId))
+      .filter((id: number) => Number.isFinite(id) && id > 0))) as number[];
+    const rateLimitUsers = await Promise.all(rateLimitUserIds.map((id) => db.getUserById(id)));
+    const rateLimitUserById = new Map(rateLimitUsers.filter(Boolean).map((u: any) => [u.id, u]));
     const gostRateLimiters: any[] = [];
     const gostRateLimiterNames = new Set<string>();
     const ensureGostLimiter = (name: string, mbps: number) => {
@@ -2128,27 +2302,41 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         limits: [`$ ${bytesPerSecond}B ${bytesPerSecond}B`],
       });
     };
-    const applyGostLimiter = (service: any, userId: number, tunnel?: any | null) => {
-      const user = gostUserById.get(userId) as any;
-      const mbps = effectiveTunnelRateLimitMbps(user, tunnel);
-      if (mbps > 0) {
-        const tunnelId = Number(tunnel?.id || 0);
-        const name = tunnelId > 0 ? `fwx-user-${userId}-tunnel-${tunnelId}-${mbps}` : `fwx-user-${userId}-${mbps}`;
-        ensureGostLimiter(name, mbps);
+    const effectiveRateLimitForRule = (rule: any, tunnel?: any | null) => {
+      const userId = Number(rule?.userId || 0);
+      const user = rateLimitUserById.get(userId) as any;
+      const forwardGroupId = Number(rule?.forwardGroupId || 0);
+      const group = forwardGroupRuntimeConfigById.get(forwardGroupId) as any;
+      return selectEffectiveForwardRateLimit({
+        userId,
+        hostId: Number(host.id) || 0,
+        userLimitMbps: userForwardRateLimitMbps(user),
+        tunnelId: Number(tunnel?.id || 0),
+        tunnelLimitMbps: tunnelRateLimitMbps(tunnel),
+        forwardGroupId,
+        forwardGroupLimitMbps: forwardGroupRateLimitMbps(group),
+      });
+    };
+    const applyGostLimiter = (service: any, rule: any, tunnel?: any | null) => {
+      const limit = effectiveRateLimitForRule(rule, tunnel);
+      if (limit.mbps > 0) {
+        const name = `fwx-${limit.scope}-${limit.mbps}`;
+        ensureGostLimiter(name, limit.mbps);
         service.limiter = name;
       }
       return service;
     };
-    const userRateLimits = (userId: number, tunnel?: any | null) => {
-      const user = gostUserById.get(userId) as any;
-      const bytesPerSecond = mbpsToBytesPerSecond(effectiveTunnelRateLimitMbps(user, tunnel));
+    const ruleRateLimits = (rule: any, tunnel?: any | null) => {
+      const limit = effectiveRateLimitForRule(rule, tunnel);
+      const bytesPerSecond = mbpsToBytesPerSecond(limit.mbps);
       return {
+        rateLimitScope: limit.scope,
         limitIn: bytesPerSecond,
         limitOut: bytesPerSecond,
       };
     };
     const userAccessLimits = (userId: number) => {
-      const user = gostUserById.get(userId) as any;
+      const user = rateLimitUserById.get(userId) as any;
       return {
         maxConnections: Math.max(0, Number(user?.maxConnections) || 0),
         maxIPs: Math.max(0, Number(user?.maxIPs) || 0),
@@ -2216,12 +2404,59 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))
         : buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))
     );
-    const failoverProxyPort = (rule: any) => 41000 + (Number(rule?.id) % 20000);
+    const reservedProtocolGuardPorts = new Set<number>();
+    const reserveProtocolGuardPort = (value: unknown) => {
+      const port = Number(value || 0);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) reservedProtocolGuardPorts.add(port);
+    };
+    for (const rule of agentAllRules as any[]) {
+      reserveProtocolGuardPort(rule?.udpOverTcpPort);
+      reserveProtocolGuardPort(rule?.gostRelayPort);
+      for (const target of parseFailoverTargets(rule?.failoverTargets)) {
+        reserveProtocolGuardPort(target.targetPort);
+      }
+      const tunnel = tunnelById.get(Number(rule?.tunnelId || 0)) as any;
+      if (tunnel && Number(tunnel.exitHostId || 0) === Number(host.id)) {
+        reserveProtocolGuardPort(rule?.tunnelExitPort);
+      }
+    }
+    for (const rows of tunnelExitRowsByRuleId.values()) {
+      for (const row of rows as any[]) {
+        if (Number(row?.exitHostId || 0) === Number(host.id)) reserveProtocolGuardPort(row?.tunnelExitPort);
+      }
+    }
+    for (const tunnel of hostTunnels as any[]) {
+      if (Number(tunnel?.exitHostId || 0) === Number(host.id)) {
+        reserveProtocolGuardPort(tunnel?.listenPort);
+        reserveProtocolGuardPort(tunnel?.mimicPort);
+      }
+      for (const hop of tunnelHopsByTunnelId.get(Number(tunnel?.id || 0)) || []) {
+        if (Number(hop?.hostId || 0) !== Number(host.id)) continue;
+        reserveProtocolGuardPort(hop?.listenPort);
+        reserveProtocolGuardPort(hop?.mimicPort);
+      }
+      for (const exitNode of tunnelExitNodesByTunnelId.get(Number(tunnel?.id || 0)) || []) {
+        if (Number(exitNode?.hostId || 0) !== Number(host.id)) continue;
+        reserveProtocolGuardPort(exitNode?.listenPort);
+        reserveProtocolGuardPort(exitNode?.mimicPort);
+      }
+    }
+    const protocolGuardPorts = allocateProtocolGuardPorts(
+      [...agentAllRules, ...agentHostRules],
+      reservedProtocolGuardPorts,
+    );
+    const protocolGuardPortsForRule = (rule: any) => {
+      const ruleId = Number(rule?.id || 0);
+      const plan = protocolGuardPorts.get(ruleId);
+      if (!plan) throw new Error(`Missing protocol guard port plan for rule ${ruleId || "unknown"}`);
+      return plan;
+    };
+    const failoverProxyPort = (rule: any) => protocolGuardPortsForRule(rule).failoverProxyPort;
     const actionFailover = (rule: any, options?: { listenPort?: number; bindAddress?: string; proxyDirection?: "send" | "exitSend" }) => {
       if (!rule || !rule.failoverEnabled) return undefined;
       if (rule.forwardType !== "gost") return undefined;
       if (!rule.tunnelId) {
-        const owner = gostUserById.get(Number(rule.userId)) as any;
+        const owner = rateLimitUserById.get(Number(rule.userId)) as any;
         if (owner?.role !== "admin") return undefined;
       }
       if (rule.protocol !== "tcp") return undefined;
@@ -2910,21 +3145,55 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const ruleProtocolPolicy = (rule: any) => getHostProtocolPolicy(Number((rule as any)?.hostId || 0));
     const tunnelProtocolPolicy = (tunnel: any) => getHostProtocolPolicy(isCurrentHostTunnelEntry(tunnel) ? Number(host.id) : Number((tunnel as any)?.entryHostId || 0));
-    const processBackendForwardTypes = new Set(["gost", "realm", "socat", "nginx"]);
-    const shouldUseProcessBackendGuard = (rule: any) => processBackendForwardTypes.has(String(rule?.forwardType || ""));
+    const shouldUseProcessBackendGuard = (rule: any) => PROTOCOL_GUARD_PROCESS_BACKENDS.has(String(rule?.forwardType || ""));
+    const tunnelForRule = (rule: any) => (
+      Number(rule?.tunnelId || 0) > 0 ? tunnelById.get(Number(rule.tunnelId)) as any : null
+    );
+    const isNginxTunnelEntryRule = (rule: any, tunnel = tunnelForRule(rule)) => (
+      !!tunnel && isNginxTunnelMode(tunnel) && isCurrentHostTunnelEntry(tunnel)
+    );
+    const guardRateLimitForRule = (rule: any) => {
+      const tunnel = tunnelForRule(rule);
+      const limits = ruleRateLimits(rule, tunnel);
+      return selectProtocolGuardRateLimit({
+        agentVersion: effectiveAgentVersion,
+        hostId: Number(host.id) || 0,
+        rule: {
+          ...rule,
+          tunnelMode: tunnel?.mode,
+          tunnelEntry: isNginxTunnelEntryRule(rule, tunnel),
+        },
+        ...limits,
+      });
+    };
     const shouldUseRuleGuard = async (rule: any) => {
-      if (rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0) return false;
+      const tunnel = tunnelForRule(rule);
+      const nginxTunnelEntry = isNginxTunnelEntryRule(rule, tunnel);
+      const rateLimits = guardRateLimitForRule(rule);
+      if (rateLimits.limitIn > 0 || rateLimits.limitOut > 0) {
+        // GOST already applies the same user bucket in its runtime config.
+        // Keep the Agent guard for process backends and Nginx tunnel entries
+        // only, otherwise two serial buckets halve the effective rate.
+        if (rule.forwardType !== "gost" || nginxTunnelEntry) return true;
+      }
+      if (tunnel) return false;
       if (!shouldUseProcessBackendGuard(rule)) return false;
       if (!isAgentVersionAtLeast(String((host as any).agentVersion || ""), AGENT_PROTOCOL_GUARD_BACKEND_VERSION)) return false;
       if (!isForwardRuleProtocolTcpEnabled(rule.protocol)) return false;
       return hasProtocolPolicy(await ruleProtocolPolicy(rule));
     };
     const shouldUseProtocolGuard = (rule: any, policy: any) => isForwardRuleProtocolTcpEnabled(rule?.protocol) && hasProtocolPolicy(policy);
-    const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
-    const guardBackendPort = (rule: any) => 43000 + (Number(rule.id) % 20000);
+    const guardListenPort = (rule: any) => protocolGuardPortsForRule(rule).guardListenPort;
+    const guardBackendPort = (rule: any) => protocolGuardPortsForRule(rule).guardBackendPort;
     const guardTargetForRule = (rule: any, useRuleGuard: boolean) => (
       useRuleGuard && shouldUseProcessBackendGuard(rule)
-        ? { targetIp: "127.0.0.1", targetPort: guardBackendPort(rule), backendPort: guardBackendPort(rule), backendForwardType: String(rule.forwardType || "") }
+        && (!tunnelForRule(rule) || isNginxTunnelEntryRule(rule))
+        ? {
+            targetIp: "127.0.0.1",
+            targetPort: guardBackendPort(rule),
+            backendPort: guardBackendPort(rule),
+            backendForwardType: isNginxTunnelEntryRule(rule) ? "nginx" : String(rule.forwardType || ""),
+          }
         : { ...failoverTargetEndpoint(rule), backendPort: 0, backendForwardType: "" }
     );
     const cleanupGuardBackendCmds = (rule: any, keepNames: string[] = []) => {
@@ -3097,7 +3366,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               }],
             };
           }
-          return applyGostLimiter(service, Number(r.userId), tunnel);
+          return applyGostLimiter(service, r, tunnel);
         }));
       })))
       .flat()
@@ -3530,6 +3799,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort,
             proto,
             upstream,
+            loopbackOnly: useRuleGuard,
           });
         }
         countingCmds.push(...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
@@ -3558,15 +3828,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           warnNginxRoute(`[NginxRuntime] skipped tunnel entry host=${host.id} name=${String(host.name || "-")} tunnel=${tunnel.id} rule=${rule.id} reason=no-endpoints`);
           continue;
         }
-        routeSummaries.push(`entry rule=${rule.id} tunnel=${tunnel.id} port=${Number(rule.sourcePort)} endpoints=${endpoints.map((item) => item.addr).join(",")}`);
+        const useRuleGuard = await shouldUseRuleGuard(rule);
+        const listenPort = useRuleGuard ? guardBackendPort(rule) : Number(rule.sourcePort);
+        routeSummaries.push(`entry rule=${rule.id} tunnel=${tunnel.id} port=${Number(rule.sourcePort)} listen=${listenPort} endpoints=${endpoints.map((item) => item.addr).join(",")}`);
         for (const proto of nginxProtocolsForRule(rule)) {
           const upstream = `fwx_tentry_${Number(rule.id)}_${proto}`;
           if (!addUpstreamServer(upstream, endpoints, (tunnel as any).loadBalanceStrategy)) continue;
           addServer({
             name: `tunnel entry ${Number(tunnel.id)} rule ${Number(rule.id)} ${proto}`,
-            listenPort: Number(rule.sourcePort),
+            listenPort,
             proto,
             upstream,
+            loopbackOnly: useRuleGuard,
             sslClient: proto === "tcp" ? tlsClient : null,
           });
         }
@@ -4362,6 +4635,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (trafficPort) {
           if (useRuleGuard) {
             const guardTarget = guardTargetForRule(rule, useRuleGuard);
+            const guardProxyProtocol = selectProtocolGuardProxyProtocol({
+              backendPort: guardTarget.backendPort,
+              backendForwardType: guardTarget.backendForwardType,
+              receive: proxyProtocolEnabled(rule, "receive"),
+              send: proxyProtocolEnabled(rule, "send"),
+            });
             guardRules.push({
               ruleId: rule.id,
               tunnelId: 0,
@@ -4372,11 +4651,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               backendForwardType: guardTarget.backendForwardType,
               protocol: normalizeForwardRuleProtocol(rule.protocol),
               policy: ruleGuardPolicy,
-              proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
-              proxyProtocolSend: guardTarget.backendPort > 0
-                ? (proxyProtocolEnabled(rule, "send") || proxyProtocolEnabled(rule, "receive"))
-                : proxyProtocolEnabled(rule, "send"),
+              ...guardProxyProtocol,
               proxyProtocolVersion: proxyProtocolVersion(rule),
+              ...guardRateLimitForRule(rule),
             });
           }
           const runningForwardType = useRuleGuard
@@ -4418,9 +4695,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && isForwardXTunnel(ruleTunnel)
         && isCurrentTunnelEntryRule;
       const shouldRefreshForwardXEntryRule = isForwardXEntryRule && shouldRefreshTunnelEntryRule;
-      const shouldRefreshGuardBackend = useRuleGuard
-        && shouldUseProcessBackendGuard(rule)
-        && !rule.isRunning;
+      const shouldRefreshGuardBackend = shouldReconcileProtocolGuardBackend(useRuleGuard, rule.forwardType);
       const expectedRulePort = Number(rule.sourcePort) || 0;
       const expectedRuleForwardType = useRuleGuard
         ? "guard"
@@ -4451,6 +4726,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (useRuleGuard) {
           const guardTarget = guardTargetForRule(rule, useRuleGuard);
           const guardFailover = failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) });
+          const guardProxyProtocol = selectProtocolGuardProxyProtocol({
+            backendPort: guardTarget.backendPort,
+            backendForwardType: guardTarget.backendForwardType,
+            receive: proxyProtocolEnabled(rule, "receive"),
+            send: proxyProtocolEnabled(rule, "send"),
+          });
           guardRules.push({
             ruleId: rule.id,
             tunnelId: 0,
@@ -4461,11 +4742,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             backendForwardType: guardTarget.backendForwardType,
             protocol: normalizeForwardRuleProtocol(rule.protocol),
             policy: ruleGuardPolicy,
-            proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
-            proxyProtocolSend: guardTarget.backendPort > 0
-              ? (proxyProtocolEnabled(rule, "send") || proxyProtocolEnabled(rule, "receive"))
-              : proxyProtocolEnabled(rule, "send"),
+            ...guardProxyProtocol,
             proxyProtocolVersion: proxyProtocolVersion(rule),
+            ...guardRateLimitForRule(rule),
           });
           const guardBaseCleanupCmds = [
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -4480,6 +4759,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ruleId: rule.id,
             op: "apply",
             forwardType: "guard",
+            runtimeBackendForwardType: guardTarget.backendForwardType,
             sourcePort: rule.sourcePort,
             targetIp: rule.targetIp,
             targetPort: rule.targetPort,
@@ -4616,7 +4896,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             guardAction.commands = [
               ...guardBaseCleanupCmds,
               ...cleanupGuardBackendCmds(rule),
-              ...(rule.forwardType === "nginx" ? [nginxRuntimeVerifyCmd()] : []),
+              ...(guardTarget.backendForwardType === "nginx" ? [nginxRuntimeVerifyCmd()] : []),
               ...guardCountingCmds,
             ];
           }
@@ -4880,7 +5160,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               appendPanelLog("error", `[TunnelRoute] invalid ForwardX entry route tunnel=${tunnel.id} rule=${rule.id} nextHost=${entryRoute.host || "-"} nextPort=${entryRoute.port || "-"}`);
               continue;
             }
-            const rateLimits = userRateLimits(Number(rule.userId), tunnel);
+            const rateLimits = ruleRateLimits(rule, tunnel);
             const accessLimits = userAccessLimits(Number(rule.userId));
             const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
             const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
@@ -4925,7 +5205,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetIp: mainBackup ? "127.0.0.1" : processTarget(rule),
               targetPort: mainBackup ? failoverProxyPort(rule) : rule.targetPort,
               key: entryRoute.key,
-              ...rateLimits,
+              limitIn: rateLimits.limitIn,
+              limitOut: rateLimits.limitOut,
               ...accessLimits,
               accessScope: accessScopeForRule(rule),
               ...await tunnelProtocolPolicy(tunnel),
@@ -5136,6 +5417,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ruleId: rule.id,
           tunnelId: tunnel.id,
           listenPort: guardListenPort(rule),
+          bindAddress: "127.0.0.1",
           targetIp: target.targetIp,
           targetPort: target.targetPort,
           protocol: normalizeForwardRuleProtocol(rule.protocol),
@@ -5156,6 +5438,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ruleId: rule.id,
           tunnelId: tunnel.id,
           listenPort: guardListenPort(rule),
+          bindAddress: "127.0.0.1",
           targetIp: target.targetIp,
           targetPort: target.targetPort,
           protocol: normalizeForwardRuleProtocol(rule.protocol),

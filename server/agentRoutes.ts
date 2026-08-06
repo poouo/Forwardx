@@ -34,6 +34,7 @@ import { recordAuthenticatedAgentActivity } from "./agentActivity";
 import { issueAgentAuthChallenges } from "./agentAuthChallenge";
 import { panelCryptoNowMs } from "./panelClock";
 import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
+import { observePresenceCapableHostActivity } from "./agentFastLiveness";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -160,10 +161,11 @@ async function openAgentEventStream(input: {
     res.status(401).json({ error: "Invalid token" });
     return;
   }
-  recordAuthenticatedAgentActivity(host.id);
   const agentVersion = normalizeAgentText(input.agentVersion, 64);
   const agentVersionChanged = hasAgentVersionChanged((host as any).agentVersion, agentVersion);
   const wasOnline = isHostStatusOnline(host);
+  recordAuthenticatedAgentActivity(host.id);
+  observePresenceCapableHostActivity(host.id);
   if (agentVersion) {
     const upgradedFirewallCounterAgent = isAgentVersionAtLeast(agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
       && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION);

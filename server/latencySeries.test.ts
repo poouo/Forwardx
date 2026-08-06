@@ -35,6 +35,7 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     };
     const now = Math.floor(Date.now() / 1000);
     const since = new Date((now - 600) * 1000);
+    const stableProbeBucketAt = Math.floor((now - 1800) / 1800) * 1800 + 900;
 
     await insert("forward_groups", ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled", "activeMemberId"], [10, "failover", "host", "failover", "0.0.0.0", 1, 1, 102]);
     await insert("forward_groups", ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled"], [20, "chain", "host", "chain", "0.0.0.0", 1, 1]);
@@ -58,13 +59,36 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     await insert("tunnel_latency_stats", ["tunnelId", "latencyMs", "isTimeout", "seriesKey", "recordedAt"], [31, 7, 0, "exit-2", now - 10]);
     await insert("forward_group_latency_stats", ["groupId", "latencyMs", "isTimeout", "recordedAt"], [20, 66, 0, now - 40]);
     await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [40, 1, 77, 0, now - 30]);
-    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 10, 0, now - 40]);
-    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 20, 0, now - 30]);
-    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 30, 0, now - 20]);
-    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 35, 0, now - 20]);
-    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 40, 0, now - 10]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 10, 0, stableProbeBucketAt]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 20, 0, stableProbeBucketAt]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 30, 0, stableProbeBucketAt]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 35, 0, stableProbeBucketAt]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [41, 1, 40, 0, stableProbeBucketAt]);
     await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [42, 1, 50, 0, now - 31 * 60]);
     await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [42, 1, 60, 0, now - 5 * 60]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [43, 1, 80, 0, now - 120]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [43, 1, null, 1, now - 120]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [44, 1, null, 1, now - 120]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [44, 1, null, 1, now - 120]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [45, 1, 70, 0, now - 30]);
+    await insert("host_probe_service_stats", ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"], [45, 2, 90, 0, now - 10]);
+
+    // Three services reporting every ten seconds produce more than the old
+    // global 20,000-row cap over a 24-hour window. Keep the fixture large
+    // enough to catch regressions while inserting it in a few SQLite batches.
+    const denseRows = [];
+    for (const serviceId of [50, 51, 52]) {
+      for (let offset = 0; offset < 24 * 60 * 60; offset += 10) {
+        denseRows.push([serviceId, 1, 20 + (offset % 30), 0, now - offset]);
+      }
+    }
+    for (let start = 0; start < denseRows.length; start += 250) {
+      const batch = denseRows.slice(start, start + 250);
+      await runtime.executeRaw(
+        "INSERT INTO " + q("host_probe_service_stats") + " (" + ["serviceId", "hostId", "latencyMs", "isTimeout", "recordedAt"].map(q).join(", ") + ") VALUES " + batch.map(() => "(?, ?, ?, ?, ?)").join(", "),
+        batch.flat(),
+      );
+    }
 
     const activeSeries = await metrics.getTcpingSeriesByRule(100, { since });
     assert.deepEqual(activeSeries.map((item) => item.latencyMs), [42]);
@@ -102,14 +126,30 @@ test("latency series resolve direct rules, active forward-group children, tunnel
     const serviceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [40], hostId: 1, hours: 1 });
     assert.deepEqual(serviceSeries.map((item) => item.latencyMs), [77]);
     const limitedServiceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [41], hostId: 1, hours: 1, limit: 3 });
-    assert.deepEqual(limitedServiceSeries.map((item) => item.latencyMs), [30, 35, 40]);
-    assert.deepEqual(limitedServiceSeries.map((item) => item.recordedAt.getTime()), [
-      (now - 20) * 1000,
-      (now - 20) * 1000,
-      (now - 10) * 1000,
-    ]);
+    assert.deepEqual(limitedServiceSeries.map((item) => item.latencyMs), [27]);
+    assert.equal(limitedServiceSeries[0]?.isTimeout, false);
     const halfHourServiceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [42], hostId: 1, hours: 0.5 });
     assert.deepEqual(halfHourServiceSeries.map((item) => item.latencyMs), [60]);
+    const timeoutSeries = await probes.getHostProbeServiceSeries({ serviceIds: [43, 44], hostId: 1, hours: 1 });
+    assert.equal(timeoutSeries.find((item) => item.serviceId === 43)?.latencyMs, 80);
+    assert.equal(timeoutSeries.find((item) => item.serviceId === 43)?.isTimeout, false);
+    assert.equal(timeoutSeries.find((item) => item.serviceId === 44)?.latencyMs, null);
+    assert.equal(timeoutSeries.find((item) => item.serviceId === 44)?.isTimeout, true);
+    assert.equal((await probes.getLatestHostProbeServiceStats([45]))?.get(45)?.latencyMs, 90);
+    assert.equal((await probes.getLatestHostProbeServiceStats([45], 1))?.get(45)?.latencyMs, 70);
+
+    const denseServiceSeries = await probes.getHostProbeServiceSeries({ serviceIds: [50, 51, 52], hostId: 1, hours: 24 });
+    assert.ok(denseServiceSeries.length > 600 && denseServiceSeries.length < 1_200);
+    assert.deepEqual(new Set(denseServiceSeries.map((item) => item.serviceId)), new Set([50, 51, 52]));
+    for (const serviceId of [50, 51, 52]) {
+      const earliest = Math.min(...denseServiceSeries.filter((item) => item.serviceId === serviceId).map((item) => item.recordedAt.getTime()));
+      const ageSeconds = (Date.now() - earliest) / 1000;
+      assert.ok(ageSeconds >= 23 * 60 * 60, "dense series starts too late: " + ageSeconds + "s old");
+      assert.ok(ageSeconds <= 24 * 60 * 60 + 10 * 60, "dense series starts too early: " + ageSeconds + "s old");
+    }
+    const denseUnscopedSeries = await probes.getHostProbeServiceSeries({ serviceIds: [50, 51, 52], hours: 24 });
+    assert.ok(denseUnscopedSeries.length > 600 && denseUnscopedSeries.length < 1_200);
+    assert.deepEqual(new Set(denseUnscopedSeries.map((item) => item.hostId)), new Set([1]));
 
     assert.equal(await database.clearLegacyTunnelRuleLatencyHistoryOnce(), 1);
     assert.equal(Number((await runtime.queryRaw('SELECT COUNT(*) AS count FROM "tcping_stats" WHERE "ruleId" = 140'))[0]?.count || 0), 0);

@@ -3,11 +3,26 @@ import { ENV } from "./env";
 import { sendTelegramMessage } from "./telegramBot";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 import { partitionHostsByRecentAgentActivity } from "./agentActivity";
+import {
+  getPresenceCapableHostLivenessSnapshot,
+  isPresenceCapableHostConfirmedOffline,
+  subscribeAgentFastLiveness,
+  type AgentFastLivenessTransition,
+} from "./agentFastLiveness";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 
 type HostStatus = "online" | "offline";
 
 const lastKnownStatus = new Map<number, HostStatus>();
+const FAST_LIVENESS_RETRY_DELAYS_MS = [0, 1_000, 3_000, 7_000, 15_000] as const;
 let hostStatusNotifierPrimed = false;
+
+function waitForRetry(delayMs: number) {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
+}
 
 function escapeHtml(value: unknown) {
   return String(value ?? "")
@@ -58,7 +73,10 @@ function hostStatusMessage(host: any, status: HostStatus) {
 export function isHostStatusOnline(host: any) {
   if (!host?.lastHeartbeat) return false;
   const last = new Date(host.lastHeartbeat as any).getTime();
-  return !!host?.isOnline && Number.isFinite(last) && Date.now() - last <= db.HOST_ONLINE_TTL_MS;
+  return !!host?.isOnline
+    && Number.isFinite(last)
+    && Date.now() - last <= db.HOST_ONLINE_TTL_MS
+    && !isPresenceCapableHostConfirmedOffline(host?.id);
 }
 
 async function telegramHostStatusEnabled() {
@@ -142,6 +160,102 @@ export async function notifyHostOnlineIfNeeded(host: any) {
     console.warn(`[HostStatus] Online forward-group evaluation failed host=${host?.id}: ${error instanceof Error ? error.message : String(error)}`);
   });
 }
+
+async function restoreHostOnlineAfterStaleOfflineTransition(hostId: number) {
+  const before = getPresenceCapableHostLivenessSnapshot(hostId);
+  if (!before || before.confirmedOffline) return;
+  await db.touchHostHeartbeat(hostId);
+  // A second silence transition may have completed while the compensating DB
+  // write was in flight. In that case the newest transition must win.
+  const after = getPresenceCapableHostLivenessSnapshot(hostId);
+  if (after?.confirmedOffline) await db.markHostOffline(hostId);
+}
+
+async function handlePresenceCapableHostOnline(event: AgentFastLivenessTransition) {
+  if (event.kind !== "activity-restored" || event.confirmedOffline !== false) return;
+  if (!event.isCurrent()) return;
+  const hostId = Number(event.hostId || 0);
+  if (!Number.isFinite(hostId) || hostId <= 0) return;
+
+  // The regular presence route deliberately throttles database writes. A
+  // recovery transition must still repair a host that was marked offline by a
+  // just-completed silence deadline, then immediately re-evaluate its groups.
+  await db.touchHostHeartbeat(hostId);
+  if (!event.isCurrent()) return;
+  const host = await db.getHostById(hostId);
+  if (!host || !event.isCurrent()) return;
+  await db.scheduleForwardGroupsForHostHealthChange(hostId);
+  if (!event.isCurrent()) return;
+  await notifyHostStatusChange({ ...host, isOnline: true, lastHeartbeat: new Date() }, "online");
+}
+
+export async function handlePresenceCapableHostOffline(event: AgentFastLivenessTransition) {
+  if (event.kind !== "confirmed-offline" || event.confirmedOffline !== true || !event.offlineAt) return;
+  const hostId = Number(event.hostId || 0);
+  const host = await db.getHostById(hostId);
+  if (!host || !event.isCurrent()) return;
+
+  await db.markHostOffline(hostId);
+  if (!event.isCurrent()) {
+    await restoreHostOnlineAfterStaleOfflineTransition(hostId);
+    return;
+  }
+
+  clearTunnelRuntimeStatusForHost(hostId);
+  await db.scheduleForwardGroupsForHostHealthChange(hostId);
+  if (!event.isCurrent()) {
+    await restoreHostOnlineAfterStaleOfflineTransition(hostId);
+    return;
+  }
+  await notifyHostStatusChange(host, "offline");
+  console.info(`[HostStatus] Fast offline confirmed host=${hostId} silenceMs=${Math.max(0, event.offlineAt! - (event.lastSeenAt || event.offlineAt!))}`);
+}
+
+subscribeAgentFastLiveness((event) => {
+  const hostId = Number(event.hostId || 0);
+  if (!Number.isFinite(hostId) || hostId <= 0) return;
+  // A host can recover while the previous offline transition is still doing
+  // database or DDNS work. Keep all transitions for that host in event order;
+  // the generation checks below then make stale work a no-op.
+  void withKeyedTaskLock(`agent-liveness:${hostId}`, async () => {
+    if (event.kind === "activity-restored") {
+      for (let attempt = 0; attempt < FAST_LIVENESS_RETRY_DELAYS_MS.length; attempt += 1) {
+        if (!event.isCurrent()) return;
+        const delayMs = FAST_LIVENESS_RETRY_DELAYS_MS[attempt];
+        if (delayMs > 0) await waitForRetry(delayMs);
+        if (!event.isCurrent()) return;
+        try {
+          await handlePresenceCapableHostOnline(event);
+          return;
+        } catch (error) {
+          const finalAttempt = attempt === FAST_LIVENESS_RETRY_DELAYS_MS.length - 1;
+          console.warn(
+            `[HostStatus] Fast online transition failed host=${hostId} attempt=${attempt + 1}/${FAST_LIVENESS_RETRY_DELAYS_MS.length}${finalAttempt ? " giving-up=true" : ""}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      return;
+    }
+
+    for (let attempt = 0; attempt < FAST_LIVENESS_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (!event.isCurrent()) return;
+      const delayMs = FAST_LIVENESS_RETRY_DELAYS_MS[attempt];
+      if (delayMs > 0) await waitForRetry(delayMs);
+      if (!event.isCurrent()) return;
+      try {
+        await handlePresenceCapableHostOffline(event);
+        return;
+      } catch (error) {
+        const finalAttempt = attempt === FAST_LIVENESS_RETRY_DELAYS_MS.length - 1;
+        console.warn(
+          `[HostStatus] Fast offline transition failed host=${hostId} attempt=${attempt + 1}/${FAST_LIVENESS_RETRY_DELAYS_MS.length}${finalAttempt ? " giving-up=true" : ""}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }).catch((error) => {
+    console.warn(`[HostStatus] Fast liveness transition queue failed host=${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+});
 
 export async function sweepOfflineHostsAndNotify() {
   if (!hostStatusNotifierPrimed) {

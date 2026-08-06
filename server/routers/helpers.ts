@@ -155,17 +155,9 @@ export async function pushTunnelEndpointRefresh(
 export async function refreshUserForwardEndpoints(
   userId: number,
   reason: string,
-  options: { urgent?: boolean; includeForwardGroups?: boolean } = {},
+  options: { urgent?: boolean } = {},
 ) {
   const rules = [...await db.getForwardRulesForUserSync(userId)] as any[];
-  if (options.includeForwardGroups) {
-    const rootRules = await db.getForwardRules(userId);
-    const templates = (rootRules as any[]).filter((rule) => rule?.isForwardGroupTemplate && Number(rule?.forwardGroupId || 0) > 0);
-    const childRows = await Promise.all(templates.map((template) => (
-      db.getForwardGroupChildRulesForTemplate(Number(template.id))
-    )));
-    for (const children of childRows) rules.push(...children as any[]);
-  }
   await db.resetForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
   const tunnelIds = new Set<number>();

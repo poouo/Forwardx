@@ -641,13 +641,18 @@ export const hostsRouter = router({
         const services = (allServices as any[])
           .filter((service) => publicProbeServiceAppliesToHost(service, host.id));
         const serviceIds = services.map((service) => Number(service.id)).filter((id) => Number.isInteger(id) && id > 0);
-        const series = serviceIds.length > 0
-          ? (await db.getHostProbeServiceSeries({ serviceIds, hostId: host.id, hours: input.hours, limit: 20_000 }) as any[])
+        let series: any[] = [];
+        let latestByService = new Map<number, any>();
+        if (serviceIds.length > 0) {
+          const [rawSeries, latest] = await Promise.all([
+            db.getHostProbeServiceSeries({ serviceIds, hostId: host.id, hours: input.hours, limit: 20_000 }),
+            db.getLatestHostProbeServiceStats(serviceIds, host.id),
+          ]);
+          series = (rawSeries as any[])
             .map(compactPublicProbeSeries)
-            .filter((row) => row.serviceId > 0 && row.hostId === host.id)
-          : [];
-        const latestByService = new Map<number, any>();
-        for (const row of series) latestByService.set(Number(row.serviceId), row);
+            .filter((row) => row.serviceId > 0 && row.hostId === host.id);
+          latestByService = latest as Map<number, any>;
+        }
         return {
           path: configuredPath,
           refreshedAt: new Date().toISOString(),

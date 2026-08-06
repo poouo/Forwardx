@@ -31,6 +31,10 @@ import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 import { invalidateAgentAuthTokenCandidates } from "./tokenRepository";
 import { getSetting, setSetting } from "./settingsRepository";
+import {
+  isPresenceCapableHostConfirmedOffline,
+  removePresenceCapableHost,
+} from "../agentFastLiveness";
 
 // ==================== Host Queries ====================
 
@@ -42,8 +46,13 @@ export function isFreshHostHeartbeat(lastHeartbeat: unknown) {
   return Number.isFinite(time) && Date.now() - time <= HOST_ONLINE_TTL_MS;
 }
 
-function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
-  return { ...host, isOnline: !!host.isOnline && isFreshHostHeartbeat(host.lastHeartbeat) };
+function withComputedOnline<T extends { id?: unknown; isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
+  return {
+    ...host,
+    isOnline: !!host.isOnline
+      && isFreshHostHeartbeat(host.lastHeartbeat)
+      && !isPresenceCapableHostConfirmedOffline(host.id),
+  };
 }
 
 export async function getHosts(userId?: number) {
@@ -523,6 +532,7 @@ export async function deleteHost(id: number) {
     eq(trafficBillingConfigs.resourceId, id),
   ));
   await db.delete(hosts).where(eq(hosts.id, id));
+  removePresenceCapableHost(id);
   invalidateAgentAuthTokenCandidates();
   if (before) await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "delete", before });
   await refreshDatabasePoolSettings().catch(() => undefined);

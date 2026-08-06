@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import {
   balanceTransactions, InsertBalanceTransaction,
   discountCodePlans,
@@ -18,7 +18,7 @@ import {
   users,
 } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
-import { getForwardRulesForUserSync } from "./forwardRuleRepository";
+import { getForwardRulesForUserSync, resetForwardRulesForUserSync } from "./forwardRuleRepository";
 import { getForwardGroupEntryPortRange } from "./forwardGroupRepository";
 import { getHostById } from "./hostRepository";
 import { getTunnelById, updateTunnel } from "./tunnelRepository";
@@ -27,6 +27,7 @@ import {
   getAllUsers,
   getUserById,
   resetUserTraffic,
+  resetUserTrafficForCycle,
   setUserForwardAccess,
   updateUserTrafficSettings,
   type ForwardAccessPauseReason,
@@ -36,6 +37,11 @@ import { pushAgentRefresh } from "../agentEvents";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { getSetting, setSetting } from "./settingsRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
+import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
+import {
+  getUserForwardRuleIdsDisabledByAccess,
+  scheduleUserForwardRulesAfterAccessRecovery,
+} from "./userForwardAccessRecovery";
 
 let lastActiveSubscriptionWarningAt = 0;
 
@@ -676,6 +682,7 @@ function userSubscriptionsListQuery(db: any) {
       portRangeStart: userSubscriptions.portRangeStart,
       portRangeEnd: userSubscriptions.portRangeEnd,
       nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
+      lastTrafficResetAt: userSubscriptions.lastTrafficResetAt,
       startedAt: userSubscriptions.startedAt,
       expiresAt: userSubscriptions.expiresAt,
       createdAt: userSubscriptions.createdAt,
@@ -804,6 +811,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
         portRangeStart: userSubscriptions.portRangeStart,
         portRangeEnd: userSubscriptions.portRangeEnd,
         nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
+        lastTrafficResetAt: userSubscriptions.lastTrafficResetAt,
         startedAt: userSubscriptions.startedAt,
         expiresAt: userSubscriptions.expiresAt,
         planName: subscriptionPlans.name,
@@ -837,6 +845,158 @@ export async function updateUserSubscription(id: number, data: Partial<InsertUse
   await db.update(userSubscriptions).set({ ...data, updatedAt: nowDate() } as any).where(eq(userSubscriptions.id, id));
 }
 
+function validDate(value: unknown): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value as any);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function boundTrafficResetAt(resetAt: Date | null, expiresAt: Date | null) {
+  if (!resetAt) return null;
+  return !expiresAt || resetAt.getTime() < expiresAt.getTime() ? resetAt : null;
+}
+
+function addMonthsFromAnchor(anchor: Date, months: number) {
+  const next = new Date(anchor.getTime());
+  const day = next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth() + months);
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, lastDay));
+  return next;
+}
+
+function nextAnchoredSubscriptionTrafficReset(startedAt: unknown, reference: Date, expiresAt: Date | null) {
+  const anchor = validDate(startedAt) || reference;
+  const monthDelta = Math.max(
+    1,
+    (reference.getFullYear() - anchor.getFullYear()) * 12 + reference.getMonth() - anchor.getMonth(),
+  );
+  let months = monthDelta;
+  let next = addMonthsFromAnchor(anchor, months);
+  while (next.getTime() <= reference.getTime()) {
+    months += 1;
+    next = addMonthsFromAnchor(anchor, months);
+  }
+  return boundTrafficResetAt(next, expiresAt);
+}
+
+function nextConfiguredSubscriptionTrafficReset(
+  user: { trafficResetDay?: unknown },
+  subscription: { startedAt?: unknown; lastTrafficResetAt?: unknown },
+  reference: Date,
+  expiresAt: Date | null,
+) {
+  const resetDay = Math.min(28, Math.max(1, Math.floor(Number(user.trafficResetDay) || 1)));
+  let next = new Date(reference.getTime());
+  next.setHours(0, 0, 0, 0);
+  next.setDate(1);
+  next.setDate(resetDay);
+
+  // A subscription created after this month's boundary did not participate in
+  // that cycle. A boundary already settled for it must not run twice.
+  const startedAt = validDate(subscription.startedAt);
+  const lastTrafficResetAt = validDate(subscription.lastTrafficResetAt);
+  const handledThrough = Math.max(
+    startedAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+    lastTrafficResetAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+  );
+  while (next.getTime() <= handledThrough) {
+    next.setMonth(next.getMonth() + 1);
+  }
+  return boundTrafficResetAt(next, expiresAt);
+}
+
+function subscriptionTrafficLimit(row: any) {
+  return Number(parsePlanSnapshot(row?.planSnapshot)?.trafficLimit ?? row?.planTrafficLimit ?? row?.trafficLimit ?? 0);
+}
+
+function sameEpochSecond(left: unknown, right: unknown) {
+  const leftDate = validDate(left);
+  const rightDate = validDate(right);
+  if (!leftDate || !rightDate) return leftDate === rightDate;
+  return Math.floor(leftDate.getTime() / 1000) === Math.floor(rightDate.getTime() / 1000);
+}
+
+async function updateActiveTrafficAddonCycleEnd(
+  subscriptionId: number,
+  nextTrafficResetAt: Date | null,
+  expiresAt: Date | null,
+) {
+  const db = await getDb();
+  if (!db || subscriptionId <= 0) return;
+  const cycleEnd = nextTrafficResetAt || expiresAt;
+  await db.update(userTrafficAddons).set({
+    cycleResetAt: cycleEnd,
+    expiresAt: cycleEnd,
+    updatedAt: nowDate(),
+  } as any).where(and(
+    eq(userTrafficAddons.subscriptionId, subscriptionId),
+    eq(userTrafficAddons.status, "active"),
+    cycleEnd
+      ? or(
+        isNull(userTrafficAddons.expiresAt),
+        ne(userTrafficAddons.expiresAt, cycleEnd),
+        isNull(userTrafficAddons.cycleResetAt),
+        ne(userTrafficAddons.cycleResetAt, cycleEnd),
+      )
+      : or(isNotNull(userTrafficAddons.expiresAt), isNotNull(userTrafficAddons.cycleResetAt)),
+  ));
+}
+
+async function subscriptionCycleRows(input: { userId?: number; autoResetOnly?: boolean; preserveDue?: boolean } = {}) {
+  const db = await getDb();
+  if (!db) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const conditions: any[] = [
+    eq(userSubscriptions.status, "active"),
+    sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+  ];
+  if (input.userId !== undefined) conditions.push(eq(userSubscriptions.userId, input.userId));
+  if (input.autoResetOnly) conditions.push(eq(users.trafficAutoReset, true));
+  return db.select({
+    id: userSubscriptions.id,
+    userId: userSubscriptions.userId,
+    planSnapshot: userSubscriptions.planSnapshot,
+    nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
+    lastTrafficResetAt: userSubscriptions.lastTrafficResetAt,
+    startedAt: userSubscriptions.startedAt,
+    expiresAt: userSubscriptions.expiresAt,
+    planTrafficLimit: subscriptionPlans.trafficLimit,
+    trafficAutoReset: users.trafficAutoReset,
+    trafficResetDay: users.trafficResetDay,
+  })
+    .from(userSubscriptions)
+    .innerJoin(users, eq(userSubscriptions.userId, users.id))
+    .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
+    .where(and(...conditions));
+}
+
+async function alignSubscriptionTrafficCycles(
+  reference: Date,
+  input: { userId?: number; autoResetOnly?: boolean; preserveDue?: boolean } = {},
+) {
+  const rows = await subscriptionCycleRows(input);
+  let updated = 0;
+  for (const row of rows as any[]) {
+    const existingResetAt = validDate(row.nextTrafficResetAt);
+    if (input.preserveDue && existingResetAt && existingResetAt.getTime() <= reference.getTime()) {
+      continue;
+    }
+    const expiresAt = validDate(row.expiresAt);
+    const nextTrafficResetAt = subscriptionTrafficLimit(row) > 0
+      ? row.trafficAutoReset
+        ? nextConfiguredSubscriptionTrafficReset(row, row, reference, expiresAt)
+        : nextAnchoredSubscriptionTrafficReset(row.startedAt, reference, expiresAt)
+      : null;
+    await updateActiveTrafficAddonCycleEnd(Number(row.id), nextTrafficResetAt, expiresAt);
+    if (sameEpochSecond(row.nextTrafficResetAt, nextTrafficResetAt)) continue;
+    await updateUserSubscription(Number(row.id), { nextTrafficResetAt } as any);
+    updated += 1;
+  }
+  return updated;
+}
+
 async function expireTrafficAddonsForSubscriptionIds(subscriptionIds: number[]) {
   const db = await getDb();
   const ids = Array.from(new Set(subscriptionIds.map(Number).filter((id) => id > 0)));
@@ -858,6 +1018,45 @@ async function expireTrafficAddonsForSubscriptionIds(subscriptionIds: number[]) 
     inArray(userTrafficAddons.subscriptionId, ids),
   ));
   return Array.from(new Set((rows as any[]).map((row: any) => Number(row.userId)).filter((id: number) => id > 0)));
+}
+
+async function expireTrafficAddonsForSubscriptionCycles(
+  cycles: Array<{ id: number; dueBoundary: Date }>,
+) {
+  const db = await getDb();
+  if (!db || cycles.length === 0) return [];
+  const now = nowDate();
+  const userIds = new Set<number>();
+  const boundaryBySubscription = new Map<number, number>();
+  for (const cycle of cycles) {
+    const id = Number(cycle.id || 0);
+    const boundarySec = Math.floor(cycle.dueBoundary.getTime() / 1000);
+    if (id <= 0 || !Number.isFinite(boundarySec)) continue;
+    boundaryBySubscription.set(id, Math.max(boundaryBySubscription.get(id) ?? Number.NEGATIVE_INFINITY, boundarySec));
+  }
+  for (const [subscriptionId, boundarySec] of boundaryBySubscription) {
+    // createdAt is compared strictly so an add-on bought at or after the cycle
+    // boundary belongs to the new cycle, even if another panel instance is
+    // still finishing the old one.
+    const conditions = and(
+      eq(userTrafficAddons.subscriptionId, subscriptionId),
+      eq(userTrafficAddons.status, "active"),
+      sql`${userTrafficAddons.createdAt} < ${boundarySec}`,
+    );
+    const rows = await db.select({ userId: userTrafficAddons.userId })
+      .from(userTrafficAddons)
+      .where(conditions);
+    for (const row of rows as any[]) {
+      const userId = Number(row.userId || 0);
+      if (userId > 0) userIds.add(userId);
+    }
+    await db.update(userTrafficAddons).set({
+      status: "expired",
+      expiredAt: now,
+      updatedAt: now,
+    } as any).where(conditions);
+  }
+  return Array.from(userIds);
 }
 
 export async function expireDueTrafficAddons(userId?: number) {
@@ -901,10 +1100,13 @@ export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date |
   const expired = !!nextExpiresAt && nextExpiresAt.getTime() <= now.getTime();
   let nextTrafficResetAt = subscription.nextTrafficResetAt ? new Date(subscription.nextTrafficResetAt) : null;
   const plan = await getSubscriptionPlanById(Number(subscription.planId));
+  const user = await getUserById(Number(subscription.userId));
   const subscriptionSnapshot = parsePlanSnapshot((subscription as any).planSnapshot);
   const subscriptionTrafficLimit = Number(subscriptionSnapshot?.trafficLimit ?? plan?.trafficLimit ?? 0);
   if (subscriptionTrafficLimit > 0 && !expired) {
-    if (
+    if ((user as any)?.trafficAutoReset) {
+      nextTrafficResetAt = nextConfiguredSubscriptionTrafficReset(user as any, subscription, now, nextExpiresAt);
+    } else if (
       !nextTrafficResetAt ||
       !Number.isFinite(nextTrafficResetAt.getTime()) ||
       nextTrafficResetAt.getTime() <= now.getTime() ||
@@ -923,6 +1125,7 @@ export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date |
     expiresAt: nextExpiresAt,
     nextTrafficResetAt,
   } as any);
+  await updateActiveTrafficAddonCycleEnd(id, nextTrafficResetAt, nextExpiresAt);
   if (expired) await expireTrafficAddonsForSubscriptionIds([id]);
   const limits = await syncUserSubscriptionEntitlements(Number(subscription.userId));
   return {
@@ -952,10 +1155,13 @@ export async function extendUserSubscription(id: number, days: number) {
   const expiresAt = new Date(base.getTime() + extraDays * 24 * 3600 * 1000);
   let nextTrafficResetAt = subscription.nextTrafficResetAt ? new Date(subscription.nextTrafficResetAt) : null;
   const plan = await getSubscriptionPlanById(Number(subscription.planId));
+  const user = await getUserById(Number(subscription.userId));
   const subscriptionSnapshot = parsePlanSnapshot((subscription as any).planSnapshot);
   const subscriptionTrafficLimit = Number(subscriptionSnapshot?.trafficLimit ?? plan?.trafficLimit ?? 0);
   if (subscriptionTrafficLimit > 0) {
-    if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
+    if ((user as any)?.trafficAutoReset) {
+      nextTrafficResetAt = nextConfiguredSubscriptionTrafficReset(user as any, subscription, now, expiresAt);
+    } else if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
       nextTrafficResetAt = nextMonthlyTrafficReset(now, expiresAt);
     }
     if (nextTrafficResetAt && nextTrafficResetAt.getTime() >= expiresAt.getTime()) nextTrafficResetAt = null;
@@ -967,6 +1173,7 @@ export async function extendUserSubscription(id: number, days: number) {
     expiresAt,
     nextTrafficResetAt,
   } as any);
+  await updateActiveTrafficAddonCycleEnd(id, nextTrafficResetAt, expiresAt);
   const limits = await syncUserSubscriptionEntitlements(Number(subscription.userId));
   return {
     id,
@@ -1008,8 +1215,11 @@ export async function expireUserSubscriptions() {
   for (const userId of userIds) {
     const rules = await getForwardRulesForUserSync(userId);
     const active = await getActiveUserSubscriptions(userId);
-    await syncUserSubscriptionEntitlements(userId);
-    if (active.length === 0) {
+    const userBeforeSync = await getUserById(userId);
+    const limits = await syncUserSubscriptionEntitlements(userId);
+    const accessBecameDisabled = !!(userBeforeSync as any)?.canAddRules && !limits.canAddRules;
+    if (active.length === 0 || accessBecameDisabled) {
+      await resetForwardRulesForUserSync(userId);
       const hostIds = new Set<number>();
       const tunnelIds = new Set<number>();
       for (const rule of rules as any[]) {
@@ -1192,9 +1402,32 @@ export type ForwardAccessCheckResult = {
   allowed: boolean;
   restored: boolean;
   user: any | null;
+  restoredRuleIds?: number[];
   reason?: ForwardAccessPauseReason | "not_found" | "no_access";
   message?: string;
 };
+
+async function restoreUserForwardRulesIfEligible(userId: number) {
+  const user = await getUserById(userId) as any;
+  if (
+    !user
+    || user.accountEnabled === false
+    || !user.canAddRules
+    || String(user.forwardAccessPauseReason || "").trim()
+  ) {
+    return { affectedRuleIds: [] as number[], restoredRuleIds: [] as number[], forwardGroupIds: [] as number[] };
+  }
+  const affectedRuleIds = await getUserForwardRuleIdsDisabledByAccess(userId);
+  if (affectedRuleIds.length === 0) {
+    return { affectedRuleIds, restoredRuleIds: [] as number[], forwardGroupIds: [] as number[] };
+  }
+  const recovery = await scheduleUserForwardRulesAfterAccessRecovery(userId);
+  return {
+    affectedRuleIds,
+    restoredRuleIds: recovery?.enabledRuleIds ?? [],
+    forwardGroupIds: [] as number[],
+  };
+}
 
 export async function recoverUserForwardAccessIfEligible(
   userId: number,
@@ -1238,16 +1471,19 @@ export async function recoverUserForwardAccessIfEligible(
   if (effectiveLimits.canAddRules) {
     if (isTrafficLimitExceeded((user as any).trafficUsed, effectiveLimits.trafficLimit)) {
       if (options.allowTrafficBillingRecovery && hasTrafficBillingResource && hasTrafficBillingBalance) {
-        const restored = !(user as any).canAddRules || !!pauseReason;
+        let restored = !(user as any).canAddRules || !!pauseReason;
         await updateUserTrafficSettings(userId, {
           ...effectiveLimits,
           canAddRules: true,
           allowForwardXTunnel: true,
           forwardAccessPauseReason: null,
         });
+        const ruleRecovery = await restoreUserForwardRulesIfEligible(userId);
+        restored = restored || ruleRecovery.affectedRuleIds.length > 0;
         return {
           allowed: true,
           restored,
+          restoredRuleIds: ruleRecovery.restoredRuleIds,
           user: await getUserById(userId) ?? user,
         };
       }
@@ -1263,16 +1499,19 @@ export async function recoverUserForwardAccessIfEligible(
       };
     }
 
-    const restored = !(user as any).canAddRules || !!pauseReason;
+    let restored = !(user as any).canAddRules || !!pauseReason;
     await updateUserTrafficSettings(userId, {
       ...effectiveLimits,
       canAddRules: true,
       allowForwardXTunnel: true,
       forwardAccessPauseReason: null,
     });
+    const ruleRecovery = await restoreUserForwardRulesIfEligible(userId);
+    restored = restored || ruleRecovery.affectedRuleIds.length > 0;
     return {
       allowed: true,
       restored,
+      restoredRuleIds: ruleRecovery.restoredRuleIds,
       user: await getUserById(userId) ?? user,
     };
   }
@@ -1292,7 +1531,7 @@ export async function recoverUserForwardAccessIfEligible(
 
   if (hasTrafficBillingResource) {
     if (hasTrafficBillingBalance) {
-      const restored = !(user as any).canAddRules || !!pauseReason;
+      let restored = !(user as any).canAddRules || !!pauseReason;
       await updateUserTrafficSettings(userId, {
         canAddRules: true,
         allowForwardXTunnel: true,
@@ -1300,9 +1539,12 @@ export async function recoverUserForwardAccessIfEligible(
         trafficLimit: 0,
         forwardAccessPauseReason: null,
       });
+      const ruleRecovery = await restoreUserForwardRulesIfEligible(userId);
+      restored = restored || ruleRecovery.affectedRuleIds.length > 0;
       return {
         allowed: true,
         restored,
+        restoredRuleIds: ruleRecovery.restoredRuleIds,
         user: await getUserById(userId) ?? user,
       };
     }
@@ -1323,7 +1565,12 @@ export async function recoverUserForwardAccessIfEligible(
   const baseline = await syncUserSubscriptionEntitlements(userId);
   const baselineUser = await getUserById(userId) ?? user;
   if (baseline.canAddRules) {
-    return { allowed: true, restored: false, user: baselineUser };
+    return {
+      allowed: true,
+      restored: baseline.restoredRuleIds.length > 0,
+      restoredRuleIds: baseline.restoredRuleIds,
+      user: baselineUser,
+    };
   }
   return {
     allowed: false,
@@ -1338,7 +1585,10 @@ export async function ensureUserForwardAccessReady(userId: number, options?: { a
   return recoverUserForwardAccessIfEligible(userId, options);
 }
 
-export async function syncUserSubscriptionEntitlements(userId: number) {
+export async function syncUserSubscriptionEntitlements(
+  userId: number,
+  options: { deferRuleRecovery?: boolean } = {},
+) {
   await expireDueTrafficAddons(userId);
   const limits = await getEffectiveUserPlanLimits(userId);
   const user = await getUserById(userId);
@@ -1359,10 +1609,14 @@ export async function syncUserSubscriptionEntitlements(userId: number) {
       : pauseReason) as ForwardAccessPauseReason,
   };
   await updateUserTrafficSettings(userId, nextLimits);
+  let restoredRuleIds: number[] = [];
   if (!nextLimits.canAddRules) {
     await disableAllUserRules(userId);
+  } else if (!options.deferRuleRecovery) {
+    const ruleRecovery = await restoreUserForwardRulesIfEligible(userId);
+    restoredRuleIds = ruleRecovery.restoredRuleIds;
   }
-  return nextLimits;
+  return { ...nextLimits, restoredRuleIds };
 }
 
 export async function updateUserManualEntitlements(userId: number, data: {
@@ -1383,6 +1637,12 @@ export async function updateUserManualEntitlements(userId: number, data: {
   forwardAccessPauseReason?: ForwardAccessPauseReason;
 }) {
   await updateUserTrafficSettings(userId, data as any);
+  if (
+    Object.prototype.hasOwnProperty.call(data, "trafficAutoReset") ||
+    Object.prototype.hasOwnProperty.call(data, "trafficResetDay")
+  ) {
+    await alignSubscriptionTrafficCycles(nowDate(), { userId });
+  }
   return syncUserSubscriptionEntitlements(userId);
 }
 
@@ -1420,38 +1680,93 @@ export async function backfillManualEntitlementsFromEffectiveUsers() {
   await setSetting("manual-entitlements-backfill-v1", String(Math.floor(Date.now() / 1000)));
 }
 
-export async function rechargeSubscriptionTrafficCycles() {
+async function rechargeSubscriptionTrafficCyclesForUserUnlocked(userId: number, now: Date) {
   const db = await getDb();
-  if (!db) return 0;
-  const now = new Date();
+  if (!db) return { resetCount: 0, settled: false };
+  await alignSubscriptionTrafficCycles(now, { userId, preserveDue: true });
   const nowSec = Math.floor(now.getTime() / 1000);
-  const due = await db.select().from(userSubscriptions).where(and(
+  const due = await db.select({
+    id: userSubscriptions.id,
+    userId: userSubscriptions.userId,
+    nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
+    lastTrafficResetAt: userSubscriptions.lastTrafficResetAt,
+    startedAt: userSubscriptions.startedAt,
+    expiresAt: userSubscriptions.expiresAt,
+    trafficAutoReset: users.trafficAutoReset,
+    trafficResetDay: users.trafficResetDay,
+  }).from(userSubscriptions).innerJoin(users, eq(userSubscriptions.userId, users.id)).where(and(
+    eq(userSubscriptions.userId, userId),
     eq(userSubscriptions.status, "active"),
     sql`${userSubscriptions.nextTrafficResetAt} IS NOT NULL`,
     sql`${userSubscriptions.nextTrafficResetAt} <= ${nowSec}`,
     sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
   ));
-  const resetUserIds = new Set<number>();
+  let dueBoundary = Number.NEGATIVE_INFINITY;
+  const cycleUpdates: Array<{ id: number; dueBoundary: Date; nextTrafficResetAt: Date | null }> = [];
   for (const sub of due as any[]) {
     const expiresAt = sub.expiresAt ? new Date(sub.expiresAt) : null;
     let next = sub.nextTrafficResetAt ? new Date(sub.nextTrafficResetAt) : null;
     if (!next) continue;
-    while (next && next.getTime() <= now.getTime()) {
-      next = addMonthsClamped(next, 1);
+    const subscriptionDueBoundary = next.getTime();
+    if (sub.trafficAutoReset) {
+      next = nextConfiguredSubscriptionTrafficReset(
+        sub,
+        { ...sub, lastTrafficResetAt: now },
+        now,
+        expiresAt,
+      );
+    } else {
+      next = nextAnchoredSubscriptionTrafficReset(sub.startedAt, now, expiresAt);
     }
     const boundedNext = next && (!expiresAt || next.getTime() < expiresAt.getTime()) ? next : null;
-    await updateUserSubscription(sub.id, {
+    cycleUpdates.push({
+      id: Number(sub.id),
+      dueBoundary: new Date(subscriptionDueBoundary),
       nextTrafficResetAt: boundedNext,
+    });
+    dueBoundary = Math.max(dueBoundary, subscriptionDueBoundary);
+  }
+  if (cycleUpdates.length === 0) return { resetCount: 0, settled: false };
+  const reset = await resetUserTrafficForCycle(userId, new Date(dueBoundary), now);
+  await expireTrafficAddonsForSubscriptionCycles(cycleUpdates);
+  for (const cycle of cycleUpdates) {
+    await updateUserSubscription(cycle.id, {
+      nextTrafficResetAt: cycle.nextTrafficResetAt,
       lastTrafficResetAt: now,
     } as any);
-    resetUserIds.add(Number(sub.userId));
   }
-  await expireTrafficAddonsForSubscriptionIds((due as any[]).map((sub: any) => Number(sub.id)).filter((id: number) => id > 0));
-  for (const userId of resetUserIds) {
-    await resetUserTraffic(userId);
-    await syncUserSubscriptionEntitlements(userId);
+  return { resetCount: reset ? 1 : 0, settled: true };
+}
+
+export async function settleSubscriptionTrafficCyclesForUser(userId: number, now = nowDate()) {
+  const result = await withKeyedTaskLock(
+    trafficBillingUserLockKey(userId),
+    () => rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, now),
+  );
+  if (result.settled) {
+    await recoverUserForwardAccessIfEligible(userId);
   }
-  return resetUserIds.size;
+  return result.resetCount;
+}
+
+export async function rechargeSubscriptionTrafficCycles() {
+  const rows = await subscriptionCycleRows();
+  const userIds = Array.from(new Set((rows as any[])
+    .map((row) => Number(row.userId || 0))
+    .filter((userId) => userId > 0)));
+  const now = nowDate();
+  let resetCount = 0;
+  for (const userId of userIds) {
+    const result = await withKeyedTaskLock(
+      trafficBillingUserLockKey(userId),
+      () => rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, now),
+    );
+    resetCount += result.resetCount;
+    if (result.settled) {
+      await recoverUserForwardAccessIfEligible(userId);
+    }
+  }
+  return resetCount;
 }
 
 export async function getUserPlanPortRange(userId: number, hostId?: number, tunnelId?: number): Promise<{ start: number; end: number } | null> {
@@ -1583,7 +1898,9 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
       ? existingNextTrafficResetAt
       : null;
     if (Number(plan.trafficLimit || 0) > 0) {
-      if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
+      if ((user as any)?.trafficAutoReset) {
+        nextTrafficResetAt = nextConfiguredSubscriptionTrafficReset(user as any, sameActiveSubscription, now, expiresAt);
+      } else if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
         nextTrafficResetAt = !existingNextTrafficResetAt && currentExpiresAt && expiresAt && currentExpiresAt.getTime() > now.getTime() && currentExpiresAt.getTime() < expiresAt.getTime()
           ? currentExpiresAt
           : nextMonthlyTrafficReset(now, expiresAt);
@@ -1615,6 +1932,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
       (updateData as any).portRangeEnd = block.end;
     }
     await updateUserSubscription(Number(sameActiveSubscription.id), updateData);
+    await updateActiveTrafficAddonCycleEnd(Number(sameActiveSubscription.id), nextTrafficResetAt, expiresAt);
     await syncUserSubscriptionEntitlements(userId);
     return {
       subscriptionId: Number(sameActiveSubscription.id),
@@ -1628,7 +1946,11 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
   if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const expiresAt = durationDays > 0 ? addSubscriptionDays(now, durationDays) : null;
-  const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0 ? nextMonthlyTrafficReset(now, expiresAt) : null;
+  const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0
+    ? (user as any)?.trafficAutoReset
+      ? nextConfiguredSubscriptionTrafficReset(user as any, { startedAt: now }, now, expiresAt)
+      : nextMonthlyTrafficReset(now, expiresAt)
+    : null;
   const subscriptionId = await createUserSubscription({
     userId,
     planId,
@@ -1700,6 +2022,12 @@ function pickActiveFiniteTrafficSubscription(activeSubscriptions: any[], planId?
 }
 
 export async function purchaseTrafficAddonWithBalance(userId: number, addonId: number, subscriptionId?: number | null) {
+  let cycleSettled = false;
+  let entitlementsSynced = false;
+  try {
+  return await withKeyedTaskLock(trafficBillingUserLockKey(userId), async () => {
+  const cycle = await rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, nowDate());
+  cycleSettled = cycle.settled;
   return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -1737,7 +2065,8 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
     createdAt: now,
     updatedAt: now,
   });
-  const limits = await syncUserSubscriptionEntitlements(userId);
+  const limits = await syncUserSubscriptionEntitlements(userId, { deferRuleRecovery: true });
+  entitlementsSynced = true;
   return {
     id,
     subscriptionId: subscription.id,
@@ -1747,6 +2076,16 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
     trafficLimit: limits.trafficLimit,
   };
   });
+  });
+  } finally {
+    if (cycleSettled || entitlementsSynced) {
+      try {
+        await recoverUserForwardAccessIfEligible(userId);
+      } catch (error) {
+        console.warn(`[Billing] post-cycle access recovery failed user=${userId}:`, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
 }
 
 export async function adminAddUserTrafficAddon(input: {
@@ -1756,6 +2095,12 @@ export async function adminAddUserTrafficAddon(input: {
   operatorUserId?: number | null;
   description?: string | null;
 }) {
+  let cycleSettled = false;
+  let entitlementsSynced = false;
+  try {
+  return await withKeyedTaskLock(trafficBillingUserLockKey(input.userId), async () => {
+  const cycle = await rechargeSubscriptionTrafficCyclesForUserUnlocked(input.userId, nowDate());
+  cycleSettled = cycle.settled;
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const trafficBytes = Math.floor(Number(input.trafficBytes || 0));
@@ -1783,7 +2128,8 @@ export async function adminAddUserTrafficAddon(input: {
     createdAt: now,
     updatedAt: now,
   });
-  const limits = await syncUserSubscriptionEntitlements(input.userId);
+  const limits = await syncUserSubscriptionEntitlements(input.userId, { deferRuleRecovery: true });
+  entitlementsSynced = true;
   return {
     id,
     subscriptionId: subscription.id,
@@ -1791,6 +2137,16 @@ export async function adminAddUserTrafficAddon(input: {
     expiresAt,
     trafficLimit: limits.trafficLimit,
   };
+  });
+  } finally {
+    if (cycleSettled || entitlementsSynced) {
+      try {
+        await recoverUserForwardAccessIfEligible(input.userId);
+      } catch (error) {
+        console.warn(`[Billing] post-cycle access recovery failed user=${input.userId}:`, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
 }
 
 // ==================== Balance ====================

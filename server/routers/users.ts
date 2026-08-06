@@ -305,8 +305,8 @@ export const usersRouter = router({
       .input(z.object({
         userId: z.number(),
         trafficLimit: z.number().min(0).optional(),
-        gostRateLimitIn: z.number().min(0).optional(),
-        gostRateLimitOut: z.number().min(0).optional(),
+        gostRateLimitIn: z.number().int().min(0).max(1_000_000).optional(),
+        gostRateLimitOut: z.number().int().min(0).max(1_000_000).optional(),
         expiresAt: z.string().nullable().optional(), // ISO date string or null
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().min(1).max(28).optional(),
