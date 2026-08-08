@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,23 @@ func TestTrafficConfigurationDiagnosticsAreRateLimitedAndDoNotLeakToken(t *testi
 	}
 	if snapshot := trafficBatchSnapshot(); len(snapshot) != 0 {
 		t.Fatalf("invalid traffic configuration created a batch: %#v", snapshot)
+	}
+}
+
+func TestTrafficDiagnosticBookkeepingIsBounded(t *testing.T) {
+	resetTrafficBatchesForTest()
+	t.Cleanup(resetTrafficBatchesForTest)
+	now := time.Now()
+	trafficDiagnostics.Lock()
+	trafficDiagnostics.last = make(map[string]time.Time, trafficDiagnosticMaxEntries+128)
+	for index := 0; index < trafficDiagnosticMaxEntries+128; index++ {
+		trafficDiagnostics.last["diagnostic-"+strconv.Itoa(index)] = now
+	}
+	pruneTrafficDiagnosticsLocked(now)
+	got := len(trafficDiagnostics.last)
+	trafficDiagnostics.Unlock()
+	if got != trafficDiagnosticMaxEntries {
+		t.Fatalf("diagnostic cache size=%d, want bound %d", got, trafficDiagnosticMaxEntries)
 	}
 }
 

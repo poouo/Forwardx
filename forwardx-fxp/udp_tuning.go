@@ -10,14 +10,20 @@ import (
 )
 
 const (
-	fxpUDPListenBufferBytes  = 4 * 1024 * 1024
-	fxpUDPSessionBufferBytes = 256 * 1024
+	// Keep one listener from reserving several megabytes on every FXP process.
+	// The queue budget above the socket still absorbs short bursts, while the
+	// kernel can drop stale UDP packets instead of growing process RSS.
+	fxpUDPListenBufferBytes = 2 * 1024 * 1024
+	// A connected target socket is created for every UDP session. 128 KiB is
+	// enough for normal game bursts and halves the kernel accounting compared
+	// with the previous 256 KiB setting (Linux may account SO_*BUF at 2x).
+	fxpUDPSessionBufferBytes = 128 * 1024
 	fxpUDPDirectQueueSize    = 64
 	fxpUDPStreamQueueSize    = 64
 	fxpUDPQueueMaxBytes      = 512 * 1024
-	fxpUDPSoftSessions       = 960
+	fxpUDPSoftSessions       = 512
 	fxpUDPMaxSessions        = 1024
-	fxpUDPSoftSessionsPerIP  = 60
+	fxpUDPSoftSessionsPerIP  = 48
 	fxpUDPMaxSessionsPerIP   = 64
 	fxpUDPReclaimAfter       = 30 * time.Second
 	fxpUDPMaxQueueDelay      = 75 * time.Millisecond

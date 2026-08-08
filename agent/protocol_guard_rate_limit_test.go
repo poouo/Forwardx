@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -75,6 +77,87 @@ func TestProtocolGuardRateLimitNormalizationAndBurst(t *testing.T) {
 	}
 	if protocolGuardUDPMaxSessions > 512 {
 		t.Fatalf("UDP session limit %d permits excessive per-rule memory growth", protocolGuardUDPMaxSessions)
+	}
+}
+
+func TestProtocolBlockReporterDeduplicatesAndBoundsQueue(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var startOnce sync.Once
+	var calls atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	updateMax := func(value int32) {
+		for previous := maxActive.Load(); value > previous && !maxActive.CompareAndSwap(previous, value); previous = maxActive.Load() {
+		}
+	}
+	reporter := newProtocolBlockReporter(2, time.Hour, 32, func(Config, guardRule, string) {
+		current := active.Add(1)
+		updateMax(current)
+		calls.Add(1)
+		startOnce.Do(func() { close(started) })
+		<-release
+		active.Add(-1)
+	})
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		reporter.close()
+	}()
+
+	base := guardRule{RuleID: 701, TunnelID: 702, ListenPort: 17001}
+	if !reporter.enqueue(Config{}, base, "HTTP") {
+		t.Fatal("first protocol block was not queued")
+	}
+	select {
+	case <-started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("reporter worker did not start")
+	}
+	if reporter.enqueue(Config{}, base, "http") {
+		t.Fatal("duplicate protocol block bypassed the in-flight dedupe")
+	}
+	accepted := 0
+	for index := 0; index < 8; index++ {
+		rule := base
+		rule.RuleID += index + 1
+		if reporter.enqueue(Config{}, rule, "http") {
+			accepted++
+		}
+	}
+	if accepted > 2 {
+		t.Fatalf("reporter accepted %d queued events with capacity 2", accepted)
+	}
+	if max := maxActive.Load(); max > 1 {
+		t.Fatalf("reporter ran %d handlers concurrently, want a single worker", max)
+	}
+	releaseOnce.Do(func() { close(release) })
+	// The deferred close must be idempotent for the test cleanup path.
+	reporter.close()
+}
+
+func TestProtocolBlockReporterCooldownAfterCompletion(t *testing.T) {
+	completed := make(chan struct{})
+	var calls atomic.Int32
+	reporter := newProtocolBlockReporter(1, time.Hour, 8, func(Config, guardRule, string) {
+		calls.Add(1)
+		close(completed)
+	})
+	defer reporter.close()
+	rule := guardRule{RuleID: 703, ListenPort: 17003}
+	if !reporter.enqueue(Config{}, rule, "tls") {
+		t.Fatal("protocol block was not queued")
+	}
+	select {
+	case <-completed:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("protocol block report did not complete")
+	}
+	if reporter.enqueue(Config{}, rule, "TLS") {
+		t.Fatal("completed report ignored its cooldown")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("report handler calls = %d, want 1", got)
 	}
 }
 
@@ -172,7 +255,7 @@ func TestSyncProtocolGuardsAfterActionsDefersRouteReplacement(t *testing.T) {
 	updated := base
 	updated.TargetPort++
 	completed := make(chan struct{})
-	syncProtocolGuardsAfterActions(Config{}, []guardRule{updated}, []<-chan struct{}{completed})
+	waiter := syncProtocolGuardsAfterActions(Config{}, []guardRule{updated}, []<-chan struct{}{completed})
 	protocolGuardMu.Lock()
 	current := protocolGuards[id]
 	protocolGuardMu.Unlock()
@@ -183,6 +266,32 @@ func TestSyncProtocolGuardsAfterActionsDefersRouteReplacement(t *testing.T) {
 	// real listener cleanup or binding on the test host.
 	protocolGuardSyncGeneration.Add(1)
 	close(completed)
+	select {
+	case <-waiter.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deferred protocol guard waiter did not finish")
+	}
+}
+
+func TestSyncProtocolGuardsAfterActionsCancelsObsoleteWaiter(t *testing.T) {
+	originalGeneration := protocolGuardSyncGeneration.Load()
+	defer protocolGuardSyncGeneration.Store(originalGeneration)
+	never := make(chan struct{})
+	first := syncProtocolGuardsAfterActions(Config{}, nil, []<-chan struct{}{never})
+	select {
+	case <-first.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first protocol guard waiter did not start")
+	}
+	// A newer reconciliation must cancel the waiter even though its action
+	// channel remains open forever.
+	syncProtocolGuardsAfterActions(Config{}, nil, nil)
+	select {
+	case <-first.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("obsolete protocol guard waiter did not exit")
+	}
+	close(never)
 }
 
 func TestProtocolGuardRuleReadinessRequiresLiveListeners(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -105,6 +106,34 @@ func TestNetworkTargetDNSCoalescesConcurrentLookups(t *testing.T) {
 	}
 	if got := lookups.Load(); got != 1 {
 		t.Fatalf("DNS lookups = %d, want 1", got)
+	}
+}
+
+func TestNetworkTargetDNSCacheIsBoundedAndExpiresEntries(t *testing.T) {
+	now := time.Now()
+	networkTargetDNSMu.Lock()
+	previous := networkTargetDNSCache
+	networkTargetDNSCache = map[string]networkTargetDNSCacheEntry{}
+	for index := 0; index < networkTargetDNSCacheMaxEntries+16; index++ {
+		expiresAt := now.Add(time.Hour)
+		if index < 4 {
+			expiresAt = now.Add(-time.Second)
+		}
+		networkTargetDNSCache["cache-test-"+strconv.Itoa(index)] = networkTargetDNSCacheEntry{
+			addresses: []string{"192.0.2.1"}, expiresAt: expiresAt,
+		}
+	}
+	pruneNetworkTargetDNSCacheLocked(now)
+	got := len(networkTargetDNSCache)
+	_, expiredPresent := networkTargetDNSCache["cache-test-0"]
+	networkTargetDNSCache = previous
+	networkTargetDNSMu.Unlock()
+
+	if got != networkTargetDNSCacheMaxEntries {
+		t.Fatalf("DNS cache size=%d, want bound %d", got, networkTargetDNSCacheMaxEntries)
+	}
+	if expiredPresent {
+		t.Fatal("expired DNS cache entry was retained")
 	}
 }
 
@@ -300,66 +329,108 @@ func TestPresenceFailurePathRetainsFastTimeoutAndBoundedRetries(t *testing.T) {
 	}
 }
 
-func TestHeartbeatRequestCoordinatorSerializesAndBroadcastsSuccess(t *testing.T) {
+func TestHeartbeatRequestCoordinatorSeparatesRequestLanes(t *testing.T) {
 	coordinator := newHeartbeatRequestCoordinator()
 	generation, successCh := coordinator.successSnapshot()
-	finish, ok := coordinator.tryStart()
+
+	finishFull, ok := coordinator.tryStart(heartbeatRequestLaneFull)
 	if !ok {
-		t.Fatal("first heartbeat request was rejected")
+		t.Fatal("first full heartbeat request was rejected")
 	}
-	if _, ok := coordinator.tryStart(); ok {
-		t.Fatal("overlapping heartbeat request was accepted")
+	if _, ok := coordinator.tryStart(heartbeatRequestLaneFull); ok {
+		t.Fatal("overlapping full heartbeat request was accepted")
 	}
-	finish(false)
+
+	finishPresence, _, ok := coordinator.tryStartTracked(heartbeatRequestLanePresence)
+	if !ok {
+		t.Fatal("presence request was blocked by a full heartbeat")
+	}
+	if _, ok := coordinator.tryStart(heartbeatRequestLanePresence); ok {
+		t.Fatal("overlapping presence request was accepted")
+	}
+	if _, ok := coordinator.tryStart(heartbeatRequestLaneFull); ok {
+		t.Fatal("third request entered while both request lanes were occupied")
+	}
+
+	finishFull(false)
+	if _, ok := coordinator.tryStart(heartbeatRequestLanePresence); ok {
+		t.Fatal("releasing the full lane also released the occupied presence lane")
+	}
+	finishPresence(false)
 	if got, _ := coordinator.successSnapshot(); got != generation {
-		t.Fatalf("failed request changed success generation: got=%d want=%d", got, generation)
+		t.Fatalf("failed requests changed success generation: got=%d want=%d", got, generation)
 	}
 	select {
 	case <-successCh:
 		t.Fatal("failed request broadcast a success")
 	default:
 	}
-
-	finish, ok = coordinator.tryStart()
-	if !ok {
-		t.Fatal("request gate was not released after failure")
-	}
-	finish(true)
-	select {
-	case <-successCh:
-	default:
-		t.Fatal("successful heartbeat did not cancel pending retry waiters")
-	}
-	if got, nextSuccessCh := coordinator.successSnapshot(); got != generation+1 {
-		t.Fatalf("success generation=%d want=%d", got, generation+1)
+	if finish, ok := coordinator.tryStart(heartbeatRequestLaneFull); !ok {
+		t.Fatal("full heartbeat lane was not released")
 	} else {
+		finish(false)
+	}
+	if finish, ok := coordinator.tryStart(heartbeatRequestLanePresence); !ok {
+		t.Fatal("presence lane was not released")
+	} else {
+		finish(false)
+	}
+}
+
+func TestHeartbeatRequestCoordinatorSharesSuccessAcrossLanes(t *testing.T) {
+	for _, successLane := range []heartbeatRequestLane{heartbeatRequestLaneFull, heartbeatRequestLanePresence} {
+		coordinator := newHeartbeatRequestCoordinator()
+		generation, successCh := coordinator.successSnapshot()
+		finish, ok := coordinator.tryStart(successLane)
+		if !ok {
+			t.Fatalf("lane %d request was rejected", successLane)
+		}
+		finish(true)
+
 		select {
-		case <-nextSuccessCh:
-			t.Fatal("next success signal started closed")
+		case <-successCh:
 		default:
+			t.Fatalf("lane %d success did not broadcast to retry waiters", successLane)
+		}
+		if got, nextSuccessCh := coordinator.successSnapshot(); got != generation+1 {
+			t.Fatalf("lane %d success generation=%d want=%d", successLane, got, generation+1)
+		} else {
+			select {
+			case <-nextSuccessCh:
+				t.Fatalf("lane %d next success signal started closed", successLane)
+			default:
+			}
+		}
+		if _, err := coordinator.tryStartIfGeneration(heartbeatRequestLanePresence, generation); !errors.Is(err, errHeartbeatRetrySuperseded) {
+			t.Fatalf("lane %d success left old presence retry active: err=%v want=%v", successLane, err, errHeartbeatRetrySuperseded)
 		}
 	}
-	if _, err := coordinator.tryStartIfGeneration(generation); !errors.Is(err, errHeartbeatRetrySuperseded) {
-		t.Fatalf("stale retry generation err=%v want=%v", err, errHeartbeatRetrySuperseded)
-	}
+}
 
+func TestHeartbeatRequestCoordinatorPresenceRetryUsesPresenceLane(t *testing.T) {
+	coordinator := newHeartbeatRequestCoordinator()
 	currentGeneration, _ := coordinator.successSnapshot()
-	finish, startedGeneration, ok := coordinator.tryStartTracked()
+	finishPresence, startedGeneration, ok := coordinator.tryStartTracked(heartbeatRequestLanePresence)
 	if !ok {
-		t.Fatal("request gate was not available for in-flight retry test")
+		t.Fatal("presence lane was unavailable")
 	}
 	if startedGeneration != currentGeneration {
-		t.Fatalf("request start generation=%d want=%d", startedGeneration, currentGeneration)
+		t.Fatalf("presence start generation=%d want=%d", startedGeneration, currentGeneration)
 	}
-	if _, err := coordinator.tryStartIfGeneration(currentGeneration); !errors.Is(err, errHeartbeatRequestInFlight) {
-		t.Fatalf("retry during in-flight request err=%v want=%v", err, errHeartbeatRequestInFlight)
+	finishFull, ok := coordinator.tryStart(heartbeatRequestLaneFull)
+	if !ok {
+		t.Fatal("full heartbeat was blocked by an in-flight presence request")
 	}
-	finish(false)
-	finishRetry, err := coordinator.tryStartIfGeneration(currentGeneration)
+	if _, err := coordinator.tryStartIfGeneration(heartbeatRequestLanePresence, currentGeneration); !errors.Is(err, errHeartbeatRequestInFlight) {
+		t.Fatalf("retry during in-flight presence err=%v want=%v", err, errHeartbeatRequestInFlight)
+	}
+	finishPresence(false)
+	finishRetry, err := coordinator.tryStartIfGeneration(heartbeatRequestLanePresence, currentGeneration)
 	if err != nil {
-		t.Fatalf("retry after failed in-flight request: %v", err)
+		t.Fatalf("presence retry was blocked by the full heartbeat lane: %v", err)
 	}
 	finishRetry(false)
+	finishFull(false)
 }
 
 func TestPresenceSchedulingSpreadsLoadWithoutExtendingTheDeadline(t *testing.T) {

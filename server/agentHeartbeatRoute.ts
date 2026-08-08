@@ -1240,10 +1240,14 @@ agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
       await db.touchHostHeartbeat(host.id);
     }
     if (!wasOnline) {
-      await resetAgentRuntimeStateForRecovery(host.id, "agent-reconnected-presence");
-      void notifyHostOnlineIfNeeded({ ...host, isOnline: true, lastHeartbeat: new Date() }).catch((error) => {
-        console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      // Presence has an eight-second client timeout and must remain a liveness-only
+      // request. Runtime recovery is serialized separately and must not make an
+      // already accepted presence look like a communication failure to the Agent.
+      void resetAgentRuntimeStateForRecovery(host.id, "agent-reconnected-presence")
+        .then(() => notifyHostOnlineIfNeeded({ ...host, isOnline: true, lastHeartbeat: new Date() }))
+        .catch((error) => {
+          console.warn(`[AgentRecovery] Presence recovery failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+        });
     }
     const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
     res.json(buildPresenceAgentHeartbeatResponse({ panelMigration }));

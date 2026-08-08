@@ -1050,6 +1050,23 @@ func TestProcessConnectionCounterKeepsShortConnectionsBetweenSnapshots(t *testin
 	}
 }
 
+func TestClearingRemovedProcessConnectionCounterDoesNotRetainStalePorts(t *testing.T) {
+	freshProcessConnMu.Lock()
+	previous := freshProcessConnRule
+	freshProcessConnRule = map[string]int{"22022": 7}
+	freshProcessConnMu.Unlock()
+	t.Cleanup(func() {
+		freshProcessConnMu.Lock()
+		freshProcessConnRule = previous
+		freshProcessConnMu.Unlock()
+	})
+
+	clearFreshProcessConnectionCounter("22022", 0)
+	if freshProcessConnectionCounter("22022", 7) {
+		t.Fatal("removed process connection counter remained marked fresh")
+	}
+}
+
 func TestConntrackFlowSnapshotFiltersRuleProtocol(t *testing.T) {
 	raw := strings.Join([]string{
 		"ipv4 2 tcp 6 30 ESTABLISHED src=198.51.100.10 dst=192.0.2.20 sport=51000 dport=22022 packets=1 bytes=60 src=192.0.2.20 dst=198.51.100.10 sport=22022 dport=51000 packets=1 bytes=60",

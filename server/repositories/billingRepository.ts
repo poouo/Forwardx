@@ -17,7 +17,7 @@ import {
   userSubscriptions, InsertUserSubscription,
   users,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, isDatabaseTransactionActive, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { getForwardRulesForUserSync, resetForwardRulesForUserSync } from "./forwardRuleRepository";
 import { getForwardGroupEntryPortRange } from "./forwardGroupRepository";
 import { getHostById } from "./hostRepository";
@@ -32,24 +32,59 @@ import {
   updateUserTrafficSettings,
   type ForwardAccessPauseReason,
 } from "./userRepository";
-import { addMonthsClamped, nextMonthlyTrafficReset, sqlBool } from "./repositoryUtils";
+import { sqlBool } from "./repositoryUtils";
 import { pushAgentRefresh } from "../agentEvents";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { getSetting, setSetting } from "./settingsRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
-import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
+import { withKeyedTaskLock, withTrafficBillingUserLock } from "../keyedTaskLock";
 import {
   getUserForwardRuleIdsDisabledByAccess,
   scheduleUserForwardRulesAfterAccessRecovery,
+  restoreUserForwardRulesAfterAccessRecovery,
 } from "./userForwardAccessRecovery";
+import {
+  billingAddMonthsClamped,
+  billingCalendarParts,
+  billingMonthlyBoundary,
+  billingStartOfCalendarDay,
+} from "../../shared/billingTime";
 
 let lastActiveSubscriptionWarningAt = 0;
+const SUBSCRIPTION_PORT_ALLOCATION_LOCK_KEY = "subscription-port-allocation";
+const SUBSCRIPTION_PORT_ALLOCATION_MARKER = "subscription-port-allocation-lock";
 
 function warnActiveSubscriptionLookupFailure(error: unknown) {
   const now = Date.now();
   if (now - lastActiveSubscriptionWarningAt < 60_000) return;
   lastActiveSubscriptionWarningAt = now;
   console.warn("[Billing] optional subscription lookup failed; self-owned resources remain available:", error instanceof Error ? error.message : String(error));
+}
+
+async function lockTrafficBillingUserRow(userId: number) {
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`,
+    [userId],
+  );
+  if (!rows[0]) throw new Error("用户不存在");
+}
+
+async function withTrafficBillingUserTransaction<T>(userId: number, task: () => Promise<T>) {
+  return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(async () => {
+    await lockTrafficBillingUserRow(userId);
+    return task();
+  }));
+}
+
+async function withSubscriptionPortAllocationLock<T>(task: () => Promise<T>) {
+  return withKeyedTaskLock(SUBSCRIPTION_PORT_ALLOCATION_LOCK_KEY, async () => {
+    // Updating one stable row gives MySQL/PostgreSQL instances the same lock;
+    // SQLite is already serialized by BEGIN IMMEDIATE.
+    await setSetting(SUBSCRIPTION_PORT_ALLOCATION_MARKER, "1");
+    return task();
+  });
 }
 
 // ==================== Payment Orders ====================
@@ -311,6 +346,7 @@ async function snapshotForPlanId(planId: number) {
 async function attachSubscriptionSnapshots<T extends { planId: number; planSnapshot?: string | null }>(subscriptions: T[]) {
   return Promise.all(subscriptions.map(async (subscription: any) => {
     const snapshot = parsePlanSnapshot(subscription.planSnapshot);
+    const addonTraffic = await getActiveTrafficAddonBreakdownForSubscription(Number(subscription.id));
     return {
       ...subscription,
       planName: snapshot?.name || subscription.planName,
@@ -324,7 +360,9 @@ async function attachSubscriptionSnapshots<T extends { planId: number; planSnaps
       tunnelIds: snapshot ? snapshot.tunnelIds : await getPlanTunnelIds(Number(subscription.planId)),
       forwardGroupIds: snapshot ? snapshot.forwardGroupIds : await getPlanForwardGroupIds(Number(subscription.planId)),
       trafficAddons: await getPlanTrafficAddons(Number(subscription.planId), false),
-      activeTrafficAddonBytes: await getActiveTrafficAddonBytesForSubscription(Number(subscription.id)),
+      activeTrafficAddonBytes: addonTraffic.totalBytes,
+      purchasedTrafficAddonBytes: addonTraffic.purchasedBytes,
+      grantedTrafficAddonBytes: addonTraffic.grantedBytes,
     };
   }));
 }
@@ -603,17 +641,23 @@ export async function syncPlanSubscribers(planId: number) {
       eq(userSubscriptions.status, "active"),
       sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
     ));
-  const userIds = new Set<number>();
+  const subscriptionIdsByUser = new Map<number, number[]>();
   for (const row of rows as any[]) {
     const subscriptionId = Number(row.id || 0);
     const userId = Number(row.userId || 0);
-    if (subscriptionId <= 0) continue;
-    await updateUserSubscription(subscriptionId, { planSnapshot: JSON.stringify(snapshot) } as any);
-    if (userId > 0) userIds.add(userId);
+    if (subscriptionId <= 0 || userId <= 0) continue;
+    const subscriptionIds = subscriptionIdsByUser.get(userId) || [];
+    subscriptionIds.push(subscriptionId);
+    subscriptionIdsByUser.set(userId, subscriptionIds);
   }
-  const affectedUserIds = Array.from(userIds);
-  for (const userId of affectedUserIds) {
-    await syncUserSubscriptionEntitlements(userId);
+  const affectedUserIds = Array.from(subscriptionIdsByUser.keys());
+  for (const [userId, subscriptionIds] of subscriptionIdsByUser) {
+    await withTrafficBillingUserTransaction(userId, async () => {
+      for (const subscriptionId of subscriptionIds) {
+        await updateUserSubscription(subscriptionId, { planSnapshot: JSON.stringify(snapshot) } as any);
+      }
+      await syncUserSubscriptionEntitlementsUnlocked(userId);
+    });
   }
   return affectedUserIds;
 }
@@ -683,6 +727,8 @@ function userSubscriptionsListQuery(db: any) {
       portRangeEnd: userSubscriptions.portRangeEnd,
       nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
       lastTrafficResetAt: userSubscriptions.lastTrafficResetAt,
+      userDismissedAt: userSubscriptions.userDismissedAt,
+      adminDismissedAt: userSubscriptions.adminDismissedAt,
       startedAt: userSubscriptions.startedAt,
       expiresAt: userSubscriptions.expiresAt,
       createdAt: userSubscriptions.createdAt,
@@ -694,12 +740,27 @@ function userSubscriptionsListQuery(db: any) {
   return base;
 }
 
-export async function listUserSubscriptions(userId?: number) {
+type SubscriptionListVisibility = "all" | "user" | "admin";
+
+function subscriptionVisibilityConditions(visibility: SubscriptionListVisibility) {
+  if (visibility === "user") {
+    return [isNull(userSubscriptions.userDismissedAt), isNull(userSubscriptions.adminDismissedAt)];
+  }
+  if (visibility === "admin") return [isNull(userSubscriptions.adminDismissedAt)];
+  return [];
+}
+
+export async function listUserSubscriptions(
+  userId?: number,
+  options: { visibility?: SubscriptionListVisibility } = {},
+) {
   const db = await getDb();
   if (!db) return [];
   const base = userSubscriptionsListQuery(db);
-  const rows = userId !== undefined
-    ? await base.where(eq(userSubscriptions.userId, userId)).orderBy(desc(userSubscriptions.createdAt))
+  const conditions = subscriptionVisibilityConditions(options.visibility || "all");
+  if (userId !== undefined) conditions.push(eq(userSubscriptions.userId, userId));
+  const rows = conditions.length > 0
+    ? await base.where(and(...conditions)).orderBy(desc(userSubscriptions.createdAt))
     : await base.orderBy(desc(userSubscriptions.createdAt));
   return attachUserSubscriptionDetails(rows);
 }
@@ -717,12 +778,14 @@ export async function getUserSubscriptionById(id: number) {
 export async function listUserSubscriptionsPage(input: PageRequest & {
   userId?: number;
   excludeCancelled?: boolean;
+  visibility?: SubscriptionListVisibility;
 }) {
   const db = await getDb();
   if (!db) return { ...pageResult([], 0, input), activeItems: 0 };
   const conditions = [] as any[];
   if (input.userId !== undefined) conditions.push(eq(userSubscriptions.userId, input.userId));
   if (input.excludeCancelled !== false) conditions.push(sql`${userSubscriptions.status} <> 'cancelled'`);
+  conditions.push(...subscriptionVisibilityConditions(input.visibility || "all"));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
   const nowSec = Math.floor(Date.now() / 1000);
   const aggregateQuery = db
@@ -759,19 +822,30 @@ async function attachUserSubscriptionDetails<T extends { id: number; planId: num
   return attachSubscriptionSnapshots(subscriptions as any);
 }
 
-async function getActiveTrafficAddonBytesForSubscription(subscriptionId: number) {
+async function getActiveTrafficAddonBreakdownForSubscription(subscriptionId: number) {
   const db = await getDb();
-  if (!db || !subscriptionId) return 0;
+  if (!db || !subscriptionId) return { totalBytes: 0, purchasedBytes: 0, grantedBytes: 0 };
   const nowSec = Math.floor(Date.now() / 1000);
   const rows = await db
-    .select({ total: sql<number>`COALESCE(SUM(${userTrafficAddons.trafficBytes}), 0)` })
+    .select({
+      total: sql<number>`COALESCE(SUM(${userTrafficAddons.trafficBytes}), 0)`,
+      purchased: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'user' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
+      granted: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'admin' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
+    })
     .from(userTrafficAddons)
+    .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
     .where(and(
       eq(userTrafficAddons.subscriptionId, subscriptionId),
       eq(userTrafficAddons.status, "active"),
       sql`(${userTrafficAddons.expiresAt} IS NULL OR ${userTrafficAddons.expiresAt} > ${nowSec})`,
+      eq(userSubscriptions.status, "active"),
+      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
     ));
-  return Number(rows?.[0]?.total || 0);
+  return {
+    totalBytes: Number(rows?.[0]?.total || 0),
+    purchasedBytes: Number(rows?.[0]?.purchased || 0),
+    grantedBytes: Number(rows?.[0]?.granted || 0),
+  };
 }
 
 export async function getActiveUserTrafficAddonBytes(userId: number) {
@@ -781,10 +855,13 @@ export async function getActiveUserTrafficAddonBytes(userId: number) {
   const rows = await db
     .select({ total: sql<number>`COALESCE(SUM(${userTrafficAddons.trafficBytes}), 0)` })
     .from(userTrafficAddons)
+    .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
     .where(and(
       eq(userTrafficAddons.userId, userId),
       eq(userTrafficAddons.status, "active"),
       sql`(${userTrafficAddons.expiresAt} IS NULL OR ${userTrafficAddons.expiresAt} > ${nowSec})`,
+      eq(userSubscriptions.status, "active"),
+      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
     ));
   return Number(rows?.[0]?.total || 0);
 }
@@ -856,27 +933,24 @@ function boundTrafficResetAt(resetAt: Date | null, expiresAt: Date | null) {
   return !expiresAt || resetAt.getTime() < expiresAt.getTime() ? resetAt : null;
 }
 
-function addMonthsFromAnchor(anchor: Date, months: number) {
-  const next = new Date(anchor.getTime());
-  const day = next.getDate();
-  next.setDate(1);
-  next.setMonth(next.getMonth() + months);
-  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-  next.setDate(Math.min(day, lastDay));
-  return next;
+function nextBillingMonthlyTrafficReset(start: Date, expiresAt: Date | null) {
+  const next = billingStartOfCalendarDay(billingAddMonthsClamped(start, 1));
+  return !expiresAt || next.getTime() < expiresAt.getTime() ? next : null;
 }
 
 function nextAnchoredSubscriptionTrafficReset(startedAt: unknown, reference: Date, expiresAt: Date | null) {
   const anchor = validDate(startedAt) || reference;
+  const referenceCalendar = billingCalendarParts(reference);
+  const anchorCalendar = billingCalendarParts(anchor);
   const monthDelta = Math.max(
     1,
-    (reference.getFullYear() - anchor.getFullYear()) * 12 + reference.getMonth() - anchor.getMonth(),
+    (referenceCalendar.year - anchorCalendar.year) * 12 + referenceCalendar.month - anchorCalendar.month,
   );
   let months = monthDelta;
-  let next = addMonthsFromAnchor(anchor, months);
+  let next = billingStartOfCalendarDay(billingAddMonthsClamped(anchor, months));
   while (next.getTime() <= reference.getTime()) {
     months += 1;
-    next = addMonthsFromAnchor(anchor, months);
+    next = billingStartOfCalendarDay(billingAddMonthsClamped(anchor, months));
   }
   return boundTrafficResetAt(next, expiresAt);
 }
@@ -888,10 +962,8 @@ function nextConfiguredSubscriptionTrafficReset(
   expiresAt: Date | null,
 ) {
   const resetDay = Math.min(28, Math.max(1, Math.floor(Number(user.trafficResetDay) || 1)));
-  let next = new Date(reference.getTime());
-  next.setHours(0, 0, 0, 0);
-  next.setDate(1);
-  next.setDate(resetDay);
+  let monthOffset = 0;
+  let next = billingMonthlyBoundary(reference, resetDay, monthOffset);
 
   // A subscription created after this month's boundary did not participate in
   // that cycle. A boundary already settled for it must not run twice.
@@ -902,7 +974,8 @@ function nextConfiguredSubscriptionTrafficReset(
     lastTrafficResetAt?.getTime() ?? Number.NEGATIVE_INFINITY,
   );
   while (next.getTime() <= handledThrough) {
-    next.setMonth(next.getMonth() + 1);
+    monthOffset += 1;
+    next = billingMonthlyBoundary(reference, resetDay, monthOffset);
   }
   return boundTrafficResetAt(next, expiresAt);
 }
@@ -1082,12 +1155,99 @@ export async function expireDueTrafficAddons(userId?: number) {
   return Array.from(new Set((rows as any[]).map((row: any) => Number(row.userId)).filter((id: number) => id > 0)));
 }
 
-export async function cancelUserSubscription(id: number) {
-  await updateUserSubscription(id, { status: "cancelled" } as any);
-  await expireTrafficAddonsForSubscriptionIds([id]);
+async function expireInvalidTrafficAddonsForUser(userId: number, now = nowDate()) {
+  const db = await getDb();
+  if (!db || userId <= 0) return 0;
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const rows = await db.select({ id: userTrafficAddons.id })
+    .from(userTrafficAddons)
+    .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
+    .where(and(
+      eq(userTrafficAddons.userId, userId),
+      eq(userTrafficAddons.status, "active"),
+      or(
+        ne(userSubscriptions.status, "active"),
+        and(
+          isNotNull(userSubscriptions.expiresAt),
+          sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
+        ),
+      ),
+    ));
+  const ids = (rows as any[]).map((row) => Number(row.id || 0)).filter((id) => id > 0);
+  if (ids.length === 0) return 0;
+  await db.update(userTrafficAddons).set({
+    status: "expired",
+    expiredAt: now,
+    updatedAt: now,
+  } as any).where(and(
+    eq(userTrafficAddons.status, "active"),
+    inArray(userTrafficAddons.id, ids),
+  ));
+  return ids.length;
 }
 
-export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date | null) {
+async function withUserSubscriptionLock<T>(id: number, task: () => Promise<T>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [subscription] = await db.select({
+    userId: userSubscriptions.userId,
+  }).from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
+  if (!subscription) throw new Error("订阅不存在");
+  return withTrafficBillingUserTransaction(Number(subscription.userId), task);
+}
+
+export async function cancelUserSubscription(id: number) {
+  return withUserSubscriptionLock(id, () => withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    const [subscription] = await db.select({
+      id: userSubscriptions.id,
+      userId: userSubscriptions.userId,
+      status: userSubscriptions.status,
+    }).from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
+    if (!subscription) throw new Error("订阅不存在");
+    if (subscription.status !== "cancelled") {
+      await updateUserSubscription(id, { status: "cancelled" } as any);
+    }
+    await expireTrafficAddonsForSubscriptionIds([id]);
+    const limits = await syncUserSubscriptionEntitlements(Number(subscription.userId));
+    return {
+      id: Number(subscription.id),
+      userId: Number(subscription.userId),
+      trafficLimit: limits.trafficLimit,
+    };
+  }));
+}
+
+export async function dismissCancelledUserSubscription(input: {
+  id: number;
+  viewerUserId: number;
+  isAdmin: boolean;
+}) {
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    const [subscription] = await db.select({
+      id: userSubscriptions.id,
+      userId: userSubscriptions.userId,
+      status: userSubscriptions.status,
+    }).from(userSubscriptions).where(eq(userSubscriptions.id, input.id)).limit(1);
+    if (!subscription) throw new Error("订阅不存在");
+    if (subscription.status !== "cancelled") throw new Error("只能删除已取消的订阅记录");
+    if (!input.isAdmin && Number(subscription.userId) !== Number(input.viewerUserId)) {
+      throw new Error("无权删除该订阅记录");
+    }
+
+    const dismissedAt = nowDate();
+    await db.update(userSubscriptions).set(input.isAdmin
+      ? { adminDismissedAt: dismissedAt, updatedAt: dismissedAt } as any
+      : { userDismissedAt: dismissedAt, updatedAt: dismissedAt } as any)
+      .where(eq(userSubscriptions.id, input.id));
+    return { id: Number(subscription.id), userId: Number(subscription.userId) };
+  });
+}
+
+async function setUserSubscriptionExpiresAtUnlocked(id: number, expiresAt: Date | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const rows = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
@@ -1112,7 +1272,7 @@ export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date |
       nextTrafficResetAt.getTime() <= now.getTime() ||
       (nextExpiresAt && nextTrafficResetAt.getTime() >= nextExpiresAt.getTime())
     ) {
-      nextTrafficResetAt = nextMonthlyTrafficReset(now, nextExpiresAt);
+      nextTrafficResetAt = nextBillingMonthlyTrafficReset(now, nextExpiresAt);
     }
     if (nextTrafficResetAt && nextExpiresAt && nextTrafficResetAt.getTime() >= nextExpiresAt.getTime()) {
       nextTrafficResetAt = null;
@@ -1137,7 +1297,13 @@ export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date |
   };
 }
 
-export async function extendUserSubscription(id: number, days: number) {
+export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date | null) {
+  return withUserSubscriptionLock(id, () => withDatabaseTransaction(
+    () => setUserSubscriptionExpiresAtUnlocked(id, expiresAt),
+  ));
+}
+
+async function extendUserSubscriptionUnlocked(id: number, days: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const extraDays = Math.floor(Number(days || 0));
@@ -1162,7 +1328,7 @@ export async function extendUserSubscription(id: number, days: number) {
     if ((user as any)?.trafficAutoReset) {
       nextTrafficResetAt = nextConfiguredSubscriptionTrafficReset(user as any, subscription, now, expiresAt);
     } else if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
-      nextTrafficResetAt = nextMonthlyTrafficReset(now, expiresAt);
+      nextTrafficResetAt = nextBillingMonthlyTrafficReset(now, expiresAt);
     }
     if (nextTrafficResetAt && nextTrafficResetAt.getTime() >= expiresAt.getTime()) nextTrafficResetAt = null;
   } else {
@@ -1187,42 +1353,104 @@ export async function extendUserSubscription(id: number, days: number) {
 export async function expireUserSubscriptions() {
   const db = await getDb();
   if (!db) return 0;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const dueAddonUserIds = await expireDueTrafficAddons();
-  const expiredRows = await db.select({
-    id: userSubscriptions.id,
-    userId: userSubscriptions.userId,
-  }).from(userSubscriptions).where(and(
-    eq(userSubscriptions.status, "active"),
-    sql`${userSubscriptions.expiresAt} IS NOT NULL`,
-    sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
-  ));
-  const result: any = await executeRaw(
-    `UPDATE ${quoteDbIdentifier("user_subscriptions")}
-     SET ${quoteDbIdentifier("status")} = 'expired', ${quoteDbIdentifier("updatedAt")} = ?
-     WHERE ${quoteDbIdentifier("status")} = 'active'
-       AND ${quoteDbIdentifier("expiresAt")} IS NOT NULL
-       AND ${quoteDbIdentifier("expiresAt")} <= ?`,
-    [nowSec, nowSec],
-  );
-  const expiredSubscriptionIds = (expiredRows as any[]).map((row: any) => Number(row.id)).filter((id: number) => id > 0);
-  const addonUserIds = await expireTrafficAddonsForSubscriptionIds(expiredSubscriptionIds);
+  const now = nowDate();
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const [subscriptionCandidates, addonCandidates] = await Promise.all([
+    db.select({ userId: userSubscriptions.userId })
+      .from(userSubscriptions)
+      .where(and(
+        eq(userSubscriptions.status, "active"),
+        isNotNull(userSubscriptions.expiresAt),
+        sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
+      )),
+    db.select({ userId: userTrafficAddons.userId })
+      .from(userTrafficAddons)
+      .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
+      .where(and(
+        eq(userTrafficAddons.status, "active"),
+        or(
+          and(
+            isNotNull(userTrafficAddons.expiresAt),
+            sql`${userTrafficAddons.expiresAt} <= ${nowSec}`,
+          ),
+          ne(userSubscriptions.status, "active"),
+          and(
+            isNotNull(userSubscriptions.expiresAt),
+            sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
+          ),
+        ),
+      )),
+  ]);
   const userIds = Array.from(new Set([
-    ...(expiredRows as any[]).map((row: any) => Number(row.userId)).filter((id: number) => id > 0),
-    ...dueAddonUserIds,
-    ...addonUserIds,
-  ]));
+    ...(subscriptionCandidates as any[]).map((row) => Number(row.userId || 0)),
+    ...(addonCandidates as any[]).map((row) => Number(row.userId || 0)),
+  ].filter((userId) => userId > 0)));
+  const addonCandidateUserIds = new Set(
+    (addonCandidates as any[])
+      .map((row) => Number(row.userId || 0))
+      .filter((userId) => userId > 0),
+  );
+  let expiredCount = 0;
   for (const userId of userIds) {
-    const rules = await getForwardRulesForUserSync(userId);
-    const active = await getActiveUserSubscriptions(userId);
-    const userBeforeSync = await getUserById(userId);
-    const limits = await syncUserSubscriptionEntitlements(userId);
-    const accessBecameDisabled = !!(userBeforeSync as any)?.canAddRules && !limits.canAddRules;
-    if (active.length === 0 || accessBecameDisabled) {
-      await resetForwardRulesForUserSync(userId);
+    await withTrafficBillingUserLock(userId, async () => {
+      const outcome = await withDatabaseTransaction(async () => {
+        await lockTrafficBillingUserRow(userId);
+        const txDb = await getDb();
+        if (!txDb) throw new Error("Database not available");
+        const rules = await getForwardRulesForUserSync(userId);
+        const userBeforeSync = await getUserById(userId);
+        const dueRows = await txDb.select({ id: userSubscriptions.id })
+          .from(userSubscriptions)
+          .where(and(
+            eq(userSubscriptions.userId, userId),
+            eq(userSubscriptions.status, "active"),
+            isNotNull(userSubscriptions.expiresAt),
+            sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
+          ));
+        const expiredSubscriptionIds: number[] = [];
+        for (const row of dueRows as any[]) {
+          const id = Number(row.id || 0);
+          if (id <= 0) continue;
+          const result = await executeRaw(
+            `UPDATE ${quoteDbIdentifier("user_subscriptions")}
+             SET ${quoteDbIdentifier("status")} = 'expired', ${quoteDbIdentifier("updatedAt")} = ?
+             WHERE ${quoteDbIdentifier("id")} = ?
+               AND ${quoteDbIdentifier("userId")} = ?
+               AND ${quoteDbIdentifier("status")} = 'active'
+               AND ${quoteDbIdentifier("expiresAt")} IS NOT NULL
+               AND ${quoteDbIdentifier("expiresAt")} <= ?`,
+            [nowSec, id, userId, nowSec],
+          );
+          if (rawAffectedRows(result) > 0) expiredSubscriptionIds.push(id);
+        }
+
+        await expireDueTrafficAddons(userId);
+        await expireTrafficAddonsForSubscriptionIds(expiredSubscriptionIds);
+        await expireInvalidTrafficAddonsForUser(userId, now);
+        const limits = await syncUserSubscriptionEntitlementsUnlocked(userId);
+        const active = await getActiveUserSubscriptions(userId);
+        const accessBecameDisabled = !!(userBeforeSync as any)?.canAddRules && !limits.canAddRules;
+        return {
+          expiredCount: expiredSubscriptionIds.length,
+          rules,
+          // Even when another subscription remains active, the resource ACL
+          // may have changed. Invalidate the Agent's stable heartbeat plan so
+          // it gates and removes rules that belonged only to the expired
+          // subscription. Add-on expiry can also cross the traffic limit and
+          // therefore needs the same runtime refresh.
+          shouldRefreshRuntime: expiredSubscriptionIds.length > 0 || addonCandidateUserIds.has(userId),
+          shouldResetRuntime: active.length === 0 || accessBecameDisabled,
+        };
+      });
+      expiredCount += outcome.expiredCount;
+      if (!outcome.shouldRefreshRuntime) return;
+
+      if (outcome.shouldResetRuntime) {
+        await resetForwardRulesForUserSync(userId);
+      }
       const hostIds = new Set<number>();
       const tunnelIds = new Set<number>();
-      for (const rule of rules as any[]) {
+      for (const rule of outcome.rules as any[]) {
         if (rule.hostId) hostIds.add(Number(rule.hostId));
         if (rule.tunnelId) tunnelIds.add(Number(rule.tunnelId));
       }
@@ -1237,9 +1465,9 @@ export async function expireUserSubscriptions() {
       for (const hostId of hostIds) {
         if (hostId > 0) pushAgentRefresh(hostId, "subscription-expired");
       }
-    }
+    });
   }
-  return Number(result?.affectedRows ?? result?.changes ?? 0);
+  return expiredCount;
 }
 
 export async function getEffectiveUserPlanLimits(userId: number) {
@@ -1252,6 +1480,8 @@ export async function getEffectiveUserPlanLimits(userId: number) {
       maxRules: 0,
       maxConnections: 0,
       maxIPs: 0,
+      baseTrafficLimit: 0,
+      addonTrafficLimit: 0,
       trafficLimit: 0,
       gostRateLimitIn: 0,
       gostRateLimitOut: 0,
@@ -1261,6 +1491,10 @@ export async function getEffectiveUserPlanLimits(userId: number) {
 
   let expiresAt: Date | null = null;
   const maxOf = (field: string) => Math.max(...active.map((sub: any) => Number(sub[field] || 0)));
+  const sumWithUnlimited = (field: string) => {
+    if (active.some((sub: any) => Number(sub[field] || 0) === 0)) return 0;
+    return active.reduce((total, sub: any) => total + Math.max(0, Number(sub[field] || 0)), 0);
+  };
   for (const sub of active as any[]) {
     const subExpiresAt = sub.expiresAt ? new Date(sub.expiresAt) : null;
     if (!subExpiresAt) {
@@ -1271,16 +1505,20 @@ export async function getEffectiveUserPlanLimits(userId: number) {
   }
 
   const hasUnlimitedTraffic = (active as any[]).some((sub: any) => Number(sub.trafficLimit || 0) === 0);
-  const baseTrafficLimit = hasUnlimitedTraffic ? 0 : maxOf("trafficLimit");
+  const baseTrafficLimit = hasUnlimitedTraffic
+    ? 0
+    : active.reduce((total, sub: any) => total + Math.max(0, Number(sub.trafficLimit || 0)), 0);
   const addonTrafficLimit = baseTrafficLimit > 0 ? await getActiveUserTrafficAddonBytes(userId) : 0;
 
   return {
     canAddRules: true,
     allowForwardXTunnel: true,
-    maxPorts: maxOf("portCount"),
-    maxRules: maxOf("maxRules"),
-    maxConnections: maxOf("maxConnections"),
-    maxIPs: maxOf("maxIPs"),
+    maxPorts: sumWithUnlimited("portCount"),
+    maxRules: sumWithUnlimited("maxRules"),
+    maxConnections: sumWithUnlimited("maxConnections"),
+    maxIPs: sumWithUnlimited("maxIPs"),
+    baseTrafficLimit,
+    addonTrafficLimit,
     trafficLimit: baseTrafficLimit > 0 ? baseTrafficLimit + addonTrafficLimit : baseTrafficLimit,
     gostRateLimitIn: maxOf("rateLimitMbps"),
     gostRateLimitOut: maxOf("rateLimitMbps"),
@@ -1322,19 +1560,6 @@ function mergeLimitValue(sources: Array<{ active: boolean; value: unknown }>) {
   return hasSource ? max : 0;
 }
 
-function mergeTrafficLimitValue(sources: Array<{ active: boolean; value: unknown }>) {
-  let hasSource = false;
-  let total = 0;
-  for (const source of sources) {
-    if (!source.active) continue;
-    hasSource = true;
-    const value = positiveInt(source.value);
-    if (value === 0) return 0;
-    total += value;
-  }
-  return hasSource ? total : 0;
-}
-
 function latestExpiresAtValue(sources: Array<{ active: boolean; value: unknown }>): Date | null {
   let latest: Date | null = null;
   for (const source of sources) {
@@ -1360,6 +1585,16 @@ export function mergeManualAndPlanLimits(user: any, planLimits: any) {
   const manualTrafficLimit = positiveInt(user?.manualTrafficLimit);
   const manualGostRateLimitIn = positiveInt(user?.manualGostRateLimitIn);
   const manualGostRateLimitOut = positiveInt(user?.manualGostRateLimitOut);
+  const planBaseTrafficLimit = positiveInt(
+    planLimits?.baseTrafficLimit === undefined
+      ? planLimits?.trafficLimit
+      : planLimits.baseTrafficLimit,
+  );
+  const addonTrafficLimit = planCanAddRules ? positiveInt(planLimits?.addonTrafficLimit) : 0;
+  const baseTrafficLimit = mergeLimitValue([
+    { active: planCanAddRules, value: planBaseTrafficLimit },
+    { active: manualDefaultActive || manualTrafficLimit > 0, value: manualTrafficLimit },
+  ]);
   return {
     canAddRules: manualCanAddRules || planCanAddRules,
     allowForwardXTunnel: manualAllowForwardXTunnel || planAllowForwardXTunnel,
@@ -1379,10 +1614,7 @@ export function mergeManualAndPlanLimits(user: any, planLimits: any) {
       { active: planCanAddRules, value: planLimits?.maxIPs },
       { active: manualDefaultActive || manualMaxIPs > 0, value: manualMaxIPs },
     ]),
-    trafficLimit: mergeTrafficLimitValue([
-      { active: planCanAddRules, value: planLimits?.trafficLimit },
-      { active: manualDefaultActive || manualTrafficLimit > 0, value: manualTrafficLimit },
-    ]),
+    trafficLimit: baseTrafficLimit > 0 ? baseTrafficLimit + addonTrafficLimit : baseTrafficLimit,
     gostRateLimitIn: mergeLimitValue([
       { active: planCanAddRules, value: planLimits?.gostRateLimitIn },
       { active: manualDefaultActive || manualGostRateLimitIn > 0, value: manualGostRateLimitIn },
@@ -1429,7 +1661,13 @@ async function restoreUserForwardRulesIfEligible(userId: number) {
   };
 }
 
-export async function recoverUserForwardAccessIfEligible(
+export async function extendUserSubscription(id: number, days: number) {
+  return withUserSubscriptionLock(id, () => withDatabaseTransaction(
+    () => extendUserSubscriptionUnlocked(id, days),
+  ));
+}
+
+async function recoverUserForwardAccessIfEligibleUnlocked(
   userId: number,
   options: { allowTrafficBillingRecovery?: boolean } = {},
 ): Promise<ForwardAccessCheckResult> {
@@ -1562,7 +1800,7 @@ export async function recoverUserForwardAccessIfEligible(
 
   // canAddRules may have been granted temporarily by traffic billing. Once no
   // usable billing resource remains, rebuild it from manual/subscription data.
-  const baseline = await syncUserSubscriptionEntitlements(userId);
+  const baseline = await syncUserSubscriptionEntitlementsUnlocked(userId);
   const baselineUser = await getUserById(userId) ?? user;
   if (baseline.canAddRules) {
     return {
@@ -1581,11 +1819,42 @@ export async function recoverUserForwardAccessIfEligible(
   };
 }
 
+export async function recoverUserForwardAccessIfEligible(
+  userId: number,
+  options: { allowTrafficBillingRecovery?: boolean } = {},
+) {
+  const result = await withTrafficBillingUserTransaction(
+    userId,
+    () => recoverUserForwardAccessIfEligibleUnlocked(userId, options),
+  );
+  // Recovery notifications are deferred while the billing transaction still
+  // owns the per-user lock. Once the outer transaction has settled, run one
+  // serialized pass so callers immediately observe the new rule state instead
+  // of racing the queued after-commit task.
+  if (!isDatabaseTransactionActive() && result.allowed) {
+    const recovery = await withTrafficBillingUserLock(
+      userId,
+      () => restoreUserForwardRulesAfterAccessRecovery(userId),
+    );
+    if (recovery.enabledRuleIds.length > 0) {
+      return {
+        ...result,
+        restored: true,
+        restoredRuleIds: Array.from(new Set([
+          ...(result.restoredRuleIds || []),
+          ...recovery.enabledRuleIds,
+        ])),
+      };
+    }
+  }
+  return result;
+}
+
 export async function ensureUserForwardAccessReady(userId: number, options?: { allowTrafficBillingRecovery?: boolean }) {
   return recoverUserForwardAccessIfEligible(userId, options);
 }
 
-export async function syncUserSubscriptionEntitlements(
+async function syncUserSubscriptionEntitlementsUnlocked(
   userId: number,
   options: { deferRuleRecovery?: boolean } = {},
 ) {
@@ -1619,6 +1888,16 @@ export async function syncUserSubscriptionEntitlements(
   return { ...nextLimits, restoredRuleIds };
 }
 
+export async function syncUserSubscriptionEntitlements(
+  userId: number,
+  options: { deferRuleRecovery?: boolean } = {},
+) {
+  return withTrafficBillingUserTransaction(
+    userId,
+    () => syncUserSubscriptionEntitlementsUnlocked(userId, options),
+  );
+}
+
 export async function updateUserManualEntitlements(userId: number, data: {
   manualTrafficLimit?: number;
   manualGostRateLimitIn?: number;
@@ -1636,14 +1915,16 @@ export async function updateUserManualEntitlements(userId: number, data: {
   trafficResetDay?: number;
   forwardAccessPauseReason?: ForwardAccessPauseReason;
 }) {
-  await updateUserTrafficSettings(userId, data as any);
-  if (
-    Object.prototype.hasOwnProperty.call(data, "trafficAutoReset") ||
-    Object.prototype.hasOwnProperty.call(data, "trafficResetDay")
-  ) {
-    await alignSubscriptionTrafficCycles(nowDate(), { userId });
-  }
-  return syncUserSubscriptionEntitlements(userId);
+  return withTrafficBillingUserTransaction(userId, async () => {
+    await updateUserTrafficSettings(userId, data as any);
+    if (
+      Object.prototype.hasOwnProperty.call(data, "trafficAutoReset") ||
+      Object.prototype.hasOwnProperty.call(data, "trafficResetDay")
+    ) {
+      await alignSubscriptionTrafficCycles(nowDate(), { userId });
+    }
+    return syncUserSubscriptionEntitlementsUnlocked(userId);
+  });
 }
 
 export async function backfillManualEntitlementsFromEffectiveUsers() {
@@ -1678,6 +1959,33 @@ export async function backfillManualEntitlementsFromEffectiveUsers() {
     await syncUserSubscriptionEntitlements(Number(user.id));
   }
   await setSetting("manual-entitlements-backfill-v1", String(Math.floor(Date.now() / 1000)));
+}
+
+export async function repairSubscriptionBillingStateOnce() {
+  const marker = "subscription-billing-state-v3";
+  if (await getSetting(marker)) return { users: 0, resets: 0 };
+  const db = await getDb();
+  if (!db) return { users: 0, resets: 0 };
+  const now = nowDate();
+  const rows = await db.select({
+    userId: userSubscriptions.userId,
+    role: users.role,
+  }).from(userSubscriptions)
+    .innerJoin(users, eq(userSubscriptions.userId, users.id));
+  const userIds = Array.from(new Set((rows as any[])
+    .filter((row) => row.role !== "admin")
+    .map((row) => Number(row.userId || 0))
+    .filter((userId) => userId > 0)));
+  let resets = 0;
+  for (const userId of userIds) {
+    resets += await withTrafficBillingUserLock(userId, async () => {
+      const cycle = await rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, now);
+      await syncUserSubscriptionEntitlements(userId);
+      return cycle.resetCount;
+    });
+  }
+  await setSetting(marker, String(Math.floor(now.getTime() / 1000)));
+  return { users: userIds.length, resets };
 }
 
 async function rechargeSubscriptionTrafficCyclesForUserUnlocked(userId: number, now: Date) {
@@ -1739,8 +2047,8 @@ async function rechargeSubscriptionTrafficCyclesForUserUnlocked(userId: number, 
 }
 
 export async function settleSubscriptionTrafficCyclesForUser(userId: number, now = nowDate()) {
-  const result = await withKeyedTaskLock(
-    trafficBillingUserLockKey(userId),
+  const result = await withTrafficBillingUserLock(
+    userId,
     () => rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, now),
   );
   if (result.settled) {
@@ -1757,8 +2065,8 @@ export async function rechargeSubscriptionTrafficCycles() {
   const now = nowDate();
   let resetCount = 0;
   for (const userId of userIds) {
-    const result = await withKeyedTaskLock(
-      trafficBillingUserLockKey(userId),
+    const result = await withTrafficBillingUserLock(
+      userId,
       () => rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, now),
     );
     resetCount += result.resetCount;
@@ -1769,26 +2077,80 @@ export async function rechargeSubscriptionTrafficCycles() {
   return resetCount;
 }
 
-export async function getUserPlanPortRange(userId: number, hostId?: number, tunnelId?: number): Promise<{ start: number; end: number } | null> {
-  const active = await getActiveUserSubscriptions(userId);
-  for (const sub of active as any[]) {
-    if (!sub.portRangeStart || !sub.portRangeEnd) continue;
-    if (tunnelId && Array.isArray(sub.tunnelIds) && sub.tunnelIds.includes(tunnelId)) return { start: sub.portRangeStart, end: sub.portRangeEnd };
-    if (!tunnelId && hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId)) return { start: sub.portRangeStart, end: sub.portRangeEnd };
-    if (hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId)) return { start: sub.portRangeStart, end: sub.portRangeEnd };
+export type SubscriptionPortRange = {
+  start: number;
+  end: number;
+};
+
+export type UserPlanPortRange = SubscriptionPortRange & {
+  ranges: SubscriptionPortRange[];
+};
+
+function mergeSubscriptionPortRanges(ranges: SubscriptionPortRange[]) {
+  const sorted = ranges
+    .map((range) => ({ start: Math.max(1, Math.floor(Number(range.start))), end: Math.min(65535, Math.floor(Number(range.end))) }))
+    .filter((range) => range.start <= range.end)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: SubscriptionPortRange[] = [];
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end + 1) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
   }
-  return null;
+  return merged;
 }
 
-export async function getUserForwardGroupPlanPortRange(userId: number, forwardGroupId: number): Promise<{ start: number; end: number } | null> {
+function userPlanPortRangeResult(ranges: SubscriptionPortRange[]): UserPlanPortRange | null {
+  const merged = mergeSubscriptionPortRanges(ranges);
+  if (merged.length === 0) return null;
+  return {
+    start: merged[0].start,
+    end: merged[merged.length - 1].end,
+    ranges: merged,
+  };
+}
+
+export async function getUserPlanPortRanges(userId: number, hostId?: number, tunnelId?: number): Promise<SubscriptionPortRange[]> {
   const active = await getActiveUserSubscriptions(userId);
+  const ranges: SubscriptionPortRange[] = [];
+  for (const sub of active as any[]) {
+    if (!sub.portRangeStart || !sub.portRangeEnd) continue;
+    const matches = tunnelId
+      ? (Array.isArray(sub.tunnelIds) && sub.tunnelIds.includes(tunnelId))
+        || (!!hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId))
+      : !!hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId);
+    if (matches) ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
+  }
+  return mergeSubscriptionPortRanges(ranges);
+}
+
+export async function getUserPlanPortRange(userId: number, hostId?: number, tunnelId?: number): Promise<UserPlanPortRange | null> {
+  return userPlanPortRangeResult(await getUserPlanPortRanges(userId, hostId, tunnelId));
+}
+
+export async function getUserForwardGroupPlanPortRanges(userId: number, forwardGroupId: number): Promise<SubscriptionPortRange[]> {
+  const active = await getActiveUserSubscriptions(userId);
+  const ranges: SubscriptionPortRange[] = [];
   for (const sub of active as any[]) {
     if (!sub.portRangeStart || !sub.portRangeEnd) continue;
     if (Array.isArray(sub.forwardGroupIds) && sub.forwardGroupIds.includes(forwardGroupId)) {
-      return { start: sub.portRangeStart, end: sub.portRangeEnd };
+      ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
     }
   }
-  return null;
+  return mergeSubscriptionPortRanges(ranges);
+}
+
+export async function getUserForwardGroupPlanPortRange(userId: number, forwardGroupId: number): Promise<UserPlanPortRange | null> {
+  return userPlanPortRangeResult(await getUserForwardGroupPlanPortRanges(userId, forwardGroupId));
+}
+
+export function isPortAllowedByUserPlanRange(port: number, range: UserPlanPortRange | null | undefined) {
+  if (!range) return true;
+  const candidate = Number(port);
+  return range.ranges.some((item) => candidate >= item.start && candidate <= item.end);
 }
 
 export async function findAvailableSubscriptionPortBlock(portCount: number, hostIds: number[], tunnelIds: number[], forwardGroupIds: number[] = []) {
@@ -1852,22 +2214,27 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
   return null;
 }
 
-function pickSameActiveSubscription(subscriptions: any[], planId: number) {
-  const samePlan = subscriptions.filter((sub: any) => Number(sub.planId) === Number(planId));
-  if (samePlan.length === 0) return null;
-  return samePlan.sort((a: any, b: any) => {
-    const aExpires = a.expiresAt ? new Date(a.expiresAt).getTime() : Number.POSITIVE_INFINITY;
-    const bExpires = b.expiresAt ? new Date(b.expiresAt).getTime() : Number.POSITIVE_INFINITY;
-    if (aExpires !== bExpires) return bExpires - aExpires;
-    return Number(b.id || 0) - Number(a.id || 0);
-  })[0];
+export type SubscriptionSource = "admin" | "payment" | "redeem" | "balance";
+
+/** Store purchases may be renewed by the owner; administrative grants and
+ * redemption grants require a fresh assignment/administrative action. */
+export function isUserRenewableSubscriptionSource(source: unknown) {
+  return source === "payment" || source === "balance";
 }
 
 function addSubscriptionDays(base: Date, days: number) {
   return new Date(base.getTime() + days * 24 * 3600 * 1000);
 }
 
-export async function applySubscriptionToUser(userId: number, planId: number, source: "admin" | "payment" | "redeem" | "balance", paymentOrderNo?: string | null, startsAt?: Date, overrideDurationDays?: number | null) {
+async function applySubscriptionToUserUnlocked(
+  userId: number,
+  planId: number,
+  source: SubscriptionSource,
+  paymentOrderNo?: string | null,
+  startsAt?: Date,
+  overrideDurationDays?: number | null,
+  targetSubscriptionId?: number | null,
+) {
   const plan = await getSubscriptionPlanById(planId);
   if (!plan) throw new Error("套餐不存在");
   if (!plan.isActive) throw new Error("套餐已停用");
@@ -1882,7 +2249,28 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const user = await getUserById(userId);
   const hadActiveSubscription = activeSubscriptions.length > 0;
-  const sameActiveSubscription = pickSameActiveSubscription(activeSubscriptions as any[], planId);
+  // A purchase/assignment without an explicit target is always a new
+  // subscription. Renewal must name the exact subscription being extended.
+  let sameActiveSubscription = targetSubscriptionId
+    ? await getUserSubscriptionById(Number(targetSubscriptionId))
+    : null;
+  if (targetSubscriptionId) {
+    if (!sameActiveSubscription || Number(sameActiveSubscription.userId) !== Number(userId)) {
+      throw new Error("订阅不存在或无权操作");
+    }
+    if (Number(sameActiveSubscription.planId) !== Number(planId)) {
+      throw new Error("续费套餐与目标订阅不一致");
+    }
+    if (sameActiveSubscription.status === "cancelled") {
+      throw new Error("已取消的订阅不能续费");
+    }
+    if (!isUserRenewableSubscriptionSource(sameActiveSubscription.source)) {
+      throw new Error("管理员分配的套餐不能自行续费，请联系管理员处理");
+    }
+    if (!isUserRenewableSubscriptionSource(source)) {
+      throw new Error("当前来源不支持用户续费");
+    }
+  }
   if (sameActiveSubscription) {
     const currentExpiresAt = sameActiveSubscription.expiresAt ? new Date(sameActiveSubscription.expiresAt) : null;
     const baseExpiresAt = currentExpiresAt && Number.isFinite(currentExpiresAt.getTime()) && currentExpiresAt.getTime() > now.getTime()
@@ -1903,7 +2291,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
       } else if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
         nextTrafficResetAt = !existingNextTrafficResetAt && currentExpiresAt && expiresAt && currentExpiresAt.getTime() > now.getTime() && currentExpiresAt.getTime() < expiresAt.getTime()
           ? currentExpiresAt
-          : nextMonthlyTrafficReset(now, expiresAt);
+          : nextBillingMonthlyTrafficReset(now, expiresAt);
       }
       if (expiresAt && nextTrafficResetAt && nextTrafficResetAt.getTime() >= expiresAt.getTime()) {
         nextTrafficResetAt = null;
@@ -1949,7 +2337,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0
     ? (user as any)?.trafficAutoReset
       ? nextConfiguredSubscriptionTrafficReset(user as any, { startedAt: now }, now, expiresAt)
-      : nextMonthlyTrafficReset(now, expiresAt)
+      : nextBillingMonthlyTrafficReset(now, expiresAt)
     : null;
   const subscriptionId = await createUserSubscription({
     userId,
@@ -1972,13 +2360,35 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   return { subscriptionId, portRangeStart: block.start, portRangeEnd: block.end, expiresAt };
 }
 
+export async function applySubscriptionToUser(
+  userId: number,
+  planId: number,
+  source: SubscriptionSource,
+  paymentOrderNo?: string | null,
+  startsAt?: Date,
+  overrideDurationDays?: number | null,
+  targetSubscriptionId?: number | null,
+) {
+  return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(
+    () => applySubscriptionToUserUnlocked(
+      userId,
+      planId,
+      source,
+      paymentOrderNo,
+      startsAt,
+      overrideDurationDays,
+      targetSubscriptionId,
+    ),
+  ));
+}
+
 function getTrafficAddonCycleEnd(subscription: any) {
   const now = new Date();
   const nextTrafficResetAt = subscription?.nextTrafficResetAt ? new Date(subscription.nextTrafficResetAt) : null;
   if (nextTrafficResetAt && nextTrafficResetAt.getTime() > now.getTime()) return nextTrafficResetAt;
   const expiresAt = subscription?.expiresAt ? new Date(subscription.expiresAt) : null;
   if (expiresAt && expiresAt.getTime() > now.getTime()) return expiresAt;
-  return addMonthsClamped(now, 1);
+  return billingStartOfCalendarDay(billingAddMonthsClamped(now, 1));
 }
 
 function formatAddonTraffic(bytes: number) {
@@ -2025,7 +2435,7 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
   let cycleSettled = false;
   let entitlementsSynced = false;
   try {
-  return await withKeyedTaskLock(trafficBillingUserLockKey(userId), async () => {
+  return await withTrafficBillingUserLock(userId, async () => {
   const cycle = await rechargeSubscriptionTrafficCyclesForUserUnlocked(userId, nowDate());
   cycleSettled = cycle.settled;
   return withDatabaseTransaction(async () => {
@@ -2098,9 +2508,10 @@ export async function adminAddUserTrafficAddon(input: {
   let cycleSettled = false;
   let entitlementsSynced = false;
   try {
-  return await withKeyedTaskLock(trafficBillingUserLockKey(input.userId), async () => {
+  return await withTrafficBillingUserLock(input.userId, async () => {
   const cycle = await rechargeSubscriptionTrafficCyclesForUserUnlocked(input.userId, nowDate());
   cycleSettled = cycle.settled;
+  return withDatabaseTransaction(async () => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const trafficBytes = Math.floor(Number(input.trafficBytes || 0));
@@ -2137,6 +2548,7 @@ export async function adminAddUserTrafficAddon(input: {
     expiresAt,
     trafficLimit: limits.trafficLimit,
   };
+  });
   });
   } finally {
     if (cycleSettled || entitlementsSynced) {
@@ -2294,18 +2706,21 @@ function subscriptionSourceLabel(source: string) {
 }
 
 
-async function listUserSubscriptionsForLedger(userId: number | undefined, limit: number) {
+async function listUserSubscriptionsForLedger(
+  userId: number | undefined,
+  limit: number,
+  options: { isAdmin: boolean; includeCancelledSubscriptions: boolean },
+) {
   const db = await getDb();
   if (!db) return [];
   const query = userSubscriptionsListQuery(db);
-  return userId !== undefined
-    ? query
-      .where(eq(userSubscriptions.userId, userId))
-      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
-      .limit(limit)
-    : query
-      .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
-      .limit(limit);
+  const conditions = subscriptionVisibilityConditions(options.isAdmin ? "admin" : "user");
+  if (userId !== undefined) conditions.push(eq(userSubscriptions.userId, userId));
+  if (!options.includeCancelledSubscriptions) conditions.push(ne(userSubscriptions.status, "cancelled"));
+  return query
+    .where(and(...conditions))
+    .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
+    .limit(limit);
 }
 
 export async function listBillingLedger(options?: {
@@ -2313,6 +2728,7 @@ export async function listBillingLedger(options?: {
   isAdmin?: boolean;
   userId?: number;
   limit?: number;
+  includeCancelledSubscriptions?: boolean;
 }) {
   const limit = normalizeBillingLimit(options?.limit);
   const targetUserId = options?.isAdmin ? options?.userId : options?.viewerUserId;
@@ -2321,7 +2737,10 @@ export async function listBillingLedger(options?: {
   const [transactions, orders, subscriptions] = await Promise.all([
     listBalanceTransactions(targetUserId, limit),
     listPaymentOrders(limit, targetUserId),
-    listUserSubscriptionsForLedger(targetUserId, limit),
+    listUserSubscriptionsForLedger(targetUserId, limit, {
+      isAdmin: !!options?.isAdmin,
+      includeCancelledSubscriptions: !!options?.includeCancelledSubscriptions,
+    }),
   ]);
 
   const items = [
@@ -2422,8 +2841,13 @@ export async function setUserBalance(userId: number, balanceCents: number, meta:
   });
 }
 
-export async function purchasePlanWithBalance(userId: number, planId: number, discountCodeId?: number | null) {
-  return withDatabaseTransaction(async () => {
+export async function purchasePlanWithBalance(
+  userId: number,
+  planId: number,
+  discountCodeId?: number | null,
+  subscriptionId?: number | null,
+) {
+  return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(async () => {
   const plan = await getSubscriptionPlanById(planId);
   if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
   const discount = discountCodeId ? await getDiscountCodeById(discountCodeId) : null;
@@ -2441,9 +2865,17 @@ export async function purchasePlanWithBalance(userId: number, planId: number, di
     } as any);
   }
   if (discount) await consumeDiscountCode(discount.id);
-  const result = await applySubscriptionToUser(userId, planId, "balance", null);
+  const result = await applySubscriptionToUser(
+    userId,
+    planId,
+    "balance",
+    null,
+    undefined,
+    null,
+    subscriptionId || null,
+  );
   return result;
-  });
+  }));
 }
 
 // ==================== Redemption Codes ====================
@@ -2528,7 +2960,7 @@ export async function deleteRedemptionCode(id: number) {
 }
 
 export async function redeemCode(userId: number, code: string, attemptScope?: string | null) {
-  return withRedemptionScopeLock(userId, attemptScope, async () => {
+  return withTrafficBillingUserLock(userId, () => withRedemptionScopeLock(userId, attemptScope, async () => {
     const limited = redemptionAttemptRateLimitState(userId, attemptScope);
     if (limited.limited) {
       throw new Error(`兑换过于频繁，请 ${limited.retryAfterSeconds} 秒后再试`);
@@ -2597,7 +3029,7 @@ export async function redeemCode(userId: number, code: string, attemptScope?: st
       }
       throw error;
     }
-  });
+  }));
 }
 
 // ==================== Discount Codes ====================

@@ -8,6 +8,7 @@ import (
 const (
 	fxpUDPSweepInterval    = 5 * time.Second
 	fxpUDPMinSweepInterval = 250 * time.Millisecond
+	fxpUDPStalledTimeout   = 2 * fxpUDPIdleTimeout
 )
 
 func fxpUDPSessionIdleAt(now time.Time, lastActivity int64) bool {
@@ -15,6 +16,19 @@ func fxpUDPSessionIdleAt(now time.Time, lastActivity int64) bool {
 		return false
 	}
 	return now.Sub(time.Unix(0, lastActivity)) >= fxpUDPIdleTimeout
+}
+
+// Normal idle sessions are reclaimed only after their queues drain. A worker
+// stuck in a socket write or limiter wait must not keep its session, socket and
+// 65 KiB read buffer forever, so a longer hard timeout closes it regardless of
+// the pending count. Active sessions keep touching lastActivity and are never
+// affected by either path.
+func fxpUDPSessionExpiredAt(now time.Time, lastActivity int64, pending int) bool {
+	if lastActivity <= 0 {
+		return false
+	}
+	idle := now.Sub(time.Unix(0, lastActivity))
+	return idle >= fxpUDPStalledTimeout || (pending <= 0 && idle >= fxpUDPIdleTimeout)
 }
 
 func startFXPUDPSessionSweeper(sweep func(time.Time)) (stop func(), wake func()) {

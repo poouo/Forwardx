@@ -19,7 +19,7 @@ import { revokeUserAuthSessions } from "./repositories/sessionRepository";
 import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { ensureBundledDeveloperAnnouncements } from "./repositories/announcementRepository";
-import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
+import { backfillManualEntitlementsFromEffectiveUsers, repairSubscriptionBillingStateOnce } from "./repositories/billingRepository";
 import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/trafficBillingRepository";
 import { purgeSettledPendingForwardRuleDeletes, repairConflictingProtocolPortRules } from "./repositories/forwardRuleRepository";
 import { markLocalSetupComplete } from "./setupState";
@@ -307,6 +307,13 @@ export async function initDatabase() {
     });
     await seedDevPanelData().catch((error) => {
       console.warn("[DevPanel] Seed data skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await repairSubscriptionBillingStateOnce().then((result) => {
+      if (result.users > 0) {
+        console.log(`[Database] Reconciled subscription billing users=${result.users} resets=${result.resets}`);
+      }
+    }).catch((error) => {
+      console.warn("[Database] Subscription billing reconciliation skipped:", error instanceof Error ? error.message : String(error));
     });
     await ensureBundledDeveloperAnnouncements().catch((error) => {
       console.warn("[Announcement] Bundled developer announcements skipped:", error instanceof Error ? error.message : String(error));

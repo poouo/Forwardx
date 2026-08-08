@@ -107,10 +107,10 @@ const (
 	fxpHelloTimeout      = 10 * time.Second
 	fxpTCPKeepAlive      = 30 * time.Second
 	fxpHalfCloseLinger   = 30 * time.Second
-	fxpUDPIdleTimeout    = 10 * time.Minute
+	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.112"
+	fxpRuntimeVersion    = "2.2.113"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -1355,7 +1355,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 		sessionsMu.Lock()
 		for key, session := range sessions {
 			state := udpEntrySessionSnapshot(session)
-			if session != nil && state.pending == 0 && fxpUDPSessionIdleAt(now, state.lastActivity) {
+			if session != nil && fxpUDPSessionExpiredAt(now, state.lastActivity, state.pending) {
 				if sessions[key] == session && detachSessionLocked(session) {
 					expired = append(expired, session)
 				}
@@ -1798,7 +1798,8 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 		}
 	}()
 	go func() {
-		buf := make([]byte, 65535)
+		buf := getFXPByteBuffer(fxpUDPMaxDatagramPayload)
+		defer putFXPByteBuffer(buf)
 		for {
 			_ = target.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, err := target.Read(buf)
@@ -2086,7 +2087,8 @@ func copyPlainToSecure(dst *secureConn, src net.Conn, limiter *limiter, counter 
 }
 
 func copyPlainToSecureWithPolicy(dst *secureConn, src net.Conn, limiter *limiter, counter *atomic.Uint64, policy protocolPolicy, onBlock func(string), initialSample []byte) error {
-	buf := make([]byte, 32*1024)
+	buf := getFXPByteBuffer(32 * 1024)
+	defer putFXPByteBuffer(buf)
 	sample := make([]byte, 0, fxpProtocolSampleMax)
 	if len(initialSample) > 0 {
 		n := len(initialSample)
@@ -2332,8 +2334,9 @@ func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireCont
 	if !fxpReplaySeen.Add(replayKey(cfg, salt)) {
 		return nil, errors.New("fxp replay detected")
 	}
-	lenCipher := make([]byte, 4+16)
-	if _, err := io.ReadFull(conn, lenCipher); err != nil {
+	var lenCipher [64]byte
+	lenSize := 4 + 16
+	if _, err := io.ReadFull(conn, lenCipher[:lenSize]); err != nil {
 		return nil, err
 	}
 	var lastErr error
@@ -2343,16 +2346,18 @@ func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireCont
 			lastErr = err
 			continue
 		}
-		n, err := sec.decryptFrameLength(0, lenCipher)
+		n, err := sec.decryptFrameLength(0, lenCipher[:lenSize])
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		dataCipher := make([]byte, int(n)+sec.dataReadAEAD.Overhead())
+		dataCipher := getFXPByteBuffer(int(n) + sec.dataReadAEAD.Overhead())
 		if _, err := io.ReadFull(conn, dataCipher); err != nil {
+			putFXPByteBuffer(dataCipher)
 			return nil, err
 		}
 		ack, err := sec.decryptFrameData(0, dataCipher)
+		putFXPByteBuffer(dataCipher)
 		if err != nil {
 			return nil, err
 		}
@@ -2512,16 +2517,21 @@ func (c *secureConn) writeEncryptedFrame(plain []byte) error {
 	c.writeCounter++
 	var lenPlain [4]byte
 	binary.BigEndian.PutUint32(lenPlain[:], uint32(len(plain)))
-	lenNonce := fxpNonce(c.writeDir, counter, 0)
-	dataNonce := fxpNonce(c.writeDir, counter, 1)
-	lenCipher := c.lenWriteAEAD.Seal(nil, lenNonce, lenPlain[:], c.lengthAD)
-	dataCipher := c.dataWriteAEAD.Seal(nil, dataNonce, plain, c.payloadAD)
-	buffers := net.Buffers{lenCipher, dataCipher}
-	written, err := buffers.WriteTo(c.conn)
+	wireSize := 4 + c.lenWriteAEAD.Overhead() + len(plain) + c.dataWriteAEAD.Overhead()
+	wire := getFXPByteBuffer(wireSize)
+	defer putFXPByteBuffer(wire)
+	wire = wire[:0]
+	var lenNonce [12]byte
+	var dataNonce [12]byte
+	fillFXPNonce(lenNonce[:], c.writeDir, counter, 0)
+	fillFXPNonce(dataNonce[:], c.writeDir, counter, 1)
+	wire = c.lenWriteAEAD.Seal(wire, lenNonce[:], lenPlain[:], c.lengthAD)
+	wire = c.dataWriteAEAD.Seal(wire, dataNonce[:], plain, c.payloadAD)
+	written, err := writeFull(c.conn, wire)
 	if err != nil {
 		return err
 	}
-	if written != int64(len(lenCipher)+len(dataCipher)) {
+	if written != len(wire) {
 		return io.ErrShortWrite
 	}
 	return err
@@ -2530,15 +2540,20 @@ func (c *secureConn) writeEncryptedFrame(plain []byte) error {
 func (c *secureConn) readEncryptedFrame() ([]byte, error) {
 	counter := c.readCounter
 	c.readCounter++
-	lenCipher := make([]byte, 4+c.lenReadAEAD.Overhead())
-	if _, err := io.ReadFull(c.conn, lenCipher); err != nil {
+	var lenCipher [64]byte
+	lenSize := 4 + c.lenReadAEAD.Overhead()
+	if lenSize > len(lenCipher) {
+		return nil, errors.New("invalid encrypted frame length")
+	}
+	if _, err := io.ReadFull(c.conn, lenCipher[:lenSize]); err != nil {
 		return nil, err
 	}
-	n, err := c.decryptFrameLength(counter, lenCipher)
+	n, err := c.decryptFrameLength(counter, lenCipher[:lenSize])
 	if err != nil {
 		return nil, err
 	}
-	dataCipher := make([]byte, int(n)+c.dataReadAEAD.Overhead())
+	dataCipher := getFXPByteBuffer(int(n) + c.dataReadAEAD.Overhead())
+	defer putFXPByteBuffer(dataCipher)
 	if _, err := io.ReadFull(c.conn, dataCipher); err != nil {
 		return nil, err
 	}
@@ -2546,8 +2561,10 @@ func (c *secureConn) readEncryptedFrame() ([]byte, error) {
 }
 
 func (c *secureConn) decryptFrameLength(counter uint64, lenCipher []byte) (uint32, error) {
-	lenNonce := fxpNonce(c.readDir, counter, 0)
-	lenPlain, err := c.lenReadAEAD.Open(nil, lenNonce, lenCipher, c.lengthAD)
+	var nonce [12]byte
+	var plain [4]byte
+	fillFXPNonce(nonce[:], c.readDir, counter, 0)
+	lenPlain, err := c.lenReadAEAD.Open(plain[:0], nonce[:], lenCipher, c.lengthAD)
 	if err != nil {
 		return 0, err
 	}
@@ -2562,16 +2579,24 @@ func (c *secureConn) decryptFrameLength(counter uint64, lenCipher []byte) (uint3
 }
 
 func (c *secureConn) decryptFrameData(counter uint64, dataCipher []byte) ([]byte, error) {
-	dataNonce := fxpNonce(c.readDir, counter, 1)
-	return c.dataReadAEAD.Open(nil, dataNonce, dataCipher, c.payloadAD)
+	var nonce [12]byte
+	fillFXPNonce(nonce[:], c.readDir, counter, 1)
+	return c.dataReadAEAD.Open(nil, nonce[:], dataCipher, c.payloadAD)
 }
 
 func fxpNonce(direction uint32, counter uint64, kind byte) []byte {
 	nonce := make([]byte, 12)
+	fillFXPNonce(nonce, direction, counter, kind)
+	return nonce
+}
+
+func fillFXPNonce(nonce []byte, direction uint32, counter uint64, kind byte) {
+	if len(nonce) < 12 {
+		return
+	}
 	binary.BigEndian.PutUint32(nonce[0:4], direction)
 	binary.BigEndian.PutUint64(nonce[4:12], counter)
 	nonce[3] ^= kind
-	return nonce
 }
 
 func replayKey(cfg config, salt []byte) string {

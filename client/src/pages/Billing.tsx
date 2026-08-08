@@ -16,7 +16,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
-import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
+import { CreditCard, Download, Eye, EyeOff, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -234,6 +234,7 @@ export default function Billing() {
     storageKey: BILLING_TAB_STORAGE_KEY,
   });
   const [ledgerUserId, setLedgerUserId] = useState("all");
+  const [showCancelledSubscriptions, setShowCancelledSubscriptions] = useState(false);
   const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
   const subscriptionPageRequest = usePersistentPageRequest("forwardx.billing.subscriptions.page");
   const redemptionPageRequest = usePersistentPageRequest("forwardx.billing.redemption.page");
@@ -274,12 +275,19 @@ export default function Billing() {
   const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
     limit: 200,
     userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
+    includeCancelledSubscriptions: showCancelledSubscriptions,
   }, {
     enabled: activeTab === "ledger",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
   });
+  const visibleLedger = useMemo(
+    () => showCancelledSubscriptions
+      ? ledger
+      : ledger.filter((item: any) => item.kind !== "subscription" || item.status !== "cancelled"),
+    [ledger, showCancelledSubscriptions],
+  );
   const redemptionPageQuery = trpc.billing.listRedemptionCodesPage.useQuery({
     page: redemptionPageRequest.page,
     pageSize: 50,
@@ -356,6 +364,25 @@ export default function Billing() {
     },
     onError: (error) => toast.error(error.message || "更新失败"),
   });
+
+  const deleteCancelledSubscription = trpc.plans.deleteCancelledSubscription.useMutation({
+    onSuccess: () => {
+      toast.success("已取消的订阅记录已删除");
+      utils.billing.ledger.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
+    },
+    onError: (error) => toast.error(error.message || "删除订阅记录失败"),
+  });
+
+  const confirmDeleteCancelledSubscription = async (item: any) => {
+    const confirmed = await confirmDialog({
+      title: "删除订阅记录",
+      description: `确认删除“${item.title || "已取消套餐"}”记录？支付和余额流水会继续保留。`,
+      confirmText: "删除",
+      tone: "destructive",
+    });
+    if (confirmed) deleteCancelledSubscription.mutate({ id: Number(item.sourceId) });
+  };
 
   const createRedemptionCodes = trpc.billing.createRedemptionCodes.useMutation({
     onSuccess: (res) => {
@@ -621,19 +648,30 @@ export default function Billing() {
                   <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" /> 账单流水</CardTitle>
                   <CardDescription>余额、支付和订阅记录。</CardDescription>
                 </div>
-                <Select value={ledgerUserId} onValueChange={setLedgerUserId}>
-                  <SelectTrigger className="w-full lg:w-56">
-                    <SelectValue placeholder="筛选用户" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部用户</SelectItem>
-                    {users.map((user: any) => (
-                      <SelectItem key={user.id} value={String(user.id)}>
-                        {user.name || user.username}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowCancelledSubscriptions((value) => !value)}
+                  >
+                    {showCancelledSubscriptions ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}
+                    {showCancelledSubscriptions ? "隐藏已取消" : "查看已取消"}
+                  </Button>
+                  <Select value={ledgerUserId} onValueChange={setLedgerUserId}>
+                    <SelectTrigger className="w-full sm:w-56">
+                      <SelectValue placeholder="筛选用户" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部用户</SelectItem>
+                      {users.map((user: any) => (
+                        <SelectItem key={user.id} value={String(user.id)}>
+                          {user.name || user.username}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
               <CardContent>
                 {ledgerLoading ? (
@@ -641,7 +679,7 @@ export default function Billing() {
                 ) : (
                   <>
                 <div className="grid gap-3 md:hidden">
-                  {ledger.map((item: any) => {
+                  {visibleLedger.map((item: any) => {
                     const Icon = ledgerIcon(item);
                     const relatedInfo = item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-");
                     return (
@@ -656,8 +694,24 @@ export default function Billing() {
                               <p className="mt-0.5 break-words text-xs text-muted-foreground">{item.description || "-"}</p>
                             </div>
                           </div>
-                          <div className={`shrink-0 text-right text-sm font-medium ${ledgerTone(item)}`}>
-                            {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
+                          <div className="flex shrink-0 items-center gap-1">
+                            <div className={`text-right text-sm font-medium ${ledgerTone(item)}`}>
+                              {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
+                            </div>
+                            {item.kind === "subscription" && item.status === "cancelled" && (
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-destructive"
+                                title="删除已取消订阅"
+                                aria-label="删除已取消订阅"
+                                onClick={() => void confirmDeleteCancelledSubscription(item)}
+                                disabled={deleteCancelledSubscription.isPending}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
                           </div>
                         </div>
                         <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
@@ -672,7 +726,7 @@ export default function Billing() {
                       </div>
                     );
                   })}
-                  {ledger.length === 0 && (
+                  {visibleLedger.length === 0 && (
                     <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无账单流水</div>
                   )}
                 </div>
@@ -687,10 +741,11 @@ export default function Billing() {
                       <TableHead>状态</TableHead>
                       <TableHead>关联信息</TableHead>
                       <TableHead>时间</TableHead>
+                      <TableHead className="w-12"><span className="sr-only">操作</span></TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {ledger.map((item: any) => {
+                    {visibleLedger.map((item: any) => {
                       const Icon = ledgerIcon(item);
                       return (
                         <TableRow key={item.id}>
@@ -713,12 +768,28 @@ export default function Billing() {
                           <TableCell><Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel || item.status}</Badge></TableCell>
                           <TableCell className="font-mono text-xs text-muted-foreground">{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</TableCell>
                           <TableCell>{dateText(item.createdAt)}</TableCell>
+                          <TableCell>
+                            {item.kind === "subscription" && item.status === "cancelled" && (
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-destructive"
+                                title="删除已取消订阅"
+                                aria-label="删除已取消订阅"
+                                onClick={() => void confirmDeleteCancelledSubscription(item)}
+                                disabled={deleteCancelledSubscription.isPending}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
-                    {ledger.length === 0 && (
+                    {visibleLedger.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">暂无账单流水</TableCell>
+                        <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">暂无账单流水</TableCell>
                       </TableRow>
                     )}
                   </TableBody>

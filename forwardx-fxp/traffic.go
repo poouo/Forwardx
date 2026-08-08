@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	trafficBatchInterval      = 10 * time.Second
-	trafficDiagnosticInterval = time.Minute
+	trafficBatchInterval        = 10 * time.Second
+	trafficDiagnosticInterval   = time.Minute
+	trafficDiagnosticMaxEntries = 1024
 )
 
 type trafficBatchKey struct {
@@ -119,15 +120,37 @@ func logTrafficDiagnostic(key, format string, args ...any) {
 		return
 	}
 	trafficDiagnostics.last[key] = now
-	if len(trafficDiagnostics.last) > 1024 {
-		for diagnosticKey, loggedAt := range trafficDiagnostics.last {
-			if now.Sub(loggedAt) >= trafficDiagnosticInterval {
-				delete(trafficDiagnostics.last, diagnosticKey)
-			}
-		}
-	}
+	pruneTrafficDiagnosticsLocked(now, key)
 	trafficDiagnostics.Unlock()
 	log.Printf(format, args...)
+}
+
+// pruneTrafficDiagnosticsLocked keeps the rate-limit bookkeeping bounded even
+// when malformed or changing runtime configurations generate fresh keys faster
+// than the diagnostic interval. The caller must hold trafficDiagnostics.
+func pruneTrafficDiagnosticsLocked(now time.Time, protectedKeys ...string) {
+	protected := func(key string) bool {
+		for _, candidate := range protectedKeys {
+			if key == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	for diagnosticKey, loggedAt := range trafficDiagnostics.last {
+		if now.Sub(loggedAt) >= trafficDiagnosticInterval && !protected(diagnosticKey) {
+			delete(trafficDiagnostics.last, diagnosticKey)
+		}
+	}
+	for diagnosticKey := range trafficDiagnostics.last {
+		if len(trafficDiagnostics.last) <= trafficDiagnosticMaxEntries {
+			break
+		}
+		if protected(diagnosticKey) {
+			continue
+		}
+		delete(trafficDiagnostics.last, diagnosticKey)
+	}
 }
 
 func safeTrafficReportError(err error, token string) string {

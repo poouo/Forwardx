@@ -1,9 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 type PendingTask = {
   tail: Promise<void>;
   depth: number;
 };
 
 const pendingTasks = new Map<string, PendingTask>();
+type TrafficBillingLockToken = { active: boolean };
+const trafficBillingLockContext = new AsyncLocalStorage<Map<string, TrafficBillingLockToken>>();
 
 export function trafficBillingUserLockKey(userId: unknown) {
   const id = Number(userId || 0);
@@ -30,6 +34,25 @@ export async function withKeyedTaskLock<T>(keyValue: unknown, task: () => Promis
     release();
     if (pendingTasks.get(key) === current) pendingTasks.delete(key);
   }
+}
+
+export async function withTrafficBillingUserLock<T>(userId: unknown, task: () => Promise<T>): Promise<T> {
+  const key = trafficBillingUserLockKey(userId);
+  const inheritedLocks = trafficBillingLockContext.getStore();
+  if (inheritedLocks?.get(key)?.active) return task();
+
+  return withKeyedTaskLock(key, () => {
+    const token = { active: true };
+    const heldLocks = new Map(inheritedLocks);
+    heldLocks.set(key, token);
+    return trafficBillingLockContext.run(heldLocks, async () => {
+      try {
+        return await task();
+      } finally {
+        token.active = false;
+      }
+    });
+  });
 }
 
 export function keyedTaskDepth(keyValue: unknown) {

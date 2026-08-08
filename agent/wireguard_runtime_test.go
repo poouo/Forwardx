@@ -1119,6 +1119,44 @@ func TestWireGuardUDPProxySessionLimitEvictsLeastRecentlyActive(t *testing.T) {
 	}
 }
 
+func TestWireGuardUDPProxySessionPressureOnlyReclaimsIdleSessions(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	sessions := make(map[string]*wireGuardUDPProxySession, wireGuardUDPProxySoftSessions)
+	for index := 0; index < wireGuardUDPProxySoftSessions; index++ {
+		session := &wireGuardUDPProxySession{}
+		session.lastActivity.Store(now.Add(-wireGuardUDPProxyReclaimAfter + time.Second).UnixNano())
+		sessions[strconv.Itoa(index)] = session
+	}
+	if evicted := reclaimWireGuardUDPProxySession(sessions, now); evicted != nil {
+		t.Fatal("soft session pressure evicted an active session")
+	}
+
+	oldest := sessions["0"]
+	oldest.lastActivity.Store(now.Add(-wireGuardUDPProxyReclaimAfter).UnixNano())
+	if evicted := reclaimWireGuardUDPProxySession(sessions, now); evicted != oldest {
+		t.Fatal("soft session pressure did not reclaim the idle oldest session")
+	}
+	if len(sessions) != wireGuardUDPProxySoftSessions-1 {
+		t.Fatalf("session map size=%d, want %d after pressure reclaim", len(sessions), wireGuardUDPProxySoftSessions-1)
+	}
+}
+
+func TestWireGuardUDPProxyHardLimitStillReclaimsActiveOldest(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	sessions := make(map[string]*wireGuardUDPProxySession, wireGuardUDPProxyMaxSessions)
+	for index := 0; index < wireGuardUDPProxyMaxSessions; index++ {
+		session := &wireGuardUDPProxySession{}
+		session.lastActivity.Store(now.Add(-time.Duration(index) * time.Millisecond).UnixNano())
+		sessions[strconv.Itoa(index)] = session
+	}
+	if evicted := reclaimWireGuardUDPProxySession(sessions, now); evicted == nil {
+		t.Fatal("hard session limit failed to reclaim a session")
+	}
+	if len(sessions) != wireGuardUDPProxyMaxSessions-1 {
+		t.Fatalf("session map size=%d, want %d after hard reclaim", len(sessions), wireGuardUDPProxyMaxSessions-1)
+	}
+}
+
 func TestWireGuardUDPProxySessionsWriteIndependently(t *testing.T) {
 	blockedConnection, blockedPeer := net.Pipe()
 	fastConnection, fastPeer := net.Pipe()

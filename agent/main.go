@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.187"
+var Version = "2.2.188"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -140,6 +140,13 @@ const protocolGuardUDPMaxSessions = 512
 const protocolGuardRateBurstMin = 64 * 1024
 const protocolGuardRateBurstMax = 1024 * 1024
 const protocolGuardRateWaitChunk = 16 * 1024
+
+// Protocol-block notifications are advisory: the local Guard already blocks
+// the connection. Keep panel reporting bounded when the panel is unavailable
+// or a scanner opens many blocked connections at once.
+const protocolBlockReportQueueSize = 32
+const protocolBlockReportCooldown = 30 * time.Second
+const protocolBlockReportStateMaxKeys = 2048
 const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
@@ -230,6 +237,7 @@ var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
 var protocolGuardSyncMu sync.Mutex
 var protocolGuardSyncGeneration atomic.Uint64
+var protocolGuardSyncWaitMu sync.Mutex
 var protocolGuardRateMu sync.Mutex
 var protocolGuardRates = map[protocolGuardRateKey]*protocolGuardSharedRateLimiter{}
 var failoverControlMu sync.Mutex
@@ -2786,9 +2794,20 @@ func (state *heartbeatRetryState) active() bool {
 var errHeartbeatRequestInFlight = errors.New("another heartbeat request is already in flight")
 var errHeartbeatRetrySuperseded = errors.New("heartbeat retry canceled by a successful heartbeat")
 
+// A full reconciliation may occupy its HTTP client for up to 60 seconds.
+// Presence needs its own single-flight lane so that slow work cannot suppress
+// liveness, while the shared success generation still cancels stale retries.
+type heartbeatRequestLane uint8
+
+const (
+	heartbeatRequestLaneFull heartbeatRequestLane = iota
+	heartbeatRequestLanePresence
+	heartbeatRequestLaneCount
+)
+
 type heartbeatRequestCoordinator struct {
 	mu                sync.Mutex
-	inFlight          bool
+	inFlight          [heartbeatRequestLaneCount]bool
 	successGeneration uint64
 	successCh         chan struct{}
 }
@@ -2797,39 +2816,39 @@ func newHeartbeatRequestCoordinator() *heartbeatRequestCoordinator {
 	return &heartbeatRequestCoordinator{successCh: make(chan struct{})}
 }
 
-func (coordinator *heartbeatRequestCoordinator) tryStart() (func(bool), bool) {
-	finish, _, ok := coordinator.tryStartTracked()
+func (coordinator *heartbeatRequestCoordinator) tryStart(lane heartbeatRequestLane) (func(bool), bool) {
+	finish, _, ok := coordinator.tryStartTracked(lane)
 	return finish, ok
 }
 
-func (coordinator *heartbeatRequestCoordinator) tryStartTracked() (func(bool), uint64, bool) {
+func (coordinator *heartbeatRequestCoordinator) tryStartTracked(lane heartbeatRequestLane) (func(bool), uint64, bool) {
 	coordinator.mu.Lock()
 	defer coordinator.mu.Unlock()
-	if coordinator.inFlight {
+	if coordinator.inFlight[lane] {
 		return nil, coordinator.successGeneration, false
 	}
-	return coordinator.startLocked(), coordinator.successGeneration, true
+	return coordinator.startLocked(lane), coordinator.successGeneration, true
 }
 
-func (coordinator *heartbeatRequestCoordinator) tryStartIfGeneration(expected uint64) (func(bool), error) {
+func (coordinator *heartbeatRequestCoordinator) tryStartIfGeneration(lane heartbeatRequestLane, expected uint64) (func(bool), error) {
 	coordinator.mu.Lock()
 	defer coordinator.mu.Unlock()
 	if coordinator.successGeneration != expected {
 		return nil, errHeartbeatRetrySuperseded
 	}
-	if coordinator.inFlight {
+	if coordinator.inFlight[lane] {
 		return nil, errHeartbeatRequestInFlight
 	}
-	return coordinator.startLocked(), nil
+	return coordinator.startLocked(lane), nil
 }
 
-func (coordinator *heartbeatRequestCoordinator) startLocked() func(bool) {
-	coordinator.inFlight = true
+func (coordinator *heartbeatRequestCoordinator) startLocked(lane heartbeatRequestLane) func(bool) {
+	coordinator.inFlight[lane] = true
 	var once sync.Once
 	return func(success bool) {
 		once.Do(func() {
 			coordinator.mu.Lock()
-			coordinator.inFlight = false
+			coordinator.inFlight[lane] = false
 			if success {
 				coordinator.successGeneration++
 				close(coordinator.successCh)
@@ -8019,6 +8038,7 @@ func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	invalidateTrafficPrev(port)
+	clearFreshProcessConnectionCounter(port, 0)
 	removeTunnelStateByPort(port)
 	forgetCountingChainState(port)
 }
@@ -8394,6 +8414,7 @@ func removeState(port int) {
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + p + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
 	invalidateTrafficPrev(p)
+	clearFreshProcessConnectionCounter(p, 0)
 	removeTunnelStateByPort(p)
 	forgetCountingChainState(p)
 }
@@ -11944,30 +11965,81 @@ func protocolGuardTargetsOwnListener(rule guardRule) bool {
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
+type protocolGuardSyncWaiter struct {
+	cancel  chan struct{}
+	started chan struct{}
+	done    chan struct{}
+}
+
+func newProtocolGuardSyncWaiter() *protocolGuardSyncWaiter {
+	return &protocolGuardSyncWaiter{
+		cancel:  make(chan struct{}),
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+}
+
+var protocolGuardSyncWaiterCurrent = newProtocolGuardSyncWaiter()
+
+// Every reconciliation owns one waiter lifecycle. Replacing it closes the
+// previous cancellation channel, so an obsolete generation exits even when
+// its action never completes.
+func advanceProtocolGuardSyncWaiter() *protocolGuardSyncWaiter {
+	next := newProtocolGuardSyncWaiter()
+	protocolGuardSyncWaitMu.Lock()
+	previous := protocolGuardSyncWaiterCurrent
+	protocolGuardSyncWaiterCurrent = next
+	protocolGuardSyncWaitMu.Unlock()
+	if previous != nil {
+		close(previous.cancel)
+	}
+	return next
+}
+
 func syncProtocolGuards(cfg Config, rules []guardRule) {
+	protocolGuardSyncGeneration.Add(1)
+	waiter := advanceProtocolGuardSyncWaiter()
+	close(waiter.started)
+	defer close(waiter.done)
 	protocolGuardSyncMu.Lock()
 	defer protocolGuardSyncMu.Unlock()
 	syncProtocolGuardsLocked(cfg, rules)
 }
 
-func syncProtocolGuardsAfterActions(cfg Config, rules []guardRule, completed []<-chan struct{}) {
+func syncProtocolGuardsAfterActions(cfg Config, rules []guardRule, completed []<-chan struct{}) *protocolGuardSyncWaiter {
 	generation := protocolGuardSyncGeneration.Add(1)
+	waiter := advanceProtocolGuardSyncWaiter()
 	rules = append([]guardRule(nil), rules...)
 	if len(completed) == 0 {
 		syncProtocolGuardsForGeneration(cfg, rules, generation)
-		return
+		close(waiter.started)
+		close(waiter.done)
+		return waiter
 	}
 	waits := append([]<-chan struct{}(nil), completed...)
 	go func() {
+		close(waiter.started)
+		defer close(waiter.done)
 		for _, done := range waits {
-			if done != nil {
-				<-done
+			if done == nil {
+				continue
 			}
+			select {
+			case <-done:
+			case <-waiter.cancel:
+				return
+			}
+		}
+		select {
+		case <-waiter.cancel:
+			return
+		default:
 		}
 		// Keep the existing route until its backend action completes. The final
 		// sync also verifies the new backend listener before switching the Guard.
 		syncProtocolGuardsForGeneration(cfg, rules, generation)
 	}()
+	return waiter
 }
 
 func syncProtocolGuardsForGeneration(cfg Config, rules []guardRule, generation uint64) {
@@ -12241,7 +12313,7 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(ctx context.Context, cfg 
 			return nil
 		}
 		if proto, blocked := inspection.inspectClient(chunk); blocked {
-			go reportProtocolBlock(cfg, s.rule, proto)
+			enqueueProtocolBlockReport(cfg, s.rule, proto)
 			return fmt.Errorf("protocol blocked: %s", proto)
 		}
 		if err := s.waitRate(ctx, protocolGuardRateIn, len(chunk)); err != nil {
@@ -12253,7 +12325,8 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(ctx context.Context, cfg 
 	if err := writeChunk(initial); err != nil {
 		return err
 	}
-	buf := make([]byte, 32*1024)
+	buf := getAgentByteBuffer(32 * 1024)
+	defer putAgentByteBuffer(buf)
 	for {
 		n, err := client.Read(buf)
 		if n > 0 {
@@ -12268,13 +12341,14 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(ctx context.Context, cfg 
 }
 
 func (s *protocolGuardServer) copyTCPToClientWithGuard(ctx context.Context, cfg Config, client net.Conn, target net.Conn, inspection *protocolGuardInspection) error {
-	buf := make([]byte, 32*1024)
+	buf := getAgentByteBuffer(32 * 1024)
+	defer putAgentByteBuffer(buf)
 	for {
 		n, err := target.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
 			if proto, blocked := inspection.inspectServer(chunk); blocked {
-				go reportProtocolBlock(cfg, s.rule, proto)
+				enqueueProtocolBlockReport(cfg, s.rule, proto)
 				return fmt.Errorf("protocol blocked: %s", proto)
 			}
 			if err := s.waitRate(ctx, protocolGuardRateOut, len(chunk)); err != nil {
@@ -12351,7 +12425,10 @@ func (s *protocolGuardServer) serveUDP() {
 		if n <= 0 || clientAddr == nil {
 			continue
 		}
-		packet := append([]byte(nil), buf[:n]...)
+		// The loop consumes the packet synchronously before the next ReadFrom,
+		// so the read buffer remains valid for the target Write. Avoid a heap
+		// allocation for every datagram on high-PPS UDP rules.
+		packet := buf[:n]
 		if err := s.waitRate(s.ctx, protocolGuardRateIn, len(packet)); err != nil {
 			select {
 			case <-s.done:
@@ -12401,7 +12478,8 @@ func (s *protocolGuardServer) serveUDP() {
 }
 
 func (s *protocolGuardServer) copyUDPToClient(key string, clientAddr net.Addr, target net.Conn, sessions map[string]*protocolGuardUDPSession, sessionMu *sync.Mutex) {
-	buf := make([]byte, 65535)
+	buf := getAgentByteBuffer(65535)
+	defer putAgentByteBuffer(buf)
 	for {
 		_ = target.SetReadDeadline(time.Now().Add(protocolGuardUDPIdleTimeout))
 		n, err := target.Read(buf)
@@ -12851,6 +12929,188 @@ func detectSocks4Request(data []byte) bool {
 	return end == len(data)
 }
 
+type protocolBlockReportEvent struct {
+	cfg   Config
+	rule  guardRule
+	proto string
+	key   string
+}
+
+type protocolBlockReportState struct {
+	last    time.Time
+	pending bool
+}
+
+// protocolBlockReporter keeps protocol-block reporting off the connection
+// goroutines. A blocked connection is already handled locally, so a failed or
+// slow panel request must never be allowed to create an unbounded backlog.
+type protocolBlockReporter struct {
+	mu        sync.Mutex
+	queue     chan protocolBlockReportEvent
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	closed    bool
+	cooldown  time.Duration
+	maxKeys   int
+	states    map[string]*protocolBlockReportState
+	report    func(Config, guardRule, string)
+}
+
+func newProtocolBlockReporter(queueSize int, cooldown time.Duration, maxKeys int, report func(Config, guardRule, string)) *protocolBlockReporter {
+	if queueSize <= 0 {
+		queueSize = 1
+	}
+	if cooldown < 0 {
+		cooldown = 0
+	}
+	if maxKeys <= 0 {
+		maxKeys = queueSize * 4
+	}
+	reporter := &protocolBlockReporter{
+		queue:    make(chan protocolBlockReportEvent, queueSize),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+		cooldown: cooldown,
+		maxKeys:  maxKeys,
+		states:   make(map[string]*protocolBlockReportState),
+		report:   report,
+	}
+	go reporter.run()
+	return reporter
+}
+
+func protocolBlockReportKey(rule guardRule, proto string) string {
+	// Include the route signature so a changed rule is not suppressed by a
+	// cooldown entry left over from its previous target or policy.
+	return guardRoutingSignature(rule) + "|" + strings.ToLower(strings.TrimSpace(proto))
+}
+
+func (r *protocolBlockReporter) pruneLocked(now time.Time) {
+	for key, state := range r.states {
+		if state == nil || state.pending || state.last.IsZero() {
+			continue
+		}
+		if r.cooldown <= 0 || !now.Before(state.last.Add(r.cooldown)) {
+			delete(r.states, key)
+		}
+	}
+}
+
+func (r *protocolBlockReporter) makeRoomLocked() bool {
+	if len(r.states) < r.maxKeys {
+		return true
+	}
+	oldestKey := ""
+	var oldest time.Time
+	for key, state := range r.states {
+		if state == nil || state.pending {
+			continue
+		}
+		if oldestKey == "" || state.last.Before(oldest) {
+			oldestKey = key
+			oldest = state.last
+		}
+	}
+	if oldestKey == "" {
+		return false
+	}
+	delete(r.states, oldestKey)
+	return true
+}
+
+func (r *protocolBlockReporter) enqueue(cfg Config, rule guardRule, proto string) bool {
+	if r == nil {
+		return false
+	}
+	key := protocolBlockReportKey(rule, proto)
+	now := time.Now()
+	event := protocolBlockReportEvent{cfg: cfg, rule: rule, proto: strings.ToLower(strings.TrimSpace(proto)), key: key}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return false
+	}
+	r.pruneLocked(now)
+	state := r.states[key]
+	if state != nil && (state.pending || (r.cooldown > 0 && now.Before(state.last.Add(r.cooldown)))) {
+		r.mu.Unlock()
+		return false
+	}
+	if state == nil {
+		if !r.makeRoomLocked() {
+			r.mu.Unlock()
+			return false
+		}
+		state = &protocolBlockReportState{}
+		r.states[key] = state
+	}
+	state.last = now
+	state.pending = true
+	select {
+	case r.queue <- event:
+		r.mu.Unlock()
+		return true
+	default:
+		// Keep the cooldown timestamp but release the pending flag. A later
+		// connection can retry after the bounded cooldown without spinning.
+		state.pending = false
+		r.mu.Unlock()
+		return false
+	}
+}
+
+func (r *protocolBlockReporter) run() {
+	defer close(r.done)
+	for {
+		select {
+		case <-r.stop:
+			return
+		case event := <-r.queue:
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						logf("protocol block reporter panic: %v", recovered)
+					}
+					r.mu.Lock()
+					if state := r.states[event.key]; state != nil {
+						state.pending = false
+						state.last = time.Now()
+					}
+					r.mu.Unlock()
+				}()
+				if r.report != nil {
+					r.report(event.cfg, event.rule, event.proto)
+				}
+			}()
+		}
+	}
+}
+
+func (r *protocolBlockReporter) close() {
+	if r == nil {
+		return
+	}
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
+		close(r.stop)
+		<-r.done
+	})
+}
+
+var protocolBlockReports = newProtocolBlockReporter(
+	protocolBlockReportQueueSize,
+	protocolBlockReportCooldown,
+	protocolBlockReportStateMaxKeys,
+	reportProtocolBlock,
+)
+
+func enqueueProtocolBlockReport(cfg Config, rule guardRule, proto string) {
+	_ = protocolBlockReports.enqueue(cfg, rule, proto)
+}
+
 func reportProtocolBlock(cfg Config, rule guardRule, proto string) {
 	payload := map[string]any{
 		"ruleId":     rule.RuleID,
@@ -12902,7 +13162,7 @@ func postHeartbeat(cfg Config, path string, payload any, out any) error {
 }
 
 func postHeartbeatWithClient(client *http.Client, cfg Config, path string, payload any, out any) error {
-	finish, ok := heartbeatRequests.tryStart()
+	finish, ok := heartbeatRequests.tryStart(heartbeatRequestLaneFull)
 	if !ok {
 		return errHeartbeatRequestInFlight
 	}
@@ -12910,7 +13170,7 @@ func postHeartbeatWithClient(client *http.Client, cfg Config, path string, paylo
 }
 
 func postHeartbeatWithClientTracked(client *http.Client, cfg Config, path string, payload any, out any) (uint64, error) {
-	finish, generation, ok := heartbeatRequests.tryStartTracked()
+	finish, generation, ok := heartbeatRequests.tryStartTracked(heartbeatRequestLanePresence)
 	if !ok {
 		return generation, errHeartbeatRequestInFlight
 	}
@@ -12918,7 +13178,7 @@ func postHeartbeatWithClientTracked(client *http.Client, cfg Config, path string
 }
 
 func postHeartbeatWithClientIfGeneration(client *http.Client, cfg Config, path string, payload any, out any, expectedGeneration uint64) error {
-	finish, err := heartbeatRequests.tryStartIfGeneration(expectedGeneration)
+	finish, err := heartbeatRequests.tryStartIfGeneration(heartbeatRequestLanePresence, expectedGeneration)
 	if err != nil {
 		return err
 	}

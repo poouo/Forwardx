@@ -35,6 +35,7 @@ import {
   isPresenceCapableHostConfirmedOffline,
   removePresenceCapableHost,
 } from "../agentFastLiveness";
+import { billingCalendarParts, billingDaysInMonth, billingMonthStart } from "../../shared/billingTime";
 
 // ==================== Host Queries ====================
 
@@ -725,9 +726,10 @@ function dateTimeMs(value: unknown) {
 }
 
 function hostResetDueToday(host: any, now: Date) {
+  const calendar = billingCalendarParts(now);
   const resetDay = Math.min(31, Math.max(1, Math.floor(Number(host?.trafficResetDay || 1))));
-  const dueDay = Math.min(resetDay, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
-  if (now.getDate() < dueDay) return false;
+  const dueDay = Math.min(resetDay, billingDaysInMonth(calendar.year, calendar.month));
+  if (calendar.day < dueDay) return false;
 
   const nowMs = now.getTime();
   const purchasedAt = dateTimeMs(host?.purchasedAt);
@@ -735,7 +737,7 @@ function hostResetDueToday(host: any, now: Date) {
   const stoppedAt = dateTimeMs(host?.stoppedAt);
   if (stoppedAt != null && nowMs >= stoppedAt) return false;
 
-  const monthStartMs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const monthStartMs = billingMonthStart(now).getTime();
   const lastResetAt = dateTimeMs(host?.lastTrafficReset);
   return lastResetAt == null || lastResetAt < monthStartMs;
 }

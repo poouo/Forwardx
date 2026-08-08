@@ -4,14 +4,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { planResourceText } from "@/lib/planDisplay";
+import { pollingInterval } from "@/lib/polling";
+import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
-import { CalendarClock, CheckCircle2, CreditCard, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
+import { CalendarClock, CheckCircle2, CreditCard, Eye, EyeOff, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, Trash2, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { BILLING_DATE_TIME_FORMAT_OPTIONS } from "@shared/billingTime";
 
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((Number(cents) || 0) / 100);
@@ -42,6 +47,13 @@ function dateTime(value?: string | Date | null) {
   return date.toLocaleString();
 }
 
+function billingDateTime(value?: string | Date | null) {
+  if (!value) return "---";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "---";
+  return date.toLocaleString("zh-CN", BILLING_DATE_TIME_FORMAT_OPTIONS);
+}
+
 function statusLabel(status?: string) {
   if (status === "active") return "生效中";
   if (status === "expired") return "已过期";
@@ -61,8 +73,17 @@ function cycleEnd(sub: any) {
   return sub?.nextTrafficResetAt || sub?.expiresAt || null;
 }
 
+function quotaSourceLabel(kind: TrafficQuotaSourceKind) {
+  if (kind === "manual") return "手工额度";
+  if (kind === "addon") return "已购附加流量";
+  if (kind === "grant") return "管理员加赠";
+  return "套餐额度";
+}
+
 export default function Subscriptions() {
   const utils = trpc.useUtils();
+  const { user } = useAuth();
+  const confirmDialog = useConfirmDialog();
   const [, setLocation] = useLocation();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
@@ -71,17 +92,60 @@ export default function Subscriptions() {
     enabled: !!storeStatus?.enabled,
   });
   const { data: subscriptions = [], isLoading } = trpc.plans.mySubscriptions.useQuery();
+  const { data: userTraffic = [] } = trpc.dashboard.userTraffic.useQuery(undefined, {
+    refetchInterval: pollingInterval("slow"),
+    placeholderData: (previousData) => previousData,
+  });
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
+  const [showCancelled, setShowCancelled] = useState(false);
 
   const activeCount = useMemo(
     () => subscriptions.filter((sub: any) => sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date())).length,
     [subscriptions],
   );
+  const cancelledCount = useMemo(
+    () => subscriptions.filter((sub: any) => sub.status === "cancelled").length,
+    [subscriptions],
+  );
+  const visibleSubscriptions = useMemo(
+    () => showCancelled ? subscriptions : subscriptions.filter((sub: any) => sub.status !== "cancelled"),
+    [showCancelled, subscriptions],
+  );
+  const currentUserTraffic = useMemo(
+    () => userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || user,
+    [user, userTraffic],
+  );
+  const quota = useMemo(
+    () => trafficQuotaBreakdown(currentUserTraffic, subscriptions),
+    [currentUserTraffic, subscriptions],
+  );
+  const effectiveTrafficLimit = quota.unlimited
+    ? 0
+    : Number(currentUserTraffic?.trafficLimit || 0) || quota.totalBytes;
+
+  const deleteCancelledSubscription = trpc.plans.deleteCancelledSubscription.useMutation({
+    onSuccess: () => {
+      toast.success("已取消的订阅记录已删除");
+      utils.plans.mySubscriptions.invalidate();
+      utils.billing.ledger.invalidate();
+    },
+    onError: (error) => toast.error(error.message || "删除订阅记录失败"),
+  });
+
+  const confirmDeleteCancelledSubscription = async (sub: any) => {
+    const confirmed = await confirmDialog({
+      title: "删除订阅记录",
+      description: `确认删除“${sub.planName || `套餐 #${sub.planId}`}”的已取消记录？支付和余额流水会继续保留。`,
+      confirmText: "删除",
+      tone: "destructive",
+    });
+    if (confirmed) deleteCancelledSubscription.mutate({ id: Number(sub.id) });
+  };
 
   const purchaseAddon = trpc.billing.purchaseTrafficAddonWithBalance.useMutation({
     onSuccess: () => {
@@ -151,13 +215,18 @@ export default function Subscriptions() {
     const planId = Number(renewingSub.planId);
     const code = billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined;
     if (payMode === "balance") {
-      renewWithBalance.mutate({ planId, discountCode: code });
+      renewWithBalance.mutate({
+        planId,
+        subscriptionId: Number(renewingSub.id),
+        discountCode: code,
+      });
       return;
     }
     createOrder.mutate({
       amount: Number(renewingSub.priceCents || 0) / 100,
       paymentType,
       planId,
+      subscriptionId: Number(renewingSub.id),
       discountCode: code,
       returnPath: "/subscriptions",
     });
@@ -180,21 +249,48 @@ export default function Subscriptions() {
             <h1 className="text-2xl font-semibold tracking-tight">我的订阅</h1>
             <p className="text-sm text-muted-foreground">已购买和已分配的套餐。</p>
           </div>
-          <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-            {activeCount} 个生效套餐
-          </Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            {cancelledCount > 0 && (
+              <Button type="button" size="sm" variant="outline" onClick={() => setShowCancelled((value) => !value)}>
+                {showCancelled ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}
+                {showCancelled ? "隐藏已取消" : `已取消 ${cancelledCount}`}
+              </Button>
+            )}
+            <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+              {activeCount} 个生效套餐
+            </Badge>
+          </div>
         </div>
+
+        {!isLoading && quota.hasQuota && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border/50 py-3 sm:flex sm:flex-wrap sm:items-center sm:gap-x-8">
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">当前总额度</p>
+              <p className="mt-0.5 truncate text-sm font-semibold tabular-nums">
+                {quota.unlimited ? "不限" : bytes(effectiveTrafficLimit)}
+              </p>
+            </div>
+            {quota.sources.map((source) => (
+              <div key={source.kind} className="min-w-0">
+                <p className="text-xs text-muted-foreground">{quotaSourceLabel(source.kind)}</p>
+                <p className="mt-0.5 truncate text-sm font-medium tabular-nums">
+                  {source.unlimited ? "不限" : bytes(source.bytes)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
 
         {isLoading && (
           <DataSectionLoading label="正在加载订阅数据" />
         )}
 
-        {!isLoading && subscriptions.length === 0 && (
+        {!isLoading && visibleSubscriptions.length === 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 暂无订阅</CardTitle>
-              <CardDescription>当前账户还没有套餐记录。</CardDescription>
+              <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 暂无可显示订阅</CardTitle>
+              <CardDescription>{cancelledCount > 0 ? "已取消记录当前处于隐藏状态。" : "当前账户还没有套餐记录。"}</CardDescription>
             </CardHeader>
             {storeStatus?.enabled && (
               <CardFooter>
@@ -207,12 +303,17 @@ export default function Subscriptions() {
         )}
 
         <div className="grid gap-4 lg:grid-cols-2">
-          {subscriptions.map((sub: any) => {
+          {visibleSubscriptions.map((sub: any) => {
             const isActive = sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date());
             const addons = isActive && Number(sub.trafficLimit || 0) > 0 ? (sub.trafficAddons || []) : [];
             const currentAddonBytes = Number(sub.activeTrafficAddonBytes || 0);
+            const purchasedAddonBytes = Number(sub.purchasedTrafficAddonBytes || 0);
+            const grantedAddonBytes = Number(sub.grantedTrafficAddonBytes || 0);
             const validUntil = cycleEnd(sub);
-            const canRenew = !!storeStatus?.enabled && !!sub.planId && sub.status !== "cancelled";
+            const canRenew = !!storeStatus?.enabled && !!sub.planId && sub.status !== "cancelled"
+              && (sub.source === "payment" || sub.source === "balance");
+            const requiresAdminRenewal = sub.status !== "cancelled"
+              && (sub.source === "admin" || sub.source === "redeem");
 
             return (
               <Card key={sub.id} className="flex flex-col">
@@ -227,6 +328,20 @@ export default function Subscriptions() {
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                       <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
+                      {sub.status === "cancelled" && (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 text-destructive"
+                          title="删除已取消订阅"
+                          aria-label="删除已取消订阅"
+                          onClick={() => void confirmDeleteCancelledSubscription(sub)}
+                          disabled={deleteCancelledSubscription.isPending}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
                       {canRenew && (
                         <Button
                           type="button"
@@ -238,6 +353,9 @@ export default function Subscriptions() {
                           <CreditCard className="mr-2 h-3.5 w-3.5" />
                           续费
                         </Button>
+                      )}
+                      {requiresAdminRenewal && (
+                        <span className="text-xs text-muted-foreground">请联系管理员续期</span>
                       )}
                     </div>
                   </div>
@@ -253,13 +371,21 @@ export default function Subscriptions() {
                       <div className="mt-1 font-medium text-foreground">{planResourceText(sub)}</div>
                     </div>
                     <div className="rounded-md border border-border/50 p-3">
-                      <div className="text-xs">套餐流量</div>
+                      <div className="text-xs">套餐额度</div>
                       <div className="mt-1 font-medium text-foreground">{bytes(sub.trafficLimit)}</div>
                     </div>
-                    <div className="rounded-md border border-border/50 p-3">
-                      <div className="text-xs">本周期附加</div>
-                      <div className="mt-1 font-medium text-foreground">{currentAddonBytes > 0 ? bytes(currentAddonBytes) : "---"}</div>
-                    </div>
+                    {purchasedAddonBytes > 0 && (
+                      <div className="rounded-md border border-border/50 p-3">
+                        <div className="text-xs">已购附加流量</div>
+                        <div className="mt-1 font-medium text-foreground">{bytes(purchasedAddonBytes)}</div>
+                      </div>
+                    )}
+                    {grantedAddonBytes > 0 && (
+                      <div className="rounded-md border border-border/50 p-3">
+                        <div className="text-xs">管理员加赠</div>
+                        <div className="mt-1 font-medium text-foreground">{bytes(grantedAddonBytes)}</div>
+                      </div>
+                    )}
                     <div className="rounded-md border border-border/50 p-3">
                       <div className="text-xs">限速</div>
                       <div className="mt-1 font-medium text-foreground">{speed(sub.rateLimitMbps)}</div>
@@ -273,7 +399,7 @@ export default function Subscriptions() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Gauge className="h-3.5 w-3.5" />
-                      下次流量周期：{dateTime(sub.nextTrafficResetAt)}
+                      下次流量周期：{billingDateTime(sub.nextTrafficResetAt)}
                     </div>
                   </div>
 
@@ -304,7 +430,7 @@ export default function Subscriptions() {
                     </div>
                   )}
                 </CardContent>
-                {isActive && validUntil && (
+                {isActive && currentAddonBytes > 0 && validUntil && (
                   <CardFooter className="text-xs text-muted-foreground">
                     本周期附加流量有效至 {dateTime(validUntil)}
                   </CardFooter>

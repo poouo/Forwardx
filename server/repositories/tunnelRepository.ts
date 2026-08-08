@@ -1215,6 +1215,7 @@ export async function findAvailablePort(
   protocol?: unknown,
   reservedPorts: number[] = [],
   excludeRuleIds: number | number[] = [],
+  allowedRanges: Array<{ start: number; end: number }> = [],
 ): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
@@ -1223,7 +1224,14 @@ export async function findAvailablePort(
   const explicitPolicy = rangeStart != null && rangeEnd != null
     ? portPolicyFrom({ portRangeStart: rangeStart, portRangeEnd: rangeEnd })
     : null;
-  const policy = explicitPolicy ? combinePortPolicies(hostPolicy, explicitPolicy) : hostPolicy;
+  const subscriptionPolicy = allowedRanges.length > 0
+    ? portPolicyFrom({ portRanges: allowedRanges })
+    : null;
+  const policy = combinePortPolicies(
+    hostPolicy,
+    ...(explicitPolicy ? [explicitPolicy] : []),
+    ...(subscriptionPolicy ? [subscriptionPolicy] : []),
+  );
   const usedPorts = await getUsedPortsOnHost(hostId, excludeRuleIds, protocol, undefined, false);
   for (const reservedPort of reservedPorts) {
     const port = Number(reservedPort);

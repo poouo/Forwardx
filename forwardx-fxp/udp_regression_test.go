@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,6 +120,36 @@ func TestPlanFXPUDPPressureReclamationScopesPerIPPressure(t *testing.T) {
 	reclaimed := planFXPUDPPressureReclamation(now, sessions, policy, udpAdmissionTestSnapshot)
 	if len(reclaimed) != 2 || reclaimed[0].key != "same-old" || reclaimed[1].key != "same-new" {
 		t.Fatalf("per-IP reclamation = %+v, want only same-IP idle sessions", reclaimed)
+	}
+}
+
+func TestPlanFXPUDPPressureReclamationBoundsRepeatedChurn(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	policy := defaultFXPUDPSessionPolicy()
+	sessions := make(map[string]*udpAdmissionTestSession)
+
+	const activeSessions = 16
+	for index := 0; index < activeSessions; index++ {
+		sessions["active-"+strconv.Itoa(index)] = &udpAdmissionTestSession{activity: now.UnixNano()}
+	}
+
+	for round := 0; round < 12; round++ {
+		for index := 0; index < 256; index++ {
+			key := "idle-" + strconv.Itoa(round) + "-" + strconv.Itoa(index)
+			sessions[key] = &udpAdmissionTestSession{activity: now.Add(-fxpUDPReclaimAfter).UnixNano()}
+		}
+
+		for _, victim := range planFXPUDPPressureReclamation(now, sessions, policy, udpAdmissionTestSnapshot) {
+			delete(sessions, victim.key)
+		}
+		if len(sessions) >= policy.softSessions {
+			t.Fatalf("round %d retained %d sessions, want below soft limit %d", round, len(sessions), policy.softSessions)
+		}
+		for index := 0; index < activeSessions; index++ {
+			if sessions["active-"+strconv.Itoa(index)] == nil {
+				t.Fatalf("round %d reclaimed active session %d", round, index)
+			}
+		}
 	}
 }
 

@@ -215,8 +215,20 @@ func TestFXPUDPQueuedPacketSupersededDelayBoundary(t *testing.T) {
 
 func TestDefaultFXPUDPSessionPolicyIsIndependentOfTCPPlanLimits(t *testing.T) {
 	policy := defaultFXPUDPSessionPolicy()
-	if policy.softSessions != 960 || policy.hardSessions != 1024 || policy.softPerIP != 60 || policy.hardPerIP != 64 {
-		t.Fatalf("default policy = %+v, want total 960/1024 and per-IP 60/64", policy)
+	if policy.softSessions != 512 || policy.hardSessions != 1024 || policy.softPerIP != 48 || policy.hardPerIP != 64 {
+		t.Fatalf("default policy = %+v, want total 512/1024 and per-IP 48/64", policy)
+	}
+}
+
+func TestFXPUDPBufferBudgetsKeepPerSessionReservationBounded(t *testing.T) {
+	if fxpUDPListenBufferBytes != 2*1024*1024 {
+		t.Fatalf("listener UDP buffer = %d, want 2 MiB", fxpUDPListenBufferBytes)
+	}
+	if fxpUDPSessionBufferBytes != 128*1024 {
+		t.Fatalf("session UDP buffer = %d, want 128 KiB", fxpUDPSessionBufferBytes)
+	}
+	if fxpUDPSessionBufferBytes >= fxpUDPListenBufferBytes {
+		t.Fatalf("session buffer %d must remain below listener buffer %d", fxpUDPSessionBufferBytes, fxpUDPListenBufferBytes)
 	}
 }
 

@@ -50,8 +50,9 @@ export const portsRulesRouter = router({
         if (ctx.user.role !== "admin") {
           await requireForwardGroupPortAccess(ctx, input.forwardGroupId);
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
-          if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
-            return { used: true, reason: `套餐端口必须在 ${planRange.start}-${planRange.end} 范围内` };
+          if (planRange && !db.isPortAllowedByUserPlanRange(input.sourcePort, planRange)) {
+            const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+            return { used: true, reason: `套餐端口必须在 ${ranges} 范围内` };
           }
         }
         try {
@@ -94,7 +95,9 @@ export const portsRulesRouter = router({
       if (ctx.user.role !== "admin") {
         const planRange = await db.getUserPlanPortRange(ctx.user.id, hostId, input.tunnelId ?? undefined);
         if (planRange) {
-          policy = combinePortPolicies(policy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
+          policy = combinePortPolicies(policy, portPolicyFrom({
+            portRanges: planRange.ranges,
+          }));
         }
         if (planRange && !isPortAllowedByPolicy(input.sourcePort, policy)) {
           return { used: true, reason: portPolicyErrorMessage(policy, "套餐端口") };
@@ -116,7 +119,7 @@ export const portsRulesRouter = router({
         await requireRuleAccess(ctx, input.excludeRuleId);
       }
       if (input.forwardGroupId) {
-        let planRange: { start: number; end: number } | null = null;
+        let planRange: Awaited<ReturnType<typeof db.getUserForwardGroupPlanPortRange>> = null;
         if (ctx.user.role !== "admin") {
           await requireForwardGroupPortAccess(ctx, input.forwardGroupId);
           planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
@@ -128,6 +131,7 @@ export const portsRulesRouter = router({
       if (!input.hostId) throw new Error("请选择主机");
       let rangeStart: number | null | undefined;
       let rangeEnd: number | null | undefined;
+      let planRange: Awaited<ReturnType<typeof db.getUserPlanPortRange>> = null;
       if (input.tunnelId) {
         const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
@@ -137,11 +141,9 @@ export const portsRulesRouter = router({
         await requireHostUseAccess(ctx, input.hostId);
       }
       if (ctx.user.role !== "admin") {
-        const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
-        if (planRange) {
-          rangeStart = Math.max(Number(rangeStart || planRange.start), planRange.start);
-          rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
-        }
+        planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
+        // Keep the subscription's disjoint ranges intact. The repository
+        // intersects them with the host/tunnel policy when selecting a port.
       }
       const excludeRuleIds = input.excludeRuleId
         ? [
@@ -149,7 +151,15 @@ export const portsRulesRouter = router({
             ...((await db.getForwardGroupChildRulesForTemplate(input.excludeRuleId)) as any[]).map((rule: any) => Number(rule.id)),
           ]
         : [];
-      const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd, input.protocol, [], excludeRuleIds);
+      const port = await db.findAvailablePort(
+        input.hostId,
+        rangeStart,
+        rangeEnd,
+        input.protocol,
+        [],
+        excludeRuleIds,
+        planRange?.ranges || [],
+      );
       if (!port) throw new Error("该主机端口区间内已无可用端口");
       return { port };
     }),

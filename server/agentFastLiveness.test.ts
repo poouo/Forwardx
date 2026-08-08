@@ -82,7 +82,7 @@ test("prime registers only eligible hosts behind one startup observation grace",
   assert.equal(transitions[0].isCurrent(), true);
 });
 
-test("authenticated activity resets the 25 second deadline and stale timers cannot win", () => {
+test("authenticated activity resets the 45 second deadline and stale timers cannot win", () => {
   const clock = fakeTimerHarness(1_000);
   const transitions: AgentFastLivenessTransition[] = [];
   const tracker = new AgentFastLivenessTracker({
@@ -101,16 +101,16 @@ test("authenticated activity resets the 25 second deadline and stale timers cann
   assert.equal(clock.timers[1].delayMs, AGENT_FAST_LIVENESS_SILENCE_MS);
   assert.equal(tracker.state(7)?.transitionEpoch, initialEpoch, "routine presence must not advance the transition epoch");
 
-  clock.moveTo(26_000);
+  clock.moveTo(46_000);
   clock.timers[0].callback();
   assert.equal(tracker.isConfirmedOffline(7), false);
   assert.deepEqual(transitions, []);
 
-  clock.moveTo(31_000);
+  clock.moveTo(51_000);
   clock.timers[1].callback();
   assert.equal(tracker.isConfirmedOffline(7), true);
-  assert.equal(tracker.state(7)?.offlineAt, 31_000);
-  assert.equal(tracker.state(7)?.lastOfflineAt, 31_000);
+  assert.equal(tracker.state(7)?.offlineAt, 51_000);
+  assert.equal(tracker.state(7)?.lastOfflineAt, 51_000);
   assert.equal(transitions.length, 1);
 });
 

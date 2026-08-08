@@ -2002,7 +2002,10 @@ async function assertEntryPortAllowed(member: any, sourcePort: number) {
 }
 
 function policyHasRestrictionForGroup(policy: PortPolicy) {
-  return !!policy.denyAll || (policy.rangeStart !== null && policy.rangeEnd !== null) || policy.allowlist.length > 0;
+  return !!policy.denyAll
+    || (policy.rangeStart !== null && policy.rangeEnd !== null)
+    || (policy.ranges?.length || 0) > 0
+    || policy.allowlist.length > 0;
 }
 
 function longestContiguousRange(ports: number[]) {
@@ -2040,15 +2043,26 @@ function policyRangeForGroup(policy: PortPolicy) {
 function candidatePortsForGroup(policy: PortPolicy) {
   if (policy.denyAll) return [];
   const ports: number[] = [];
+  const portSet = new Set<number>();
+  const addPort = (port: number) => {
+    if (portSet.has(port)) return;
+    portSet.add(port);
+    ports.push(port);
+  };
   if (!policyHasRestrictionForGroup(policy)) {
-    for (let port = 10000; port <= 65535; port++) ports.push(port);
+    for (let port = 10000; port <= 65535; port++) addPort(port);
     return ports;
   }
   if (policy.rangeStart !== null && policy.rangeEnd !== null) {
-    for (let port = policy.rangeStart; port <= policy.rangeEnd; port++) ports.push(port);
+    for (let port = policy.rangeStart; port <= policy.rangeEnd; port++) addPort(port);
+  }
+  for (const range of policy.ranges || []) {
+    for (let port = range.start; port <= range.end; port++) {
+      addPort(port);
+    }
   }
   for (const port of policy.allowlist) {
-    if (!ports.includes(port)) ports.push(port);
+    addPort(port);
   }
   return ports.filter((port) => isPortAllowedByPolicy(port, policy));
 }
@@ -2080,7 +2094,7 @@ export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ 
 export async function findAvailableForwardGroupPort(
   groupId: number,
   excludeTemplateRuleId?: number | null,
-  allowedRange?: { start: number; end: number } | null,
+  allowedRange?: { start: number; end: number; ranges?: Array<{ start: number; end: number }> } | null,
   protocol?: unknown,
   unavailablePorts: Iterable<number> = [],
 ) {
@@ -2126,7 +2140,11 @@ export async function findAvailableForwardGroupPort(
     policy = combinePortPolicies(policy, entry.policy);
   }
   if (allowedRange) {
-    policy = combinePortPolicies(policy, portPolicyFrom({ portRangeStart: allowedRange.start, portRangeEnd: allowedRange.end }));
+    policy = combinePortPolicies(policy, portPolicyFrom({
+      ...(allowedRange.ranges?.length
+        ? { portRanges: allowedRange.ranges }
+        : { portRangeStart: allowedRange.start, portRangeEnd: allowedRange.end }),
+    }));
   }
   const candidates = candidatePortsForGroup(policy);
   if (candidates.length === 0) return null;

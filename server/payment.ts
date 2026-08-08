@@ -5,6 +5,7 @@ import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
 import { appendPanelLog } from "./_core/panelLogger";
 import { getConfiguredPanelUrl, resolvePanelUrl } from "./agentPanelUrl";
 import * as db from "./db";
+import { withTrafficBillingUserLock } from "./keyedTaskLock";
 import {
   createGmPayOrder,
   getGmPayGatewayInfo,
@@ -215,6 +216,7 @@ const createOrderInput = z.object({
   amount: z.number().min(0.01).max(1_000_000),
   paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
   planId: z.number().int().positive().optional(),
+  subscriptionId: z.number().int().positive().optional(),
   discountCode: z.string().trim().max(64).optional(),
   orderType: z.enum(["balance", "test"]).optional(),
   returnPath: z.enum(PAYMENT_RETURN_PATHS).optional(),
@@ -802,8 +804,8 @@ async function finalizePaidOrder(outTradeNo: string) {
   }
 
   try {
-    await db.withDatabaseTransaction(async () => {
-      if (order.planId && !order.subscriptionId) {
+    await withTrafficBillingUserLock(order.userId, () => db.withDatabaseTransaction(async () => {
+      if (order.planId) {
         const existingSubscription = await db.getUserSubscriptionByPaymentOrderNo(outTradeNo);
         if (existingSubscription) {
           if ((order as any).discountCodeId && !(order as any).discountConsumed) {
@@ -817,10 +819,18 @@ async function finalizePaidOrder(outTradeNo: string) {
           await db.consumeDiscountCode(Number((order as any).discountCodeId));
           await db.updatePaymentOrder(outTradeNo, { discountConsumed: true } as any);
         }
-        const result = await db.applySubscriptionToUser(order.userId, order.planId, "payment", outTradeNo);
+        const result = await db.applySubscriptionToUser(
+          order.userId,
+          order.planId,
+          "payment",
+          outTradeNo,
+          undefined,
+          null,
+          order.subscriptionId ? Number(order.subscriptionId) : null,
+        );
         await db.recoverUserForwardAccessIfEligible(order.userId);
         await db.updatePaymentOrder(outTradeNo, { subscriptionId: result.subscriptionId, status: "completed" } as any);
-        appendPanelLog("info", `[Plan] subscription granted user=${order.userId} plan=${order.planId} order=${outTradeNo} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+        appendPanelLog("info", `[Plan] subscription ${order.subscriptionId ? "renewed" : "granted"} user=${order.userId} plan=${order.planId} order=${outTradeNo} subscription=${result.subscriptionId} ports=${result.portRangeStart}-${result.portRangeEnd}`);
         return;
       }
       if ((order as any).orderType === "balance") {
@@ -840,7 +850,7 @@ async function finalizePaidOrder(outTradeNo: string) {
         return;
       }
       await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
-    });
+    }));
   } catch (error) {
     await db.updatePaymentOrder(outTradeNo, { status: "paid" } as any);
     throw error;
@@ -1031,10 +1041,28 @@ export const paymentRouter = router({
       let subjectSuffix = ctx.user.username;
       let discountCodeId: number | null = null;
       let discountAmountCents = 0;
+      if (input.subscriptionId && !input.planId) {
+        throw new Error("renewal order requires a plan");
+      }
       if (input.planId) {
         const shopEnabled = (await db.getSetting("storeEnabled")) === "true";
         if (!shopEnabled) throw new Error("商店功能未开启");
         const plan = await db.getSubscriptionPlanById(input.planId);
+        if (input.subscriptionId) {
+          const target = await db.getUserSubscriptionById(input.subscriptionId);
+          if (!target || Number(target.userId) !== Number(ctx.user.id)) {
+            throw new Error("subscription does not exist or is not owned by this user");
+          }
+          if (Number(target.planId) !== Number(input.planId)) {
+            throw new Error("renewal plan does not match the target subscription");
+          }
+          if (target.status === "cancelled") {
+            throw new Error("cancelled subscriptions cannot be renewed");
+          }
+          if (!db.isUserRenewableSubscriptionSource(target.source)) {
+            throw new Error("administrator-assigned subscriptions must be renewed by an administrator");
+          }
+        }
         if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
         let amountCentsForPlan = Number(plan.priceCents || 0);
         if (input.discountCode) {
@@ -1101,6 +1129,7 @@ export const paymentRouter = router({
           currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
           orderType: input.planId ? "plan" : input.orderType || "balance",
           planId: input.planId ?? null,
+          subscriptionId: input.subscriptionId ?? null,
           discountCodeId,
           discountConsumed: !!discountCodeId,
           discountAmountCents,

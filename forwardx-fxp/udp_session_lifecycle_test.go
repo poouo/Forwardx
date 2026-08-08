@@ -19,6 +19,24 @@ func TestFXPUDPSessionIdleAtBoundary(t *testing.T) {
 	}
 }
 
+func TestFXPUDPSessionExpirationWaitsForDrainButBoundsStalls(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	regularIdle := now.Add(-fxpUDPIdleTimeout).UnixNano()
+	if !fxpUDPSessionExpiredAt(now, regularIdle, 0) {
+		t.Fatal("drained idle session was not expired")
+	}
+	if fxpUDPSessionExpiredAt(now, regularIdle, 1) {
+		t.Fatal("normal idle timeout interrupted pending work")
+	}
+	stalled := now.Add(-fxpUDPStalledTimeout).UnixNano()
+	if !fxpUDPSessionExpiredAt(now, stalled, 1) {
+		t.Fatal("stalled session with pending work was retained indefinitely")
+	}
+	if fxpUDPSessionExpiredAt(now, 0, 0) {
+		t.Fatal("uninitialized session was expired")
+	}
+}
+
 func TestFXPUDPSessionSweeperStopsIdempotently(t *testing.T) {
 	var calls atomic.Int64
 	stop, wake := startFXPUDPSessionSweeper(func(time.Time) {

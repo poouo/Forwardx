@@ -78,6 +78,7 @@ import {
 import { useState, useEffect, useMemo, type ElementType } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { BILLING_DATE_TIME_FORMAT_OPTIONS, billingCalendarParts } from "@shared/billingTime";
 import { FORWARD_TYPES } from "@shared/forwardTypes";
 
 function formatBytes(bytes: number | string | null | undefined): string {
@@ -130,10 +131,14 @@ function dateText(value?: string | Date | null) {
   return Number.isNaN(date.getTime()) ? "-" : date.toLocaleDateString("zh-CN");
 }
 
-function dateTimeText(value?: string | Date | null) {
+function billingDateTimeText(value?: string | Date | null) {
   if (!value) return "-";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN");
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN", BILLING_DATE_TIME_FORMAT_OPTIONS);
+}
+
+function currentBillingResetDay() {
+  return Math.min(billingCalendarParts(new Date()).day, 28);
 }
 
 function subscriptionStatusLabel(status?: string) {
@@ -1644,7 +1649,8 @@ function UsersContent() {
                 {pagedSubscriptions.map((sub: any) => {
                   const active = isSubscriptionActive(sub);
                   const trafficLimit = Number(sub.trafficLimit || 0);
-                  const activeAddonBytes = Number(sub.activeTrafficAddonBytes || 0);
+                  const purchasedAddonBytes = Number(sub.purchasedTrafficAddonBytes || 0);
+                  const grantedAddonBytes = Number(sub.grantedTrafficAddonBytes || 0);
                   const canAddAddon = active && trafficLimit > 0;
                   const canChangeExpiry = sub.status !== "cancelled";
                   return (
@@ -1672,20 +1678,28 @@ function UsersContent() {
                             </p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">套餐流量</p>
+                            <p className="text-muted-foreground">套餐额度</p>
                             <p className="mt-1 break-words font-medium">{trafficLimit > 0 ? formatBytes(trafficLimit) : "不限"}</p>
                           </div>
-                          <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">附加流量</p>
-                            <p className="mt-1 break-words font-medium">{activeAddonBytes > 0 ? formatBytes(activeAddonBytes) : "-"}</p>
-                          </div>
+                          {purchasedAddonBytes > 0 && (
+                            <div className="min-w-0 rounded-md bg-muted/25 p-2">
+                              <p className="text-muted-foreground">已购附加流量</p>
+                              <p className="mt-1 break-words font-medium">{formatBytes(purchasedAddonBytes)}</p>
+                            </div>
+                          )}
+                          {grantedAddonBytes > 0 && (
+                            <div className="min-w-0 rounded-md bg-muted/25 p-2">
+                              <p className="text-muted-foreground">管理员加赠</p>
+                              <p className="mt-1 break-words font-medium">{formatBytes(grantedAddonBytes)}</p>
+                            </div>
+                          )}
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
                             <p className="text-muted-foreground">到期</p>
                             <p className={`mt-1 truncate font-medium ${sub.expiresAt && !active ? "text-destructive" : ""}`}>{dateText(sub.expiresAt)}</p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
                             <p className="text-muted-foreground">流量周期</p>
-                            <p className="mt-1 truncate font-medium">{dateTimeText(sub.nextTrafficResetAt)}</p>
+                            <p className="mt-1 truncate font-medium">{billingDateTimeText(sub.nextTrafficResetAt)}</p>
                           </div>
                         </div>
 
@@ -2319,7 +2333,7 @@ function UsersContent() {
                       setTrafficAutoReset(checked);
                       // 启用时默认以当前日期作为重置日（最大 28）
                       if (checked) {
-                        const today = Math.min(new Date().getDate(), 28);
+                        const today = currentBillingResetDay();
                         setTrafficResetDay(today);
                       }
                     }}
@@ -2339,7 +2353,7 @@ function UsersContent() {
                         {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
                           <SelectItem key={d} value={String(d)}>
                             每月 {d} 日
-                            {d === Math.min(new Date().getDate(), 28) ? "（今日）" : ""}
+                            {d === currentBillingResetDay() ? "（今日）" : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>

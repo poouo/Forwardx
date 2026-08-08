@@ -35,9 +35,13 @@ const (
 	systemPingConcurrency      = 8
 	networkTargetDNSTTL        = 30 * time.Second
 	networkTargetDNSFailureTTL = 5 * time.Second
-	activeTrafficReportEvery   = 10 * time.Second
-	steadyTrafficReportEvery   = 30 * time.Second
-	idleHostTrafficReportEvery = 5 * time.Minute
+	// Probe targets can be user supplied and may change over time. Keep the
+	// positive/negative DNS cache bounded so a long-lived Agent does not retain
+	// one entry for every hostname it has ever probed.
+	networkTargetDNSCacheMaxEntries = 1024
+	activeTrafficReportEvery        = 10 * time.Second
+	steadyTrafficReportEvery        = 30 * time.Second
+	idleHostTrafficReportEvery      = 5 * time.Minute
 )
 
 var (
@@ -84,7 +88,7 @@ func freshProcessConnectionCounter(port string, ruleID int) bool {
 
 func clearFreshProcessConnectionCounter(port string, ruleID int) {
 	freshProcessConnMu.Lock()
-	if freshProcessConnRule[port] == ruleID {
+	if ruleID <= 0 || freshProcessConnRule[port] == ruleID {
 		delete(freshProcessConnRule, port)
 	}
 	freshProcessConnMu.Unlock()
@@ -1944,6 +1948,12 @@ func resolveNetworkTargetIPs(host string, timeout time.Duration) []string {
 		networkTargetDNSMu.Unlock()
 		return addresses
 	}
+	// Expired entries are normally replaced below. Remove this one first so a
+	// hostname that repeatedly fails resolution does not retain stale address
+	// slices while the lookup is in flight.
+	if _, ok := networkTargetDNSCache[host]; ok {
+		delete(networkTargetDNSCache, host)
+	}
 	if call := networkTargetDNSCalls[host]; call != nil {
 		done := call.done
 		networkTargetDNSMu.Unlock()
@@ -1982,10 +1992,40 @@ func resolveNetworkTargetIPs(host string, timeout time.Duration) []string {
 		addresses: append([]string(nil), targets...),
 		expiresAt: time.Now().Add(ttl),
 	}
+	pruneNetworkTargetDNSCacheLocked(time.Now(), host)
 	delete(networkTargetDNSCalls, host)
 	close(call.done)
 	networkTargetDNSMu.Unlock()
 	return targets
+}
+
+// pruneNetworkTargetDNSCacheLocked drops expired entries and then evicts
+// arbitrary cached targets until the cache is within its hard bound. Cache
+// eviction does not affect an in-flight lookup or its current caller.
+// The caller must hold networkTargetDNSMu.
+func pruneNetworkTargetDNSCacheLocked(now time.Time, protectedKeys ...string) {
+	protected := func(key string) bool {
+		for _, candidate := range protectedKeys {
+			if key == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	for key, entry := range networkTargetDNSCache {
+		if !entry.expiresAt.After(now) && !protected(key) {
+			delete(networkTargetDNSCache, key)
+		}
+	}
+	for key := range networkTargetDNSCache {
+		if len(networkTargetDNSCache) <= networkTargetDNSCacheMaxEntries {
+			break
+		}
+		if protected(key) {
+			continue
+		}
+		delete(networkTargetDNSCache, key)
+	}
 }
 
 func pingLatency(host string, timeout time.Duration) (int, bool, string) {

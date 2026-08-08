@@ -262,7 +262,7 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 				session.returnFragments.expire(now)
 			}
 			state := udpDirectEntrySessionSnapshot(session)
-			if session != nil && state.pending == 0 && fxpUDPSessionIdleAt(now, state.lastActivity) {
+			if session != nil && fxpUDPSessionExpiredAt(now, state.lastActivity, state.pending) {
 				if sessionsByClient[key] == session && detachSessionLocked(session) {
 					expired = append(expired, session)
 				}
@@ -643,7 +643,7 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 				session.dataFragments.expire(now)
 			}
 			state := udpDirectExitSessionSnapshot(session)
-			if session != nil && state.pending == 0 && fxpUDPSessionIdleAt(now, state.lastActivity) {
+			if session != nil && fxpUDPSessionExpiredAt(now, state.lastActivity, state.pending) {
 				if sessions[key] == session && detachSessionLocked(session) {
 					expired = append(expired, session)
 				}
@@ -899,7 +899,8 @@ func (s *udpDirectExitSession) writeTarget(payload []byte) {
 
 func (s *udpDirectExitSession) readTargetLoop() {
 	defer observeFXPUDPSequence(&s.sendSequence)
-	buf := make([]byte, 65535)
+	buf := getFXPByteBuffer(fxpUDPMaxDatagramPayload)
+	defer putFXPByteBuffer(buf)
 	for {
 		_ = s.target.SetReadDeadline(time.Now().Add(5 * time.Second))
 		n, err := s.target.Read(buf)
@@ -990,7 +991,7 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 				session.returnFragments.expire(now)
 			}
 			state := udpDirectRelaySessionSnapshot(session)
-			if session != nil && state.pending == 0 && fxpUDPSessionIdleAt(now, state.lastActivity) {
+			if session != nil && fxpUDPSessionExpiredAt(now, state.lastActivity, state.pending) {
 				if sessionsByUpstream[key] == session && detachSessionLocked(session) {
 					expired = append(expired, session)
 				}
@@ -1440,12 +1441,14 @@ func (c *fxpUDPCodec) sealPacket(packet fxpUDPPacket) ([]byte, error) {
 	if len(packet.payload) > fxpUDPMaxSinglePayload {
 		return nil, fmt.Errorf("udp payload too large: %d", len(packet.payload))
 	}
-	header, err := fxpUDPHeader(packet)
-	if err != nil {
+	wireSize := fxpUDPHeaderSize + len(packet.payload) + c.aead.Overhead()
+	wire := make([]byte, fxpUDPHeaderSize, wireSize)
+	if err := writeFXPUDPHeader(wire, packet); err != nil {
 		return nil, err
 	}
-	ciphertext := c.aead.Seal(nil, fxpUDPNonce(packet.sequence, packet.fragment), packet.payload, header)
-	return append(header, ciphertext...), nil
+	var nonce [12]byte
+	fillFXPUDPNonce(nonce[:], packet.sequence, packet.fragment)
+	return c.aead.Seal(wire, nonce[:], packet.payload, wire[:fxpUDPHeaderSize]), nil
 }
 
 func sealFXPUDPPacket(packet fxpUDPPacket, key string) ([]byte, error) {
@@ -1482,7 +1485,9 @@ func (c *fxpUDPCodec) openParsedPacket(raw []byte, packet fxpUDPPacket) (fxpUDPP
 	if !c.matches(packet) {
 		return fxpUDPPacket{}, errors.New("udp packet does not match cached decryption context")
 	}
-	payload, err := c.aead.Open(nil, fxpUDPNonce(packet.sequence, packet.fragment), raw[fxpUDPHeaderSize:], raw[:fxpUDPHeaderSize])
+	var nonce [12]byte
+	fillFXPUDPNonce(nonce[:], packet.sequence, packet.fragment)
+	payload, err := c.aead.Open(nil, nonce[:], raw[fxpUDPHeaderSize:], raw[:fxpUDPHeaderSize])
 	if err != nil {
 		return fxpUDPPacket{}, errors.New("invalid udp packet authentication")
 	}
@@ -1538,6 +1543,19 @@ func fxpUDPHeader(packet fxpUDPPacket) ([]byte, error) {
 		return nil, err
 	}
 	header := make([]byte, fxpUDPHeaderSize)
+	if err := writeFXPUDPHeader(header, packet); err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+func writeFXPUDPHeader(header []byte, packet fxpUDPPacket) error {
+	if len(header) < fxpUDPHeaderSize {
+		return errors.New("udp header buffer too small")
+	}
+	if err := validateFXPUDPPacket(packet); err != nil {
+		return err
+	}
 	copy(header[0:4], []byte(fxpUDPMagic))
 	header[4] = fxpUDPVersion
 	header[5] = packet.packetType
@@ -1547,7 +1565,7 @@ func fxpUDPHeader(packet fxpUDPPacket) ([]byte, error) {
 	binary.BigEndian.PutUint32(header[12:16], uint32(packet.ruleID))
 	binary.BigEndian.PutUint64(header[16:24], packet.sessionID)
 	binary.BigEndian.PutUint64(header[24:32], packet.sequence)
-	return header, nil
+	return nil
 }
 
 func fxpUDPAEAD(key string, packet fxpUDPPacket) (cipher.AEAD, error) {
@@ -1571,9 +1589,16 @@ func fxpUDPAEAD(key string, packet fxpUDPPacket) (cipher.AEAD, error) {
 
 func fxpUDPNonce(sequence uint64, fragment uint8) []byte {
 	nonce := make([]byte, 12)
+	fillFXPUDPNonce(nonce, sequence, fragment)
+	return nonce
+}
+
+func fillFXPUDPNonce(nonce []byte, sequence uint64, fragment uint8) {
+	if len(nonce) < 12 {
+		return
+	}
 	nonce[3] = fragment
 	binary.BigEndian.PutUint64(nonce[4:], sequence)
-	return nonce
 }
 
 func fxpUDPHasMagic(raw []byte) bool {

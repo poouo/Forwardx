@@ -10,12 +10,18 @@ import {
   type AgentFastLivenessTransition,
 } from "./agentFastLiveness";
 import { withKeyedTaskLock } from "./keyedTaskLock";
+import { HostOfflineNotificationDebouncer } from "./hostOfflineNotificationDebouncer";
 
 type HostStatus = "online" | "offline";
 
 const lastKnownStatus = new Map<number, HostStatus>();
 const FAST_LIVENESS_RETRY_DELAYS_MS = [0, 1_000, 3_000, 7_000, 15_000] as const;
 let hostStatusNotifierPrimed = false;
+const fastOfflineNotificationDebouncer = new HostOfflineNotificationDebouncer({
+  onError: (error, hostId) => {
+    console.warn(`[HostStatus] Delayed offline notify failed host=${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+  },
+});
 
 function waitForRetry(delayMs: number) {
   return new Promise<void>((resolve) => {
@@ -112,6 +118,7 @@ async function sendHostStatusTelegram(host: any, status: HostStatus) {
 async function notifyHostStatusChange(host: any, status: HostStatus) {
   const hostId = Number(host?.id || 0);
   if (!Number.isFinite(hostId) || hostId <= 0) return;
+  if (status === "online") fastOfflineNotificationDebouncer.cancel(hostId);
   const previous = lastKnownStatus.get(hostId);
   if (previous === status) return;
 
@@ -128,6 +135,7 @@ async function notifyHostStatusChange(host: any, status: HostStatus) {
 }
 
 export async function primeHostStatusNotifier() {
+  fastOfflineNotificationDebouncer.clear();
   try {
     const [hosts, staleOnlineHosts] = await Promise.all([
       db.getHosts(),
@@ -155,6 +163,7 @@ export async function primeHostStatusNotifier() {
 }
 
 export async function notifyHostOnlineIfNeeded(host: any) {
+  fastOfflineNotificationDebouncer.cancel(Number(host?.id || 0));
   await notifyHostStatusChange(host, "online");
   void db.scheduleForwardGroupsForHostHealthChange(Number(host?.id || 0)).catch((error) => {
     console.warn(`[HostStatus] Online forward-group evaluation failed host=${host?.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -176,6 +185,7 @@ async function handlePresenceCapableHostOnline(event: AgentFastLivenessTransitio
   if (!event.isCurrent()) return;
   const hostId = Number(event.hostId || 0);
   if (!Number.isFinite(hostId) || hostId <= 0) return;
+  fastOfflineNotificationDebouncer.cancel(hostId);
 
   // The regular presence route deliberately throttles database writes. A
   // recovery transition must still repair a host that was marked offline by a
@@ -207,13 +217,23 @@ export async function handlePresenceCapableHostOffline(event: AgentFastLivenessT
     await restoreHostOnlineAfterStaleOfflineTransition(hostId);
     return;
   }
-  await notifyHostStatusChange(host, "offline");
+  fastOfflineNotificationDebouncer.schedule(
+    hostId,
+    event.isCurrent,
+    () => withKeyedTaskLock(`agent-liveness:${hostId}`, async () => {
+      if (!event.isCurrent()) return;
+      await notifyHostStatusChange(host, "offline");
+    }),
+  );
   console.info(`[HostStatus] Fast offline confirmed host=${hostId} silenceMs=${Math.max(0, event.offlineAt! - (event.lastSeenAt || event.offlineAt!))}`);
 }
 
 subscribeAgentFastLiveness((event) => {
   const hostId = Number(event.hostId || 0);
   if (!Number.isFinite(hostId) || hostId <= 0) return;
+  // Cancel before entering the per-host transition queue. An online event can
+  // otherwise wait behind offline persistence while its notification timer fires.
+  if (event.kind === "activity-restored") fastOfflineNotificationDebouncer.cancel(hostId);
   // A host can recover while the previous offline transition is still doing
   // database or DDNS work. Keep all transitions for that host in event order;
   // the generation checks below then make stale work a no-op.

@@ -130,13 +130,14 @@ test("subscription traffic cycles follow the user's configured monthly reset day
       assert.equal(new RealDate(byId.get(12).nextTrafficResetAt).getTime(), localDate(2026, 9, 3).getTime());
       assert.equal(byId.get(13).nextTrafficResetAt, null);
       const renewed = await billing.applySubscriptionToUser(1, 1, "admin", null, new FixedDate());
-      assert.equal(Number(renewed.subscriptionId), 11);
+      assert.notEqual(Number(renewed.subscriptionId), 11, "a new administrative assignment must create its own subscription");
       listed = await billing.listUserSubscriptions(1);
       byId = new Map(listed.map((subscription) => [Number(subscription.id), subscription]));
+      assert.ok(byId.get(Number(renewed.subscriptionId)), "the new administrative subscription is visible");
       assert.equal(
         new RealDate(byId.get(11).nextTrafficResetAt).getTime(),
         localDate(2026, 9, 3).getTime(),
-        "renewing after this month's reset must not reopen the handled boundary",
+        "adding another subscription must not reopen the existing cycle boundary",
       );
 
       await runtime.executeRaw('UPDATE "users" SET "trafficUsed" = ? WHERE "id" = ?', [777, 1]);
@@ -147,8 +148,8 @@ test("subscription traffic cycles follow the user's configured monthly reset day
       await billing.updateUserManualEntitlements(1, { trafficAutoReset: false });
       listed = await billing.listUserSubscriptions(1);
       byId = new Map(listed.map((subscription) => [Number(subscription.id), subscription]));
-      assert.equal(new RealDate(byId.get(11).nextTrafficResetAt).getTime(), localDate(2026, 9, 3, 10).getTime());
-      assert.equal(new RealDate(byId.get(12).nextTrafficResetAt).getTime(), localDate(2026, 8, 15, 10).getTime());
+      assert.equal(new RealDate(byId.get(11).nextTrafficResetAt).getTime(), localDate(2026, 9, 3).getTime());
+      assert.equal(new RealDate(byId.get(12).nextTrafficResetAt).getTime(), localDate(2026, 8, 15).getTime());
 
       await billing.updateUserManualEntitlements(1, { trafficAutoReset: true, trafficResetDay: 23 });
       listed = await billing.listUserSubscriptions(1);
@@ -407,7 +408,7 @@ test("subscription traffic cycles follow the user's configured monthly reset day
   try {
     const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
       cwd: process.cwd(),
-      env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+      env: { ...process.env, TZ: "Asia/Shanghai", DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
       encoding: "utf8",
       timeout: 60_000,
     });

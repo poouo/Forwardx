@@ -8,6 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { pollingInterval } from "@/lib/polling";
+import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -60,6 +61,13 @@ function formatBytes(bytes: number | string | null | undefined): string {
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   const index = Math.min(units.length - 1, Math.floor(Math.log(Math.abs(num)) / Math.log(1024)));
   return `${parseFloat((num / 1024 ** index).toFixed(index === 0 ? 0 : 2))} ${units[index]}`;
+}
+
+function quotaSourceLabel(kind: TrafficQuotaSourceKind) {
+  if (kind === "manual") return "手工额度";
+  if (kind === "addon") return "已购附加流量";
+  if (kind === "grant") return "管理员加赠";
+  return "套餐额度";
 }
 
 function money(cents?: number | null, currency = "CNY") {
@@ -461,40 +469,29 @@ function DashboardContent() {
     });
   }, [subscriptions]);
   const activeSubscription = activeSubscriptions[0];
-  const hasActiveSubscription = !!activeSubscription;
-  const hasUnlimitedPlanTraffic = activeSubscriptions.some((subscription: any) => Number(subscription.trafficLimit || 0) === 0);
-  const activeAddonTrafficBytes = hasActiveSubscription && !hasUnlimitedPlanTraffic
-    ? activeSubscriptions.reduce((total: number, subscription: any) => total + (Number(subscription.activeTrafficAddonBytes) || 0), 0)
-    : 0;
-  const basePlanTrafficLimit = hasActiveSubscription && !hasUnlimitedPlanTraffic
-    ? Math.max(0, ...activeSubscriptions.map((subscription: any) => Number(subscription.trafficLimit || 0)))
-    : 0;
-  const planTrafficLimit = hasActiveSubscription
-    ? hasUnlimitedPlanTraffic
-      ? 0
-      : Math.max(accountTrafficLimit, basePlanTrafficLimit + activeAddonTrafficBytes)
-    : 0;
-  const trafficPercent = planTrafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / planTrafficLimit) * 100)) : 0;
+  const quota = useMemo(
+    () => trafficQuotaBreakdown(currentUserTraffic || user, subscriptions),
+    [currentUserTraffic, subscriptions, user],
+  );
+  const trafficLimit = quota.unlimited
+    ? 0
+    : accountTrafficLimit > 0
+      ? accountTrafficLimit
+      : quota.totalBytes;
+  const trafficPercent = trafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / trafficLimit) * 100)) : 0;
   const accountStatusLoading = userTrafficLoading || subscriptionsLoading || trafficBillingLoading || (!isAdmin && walletLoading);
   const accountCacheScope = user?.id ? String(user.id) : "current";
-  const planExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
-  const expiry = hasActiveSubscription ? getExpiryStatus(planExpiresAt) : { label: "---", tone: "normal" as const };
+  const accountExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
+  const expiry = quota.hasQuota ? getExpiryStatus(accountExpiresAt) : { label: "---", tone: "normal" as const };
   const canForward = isAdmin || !!currentUserTraffic?.canAddRules;
   const canForwardText = canForward ? "转发已启用" : "转发已停用";
-  const planExpiryText = hasActiveSubscription ? formatDate(planExpiresAt) : "---";
-  const planProgressText = hasActiveSubscription
-    ? planTrafficLimit > 0
-      ? `${formatBytes(trafficUsed)} / ${formatBytes(planTrafficLimit)} (${trafficPercent}%)`
+  const quotaExpiryText = quota.hasQuota ? formatDate(accountExpiresAt) : "---";
+  const quotaProgressText = quota.hasQuota
+    ? trafficLimit > 0
+      ? `${formatBytes(trafficUsed)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`
       : `${formatBytes(trafficUsed)} / 不限`
     : "---";
-  const planTrafficBreakdownText = hasActiveSubscription
-    ? planTrafficLimit > 0
-      ? activeAddonTrafficBytes > 0
-        ? `基础 ${formatBytes(Math.max(0, planTrafficLimit - activeAddonTrafficBytes))} + 附加 ${formatBytes(activeAddonTrafficBytes)}`
-        : `套餐总量 ${formatBytes(planTrafficLimit)}`
-      : "不限流量"
-    : "暂无生效套餐";
-  const planProgressValue = hasActiveSubscription && planTrafficLimit > 0 ? trafficPercent : 0;
+  const quotaProgressValue = quota.hasQuota && trafficLimit > 0 ? trafficPercent : 0;
   const trafficBillingBytesText = trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启";
   const trafficBillingAmountText = trafficBillingEnabled ? money(trafficBillingAmount) : "-";
   const trafficBillingAdminSubtitle = trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "流量计费功能未开启";
@@ -502,11 +499,11 @@ function DashboardContent() {
 
   const mobileReminderSnapshot = useMemo(
     () => ({
-      trafficLimit: hasActiveSubscription ? planTrafficLimit : 0,
-      trafficUsed: hasActiveSubscription ? trafficUsed : 0,
-      expiresAt: hasActiveSubscription ? planExpiresAt : null,
+      trafficLimit: quota.hasQuota ? trafficLimit : 0,
+      trafficUsed: quota.hasQuota ? trafficUsed : 0,
+      expiresAt: quota.hasQuota ? accountExpiresAt : null,
     }),
-    [hasActiveSubscription, planTrafficLimit, trafficUsed, planExpiresAt],
+    [accountExpiresAt, quota.hasQuota, trafficLimit, trafficUsed],
   );
 
   const onlineRate = stats?.totalHosts ? Math.round((stats.onlineHosts / stats.totalHosts) * 100) : 0;
@@ -713,29 +710,30 @@ function DashboardContent() {
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
-                <p className="text-xs text-muted-foreground">套餐用量</p>
+                <p className="text-xs text-muted-foreground">流量额度</p>
                 <AnimatedStatValue
                   as="p"
-                  value={planProgressText}
+                  value={quotaProgressText}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.planProgress`}
                   fallbackValue="---"
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
-                <AnimatedStatValue
-                  as="p"
-                  value={planTrafficBreakdownText}
-                  loading={accountStatusLoading}
-                  cacheKey={`home.account.${accountCacheScope}.planBreakdown`}
-                  fallbackValue="暂无生效套餐"
-                  className="mt-1 text-[11px] text-muted-foreground"
-                />
+                {!accountStatusLoading && quota.sources.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    {quota.sources.map((source) => (
+                      <span key={source.kind} className="whitespace-nowrap">
+                        {quotaSourceLabel(source.kind)} {source.unlimited ? "不限" : formatBytes(source.bytes)}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="text-xs text-muted-foreground">到期时间</p>
                 <AnimatedStatValue
                   as="p"
-                  value={planExpiryText}
+                  value={quotaExpiryText}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.planExpiry`}
                   fallbackValue="---"
@@ -800,7 +798,9 @@ function DashboardContent() {
                 </p>
                 <AnimatedStatValue
                   as="p"
-                  value={activeSubscription?.planName || "---"}
+                  value={activeSubscriptions.length > 1
+                    ? `${activeSubscription?.planName || "---"} 等 ${activeSubscriptions.length} 个套餐`
+                    : activeSubscription?.planName || "---"}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.planName`}
                   fallbackValue="---"
@@ -810,19 +810,21 @@ function DashboardContent() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                <span>套餐流量使用进度</span>
+                <span>流量额度使用进度</span>
                 <AnimatedStatValue
-                  value={planProgressText}
+                  value={quotaProgressText}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.planProgress.inline`}
                   fallbackValue="---"
                   className="tabular-nums"
                 />
               </div>
-              <Progress value={planProgressValue} className="h-2" />
+              <Progress value={quotaProgressValue} className="h-2" />
               <p className="text-[11px] text-muted-foreground/70">
-                {hasActiveSubscription ? "套餐流量和计费流量分开统计。" : "暂无生效套餐，套餐流量信息暂不展示。"}
-                {hasActiveSubscription && currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
+                {quota.sources.length > 0
+                  ? `额度来源：${quota.sources.map((source) => quotaSourceLabel(source.kind)).join("、")}。`
+                  : "暂无生效流量额度。"}
+                {quota.hasQuota && currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
               </p>
             </div>
           </CardContent>

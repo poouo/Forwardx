@@ -13,6 +13,7 @@ import {
   randomAvataaarsValue,
 } from "../../shared/avatar";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
+import { billingCalendarParts, billingMonthStart } from "../../shared/billingTime";
 
 export type ForwardAccessPauseReason = "manual" | "traffic_billing_balance" | "traffic_limit" | "expired" | null;
 
@@ -769,14 +770,11 @@ export async function addUserTraffic(userId: number, bytes: number) {
 }
 
 /** 获取所有需要月度自动重置的用户 */
-export async function getUsersForAutoReset(day: number) {
+export async function getUsersForAutoReset(reference = nowDate()) {
   const db = await getDb();
   if (!db) return [];
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const todayStartSec = Math.floor(todayStart.getTime() / 1000);
+  const { day } = billingCalendarParts(reference);
+  const monthStart = billingMonthStart(reference);
   const monthStartSec = Math.floor(monthStart.getTime() / 1000);
   return db.select().from(users).where(and(
     eq(users.trafficAutoReset, true),

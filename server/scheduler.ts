@@ -20,6 +20,7 @@ import {
   selfTestSweepActivity,
   startSelfTestSweepTimer,
 } from "./selfTestTiming";
+import { billingMonthlyBoundary, billingStartOfCalendarDay } from "@shared/billingTime";
 
 type TimedOutForwardTest = {
   id: number;
@@ -73,11 +74,10 @@ async function refreshUserRuleAgents(userId: number, reason: string) {
 async function runMonthlyTrafficReset() {
   try {
     const now = new Date();
-    const today = now.getDate();
-    const usersToReset = await db.getUsersForAutoReset(today);
+    const usersToReset = await db.getUsersForAutoReset(now);
     for (const user of usersToReset) {
       const resetDay = Math.min(28, Math.max(1, Math.floor(Number(user.trafficResetDay) || 1)));
-      const boundary = new Date(now.getFullYear(), now.getMonth(), resetDay);
+      const boundary = billingMonthlyBoundary(now, resetDay);
       if (!await db.resetUserTrafficForCycle(user.id, boundary, now)) continue;
       const recovery = await db.recoverUserForwardAccessIfEligible(user.id);
       if (recovery.restored) {
@@ -642,6 +642,19 @@ export function startScheduler() {
     startTimer.unref?.();
   };
 
+  const runAtBillingMidnight = (task: () => Promise<boolean>) => {
+    const scheduleNext = () => {
+      const now = Date.now();
+      const nextMidnight = billingStartOfCalendarDay(now).getTime() + 24 * 60 * 60 * 1000 + 1_000;
+      const timer = setTimeout(async () => {
+        await task();
+        scheduleNext();
+      }, Math.max(1_000, nextMidnight - now));
+      timer.unref?.();
+    };
+    scheduleNext();
+  };
+
   repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
   startSelfTestSweepTimer(async () => { await selfTestTimeoutSweep(); });
   void recoverPendingSelfTestSweep();
@@ -652,6 +665,7 @@ export function startScheduler() {
   repeatAfter(forwardingMaintenance, 5 * 60 * 1000, 20_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
+  runAtBillingMidnight(monthlyTrafficReset);
   repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
   repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);

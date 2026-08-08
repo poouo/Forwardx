@@ -132,7 +132,7 @@ export const plansRouter = router({
     .input(z.object({ userId: z.number().optional() }).optional())
     .query(async ({ input }) => {
       await db.expireUserSubscriptions();
-      return db.listUserSubscriptions(input?.userId);
+      return db.listUserSubscriptions(input?.userId, { visibility: "admin" });
     }),
   subscriptionsPage: adminProcedure
     .input(z.object({
@@ -145,11 +145,12 @@ export const plansRouter = router({
       return db.listUserSubscriptionsPage({
         ...input,
         excludeCancelled: true,
+        visibility: "admin",
       });
     }),
   mySubscriptions: protectedProcedure.query(async ({ ctx }) => {
     await db.expireUserSubscriptions();
-    return db.listUserSubscriptions(ctx.user.id);
+    return db.listUserSubscriptions(ctx.user.id, { visibility: "user" });
   }),
   assign: adminProcedure
     .input(z.object({
@@ -171,12 +172,19 @@ export const plansRouter = router({
   cancelSubscription: adminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input }) => {
-      const subscription = await db.getUserSubscriptionById(input.id);
-      await db.cancelUserSubscription(input.id);
-      if (subscription?.userId) {
-        await db.syncUserSubscriptionEntitlements(Number(subscription.userId));
-        await refreshUserForwardEndpoints(Number(subscription.userId), "subscription-cancelled");
-      }
+      const subscription = await db.cancelUserSubscription(input.id);
+      await refreshUserForwardEndpoints(subscription.userId, "subscription-cancelled");
+      return { success: true };
+    }),
+  deleteCancelledSubscription: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await db.dismissCancelledUserSubscription({
+        id: input.id,
+        viewerUserId: ctx.user.id,
+        isAdmin: ctx.user.role === "admin",
+      });
+      appendPanelLog("info", `[Plan] dismissed cancelled subscription=${result.id} user=${result.userId} operator=${ctx.user.id}`);
       return { success: true };
     }),
   extendSubscription: adminProcedure

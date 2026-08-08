@@ -57,6 +57,7 @@ export const billingRouter = router({
     .input(z.object({
       userId: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(500).default(100),
+      includeCancelledSubscriptions: z.boolean().default(false),
     }).optional())
     .query(async ({ input, ctx }) => {
       const isAdmin = ctx.user.role === "admin";
@@ -65,6 +66,7 @@ export const billingRouter = router({
         isAdmin,
         userId: isAdmin ? input?.userId : undefined,
         limit: input?.limit || 100,
+        includeCancelledSubscriptions: input?.includeCancelledSubscriptions || false,
       });
     }),
 
@@ -107,6 +109,7 @@ export const billingRouter = router({
   purchasePlanWithBalance: protectedProcedure
     .input(z.object({
       planId: z.number().int().positive(),
+      subscriptionId: z.number().int().positive().optional(),
       discountCode: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -118,7 +121,7 @@ export const billingRouter = router({
         const preview = await db.previewDiscount(input.discountCode, Number(plan.priceCents || 0), input.planId);
         discountCodeId = preview.discountCodeId;
       }
-      const result = await db.purchasePlanWithBalance(ctx.user.id, input.planId, discountCodeId);
+      const result = await db.purchasePlanWithBalance(ctx.user.id, input.planId, discountCodeId, input.subscriptionId);
       await refreshUserForwardEndpoints(ctx.user.id, "balance-plan-purchased");
       appendPanelLog("info", `[Plan] balance purchase user=${ctx.user.id} plan=${input.planId}`);
       return result;

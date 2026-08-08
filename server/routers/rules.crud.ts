@@ -565,8 +565,9 @@ async function assertRulePortWithinUserPlanRange(options: {
     Number(options.hostId),
     Number(options.tunnelId || 0) || undefined,
   );
-  if (planRange && (port < planRange.start || port > planRange.end)) {
-    throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+  if (planRange && !db.isPortAllowedByUserPlanRange(port, planRange)) {
+    const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+    throw new Error(`套餐端口必须在 ${ranges} 区间内`);
   }
 }
 
@@ -581,8 +582,9 @@ async function assertForwardGroupPortWithinUserPlanRange(options: {
     Number(options.userId),
     Number(options.forwardGroupId),
   );
-  if (planRange && (port < planRange.start || port > planRange.end)) {
-    throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+  if (planRange && !db.isPortAllowedByUserPlanRange(port, planRange)) {
+    const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+    throw new Error(`套餐端口必须在 ${ranges} 区间内`);
   }
 }
 
@@ -852,7 +854,9 @@ export async function createDirectForwardRuleForActor(
     ? await db.getUserPlanPortRange(actor.id, hostId, tunnelId ?? undefined)
     : null;
   const effectivePolicy = planRange
-    ? combinePortPolicies(entryPolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }))
+    ? combinePortPolicies(entryPolicy, portPolicyFrom({
+      portRanges: planRange.ranges,
+    }))
     : entryPolicy;
 
   let sourcePort = Number(input.sourcePort || 0);
@@ -863,14 +867,18 @@ export async function createDirectForwardRuleForActor(
     if (sourcePort === 0) {
       let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
       let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
-      if (planRange) {
-        randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
-        randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
-      }
       sourcePortReservation = await reserveAvailableHostPort({
         hostId,
         protocol: input.protocol,
-        findPort: (reservedPorts) => db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd, input.protocol, reservedPorts),
+        findPort: (reservedPorts) => db.findAvailablePort(
+          hostId,
+          randomRangeStart,
+          randomRangeEnd,
+          input.protocol,
+          reservedPorts,
+          [],
+          planRange?.ranges || [],
+        ),
         isUsed: (port) => db.isPortUsedOnHost(hostId, port, undefined, input.protocol),
       });
       if (!sourcePortReservation) throw new Error("该主机端口区间内已无可用端口");
@@ -989,7 +997,7 @@ export const crudRulesRouter = router({
         try {
         const randomSourcePort = input.sourcePort === 0;
         let sourcePort = input.sourcePort;
-        let planRange: { start: number; end: number } | null = null;
+        let planRange: Awaited<ReturnType<typeof db.getUserForwardGroupPlanPortRange>> = null;
         let groupAccess = { isTrafficBillingResource: false };
         if (ctx.user.role !== "admin") {
           groupAccess = await requireForwardGroupUseAccess(ctx, forwardGroupId);
@@ -998,8 +1006,9 @@ export const crudRulesRouter = router({
             throw new Error("您的账户已到期，无法添加规则");
           }
           planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, forwardGroupId);
-          if (sourcePort > 0 && planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
-            throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
+          if (sourcePort > 0 && planRange && !db.isPortAllowedByUserPlanRange(sourcePort, planRange)) {
+            const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+            throw new Error(`套餐端口必须在 ${ranges} 内`);
           }
         }
         const entryHostIds = await db.getForwardGroupRuleEntryHostIds(forwardGroupId);
@@ -1239,7 +1248,7 @@ export const crudRulesRouter = router({
             : 0;
 
         if (nextForwardGroupId > 0) {
-          let planRange: { start: number; end: number } | null = null;
+          let planRange: Awaited<ReturnType<typeof db.getUserForwardGroupPlanPortRange>> = null;
           if (ctx.user.role !== "admin") {
             await requireForwardGroupUseAccess(ctx, nextForwardGroupId);
             planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, nextForwardGroupId);
@@ -1295,6 +1304,7 @@ export const crudRulesRouter = router({
           let nextHostId = Number(input.hostId ?? (rule as any).hostId);
           let rangeStart: number | null | undefined;
           let rangeEnd: number | null | undefined;
+          let planRange: Awaited<ReturnType<typeof db.getUserPlanPortRange>> = null;
           if (nextTunnelId) {
             const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId);
             nextHostId = Number((tunnel as any).entryHostId || 0);
@@ -1304,16 +1314,20 @@ export const crudRulesRouter = router({
             await requireHostUseAccess(ctx, nextHostId);
           }
           if (ctx.user.role !== "admin") {
-            const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostId, nextTunnelId || undefined);
-            if (planRange) {
-              rangeStart = Math.max(Number(rangeStart || planRange.start), planRange.start);
-              rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
-            }
+            planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostId, nextTunnelId || undefined);
           }
           const reservation = await reserveAvailableHostPort({
             hostId: nextHostId,
             protocol: nextProtocol,
-            findPort: (reservedPorts) => db.findAvailablePort(nextHostId, rangeStart, rangeEnd, nextProtocol, reservedPorts, excludeRuleIds),
+            findPort: (reservedPorts) => db.findAvailablePort(
+              nextHostId,
+              rangeStart,
+              rangeEnd,
+              nextProtocol,
+              reservedPorts,
+              excludeRuleIds,
+              planRange?.ranges || [],
+            ),
             isUsed: (port) => db.isPortUsedOnHost(nextHostId, port, excludeRuleIds, nextProtocol, undefined, false),
             maxAttempts: 256,
           });
@@ -1375,8 +1389,9 @@ export const crudRulesRouter = router({
           });
           if (ctx.user.role !== "admin") {
             const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostId, nextTunnelId || undefined);
-            if (planRange && (nextSourcePort < planRange.start || nextSourcePort > planRange.end)) {
-              throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+            if (planRange && !db.isPortAllowedByUserPlanRange(nextSourcePort, planRange)) {
+              const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+              throw new Error(`套餐端口必须在 ${ranges} 区间内`);
             }
           }
           const sourceReservation = await reserveRulePort(nextHostId, nextSourcePort, nextProtocol, excludeRuleIds);
@@ -1494,8 +1509,9 @@ export const crudRulesRouter = router({
           groupAccess = await requireForwardGroupUseAccess(ctx, activeGroupId);
           const nextSourcePort = input.sourcePort ?? rule.sourcePort;
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, activeGroupId);
-          if (planRange && (nextSourcePort < planRange.start || nextSourcePort > planRange.end)) {
-            throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
+          if (planRange && !db.isPortAllowedByUserPlanRange(nextSourcePort, planRange)) {
+            const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+            throw new Error(`套餐端口必须在 ${ranges} 内`);
           }
         }
         const group = await db.validateForwardGroupRuleConfig(activeGroupId, {
@@ -1634,8 +1650,9 @@ export const crudRulesRouter = router({
         if (ctx.user.role !== "admin") {
           groupAccess = await requireForwardGroupUseAccess(ctx, groupId);
           const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, groupId);
-          if (planRange && (sourcePort < planRange.start || sourcePort > planRange.end)) {
-            throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 内`);
+          if (planRange && !db.isPortAllowedByUserPlanRange(sourcePort, planRange)) {
+            const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+            throw new Error(`套餐端口必须在 ${ranges} 内`);
           }
         }
         const group = await db.validateForwardGroupRuleConfig(groupId, {
@@ -1830,10 +1847,13 @@ export const crudRulesRouter = router({
           if (ctx.user.role !== "admin") {
             const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostIdForRule, nextTunnelIdForRule || undefined);
             if (planRange) {
-              effectivePolicy = combinePortPolicies(effectivePolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
+              effectivePolicy = combinePortPolicies(effectivePolicy, portPolicyFrom({
+                portRanges: planRange.ranges,
+              }));
             }
             if (planRange && !isPortAllowedByPolicy(nextSourcePortForRule, effectivePolicy)) {
-              throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+              const ranges = planRange.ranges.map((range) => `${range.start}-${range.end}`).join(",");
+              throw new Error(`套餐端口必须在 ${ranges} 区间内`);
             }
           }
           const sourceReservation = await reserveRulePort(nextHostIdForRule, nextSourcePortForRule, nextProtocolForRule, rule.id);

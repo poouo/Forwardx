@@ -27,11 +27,13 @@ const (
 	forwardXWireGuardVersion       = "v2"
 	wireGuardRuntimeWaitTimeout    = 12 * time.Second
 	wireGuardProxyDialTimeout      = 10 * time.Second
-	wireGuardUDPSessionIdleTimeout = 10 * time.Minute
+	wireGuardUDPSessionIdleTimeout = 5 * time.Minute
 	wireGuardUDPIdlePollInterval   = 15 * time.Second
 	wireGuardUDPProxyQueueSize     = 64
 	wireGuardUDPProxyQueueBytes    = 512 * 1024
+	wireGuardUDPProxySoftSessions  = 512
 	wireGuardUDPProxyMaxSessions   = 1024
+	wireGuardUDPProxyReclaimAfter  = 30 * time.Second
 	wireGuardUDPProxyMaxQueueDelay = 25 * time.Millisecond
 	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
 	wireGuardUDPSessionBufferBytes = 256 * 1024
@@ -133,6 +135,27 @@ func evictOldestWireGuardUDPProxySession(sessions map[string]*wireGuardUDPProxyS
 	if oldest != nil {
 		delete(sessions, oldestKey)
 	}
+	return oldest
+}
+
+// Reclaim only genuinely idle sessions at the soft limit. The hard limit still
+// evicts the least recently active session so an address/port churn cannot grow
+// the map without bound. Active game sessions refresh lastActivity on every
+// packet and are unaffected by the pressure path.
+func reclaimWireGuardUDPProxySession(sessions map[string]*wireGuardUDPProxySession, now time.Time) *wireGuardUDPProxySession {
+	if len(sessions) < wireGuardUDPProxySoftSessions {
+		return nil
+	}
+	oldestKey, oldest := oldestWireGuardUDPProxySession(sessions)
+	if oldest == nil {
+		return nil
+	}
+	lastActivity := oldest.lastActivity.Load()
+	underHardLimit := len(sessions) < wireGuardUDPProxyMaxSessions
+	if underHardLimit && (lastActivity <= 0 || now.Sub(time.Unix(0, lastActivity)) < wireGuardUDPProxyReclaimAfter) {
+		return nil
+	}
+	delete(sessions, oldestKey)
 	return oldest
 }
 
@@ -1293,7 +1316,7 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 				logf("wireguard udp proxy dial failed tunnel=%d peer=%s port=%d: %v", runtime.spec.TunnelID, proxy.peerID, proxy.udpPort, dialErr)
 				continue
 			}
-			evicted = evictOldestWireGuardUDPProxySession(proxy.sessions, wireGuardUDPProxyMaxSessions)
+			evicted = reclaimWireGuardUDPProxySession(proxy.sessions, time.Now())
 			session = newWireGuardUDPProxySession(remote)
 			proxy.sessions[key] = session
 			created := session
@@ -1312,7 +1335,7 @@ func (runtime *wireGuardRuntime) serveOutboundUDP(proxy *wireGuardOutboundProxy)
 		if evicted != nil {
 			evicted.close()
 			if shouldLogAgentReport("wireguard-udp-outbound-session-evict:"+proxy.key, agentReportLogInterval) {
-				logf("wireguard udp outbound session limit reached tunnel=%d peer=%s limit=%d; evicted oldest session", runtime.spec.TunnelID, proxy.peerID, wireGuardUDPProxyMaxSessions)
+				logf("wireguard udp outbound session pressure tunnel=%d peer=%s soft=%d hard=%d; reclaimed oldest session", runtime.spec.TunnelID, proxy.peerID, wireGuardUDPProxySoftSessions, wireGuardUDPProxyMaxSessions)
 			}
 		}
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-outbound-queue:"+proxy.key, agentReportLogInterval) {
@@ -1435,7 +1458,7 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 				logf("wireguard udp backend dial failed tunnel=%d port=%d: %v", runtime.spec.TunnelID, proxy.backendUDP, dialErr)
 				continue
 			}
-			evicted = evictOldestWireGuardUDPProxySession(proxy.sessions, wireGuardUDPProxyMaxSessions)
+			evicted = reclaimWireGuardUDPProxySession(proxy.sessions, time.Now())
 			session = newWireGuardUDPProxySession(backend)
 			proxy.sessions[key] = session
 			created := session
@@ -1454,7 +1477,7 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 		if evicted != nil {
 			evicted.close()
 			if shouldLogAgentReport("wireguard-udp-inbound-session-evict:"+proxy.key, agentReportLogInterval) {
-				logf("wireguard udp inbound session limit reached tunnel=%d port=%d limit=%d; evicted oldest session", runtime.spec.TunnelID, proxy.backendUDP, wireGuardUDPProxyMaxSessions)
+				logf("wireguard udp inbound session pressure tunnel=%d port=%d soft=%d hard=%d; reclaimed oldest session", runtime.spec.TunnelID, proxy.backendUDP, wireGuardUDPProxySoftSessions, wireGuardUDPProxyMaxSessions)
 			}
 		}
 		if !session.enqueue(buf[:n]) && shouldLogAgentReport("wireguard-udp-inbound-queue:"+proxy.key, agentReportLogInterval) {
@@ -1466,7 +1489,8 @@ func (runtime *wireGuardRuntime) serveInboundUDP(proxy *wireGuardInboundProxy) {
 func copyWireGuardUDPResponses(session *wireGuardUDPProxySession, target *net.UDPConn, clientAddr net.Addr, done func()) {
 	defer done()
 	defer session.close()
-	buf := make([]byte, 65535)
+	buf := getAgentByteBuffer(65535)
+	defer putAgentByteBuffer(buf)
 	for {
 		_ = session.conn.SetReadDeadline(session.readDeadline(time.Now()))
 		n, err := session.conn.Read(buf)
@@ -1486,7 +1510,8 @@ func copyWireGuardUDPResponses(session *wireGuardUDPProxySession, target *net.UD
 func copyWireGuardPacketResponses(session *wireGuardUDPProxySession, target net.PacketConn, clientAddr net.Addr, done func()) {
 	defer done()
 	defer session.close()
-	buf := make([]byte, 65535)
+	buf := getAgentByteBuffer(65535)
+	defer putAgentByteBuffer(buf)
 	for {
 		_ = session.conn.SetReadDeadline(session.readDeadline(time.Now()))
 		n, err := session.conn.Read(buf)

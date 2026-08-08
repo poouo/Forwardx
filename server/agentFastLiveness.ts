@@ -2,7 +2,11 @@ import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { clearAuthenticatedAgentActivity } from "./agentActivity";
 
 export const AGENT_FAST_LIVENESS_MIN_VERSION = "2.2.171";
-export const AGENT_FAST_LIVENESS_SILENCE_MS = 25_000;
+// Presence normally arrives every five seconds, but one attempt can occupy up
+// to eight seconds and transient failures use bounded retries. Requiring 45
+// seconds of silence keeps failover responsive while tolerating short network
+// stalls and slow panel requests.
+export const AGENT_FAST_LIVENESS_SILENCE_MS = 45_000;
 // A live Agent reconnects its event stream within at most 30 seconds and its
 // presence loop within 5 seconds. Keep a little startup margin without falling
 // back to the legacy 150-second display TTL.

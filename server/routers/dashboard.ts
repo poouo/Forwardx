@@ -102,6 +102,8 @@ export const dashboardRouter = router({
         role: user.role,
         trafficLimit: user.trafficLimit,
         trafficUsed: user.trafficUsed,
+        manualCanAddRules: user.manualCanAddRules,
+        manualTrafficLimit: user.manualTrafficLimit,
         canAddRules: user.canAddRules,
         gostRateLimitIn: user.gostRateLimitIn,
         gostRateLimitOut: user.gostRateLimitOut,

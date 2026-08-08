@@ -867,13 +867,15 @@ export const userSubscriptions = table("user_subscriptions", {
   userId: int("userId").notNull(),
   planId: int("planId").notNull(),
   status: varchar("status", { length: 32 }).notNull().default("active"), // active | expired | cancelled
-  source: varchar("source", { length: 32 }).notNull().default("admin"), // admin | payment
+  source: varchar("source", { length: 32 }).notNull().default("admin"), // admin | payment | balance | redeem
   paymentOrderNo: text("paymentOrderNo"),
   planSnapshot: text("planSnapshot"),
   portRangeStart: int("portRangeStart"),
   portRangeEnd: int("portRangeEnd"),
   nextTrafficResetAt: epoch("nextTrafficResetAt"),
   lastTrafficResetAt: epoch("lastTrafficResetAt"),
+  userDismissedAt: epoch("userDismissedAt"),
+  adminDismissedAt: epoch("adminDismissedAt"),
   startedAt: epoch("startedAt").notNull().default(nowDefault()),
   expiresAt: epoch("expiresAt"),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
