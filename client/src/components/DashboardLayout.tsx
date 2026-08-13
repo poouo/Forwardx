@@ -81,6 +81,7 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
+import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
@@ -123,9 +124,6 @@ const POPUP_ANNOUNCEMENT_SESSION_KEY = "forwardx.popupAnnouncement.seen";
 const UPGRADE_ANNOUNCEMENT_VERSION_KEY = "forwardx.upgradeAnnouncement.lastSeenVersion";
 const UPGRADE_ANNOUNCEMENT_DISPLAY_SESSION_KEY = "forwardx.upgradeAnnouncement.displayed";
 const UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS = 5;
-const DEFAULT_DOCKER_UPGRADE_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
-
 type PanelUpgradeSession = { targetVersion: string; startedAt: number; mode?: "upgrade" | "rollback" };
 type UpgradeAnnouncementDisplaySession = { key: string; shownAt: number };
 
@@ -1134,11 +1132,21 @@ function DashboardLayoutContent({
   const upgradeTargetVersion = isPanelVersionTaskVisible
     ? (displayUpgradeJob?.targetVersion || "")
     : (updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || "");
-  const upgradeChangelogUrl = getPanelChangelogUrl(upgradeTargetVersion, isPanelVersionTaskVisible ? null : (updateInfo?.releaseUrl || upgradeStatus?.update?.releaseUrl));
+  const upgradeChangelogUrl = getPanelChangelogUrl(
+    upgradeTargetVersion,
+    isPanelVersionTaskVisible ? null : (updateInfo?.releaseUrl || upgradeStatus?.update?.releaseUrl),
+    upgradeStatus?.githubAccelerator,
+  );
   const normalizedUpgradeTargetVersion = normalizePanelVersion(upgradeTargetVersion);
   const isPanelUpdateNoticeDismissed = !!normalizedUpgradeTargetVersion && dismissedPanelUpgradeNoticeVersion === normalizedUpgradeTargetVersion;
   const isDockerDeployment = !!upgradeStatus?.docker;
-  const dockerUpgradeCommand = upgradeStatus?.manualUpgradeCommand || DEFAULT_DOCKER_UPGRADE_COMMAND;
+  const dockerUpgradeCommand = upgradeStatus?.manualUpgradeCommand || buildPanelInstallerCommand({
+    deployment: "docker",
+    action: "upgrade",
+    accelerator: upgradeStatus?.githubAccelerator?.panelUpdateEnabled
+      ? upgradeStatus.githubAccelerator
+      : null,
+  });
   const upgradeRefreshText = upgradeRefreshCountdown !== null
     ? (upgradeRefreshCountdown > 0 ? `${upgradeRefreshCountdown} 秒后自动刷新` : "正在刷新页面")
     : "系统恢复后将自动刷新";

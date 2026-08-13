@@ -164,6 +164,32 @@ test("database-backed list queries page, search, scope, and hydrate only request
         ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
         [1401, 14, "host", 3, 0, 1],
       );
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "domain", "userId", "isEnabled", "sortOrder"],
+        [15, "Shared Chain Entry", "host", "entry", "127.0.0.1", "entry.example.com", 1, 1, 5],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [1501, 15, "host", 1, 0, 1],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [1502, 15, "host", 3, 1, 0],
+      );
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "targetIp", "userId", "isEnabled", "sortOrder", "entryGroupId"],
+        [16, "Shared Chain", "host", "chain", "127.0.0.1", 1, 1, 6, 15],
+      );
+      await insert(
+        "forward_group_members",
+        ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"],
+        [1601, 16, "host", 2, 0, 1],
+      );
+      await insert("user_forward_group_permissions", ["userId", "forwardGroupId"], [2, 16]);
 
       const tunnelCaller = tunnelsRouter.createCaller({
         req: { headers: {} },
@@ -247,6 +273,13 @@ test("database-backed list queries page, search, scope, and hydrate only request
       assert.deepEqual(ownedGroupPage.items.map((item) => Number(item.id)), [14]);
       const ownedGroupOptions = await groupCaller.options();
       assert.ok(ownedGroupOptions.some((item) => Number(item.id) === 14));
+      const sharedChainOption = ownedGroupOptions.find((item) => Number(item.id) === 16);
+      assert.ok(sharedChainOption);
+      assert.equal(ownedGroupOptions.some((item) => Number(item.id) === 15), false);
+      assert.equal(sharedChainOption.entryGroup.domain, "entry.example.com");
+      assert.deepEqual(sharedChainOption.entryGroup.members.map((member) => Number(member.id)), [1501]);
+      assert.equal(sharedChainOption.entryGroup.members[0].host.id, 1);
+      assert.equal("portRangeStart" in sharedChainOption.entryGroup.members[0].host, false);
       const sharedGroupPage = await groupCaller.listPage({
         page: 1,
         pageSize: 10,

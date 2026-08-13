@@ -51,6 +51,12 @@ import {
   hasRuleProbeAfterInvalidation,
   updateRuleProbeCache,
 } from "@/lib/ruleProbeCache";
+import {
+  clearRuleStatusSnapshots,
+  readRuleStatusSnapshots,
+  writeRuleStatusSnapshots,
+  type RuleVisualStatusSnapshot,
+} from "@/lib/ruleStatusCache";
 import { batchOperationErrorMessage, chunkBatchItems, isBatchPortConflictError, runBatchOperations } from "@/lib/batchOperations";
 import {
   RULE_TRANSFER_FILE_KIND,
@@ -64,6 +70,7 @@ import {
 import {
   filterRuleEntryAddressesForDisplay,
   getEntryAddressFamily as addressFamily,
+  resolveRuleEntryHost,
   type EntryAddressFamily,
 } from "@/lib/ruleEntryDisplay";
 import { cn } from "@/lib/utils";
@@ -128,7 +135,10 @@ import {
   targetGeoNodeMeta,
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
-import { resolveForwardRuleVisualStatus } from "@/lib/forwardRuleStatus";
+import {
+  preferLastKnownForwardRuleVisualStatus,
+  resolveForwardRuleVisualStatus,
+} from "@/lib/forwardRuleStatus";
 import { buildLinkAvailabilityIndex } from "@/lib/linkAvailability";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -1554,6 +1564,13 @@ function buildRuleGlobeData(
   const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
   const tunnelById = new Map<number, any>((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
   const forwardGroupById = new Map<number, any>((forwardGroups || []).map((group: any) => [Number(group.id), group]));
+  (forwardGroups || []).forEach((group: any) => {
+    const entryGroup = group?.entryGroup;
+    const entryGroupId = Number(entryGroup?.id || group?.entryGroupId || 0);
+    if (entryGroupId > 0 && entryGroup && !forwardGroupById.has(entryGroupId)) {
+      forwardGroupById.set(entryGroupId, entryGroup);
+    }
+  });
   const hostPointById = new Map<number, RuleGlobePoint>();
   const hostByAddress = new Map<string, RuleGlobePoint>();
 
@@ -2168,6 +2185,7 @@ function RulesContent() {
     if (ids.length === 0) return;
     ids.forEach((id) => invalidatedRuleProbeIdsRef.current.add(id));
     clearRuleProbeCache(user?.id, ids);
+    clearRuleStatusSnapshots(user?.id, ids);
     setRuleProbeCacheRevision((revision) => revision + 1);
   }, [user?.id]);
   const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
@@ -2852,6 +2870,14 @@ function RulesContent() {
   const forwardGroupById = useMemo(() => {
     const map = new Map<number, any>();
     (forwardGroups || []).forEach((group: any) => map.set(Number(group.id), group));
+    // Ordinary users receive ACL-filtered supporting entry groups nested on
+    // their chain. Merge those display-only records into the lookup without
+    // adding them to selectable resource lists.
+    (forwardGroups || []).forEach((group: any) => {
+      const entryGroup = group?.entryGroup;
+      const entryGroupId = Number(entryGroup?.id || group?.entryGroupId || 0);
+      if (entryGroupId > 0 && entryGroup && !map.has(entryGroupId)) map.set(entryGroupId, entryGroup);
+    });
     return map;
   }, [forwardGroups]);
   const linkAvailabilityIndex = useMemo(() => buildLinkAvailabilityIndex({
@@ -4438,9 +4464,94 @@ function RulesContent() {
     }
     return `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员${billingText}`;
   };
-  const getForwardGroupConfigStatus = (group: any): "available" | "degraded" | "pending" | "unavailable" | "disabled" => (
+  const getForwardGroupConfigStatus = useCallback((group: any): "available" | "degraded" | "pending" | "unavailable" | "disabled" => (
     groupAvailabilityById.get(Number(group?.id || 0))?.status || "unavailable"
+  ), [groupAvailabilityById]);
+  const resolveRuleVisualStatus = useCallback((rule: any): ReturnType<typeof resolveForwardRuleVisualStatus> => {
+    const latest = stableProbeByRule.get(Number(rule.id));
+    if (rule.forwardGroupId) {
+      const group = forwardGroupById.get(Number(rule.forwardGroupId));
+      const runtime = Array.isArray(group?.ruleRuntimeStatuses)
+        ? group.ruleRuntimeStatuses.find((item: any) => Number(item.templateRuleId) === Number(rule.id))
+        : null;
+      const rawGroupStatus = group
+        ? getForwardGroupConfigStatus(group)
+        : forwardGroupsFetched || forwardGroupsError
+          ? "unavailable"
+          : "pending";
+      const groupStatus = rawGroupStatus === "degraded" ? "available" : rawGroupStatus;
+      return resolveForwardRuleVisualStatus({
+        ruleEnabled: !!rule.isEnabled,
+        ruleRunning: !!rule.isRunning,
+        resourceAccessAllowed: rule.resourceAccessAllowed,
+        groupEnabled: group?.isEnabled !== false,
+        groupConfigStatus: groupStatus,
+        runtimeStatus: runtime?.status,
+        runningCount: runtime?.runningRuleCount,
+        expectedCount: runtime?.expectedRuleCount,
+        latestLatencyMs: latest?.latestLatencyMs,
+        latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
+        latestLatencyAt: latest?.latestLatencyAt,
+      });
+    }
+    return resolveForwardRuleVisualStatus({
+      ruleEnabled: !!rule.isEnabled,
+      ruleRunning: !!rule.isRunning,
+      resourceAccessAllowed: rule.resourceAccessAllowed,
+      groupEnabled: true,
+      groupConfigStatus: "available",
+      latestLatencyMs: latest?.latestLatencyMs,
+      latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
+      latestLatencyAt: latest?.latestLatencyAt,
+    });
+  }, [forwardGroupById, forwardGroupsError, forwardGroupsFetched, getForwardGroupConfigStatus, stableProbeByRule]);
+  const ruleVisualStatuses = useMemo(() => {
+    const statuses = new Map<number, {
+      current: ReturnType<typeof resolveForwardRuleVisualStatus>;
+      display: ReturnType<typeof resolveForwardRuleVisualStatus>;
+      lastKnown: RuleVisualStatusSnapshot | null;
+      invalidated: boolean;
+    }>();
+    const ruleIds = filteredRules
+      .map((rule: any) => Number(rule?.id || 0))
+      .filter((ruleId: number) => Number.isInteger(ruleId) && ruleId > 0);
+    const lastKnownByRule = readRuleStatusSnapshots(user?.id, ruleIds);
+    for (const rule of filteredRules) {
+      const ruleId = Number(rule?.id || 0);
+      if (!Number.isInteger(ruleId) || ruleId <= 0) continue;
+      const current = resolveRuleVisualStatus(rule);
+      const invalidated = invalidatedRuleProbeIdsRef.current.has(ruleId);
+      const lastKnown = invalidated ? null : lastKnownByRule.get(ruleId) || null;
+      statuses.set(ruleId, {
+        current,
+        lastKnown,
+        invalidated,
+        display: preferLastKnownForwardRuleVisualStatus(current, lastKnown),
+      });
+    }
+    return statuses;
+  }, [filteredRules, resolveRuleVisualStatus, ruleProbeCacheRevision, user?.id]);
+  const hasCachedRuleStatus = useMemo(
+    () => Array.from(ruleVisualStatuses.values()).some((item) => !!item.lastKnown),
+    [ruleVisualStatuses],
   );
+  useEffect(() => {
+    if (!user?.id || ruleVisualStatuses.size === 0) return;
+    const snapshots = new Map<number, { state: ReturnType<typeof resolveForwardRuleVisualStatus>["state"]; title: string }>();
+    ruleVisualStatuses.forEach(({ current, lastKnown, invalidated }, ruleId) => {
+      // Do not repopulate a just-cleared snapshot from React Query's previous
+      // rule object. The invalidation is released only after a new probe has
+      // been observed, at which point the new concrete state can be cached.
+      if (invalidated) return;
+      // A pending result is commonly the short interval between page mount
+      // and the next Agent report. Keep a confirmed previous state until a
+      // concrete result arrives; first-time pending rules are still cached.
+      if (current.state === "pending" && lastKnown) return;
+      if (lastKnown && lastKnown.state === current.state && lastKnown.title === current.title) return;
+      snapshots.set(ruleId, { state: current.state, title: current.title });
+    });
+    if (snapshots.size > 0) writeRuleStatusSnapshots(user.id, snapshots);
+  }, [ruleVisualStatuses, user?.id]);
   const getForwardGroupStatusText = (group: any) => {
     const status = getForwardGroupConfigStatus(group);
     if (status === "disabled") return "已停用";
@@ -4560,7 +4671,7 @@ function RulesContent() {
       : null;
     const chainEntryMembers = chainEntryGroup && normalizeForwardGroupModeForRule(chainEntryGroup) === "entry" ? enabledHostMembers(chainEntryGroup) : [];
     const tunnelEntryGroup = tunnel && Number((tunnel as any).entryGroupId || 0) > 0
-      ? forwardGroupById.get(Number((tunnel as any).entryGroupId))
+      ? forwardGroupById.get(Number((tunnel as any).entryGroupId)) || (tunnel as any).entryGroup
       : null;
     const tunnelEntryMembers = tunnelEntryGroup && normalizeForwardGroupModeForRule(tunnelEntryGroup) === "entry" ? enabledHostMembers(tunnelEntryGroup) : [];
     const tunnelEntryMemberByHostId = new Map<number, any>();
@@ -5358,7 +5469,7 @@ function RulesContent() {
   const entryDomainForForwardGroup = (group: any | null | undefined) => {
     if (!group) return "";
     if (isForwardChainGroup(group) && group.entryGroupId) {
-      const entryGroup = forwardGroupById.get(Number(group.entryGroupId));
+      const entryGroup = forwardGroupById.get(Number(group.entryGroupId)) || group.entryGroup;
       return String(entryGroup?.domain || "").trim();
     }
     return "";
@@ -5380,13 +5491,18 @@ function RulesContent() {
     return (hosts || []).find((host: any) => Number(host.id) === id)
       || (Array.isArray(tunnel?.hopHosts) ? tunnel.hopHosts.find((host: any) => Number(host?.id) === id) : null)
       || (Number(tunnel?.entryHost?.id || 0) === id ? tunnel.entryHost : null)
-      || (Number(tunnel?.exitHost?.id || 0) === id ? tunnel.exitHost : null);
+      || (Number(tunnel?.exitHost?.id || 0) === id ? tunnel.exitHost : null)
+      || (Array.isArray(tunnel?.entryGroup?.members)
+        ? tunnel.entryGroup.members.find((member: any) => Number(member?.host?.id || 0) === id)?.host
+        : null);
   };
 
   const getTunnelEntryAddresses = (tunnel: any | null | undefined): EntryAddress[] => {
     if (!tunnel) return [];
     const rows: EntryAddress[] = [];
-    const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? forwardGroupById.get(Number(tunnel.entryGroupId)) : null;
+    const entryGroup = Number(tunnel?.entryGroupId || 0) > 0
+      ? forwardGroupById.get(Number(tunnel.entryGroupId)) || tunnel.entryGroup
+      : null;
     const entryGroupDomain = String(entryGroup?.domain || "").trim();
     if (entryGroupDomain) {
       pushUniqueEntryAddress(rows, "入口组", entryGroupDomain);
@@ -5421,16 +5537,20 @@ function RulesContent() {
 
   const getMemberEntryHost = (member: any | null | undefined) => {
     const hostId = Number(member?.hostId || 0);
-    if (hostId > 0) return hosts?.find((host: any) => Number(host.id) === hostId) || null;
+    if (hostId > 0) {
+      // Shared groups may expose the member host only through the ACL-filtered
+      // `member.host` payload. Keep that nested summary as a display fallback;
+      // otherwise a configured DDNS/domain entry is replaced by entryAddress
+      // (usually an IPv4 literal) for ordinary users.
+      return resolveRuleEntryHost(hosts, hostId, member?.host || null);
+    }
     const tunnelId = Number(member?.tunnelId || 0);
     if (tunnelId > 0) {
       const tunnel = tunnelById.get(tunnelId);
       const entryHostId = Number(tunnel?.entryHostId || 0);
-      return entryHostId > 0
-        ? hosts?.find((host: any) => Number(host.id) === entryHostId) || tunnel?.entryHost || null
-        : tunnel?.entryHost || null;
+      return resolveRuleEntryHost(hosts, entryHostId, tunnel?.entryHost || member?.host || null);
     }
-    return null;
+    return member?.host || null;
   };
 
   const pushMemberEntryAddresses = (rows: EntryAddress[], member: any | null | undefined) => {
@@ -5478,7 +5598,7 @@ function RulesContent() {
     if (!group) return [];
     const rows: EntryAddress[] = [];
     const entryGroup = isForwardChainGroup(group) && group.entryGroupId
-      ? forwardGroupById.get(Number(group.entryGroupId))
+      ? forwardGroupById.get(Number(group.entryGroupId)) || group.entryGroup
       : null;
     const domain = entryDomainForForwardGroup(group);
     if (domain) {
@@ -5578,43 +5698,8 @@ function RulesContent() {
   };
 
   const renderStatusDot = (rule: any) => {
-    const latest = stableProbeByRule.get(Number(rule.id));
-    if (rule.forwardGroupId) {
-      const group = forwardGroupById.get(Number(rule.forwardGroupId));
-      const runtime = Array.isArray(group?.ruleRuntimeStatuses)
-        ? group.ruleRuntimeStatuses.find((item: any) => Number(item.templateRuleId) === Number(rule.id))
-        : null;
-      const rawGroupStatus = group
-        ? getForwardGroupConfigStatus(group)
-        : forwardGroupsFetched || forwardGroupsError
-          ? "unavailable"
-          : "pending";
-      const groupStatus = rawGroupStatus === "degraded" ? "available" : rawGroupStatus;
-      const visual = resolveForwardRuleVisualStatus({
-        ruleEnabled: !!rule.isEnabled,
-        ruleRunning: !!rule.isRunning,
-        resourceAccessAllowed: rule.resourceAccessAllowed,
-        groupEnabled: group?.isEnabled !== false,
-        groupConfigStatus: groupStatus,
-        runtimeStatus: runtime?.status,
-        runningCount: runtime?.runningRuleCount,
-        expectedCount: runtime?.expectedRuleCount,
-        latestLatencyMs: latest?.latestLatencyMs,
-        latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
-        latestLatencyAt: latest?.latestLatencyAt,
-      });
-      return renderResolvedStatusDot(visual);
-    }
-    return renderResolvedStatusDot(resolveForwardRuleVisualStatus({
-      ruleEnabled: !!rule.isEnabled,
-      ruleRunning: !!rule.isRunning,
-      resourceAccessAllowed: rule.resourceAccessAllowed,
-      groupEnabled: true,
-      groupConfigStatus: "available",
-      latestLatencyMs: latest?.latestLatencyMs,
-      latestLatencyIsTimeout: latest?.latestLatencyIsTimeout,
-      latestLatencyAt: latest?.latestLatencyAt,
-    }));
+    const visual = ruleVisualStatuses.get(Number(rule.id))?.display || resolveRuleVisualStatus(rule);
+    return renderResolvedStatusDot(visual);
   };
 
   const getRuleTransferDisplay = (rule: any) => {
@@ -6754,7 +6839,7 @@ function RulesContent() {
       </div>
 
       <RuleContentTransition transitionKey={ruleContentTransitionKey}>
-      {isLoading || !ruleStatusSnapshotReady ? (
+      {isLoading || (!ruleStatusSnapshotReady && !hasCachedRuleStatus) ? (
         <DataSectionLoading label={isLoading ? "正在加载转发规则" : "正在加载规则状态"} />
       ) : filteredRules.length > 0 ? (
         <>

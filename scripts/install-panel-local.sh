@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ACTION="${1:-install}"
+ACTION="install"
 APP_DIR="${FORWARDX_PANEL_DIR:-/opt/forwardx-panel}"
 SERVICE_NAME="${FORWARDX_SERVICE_NAME:-forwardx-panel}"
 PORT="${PORT:-9810}"
@@ -9,6 +9,75 @@ REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 PANEL_BUNDLE_PREFIX="${FORWARDX_PANEL_BUNDLE_PREFIX:-forwardx-panel-v}"
 PNPM_VERSION="${FORWARDX_PNPM_VERSION:-10.28.1}"
 ASSETS_PENDING_EXIT_CODE=12
+GITHUB_ACCELERATOR_URL=""
+GITHUB_ACCELERATOR_EXPLICIT="false"
+if [ "${FORWARDX_GITHUB_ACCELERATOR_URL+x}" = "x" ]; then
+  GITHUB_ACCELERATOR_URL="$FORWARDX_GITHUB_ACCELERATOR_URL"
+  GITHUB_ACCELERATOR_EXPLICIT="true"
+fi
+
+usage() {
+  cat <<EOF
+Usage: $0 install|upgrade|uninstall [--github-accelerator URL]
+
+Options:
+  --github-accelerator URL   Prefix GitHub API/raw/release URLs with this HTTP(S) accelerator.
+
+Environment:
+  FORWARDX_GITHUB_ACCELERATOR_URL   Same as --github-accelerator; an explicit empty value disables it.
+EOF
+}
+
+parse_args() {
+  local action_seen="false"
+  local value=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      install|upgrade|update|uninstall|remove)
+        if [ "$action_seen" = "true" ]; then
+          echo "[ERROR] Multiple actions were provided: $1" >&2
+          usage >&2
+          exit 1
+        fi
+        ACTION="$1"
+        action_seen="true"
+        shift
+        ;;
+      --github-accelerator)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "[ERROR] --github-accelerator requires an HTTP(S) URL" >&2
+          usage >&2
+          exit 1
+        fi
+        GITHUB_ACCELERATOR_URL="$2"
+        GITHUB_ACCELERATOR_EXPLICIT="true"
+        shift 2
+        ;;
+      --github-accelerator=*)
+        value="${1#*=}"
+        if [ -z "$value" ]; then
+          echo "[ERROR] --github-accelerator requires an HTTP(S) URL" >&2
+          usage >&2
+          exit 1
+        fi
+        GITHUB_ACCELERATOR_URL="$value"
+        GITHUB_ACCELERATOR_EXPLICIT="true"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "[ERROR] Unknown argument: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+parse_args "$@"
 
 valid_port() {
   local port="$1"
@@ -28,6 +97,109 @@ get_env_value() {
     return 0
   fi
   grep -E "^${key}=" "$file" | tail -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
+}
+
+normalize_github_accelerator_url() {
+  local value="${1:-}"
+  local pattern='^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$'
+  value="$(printf "%s" "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s#/*$##')"
+  if [[ ! "$value" =~ $pattern ]]; then
+    return 1
+  fi
+  case "$value" in
+    *'$'*|*'`'*|*'\'*|*'"'*) return 1 ;;
+  esac
+  if [ -z "$value" ]; then
+    return 1
+  fi
+  printf "%s\n" "$value"
+}
+
+resolve_github_accelerator() {
+  local existing=""
+  local normalized=""
+  if [ "$GITHUB_ACCELERATOR_EXPLICIT" != "true" ]; then
+    existing="$(get_env_value FORWARDX_GITHUB_ACCELERATOR_URL || true)"
+    if [ -n "$existing" ]; then
+      GITHUB_ACCELERATOR_URL="$existing"
+    fi
+  fi
+  if [ -z "$GITHUB_ACCELERATOR_URL" ]; then
+    export FORWARDX_GITHUB_ACCELERATOR_URL=""
+    return
+  fi
+  if ! normalized="$(normalize_github_accelerator_url "$GITHUB_ACCELERATOR_URL")"; then
+    echo "[ERROR] Invalid GitHub accelerator URL: $GITHUB_ACCELERATOR_URL" >&2
+    echo "[INFO] Use an HTTP(S) base URL, for example: https://mirror.example.com" >&2
+    exit 1
+  fi
+  GITHUB_ACCELERATOR_URL="$normalized"
+  export FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
+}
+
+is_github_url() {
+  local url="${1:-}"
+  [[ "$url" =~ ^https?://([^/]+\.)?github\.com(/|$) ]] \
+    || [[ "$url" =~ ^https?://raw\.githubusercontent\.com(/|$) ]] \
+    || [[ "$url" =~ ^https?://([^/]+\.)?githubusercontent\.com(/|$) ]]
+}
+
+accelerated_github_url() {
+  local url="$1"
+  if [ -n "$GITHUB_ACCELERATOR_URL" ] && is_github_url "$url"; then
+    printf "%s/%s\n" "$GITHUB_ACCELERATOR_URL" "$url"
+  else
+    printf "%s\n" "$url"
+  fi
+}
+
+release_tag_from_url() {
+  local url="$1"
+  curl -fsSL --retry 3 --connect-timeout 10 "$url" \
+    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
+    | head -1 || true
+}
+
+download_url_to_file() {
+  local url="$1"
+  local output="$2"
+  local partial="${output}.part"
+  local http_code=""
+  rm -f "$partial"
+  http_code="$(curl -fsSL --retry 3 --connect-timeout 10 --write-out "%{http_code}" --output "$partial" "$url" 2>/dev/null || true)"
+  if [ "$http_code" = "200" ]; then
+    mv -f "$partial" "$output"
+  else
+    rm -f "$partial"
+  fi
+  printf "%s\n" "$http_code"
+}
+
+download_github_archive() {
+  local url="$1"
+  local output="$2"
+  local accelerated=""
+  local http_code=""
+  accelerated="$(accelerated_github_url "$url")"
+  if [ "$accelerated" != "$url" ]; then
+    echo "[INFO] Trying GitHub accelerator: $accelerated" >&2
+    http_code="$(download_url_to_file "$accelerated" "$output")"
+    if [ "$http_code" = "200" ] && tar -tzf "$output" >/dev/null 2>&1; then
+      printf "%s\n" "$http_code"
+      return
+    fi
+    if [ "$http_code" = "200" ]; then
+      http_code="invalid-archive"
+      rm -f "$output"
+    fi
+    echo "[WARN] GitHub accelerator request failed (HTTP ${http_code:-unknown}); falling back to GitHub." >&2
+  fi
+  http_code="$(download_url_to_file "$url" "$output")"
+  if [ "$http_code" = "200" ] && ! tar -tzf "$output" >/dev/null 2>&1; then
+    rm -f "$output"
+    http_code="invalid-archive"
+  fi
+  printf "%s\n" "$http_code"
 }
 
 read_install_port() {
@@ -203,6 +375,7 @@ resolve_runtime_env() {
   if [ -z "${JWT_SECRET:-}" ] && [ -n "$existing_jwt" ]; then
     JWT_SECRET="$existing_jwt"
   fi
+  resolve_github_accelerator
 }
 
 require_root() {
@@ -363,10 +536,18 @@ confirm_yes() {
 
 latest_release_version() {
   local api_url="${FORWARDX_GITHUB_API_URL:-https://api.github.com/repos/${REPO_SLUG}/releases/latest}"
+  local accelerated_url=""
   local tag=""
-  tag="$(curl -fsSL --retry 3 --connect-timeout 10 "$api_url" \
-    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
-    | head -1 || true)"
+  accelerated_url="$(accelerated_github_url "$api_url")"
+  if [ "$accelerated_url" != "$api_url" ]; then
+    tag="$(release_tag_from_url "$accelerated_url")"
+    if [ -n "$tag" ]; then
+      printf "%s\n" "$tag"
+      return
+    fi
+    echo "[WARN] GitHub accelerator version check failed; falling back to GitHub." >&2
+  fi
+  tag="$(release_tag_from_url "$api_url")"
 
   if [ -z "$tag" ]; then
     echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url"
@@ -484,7 +665,7 @@ download_panel_bundle() {
   url="$(panel_bundle_url "$version")"
 
   echo "[INFO] Downloading panel bundle: $url"
-  http_code="$(curl -fL --retry 3 --connect-timeout 10 --write-out "%{http_code}" --output "$archive" "$url" 2>/dev/null || true)"
+  http_code="$(download_github_archive "$url" "$archive")"
   if [ "$http_code" = "404" ]; then
     rm -rf "$tmp_dir"
     echo "[INFO] Panel bundle for v$version is not available yet."
@@ -493,7 +674,11 @@ download_panel_bundle() {
   fi
   if [ "$http_code" != "200" ]; then
     rm -rf "$tmp_dir"
-    echo "[ERROR] Failed to download panel bundle from GitHub release (HTTP ${http_code:-unknown})"
+    if [ "$http_code" = "invalid-archive" ]; then
+      echo "[ERROR] Downloaded panel bundle is not a valid tar.gz archive"
+    else
+      echo "[ERROR] Failed to download panel bundle from GitHub release (HTTP ${http_code:-unknown})"
+    fi
     exit 1
   fi
 
@@ -535,7 +720,8 @@ MYSQL_CONFIG_PATH=$APP_DIR/data/mysql.json
 JWT_SECRET=$jwt_secret
 FORWARDX_PORT_CONFIG_PATH=$APP_DIR/.env
 FORWARDX_PORT_MANAGEMENT=local
-FORWARDX_UPGRADE_COMMAND="/bin/bash -lc 'SCRIPT=\"$APP_DIR/scripts/install-panel-local.sh\"; if [ -f \"\$SCRIPT\" ]; then exec /bin/bash \"\$SCRIPT\" upgrade; fi; URL=\"https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts/install-panel-local.sh\"; if command -v sudo >/dev/null 2>&1; then curl -fsSL \"\$URL\" | sudo bash -s -- upgrade; else curl -fsSL \"\$URL\" | bash -s -- upgrade; fi'"
+FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
+FORWARDX_UPGRADE_COMMAND="/bin/bash -lc 'SCRIPT=\"$APP_DIR/scripts/install-panel-local.sh\"; if [ -f \"\$SCRIPT\" ] && /bin/bash -n \"\$SCRIPT\" >/dev/null 2>&1; then exec /bin/bash \"\$SCRIPT\" upgrade; fi; DIRECT_URL=\"https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts/install-panel-local.sh\"; ACCEL=\"\${FORWARDX_GITHUB_ACCELERATOR_URL:-}\"; URL=\"\$DIRECT_URL\"; if [ -n \"\$ACCEL\" ]; then URL=\"\${ACCEL%/}/\$DIRECT_URL\"; fi; TMP=\"\$(mktemp)\"; if ! curl -fsSL \"\$URL\" -o \"\$TMP\" || ! /bin/bash -n \"\$TMP\" >/dev/null 2>&1; then rm -f \"\$TMP\"; TMP=\"\$(mktemp)\"; if [ \"\$URL\" = \"\$DIRECT_URL\" ] || ! curl -fsSL \"\$DIRECT_URL\" -o \"\$TMP\" || ! /bin/bash -n \"\$TMP\" >/dev/null 2>&1; then rm -f \"\$TMP\"; exit 1; fi; fi; if [ \"\$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo env FORWARDX_GITHUB_ACCELERATOR_URL=\"\$ACCEL\" bash \"\$TMP\" upgrade; STATUS=\$?; else env FORWARDX_GITHUB_ACCELERATOR_URL=\"\$ACCEL\" bash \"\$TMP\" upgrade; STATUS=\$?; fi; rm -f \"\$TMP\"; exit \"\$STATUS\"'"
 EOF
 }
 
@@ -590,7 +776,7 @@ case "$ACTION" in
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
   *)
-    echo "Usage: $0 install|upgrade|uninstall"
+    usage
     exit 1
     ;;
 esac

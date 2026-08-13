@@ -237,6 +237,51 @@ test("shared tunnel status does not expose hosts outside the user's host scope",
   assert.equal(JSON.stringify(filtered).includes('"lastHeartbeat":200'), false);
 });
 
+test("shared tunnel keeps its sanitized endpoint group for domain display", () => {
+  const endpointScope: LinkAccessScope = {
+    ...scope,
+    groupIds: new Set([30]),
+    groupHostIds: new Map([[30, new Set([2])]]),
+  };
+  const filtered = filterTunnelFieldsForUser({
+    id: 10,
+    entryGroupId: 30,
+    entryGroup: {
+      id: 30,
+      name: "entry group",
+      groupMode: "entry",
+      domain: "entry.example.test",
+      members: [
+        {
+          id: 301,
+          groupId: 30,
+          memberType: "host",
+          hostId: 2,
+          host: {
+            id: 2,
+            name: "visible",
+            ddnsEnabled: true,
+            ddnsDomain: "host.example.test",
+            portRangeStart: 10000,
+            portRangeEnd: 20000,
+            portAllowlist: "10000-20000",
+            agentToken: "must-not-leak",
+          },
+        },
+        { id: 302, groupId: 30, memberType: "host", hostId: 3, host: { id: 3, name: "hidden", ip: "192.0.2.3" } },
+      ],
+    },
+  }, endpointScope) as any;
+
+  assert.equal(filtered.entryGroup.domain, "entry.example.test");
+  assert.deepEqual(filtered.entryGroup.members.map((member: any) => member.id), [301]);
+  assert.equal(filtered.entryGroup.members[0].host.ddnsDomain, "host.example.test");
+  assert.equal(JSON.stringify(filtered.entryGroup).includes("hidden"), false);
+  assert.equal(JSON.stringify(filtered.entryGroup).includes("portRange"), false);
+  assert.equal(JSON.stringify(filtered.entryGroup).includes("portAllowlist"), false);
+  assert.equal(JSON.stringify(filtered.entryGroup).includes("must-not-leak"), false);
+});
+
 test("shared group keeps an accurate summary while removing unauthorized members", () => {
   const availability = publicLinkAvailabilitySummary({
     status: "degraded",

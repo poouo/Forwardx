@@ -92,6 +92,14 @@ import {
   normalizePersonalizationThemePresetId,
   type PersonalizationBackgroundConfig,
 } from "../../shared/personalization";
+import {
+  buildPanelInstallerCommand,
+  githubDownloadCandidates,
+  normalizeGithubAcceleratorUrl,
+  panelUpdateGithubAccelerator,
+  type GithubAcceleratorConfig,
+  type GithubAcceleratorSettings,
+} from "../../shared/githubAccelerator";
 
 export {
   AGENT_VERSION,
@@ -114,10 +122,6 @@ const ANDROID_APK_DOWNLOAD_URL =
   `${REPO_URL}/releases/download/v${ANDROID_APK_RELEASE_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const UPGRADE_ASSETS_PENDING_EXIT_CODE = 12;
-const MANUAL_LOCAL_UPGRADE_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
-const MANUAL_DOCKER_UPGRADE_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
 const DEFAULT_DOCKER_IMAGE = "ghcr.io/poouo/forwardx:latest";
 const forwardProtocolSettingsSchema = z.object(
   Object.fromEntries(
@@ -158,6 +162,33 @@ function readCustomSidebarPages(all: Record<string, string | null | undefined>) 
 
 function isUpdateAutoCheckEnabled(all: Record<string, string | null | undefined>) {
   return all.updateAutoCheckEnabled !== "false";
+}
+
+function githubAcceleratorSettingsFromRecord(
+  all: Record<string, string | null | undefined>,
+): GithubAcceleratorSettings {
+  return {
+    enabled: all.githubAcceleratorEnabled === "true",
+    url: all.githubAcceleratorUrl ?? "",
+    panelUpdateEnabled: all.githubAcceleratorPanelUpdateEnabled === "true",
+  };
+}
+
+function panelUpdateAcceleratorFromRecord(
+  all: Record<string, string | null | undefined>,
+) {
+  return panelUpdateGithubAccelerator(githubAcceleratorSettingsFromRecord(all));
+}
+
+async function readPanelUpdateAccelerator() {
+  return panelUpdateAcceleratorFromRecord(await db.getAllSettings());
+}
+
+function panelManualUpgradeCommand(
+  deployment: "local" | "docker",
+  accelerator?: GithubAcceleratorConfig | null,
+) {
+  return buildPanelInstallerCommand({ deployment, action: "upgrade", accelerator });
 }
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
@@ -484,36 +515,85 @@ function noCacheUrl(url: string) {
   return `${url}${sep}_=${Date.now()}`;
 }
 
-async function fetchGithubJson<T>(url: string): Promise<T> {
-  const res = await fetch(noCacheUrl(url), {
-    cache: "no-store",
-    headers: {
-      "Accept": "application/vnd.github+json",
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-      "User-Agent": `ForwardX/${APP_VERSION}`,
-    },
-  });
-  if (!res.ok) throw new Error(`GitHub API 请求失败：${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
+async function fetchGithubResource(
+  url: string,
+  init: RequestInit,
+  accelerator?: GithubAcceleratorConfig | null,
+) {
+  const candidates = githubDownloadCandidates(url, accelerator);
+  let lastError: unknown = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    try {
+      const res = await fetch(noCacheUrl(candidates[index]), init);
+      if (res.ok || index === candidates.length - 1) return res;
+    } catch (error) {
+      lastError = error;
+      if (index === candidates.length - 1) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("GitHub 请求失败");
 }
 
-async function fetchTextNoCache(url: string): Promise<string> {
-  const res = await fetch(noCacheUrl(url), {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-      "User-Agent": `ForwardX/${APP_VERSION}`,
-    },
-  });
-  if (!res.ok) throw new Error(`HTTP 请求失败：${res.status} ${res.statusText}`);
-  return res.text();
+async function fetchGithubJson<T>(
+  url: string,
+  accelerator?: GithubAcceleratorConfig | null,
+): Promise<T> {
+  const candidates = githubDownloadCandidates(url, accelerator);
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(noCacheUrl(candidate), {
+        cache: "no-store",
+        headers: {
+          "Accept": "application/vnd.github+json",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          "User-Agent": `ForwardX/${APP_VERSION}`,
+        },
+      });
+      if (!res.ok) throw new Error(`GitHub API 请求失败：${res.status} ${res.statusText}`);
+      return await res.json() as T;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("GitHub API 请求失败");
 }
 
-async function fetchPanelBundleAssetStatus(version: string): Promise<{ ready: boolean; status: number; url: string }> {
+async function fetchTextNoCache(
+  url: string,
+  accelerator?: GithubAcceleratorConfig | null,
+  validate?: (text: string) => boolean,
+): Promise<string> {
+  const candidates = githubDownloadCandidates(url, accelerator);
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(noCacheUrl(candidate), {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          "User-Agent": `ForwardX/${APP_VERSION}`,
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP 请求失败：${res.status} ${res.statusText}`);
+      const text = await res.text();
+      if (validate && !validate(text)) throw new Error("GitHub 返回内容格式不正确");
+      return text;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("GitHub 文本请求失败");
+}
+
+async function fetchPanelBundleAssetStatus(
+  version: string,
+  accelerator?: GithubAcceleratorConfig | null,
+): Promise<{ ready: boolean; status: number; url: string }> {
   const url = panelBundleAssetUrl(version);
-  const res = await fetch(noCacheUrl(url), {
+  const res = await fetchGithubResource(url, {
     method: "HEAD",
     redirect: "follow",
     cache: "no-store",
@@ -522,7 +602,7 @@ async function fetchPanelBundleAssetStatus(version: string): Promise<{ ready: bo
       "Pragma": "no-cache",
       "User-Agent": `ForwardX/${APP_VERSION}`,
     },
-  });
+  }, accelerator);
   return { ready: res.ok, status: res.status, url };
 }
 
@@ -536,12 +616,19 @@ function releaseSemver(release: GithubReleaseInfo) {
   return /^\d+\.\d+\.\d+$/.test(version) ? version : "";
 }
 
-async function fetchReleaseAgentVersion(panelVersion: string) {
+async function fetchReleaseAgentVersion(
+  panelVersion: string,
+  accelerator?: GithubAcceleratorConfig | null,
+) {
   const normalized = normalizeVersion(panelVersion);
   const refs = [`v${normalized}`, normalized];
   for (const ref of refs) {
     try {
-      const text = await fetchTextNoCache(githubRawRefUrl(REPO_URL, ref, "shared/versions.ts"));
+      const text = await fetchTextNoCache(
+        githubRawRefUrl(REPO_URL, ref, "shared/versions.ts"),
+        accelerator,
+        (value) => /AGENT_VERSION\s*=\s*["']v?[^"']+["']/.test(value),
+      );
       const agentVersion = parseAgentVersionFromVersionsText(text);
       if (agentVersion) return agentVersion;
     } catch {
@@ -575,7 +662,11 @@ function mergeCompatibilityRecords(records: VersionCompatibilityInfo[]) {
 async function fetchRollbackVersionInfo(): Promise<RollbackVersionInfo> {
   const checkedAt = new Date().toISOString();
   const api = githubApiBase(REPO_URL);
-  const releases = await fetchGithubJson<GithubReleaseInfo[]>(`${api}/releases?per_page=30`);
+  const accelerator = await readPanelUpdateAccelerator();
+  const releases = await fetchGithubJson<GithubReleaseInfo[]>(
+    `${api}/releases?per_page=30`,
+    accelerator,
+  );
   const releaseVersions = releases
     .filter((release) => !release.draft && !release.prerelease)
     .map((release) => ({ release, panelVersion: releaseSemver(release) }))
@@ -587,7 +678,7 @@ async function fetchRollbackVersionInfo(): Promise<RollbackVersionInfo> {
     .slice(0, PANEL_AGENT_COMPATIBILITY_LIMIT);
 
   const releaseCompatibility = await Promise.all(rollbackPanelReleases.map(async ({ release, panelVersion }) => {
-    const agentVersion = await fetchReleaseAgentVersion(panelVersion);
+    const agentVersion = await fetchReleaseAgentVersion(panelVersion, accelerator);
     return {
       panelVersion,
       agentVersion,
@@ -662,7 +753,10 @@ async function getRollbackVersionInfoCached(force = false): Promise<RollbackVers
 async function fetchGithubReleaseByVersion(version: string) {
   const normalized = normalizeVersion(version);
   const api = githubApiBase(REPO_URL);
-  return fetchGithubJson<GithubReleaseInfo>(`${api}/releases/tags/${encodeURIComponent(`v${normalized}`)}`);
+  return fetchGithubJson<GithubReleaseInfo>(
+    `${api}/releases/tags/${encodeURIComponent(`v${normalized}`)}`,
+    await readPanelUpdateAccelerator(),
+  );
 }
 
 async function assertAgentReleaseAssetsReadyForRollback(releaseVersion: string, agentVersion: string) {
@@ -783,14 +877,17 @@ async function fetchDockerImageVersion(imageRef = dockerImageReference()): Promi
   return version || null;
 }
 
-async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
+async function ensureUpdateDeployable(
+  info: UpdateInfo,
+  accelerator?: GithubAcceleratorConfig | null,
+): Promise<UpdateInfo> {
   if (!info.latestVersion || !info.hasUpdate) {
     return { ...info, deployable: info.hasUpdate || undefined };
   }
   const expected = normalizeVersion(info.latestVersion);
   if (!isDockerRuntime()) {
     try {
-      const asset = await fetchPanelBundleAssetStatus(expected);
+      const asset = await fetchPanelBundleAssetStatus(expected, accelerator);
       if (asset.ready) {
         return { ...info, deployable: true, artifactVersion: `v${expected}`, pendingReason: null };
       }
@@ -859,7 +956,7 @@ async function getPanelAssetsPendingReason(targetVersion: string, operationLabel
   }
 
   try {
-    const asset = await fetchPanelBundleAssetStatus(expected);
+    const asset = await fetchPanelBundleAssetStatus(expected, await readPanelUpdateAccelerator());
     if (asset.ready) return null;
     if (asset.status === 404) {
       return `目标${operationLabel}版本 v${expected} 的面板安装包 forwardx-panel-v${expected}.tar.gz 尚未上传到 GitHub Release，请稍后重试。`;
@@ -897,10 +994,13 @@ function makeUpdateInfo(
   };
 }
 
-async function withLatestAgentVersion(info: UpdateInfo): Promise<UpdateInfo> {
+async function withLatestAgentVersion(
+  info: UpdateInfo,
+  accelerator?: GithubAcceleratorConfig | null,
+): Promise<UpdateInfo> {
   if (info.latestAgentVersion || !info.latestVersion) return info;
   try {
-    const agentVersion = await fetchReleaseAgentVersion(info.latestVersion);
+    const agentVersion = await fetchReleaseAgentVersion(info.latestVersion, accelerator);
     const normalized = normalizeVersion(agentVersion || "");
     return {
       ...info,
@@ -915,6 +1015,7 @@ async function withLatestAgentVersion(info: UpdateInfo): Promise<UpdateInfo> {
 async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   const checkedAt = new Date().toISOString();
   const api = githubApiBase(REPO_URL);
+  const accelerator = await readPanelUpdateAccelerator();
   const candidates: UpdateInfo[] = [];
   const errors: string[] = [];
 
@@ -925,14 +1026,17 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
       published_at?: string;
       prerelease?: boolean;
       draft?: boolean;
-    }>(`${api}/releases/latest`);
+    }>(`${api}/releases/latest`, accelerator);
     candidates.push(makeUpdateInfo(latest.tag_name || null, "release", checkedAt, latest.html_url || null, latest.published_at || null));
   } catch (releaseError: any) {
     errors.push(releaseError?.message || "GitHub Release 检查失败");
   }
 
   try {
-    const tags = await fetchGithubJson<Array<{ name?: string; commit?: { sha?: string } }>>(`${api}/tags?per_page=50`);
+    const tags = await fetchGithubJson<Array<{ name?: string; commit?: { sha?: string } }>>(
+      `${api}/tags?per_page=50`,
+      accelerator,
+    );
     const versionTags = tags
       .map((t) => t.name)
       .filter((name): name is string => !!name && /^v?\d+\.\d+\.\d+/.test(name))
@@ -944,7 +1048,11 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   }
 
   try {
-    const text = await fetchTextNoCache(githubRawMainUrl(REPO_URL, "shared/versions.ts"));
+    const text = await fetchTextNoCache(
+      githubRawMainUrl(REPO_URL, "shared/versions.ts"),
+      accelerator,
+      (value) => /APP_VERSION\s*=\s*["']v?[^"']+["']/.test(value),
+    );
     const match = text.match(/APP_VERSION\s*=\s*["']v?([^"']+)["']/);
     const mainVersion = match?.[1] ? `v${normalizeVersion(match[1])}` : null;
     const mainAgentVersion = parseAgentVersionFromVersionsText(text);
@@ -956,7 +1064,12 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   const latest = candidates
     .filter((item) => !!item.latestVersion)
     .sort((a, b) => compareVersions(b.latestVersion || "0", a.latestVersion || "0"))[0];
-  if (latest) return ensureUpdateDeployable(await withLatestAgentVersion(latest));
+  if (latest) {
+    return ensureUpdateDeployable(
+      await withLatestAgentVersion(latest, accelerator),
+      accelerator,
+    );
+  }
 
   return {
     ...makeUpdateInfo(null, null, checkedAt),
@@ -1003,14 +1116,17 @@ function appendUpgradeLog(line: string) {
   }
 }
 
-function normalizeUpgradeCommand(command: string) {
+function normalizeUpgradeCommand(
+  command: string,
+  accelerator?: GithubAcceleratorConfig | null,
+) {
   const trimmed = command.trim();
   if (!trimmed) return "";
   const missingLocalPanelUpgrade = trimmed.match(/^(?:\/bin\/bash|\/usr\/bin\/bash|bash)\s+(\S*install-panel-local\.sh)\s+upgrade\s*$/i);
   if (missingLocalPanelUpgrade) {
     const scriptPath = missingLocalPanelUpgrade[1].replace(/^['"]|['"]$/g, "");
     if (!fs.existsSync(scriptPath)) {
-      return MANUAL_LOCAL_UPGRADE_COMMAND;
+      return panelManualUpgradeCommand("local", accelerator);
     }
   }
   if (/^(?:bash|sh|\/bin\/bash|\/usr\/bin\/bash|\/bin\/sh|\/usr\/bin\/sh)\s+/i.test(trimmed)) {
@@ -1022,10 +1138,10 @@ function normalizeUpgradeCommand(command: string) {
   return trimmed;
 }
 
-function appendManualUpgradeHint() {
+function appendManualUpgradeHint(accelerator?: GithubAcceleratorConfig | null) {
   appendUpgradeLog("[ForwardX] Automatic upgrade failed. Run a one-click script on the server to upgrade manually:");
-  appendUpgradeLog(`[ForwardX] Local: ${MANUAL_LOCAL_UPGRADE_COMMAND}`);
-  appendUpgradeLog(`[ForwardX] Docker: ${MANUAL_DOCKER_UPGRADE_COMMAND}`);
+  appendUpgradeLog(`[ForwardX] Local: ${panelManualUpgradeCommand("local", accelerator)}`);
+  appendUpgradeLog(`[ForwardX] Docker: ${panelManualUpgradeCommand("docker", accelerator)}`);
 }
 
 function setUpgradeWaitingForAssets(targetVersion: string, reason: string, mode: "upgrade" | "rollback" = "upgrade") {
@@ -1057,7 +1173,8 @@ export function getPanelUpgradeRuntimeStatus() {
 }
 
 async function startPanelVersionTask(targetVersionInput: string | null | undefined, mode: "upgrade" | "rollback") {
-  const command = normalizeUpgradeCommand(ENV.upgradeCommand);
+  const accelerator = await readPanelUpdateAccelerator();
+  const command = normalizeUpgradeCommand(ENV.upgradeCommand, accelerator);
   if (!command) {
     console.warn(`[Upgrade] ${mode} requested but FORWARDX_UPGRADE_COMMAND is not configured`);
     throw new Error(`未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查版本，不能自动${mode === "rollback" ? "回退" : "升级"}`);
@@ -1130,6 +1247,7 @@ async function startPanelVersionTask(targetVersionInput: string | null | undefin
       FORWARDX_TARGET_VERSION: targetVersion,
       FORWARDX_CURRENT_VERSION: APP_VERSION,
       FORWARDX_REPO_URL: REPO_URL,
+      FORWARDX_GITHUB_ACCELERATOR_URL: accelerator.enabled ? accelerator.url : "",
     },
     windowsHide: true,
   });
@@ -1142,7 +1260,7 @@ async function startPanelVersionTask(targetVersionInput: string | null | undefin
     upgradeJob.finishedAt = new Date().toISOString();
     console.error(`[Upgrade] Failed to start upgrade command: ${err.message}`);
     appendUpgradeLog(`[ForwardX] Upgrade command failed to start: ${err.message}`);
-    appendManualUpgradeHint();
+    appendManualUpgradeHint(accelerator);
   });
   child.on("close", (code) => {
     upgradeJob.finishedAt = new Date().toISOString();
@@ -1161,7 +1279,7 @@ async function startPanelVersionTask(targetVersionInput: string | null | undefin
       upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;
       console.error(`[Upgrade] Panel upgrade failed target=${targetVersion} exitCode=${code}`);
       appendUpgradeLog(`[ForwardX] Upgrade failed, exit code: ${code}`);
-      appendManualUpgradeHint();
+      appendManualUpgradeHint(accelerator);
     }
   });
 
@@ -1176,12 +1294,12 @@ export async function startPanelRollbackTask(targetVersionInput: string) {
   return startPanelVersionTask(targetVersionInput, "rollback");
 }
 
-function getDeploymentInfo(): DeploymentInfo {
+function getDeploymentInfo(accelerator?: GithubAcceleratorConfig | null): DeploymentInfo {
   const docker = isDockerRuntime();
   return {
     docker,
     dockerSocket: fs.existsSync("/var/run/docker.sock"),
-    manualUpgradeCommand: docker ? MANUAL_DOCKER_UPGRADE_COMMAND : MANUAL_LOCAL_UPGRADE_COMMAND,
+    manualUpgradeCommand: panelManualUpgradeCommand(docker ? "docker" : "local", accelerator),
   };
 }
 
@@ -1549,6 +1667,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     githubAccelerator: {
       enabled: all.githubAcceleratorEnabled === "true",
       url: all.githubAcceleratorUrl ?? "",
+      panelUpdateEnabled: all.githubAcceleratorPanelUpdateEnabled === "true",
     },
     agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
     database: databaseSettingsSummary(all, false),
@@ -1689,6 +1808,7 @@ export const systemRouter = router({
     const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const safeSettings = publicSystemSettings(all, activeProtocol);
     if (!ctx.user || ctx.user.role !== "admin") return safeSettings;
+    const deploymentInfo = getDeploymentInfo(panelUpdateAcceleratorFromRecord(all));
     const emailPort = Number(all.emailPort || 587);
     const emailSecurity = resolveSmtpSecurityMode(all.emailSecurity, emailPort, all.emailSecure === "true");
     return {
@@ -1721,6 +1841,7 @@ export const systemRouter = router({
       githubAccelerator: {
         enabled: all.githubAcceleratorEnabled === "true",
         url: all.githubAcceleratorUrl ?? "",
+        panelUpdateEnabled: all.githubAcceleratorPanelUpdateEnabled === "true",
       },
       agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
       database: databaseSettingsSummary(all),
@@ -1781,10 +1902,10 @@ export const systemRouter = router({
       agentEncryption: "aes-256-ctr+hmac-sha256", // 加密方案标识
       upgrade: {
         enabled: !!ENV.upgradeCommand.trim(),
-        docker: getDeploymentInfo().docker,
-        dockerSocket: getDeploymentInfo().dockerSocket,
+        docker: deploymentInfo.docker,
+        dockerSocket: deploymentInfo.dockerSocket,
         commandConfigured: !!ENV.upgradeCommand.trim(),
-        manualUpgradeCommand: getDeploymentInfo().manualUpgradeCommand,
+        manualUpgradeCommand: deploymentInfo.manualUpgradeCommand,
         autoCheckEnabled: isUpdateAutoCheckEnabled(all),
       },
       telegram: {
@@ -1941,6 +2062,7 @@ export const systemRouter = router({
         githubAccelerator: z.object({
           enabled: z.boolean().optional(),
           url: githubAcceleratorUrlSchema.optional(),
+          panelUpdateEnabled: z.boolean().optional(),
         }).optional(),
         agentPreferPanelInstall: z.boolean().optional(),
         email: z.object({
@@ -2138,9 +2260,21 @@ export const systemRouter = router({
           next.githubAcceleratorEnabled = input.githubAccelerator.enabled ? "true" : "false";
         }
         if (input.githubAccelerator.url !== undefined) {
-          next.githubAcceleratorUrl = normalizeOptionalHttpUrl(input.githubAccelerator.url) || null;
+          const inputUrl = input.githubAccelerator.url.trim();
+          const normalizedUrl = normalizeGithubAcceleratorUrl(inputUrl);
+          if (inputUrl && !normalizedUrl) {
+            throw new Error("GitHub 加速地址必须是 HTTP(S) 基础地址，且不能包含查询参数或锚点");
+          }
+          next.githubAcceleratorUrl = normalizedUrl || null;
+        }
+        if (input.githubAccelerator.panelUpdateEnabled !== undefined) {
+          next.githubAcceleratorPanelUpdateEnabled = input.githubAccelerator.panelUpdateEnabled ? "true" : "false";
         }
         await db.setSettings(next);
+        lastUpdateInfo = null;
+        rollbackVersionInfo = null;
+        updateCheckInFlight = null;
+        rollbackVersionCheckInFlight = null;
         console.info("[Settings] GitHub accelerator settings updated");
       }
       if (input.agentPreferPanelInstall !== undefined) {
@@ -2626,6 +2760,8 @@ export const systemRouter = router({
   /** 获取上次检查结果和升级任务状态 */
   upgradeStatus: adminProcedure.query(async () => {
     const all = await db.getAllSettings();
+    const githubAccelerator = githubAcceleratorSettingsFromRecord(all);
+    const deploymentInfo = getDeploymentInfo(panelUpdateGithubAccelerator(githubAccelerator));
     return {
       currentVersion: APP_VERSION,
       currentAgentVersion: AGENT_VERSION,
@@ -2634,7 +2770,8 @@ export const systemRouter = router({
       job: upgradeJob,
       upgradeEnabled: !!ENV.upgradeCommand.trim(),
       autoCheckEnabled: isUpdateAutoCheckEnabled(all),
-      ...getDeploymentInfo(),
+      githubAccelerator,
+      ...deploymentInfo,
     };
   }),
 

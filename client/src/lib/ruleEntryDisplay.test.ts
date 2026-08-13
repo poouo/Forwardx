@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { filterRuleEntryAddressesForDisplay, getEntryAddressFamily } from "./ruleEntryDisplay";
+import { filterRuleEntryAddressesForDisplay, getEntryAddressFamily, resolveRuleEntryHost } from "./ruleEntryDisplay";
+
+test("uses a nested shared-resource host when it is not in the global host list", () => {
+  const nestedHost: { id: number; ddnsEnabled?: boolean; ddnsDomain?: string; ipv4?: string } = {
+    id: 42,
+    ddnsEnabled: true,
+    ddnsDomain: "entry.example.com",
+    ipv4: "198.51.100.42",
+  };
+  assert.equal(resolveRuleEntryHost([], 42, nestedHost), nestedHost);
+  assert.equal(resolveRuleEntryHost([{ id: 42, ipv4: "198.51.100.42" }], 42, nestedHost)?.ipv4, "198.51.100.42");
+});
 
 test("hides IPv6 when an IPv4 rule entry is available", () => {
   assert.deepEqual(filterRuleEntryAddressesForDisplay([

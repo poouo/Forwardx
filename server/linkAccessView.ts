@@ -389,6 +389,58 @@ function allowedHost(scope: LinkAccessScope, hostId: unknown) {
   return id > 0 && scope.hostIds.has(id);
 }
 
+function filterTunnelEndpointHost(host: any) {
+  if (!host) return null;
+  return {
+    id: host.id,
+    name: host.name,
+    ip: host.ip,
+    ipv4: host.ipv4,
+    ipv6: host.ipv6,
+    entryIp: host.entryIp,
+    tunnelEntryIp: host.tunnelEntryIp,
+    ddnsEnabled: !!host.ddnsEnabled,
+    ddnsDomain: host.ddnsDomain ?? null,
+    isOnline: !!host.isOnline,
+    lastHeartbeat: host.lastHeartbeat ?? null,
+  };
+}
+
+function filterTunnelEndpointGroup(group: any, scope: LinkAccessScope) {
+  const groupId = positiveId(group?.id);
+  if (!groupId || !scope.groupIds.has(groupId)) return null;
+  const visibleMemberIds = new Set(visibleForwardGroupMemberIds(group, scope));
+  const groupHostIds = scope.groupHostIds?.get(groupId);
+  return {
+    id: group.id,
+    name: group.name,
+    groupMode: group.groupMode,
+    exitStrategy: group.exitStrategy,
+    domain: group.domain ?? null,
+    recordType: group.recordType ?? "A",
+    isEnabled: group.isEnabled !== false,
+    lastStatus: group.lastStatus ?? null,
+    chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+    members: (Array.isArray(group.members) ? group.members : [])
+      .filter((member: any) => visibleMemberIds.has(Number(member?.id || 0)))
+      .map((member: any) => {
+        const hostId = Number(member?.host?.id || member?.hostId || 0);
+        const hostVisible = hostId > 0 && (allowedHost(scope, hostId) || !!groupHostIds?.has(hostId));
+        return {
+          id: member.id,
+          groupId: member.groupId,
+          memberType: member.memberType,
+          hostId: member.hostId ?? null,
+          tunnelId: member.tunnelId ?? null,
+          priority: Number(member.priority || 0),
+          isEnabled: member.isEnabled !== false,
+          chinaHealthStatus: member.chinaHealthStatus ?? null,
+          host: hostVisible ? filterTunnelEndpointHost(member.host) : null,
+        };
+      }),
+  };
+}
+
 export function filterTunnelFieldsForUser(tunnel: any, scope: LinkAccessScope) {
   const {
     certPem,
@@ -411,6 +463,7 @@ export function filterTunnelFieldsForUser(tunnel: any, scope: LinkAccessScope) {
     .filter((exit: any) => allowedHost(scope, exit?.hostId));
   const entryHostVisible = allowedHost(scope, rest.entryHostId);
   const exitHostVisible = allowedHost(scope, rest.exitHostId);
+  const visibleEntryGroup = filterTunnelEndpointGroup(entryGroup, scope);
   return {
     ...rest,
     entryHostId: entryHostVisible ? rest.entryHostId : null,
@@ -420,6 +473,7 @@ export function filterTunnelFieldsForUser(tunnel: any, scope: LinkAccessScope) {
     connectHost: exitHostVisible ? rest.connectHost ?? null : null,
     entryHost: entryHostVisible ? rest.entryHost ?? null : null,
     exitHost: exitHostVisible ? rest.exitHost ?? null : null,
+    ...(visibleEntryGroup ? { entryGroup: visibleEntryGroup } : {}),
     hopHostIds: visibleHopIndexes.map((index: number) => Number(rawHopIds[index])),
     hopConnectHosts: visibleHopIndexes.map((index: number) => rawHopConnectHosts[index] ?? null),
     hopHosts: (Array.isArray(rest.hopHosts) ? rest.hopHosts : [])

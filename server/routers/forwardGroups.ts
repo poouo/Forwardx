@@ -138,9 +138,26 @@ export const forwardGroupsRouter = router({
       : [];
     const availabilityIndex = await availabilityIndexForGroups(groups as any[], supportingGroups);
     const withAvailability = attachForwardGroupAvailability(groups as any[], availabilityIndex, accessScope);
-    return accessScope
-      ? db.filterForwardGroupFieldsForUse(withAvailability, accessScope)
-      : withAvailability;
+    if (!accessScope) return withAvailability;
+    const visibleGroups = db.filterForwardGroupFieldsForUse(withAvailability, accessScope);
+    if (supportingGroups.length === 0) return visibleGroups;
+
+    // A chain's entry group is loaded above for availability, but it is not
+    // itself a selectable root resource and therefore is intentionally not
+    // included in `groups`. Keep a sanitized copy nested on the chain so
+    // users can still see the configured entry domain in rule displays.
+    const allowedSupportingGroups = supportingGroups
+      .filter((group: any) => accessScope.groupIds.has(Number(group?.id || 0)));
+    const visibleSupportingGroups = db.filterForwardGroupFieldsForUse(
+      attachForwardGroupAvailability(allowedSupportingGroups, availabilityIndex, accessScope),
+      accessScope,
+    );
+    const supportingById = new Map(visibleSupportingGroups.map((group: any) => [Number(group.id), group]));
+    return visibleGroups.map((group: any) => {
+      const entryGroupId = Number(group?.entryGroupId || 0);
+      const entryGroup = entryGroupId > 0 ? supportingById.get(entryGroupId) : null;
+      return entryGroup ? { ...group, entryGroup } : group;
+    });
   }),
 
   listPage: protectedProcedure

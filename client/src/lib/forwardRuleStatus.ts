@@ -12,6 +12,25 @@ export type ForwardRuleVisualStatus = {
   title: string;
 };
 
+/**
+ * Keep the last confirmed colour while a new status snapshot is still
+ * pending. Explicit disabled/error/running results remain authoritative;
+ * this helper only bridges the transient pending state seen while queries
+ * reconnect after the rules page is revisited.
+ */
+export function preferLastKnownForwardRuleVisualStatus(
+  current: ForwardRuleVisualStatus,
+  lastKnown?: { state?: ForwardRuleVisualState; title?: string | null } | null,
+): ForwardRuleVisualStatus {
+  if (current.state !== "pending" || !lastKnown || lastKnown.state === "pending") return current;
+  if (lastKnown.state !== "running" && lastKnown.state !== "error" && lastKnown.state !== "disabled") return current;
+  const title = String(lastKnown.title || "").trim();
+  return {
+    state: lastKnown.state,
+    title: title ? `${title}（上次状态，等待新的上报）` : "上次状态，等待新的上报",
+  };
+}
+
 function timestampMillis(value: unknown) {
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number" && Number.isFinite(value)) {

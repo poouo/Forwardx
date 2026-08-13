@@ -5,6 +5,25 @@ export type RuleEntryAddress = {
   value: string;
 };
 
+/**
+ * Resolve an entry host from the global host list, falling back to an
+ * ACL-filtered nested host returned with a shared group/tunnel. Shared
+ * resources can intentionally omit their member hosts from hosts.options,
+ * but the nested summary still contains the public/DDNS address needed by
+ * the rules display.
+ */
+export function resolveRuleEntryHost<T extends { id?: unknown }>(
+  hosts: readonly T[] | null | undefined,
+  hostId: unknown,
+  nestedHost?: T | null,
+): T | null {
+  const id = Number(hostId || 0);
+  if (id > 0) {
+    return hosts?.find((host) => Number(host?.id || 0) === id) || nestedHost || null;
+  }
+  return nestedHost || null;
+}
+
 function cleanAddressLiteral(value: unknown) {
   let text = String(value || "").trim();
   if (!text) return "";

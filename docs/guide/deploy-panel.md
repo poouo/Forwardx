@@ -243,6 +243,53 @@ journalctl -u forwardx-panel -n 300 --no-pager
 
 如需卸载本地面板，请先阅读 [卸载 ForwardX](./uninstall.md)，确认是否保留安装目录和数据库。
 
+## 使用 GitHub 加速站安装和升级
+
+GitHub 访问不稳定时，Docker 和本地 systemd 一键脚本都支持：
+
+```text
+--github-accelerator https://mirror.example.com
+```
+
+加速站需要支持 `加速站地址/原始 GitHub URL` 格式。参数会保存到部署目录的 `.env`，后续升级即使不重复传参也会继续使用。加速请求失败时，脚本会自动回退到原始 GitHub 地址。
+
+首次安装时，`--github-accelerator` 只能影响脚本启动后的请求。若安装脚本本身也无法从 GitHub Raw 下载，需要同时给最前面的 Raw URL 加上加速前缀。
+
+### Docker 示例
+
+```bash
+# 安装，连安装脚本本身也通过加速站下载
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh" \
+  | bash -s -- install --github-accelerator "https://mirror.example.com"
+
+# 升级；已保存地址时可省略 --github-accelerator
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh" \
+  | bash -s -- upgrade --github-accelerator "https://mirror.example.com"
+```
+
+### 本地 systemd 示例
+
+```bash
+# 安装，连安装脚本本身也通过加速站下载
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh" \
+  | bash -s -- install --github-accelerator "https://mirror.example.com"
+
+# 升级；已保存地址时可省略 --github-accelerator
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh" \
+  | bash -s -- upgrade --github-accelerator "https://mirror.example.com"
+```
+
+也可以用环境变量传入相同配置：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh \
+  | sudo env FORWARDX_GITHUB_ACCELERATOR_URL="https://mirror.example.com" bash -s -- install
+```
+
+::: warning Docker 镜像不经过此加速站
+GitHub 加速参数用于 GitHub API、Raw 文件和 Release 资产，不会改写 `ghcr.io`。如需更换 Docker 镜像来源，请单独设置 `FORWARDX_IMAGE` 或 `FORWARDX_IMAGE_REPO`。
+:::
+
 ## 本地 systemd 手动部署
 
 本地手动部署适合不使用 Docker、也不想执行一键脚本的用户。建议直接使用 GitHub Release 中的面板安装包，不建议普通用户在服务器上从源码编译。

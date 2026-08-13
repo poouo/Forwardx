@@ -4407,7 +4407,17 @@ async function runForwardGroupFailoverForGroups(
     }
 
     const active = evaluated.find((m) => Number(m.id) === Number(group.activeMemberId));
-    const firstHealthy = evaluated.find((m) => m.healthy);
+    // `members` is normally loaded in priority order, but keep the selection
+    // explicit here. A failover may pass through several members; when a
+    // higher-priority member recovers, it must win over the currently active
+    // lower-priority member regardless of how the evaluation array was built.
+    const healthyMembers = evaluated
+      .filter((member) => member.healthy)
+      .sort((left, right) => {
+        const priorityDelta = Number(left.priority) - Number(right.priority);
+        return priorityDelta || Number(left.id) - Number(right.id);
+      });
+    const firstHealthy = healthyMembers[0];
     const anyPending = evaluated.some((member) => member.healthPending);
     if ((active?.healthPending && String(group.lastDdnsValue || "").trim()) || (!active && !firstHealthy && anyPending)) {
       await updateForwardGroupRuntimeIfChanged(db, group, {
@@ -4416,8 +4426,8 @@ async function runForwardGroupFailoverForGroups(
       });
       continue;
     }
-    const failbackCandidate = evaluated.find((m) => m.healthy && m.recoveredLongEnough);
-    const shouldFailback = !!group.autoFailback
+    const failbackCandidate = healthyMembers.find((member) => member.recoveredLongEnough);
+    const shouldFailback = dbBool(group.autoFailback)
       && !!active
       && !!failbackCandidate
       && Number(failbackCandidate.priority) < Number(active.priority);

@@ -822,3 +822,124 @@ test("entry group health windows suppress transient DDNS flaps", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("failover groups return to the highest-priority recovered member after multiple failures", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-priority-failback-"));
+  const databasePath = path.join(directory, "priority-failback.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import http from "node:http";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const groups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+    const settings = await import(moduleUrl("server/repositories/settingsRepository.ts"));
+    const requests = [];
+    const webhook = http.createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        requests.push(JSON.parse(body || "{}"));
+        response.writeHead(204);
+        response.end();
+      });
+    });
+    while (true) {
+      await new Promise((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+      const address = webhook.address();
+      if (address && typeof address === "object" && address.port > 10080) break;
+      await new Promise((resolve) => webhook.close(resolve));
+    }
+
+    const insert = async (table, columns, values) => {
+      const q = (name) => '"' + name + '"';
+      await runtime.executeRaw(
+        "INSERT INTO " + q(table) + " (" + columns.map(q).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+    const health = async (ruleId, status, recordedAt) => {
+      await runtime.executeRaw(
+        'INSERT INTO "tcping_stats" ("ruleId", "hostId", "latencyMs", "isTimeout", "healthStatus", "healthPending", "recordedAt") VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [ruleId, Math.floor(ruleId / 10) - 80, status === "healthy" ? 10 : null, status === "healthy" ? 0 : 1, status, 0, recordedAt],
+      );
+    };
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      const address = webhook.address();
+      await settings.setSettings({
+        ddnsEnabled: "true",
+        ddnsProvider: "webhook",
+        ddnsWebhookUrl: "http://127.0.0.1:" + address.port + "/ddns",
+        ddnsWebhookMethod: "POST",
+      });
+      const now = Math.floor(Date.now() / 1000);
+      for (const [id, ip] of [[1, "198.51.100.11"], [2, "198.51.100.12"], [3, "198.51.100.13"]]) {
+        await insert("hosts", ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"], [id, "member-" + id, ip, ip, 1, 1, now]);
+      }
+      await insert(
+        "forward_groups",
+        ["id", "name", "groupType", "groupMode", "domain", "recordType", "targetIp", "userId", "isEnabled", "activeMemberId", "failoverSeconds", "recoverSeconds", "autoFailback"],
+        [80, "priority-failback", "host", "failover", "priority.example.test", "A", "0.0.0.0", 1, 1, 801, 10, 10, 1],
+      );
+      for (const [memberId, hostId, priority] of [[801, 1, 0], [802, 2, 1], [803, 3, 2]]) {
+        await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [memberId, 80, "host", hostId, priority, 1]);
+      }
+      await insert(
+        "forward_rules",
+        ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
+        [800, 1, "priority template", "iptables", "tcp", 80, 1, 18000, "203.0.113.80", 80, 1, 1, 0],
+      );
+      for (const [ruleId, hostId, memberId] of [[810, 1, 801], [820, 2, 802], [830, 3, 803]]) {
+        await insert(
+          "forward_rules",
+          ["id", "hostId", "name", "forwardType", "protocol", "gostMode", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
+          [ruleId, hostId, "priority child", "iptables", "tcp", "direct", 80, 800, memberId, 0, 18000, "203.0.113.80", 80, 1, 1, 1],
+        );
+      }
+
+      await health(810, "healthy", now);
+      await health(820, "healthy", now);
+      await health(830, "healthy", now);
+      await groups.runForwardGroupFailover(80);
+      let state = (await runtime.queryRaw('SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 80'))[0];
+      assert.equal(Number(state.activeMemberId), 801);
+
+      await health(810, "unhealthy", now + 1);
+      await groups.runForwardGroupFailover(80);
+      state = (await runtime.queryRaw('SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 80'))[0];
+      assert.equal(Number(state.activeMemberId), 802, "the first member failure should select member 2");
+
+      await health(820, "unhealthy", now + 2);
+      await groups.runForwardGroupFailover(80);
+      state = (await runtime.queryRaw('SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 80'))[0];
+      assert.equal(Number(state.activeMemberId), 803, "the second member failure should select member 3");
+
+      await health(810, "healthy", now + 3);
+      await groups.runForwardGroupFailover(80);
+      state = (await runtime.queryRaw('SELECT "activeMemberId", "lastDdnsValue" FROM "forward_groups" WHERE "id" = 80'))[0];
+      assert.equal(Number(state.activeMemberId), 801, "a recovered member must reclaim its higher priority");
+      assert.equal(state.lastDdnsValue, "198.51.100.11");
+      assert.deepEqual(requests.map((request) => request.value), [
+        "198.51.100.11",
+        "198.51.100.12",
+        "198.51.100.13",
+        "198.51.100.11",
+      ]);
+    } finally {
+      await runtime.closeDatabase().catch(() => undefined);
+      await new Promise((resolve) => webhook.close(resolve));
+    }
+  `;
+
+  try {
+    runIsolatedScript(directory, databasePath, "priority-failback", script);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

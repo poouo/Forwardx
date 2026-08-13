@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ACTION="${1:-install}"
+ACTION="install"
 APP_DIR="${FORWARDX_DOCKER_DIR:-/opt/forwardx-docker}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-forwardx}"
 CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
@@ -14,6 +14,76 @@ EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
 DATA_VOLUME_REUSE_NOTIFIED="false"
 RESOLVED_IMAGE=""
 EXPECTED_PANEL_VERSION=""
+GITHUB_ACCELERATOR_URL=""
+GITHUB_ACCELERATOR_EXPLICIT="false"
+if [ "${FORWARDX_GITHUB_ACCELERATOR_URL+x}" = "x" ]; then
+  GITHUB_ACCELERATOR_URL="$FORWARDX_GITHUB_ACCELERATOR_URL"
+  GITHUB_ACCELERATOR_EXPLICIT="true"
+fi
+
+usage() {
+  cat <<EOF
+Usage: $0 install|upgrade|uninstall [--github-accelerator URL]
+
+Options:
+  --github-accelerator URL   Prefix GitHub API/raw/release URLs with this HTTP(S) accelerator.
+                             Docker image pulls still use FORWARDX_IMAGE/FORWARDX_IMAGE_REPO.
+
+Environment:
+  FORWARDX_GITHUB_ACCELERATOR_URL   Same as --github-accelerator; an explicit empty value disables it.
+EOF
+}
+
+parse_args() {
+  local action_seen="false"
+  local value=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      install|upgrade|update|uninstall|remove)
+        if [ "$action_seen" = "true" ]; then
+          echo "[ERROR] Multiple actions were provided: $1" >&2
+          usage >&2
+          exit 1
+        fi
+        ACTION="$1"
+        action_seen="true"
+        shift
+        ;;
+      --github-accelerator)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "[ERROR] --github-accelerator requires an HTTP(S) URL" >&2
+          usage >&2
+          exit 1
+        fi
+        GITHUB_ACCELERATOR_URL="$2"
+        GITHUB_ACCELERATOR_EXPLICIT="true"
+        shift 2
+        ;;
+      --github-accelerator=*)
+        value="${1#*=}"
+        if [ -z "$value" ]; then
+          echo "[ERROR] --github-accelerator requires an HTTP(S) URL" >&2
+          usage >&2
+          exit 1
+        fi
+        GITHUB_ACCELERATOR_URL="$value"
+        GITHUB_ACCELERATOR_EXPLICIT="true"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "[ERROR] Unknown argument: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+parse_args "$@"
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -81,6 +151,67 @@ get_env_value() {
     return 0
   fi
   grep -E "^${key}=" "$file" | tail -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
+}
+
+normalize_github_accelerator_url() {
+  local value="${1:-}"
+  local pattern='^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$'
+  value="$(printf "%s" "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s#/*$##')"
+  if [[ ! "$value" =~ $pattern ]]; then
+    return 1
+  fi
+  case "$value" in
+    *'$'*|*'`'*|*'\'*|*'"'*) return 1 ;;
+  esac
+  if [ -z "$value" ]; then
+    return 1
+  fi
+  printf "%s\n" "$value"
+}
+
+resolve_github_accelerator() {
+  local existing=""
+  local normalized=""
+  if [ "$GITHUB_ACCELERATOR_EXPLICIT" != "true" ]; then
+    existing="$(get_env_value FORWARDX_GITHUB_ACCELERATOR_URL || true)"
+    if [ -n "$existing" ]; then
+      GITHUB_ACCELERATOR_URL="$existing"
+    fi
+  fi
+  if [ -z "$GITHUB_ACCELERATOR_URL" ]; then
+    export FORWARDX_GITHUB_ACCELERATOR_URL=""
+    return
+  fi
+  if ! normalized="$(normalize_github_accelerator_url "$GITHUB_ACCELERATOR_URL")"; then
+    echo "[ERROR] Invalid GitHub accelerator URL: $GITHUB_ACCELERATOR_URL" >&2
+    echo "[INFO] Use an HTTP(S) base URL, for example: https://mirror.example.com" >&2
+    exit 1
+  fi
+  GITHUB_ACCELERATOR_URL="$normalized"
+  export FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
+}
+
+is_github_url() {
+  local url="${1:-}"
+  [[ "$url" =~ ^https?://([^/]+\.)?github\.com(/|$) ]] \
+    || [[ "$url" =~ ^https?://raw\.githubusercontent\.com(/|$) ]] \
+    || [[ "$url" =~ ^https?://([^/]+\.)?githubusercontent\.com(/|$) ]]
+}
+
+accelerated_github_url() {
+  local url="$1"
+  if [ -n "$GITHUB_ACCELERATOR_URL" ] && is_github_url "$url"; then
+    printf "%s/%s\n" "$GITHUB_ACCELERATOR_URL" "$url"
+  else
+    printf "%s\n" "$url"
+  fi
+}
+
+release_tag_from_url() {
+  local url="$1"
+  curl -fsSL --retry 3 --connect-timeout 10 "$url" \
+    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
+    | head -1 || true
 }
 
 get_compose_host_port() {
@@ -383,10 +514,18 @@ load_existing_env() {
 
 latest_release_version() {
   local api_url="${FORWARDX_GITHUB_API_URL:-https://api.github.com/repos/${REPO_SLUG}/releases/latest}"
+  local accelerated_url=""
   local tag=""
-  tag="$(curl -fsSL --retry 3 --connect-timeout 10 "$api_url" \
-    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
-    | head -1 || true)"
+  accelerated_url="$(accelerated_github_url "$api_url")"
+  if [ "$accelerated_url" != "$api_url" ]; then
+    tag="$(release_tag_from_url "$accelerated_url")"
+    if [ -n "$tag" ]; then
+      printf "%s\n" "$tag"
+      return
+    fi
+    echo "[WARN] GitHub accelerator version check failed; falling back to GitHub." >&2
+  fi
+  tag="$(release_tag_from_url "$api_url")"
 
   if [ -z "$tag" ]; then
     echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url" >&2
@@ -544,6 +683,7 @@ JWT_SECRET=$jwt_secret
 COMPOSE_PROJECT_NAME=$PROJECT_NAME
 FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
 FORWARDX_IMAGE=$image
+FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
 EOF
 }
 
@@ -752,6 +892,7 @@ install_panel() {
   require_root
   install_docker
   load_existing_env
+  resolve_github_accelerator
   read_database_config_json
   resolve_image_selection
   image="$RESOLVED_IMAGE"
@@ -767,6 +908,7 @@ upgrade_panel() {
   local image
   require_root
   load_existing_env
+  resolve_github_accelerator
   install_docker
   resolve_image_selection
   image="$RESOLVED_IMAGE"
@@ -823,7 +965,7 @@ case "$ACTION" in
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
   *)
-    echo "Usage: $0 install|upgrade|uninstall"
+    usage
     exit 1
     ;;
 esac

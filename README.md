@@ -86,6 +86,24 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 默认安装目录为 `/opt/forwardx-panel`，服务名为 `forwardx-panel.service`，数据位于 `/opt/forwardx-panel/data`。
 
+### GitHub 下载加速
+
+GitHub 访问不稳定时，可为 Docker 或本地安装脚本指定加速站。加速站格式为 `加速站地址/原始 GitHub URL`。首次执行时，安装脚本本身的 Raw 地址也需要加上前缀：
+
+```bash
+# Docker 安装
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh" \
+  | bash -s -- install --github-accelerator "https://mirror.example.com"
+
+# 本地 systemd 安装
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh" \
+  | bash -s -- install --github-accelerator "https://mirror.example.com"
+```
+
+安装器会把地址保存到部署 `.env`，后续升级可继续使用；加速请求失败时会自动回退直连 GitHub。也可在「系统设置 -> 系统信息 -> GitHub 下载加速」开启「面板更新使用加速站」，让版本检查、Release 信息、安装包检测、回退及升级命令使用该地址。
+
+该参数不代理 `ghcr.io` 镜像拉取。Docker 镜像源需要通过 `FORWARDX_IMAGE` 或 `FORWARDX_IMAGE_REPO` 单独配置。详细用法见[部署面板](https://poouo.github.io/Forwardx/guide/deploy-panel)和[升级与备份](https://poouo.github.io/Forwardx/guide/upgrade-backup)。
+
 ## 首次使用
 
 1. 打开 `http://服务器IP:9810`。

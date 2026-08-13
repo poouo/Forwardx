@@ -109,10 +109,15 @@ AI API Key 不建议写入 Docker `.env`。后台保存后会做脱敏展示，�
 | --- | --- | --- |
 | `FORWARDX_IMAGE` | `ghcr.io/poouo/forwardx:latest` | Docker 部署使用的镜像。 |
 | `FORWARDX_IMAGE_REPO` | `ghcr.io/poouo/forwardx` | Docker 一键脚本解析版本镜像时使用的镜像仓库。 |
+| `FORWARDX_GITHUB_ACCELERATOR_URL` | 空 | 面板安装或升级使用的 GitHub 加速站，例如 `https://mirror.example.com`。一键脚本通过 `--github-accelerator` 接收后会写入部署 `.env`。 |
 | `FORWARDX_TARGET_VERSION` | 空 | 本地部署可指定安装或升级到某个版本，例如 `v2.3.222`。Docker 脚本也会用它校验目标镜像是否已经构建完成。 |
 | `FORWARDX_UPGRADE_COMMAND` | 空 | 后台一键升级命令。为空时只能检查更新，不能在后台直接执行升级。 |
 | `FORWARDX_REPO_URL` | 自动注入 | 升级任务执行时使用的仓库地址，通常不需要手动配置。 |
 | `FORWARDX_CURRENT_VERSION` | 自动注入 | 升级任务执行时的当前版本，通常不需要手动配置。 |
+
+`FORWARDX_GITHUB_ACCELERATOR_URL` 使用 `加速站地址/原始 GitHub URL` 的代理格式，供安装和升级脚本读取。面板内的更新功能需另行在「系统设置 -> 系统信息 -> GitHub 下载加速」填写地址并开启「面板更新使用加速站」；开启后，版本检查、Release 信息、安装包检测、回退和升级命令会优先使用该地址，失败时自动回退直连 GitHub。
+
+该变量不加速 `ghcr.io` 镜像拉取。Docker 镜像地址仍由 `FORWARDX_IMAGE` 或 `FORWARDX_IMAGE_REPO` 控制。
 
 ## Agent 安装脚本相关变量
 

@@ -58,6 +58,11 @@ import {
 } from "@shared/customSidebarPages";
 import { panelMigrationScopeLabel, type PanelMigrationScope } from "@shared/panelMigration";
 import {
+  buildPanelInstallerCommand,
+  normalizeGithubAcceleratorUrl,
+  panelUpdateGithubAccelerator,
+} from "@shared/githubAccelerator";
+import {
   Trash2,
   Key,
   Copy,
@@ -188,10 +193,6 @@ function formatDatabaseSwitchDuration(milliseconds: number) {
   return remainingMinutes > 0 ? `${hours} 小时 ${remainingMinutes} 分` : `${hours} 小时`;
 }
 
-const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh";
-const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh";
-const panelLocalUpgradeCommand = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s -- upgrade`;
-const panelDockerUpgradeCommand = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s -- upgrade`;
 const defaultGithubAcceleratorUrl = "https://git.poouo.com";
 type AiProvider = "deepseek" | "siliconflow" | "custom";
 const aiProviderOptions: Array<{ value: AiProvider; label: string }> = [
@@ -286,17 +287,6 @@ function isDdnsProvider(value: unknown): value is DdnsProvider {
 function ddnsProviderGuideUrl(provider: DdnsProvider) {
   return `${docsBaseUrl}/guide/ddns#${ddnsProviderGuideAnchors[provider] || "quick-setup"}`;
 }
-
-const manualPanelUpgradeCommands = [
-  {
-    label: "本地部署",
-    command: panelLocalUpgradeCommand,
-  },
-  {
-    label: "Docker 部署",
-    command: panelDockerUpgradeCommand,
-  },
-];
 
 function panelVersionCommand(command: string, targetVersion: string) {
   const target = String(targetVersion || "").trim().replace(/^v/i, "");
@@ -4241,6 +4231,7 @@ function SystemInfoSection() {
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
   const [sidebarMenu, setSidebarMenu] = useState<SidebarMenuSettings>(() => normalizeSidebarMenuSettings());
   const [githubAcceleratorEnabled, setGithubAcceleratorEnabled] = useState(false);
+  const [githubAcceleratorPanelUpdateEnabled, setGithubAcceleratorPanelUpdateEnabled] = useState(false);
   const [githubAcceleratorUrlInput, setGithubAcceleratorUrlInput] = useState(defaultGithubAcceleratorUrl);
   const [agentPreferPanelInstall, setAgentPreferPanelInstall] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
@@ -4309,6 +4300,7 @@ function SystemInfoSection() {
         plugins: settings.pluginsEnabled === true || settings.sidebarMenu?.plugins === true,
       }));
       setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
+      setGithubAcceleratorPanelUpdateEnabled(!!settings.githubAccelerator?.panelUpdateEnabled);
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
       setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
       setDdnsEnabled(!!settings.ddns?.enabled);
@@ -4722,17 +4714,27 @@ function SystemInfoSection() {
   };
 
   const handleSaveAgentInstall = () => {
-    const acceleratorUrl = normalizeConfigUrl(githubAcceleratorUrlInput);
-    if (acceleratorUrl && !/^https?:\/\//i.test(acceleratorUrl)) {
-      toast.error("GitHub 加速地址必须以 http:// 或 https:// 开头");
+    const inputUrl = normalizeConfigUrl(githubAcceleratorUrlInput);
+    const acceleratorUrl = normalizeGithubAcceleratorUrl(inputUrl);
+    if (inputUrl && !acceleratorUrl) {
+      toast.error("GitHub 加速地址必须是 HTTP(S) 基础地址，且不能包含查询参数或锚点");
       return;
     }
     saveSystemSettings("agentInstall", {
       githubAccelerator: {
         enabled: githubAcceleratorEnabled,
         url: acceleratorUrl,
+        panelUpdateEnabled: githubAcceleratorPanelUpdateEnabled,
       },
       agentPreferPanelInstall,
+    }, {
+      onSuccess: async () => {
+        await Promise.all([
+          utils.system.upgradeStatus.invalidate(),
+          utils.system.checkUpdate.invalidate(),
+        ]);
+        await refetchUpgradeStatus();
+      },
     });
   };
 
@@ -4834,7 +4836,27 @@ function SystemInfoSection() {
   const updateInfo = upgradeStatus?.update;
   const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
   const isDockerDeployment = !!upgradeStatus?.docker || !!settings?.upgrade?.docker;
-  const upgradeChangelogUrl = getPanelChangelogUrl(updateInfo?.latestVersion || upgradeStatus?.currentVersion || settings?.version, updateInfo?.releaseUrl);
+  const panelUpdateAccelerator = panelUpdateGithubAccelerator({
+    enabled: githubAcceleratorEnabled,
+    panelUpdateEnabled: githubAcceleratorPanelUpdateEnabled,
+    url: githubAcceleratorUrlInput,
+  });
+  const manualPanelUpgradeCommands = ([
+    ["本地部署", "local"],
+    ["Docker 部署", "docker"],
+  ] as const).map(([label, deployment]) => ({
+    label,
+    command: buildPanelInstallerCommand({
+      deployment,
+      action: "upgrade",
+      accelerator: panelUpdateAccelerator,
+    }),
+  }));
+  const upgradeChangelogUrl = getPanelChangelogUrl(
+    updateInfo?.latestVersion || upgradeStatus?.currentVersion || settings?.version,
+    updateInfo?.releaseUrl,
+    settings?.githubAccelerator,
+  );
   const dockerPanelUpgradeCommand =
     upgradeStatus?.manualUpgradeCommand ||
     settings?.upgrade?.manualUpgradeCommand ||
@@ -6049,7 +6071,7 @@ function SystemInfoSection() {
             GitHub 下载加速
           </CardTitle>
           <CardDescription>
-            配置 Agent 安装和升级时访问 GitHub 的方式。
+            配置 Agent 安装、升级与面板更新访问 GitHub 的方式。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -6072,6 +6094,19 @@ function SystemInfoSection() {
               </div>
               <Switch className="shrink-0" checked={agentPreferPanelInstall} onCheckedChange={setAgentPreferPanelInstall} />
             </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 lg:col-span-2">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">面板更新使用加速站</p>
+                <p className="text-xs text-muted-foreground">
+                  版本检查、Release 安装包、版本回退和升级脚本优先使用加速地址，失败时自动回退直连。
+                </p>
+              </div>
+              <Switch
+                className="shrink-0"
+                checked={githubAcceleratorPanelUpdateEnabled}
+                onCheckedChange={setGithubAcceleratorPanelUpdateEnabled}
+              />
+            </div>
           </div>
           <div className="space-y-2">
             <Label>GitHub 加速地址</Label>
@@ -6082,12 +6117,12 @@ function SystemInfoSection() {
               className="font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              未填写或未开启时使用直连 GitHub。
+              格式示例：https://mirror.example.com。未填写或未开启对应开关时使用直连 GitHub。
             </p>
           </div>
           <div className="flex justify-end">
             <Button onClick={handleSaveAgentInstall} disabled={isSavingSetting("agentInstall")}>
-              保存 Agent 安装配置
+              保存 GitHub 下载配置
             </Button>
           </div>
         </CardContent>

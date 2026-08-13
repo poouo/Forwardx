@@ -67,6 +67,26 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 本地 systemd 部署升级会保留 `.env`、`data` 目录、数据库配置和已有数据。如果面板程序包尚未上传到 GitHub Release，脚本会提示等待 GitHub Actions 构建完成。
 
+### GitHub 加速升级
+
+一键脚本可为 Docker 和本地 systemd 升级指定 GitHub 加速站：
+
+```bash
+# Docker
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh" \
+  | bash -s -- upgrade --github-accelerator "https://mirror.example.com"
+
+# 本地 systemd
+curl -fsSL "https://mirror.example.com/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh" \
+  | bash -s -- upgrade --github-accelerator "https://mirror.example.com"
+```
+
+脚本会把加速地址保存到部署 `.env`，后续升级可继续使用。加速请求失败会自动回退直连 GitHub，不需要手动切换命令。
+
+面板内可前往「系统设置 -> 系统信息 -> GitHub 下载加速」，填写加速站并开启「面板更新使用加速站」。开启后，面板的版本检查、Release 信息、安装包检测、版本回退和升级命令会优先使用加速站；关闭后仍使用原始 GitHub 地址。
+
+GitHub 加速不会作用于 `ghcr.io` Docker 镜像。需要更换镜像源时，请通过 `FORWARDX_IMAGE` 或 `FORWARDX_IMAGE_REPO` 单独配置。
+
 ## Agent 升级
 
 可以在面板中选择主机批量升级 Agent，也可以单独选择某台主机升级。

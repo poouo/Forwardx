@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LINK_PROBE_FRESH_MS } from "@shared/linkProbePolicy";
-import { resolveForwardRuleVisualStatus } from "./forwardRuleStatus";
+import {
+  preferLastKnownForwardRuleVisualStatus,
+  resolveForwardRuleVisualStatus,
+} from "./forwardRuleStatus";
 
 const now = Date.UTC(2026, 6, 16, 12, 0, 0);
 const base = {
@@ -159,4 +162,33 @@ test("a recent timeout overrides the direct rule running flag", () => {
     latestLatencyAt: now - 30_000,
   }, now);
   assert.equal(result.state, "error");
+});
+
+test("last confirmed state is used while a new status is pending", () => {
+  const result = preferLastKnownForwardRuleVisualStatus(
+    { state: "pending", title: "等待 Agent 上报运行状态" },
+    { state: "running", title: "Agent 已确认规则运行" },
+  );
+  assert.equal(result.state, "running");
+  assert.match(result.title, /上次状态/);
+});
+
+test("an explicit current result is never replaced by the cache", () => {
+  const cases = [
+    {
+      current: { state: "error" as const, title: "转发资源配置不可用" },
+      cached: { state: "running" as const, title: "旧状态" },
+    },
+    {
+      current: { state: "disabled" as const, title: "规则已停用" },
+      cached: { state: "running" as const, title: "旧状态" },
+    },
+    {
+      current: { state: "running" as const, title: "Agent 已确认规则运行" },
+      cached: { state: "error" as const, title: "旧故障" },
+    },
+  ];
+  for (const { current, cached } of cases) {
+    assert.deepEqual(preferLastKnownForwardRuleVisualStatus(current, cached), current);
+  }
 });
