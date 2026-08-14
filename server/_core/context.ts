@@ -32,7 +32,7 @@ export interface TrpcContext {
   res: Response;
   user: User | null;
   authSession: AuthSession | null;
-  authFailureReason: "session_replaced" | null;
+  authFailureReason: "session_replaced" | "account_disabled" | null;
 }
 
 type TokenSource = "cookie" | "bearer";
@@ -103,7 +103,7 @@ async function claimSessionLease(user: User, sessionKind: SessionKind, sid: stri
 
 type ResolveSessionResult =
   | { user: User; authSession: AuthSession; failureReason?: never }
-  | { user: null; authSession: null; failureReason: "session_replaced" | null };
+  | { user: null; authSession: null; failureReason: "session_replaced" | "account_disabled" | null };
 
 async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<ResolveSessionResult> {
   try {
@@ -118,6 +118,14 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
 
     const found = await db.getUserById(normalized.userId);
     if (!found) return { user: null, authSession: null, failureReason: null };
+
+    // Account state is checked while resolving the token, before any public
+    // procedure can inspect ctx.user. This invalidates an otherwise-active
+    // cookie immediately after an administrator disables the account.
+    if ((found as any).accountEnabled === false) {
+      clearSessionCookie(res, req);
+      return { user: null, authSession: null, failureReason: "account_disabled" };
+    }
 
     const sessionKind = normalized.kind;
     const activeSession = await getActiveAuthSession(found.id, normalized.sid, sessionKind);

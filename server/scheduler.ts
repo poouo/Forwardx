@@ -21,6 +21,7 @@ import {
   startSelfTestSweepTimer,
 } from "./selfTestTiming";
 import { billingMonthlyBoundary, billingStartOfCalendarDay } from "@shared/billingTime";
+import { expireStalePendingOrders, recoverStaleProcessingPaymentOrders } from "./payment";
 
 type TimedOutForwardTest = {
   id: number;
@@ -632,6 +633,10 @@ export function startScheduler() {
   const databasePoolSizing = createNonOverlappingScheduledTask("database pool sizing", async () => {
     await db.refreshDatabasePoolSettings();
   });
+  const paymentMaintenance = createNonOverlappingScheduledTask("payment order maintenance", async () => {
+    await expireStalePendingOrders();
+    await recoverStaleProcessingPaymentOrders();
+  });
 
   const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {
     const startTimer = setTimeout(() => {
@@ -667,6 +672,7 @@ export function startScheduler() {
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
   runAtBillingMidnight(monthlyTrafficReset);
   repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);
+  repeatAfter(paymentMaintenance, 60 * 1000, 35_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
   repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
   repeatAfter(historyCleanup, 60 * 60 * 1000, 2 * 60_000);

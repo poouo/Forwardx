@@ -14,6 +14,96 @@ type supportBundleRequest struct {
 	TaskID string `json:"taskId"`
 }
 
+type supportBundleJob struct {
+	cfg     Config
+	request supportBundleRequest
+}
+
+const supportBundleCompletedRetention = 30 * time.Minute
+
+// supportBundleScheduler prevents duplicate SSE deliveries from launching
+// overlapping command sets. Distinct administrator requests remain queued and
+// are collected one at a time, keeping subprocess concurrency globally bounded.
+type supportBundleScheduler struct {
+	mu        sync.Mutex
+	running   bool
+	queue     []supportBundleJob
+	tasks     map[string]time.Time
+	process   func(Config, supportBundleRequest) bool
+	retention time.Duration
+}
+
+func newSupportBundleScheduler(process func(Config, supportBundleRequest) bool) *supportBundleScheduler {
+	return &supportBundleScheduler{
+		tasks:     make(map[string]time.Time),
+		process:   process,
+		retention: supportBundleCompletedRetention,
+	}
+}
+
+func (scheduler *supportBundleScheduler) schedule(cfg Config, request supportBundleRequest) bool {
+	taskID := strings.TrimSpace(request.TaskID)
+	if taskID == "" {
+		return false
+	}
+	request.TaskID = taskID
+	now := time.Now()
+	scheduler.mu.Lock()
+	for id, completedAt := range scheduler.tasks {
+		if !completedAt.IsZero() && now.Sub(completedAt) >= scheduler.retention {
+			delete(scheduler.tasks, id)
+		}
+	}
+	if _, exists := scheduler.tasks[taskID]; exists {
+		scheduler.mu.Unlock()
+		return false
+	}
+	scheduler.tasks[taskID] = time.Time{}
+	scheduler.queue = append(scheduler.queue, supportBundleJob{cfg: cfg, request: request})
+	if scheduler.running {
+		scheduler.mu.Unlock()
+		return true
+	}
+	scheduler.running = true
+	job := scheduler.queue[0]
+	scheduler.queue[0] = supportBundleJob{}
+	scheduler.queue = scheduler.queue[1:]
+	if len(scheduler.queue) == 0 {
+		scheduler.queue = nil
+	}
+	scheduler.mu.Unlock()
+	go scheduler.run(job)
+	return true
+}
+
+func (scheduler *supportBundleScheduler) run(job supportBundleJob) {
+	for {
+		reported := scheduler.process(job.cfg, job.request)
+		scheduler.mu.Lock()
+		if reported {
+			scheduler.tasks[job.request.TaskID] = time.Now()
+		} else {
+			// A later delivery may retry a report that failed while the panel was
+			// temporarily unavailable.
+			delete(scheduler.tasks, job.request.TaskID)
+		}
+		if len(scheduler.queue) == 0 {
+			scheduler.running = false
+			scheduler.mu.Unlock()
+			return
+		}
+		job = scheduler.queue[0]
+		scheduler.queue[0] = supportBundleJob{}
+		scheduler.queue = scheduler.queue[1:]
+		if len(scheduler.queue) == 0 {
+			scheduler.queue = nil
+		}
+		scheduler.mu.Unlock()
+	}
+}
+
+var agentSupportBundles = newSupportBundleScheduler(collectAndReportSupportBundle)
+
 type supportCommandResult struct {
 	Name       string `json:"name"`
 	Output     string `json:"output"`
@@ -138,10 +228,10 @@ func collectSupportDiagnostics() map[string]any {
 	}
 }
 
-func collectAndReportSupportBundle(cfg Config, request supportBundleRequest) {
+func collectAndReportSupportBundle(cfg Config, request supportBundleRequest) bool {
 	taskID := strings.TrimSpace(request.TaskID)
 	if taskID == "" {
-		return
+		return false
 	}
 	diagnostics := collectSupportDiagnostics()
 	var response map[string]any
@@ -150,5 +240,7 @@ func collectAndReportSupportBundle(cfg Config, request supportBundleRequest) {
 		"diagnostics": diagnostics,
 	}, &response); err != nil {
 		logf("support bundle report failed task=%s error=%v", taskID, err)
+		return false
 	}
+	return true
 }

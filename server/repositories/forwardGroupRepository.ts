@@ -2034,10 +2034,18 @@ function longestContiguousRange(ports: number[]) {
 function policyRangeForGroup(policy: PortPolicy) {
   if (policy.denyAll) return null;
   if (!policyHasRestrictionForGroup(policy)) return { start: 10000, end: 65535 };
-  if (policy.rangeStart !== null && policy.rangeEnd !== null) {
-    return { start: policy.rangeStart, end: policy.rangeEnd };
-  }
-  return longestContiguousRange(policy.allowlist);
+  const candidates = [
+    ...(policy.rangeStart !== null && policy.rangeEnd !== null
+      ? Array.from({ length: policy.rangeEnd - policy.rangeStart + 1 }, (_, index) => policy.rangeStart! + index)
+      : []),
+    ...policy.allowlist,
+    ...(policy.ranges || []).flatMap((range) => {
+      const ports: number[] = [];
+      for (let port = range.start; port <= range.end; port += 1) ports.push(port);
+      return ports;
+    }),
+  ];
+  return longestContiguousRange(candidates);
 }
 
 function candidatePortsForGroup(policy: PortPolicy) {

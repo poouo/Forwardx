@@ -70,6 +70,10 @@ export const ENV = {
   panelSslEnabled: process.env.FORWARDX_PANEL_SSL_ENABLED === "true",
   panelSslCertPath: process.env.FORWARDX_PANEL_SSL_CERT_PATH ?? "",
   panelSslKeyPath: process.env.FORWARDX_PANEL_SSL_KEY_PATH ?? "",
+  // Only trusted reverse proxies may supply X-Forwarded-* client metadata.
+  // Keep loopback-only as the secure default; Docker/reverse-proxy deployments
+  // can explicitly set FORWARDX_TRUST_PROXY to their proxy subnet or hop count.
+  trustProxy: process.env.FORWARDX_TRUST_PROXY ?? "loopback",
   // 管理后台一键升级命令。为空时只允许检查更新，不执行升级。
   // 执行时会注入 FORWARDX_TARGET_VERSION / FORWARDX_CURRENT_VERSION / FORWARDX_REPO_URL。
   upgradeCommand: process.env.FORWARDX_UPGRADE_COMMAND ?? "",

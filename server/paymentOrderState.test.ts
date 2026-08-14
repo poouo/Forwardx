@@ -57,6 +57,40 @@ test("payment callbacks cannot reactivate closed orders", () => {
       assert.equal(pendingRow.status, "paid");
       assert.ok(pendingRow.paidAt);
       assert.equal(pendingRow.tradeNo, "paid-trade");
+
+      await runtime.executeRaw(
+        'INSERT INTO "subscription_plans" ("id", "name", "durationDays", "portCount", "trafficLimit") VALUES (?, ?, ?, ?, ?)',
+        [100, "Pending payment plan", 30, 1, 1000],
+      );
+      await runtime.executeRaw(
+        'INSERT INTO "payment_orders" ("id", "outTradeNo", "userId", "provider", "paymentType", "status", "subject", "amountCents", "currency", "planId") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [20, "FWX-PLAN-PENDING", 1, "stripe", "stripe", "pending", "plan", 100, "CNY", 100],
+      );
+      await assert.rejects(
+        () => billing.deleteSubscriptionPlan(100),
+        /待支付或待发放订单/,
+      );
+      let [plan] = await runtime.queryRaw('SELECT "id" FROM "subscription_plans" WHERE "id" = ?', [100]);
+      assert.equal(Number(plan.id), 100);
+
+      await runtime.executeRaw('UPDATE "payment_orders" SET "status" = ? WHERE "outTradeNo" = ?', ["cancelled", "FWX-PLAN-PENDING"]);
+      await billing.deleteSubscriptionPlan(100);
+      [plan] = await runtime.queryRaw('SELECT "id" FROM "subscription_plans" WHERE "id" = ?', [100]);
+      assert.equal(plan, undefined);
+      await assert.rejects(
+        () => billing.createPaymentOrder({
+          outTradeNo: "FWX-DELETED-PLAN",
+          userId: 1,
+          provider: "stripe",
+          paymentType: "stripe",
+          status: "pending",
+          subject: "deleted plan",
+          amountCents: 100,
+          currency: "CNY",
+          planId: 100,
+        }),
+        /套餐已删除/,
+      );
     } finally {
       await runtime.closeDatabase();
     }

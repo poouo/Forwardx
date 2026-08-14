@@ -106,6 +106,20 @@ test("user and host monthly reset selection changes at the billing boundary in e
     try {
       await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
       await schema.ensureDatabaseSchema();
+      await runtime.executeRaw(
+        'INSERT INTO "users" ("id", "username", "password", "role", "lastTrafficReset") VALUES (?, ?, ?, ?, ?)',
+        [99, "legacy-reset-user", "hash", "user", epoch("2026-07-31T16:00:00.000Z")],
+      );
+      await runtime.executeRaw(
+        'DELETE FROM "system_settings" WHERE "key" = ?',
+        ["last-auto-traffic-reset-backfill-v1"],
+      );
+      await runtime.executeRaw('ALTER TABLE "users" DROP COLUMN "lastAutoTrafficReset"');
+      await schema.ensureDatabaseSchema();
+      const [legacyUser] = await runtime.queryRaw(
+        'SELECT "lastTrafficReset", "lastAutoTrafficReset" FROM "users" WHERE "id" = ?',
+        [99],
+      );
       for (const [id, resetDay, lastReset] of [
         [1, 23, null],
         [2, 24, null],
@@ -113,23 +127,53 @@ test("user and host monthly reset selection changes at the billing boundary in e
         [4, 23, epoch("2026-07-31T15:59:59.000Z")],
       ]) {
         await runtime.executeRaw(
-          'INSERT INTO "users" ("id", "username", "password", "role", "trafficAutoReset", "trafficResetDay", "lastTrafficReset") VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [id, "billing-user-" + id, "hash", "user", 1, resetDay, lastReset],
+          'INSERT INTO "users" ("id", "username", "password", "role", "trafficAutoReset", "trafficResetDay", "lastTrafficReset", "lastAutoTrafficReset") VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, "billing-user-" + id, "hash", "user", 1, resetDay, lastReset, lastReset],
         );
         await runtime.executeRaw(
           'INSERT INTO "hosts" ("id", "name", "ip", "userId", "portRangeStart", "portRangeEnd", "trafficAutoReset", "trafficResetDay", "lastTrafficReset") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [id, "billing-host-" + id, "127.0.0." + id, id, 10000 + id, 10000 + id, 1, resetDay, lastReset],
         );
       }
+      await runtime.executeRaw(
+        'INSERT INTO "users" ("id", "username", "password", "role", "trafficAutoReset", "trafficResetDay", "trafficUsed") VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [5, "manual-reset-user", "hash", "user", 1, 23, 123],
+      );
+      await users.resetUserTraffic(5);
+      await schema.ensureDatabaseSchema();
+      const [manualUserAfterEnsure] = await runtime.queryRaw(
+        'SELECT "lastAutoTrafficReset" FROM "users" WHERE "id" = ?',
+        [5],
+      );
 
       const before = new Date("2026-08-22T15:59:59.000Z");
       const boundary = new Date("2026-08-22T16:00:00.000Z");
       const ids = (rows) => rows.map((row) => Number(row.id)).sort((left, right) => left - right);
+      const usersBefore = ids(await users.getUsersForAutoReset(before));
+      const usersAt = ids(await users.getUsersForAutoReset(boundary));
+      await runtime.executeRaw('UPDATE "users" SET "trafficUsed" = ? WHERE "id" = ?', [456, 5]);
+      const resetAt = new Date("2026-08-22T17:00:00.000Z");
+      const firstCycleReset = await users.resetUserTrafficForCycle(5, boundary, resetAt);
+      const secondCycleReset = await users.resetUserTrafficForCycle(5, boundary, resetAt);
+      const usersAfterCycle = ids(await users.getUsersForAutoReset(boundary));
+      const [cycleUser] = await runtime.queryRaw(
+        'SELECT "trafficUsed", "lastTrafficReset", "lastAutoTrafficReset" FROM "users" WHERE "id" = ?',
+        [5],
+      );
       process.stdout.write("\n__BILLING_RESULT__" + JSON.stringify({
-        usersBefore: ids(await users.getUsersForAutoReset(before)),
-        usersAt: ids(await users.getUsersForAutoReset(boundary)),
+        usersBefore,
+        usersAt,
         hostsBefore: ids(await hosts.getHostsForTrafficAutoReset(before)),
         hostsAt: ids(await hosts.getHostsForTrafficAutoReset(boundary)),
+        legacyReset: Number(legacyUser.lastAutoTrafficReset),
+        legacySourceReset: Number(legacyUser.lastTrafficReset),
+        manualMarkerAfterEnsure: manualUserAfterEnsure.lastAutoTrafficReset,
+        firstCycleReset,
+        secondCycleReset,
+        usersAfterCycle,
+        cycleTrafficUsed: Number(cycleUser.trafficUsed),
+        cycleLastReset: Number(cycleUser.lastTrafficReset),
+        cycleLastAutoReset: Number(cycleUser.lastAutoTrafficReset),
       }));
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
@@ -158,7 +202,19 @@ test("user and host monthly reset selection changes at the billing boundary in e
   });
 
   assert.deepEqual(results, [
-    { usersBefore: [], usersAt: [1, 4], hostsBefore: [], hostsAt: [1, 4] },
-    { usersBefore: [], usersAt: [1, 4], hostsBefore: [], hostsAt: [1, 4] },
+    {
+      usersBefore: [], usersAt: [1, 4, 5], hostsBefore: [], hostsAt: [1, 4],
+      legacyReset: 1785513600, legacySourceReset: 1785513600, manualMarkerAfterEnsure: null,
+      firstCycleReset: true, secondCycleReset: false, cycleTrafficUsed: 0,
+      usersAfterCycle: [1, 4],
+      cycleLastReset: 1787418000, cycleLastAutoReset: 1787418000,
+    },
+    {
+      usersBefore: [], usersAt: [1, 4, 5], hostsBefore: [], hostsAt: [1, 4],
+      legacyReset: 1785513600, legacySourceReset: 1785513600, manualMarkerAfterEnsure: null,
+      firstCycleReset: true, secondCycleReset: false, cycleTrafficUsed: 0,
+      usersAfterCycle: [1, 4],
+      cycleLastReset: 1787418000, cycleLastAutoReset: 1787418000,
+    },
   ]);
 });

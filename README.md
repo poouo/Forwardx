@@ -86,6 +86,22 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 默认安装目录为 `/opt/forwardx-panel`，服务名为 `forwardx-panel.service`，数据位于 `/opt/forwardx-panel/data`。
 
+### 管理员密码恢复
+
+忘记管理员密码时，可以从 Docker 容器或 SSH 终端执行重置命令。密码会在交互式终端中隐藏输入，不会作为命令行参数传递：
+
+```bash
+# Docker 部署（默认容器名为 forwardx-panel）
+docker exec -it forwardx-panel node dist/reset-admin-password.js
+
+# 本地 systemd 部署
+sudo bash /opt/forwardx-panel/scripts/install-panel-local.sh reset-admin
+```
+
+如果有多个管理员，按提示输入要修改的用户名或邮箱。命令会撤销该管理员已有的登录会话，但保留 2FA 设置；被禁用的账号默认仍保持禁用状态，确认后再追加 `--enable-account` 才会启用。Docker 容器必须处于运行状态，执行前请先备份数据库。
+
+如果自定义过容器名，请将命令中的 `forwardx-panel` 替换为实际容器名；也可以先执行 `docker exec -it forwardx-panel sh`，再在容器内运行 `node dist/reset-admin-password.js`。
+
 ### GitHub 下载加速
 
 GitHub 访问不稳定时，可为 Docker 或本地安装脚本指定加速站。加速站格式为 `加速站地址/原始 GitHub URL`。首次执行时，安装脚本本身的 Raw 地址也需要加上前缀：

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/heap"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -89,11 +90,31 @@ type fxpWireContext struct {
 }
 
 type replayCache struct {
-	ttl       time.Duration
-	max       int
-	mu        sync.Mutex
-	seen      map[string]time.Time
-	lastSweep time.Time
+	ttl    time.Duration
+	max    int
+	mu     sync.Mutex
+	seen   map[string]time.Time
+	expiry replayExpiryHeap
+}
+
+type replayExpiry struct {
+	key       string
+	expiresAt time.Time
+}
+
+type replayExpiryHeap []replayExpiry
+
+func (h replayExpiryHeap) Len() int           { return len(h) }
+func (h replayExpiryHeap) Less(i, j int) bool { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h replayExpiryHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *replayExpiryHeap) Push(value any)    { *h = append(*h, value.(replayExpiry)) }
+func (h *replayExpiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = replayExpiry{}
+	*h = old[:last]
+	return value
 }
 
 const (
@@ -110,7 +131,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.113"
+	fxpRuntimeVersion    = "2.2.114"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -2331,9 +2352,6 @@ func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireCont
 	if _, err := io.ReadFull(conn, salt); err != nil {
 		return nil, err
 	}
-	if !fxpReplaySeen.Add(replayKey(cfg, salt)) {
-		return nil, errors.New("fxp replay detected")
-	}
 	var lenCipher [64]byte
 	lenSize := 4 + 16
 	if _, err := io.ReadFull(conn, lenCipher[:lenSize]); err != nil {
@@ -2360,6 +2378,12 @@ func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireCont
 		putFXPByteBuffer(dataCipher)
 		if err != nil {
 			return nil, err
+		}
+		// Do not let unauthenticated connections populate the replay cache.
+		// The AEAD-authenticated first frame proves knowledge of the tunnel key;
+		// Add remains atomic, so concurrent replays still admit only one request.
+		if !fxpReplaySeen.Add(replayKey(cfg, salt)) {
+			return nil, errors.New("fxp replay detected")
 		}
 		sec.readCounter = 1
 		sec, err = finishServerHandshake(sec, cfg, ack, wire)
@@ -2609,29 +2633,45 @@ func newReplayCache(ttl time.Duration, max int) *replayCache {
 }
 
 func (c *replayCache) Add(key string) bool {
-	now := time.Now()
+	return c.addAt(key, time.Now())
+}
+
+func (c *replayCache) addAt(key string, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.lastSweep.IsZero() || now.Sub(c.lastSweep) > time.Minute || len(c.seen) > c.max {
-		c.sweepLocked(now)
-	}
+	c.sweepLocked(now)
 	if expiresAt, ok := c.seen[key]; ok && expiresAt.After(now) {
 		return false
 	}
-	c.seen[key] = now.Add(c.ttl)
-	if len(c.seen) > c.max {
-		c.sweepLocked(now)
+	expiresAt := now.Add(c.ttl)
+	c.seen[key] = expiresAt
+	heap.Push(&c.expiry, replayExpiry{key: key, expiresAt: expiresAt})
+	for len(c.seen) > c.max {
+		if !c.evictOldestLocked() {
+			break
+		}
 	}
 	return true
 }
 
 func (c *replayCache) sweepLocked(now time.Time) {
-	c.lastSweep = now
-	for key, expiresAt := range c.seen {
-		if !expiresAt.After(now) || len(c.seen) > c.max {
-			delete(c.seen, key)
+	for len(c.expiry) > 0 && !c.expiry[0].expiresAt.After(now) {
+		entry := heap.Pop(&c.expiry).(replayExpiry)
+		if expiresAt, ok := c.seen[entry.key]; ok && expiresAt.Equal(entry.expiresAt) {
+			delete(c.seen, entry.key)
 		}
 	}
+}
+
+func (c *replayCache) evictOldestLocked() bool {
+	for len(c.expiry) > 0 {
+		entry := heap.Pop(&c.expiry).(replayExpiry)
+		if expiresAt, ok := c.seen[entry.key]; ok && expiresAt.Equal(entry.expiresAt) {
+			delete(c.seen, entry.key)
+			return true
+		}
+	}
+	return false
 }
 
 func probeDelay() {

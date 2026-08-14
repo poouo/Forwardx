@@ -301,3 +301,15 @@ test("the local installer validates the complete archive before removing the cur
   assert.notEqual(removal, -1);
   assert.ok(validation < removal);
 });
+
+test("both installers expose a password reset action without accepting password arguments", () => {
+  for (const installer of installers) {
+    assert.match(installer.source, /reset-admin\|reset-password\)/);
+    assert.match(installer.source, /dist\/reset-admin-password\.js/);
+    assert.match(installer.source, /--enable-account/);
+    assert.doesNotMatch(installer.source, /--password/);
+  }
+  assert.match(dockerSource, /Password reset CLI is missing from the running container/);
+  assert.match(dockerSource, /docker exec -it "\$CONTAINER_NAME" node dist\/reset-admin-password\.js/);
+  assert.match(localSource, /Password reset CLI is missing from \$APP_DIR/);
+});

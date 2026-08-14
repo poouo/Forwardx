@@ -37,12 +37,20 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.189"
+var Version = "2.2.190"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
+var encryptedResponseReplayMu sync.Mutex
+var encryptedResponseReplay = make(map[string]time.Time)
+var encryptedResponseClockMu sync.RWMutex
+var encryptedResponseClock = make(map[string]time.Duration)
 
 const selfUpgradeLockTimeout = 10 * time.Minute
+const encryptedResponseReplayWindow = 5 * time.Minute
+const encryptedResponseReplayCacheLimit = 4096
+const encryptedResponseClockMaxOffset = 24 * time.Hour
+const encryptedResponseClockHeader = "X-ForwardX-Panel-Time"
 const iperf3IdleTimeout = 3 * time.Minute
 const selfTestIdlePollInterval = 60 * time.Second
 const selfTestActivePollInterval = 2 * time.Second
@@ -2467,6 +2475,55 @@ type agentDesiredStatePush struct {
 	StateSignatures   map[string]string  `json:"stateSignatures,omitempty"`
 }
 
+type desiredStatePushJob struct {
+	cfg  Config
+	push agentDesiredStatePush
+}
+
+// desiredStatePushScheduler serializes reconciliation work and keeps at most
+// the newest not-yet-started push. Desired-state events are snapshots, so an
+// older pending snapshot must not delay a newer one during a push burst.
+type desiredStatePushScheduler struct {
+	mu      sync.Mutex
+	running bool
+	pending *desiredStatePushJob
+	process func(Config, agentDesiredStatePush)
+}
+
+func newDesiredStatePushScheduler(process func(Config, agentDesiredStatePush)) *desiredStatePushScheduler {
+	return &desiredStatePushScheduler{process: process}
+}
+
+func (scheduler *desiredStatePushScheduler) schedule(cfg Config, push agentDesiredStatePush) {
+	job := desiredStatePushJob{cfg: cfg, push: push}
+	scheduler.mu.Lock()
+	if scheduler.running {
+		scheduler.pending = &job
+		scheduler.mu.Unlock()
+		return
+	}
+	scheduler.running = true
+	scheduler.mu.Unlock()
+	go scheduler.run(job)
+}
+
+func (scheduler *desiredStatePushScheduler) run(job desiredStatePushJob) {
+	for {
+		scheduler.process(job.cfg, job.push)
+		scheduler.mu.Lock()
+		if scheduler.pending == nil {
+			scheduler.running = false
+			scheduler.mu.Unlock()
+			return
+		}
+		job = *scheduler.pending
+		scheduler.pending = nil
+		scheduler.mu.Unlock()
+	}
+}
+
+var agentDesiredStatePushes = newDesiredStatePushScheduler(handleAgentDesiredStatePush)
+
 type migratedPanelError struct {
 	PanelURL string
 }
@@ -4502,6 +4559,10 @@ func runAgentEventStream(cfg Config) error {
 	}
 	defer resp.Body.Close()
 	observeAgentAuthCapability(panelURL, resp.Header.Get(agentAuthCapabilityHeader))
+	streamClockOffset, hasStreamClockOffset := parseEncryptedResponseClockOffsetAt(
+		resp.Header.Get(encryptedResponseClockHeader),
+		time.Now(),
+	)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		authResult := resp.Header.Get(agentAuthResultHeader)
@@ -4541,7 +4602,11 @@ func runAgentEventStream(cfg Config) error {
 		if line == "" {
 			if data.Len() > 0 {
 				var msg agentEventMessage
-				if err := decodeEventData(data.String(), cfg.Token, &msg); err != nil {
+				serverTimeHeader := ""
+				if hasStreamClockOffset && !hasEncryptedResponseClock(panelURL) {
+					serverTimeHeader = encryptedResponseClockHeaderAt(streamClockOffset, time.Now())
+				}
+				if err := decodeEventDataForPanel(data.String(), cfg.Token, panelURL, serverTimeHeader, &msg); err != nil {
 					logf("decode agent upgrade event: %v", err)
 				} else if msg.Type == "agent-upgrade" {
 					var up agentUpgrade
@@ -4566,7 +4631,7 @@ func runAgentEventStream(cfg Config) error {
 					if err := json.Unmarshal(msg.Data, &push); err != nil {
 						logf("decode agent-desired-state payload: %v", err)
 					} else {
-						go handleAgentDesiredStatePush(cfg, push)
+						agentDesiredStatePushes.schedule(cfg, push)
 					}
 				} else if msg.Type == "agent-panel-migration" {
 					var directive panelMigrationDirective
@@ -4580,7 +4645,7 @@ func runAgentEventStream(cfg Config) error {
 					if err := json.Unmarshal(msg.Data, &request); err != nil {
 						logf("decode agent-support-bundle payload: %v", err)
 					} else {
-						go collectAndReportSupportBundle(cfg, request)
+						agentSupportBundles.schedule(cfg, request)
 					}
 				}
 			}
@@ -4610,11 +4675,15 @@ func newAgentEventStreamScanner(r io.Reader) *bufio.Scanner {
 }
 
 func decodeEventData(raw string, token string, out any) error {
+	return decodeEventDataForPanel(raw, token, "", "", out)
+}
+
+func decodeEventDataForPanel(raw string, token string, panelURL string, serverTimeHeader string, out any) error {
 	var env envelope
 	if err := json.Unmarshal([]byte(raw), &env); err != nil {
 		return err
 	}
-	plain, err := decrypt(env, token)
+	plain, err := decryptForPanel(env, token, panelURL, serverTimeHeader)
 	if err != nil {
 		return err
 	}
@@ -13280,7 +13349,7 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 	var decryptErr error
 	responseAuthenticated := strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultAccepted)
 	if err := json.Unmarshal(resBody, &respEnv); err == nil && respEnv.V == 1 {
-		if plain, err := decrypt(respEnv, cfg.Token); err == nil {
+		if plain, err := decryptForPanel(respEnv, cfg.Token, panelURL, res.Header.Get(encryptedResponseClockHeader)); err == nil {
 			decodedBody = plain
 			responseAuthenticated = true
 		} else {
@@ -13465,6 +13534,10 @@ func isClockSyncCandidateError(err error) bool {
 }
 
 func encrypt(payload any, token string) (envelope, error) {
+	return encryptAt(payload, token, time.Now().UnixMilli())
+}
+
+func encryptAt(payload any, token string, ts int64) (envelope, error) {
 	plain, _ := json.Marshal(payload)
 	keyEnc := sha256.Sum256([]byte(token + "|forwardx-agent-v1"))
 	keyMac := sha256.Sum256([]byte(token + "|forwardx-agent-mac"))
@@ -13478,12 +13551,18 @@ func encrypt(payload any, token string) (envelope, error) {
 	}
 	ct := make([]byte, len(plain))
 	cipher.NewCTR(block, iv).XORKeyStream(ct, plain)
-	ts := time.Now().UnixMilli()
 	mac := calcMAC(keyMac[:], iv, ct, ts)
 	return envelope{V: 1, IV: hex.EncodeToString(iv), CT: hex.EncodeToString(ct), MAC: hex.EncodeToString(mac), TS: ts}, nil
 }
 
 func decrypt(env envelope, token string) ([]byte, error) {
+	return decryptForPanel(env, token, "", "")
+}
+
+// decryptForPanel authenticates the envelope before using the optional panel
+// time header. This lets an Agent tolerate a bounded clock skew without
+// allowing an unauthenticated response header to bypass the MAC check.
+func decryptForPanel(env envelope, token, panelURL, serverTimeHeader string) ([]byte, error) {
 	keyEnc := sha256.Sum256([]byte(token + "|forwardx-agent-v1"))
 	keyMac := sha256.Sum256([]byte(token + "|forwardx-agent-mac"))
 	iv, err := hex.DecodeString(env.IV)
@@ -13499,6 +13578,38 @@ func decrypt(env envelope, token string) ([]byte, error) {
 	if !hmac.Equal(got, want) {
 		return nil, fmt.Errorf("mac verification failed")
 	}
+	if serverTime, ok := parseEncryptedResponseTime(serverTimeHeader); ok {
+		observeEncryptedResponseClock(panelURL, serverTime)
+	}
+	now := encryptedResponseNow(panelURL)
+	responseAge := now.Sub(time.UnixMilli(env.TS))
+	if env.TS <= 0 || responseAge > encryptedResponseReplayWindow || responseAge < -encryptedResponseReplayWindow {
+		return nil, fmt.Errorf("encrypted response timestamp out of window")
+	}
+	encryptedResponseReplayMu.Lock()
+	for key, expiresAt := range encryptedResponseReplay {
+		if expiresAt.Before(now) {
+			delete(encryptedResponseReplay, key)
+		}
+	}
+	if _, exists := encryptedResponseReplay[env.MAC]; exists {
+		encryptedResponseReplayMu.Unlock()
+		return nil, fmt.Errorf("encrypted response replay detected")
+	}
+	if len(encryptedResponseReplay) >= encryptedResponseReplayCacheLimit {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for key, expiresAt := range encryptedResponseReplay {
+			if oldestKey == "" || expiresAt.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = key, expiresAt
+			}
+		}
+		if oldestKey != "" {
+			delete(encryptedResponseReplay, oldestKey)
+		}
+	}
+	encryptedResponseReplay[env.MAC] = now.Add(encryptedResponseReplayWindow)
+	encryptedResponseReplayMu.Unlock()
 	block, err := aes.NewCipher(keyEnc[:])
 	if err != nil {
 		return nil, err
@@ -13506,6 +13617,82 @@ func decrypt(env envelope, token string) ([]byte, error) {
 	plain := make([]byte, len(ct))
 	cipher.NewCTR(block, iv).XORKeyStream(plain, ct)
 	return plain, nil
+}
+
+func parseEncryptedResponseTime(raw string) (time.Time, bool) {
+	now := time.Now()
+	offset, ok := parseEncryptedResponseClockOffsetAt(raw, now)
+	if !ok {
+		return time.Time{}, false
+	}
+	return now.Add(offset), true
+}
+
+func parseEncryptedResponseClockOffsetAt(raw string, now time.Time) (time.Duration, bool) {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	offset := time.UnixMilli(value).Sub(now)
+	if absDuration(offset) > encryptedResponseClockMaxOffset {
+		return 0, false
+	}
+	return offset, true
+}
+
+func encryptedResponseClockHeaderAt(offset time.Duration, now time.Time) string {
+	return strconv.FormatInt(now.Add(offset).UnixMilli(), 10)
+}
+
+func observeEncryptedResponseClock(panelURL string, serverTime time.Time) {
+	panelURL = normalizePanelURL(panelURL)
+	if panelURL == "" || serverTime.IsZero() {
+		return
+	}
+	offset := serverTime.Sub(time.Now())
+	if absDuration(offset) > encryptedResponseClockMaxOffset {
+		return
+	}
+	encryptedResponseClockMu.Lock()
+	encryptedResponseClock[panelURL] = offset
+	encryptedResponseClockMu.Unlock()
+}
+
+func encryptedResponseNow(panelURL string) time.Time {
+	offset := time.Duration(0)
+	if normalized := normalizePanelURL(panelURL); normalized != "" {
+		encryptedResponseClockMu.RLock()
+		offset = encryptedResponseClock[normalized]
+		encryptedResponseClockMu.RUnlock()
+	}
+	return time.Now().Add(offset)
+}
+
+func hasEncryptedResponseClock(panelURL string) bool {
+	normalized := normalizePanelURL(panelURL)
+	if normalized == "" {
+		return false
+	}
+	encryptedResponseClockMu.RLock()
+	_, ok := encryptedResponseClock[normalized]
+	encryptedResponseClockMu.RUnlock()
+	return ok
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func resetEncryptedResponseStateForTests() {
+	encryptedResponseReplayMu.Lock()
+	encryptedResponseReplay = make(map[string]time.Time)
+	encryptedResponseReplayMu.Unlock()
+	encryptedResponseClockMu.Lock()
+	encryptedResponseClock = make(map[string]time.Duration)
+	encryptedResponseClockMu.Unlock()
 }
 
 func calcMAC(key, iv, ct []byte, ts int64) []byte {

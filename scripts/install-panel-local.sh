@@ -9,6 +9,7 @@ REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 PANEL_BUNDLE_PREFIX="${FORWARDX_PANEL_BUNDLE_PREFIX:-forwardx-panel-v}"
 PNPM_VERSION="${FORWARDX_PNPM_VERSION:-10.28.1}"
 ASSETS_PENDING_EXIT_CODE=12
+ENABLE_ADMIN_ACCOUNT="false"
 GITHUB_ACCELERATOR_URL=""
 GITHUB_ACCELERATOR_EXPLICIT="false"
 if [ "${FORWARDX_GITHUB_ACCELERATOR_URL+x}" = "x" ]; then
@@ -18,10 +19,11 @@ fi
 
 usage() {
   cat <<EOF
-Usage: $0 install|upgrade|uninstall [--github-accelerator URL]
+Usage: $0 install|upgrade|uninstall|reset-admin|reset-password [--github-accelerator URL] [--enable-account]
 
 Options:
   --github-accelerator URL   Prefix GitHub API/raw/release URLs with this HTTP(S) accelerator.
+  --enable-account           With reset-admin, enable the selected administrator account.
 
 Environment:
   FORWARDX_GITHUB_ACCELERATOR_URL   Same as --github-accelerator; an explicit empty value disables it.
@@ -33,7 +35,7 @@ parse_args() {
   local value=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      install|upgrade|update|uninstall|remove)
+      install|upgrade|update|uninstall|remove|reset-admin|reset-password)
         if [ "$action_seen" = "true" ]; then
           echo "[ERROR] Multiple actions were provided: $1" >&2
           usage >&2
@@ -64,6 +66,10 @@ parse_args() {
         GITHUB_ACCELERATOR_EXPLICIT="true"
         shift
         ;;
+      --enable-account)
+        ENABLE_ADMIN_ACCOUNT="true"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -78,6 +84,11 @@ parse_args() {
 }
 
 parse_args "$@"
+
+if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ] && [ "$ACTION" != "reset-admin" ] && [ "$ACTION" != "reset-password" ]; then
+  echo "[ERROR] --enable-account is only valid with reset-admin" >&2
+  exit 1
+fi
 
 valid_port() {
   local port="$1"
@@ -771,10 +782,60 @@ uninstall_panel() {
   fi
 }
 
+reset_admin_password() {
+  require_root
+  local node_bin password confirmation selector status
+  node_bin="$(command -v node || true)"
+  if [ -z "$node_bin" ]; then
+    echo "[ERROR] Node.js is not installed on this host."
+    return 1
+  fi
+  if [ ! -f "$APP_DIR/dist/reset-admin-password.js" ]; then
+    echo "[ERROR] Password reset CLI is missing from $APP_DIR. Upgrade the panel first."
+    return 1
+  fi
+  if [ ! -f "$APP_DIR/.env" ]; then
+    echo "[ERROR] Panel environment file not found: $APP_DIR/.env"
+    return 1
+  fi
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    echo "[ERROR] reset-admin requires an interactive SSH terminal."
+    return 1
+  fi
+
+  echo "[WARN] This revokes all existing administrator sessions. Back up the database first."
+  printf "Administrator username or email (blank if only one): " > /dev/tty
+  IFS= read -r selector < /dev/tty || selector=""
+  password="$(read_secret "New administrator password: ")"
+  confirmation="$(read_secret "Confirm administrator password: ")"
+  if [ "$password" != "$confirmation" ]; then
+    echo "[ERROR] Password confirmation does not match."
+    unset password confirmation selector
+    return 1
+  fi
+
+  set +e
+  (
+    cd "$APP_DIR" || exit 1
+    set -a
+    . "$APP_DIR/.env"
+    set +a
+    cli_args=(--stdin)
+    if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ]; then cli_args+=(--enable-account); fi
+    printf '%s\n%s\n%s\n' "$selector" "$password" "$confirmation" \
+      | "$node_bin" dist/reset-admin-password.js "${cli_args[@]}"
+  )
+  status=$?
+  set -e
+  unset password confirmation selector
+  return "$status"
+}
+
 case "$ACTION" in
   install) install_panel ;;
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
+  reset-admin|reset-password) reset_admin_password ;;
   *)
     usage
     exit 1

@@ -10,6 +10,7 @@ PORT="${EXPLICIT_PORT:-9810}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
+ENABLE_ADMIN_ACCOUNT="false"
 EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
 DATA_VOLUME_REUSE_NOTIFIED="false"
 RESOLVED_IMAGE=""
@@ -23,11 +24,12 @@ fi
 
 usage() {
   cat <<EOF
-Usage: $0 install|upgrade|uninstall [--github-accelerator URL]
+Usage: $0 install|upgrade|uninstall|reset-admin|reset-password [--github-accelerator URL] [--enable-account]
 
 Options:
   --github-accelerator URL   Prefix GitHub API/raw/release URLs with this HTTP(S) accelerator.
                              Docker image pulls still use FORWARDX_IMAGE/FORWARDX_IMAGE_REPO.
+  --enable-account           With reset-admin, enable the selected administrator account.
 
 Environment:
   FORWARDX_GITHUB_ACCELERATOR_URL   Same as --github-accelerator; an explicit empty value disables it.
@@ -39,7 +41,7 @@ parse_args() {
   local value=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      install|upgrade|update|uninstall|remove)
+      install|upgrade|update|uninstall|remove|reset-admin|reset-password)
         if [ "$action_seen" = "true" ]; then
           echo "[ERROR] Multiple actions were provided: $1" >&2
           usage >&2
@@ -70,6 +72,10 @@ parse_args() {
         GITHUB_ACCELERATOR_EXPLICIT="true"
         shift
         ;;
+      --enable-account)
+        ENABLE_ADMIN_ACCOUNT="true"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -84,6 +90,11 @@ parse_args() {
 }
 
 parse_args "$@"
+
+if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ] && [ "$ACTION" != "reset-admin" ] && [ "$ACTION" != "reset-password" ]; then
+  echo "[ERROR] --enable-account is only valid with reset-admin" >&2
+  exit 1
+fi
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -960,10 +971,40 @@ uninstall_panel() {
   echo "[DONE] ForwardX Docker panel uninstalled"
 }
 
+reset_admin_password() {
+  require_root
+  local running
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[ERROR] Docker is not installed or not available."
+    return 1
+  fi
+  load_existing_env
+  running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  if [ "$running" != "true" ]; then
+    echo "[ERROR] ForwardX container is not running: $CONTAINER_NAME"
+    echo "[INFO] Start the panel and retry; no container or database data was changed."
+    return 1
+  fi
+  if ! docker exec "$CONTAINER_NAME" test -f /app/dist/reset-admin-password.js >/dev/null 2>&1; then
+    echo "[ERROR] Password reset CLI is missing from the running container. Upgrade the panel image first."
+    return 1
+  fi
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    echo "[ERROR] reset-admin requires an interactive Docker terminal."
+    return 1
+  fi
+
+  echo "[INFO] Starting the password reset CLI inside the Docker container."
+  cli_args=()
+  if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ]; then cli_args+=(--enable-account); fi
+  docker exec -it "$CONTAINER_NAME" node dist/reset-admin-password.js "${cli_args[@]}" < /dev/tty
+}
+
 case "$ACTION" in
   install) install_panel ;;
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
+  reset-admin|reset-password) reset_admin_password ;;
   *)
     usage
     exit 1

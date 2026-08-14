@@ -49,7 +49,7 @@ export default function HomepagePreview() {
         <iframe
           title="ForwardX homepage preview"
           className="h-[calc(100svh-3rem)] w-full border-0 bg-background"
-          sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
+          sandbox="allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation"
           srcDoc={createHomepageDocument(html)}
         />
       )}

@@ -131,7 +131,7 @@ export async function getSupportBundleTask(taskId: string) {
   const complete = pending === 0;
   let download: { filename: string; mimeType: string; content: string } | undefined;
   if (complete) {
-    const panelLogs = formatPanelLogsForExport("all");
+    const panelLogs = await formatPanelLogsForExport("all");
     const audits = await listRecentConfigAuditEvents(1000);
     const payload = redactSupportValue({
       format: "forwardx-support-bundle-v1",

@@ -27,6 +27,7 @@ function isMobileNetworkError(message: string) {
 
 type MobileTelegramLoginState = {
   code: string;
+  pollToken: string;
   telegramUrl: string;
   expiresAt: number;
 };
@@ -454,6 +455,7 @@ export default function Login() {
       const openedAt = Date.now();
       setMobileTelegramLogin({
         code: data.code,
+        pollToken: data.pollToken,
         telegramUrl: data.telegramUrl,
         expiresAt: openedAt + data.expiresInSeconds * 1000,
       });
@@ -580,7 +582,10 @@ export default function Login() {
       }
       if (!mobileTelegramStatusPendingRef.current) {
         mobileTelegramStatusPendingRef.current = true;
-        mobileTelegramStatusMutateRef.current({ code: mobileTelegramLogin.code });
+        mobileTelegramStatusMutateRef.current({
+          code: mobileTelegramLogin.code,
+          pollToken: mobileTelegramLogin.pollToken,
+        });
       }
     };
     poll();
@@ -597,7 +602,7 @@ export default function Login() {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [mobileTelegramLogin?.code, mobileTelegramLogin?.expiresAt]);
+  }, [mobileTelegramLogin?.code, mobileTelegramLogin?.pollToken, mobileTelegramLogin?.expiresAt]);
 
   const handleVerifyTwoFactorLogin = (e?: React.FormEvent) => {
     e?.preventDefault();

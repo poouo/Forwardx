@@ -1146,6 +1146,13 @@ func TestFxpRejectsReplaySalt(t *testing.T) {
 	if _, err := writeFull(c2, salt); err != nil {
 		t.Fatal(err)
 	}
+	replayClient, err := newSessionSecureConn(c2, cfg.Key, salt, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replayClient.writeFrame(hello); err != nil {
+		t.Fatal(err)
+	}
 	if err := <-errCh; err == nil {
 		t.Fatal("expected replayed salt to be rejected")
 	}

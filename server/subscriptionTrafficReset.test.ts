@@ -114,10 +114,10 @@ test("subscription traffic cycles follow the user's configured monthly reset day
       await runtime.executeRaw('UPDATE "users" SET "trafficUsed" = ? WHERE "id" = ?', [999, 1]);
       await billing.updateUserManualEntitlements(1, { trafficResetDay: 3 });
 
-      // The scheduler runs the legacy user-level monthly reset first. The
+      // The scheduler runs the user-level monthly cycle reset first. The
       // subscription phase must still advance its cycle and expire add-ons,
       // while avoiding a second reset of the shared user counter.
-      await users.resetUserTraffic(1);
+      await users.resetUserTrafficForCycle(1, localDate(2026, 8, 3), new FixedDate());
       assert.equal(await billing.rechargeSubscriptionTrafficCycles(), 0, "an already reset user is not reset twice at the same boundary");
       let [user] = await runtime.queryRaw('SELECT "trafficUsed", "lastTrafficReset" FROM "users" WHERE "id" = ?', [1]);
       assert.equal(Number(user.trafficUsed), 0);

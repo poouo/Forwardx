@@ -119,6 +119,7 @@ function setAgentEventStreamHeaders(res: Response, connection: "keep-alive" | "c
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("X-Accel-Buffering", "no");
   res.setHeader("Connection", connection);
+  res.setHeader("X-ForwardX-Panel-Time", String(panelCryptoNowMs()));
 }
 
 async function openAgentEventStream(input: {

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -150,16 +149,18 @@ func TestInstalledPluginVersionsAt(t *testing.T) {
 
 func TestPluginAgentTaskLockAllowsConcurrentReadsAndBlocksWrites(t *testing.T) {
 	pluginAgentTaskLocksMu.Lock()
-	pluginAgentTaskLocks = map[string]*sync.RWMutex{}
+	pluginAgentTaskLocks = map[string]*pluginAgentTaskLockEntry{}
 	pluginAgentTaskLocksMu.Unlock()
 
 	releaseReadOne := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: "demo", Intent: "read"})
 	releaseReadTwo := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: "demo", Intent: "read"})
 	writeAcquired := make(chan struct{})
+	writeReleased := make(chan struct{})
 	go func() {
 		releaseWrite := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: "demo", Intent: "write"})
 		close(writeAcquired)
 		releaseWrite()
+		close(writeReleased)
 	}()
 
 	select {
@@ -176,5 +177,16 @@ func TestPluginAgentTaskLockAllowsConcurrentReadsAndBlocksWrites(t *testing.T) {
 	case <-writeAcquired:
 	case <-time.After(time.Second):
 		t.Fatal("write task did not acquire the plugin lock after reads completed")
+	}
+	select {
+	case <-writeReleased:
+	case <-time.After(time.Second):
+		t.Fatal("write task did not release the plugin lock")
+	}
+	pluginAgentTaskLocksMu.Lock()
+	remaining := len(pluginAgentTaskLocks)
+	pluginAgentTaskLocksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("released plugin lock entries = %d, want 0", remaining)
 	}
 }

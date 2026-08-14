@@ -22,6 +22,7 @@ import { getForwardRulesForUserSync, resetForwardRulesForUserSync } from "./forw
 import { getForwardGroupEntryPortRange } from "./forwardGroupRepository";
 import { getHostById } from "./hostRepository";
 import { getTunnelById, updateTunnel } from "./tunnelRepository";
+import { pruneMapEntries, setBoundedMapValue } from "../boundedCache";
 import {
   disableAllUserRules,
   getAllUsers,
@@ -53,6 +54,7 @@ import {
 let lastActiveSubscriptionWarningAt = 0;
 const SUBSCRIPTION_PORT_ALLOCATION_LOCK_KEY = "subscription-port-allocation";
 const SUBSCRIPTION_PORT_ALLOCATION_MARKER = "subscription-port-allocation-lock";
+const SUBSCRIPTION_PLAN_PAYMENT_MARKER = "subscription-plan-payment-lock";
 
 function warnActiveSubscriptionLookupFailure(error: unknown) {
   const now = Date.now();
@@ -90,10 +92,23 @@ async function withSubscriptionPortAllocationLock<T>(task: () => Promise<T>) {
 // ==================== Payment Orders ====================
 
 export async function createPaymentOrder(order: InsertPaymentOrder) {
-  const db = await getDb();
-  if (!db) return undefined;
-  await db.insert(paymentOrders).values(order);
-  return getPaymentOrderByOutTradeNo(order.outTradeNo);
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return undefined;
+    if (order.planId) {
+      // Serialize against plan deletion across panel instances. The setting
+      // update holds one stable database row until this transaction commits.
+      await setSetting(SUBSCRIPTION_PLAN_PAYMENT_MARKER, "1");
+      const plan = await db
+        .select({ id: subscriptionPlans.id })
+        .from(subscriptionPlans)
+        .where(eq(subscriptionPlans.id, Number(order.planId)))
+        .limit(1);
+      if (!plan[0]) throw new Error("套餐已删除，无法创建支付订单");
+    }
+    await db.insert(paymentOrders).values(order);
+    return getPaymentOrderByOutTradeNo(order.outTradeNo);
+  });
 }
 
 function normalizeCode(code: string) {
@@ -125,6 +140,7 @@ const REDEMPTION_ATTEMPT_WINDOW_MS = 30 * 60 * 1000;
 const REDEMPTION_ATTEMPT_BLOCK_MS = 15 * 60 * 1000;
 const REDEMPTION_ATTEMPT_THRESHOLD = 8;
 const REDEMPTION_ATTEMPT_SOURCE_THRESHOLD = 20;
+const REDEMPTION_ATTEMPT_MAX_KEYS = 50_000;
 
 function redemptionAttemptUserKey(userId: number) {
   return `user:${userId}`;
@@ -149,10 +165,18 @@ function recordRedemptionAttemptFailureForKey(key: string) {
   if (entry) {
     entry.count += 1;
     entry.lastFailAt = now;
+    setBoundedMapValue(redemptionAttemptStore, key, entry, REDEMPTION_ATTEMPT_MAX_KEYS);
   } else {
-    redemptionAttemptStore.set(key, { count: 1, lastFailAt: now });
+    setBoundedMapValue(redemptionAttemptStore, key, { count: 1, lastFailAt: now }, REDEMPTION_ATTEMPT_MAX_KEYS);
   }
 }
+
+export function pruneRedemptionAttemptStore(now = Date.now()) {
+  return pruneMapEntries(redemptionAttemptStore, (entry) => now - entry.lastFailAt >= REDEMPTION_ATTEMPT_WINDOW_MS);
+}
+
+const redemptionAttemptCleanupTimer = setInterval(() => pruneRedemptionAttemptStore(), 5 * 60 * 1000);
+redemptionAttemptCleanupTimer.unref?.();
 
 function redemptionAttemptKeys(userId: number, scope?: string | null) {
   const keys = [redemptionAttemptUserKey(userId)];
@@ -663,13 +687,27 @@ export async function syncPlanSubscribers(planId: number) {
 }
 
 export async function deleteSubscriptionPlan(id: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(subscriptionPlanHosts).where(eq(subscriptionPlanHosts.planId, id));
-  await db.delete(subscriptionPlanTunnels).where(eq(subscriptionPlanTunnels.planId, id));
-  await db.delete(subscriptionPlanForwardGroups).where(eq(subscriptionPlanForwardGroups.planId, id));
-  await db.delete(subscriptionPlanTrafficAddons).where(eq(subscriptionPlanTrafficAddons.planId, id));
-  await db.delete(subscriptionPlans).where(eq(subscriptionPlans.id, id));
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return;
+    await setSetting(SUBSCRIPTION_PLAN_PAYMENT_MARKER, "1");
+    const blockingOrder = await db
+      .select({ outTradeNo: paymentOrders.outTradeNo })
+      .from(paymentOrders)
+      .where(and(
+        eq(paymentOrders.planId, id),
+        inArray(paymentOrders.status, ["pending", "paid", "processing"] as any),
+      ))
+      .limit(1);
+    if (blockingOrder[0]) {
+      throw new Error("套餐仍有待支付或待发放订单，暂时不能删除");
+    }
+    await db.delete(subscriptionPlanHosts).where(eq(subscriptionPlanHosts.planId, id));
+    await db.delete(subscriptionPlanTunnels).where(eq(subscriptionPlanTunnels.planId, id));
+    await db.delete(subscriptionPlanForwardGroups).where(eq(subscriptionPlanForwardGroups.planId, id));
+    await db.delete(subscriptionPlanTrafficAddons).where(eq(subscriptionPlanTrafficAddons.planId, id));
+    await db.delete(subscriptionPlans).where(eq(subscriptionPlans.id, id));
+  });
 }
 
 export async function setSubscriptionPlanResources(planId: number, hostIds: number[], tunnelIds: number[], forwardGroupIds: number[] = []) {
@@ -2370,7 +2408,11 @@ export async function applySubscriptionToUser(
   targetSubscriptionId?: number | null,
 ) {
   return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(
-    () => applySubscriptionToUserUnlocked(
+    // Port blocks are allocated by reading all active reservations and then
+    // inserting the selected range. Hold the shared database marker row for
+    // the entire transaction so separate panel instances cannot choose the
+    // same range concurrently.
+    () => withSubscriptionPortAllocationLock(() => applySubscriptionToUserUnlocked(
       userId,
       planId,
       source,
@@ -2378,7 +2420,7 @@ export async function applySubscriptionToUser(
       startsAt,
       overrideDurationDays,
       targetSubscriptionId,
-    ),
+    )),
   ));
 }
 
@@ -3316,6 +3358,18 @@ export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?:
     } as Partial<InsertPaymentOrder>);
   }
   return existing;
+}
+
+/** Return orders needing background maintenance without a recent-row limit. */
+export async function listPaymentOrdersForMaintenance(statuses: string[], limit = 1000) {
+  const db = await getDb();
+  if (!db || statuses.length === 0) return [];
+  return db
+    .select()
+    .from(paymentOrders)
+    .where(inArray(paymentOrders.status, statuses as any))
+    .orderBy(asc(paymentOrders.updatedAt))
+    .limit(Math.max(1, Math.min(10000, limit)));
 }
 
 export async function getBalanceTransactionByPaymentOrderNo(paymentOrderNo: string) {

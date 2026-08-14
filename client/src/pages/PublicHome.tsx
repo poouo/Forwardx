@@ -23,7 +23,7 @@ export function CustomPublicHome({ html }: { html: string }) {
     <iframe
       title="ForwardX custom homepage"
       className="h-svh w-full border-0 bg-background"
-      sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
+      sandbox="allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation"
       srcDoc={srcDoc}
     />
   );

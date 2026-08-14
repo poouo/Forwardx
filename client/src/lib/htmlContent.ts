@@ -31,18 +31,30 @@ function safeHref(url: string) {
   return "#";
 }
 
-function renderInlineMarkdown(content: string) {
+function renderInlineMarkdown(content: string, allowLinks = true) {
   let html = textToHtml(content).replace(/<br>/g, "\n");
-  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  html = html.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_match, label: string, url: string) => {
-    return `<a href="${escapeAttribute(safeHref(url.replace(/&amp;/g, "&")))}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-  });
+  const protectedValues: string[] = [];
+  const protect = (value: string) => {
+    // Keep generated markup and attributes out of the formatting regexes below.
+    const token = `\u0001${protectedValues.length}\u0002`;
+    protectedValues.push(value);
+    return token;
+  };
+
+  html = html.replace(/`([^`\n]+)`/g, (_match, code: string) => protect(`<code>${code}</code>`));
+  if (allowLinks) {
+    html = html.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_match, label: string, url: string) => {
+      const renderedLabel = renderInlineMarkdown(label, false);
+      const href = escapeAttribute(safeHref(url.replace(/&amp;/g, "&")));
+      return protect(`<a href="${href}" target="_blank" rel="noopener noreferrer">${renderedLabel}</a>`);
+    });
+  }
   html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
   html = html.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   html = html.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
-  return html;
+  return html.replace(/\u0001(\d+)\u0002/g, (_match, index: string) => protectedValues[Number(index)] || "");
 }
 
 export function markdownToHtml(content: string) {

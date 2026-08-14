@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { nanoid } from "nanoid";
 import * as svgCaptcha from "svg-captcha";
+import { setBoundedMapValue } from "./boundedCache";
 
 export const LOGIN_CAPTCHA_FAILURE_THRESHOLD = 3;
 export const LOGIN_CAPTCHA_REQUIREMENT_TTL_MS = 15 * 60 * 1000;
@@ -9,6 +10,7 @@ export const CAPTCHA_REFRESH_WINDOW_MS = 60 * 1000;
 export const CAPTCHA_REFRESH_MAX_PER_WINDOW = 6;
 
 const CAPTCHA_MAX_CHALLENGES = 5_000;
+const CAPTCHA_MAX_RATE_LIMIT_KEYS = 50_000;
 const CAPTCHA_CHARACTERS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 export type CaptchaPurpose = "login" | "register";
@@ -34,6 +36,7 @@ interface CaptchaServiceOptions {
   refreshWindowMs?: number;
   refreshMaxPerWindow?: number;
   maxChallenges?: number;
+  maxRateLimitKeys?: number;
   svgGenerator?: SvgCaptchaGenerator;
 }
 
@@ -72,6 +75,7 @@ export class AuthCaptchaService {
   private readonly refreshWindowMs: number;
   private readonly refreshMaxPerWindow: number;
   private readonly maxChallenges: number;
+  private readonly maxRateLimitKeys: number;
   private readonly svgGenerator: SvgCaptchaGenerator;
 
   constructor(options: CaptchaServiceOptions = {}) {
@@ -81,6 +85,7 @@ export class AuthCaptchaService {
     this.refreshWindowMs = options.refreshWindowMs ?? CAPTCHA_REFRESH_WINDOW_MS;
     this.refreshMaxPerWindow = options.refreshMaxPerWindow ?? CAPTCHA_REFRESH_MAX_PER_WINDOW;
     this.maxChallenges = options.maxChallenges ?? CAPTCHA_MAX_CHALLENGES;
+    this.maxRateLimitKeys = options.maxRateLimitKeys ?? CAPTCHA_MAX_RATE_LIMIT_KEYS;
     this.svgGenerator = options.svgGenerator ?? svgCaptcha.create;
   }
 
@@ -94,14 +99,15 @@ export class AuthCaptchaService {
     const active = (this.refreshTimestamps.get(key) || []).filter((timestamp) => timestamp > cutoff);
     if (active.length >= this.refreshMaxPerWindow) {
       const retryAfterMs = active[0] + this.refreshWindowMs - now;
-      this.refreshTimestamps.set(key, active);
+      setBoundedMapValue(this.refreshTimestamps, key, active, this.maxRateLimitKeys);
       throw new CaptchaRefreshRateLimitError(Math.max(1, Math.ceil(retryAfterMs / 1000)));
     }
     active.push(now);
-    this.refreshTimestamps.set(key, active);
+    setBoundedMapValue(this.refreshTimestamps, key, active, this.maxRateLimitKeys);
   }
 
   private pruneChallenges(now: number) {
+    if (this.challenges.size < this.maxChallenges) return;
     for (const [id, challenge] of this.challenges) {
       if (challenge.expiresAt <= now) this.challenges.delete(id);
     }
@@ -169,11 +175,12 @@ export class AuthCaptchaService {
     const key = this.loginKey(ip, username);
     const entry = this.loginFailures.get(key);
     if (!entry || now - entry.lastFailureAt >= this.requirementTtlMs) {
-      this.loginFailures.set(key, { count: 1, lastFailureAt: now });
+      setBoundedMapValue(this.loginFailures, key, { count: 1, lastFailureAt: now }, this.maxRateLimitKeys);
       return;
     }
     entry.count += 1;
     entry.lastFailureAt = now;
+    setBoundedMapValue(this.loginFailures, key, entry, this.maxRateLimitKeys);
   }
 
   requiresLoginCaptcha(ip: string, username: string, now = Date.now()) {
@@ -191,6 +198,29 @@ export class AuthCaptchaService {
     this.loginFailures.delete(this.loginKey(ip, username));
   }
 
+  pruneExpired(now = Date.now()) {
+    for (const [id, challenge] of this.challenges) {
+      if (challenge.expiresAt <= now) this.challenges.delete(id);
+    }
+    for (const [key, entry] of this.loginFailures) {
+      if (now - entry.lastFailureAt >= this.requirementTtlMs) this.loginFailures.delete(key);
+    }
+    const cutoff = now - this.refreshWindowMs;
+    for (const [key, timestamps] of this.refreshTimestamps) {
+      const active = timestamps.filter((timestamp) => timestamp > cutoff);
+      if (active.length > 0) setBoundedMapValue(this.refreshTimestamps, key, active, this.maxRateLimitKeys);
+      else this.refreshTimestamps.delete(key);
+    }
+  }
+
+  stateSizesForTest() {
+    return {
+      challenges: this.challenges.size,
+      loginFailures: this.loginFailures.size,
+      refreshTimestamps: this.refreshTimestamps.size,
+    };
+  }
+
   clearForTest() {
     this.challenges.clear();
     this.loginFailures.clear();
@@ -199,3 +229,6 @@ export class AuthCaptchaService {
 }
 
 export const authCaptcha = new AuthCaptchaService();
+
+const authCaptchaCleanupTimer = setInterval(() => authCaptcha.pruneExpired(), 5 * 60 * 1000);
+authCaptchaCleanupTimer.unref?.();

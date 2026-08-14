@@ -123,23 +123,26 @@ func TestMimicOffloadDisableArgsProtectActiveInterface(t *testing.T) {
 }
 
 func TestMimicOffloadOperationLockSerializesOneInterface(t *testing.T) {
-	lock := mimicOffloadOperationLock("test-mimic-lock0")
-	lock.Lock()
+	mimicOffloadOperationMu.Lock()
+	mimicOffloadOperationMap = map[string]*mimicOffloadOperationEntry{}
+	mimicOffloadOperationMu.Unlock()
+	release := acquireMimicOffloadOperationLock("test-mimic-lock0")
 	locked := true
 	t.Cleanup(func() {
 		if locked {
-			lock.Unlock()
+			release()
 		}
 	})
 
 	ready := make(chan struct{})
 	entered := make(chan struct{})
+	released := make(chan struct{})
 	go func() {
-		other := mimicOffloadOperationLock("test-mimic-lock0")
 		close(ready)
-		other.Lock()
+		releaseOther := acquireMimicOffloadOperationLock("test-mimic-lock0")
 		close(entered)
-		other.Unlock()
+		releaseOther()
+		close(released)
 	}()
 	<-ready
 	select {
@@ -147,12 +150,42 @@ func TestMimicOffloadOperationLockSerializesOneInterface(t *testing.T) {
 		t.Fatal("same-interface offload operation was not serialized")
 	case <-time.After(20 * time.Millisecond):
 	}
-	lock.Unlock()
+	release()
 	locked = false
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
 		t.Fatal("same-interface offload operation did not resume")
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("same-interface offload operation did not release")
+	}
+	mimicOffloadOperationMu.Lock()
+	remaining := len(mimicOffloadOperationMap)
+	mimicOffloadOperationMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("released mimic operation lock entries = %d, want 0", remaining)
+	}
+}
+
+func TestPruneMimicNetworkTuneCacheKeepsCurrentAndRecentEntries(t *testing.T) {
+	now := time.Now()
+	mimicNetworkTuneMu.Lock()
+	mimicNetworkTuneCache = map[string]mimicNetworkTuneResult{
+		"stale0":   {checkedAt: now.Add(-3 * mimicNetworkTuneInterval)},
+		"recent0":  {checkedAt: now.Add(-mimicNetworkTuneInterval)},
+		"current0": {checkedAt: now.Add(-3 * mimicNetworkTuneInterval)},
+	}
+	pruneMimicNetworkTuneCacheLocked(now, "current0")
+	_, staleExists := mimicNetworkTuneCache["stale0"]
+	_, recentExists := mimicNetworkTuneCache["recent0"]
+	_, currentExists := mimicNetworkTuneCache["current0"]
+	mimicNetworkTuneCache = map[string]mimicNetworkTuneResult{}
+	mimicNetworkTuneMu.Unlock()
+	if staleExists || !recentExists || !currentExists {
+		t.Fatalf("unexpected cache entries stale=%t recent=%t current=%t", staleExists, recentExists, currentExists)
 	}
 }
 

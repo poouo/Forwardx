@@ -175,6 +175,9 @@ export const users = table("users", {
   trafficAutoReset: boolean("trafficAutoReset").notNull().default(false), // 月度自动重置开关
   trafficResetDay: int("trafficResetDay").notNull().default(1),     // 每月重置日（1-28）
   lastTrafficReset: epoch("lastTrafficReset"), // 上次重置时间
+  // Automatic billing cycles use an independent marker so a manual reset
+  // cannot suppress the scheduled reset for the same month.
+  lastAutoTrafficReset: epoch("lastAutoTrafficReset"),
   telegramId: text("telegramId").unique(),
   telegramUsername: text("telegramUsername"),
   telegramFirstName: text("telegramFirstName"),

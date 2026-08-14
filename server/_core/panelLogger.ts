@@ -1,4 +1,4 @@
-import { appendJsonLog, clearJsonLogFile, getLogFilePath, pruneJsonLogFile, readRecentJsonLogPageAsync } from "../logFileStore";
+import { appendJsonLog, clearJsonLogFile, getLogFilePath, pruneJsonLogFile, readRecentJsonLogPageAsync, readRecentJsonLogsAsync } from "../logFileStore";
 
 export type PanelLogLevel = "log" | "info" | "warn" | "error";
 export type PanelLogFilterLevel = PanelLogLevel | "all";
@@ -12,9 +12,7 @@ export type PanelLogEntry = {
 
 let nextLogId = 1;
 let installed = false;
-let lastPruneAt = 0;
 const PANEL_LOG_FILE = getLogFilePath("panel.jsonl");
-const LOG_PRUNE_INTERVAL_MS = 60 * 1000;
 
 function stringifyArg(arg: unknown) {
   if (arg instanceof Error) return arg.stack || arg.message;
@@ -46,22 +44,14 @@ export function appendPanelLog(level: PanelLogLevel, ...args: unknown[]) {
     message,
     createdAt: new Date().toISOString(),
   });
-  prunePanelLogsThrottled();
 }
 
-function prunePanelLogsThrottled() {
-  const now = Date.now();
-  if (now - lastPruneAt < LOG_PRUNE_INTERVAL_MS) return;
-  lastPruneAt = now;
-  pruneJsonLogFile(PANEL_LOG_FILE);
+export async function getPanelLogs() {
+  return await readRecentJsonLogsAsync(PANEL_LOG_FILE) as PanelLogEntry[];
 }
 
-export function getPanelLogs() {
-  return pruneJsonLogFile(PANEL_LOG_FILE) as PanelLogEntry[];
-}
-
-export function getFilteredPanelLogs(level: PanelLogFilterLevel = "all") {
-  const currentLogs = getPanelLogs();
+export async function getFilteredPanelLogs(level: PanelLogFilterLevel = "all") {
+  const currentLogs = await getPanelLogs();
   return level === "all" ? currentLogs : currentLogs.filter((entry) => entry.level === level);
 }
 
@@ -83,21 +73,26 @@ export async function getPanelLogPage(input: { level?: PanelLogFilterLevel; limi
   };
 }
 
-export function getPanelLogSummary() {
-  return getPanelLogs().reduce<Record<string, number>>((acc, entry) => {
+export async function getPanelLogSummary() {
+  return (await getPanelLogs()).reduce<Record<string, number>>((acc, entry) => {
     acc[entry.level] = (acc[entry.level] || 0) + 1;
     acc.all = (acc.all || 0) + 1;
     return acc;
   }, { all: 0, log: 0, info: 0, warn: 0, error: 0 });
 }
 
-export function clearPanelLogs() {
-  clearJsonLogFile(PANEL_LOG_FILE);
+export async function clearPanelLogs() {
+  await clearJsonLogFile(PANEL_LOG_FILE);
 }
 
-export function formatPanelLogsForExport(level: PanelLogFilterLevel = "all", metadata: Record<string, unknown> = {}) {
-  const selectedLogs = getFilteredPanelLogs(level);
-  const summary = getPanelLogSummary();
+export async function formatPanelLogsForExport(level: PanelLogFilterLevel = "all", metadata: Record<string, unknown> = {}) {
+  const currentLogs = await getPanelLogs();
+  const selectedLogs = level === "all" ? currentLogs : currentLogs.filter((entry) => entry.level === level);
+  const summary = currentLogs.reduce<Record<string, number>>((acc, entry) => {
+    acc[entry.level] = (acc[entry.level] || 0) + 1;
+    acc.all = (acc.all || 0) + 1;
+    return acc;
+  }, { all: 0, log: 0, info: 0, warn: 0, error: 0 });
   const generatedAt = new Date().toISOString();
   const header = [
     "ForwardX Panel Logs",
@@ -122,7 +117,13 @@ export function formatPanelLogsForExport(level: PanelLogFilterLevel = "all", met
 export function installPanelLogger() {
   if (installed) return;
   installed = true;
-  const retentionTimer = setInterval(() => pruneJsonLogFile(PANEL_LOG_FILE), 60 * 60 * 1000);
+  const runRetention = () => {
+    void pruneJsonLogFile(PANEL_LOG_FILE).catch((error) => {
+      process.stderr.write(`[ForwardX] panel log retention failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  };
+  runRetention();
+  const retentionTimer = setInterval(runRetention, 60 * 60 * 1000);
   retentionTimer.unref?.();
   const original = {
     log: console.log.bind(console),

@@ -33,6 +33,7 @@ import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTa
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
 import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
+import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
 import { mergeAgentReportedAddress } from "./agentAddressState";
 import {
   gostTunnelTransportType,
@@ -125,12 +126,34 @@ const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: 
 const fxpUdpTargetSignatureCache = new Map<string, string>();
 const agentRuntimeDriftLogCache = new Map<string, number>();
 const fxpEndpointStatusCache = new Map<string, string>();
+const AGENT_HOST_CACHE_MAX = 10_000;
+const AGENT_DYNAMIC_CACHE_MAX = 20_000;
+const AGENT_CACHE_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
 // 否则会与 apply 形成 apply→remove→apply 抖动死循环。
 const agentOrphanPortStreakCache = new Map<number, Map<string, number>>();
 const AGENT_ORPHAN_REMOVE_MIN_STREAK = 3;
+
+export function pruneAgentHeartbeatCaches(now = Date.now()) {
+  const stale = (timestamp: number) => !Number.isFinite(timestamp) || now - timestamp >= AGENT_CACHE_IDLE_TTL_MS;
+  for (const [ruleId, checkedAt] of resolvedIpCheckedAt) {
+    if (!stale(checkedAt)) continue;
+    resolvedIpCheckedAt.delete(ruleId);
+    resolvedIpCache.delete(ruleId);
+  }
+  pruneMapEntries(mimicRuntimeLogCache, (entry) => stale(entry.loggedAt));
+  pruneMapEntries(agentActionBatchCache, (entry) => stale(entry.seenAt));
+  pruneMapEntries(agentDesiredStateSendCache, (entry) => stale(entry.sentAt));
+  pruneMapEntries(agentRuntimeSyncActionCache, (entry) => stale(entry.sentAt));
+  pruneMapEntries(agentPluginSyncActionCache, (entry) => stale(entry.sentAt));
+  pruneMapEntries(agentRuntimeDriftLogCache, (loggedAt) => stale(loggedAt));
+  pruneMapEntries(agentLocalRuntimeStateCache, (entry) => stale(entry.updatedAt));
+}
+
+const agentCacheCleanupTimer = setInterval(() => pruneAgentHeartbeatCaches(), 10 * 60 * 1000);
+agentCacheCleanupTimer.unref?.();
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
 const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
@@ -616,7 +639,7 @@ function resolveAgentLocalRuntimeState(hostId: number, signature: string, report
   if (!Number.isFinite(id) || id <= 0) return { state: null as AgentLocalRuntimeState | null, requestLocalState: false };
   if (reported) {
     const nextSignature = signature || stableStateSignature(reported);
-    agentLocalRuntimeStateCache.set(id, { signature: nextSignature, state: reported, updatedAt: Date.now() });
+    setBoundedMapValue(agentLocalRuntimeStateCache, id, { signature: nextSignature, state: reported, updatedAt: Date.now() }, AGENT_HOST_CACHE_MAX);
     return { state: reported, requestLocalState: false };
   }
   if (!signature) return { state: null as AgentLocalRuntimeState | null, requestLocalState: false };
@@ -720,7 +743,7 @@ function getOrphanPortStreaks(hostId: number): Map<string, number> {
   let streaks = agentOrphanPortStreakCache.get(id);
   if (!streaks) {
     streaks = new Map<string, number>();
-    agentOrphanPortStreakCache.set(id, streaks);
+    setBoundedMapValue(agentOrphanPortStreakCache, id, streaks, AGENT_HOST_CACHE_MAX);
   }
   return streaks;
 }
@@ -734,10 +757,10 @@ function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssu
   const signature = stableActionSignature(actions);
   const cached = agentActionBatchCache.get(hostId);
   if (cached && cached.signature === signature && now - cached.seenAt < AGENT_ACTION_BATCH_REUSE_MS) {
-    cached.seenAt = now;
+    setBoundedMapValue(agentActionBatchCache, hostId, { ...cached, seenAt: now }, AGENT_HOST_CACHE_MAX);
     return cached.issuedAt;
   }
-  agentActionBatchCache.set(hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now });
+  setBoundedMapValue(agentActionBatchCache, hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now }, AGENT_HOST_CACHE_MAX);
   return fallbackIssuedAt;
 }
 
@@ -753,7 +776,7 @@ function shouldLogMimicRuntimePlan(hostId: number, signature: string) {
   const now = Date.now();
   const cached = mimicRuntimeLogCache.get(id);
   if (!cached || cached.signature !== signature || now - cached.loggedAt >= MIMIC_RUNTIME_PLAN_LOG_INTERVAL_MS) {
-    mimicRuntimeLogCache.set(id, { signature, loggedAt: now });
+    setBoundedMapValue(mimicRuntimeLogCache, id, { signature, loggedAt: now }, AGENT_HOST_CACHE_MAX);
     return true;
   }
   return false;
@@ -764,7 +787,7 @@ function shouldLogAgentRuntimeDrift(hostId: number, ruleId: number) {
   const now = Date.now();
   const last = agentRuntimeDriftLogCache.get(key) || 0;
   if (now - last < AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS) return false;
-  agentRuntimeDriftLogCache.set(key, now);
+  setBoundedMapValue(agentRuntimeDriftLogCache, key, now, 5_000);
   if (agentRuntimeDriftLogCache.size > 5000) {
     for (const [cachedKey, loggedAt] of agentRuntimeDriftLogCache) {
       if (now - loggedAt > AGENT_RUNTIME_DRIFT_LOG_INTERVAL_MS * 2) agentRuntimeDriftLogCache.delete(cachedKey);
@@ -783,7 +806,7 @@ function shouldSendDesiredState(hostId: number, actions: any[], activeWorkAction
   const activeResync = hasActiveWork && !!cached && now - cached.sentAt >= AGENT_DESIRED_STATE_ACTIVE_RESEND_MS;
   const shouldSend = changed || activeResync;
   if (shouldSend) {
-    agentDesiredStateSendCache.set(id, { signature, sentAt: now });
+    setBoundedMapValue(agentDesiredStateSendCache, id, { signature, sentAt: now }, AGENT_HOST_CACHE_MAX);
   }
   return shouldSend;
 }
@@ -798,7 +821,7 @@ function shouldSendRuntimeSyncAction(hostId: number, action: any, force: boolean
   const changed = !cached || cached.signature !== signature;
   const shouldResend = !!cached && resendAfterMs > 0 && now - cached.sentAt >= resendAfterMs;
   if (force || changed || shouldResend) {
-    agentRuntimeSyncActionCache.set(cacheKey, { signature, sentAt: now });
+    setBoundedMapValue(agentRuntimeSyncActionCache, cacheKey, { signature, sentAt: now }, AGENT_DYNAMIC_CACHE_MAX);
     return true;
   }
   return false;
@@ -811,7 +834,7 @@ function shouldSendPluginSyncAction(hostId: number, action: any, now: number, re
   const signature = stableActionSignature([action]);
   const cached = agentPluginSyncActionCache.get(cacheKey);
   if (!cached || cached.signature !== signature || now - cached.sentAt >= resendAfterMs) {
-    agentPluginSyncActionCache.set(cacheKey, { signature, sentAt: now });
+    setBoundedMapValue(agentPluginSyncActionCache, cacheKey, { signature, sentAt: now }, AGENT_DYNAMIC_CACHE_MAX);
     return true;
   }
   return false;
@@ -1175,8 +1198,8 @@ async function resolveTargetIpCached(ruleId: number, raw: string, force = false)
     resolvedIpInflight.set(inflightKey, work);
   }
   const resolved = selectResolvedTargetIp(trimmed, await work, cachedIp);
-  resolvedIpCache.set(ruleId, { raw: trimmed, ip: resolved });
-  resolvedIpCheckedAt.set(ruleId, Date.now());
+  setBoundedMapValue(resolvedIpCache, ruleId, { raw: trimmed, ip: resolved }, AGENT_DYNAMIC_CACHE_MAX);
+  setBoundedMapValue(resolvedIpCheckedAt, ruleId, Date.now(), AGENT_DYNAMIC_CACHE_MAX);
   return resolved;
 }
 
@@ -1360,7 +1383,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!endpoint || (status !== "unhealthy" && status !== "recovered")) continue;
       const key = `${host.id}:${role}:${tunnelId}:${ruleId}:${endpoint}`;
       if (fxpEndpointStatusCache.get(key) === status) continue;
-      fxpEndpointStatusCache.set(key, status);
+      setBoundedMapValue(fxpEndpointStatusCache, key, status, AGENT_DYNAMIC_CACHE_MAX);
       const startedAt = Number(rawEvent?.startedAt || 0);
       const occurredAt = Number(rawEvent?.occurredAt || 0);
       const durationMs = status === "recovered" && startedAt > 0 && occurredAt >= startedAt ? occurredAt - startedAt : 0;
@@ -1802,13 +1825,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const target of resolvedHostRuleTargets) {
       if (!target) continue;
       const { rule, rawTargetIp, previous, forcedResolved, resolved } = target;
-      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
+      if (forcedResolved) setBoundedMapValue(resolvedIpCheckedAt, Number(rule.id), Date.now(), AGENT_DYNAMIC_CACHE_MAX);
       if (dnsChangedFor("forward-rule-target", Number(rule.id)) && previous && previous.raw === rawTargetIp && previous.ip !== resolved) {
         // IP 变更：标记为需要重新下发
         dnsChangedRuleIds.add(rule.id);
         dnsPreviousIpByRuleId.set(rule.id, previous.ip);
       }
-      resolvedIpCache.set(rule.id, { raw: rawTargetIp, ip: resolved });
+      setBoundedMapValue(resolvedIpCache, rule.id, { raw: rawTargetIp, ip: resolved }, AGENT_DYNAMIC_CACHE_MAX);
       // 保存原始值（域名），将 rule.targetIp 替换为解析后的 IP
       (rule as any)._originalTargetIp = rule.targetIp;
       rule.targetIp = resolved;
@@ -1915,8 +1938,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!targetIp || targetPort <= 0) return null;
         const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
         const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);
-        if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
-        resolvedIpCache.set(Number(rule.id), { raw: targetIp, ip: resolvedTargetIp });
+        if (forcedResolved) setBoundedMapValue(resolvedIpCheckedAt, Number(rule.id), Date.now(), AGENT_DYNAMIC_CACHE_MAX);
+        setBoundedMapValue(resolvedIpCache, Number(rule.id), { raw: targetIp, ip: resolvedTargetIp }, AGENT_DYNAMIC_CACHE_MAX);
         return { targetIp: resolvedTargetIp, targetPort, originalTargetIp: targetIp };
       }
       if (memberIdx >= members.length - 1) return null;
@@ -1935,8 +1958,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!targetIp || targetPort <= 0) return null;
       const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
       const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);
-      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
-      resolvedIpCache.set(Number(rule.id), { raw: targetIp, ip: resolvedTargetIp });
+      if (forcedResolved) setBoundedMapValue(resolvedIpCheckedAt, Number(rule.id), Date.now(), AGENT_DYNAMIC_CACHE_MAX);
+      setBoundedMapValue(resolvedIpCache, Number(rule.id), { raw: targetIp, ip: resolvedTargetIp }, AGENT_DYNAMIC_CACHE_MAX);
       return { targetIp: resolvedTargetIp, targetPort, originalTargetIp: targetIp };
     };
 
@@ -2046,7 +2069,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!rawTargetIp) return;
       const forcedResolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase());
       const resolved = forcedResolved || await resolveTargetIpCached(Number(rule.id), rawTargetIp);
-      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
+      if (forcedResolved) setBoundedMapValue(resolvedIpCheckedAt, Number(rule.id), Date.now(), AGENT_DYNAMIC_CACHE_MAX);
       rule.targetIp = resolved;
     };
     await mapWithConcurrency(agentAllRules as any[], 32, (rule: any) => hydrateRuntimeTarget(rule));
@@ -2257,7 +2280,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const key = `${Number(host.id)}:${Number(tunnel?.id || 0)}`;
       const signature = stableStateSignature(targets);
       if (fxpUdpTargetSignatureCache.get(key) === signature) return false;
-      fxpUdpTargetSignatureCache.set(key, signature);
+      setBoundedMapValue(fxpUdpTargetSignatureCache, key, signature, AGENT_DYNAMIC_CACHE_MAX);
       return true;
     };
     const proxyDebugBool = (value: unknown) => value ? "true" : "false";
@@ -2701,7 +2724,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const logKey = `wireguard-agent-version:${Number(host.id)}:${Number(tunnel?.id || 0)}`;
         const message = `ForwardX V2 requires Agent v${AGENT_FORWARDX_WIREGUARD_VERSION} or newer`;
         if (tunnelRouteLogCache.get(logKey) !== message) {
-          tunnelRouteLogCache.set(logKey, message);
+          setBoundedMapValue(tunnelRouteLogCache, logKey, message, AGENT_DYNAMIC_CACHE_MAX);
           appendPanelLog("warn", `[Tunnel] V2 waiting for Agent upgrade tunnel=${tunnel?.id || 0} host=${host.id} current=${(host as any).agentVersion || "-"} required=${AGENT_FORWARDX_WIREGUARD_VERSION}`);
         }
         return null;
@@ -2712,7 +2735,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const message = error instanceof Error ? error.message : String(error);
         const logKey = `wireguard-plan:${Number(host.id)}:${Number(tunnel?.id || 0)}`;
         if (tunnelRouteLogCache.get(logKey) !== message) {
-          tunnelRouteLogCache.set(logKey, message);
+          setBoundedMapValue(tunnelRouteLogCache, logKey, message, AGENT_DYNAMIC_CACHE_MAX);
           appendPanelLog("error", `[Tunnel] V2 plan failed tunnel=${tunnel?.id || 0} host=${host.id}: ${message}`);
         }
         return null;
@@ -3451,7 +3474,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           if (tunnelRouteLogCache.get(routeKey) !== route) {
-            tunnelRouteLogCache.set(routeKey, route);
+            setBoundedMapValue(tunnelRouteLogCache, routeKey, route, AGENT_DYNAMIC_CACHE_MAX);
             appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxyEntrySend=${proxyProtocolEnabled(r, "entrySend")} route=${route}`);
           }
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
@@ -3739,13 +3762,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const warnNginxRoute = (message: string) => {
         const key = `nginx:${Number(host.id)}:${message}`;
         if (tunnelRouteLogCache.get(key) === message) return;
-        tunnelRouteLogCache.set(key, message);
+        setBoundedMapValue(tunnelRouteLogCache, key, message, AGENT_DYNAMIC_CACHE_MAX);
         appendPanelLog("warn", message);
       };
       const logNginxRoute = (message: string) => {
         const key = `nginx:${Number(host.id)}:${message}`;
         if (tunnelRouteLogCache.get(key) === message) return;
-        tunnelRouteLogCache.set(key, message);
+        setBoundedMapValue(tunnelRouteLogCache, key, message, AGENT_DYNAMIC_CACHE_MAX);
         appendPanelLog("info", message);
       };
       const ensureNginxTunnelCert = (tunnel: any) => {
@@ -3908,7 +3931,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         .digest("hex");
       const previousSignature = nginxRuntimeLogCache.get(Number(host.id));
       if (previousSignature !== configSignature) {
-        nginxRuntimeLogCache.set(Number(host.id), configSignature);
+        setBoundedMapValue(nginxRuntimeLogCache, Number(host.id), configSignature, AGENT_HOST_CACHE_MAX);
         logNginxRoute(`[NginxRuntime] host=${host.id} name=${String(host.name || "-")} servers=${servers.length} upstreams=${upstreams.length} tlsClients=${tlsClientServers} tlsServers=${tlsServerServers} certs=${certKeys.size} counting=${countingCmds.length} routes=${routeSummaries.length} elapsedMs=${Date.now() - startedAt}`);
         for (const summary of routeSummaries.slice(0, 20)) {
           logNginxRoute(`[NginxRuntime] host=${host.id} ${summary}`);
@@ -6258,7 +6281,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // heartbeat response 里仍携带 desiredState 作为兜底（SSE 断开时的最终一致保证）。
     if (desiredState) {
       if (agentDesiredDispatchAuditHash.get(Number(host.id)) !== desiredState.configHash) {
-        agentDesiredDispatchAuditHash.set(Number(host.id), desiredState.configHash);
+        setBoundedMapValue(agentDesiredDispatchAuditHash, Number(host.id), desiredState.configHash, AGENT_HOST_CACHE_MAX);
         void recordConfigAuditEvent({
           resourceType: "runtime",
           resourceId: Number(host.id),

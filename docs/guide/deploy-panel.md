@@ -48,6 +48,26 @@ docker logs -n 300 forwardx-panel
 
 如需卸载 Docker 面板，请先阅读 [卸载 ForwardX](./uninstall.md)，确认是否保留数据卷和数据库。
 
+## 重置管理员密码
+
+忘记管理员密码时，可直接在 Docker 容器内或通过 SSH 终端执行重置命令。CLI 会隐藏读取新密码，不会把密码放在命令行参数或进程列表中。
+
+Docker 部署（默认容器名为 `forwardx-panel`）：
+
+```bash
+docker exec -it forwardx-panel node dist/reset-admin-password.js
+```
+
+本地 systemd 部署：
+
+```bash
+sudo bash /opt/forwardx-panel/scripts/install-panel-local.sh reset-admin
+```
+
+命令会撤销目标管理员的现有会话，2FA 设置保持不变。多个管理员时按提示输入用户名或邮箱；被禁用的账号默认不会被启用，如确有需要可追加 `--enable-account`。Docker 方式要求面板容器处于运行状态，本地方式要求已完成一次面板安装或升级。执行前建议备份数据库。
+
+如果自定义过容器名，请将命令中的 `forwardx-panel` 替换为实际容器名；也可以先进入容器，再运行 `node dist/reset-admin-password.js`。
+
 ## Docker 手动部署
 
 如果你不想使用一键脚本，也可以手动创建 Docker Compose。下面以 `/opt/forwardx-docker` 为例。

@@ -598,16 +598,20 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       .map((context) => Number(context?.rule?.userId || 0))
       .filter((userId) => userId > 0);
     await withTrafficAccountingUserLocks(accountingUserIds, () => db.withDatabaseTransaction(async () => {
-    if (trafficReportId && !await db.claimAgentTrafficReport(host.id, trafficReportId, trafficReportProducerId)) {
-      duplicateTrafficReport = true;
-      return;
-    }
-    if (hostTraffic) {
-      await db.recordHostTrafficSample(host.id, {
-        bytesIn: Number(hostTraffic.bytesIn) || 0,
-        bytesOut: Number(hostTraffic.bytesOut) || 0,
-      });
-    }
+      // Lock database rows in the same deterministic order as the in-process
+      // keyed locks. This protects quota/billing counters when reports arrive
+      // concurrently on different panel instances.
+      await db.lockTrafficBillingUserRows(accountingUserIds);
+      if (trafficReportId && !await db.claimAgentTrafficReport(host.id, trafficReportId, trafficReportProducerId)) {
+        duplicateTrafficReport = true;
+        return;
+      }
+      if (hostTraffic) {
+        await db.recordHostTrafficSample(host.id, {
+          bytesIn: Number(hostTraffic.bytesIn) || 0,
+          bytesOut: Number(hostTraffic.bytesOut) || 0,
+        });
+      }
 
     const quotaTrafficByUser = new Map<number, number>();
     const trafficBatch: db.TrafficStatBatchItem[] = [];

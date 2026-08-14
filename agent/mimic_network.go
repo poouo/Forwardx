@@ -27,8 +27,13 @@ var (
 	mimicNetworkTuneMu       sync.Mutex
 	mimicNetworkTuneCache    = map[string]mimicNetworkTuneResult{}
 	mimicOffloadOperationMu  sync.Mutex
-	mimicOffloadOperationMap = map[string]*sync.Mutex{}
+	mimicOffloadOperationMap = map[string]*mimicOffloadOperationEntry{}
 )
+
+type mimicOffloadOperationEntry struct {
+	lock sync.Mutex
+	refs int
+}
 
 var mimicOffloadKeys = map[string]string{
 	"rx-checksumming":              "rx",
@@ -57,15 +62,25 @@ func validMimicInterfaceName(iface string) bool {
 	return validNetworkInterfaceName(iface) && iface != "." && iface != ".." && filepath.Base(iface) == iface
 }
 
-func mimicOffloadOperationLock(iface string) *sync.Mutex {
+func acquireMimicOffloadOperationLock(iface string) func() {
 	mimicOffloadOperationMu.Lock()
-	defer mimicOffloadOperationMu.Unlock()
-	lock := mimicOffloadOperationMap[iface]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		mimicOffloadOperationMap[iface] = lock
+	entry := mimicOffloadOperationMap[iface]
+	if entry == nil {
+		entry = &mimicOffloadOperationEntry{}
+		mimicOffloadOperationMap[iface] = entry
 	}
-	return lock
+	entry.refs++
+	mimicOffloadOperationMu.Unlock()
+	entry.lock.Lock()
+	return func() {
+		entry.lock.Unlock()
+		mimicOffloadOperationMu.Lock()
+		entry.refs--
+		if entry.refs == 0 && mimicOffloadOperationMap[iface] == entry {
+			delete(mimicOffloadOperationMap, iface)
+		}
+		mimicOffloadOperationMu.Unlock()
+	}
 }
 
 func parsedMimicOffloads(output string, mutableOnly bool) []string {
@@ -243,9 +258,8 @@ func restoreMimicNetworkOffloads(iface string) (bool, string) {
 	if !validMimicInterfaceName(iface) {
 		return false, "restore-invalid-interface"
 	}
-	operationLock := mimicOffloadOperationLock(iface)
-	operationLock.Lock()
-	defer operationLock.Unlock()
+	releaseOperation := acquireMimicOffloadOperationLock(iface)
+	defer releaseOperation()
 	return restoreMimicNetworkOffloadsLocked(iface)
 }
 
@@ -286,9 +300,8 @@ func restoreMimicNetworkOffloadsLocked(iface string) (bool, string) {
 }
 
 func mimicInterfaceNetworkSummary(iface string) string {
-	operationLock := mimicOffloadOperationLock(iface)
-	operationLock.Lock()
-	defer operationLock.Unlock()
+	releaseOperation := acquireMimicOffloadOperationLock(iface)
+	defer releaseOperation()
 
 	// Mimic 0.7.1 cannot split fake-TCP packets coalesced by GRO/LRO before the
 	// encapsulated WireGuard datagrams reach wireguard-go. Other offloads do not
@@ -413,6 +426,14 @@ func mimicNetworkTuneCacheWindow(message string) time.Duration {
 	return mimicNetworkTuneInterval
 }
 
+func pruneMimicNetworkTuneCacheLocked(now time.Time, keepInterface string) {
+	for cachedInterface, cached := range mimicNetworkTuneCache {
+		if cachedInterface != keepInterface && now.Sub(cached.checkedAt) >= 2*mimicNetworkTuneInterval {
+			delete(mimicNetworkTuneCache, cachedInterface)
+		}
+	}
+}
+
 func ensureMimicNetworkCompatibility(iface string) string {
 	if !validMimicInterfaceName(iface) {
 		return "network=invalid-interface"
@@ -420,6 +441,7 @@ func ensureMimicNetworkCompatibility(iface string) string {
 	now := time.Now()
 	interfaceIdentity := mimicInterfaceIdentity(iface)
 	mimicNetworkTuneMu.Lock()
+	pruneMimicNetworkTuneCacheLocked(now, iface)
 	if cached, ok := mimicNetworkTuneCache[iface]; ok &&
 		cached.interfaceIdentity == interfaceIdentity &&
 		now.Sub(cached.checkedAt) < mimicNetworkTuneCacheWindow(cached.message) {

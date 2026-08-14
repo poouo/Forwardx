@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
+import { once } from "events";
 
 export type FileLogEntry = {
   id: string | number;
@@ -13,6 +14,10 @@ export type FileLogEntry = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PAGE_LIMIT = 200;
 const MAX_PAGE_LIMIT = 500;
+const pendingAppends = new Map<string, string[]>();
+const appendFlushScheduled = new Set<string>();
+const fileOperationQueues = new Map<string, Promise<void>>();
+const ensuredLogDirs = new Set<string>();
 
 export type JsonLogPageOptions = {
   level?: string | null;
@@ -43,7 +48,60 @@ export function getLogFilePath(filename: string) {
 }
 
 function ensureLogDir() {
-  fs.mkdirSync(getLogDir(), { recursive: true });
+  const dir = getLogDir();
+  if (ensuredLogDirs.has(dir)) return;
+  fs.mkdirSync(dir, { recursive: true });
+  ensuredLogDirs.add(dir);
+}
+
+function queueFileOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const previous = fileOperationQueues.get(filePath) || Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const tail = result.then(() => undefined, () => undefined);
+  fileOperationQueues.set(filePath, tail);
+  void tail.then(() => {
+    if (fileOperationQueues.get(filePath) === tail) fileOperationQueues.delete(filePath);
+  });
+  return result;
+}
+
+function reportLogFileError(action: string, filePath: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`[ForwardX] ${action} failed file=${filePath}: ${message}\n`);
+}
+
+function queuePendingAppend(filePath: string) {
+  const chunks = pendingAppends.get(filePath);
+  if (!chunks?.length) return fileOperationQueues.get(filePath) || Promise.resolve();
+  pendingAppends.delete(filePath);
+  const content = chunks.join("");
+  return queueFileOperation(filePath, async () => {
+    ensureLogDir();
+    try {
+      await fs.promises.appendFile(filePath, content, "utf8");
+    } catch (error) {
+      // The log directory can be removed by an external rotation or cleanup
+      // after it was cached as present. Recreate it and retry asynchronously
+      // before falling back to a blocking write on the error path.
+      try {
+        const dir = path.dirname(filePath);
+        ensuredLogDirs.delete(dir);
+        await fs.promises.mkdir(dir, { recursive: true });
+        ensuredLogDirs.add(dir);
+        await fs.promises.appendFile(filePath, content, "utf8");
+        return;
+      } catch {
+        // Fall through to the synchronous last-resort write below.
+      }
+      // Preserve logs on transient async-I/O failures. This fallback only runs
+      // on an error path, so normal console output never blocks the event loop.
+      try {
+        fs.appendFileSync(filePath, content, "utf8");
+      } catch (fallbackError) {
+        reportLogFileError("append", filePath, fallbackError || error);
+      }
+    }
+  });
 }
 
 function parseLogLine(line: string): FileLogEntry | null {
@@ -79,14 +137,15 @@ function normalizeLevel(level: unknown) {
 
 export function appendJsonLog(filePath: string, entry: FileLogEntry) {
   ensureLogDir();
-  fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, "utf8");
-}
-
-export function readRecentJsonLogs(filePath: string) {
-  if (!fs.existsSync(filePath)) return [];
-  const content = fs.readFileSync(filePath, "utf8");
-  const lines = content.split(/\r?\n/).filter(Boolean);
-  return lines.map(parseLogLine).filter((entry): entry is FileLogEntry => !!entry && recentEntry(entry));
+  const chunks = pendingAppends.get(filePath) || [];
+  chunks.push(`${JSON.stringify(entry)}\n`);
+  pendingAppends.set(filePath, chunks);
+  if (appendFlushScheduled.has(filePath)) return;
+  appendFlushScheduled.add(filePath);
+  setImmediate(() => {
+    appendFlushScheduled.delete(filePath);
+    void queuePendingAppend(filePath);
+  });
 }
 
 export async function readRecentJsonLogPageAsync<T extends FileLogEntry = FileLogEntry>(
@@ -103,59 +162,119 @@ export async function readRecentJsonLogPageAsync<T extends FileLogEntry = FileLo
   const windowLogs: T[] = [];
   let total = 0;
 
-  if (!fs.existsSync(filePath)) {
-    return { logs: [], total, summary, limit, offset, hasMore: false, nextOffset: offset };
-  }
-
-  const now = Date.now();
-  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-  for await (const line of lines) {
-    if (!line) continue;
-    const entry = parseLogLine(line);
-    if (!entry || !recentEntry(entry, now)) continue;
-    if (filterHost && Number(entry.hostId || 0) !== hostId) continue;
-
-    const entryLevel = normalizeLevel(entry.level) || "log";
-    summary.all = (summary.all || 0) + 1;
-    summary[entryLevel] = (summary[entryLevel] || 0) + 1;
-
-    if (filterLevel !== "all" && entryLevel !== filterLevel) continue;
-    total += 1;
-    if (windowSize <= 0) continue;
-    windowLogs.push(entry as T);
-    if (windowLogs.length > windowSize) {
-      windowLogs.splice(0, windowLogs.length - windowSize);
+  queuePendingAppend(filePath);
+  return queueFileOperation(filePath, async () => {
+    if (!fs.existsSync(filePath)) {
+      return { logs: [], total, summary, limit, offset, hasMore: false, nextOffset: offset };
     }
-  }
 
-  const newestFirst = windowLogs.reverse();
-  const logs = newestFirst.slice(offset, offset + limit);
-  return {
-    logs,
-    total,
-    summary,
-    limit,
-    offset,
-    hasMore: total > offset + logs.length,
-    nextOffset: offset + logs.length,
-  };
+    const now = Date.now();
+    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+    for await (const line of lines) {
+      if (!line) continue;
+      const entry = parseLogLine(line);
+      if (!entry || !recentEntry(entry, now)) continue;
+      if (filterHost && Number(entry.hostId || 0) !== hostId) continue;
+
+      const entryLevel = normalizeLevel(entry.level) || "log";
+      summary.all = (summary.all || 0) + 1;
+      summary[entryLevel] = (summary[entryLevel] || 0) + 1;
+
+      if (filterLevel !== "all" && entryLevel !== filterLevel) continue;
+      total += 1;
+      if (windowSize <= 0) continue;
+      windowLogs.push(entry as T);
+      if (windowLogs.length > windowSize) {
+        windowLogs.splice(0, windowLogs.length - windowSize);
+      }
+    }
+
+    const newestFirst = windowLogs.reverse();
+    const logs = newestFirst.slice(offset, offset + limit);
+    return {
+      logs,
+      total,
+      summary,
+      limit,
+      offset,
+      hasMore: total > offset + logs.length,
+      nextOffset: offset + logs.length,
+    };
+  });
+}
+
+export async function readRecentJsonLogsAsync(filePath: string) {
+  queuePendingAppend(filePath);
+  return queueFileOperation(filePath, async () => {
+    if (!fs.existsSync(filePath)) return [];
+    const logs: FileLogEntry[] = [];
+    const now = Date.now();
+    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of lines) {
+      const entry = line ? parseLogLine(line) : null;
+      if (entry && recentEntry(entry, now)) logs.push(entry);
+    }
+    return logs;
+  });
 }
 
 export function pruneJsonLogFile(filePath: string) {
-  if (!fs.existsSync(filePath)) return [];
-  const logs = readRecentJsonLogs(filePath);
-  ensureLogDir();
-  if (logs.length === 0) {
-    fs.writeFileSync(filePath, "", "utf8");
-  } else {
-    fs.writeFileSync(filePath, `${logs.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
-  }
-  return logs;
+  queuePendingAppend(filePath);
+  return queueFileOperation(filePath, async () => {
+    if (!fs.existsSync(filePath)) return [];
+    ensureLogDir();
+    const now = Date.now();
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    const input = fs.createReadStream(filePath, { encoding: "utf8" });
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    const output = fs.createWriteStream(tempPath, { encoding: "utf8", flags: "w" });
+    try {
+      for await (const line of lines) {
+        const entry = line ? parseLogLine(line) : null;
+        if (!entry || !recentEntry(entry, now)) continue;
+        if (!output.write(`${JSON.stringify(entry)}\n`)) await once(output, "drain");
+      }
+      output.end();
+      await once(output, "finish");
+      await fs.promises.rename(tempPath, filePath);
+      return undefined;
+    } catch (error) {
+      output.destroy();
+      await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  });
 }
 
 export function clearJsonLogFile(filePath: string) {
-  ensureLogDir();
-  fs.writeFileSync(filePath, "", "utf8");
+  queuePendingAppend(filePath);
+  return queueFileOperation(filePath, async () => {
+    ensureLogDir();
+    await fs.promises.writeFile(filePath, "", "utf8");
+  });
 }
+
+export async function flushJsonLogWrites(filePath?: string) {
+  if (filePath) {
+    await queuePendingAppend(filePath);
+    return;
+  }
+  const paths = new Set([...pendingAppends.keys(), ...fileOperationQueues.keys()]);
+  await Promise.all(Array.from(paths, (target) => queuePendingAppend(target)));
+}
+
+export function clearJsonLogStateForTests() {
+  pendingAppends.clear();
+  appendFlushScheduled.clear();
+  fileOperationQueues.clear();
+  ensuredLogDirs.clear();
+}
+
+process.once("beforeExit", () => {
+  // setImmediate/fs operations normally keep Node alive; this is a final guard
+  // for callers that append a last message while the event loop is draining.
+  for (const filePath of pendingAppends.keys()) void queuePendingAppend(filePath);
+});

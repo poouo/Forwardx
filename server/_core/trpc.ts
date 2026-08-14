@@ -18,7 +18,9 @@ const requireUser = t.middleware(async opts => {
   if (!ctx.user) {
     throw new TRPCError({
       code: "UNAUTHORIZED",
-      message: ctx.authFailureReason === "session_replaced" ? SESSION_REPLACED_ERR_MSG : UNAUTHED_ERR_MSG,
+      message: ctx.authFailureReason === "session_replaced"
+        ? SESSION_REPLACED_ERR_MSG
+        : ctx.authFailureReason === "account_disabled" ? ACCOUNT_DISABLED_ERR_MSG : UNAUTHED_ERR_MSG,
     });
   }
   if ((ctx.user as any).accountEnabled === false) {
@@ -44,7 +46,9 @@ export const adminProcedure = t.procedure.use(
     if (!ctx.user) {
       throw new TRPCError({
         code: "UNAUTHORIZED",
-        message: ctx.authFailureReason === "session_replaced" ? SESSION_REPLACED_ERR_MSG : UNAUTHED_ERR_MSG,
+        message: ctx.authFailureReason === "session_replaced"
+          ? SESSION_REPLACED_ERR_MSG
+          : ctx.authFailureReason === "account_disabled" ? ACCOUNT_DISABLED_ERR_MSG : UNAUTHED_ERR_MSG,
       });
     }
     if ((ctx.user as any).accountEnabled === false) {

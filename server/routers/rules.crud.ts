@@ -261,6 +261,16 @@ function isLoopbackAddress(value: unknown) {
   if (target === "localhost" || target === "ip6-localhost") return true;
   if (target === "0.0.0.0" || target === "::" || target === "0:0:0:0:0:0:0:0") return true;
   if (target === "::1" || target === "0:0:0:0:0:0:0:1") return true;
+  // Browsers and DNS libraries also accept non-dotted IPv4 forms. Normalize
+  // 32-bit decimal/hex forms before applying the loopback check so 127.0.0.1
+  // cannot be disguised as 2130706433 or 0x7f000001.
+  if (/^(?:0x[0-9a-f]+|\d+)$/.test(target)) {
+    const value32 = target.startsWith("0x") ? Number.parseInt(target.slice(2), 16) : Number(target);
+    if (Number.isSafeInteger(value32) && value32 >= 0 && value32 <= 0xffffffff) {
+      const firstOctet = Math.floor(value32 / 0x1000000);
+      if (firstOctet === 127) return true;
+    }
+  }
   if (isIP(target) === 4) return target.startsWith("127.");
   return false;
 }

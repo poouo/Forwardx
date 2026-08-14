@@ -26,6 +26,29 @@ const TRAFFIC_BILLING_ENABLED_CACHE_MS = 5_000;
 let trafficBillingEnabledCache: { value: boolean; expiresAt: number } | null = null;
 let lastTrafficBillingAccessWarningAt = 0;
 
+/**
+ * Serialize usage read/modify/write operations across panel instances.
+ * SQLite transactions already hold a database-wide write reservation; the
+ * row lock is required for MySQL/PostgreSQL where multiple instances share
+ * the same database.
+ */
+export async function lockTrafficBillingUserRows(userIds: number | number[]) {
+  const ids = Array.from(new Set((Array.isArray(userIds) ? userIds : [userIds])
+    .map((value) => Math.floor(Number(value) || 0))
+    .filter((value) => value > 0)))
+    .sort((left, right) => left - right);
+  if (ids.length === 0) return;
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  for (const userId of ids) {
+    const rows = await queryRaw<{ id: number }>(
+      `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`,
+      [userId],
+    );
+    if (!rows[0]) throw new Error("User not found");
+  }
+}
+
 export type TrafficBillingResourceType = "host" | "tunnel" | "forward_group";
 
 export type TrafficBillingResourceIds = {
@@ -712,6 +735,9 @@ export async function billTrafficUsage(input: {
   if (!config || pricePerGbMilliCents <= 0) return null;
   const db = await getDb();
   if (!db) return null;
+  // Lock the owning user before reading usage counters. This keeps the
+  // read/compute/write sequence atomic across multiple panel instances.
+  await lockTrafficBillingUserRows(input.userId);
   const [usageRows, ruleUsageRows] = await Promise.all([
     db.select().from(trafficBillingUsage).where(and(
       eq(trafficBillingUsage.userId, input.userId),
@@ -811,6 +837,9 @@ export async function settleTrafficBillingRuleOnDelete(input: {
   if (!(await getTrafficBillingEnabledForWrite())) return null;
   const db = await getDb();
   if (!db) return null;
+  // Rule settlement also reads and updates the same usage rows. Serialize it
+  // with live reports so a delete cannot lose a concurrently reported delta.
+  await lockTrafficBillingUserRows(input.userId);
   let rows = await db.select().from(trafficBillingRuleUsage).where(eq(trafficBillingRuleUsage.ruleId, input.ruleId));
   if (rows.length === 0) {
     const usageRows = await db.select({ id: trafficBillingUsage.id }).from(trafficBillingUsage).where(and(

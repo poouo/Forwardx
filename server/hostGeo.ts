@@ -11,6 +11,7 @@ const GEO_REFRESH_INTERVAL_MS = ADDRESS_GEO_FRESH_MS;
 const ADDRESS_GEO_NEGATIVE_CACHE_MS = 30 * 60 * 1000;
 const GEO_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 const GEO_PROVIDER = "ipapi.co";
+const MAX_ADDRESS_GEO_CACHE_ENTRIES = 4096;
 
 const refreshingHostIds = new Set<number>();
 const addressGeoCache = new Map<string, AddressGeoCacheEntry>();
@@ -22,6 +23,16 @@ type AddressGeoCacheEntry = {
   expiresAt: number;
   value: AddressGeoLookupResult | null;
 };
+
+function setAddressGeoCache(key: string, entry: AddressGeoCacheEntry) {
+  addressGeoCache.delete(key);
+  addressGeoCache.set(key, entry);
+  while (addressGeoCache.size > MAX_ADDRESS_GEO_CACHE_ENTRIES) {
+    const oldest = addressGeoCache.keys().next().value;
+    if (!oldest) break;
+    addressGeoCache.delete(oldest);
+  }
+}
 
 export type AddressGeoLookupResult = {
   address: string;
@@ -242,7 +253,7 @@ async function readPersistentGeoCacheEntry(cacheKey: string) {
     [cacheKey, nowSec],
   ).catch(() => []);
   const entry = cacheEntryFromRow(rows[0]);
-  if (entry) addressGeoCache.set(cacheKey, entry);
+  if (entry) setAddressGeoCache(cacheKey, entry);
   return entry;
 }
 
@@ -299,7 +310,7 @@ async function lookupAddressGeoUncached(normalized: string, cacheKey: string): P
 
   const resolvedAddress = await resolveLookupAddress(normalized);
   if (!resolvedAddress || isPrivateAddress(resolvedAddress)) {
-    addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+    setAddressGeoCache(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
     return null;
   }
 
@@ -308,7 +319,7 @@ async function lookupAddressGeoUncached(normalized: string, cacheKey: string): P
     const resolvedEntry = await readPersistentGeoCacheEntry(resolvedKey);
     if (resolvedEntry && resolvedEntry.freshUntil > Date.now() && resolvedEntry.value) {
       const value = { ...resolvedEntry.value, address: normalized, resolvedAddress };
-      addressGeoCache.set(cacheKey, { ...resolvedEntry, value });
+      setAddressGeoCache(cacheKey, { ...resolvedEntry, value });
       await writePersistentGeoCache(cacheKey, value);
       return value;
     }
@@ -327,7 +338,7 @@ async function lookupAddressGeoUncached(normalized: string, cacheKey: string): P
   }
   if (geo.geoLatitudeMicro == null || geo.geoLongitudeMicro == null) {
     if (staleEntry?.value) return staleEntry.value;
-    addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+    setAddressGeoCache(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
     return null;
   }
   const value = {
@@ -335,7 +346,7 @@ async function lookupAddressGeoUncached(normalized: string, cacheKey: string): P
     resolvedAddress,
     ...geo,
   };
-  addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_FRESH_MS, expiresAt: Date.now() + ADDRESS_GEO_STALE_MS, value });
+  setAddressGeoCache(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_FRESH_MS, expiresAt: Date.now() + ADDRESS_GEO_STALE_MS, value });
   await writePersistentGeoCache(cacheKey, value);
   if (resolvedKey !== cacheKey) {
     await writePersistentGeoCache(resolvedKey, { ...value, address: resolvedAddress });
@@ -386,7 +397,7 @@ export async function lookupAddressGeo(address: string): Promise<AddressGeoLooku
     .catch((error: any) => {
       const fallback = addressGeoCache.get(cacheKey);
       if (fallback?.value && fallback.expiresAt > Date.now()) return fallback.value;
-      addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+      setAddressGeoCache(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
       console.warn(`[HostGeo] lookup failed address=${normalized}:`, error?.message || error);
       return null;
     })

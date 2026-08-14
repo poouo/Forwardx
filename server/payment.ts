@@ -321,11 +321,7 @@ function createOutTradeNo() {
 }
 
 function getClientIp(req: express.Request) {
-  return (
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-    req.socket.remoteAddress ||
-    ""
-  );
+  return req.ip || req.socket.remoteAddress || "";
 }
 
 function formatPem(key: string, type: "PRIVATE KEY" | "PUBLIC KEY") {
@@ -732,14 +728,20 @@ function verifyStripeSignature(raw: string, header: string | undefined, secret: 
   });
 }
 
-async function expireStalePendingOrders() {
-  const orders = await db.listPaymentOrders(200);
+export async function expireStalePendingOrders() {
+  const orders = await db.listPaymentOrdersForMaintenance(["pending"], 10000);
   const now = Date.now();
   for (const order of orders) {
     if (order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() <= now) {
       await closePaymentOrderAndReleaseDiscount(order.outTradeNo, "expired");
     }
   }
+}
+
+function normalizedStripeOrderAmountCents(amountCents: number, currency: string) {
+  return zeroDecimalCurrencies.has(currency.trim().toLowerCase())
+    ? Math.max(100, stripeAmountForCurrency(amountCents, currency) * 100)
+    : amountCents;
 }
 
 async function closePaymentOrderAndReleaseDiscount(outTradeNo: string, status: "expired" | "failed" | "cancelled", rawNotify?: string) {
@@ -852,8 +854,23 @@ async function finalizePaidOrder(outTradeNo: string) {
       await db.updatePaymentOrder(outTradeNo, { status: "completed" } as any);
     }));
   } catch (error) {
-    await db.updatePaymentOrder(outTradeNo, { status: "paid" } as any);
+    // Keep the order in processing so the maintenance worker can retry it;
+    // reverting to paid on every permanent error strands paid orders.
+    appendPanelLog("error", `[Payment] finalize failed order=${outTradeNo}: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
+  }
+}
+
+export async function recoverStaleProcessingPaymentOrders() {
+  const orders = await db.listPaymentOrdersForMaintenance(["processing"], 1000);
+  const staleBefore = new Date(Date.now() - PROCESSING_STALE_MS);
+  for (const order of orders as any[]) {
+    if (!order.updatedAt || new Date(order.updatedAt).getTime() >= staleBefore.getTime()) continue;
+    if (await db.resetStaleProcessingPaymentOrder(order.outTradeNo, staleBefore)) {
+      try { await finalizePaidOrder(order.outTradeNo); } catch (error) {
+        appendPanelLog("error", `[Payment] processing recovery failed order=${order.outTradeNo}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 }
 
@@ -1097,7 +1114,10 @@ export const paymentRouter = router({
       if (provider === "stripe" && !config.stripe.enabled) throw new Error("Stripe 未启用");
       if (provider === "gmpay" && !config.gmpay.enabled) throw new Error("USDT 支付未启用");
 
-      const amountCents = Math.round(amount * 100);
+      const rawAmountCents = Math.round(amount * 100);
+      const amountCents = provider === "stripe"
+        ? normalizedStripeOrderAmountCents(rawAmountCents, config.stripe.currency)
+        : rawAmountCents;
       const outTradeNo = createOutTradeNo();
       const panelUrl = await getConfiguredPanelUrl();
       if (!panelUrl) throw new Error("请先配置面板公开访问地址");

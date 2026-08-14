@@ -17,6 +17,8 @@ import { installPanelLogger } from "./_core/panelLogger";
 import { loadPanelSslRuntimeConfig } from "./panelSsl";
 import { startBackgroundServices } from "./backgroundServices";
 import { initializePanelClock } from "./panelClock";
+import { ENV } from "./env";
+import { resolveTrustProxySetting } from "./trustProxy";
 
 installPanelLogger();
 
@@ -99,7 +101,7 @@ async function startServer() {
   const databaseStatus = await initDatabase();
 
   const app = express();
-  app.set("trust proxy", "loopback");
+  app.set("trust proxy", resolveTrustProxySetting(ENV.trustProxy));
   const panelSsl = await loadPanelSslRuntimeConfig();
   const protocol = panelSsl.enabled ? "https" : "http";
   const server = panelSsl.enabled && panelSsl.options

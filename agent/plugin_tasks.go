@@ -33,7 +33,13 @@ var pluginAgentResultQueue = make(chan pluginAgentTaskResultJob, pluginAgentResu
 var pluginAgentTaskSeenMu sync.Mutex
 var pluginAgentTaskSeen = map[string]time.Time{}
 var pluginAgentTaskLocksMu sync.Mutex
-var pluginAgentTaskLocks = map[string]*sync.RWMutex{}
+
+type pluginAgentTaskLockEntry struct {
+	lock sync.RWMutex
+	refs int
+}
+
+var pluginAgentTaskLocks = map[string]*pluginAgentTaskLockEntry{}
 var pluginAgentResultPendingMu sync.Mutex
 var pluginAgentResultPending = map[string]bool{}
 var pluginAgentTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -143,19 +149,35 @@ func startPluginAgentTaskWorkers(cfg Config) {
 }
 
 func acquirePluginAgentTaskLock(task pluginAgentTask) func() {
+	pluginID := strings.TrimSpace(task.PluginID)
 	pluginAgentTaskLocksMu.Lock()
-	lock := pluginAgentTaskLocks[task.PluginID]
-	if lock == nil {
-		lock = &sync.RWMutex{}
-		pluginAgentTaskLocks[task.PluginID] = lock
+	entry := pluginAgentTaskLocks[pluginID]
+	if entry == nil {
+		entry = &pluginAgentTaskLockEntry{}
+		pluginAgentTaskLocks[pluginID] = entry
 	}
+	entry.refs++
 	pluginAgentTaskLocksMu.Unlock()
-	if strings.TrimSpace(task.Intent) == "read" {
-		lock.RLock()
-		return lock.RUnlock
+	releaseEntry := func() {
+		pluginAgentTaskLocksMu.Lock()
+		entry.refs--
+		if entry.refs == 0 && pluginAgentTaskLocks[pluginID] == entry {
+			delete(pluginAgentTaskLocks, pluginID)
+		}
+		pluginAgentTaskLocksMu.Unlock()
 	}
-	lock.Lock()
-	return lock.Unlock
+	if strings.TrimSpace(task.Intent) == "read" {
+		entry.lock.RLock()
+		return func() {
+			entry.lock.RUnlock()
+			releaseEntry()
+		}
+	}
+	entry.lock.Lock()
+	return func() {
+		entry.lock.Unlock()
+		releaseEntry()
+	}
 }
 
 func pluginAgentTaskWorker() {
@@ -202,6 +224,13 @@ func queuePluginAgentTaskResult(cfg Config, result pluginAgentTaskResult) {
 	}
 }
 
+func pluginAgentTaskResultIsPending(taskID string) bool {
+	pluginAgentResultPendingMu.Lock()
+	pending := pluginAgentResultPending[taskID]
+	pluginAgentResultPendingMu.Unlock()
+	return pending
+}
+
 func pluginAgentTaskResultPath(taskID string) string {
 	return filepath.Join(pluginAgentResultRoot, taskID+".json")
 }
@@ -239,6 +268,10 @@ func queuePersistedPluginAgentTaskResults(cfg Config) {
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		taskID := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		if !pluginAgentTaskIDPattern.MatchString(taskID) || pluginAgentTaskResultIsPending(taskID) {
 			continue
 		}
 		data, readErr := os.ReadFile(filepath.Join(pluginAgentResultRoot, entry.Name()))

@@ -4,6 +4,7 @@ await build({
   entryPoints: {
     index: "server/index.ts",
     "migrate-legacy": "server/legacyMigrationCli.ts",
+    "reset-admin-password": "server/resetAdminPasswordCli.ts",
   },
   bundle: true,
   platform: "node",
@@ -32,4 +33,4 @@ const __dirname = __forwardxDirname(__filename);
   },
 });
 
-console.log("Server build complete: dist/index.js, dist/migrate-legacy.js");
+console.log("Server build complete: dist/index.js, dist/migrate-legacy.js, dist/reset-admin-password.js");

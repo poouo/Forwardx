@@ -2815,9 +2815,9 @@ export const systemRouter = router({
 
   exportPanelLogs: adminProcedure
     .input(z.object({ level: panelLogLevelSchema.default("all") }).optional())
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       const level = input?.level || "all";
-      const exported = formatPanelLogsForExport(level, {
+      const exported = await formatPanelLogsForExport(level, {
         "App Version": APP_VERSION,
         "Android App Version": ANDROID_APP_VERSION,
         "Agent Version": AGENT_VERSION,
@@ -2853,8 +2853,8 @@ export const systemRouter = router({
       return task;
     }),
 
-  clearPanelLogs: adminProcedure.mutation(() => {
-    clearPanelLogs();
+  clearPanelLogs: adminProcedure.mutation(async () => {
+    await clearPanelLogs();
     console.info("[PanelLogs] Cleared panel logs");
     return { success: true };
   }),

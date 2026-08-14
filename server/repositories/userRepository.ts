@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
-import { hashPassword, verifyPassword } from "../password";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
+import { hashPassword, verifyPassword, verifyPasswordAgainstDummy } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
 import {
@@ -86,7 +86,10 @@ export async function getUserByTelegramLoginCode(code: string) {
 
 export async function authenticateUser(username: string, password: string) {
   const user = await getUserByUsername(username);
-  if (!user) return null;
+  if (!user) {
+    verifyPasswordAgainstDummy(password);
+    return null;
+  }
   if (!verifyPassword(password, user.password)) return null;
   const db = await getDb();
   if (db && (user as any).accountEnabled !== false) {
@@ -283,26 +286,42 @@ export async function createTelegramLoginCode(userId: number, code: string, expi
 }
 
 export async function consumeTelegramLoginCode(code: string) {
-  const user = await getUserByTelegramLoginCode(code);
-  if (!user) return null;
-  const expiresAt = user.telegramLoginCodeExpiresAt ? new Date(user.telegramLoginCodeExpiresAt).getTime() : 0;
-  const db = await getDb();
-  if (!db) return null;
-  if (!expiresAt || expiresAt <= Date.now()) {
-    await db.update(users).set({
+  const normalized = String(code || "").trim().toUpperCase();
+  if (!normalized) return null;
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return null;
+
+    // Keep the read and clear in one transaction. SQLite serializes this
+    // section through BEGIN IMMEDIATE; server databases need an explicit row
+    // lock so concurrent panel instances cannot consume the same code.
+    const q = quoteDbIdentifier;
+    const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+    const locked = await queryRaw<{ id: number }>(
+      `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("telegramLoginCode")} = ?${lock}`,
+      [normalized],
+    );
+    const userId = Number(locked[0]?.id || 0);
+    if (!userId) return null;
+
+    // Fetch through Drizzle so epoch/date and dialect mappings stay identical
+    // to getUserByTelegramLoginCode.
+    const rows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    const user = rows[0];
+    if (!user) return null;
+    const expiresAt = user.telegramLoginCodeExpiresAt ? new Date(user.telegramLoginCodeExpiresAt).getTime() : 0;
+    const clear = {
       telegramLoginCode: null,
       telegramLoginCodeExpiresAt: null,
       updatedAt: nowDate(),
-    }).where(eq(users.id, user.id));
-    return null;
-  }
-  await db.update(users).set({
-    telegramLoginCode: null,
-    telegramLoginCodeExpiresAt: null,
-    lastSignedIn: nowDate(),
-    updatedAt: nowDate(),
-  }).where(eq(users.id, user.id));
-  return user;
+    };
+    if (!expiresAt || expiresAt <= Date.now()) {
+      await db.update(users).set(clear).where(and(eq(users.id, user.id), eq(users.telegramLoginCode, normalized)));
+      return null;
+    }
+    await db.update(users).set({ ...clear, lastSignedIn: nowDate() }).where(and(eq(users.id, user.id), eq(users.telegramLoginCode, normalized)));
+    return user;
+  });
 }
 
 export async function createUser(data: { username: string; password: string; name?: string; email?: string; emailVerified?: boolean; emailVerifiedAt?: Date | null; role?: "user" | "admin"; canAddRules?: boolean }) {
@@ -679,24 +698,33 @@ export async function setUserForwardAccess(userId: number, enabled: boolean, rea
 }
 
 export async function setUserAccountEnabled(userId: number, enabled: boolean) {
-  const db = await getDb();
-  if (!db) return;
-  const now = nowDate();
-  await db.update(users).set({
-    accountEnabled: enabled,
-    updatedAt: now,
-  }).where(eq(users.id, userId));
-  if (!enabled) {
-    await db.update(forwardRules).set({
-      isEnabled: false,
-      disabledByUser: true,
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return;
+    const now = nowDate();
+    if (!enabled) {
+      // Disable is an authentication boundary as well as an access-control
+      // change: revoke browser/mobile/Telegram sessions before publishing the
+      // disabled state. Keep the session-table -> user-row lock order shared
+      // with password/session revocation paths to reduce deadlock risk.
+      await revokeUserAuthSessions(userId, { reason: "account_disabled" });
+    }
+    await db.update(users).set({
+      accountEnabled: enabled,
       updatedAt: now,
-    }).where(and(
-      eq(forwardRules.userId, userId),
-      eq(forwardRules.isEnabled, true),
-      eq(forwardRules.pendingDelete, false),
-    ));
-  }
+    }).where(eq(users.id, userId));
+    if (!enabled) {
+      await db.update(forwardRules).set({
+        isEnabled: false,
+        disabledByUser: true,
+        updatedAt: now,
+      }).where(and(
+        eq(forwardRules.userId, userId),
+        eq(forwardRules.isEnabled, true),
+        eq(forwardRules.pendingDelete, false),
+      ));
+    }
+  });
 }
 
 /** 手动重置用户流量 */
@@ -720,10 +748,11 @@ export async function resetUserTrafficForCycle(userId: number, boundary: Date, r
     `UPDATE ${q("users")}
      SET ${q("trafficUsed")} = 0,
          ${q("lastTrafficReset")} = ?,
+         ${q("lastAutoTrafficReset")} = ?,
          ${q("updatedAt")} = ?
      WHERE ${q("id")} = ?
-       AND (${q("lastTrafficReset")} IS NULL OR ${q("lastTrafficReset")} < ?)`,
-    [resetSec, resetSec, userId, boundarySec],
+       AND (${q("lastAutoTrafficReset")} IS NULL OR ${q("lastAutoTrafficReset")} < ?)`,
+    [resetSec, resetSec, resetSec, userId, boundarySec],
   );
   return rawAffectedRows(result) > 0;
 }
@@ -739,6 +768,21 @@ export async function resetUserTrafficAndBillingUsage(userId: number) {
   return withDatabaseTransaction(async () => {
     const db = await getDb();
     if (!db) return;
+    // The billing reporter updates the same usage ledger in a separate
+    // transaction. Lock the owning user row before taking the snapshot so a
+    // manual reset cannot race a report from another panel instance and
+    // publish a stale baseline.
+    if (getDatabaseKind() !== "sqlite") {
+      const q = quoteDbIdentifier;
+      const locked = await queryRaw<{ id: number }>(
+        `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("id")} = ? FOR UPDATE`,
+        [userId],
+      );
+      if (!locked[0]) throw new Error("用户不存在");
+    } else {
+      const rows = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!rows[0]) throw new Error("用户不存在");
+    }
     const rows = await db.select({
       totalBytes: sql<number>`COALESCE(SUM(${trafficBillingUsage.totalBytes}), 0)`,
     }).from(trafficBillingUsage).where(eq(trafficBillingUsage.userId, userId));
@@ -779,7 +823,7 @@ export async function getUsersForAutoReset(reference = nowDate()) {
   return db.select().from(users).where(and(
     eq(users.trafficAutoReset, true),
     sql`${users.trafficResetDay} <= ${day}`,
-    sql`(${users.lastTrafficReset} IS NULL OR ${users.lastTrafficReset} < ${monthStartSec})`,
+    sql`(${users.lastAutoTrafficReset} IS NULL OR ${users.lastAutoTrafficReset} < ${monthStartSec})`,
   ));
 }
 

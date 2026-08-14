@@ -55,6 +55,7 @@ const queues = new Map<number, LookingGlassAgentTask[]>();
 const states = new Map<string, TaskState>();
 
 const TERMINAL_STATES = new Set<LookingGlassTaskState>(["success", "error", "timeout"]);
+const TERMINAL_STATE_RETENTION_MS = 15 * 60 * 1000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -92,6 +93,35 @@ function markTimeout(taskId: string) {
   state.updatedAt = finishedAt;
   state.error = "Agent 执行网络测试超时，请确认目标主机在线";
   state.output = `${state.output ? `${state.output}\n` : ""}${state.error}`;
+  const queue = queues.get(state.hostId);
+  if (queue) {
+    const remaining = queue.filter((task) => task.taskId !== taskId);
+    if (remaining.length > 0) queues.set(state.hostId, remaining);
+    else queues.delete(state.hostId);
+  }
+  scheduleTerminalStateRemoval(taskId);
+}
+
+function scheduleTerminalStateRemoval(taskId: string) {
+  const scheduledUpdatedAt = states.get(taskId)?.updatedAt;
+  const timer = setTimeout(() => {
+    const state = states.get(taskId);
+    if (!state || !TERMINAL_STATES.has(state.status) || state.updatedAt !== scheduledUpdatedAt) return;
+    states.delete(taskId);
+  }, TERMINAL_STATE_RETENTION_MS);
+  timer.unref?.();
+}
+
+export function pruneLookingGlassAgentTaskStates(now = Date.now()) {
+  let deleted = 0;
+  for (const [taskId, state] of states) {
+    if (!TERMINAL_STATES.has(state.status)) continue;
+    const updatedAt = new Date(state.updatedAt).getTime();
+    if (!Number.isFinite(updatedAt) || now - updatedAt < TERMINAL_STATE_RETENTION_MS) continue;
+    states.delete(taskId);
+    deleted += 1;
+  }
+  return deleted;
 }
 
 export function enqueueLookingGlassAgentTask(
@@ -112,6 +142,7 @@ export function enqueueLookingGlassAgentTask(
   queues.set(hostId, queue.slice(-20));
 
   const timer = setTimeout(() => markTimeout(task.taskId), timeoutMs);
+  timer.unref?.();
   const state: TaskState = {
     hostId,
     task,
@@ -181,7 +212,7 @@ export function completeLookingGlassAgentTask(hostId: number, result: LookingGla
   state.finishedAt = String(result.finishedAt || updatedAt);
   state.updatedAt = updatedAt;
   state.error = result.error;
-  setTimeout(() => states.delete(result.taskId), 15 * 60 * 1000);
+  scheduleTerminalStateRemoval(result.taskId);
   return true;
 }
 
@@ -197,3 +228,6 @@ export function hasActiveLookingGlassTask(hostId: number) {
   }
   return false;
 }
+
+const stateCleanupTimer = setInterval(() => pruneLookingGlassAgentTaskStates(), 60 * 1000);
+stateCleanupTimer.unref?.();

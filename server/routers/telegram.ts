@@ -9,15 +9,19 @@ import { TRPCError } from "@trpc/server";
 import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
+import { createTelegramMobilePollToken, verifyTelegramMobilePollToken } from "../telegramMobilePollToken";
+import { consumeTelegramWidgetLoginOnce } from "../telegramWidgetSecurity";
 import { consumeTelegramWebAppLoginChallenge } from "../telegramWebAppLogin";
 import { SESSION_TOKEN_TTL_MS, SESSION_TOKEN_TTL_SECONDS, stripSessionSensitiveFields, type SessionKind } from "../session";
 import { createLoginAuthSession } from "../loginSessionService";
+import { authRateLimitState, clearAuthAccountFailures, recordTwoFactorFailure } from "../authRateLimit";
 
 const BIND_CODE_TTL_MS = 5 * 60 * 1000;
 const MOBILE_LOGIN_TTL_MS = 5 * 60 * 1000;
 const TELEGRAM_WEBAPP_LOGIN_MAX_AGE_SECONDS = 5 * 60;
 const TELEGRAM_WEBAPP_REPLAY_TTL_MS = 10 * 60 * 1000;
 const usedTelegramWebAppLogins = new Map<string, number>();
+const TELEGRAM_WIDGET_LOGIN_MAX_AGE_SECONDS = 5 * 60;
 
 function randomCode(length = 24) {
   let out = "";
@@ -63,13 +67,13 @@ async function getTelegramSettings() {
 }
 
 const telegramWidgetLoginSchema = z.object({
-  id: z.union([z.string(), z.number()]),
-  first_name: z.string().optional(),
-  last_name: z.string().optional(),
-  username: z.string().optional(),
-  photo_url: z.string().optional(),
+  id: z.union([z.string(), z.number()]).refine((value) => /^\d{3,32}$/.test(String(value)), "invalid Telegram id"),
+  first_name: z.string().max(256).optional(),
+  last_name: z.string().max(256).optional(),
+  username: z.string().max(64).optional(),
+  photo_url: z.string().max(2048).optional(),
   auth_date: z.union([z.string(), z.number()]),
-  hash: z.string().min(1),
+  hash: z.string().regex(/^[a-f0-9]{64}$/i),
 }).passthrough();
 
 const telegramWebAppLoginSchema = z.object({
@@ -160,7 +164,8 @@ function verifyTelegramWebAppLogin(initData: string, token: string): TelegramWeb
 function verifyTelegramWidgetLogin(payload: z.infer<typeof telegramWidgetLoginSchema>, token: string) {
   const authDate = Number(payload.auth_date);
   if (!Number.isFinite(authDate) || authDate <= 0) return false;
-  if (Date.now() / 1000 - authDate > 24 * 60 * 60) return false;
+  const now = Date.now() / 1000;
+  if (authDate > now + 30 || now - authDate > TELEGRAM_WIDGET_LOGIN_MAX_AGE_SECONDS) return false;
 
   const data = payload as Record<string, unknown>;
   const checkString = Object.keys(data)
@@ -310,6 +315,7 @@ export const telegramRouter = router({
     const botUsername = settings.botUsername.trim().replace(/^@/, "");
     return {
       code,
+      pollToken: createTelegramMobilePollToken(code),
       expiresInSeconds: Math.floor(MOBILE_LOGIN_TTL_MS / 1000),
       botUsername,
       telegramUrl: `https://t.me/${botUsername}?start=${encodeURIComponent(code)}`,
@@ -317,10 +323,12 @@ export const telegramRouter = router({
   }),
 
   mobileLoginStatus: publicProcedure
-    .input(z.object({ code: z.string().min(8).max(64) }))
+    .input(z.object({ code: z.string().min(8).max(64), pollToken: z.string().min(16).max(128) }))
     .mutation(async ({ input, ctx }) => {
       const code = input.code.trim().toUpperCase();
-      if (!isMobileLoginCode(code)) return { status: "pending" as const };
+      if (!isMobileLoginCode(code) || !verifyTelegramMobilePollToken(code, input.pollToken)) {
+        return { status: "pending" as const };
+      }
       const user = await db.consumeTelegramLoginCode(code);
       if (!user) return { status: "pending" as const };
       takeMobileTelegramLoginChallenge(code);
@@ -330,7 +338,11 @@ export const telegramRouter = router({
   login: publicProcedure
     .input(z.object({ code: z.string().min(8).max(64), mobile: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
-      const user = await db.consumeTelegramLoginCode(input.code.trim().toUpperCase());
+      const code = input.code.trim().toUpperCase();
+      // APP-prefixed codes belong exclusively to the browser/mobile polling
+      // flow and require its separate poll token.
+      if (isMobileLoginCode(code)) throw new Error("Telegram 登录码无效或已过期");
+      const user = await db.consumeTelegramLoginCode(code);
       if (!user) throw new Error("Telegram 登录码无效或已过期");
       return await issueTelegramSession(ctx, user, "telegram", input.mobile);
     }),
@@ -342,8 +354,24 @@ export const telegramRouter = router({
       if (!settings.enabled || !settings.configured || !settings.token) {
         throw new Error("TELEGRAM_LOGIN_DISABLED");
       }
+      const ip = String(ctx.req.ip || ctx.req.socket.remoteAddress || "unknown");
+      const widgetScope = `telegram-widget:${String(input.id).trim()}`;
+      const limited = authRateLimitState(ip, widgetScope);
+      if (limited.limited) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: `TELEGRAM_LOGIN_RATE_LIMITED:${Math.ceil(limited.retryAfterSeconds / 60)}`,
+        });
+      }
       if (!verifyTelegramWidgetLogin(input, settings.token)) {
+        recordTwoFactorFailure(ip, widgetScope);
         throw new Error("Telegram 登录验证失败，请重新尝试");
+      }
+
+      const replayKey = `${String(input.id).trim()}:${Number(input.auth_date)}:${String(input.hash).toLowerCase()}`;
+      if (!consumeTelegramWidgetLoginOnce(replayKey)) {
+        recordTwoFactorFailure(ip, widgetScope);
+        throw new Error("TELEGRAM_WIDGET_REPLAYED");
       }
 
       const telegramId = String(input.id);
@@ -356,6 +384,7 @@ export const telegramRouter = router({
         firstName: input.first_name || null,
         lastName: input.last_name || null,
       });
+      clearAuthAccountFailures(ip, widgetScope);
       return await issueTelegramSession(ctx, user, "telegram");
     }),
 

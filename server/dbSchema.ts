@@ -80,6 +80,53 @@ export const MIGRATION_TABLES = [
   "config_audit_events",
 ] as const;
 
+const LAST_AUTO_TRAFFIC_RESET_BACKFILL_MARKER = "last-auto-traffic-reset-backfill-v1";
+
+function backfillSqliteLastAutoTrafficReset(sqlite: Database.Database) {
+  const migrate = sqlite.transaction(() => {
+    const claimed = sqlite.prepare(
+      "INSERT OR IGNORE INTO system_settings (key, value, updatedAt) VALUES (?, '1', unixepoch())",
+    ).run(LAST_AUTO_TRAFFIC_RESET_BACKFILL_MARKER);
+    if (claimed.changes === 0) return;
+    sqlite.exec(
+      'UPDATE "users" SET "lastAutoTrafficReset" = "lastTrafficReset" WHERE "lastAutoTrafficReset" IS NULL AND "lastTrafficReset" IS NOT NULL',
+    );
+  });
+  migrate();
+}
+
+async function backfillMysqlLastAutoTrafficReset(pool: Pool) {
+  const [rows] = await pool.query<any[]>(
+    "SELECT `key` FROM `system_settings` WHERE `key` = ? LIMIT 1",
+    [LAST_AUTO_TRAFFIC_RESET_BACKFILL_MARKER],
+  );
+  if (rows.length > 0) return;
+  await pool.query(
+    'UPDATE `users` SET `lastAutoTrafficReset` = `lastTrafficReset` WHERE `lastAutoTrafficReset` IS NULL AND `lastTrafficReset` IS NOT NULL',
+  );
+  await pool.execute(
+    "INSERT INTO system_settings (`key`, value, updatedAt) VALUES (?, '1', UNIX_TIMESTAMP()) ON DUPLICATE KEY UPDATE `key` = `key`",
+    [LAST_AUTO_TRAFFIC_RESET_BACKFILL_MARKER],
+  );
+}
+
+async function backfillPostgresqlLastAutoTrafficReset(pool: pg.Pool) {
+  await pool.query(
+    `WITH claimed AS (
+       INSERT INTO "system_settings" ("key", value, "updatedAt")
+       VALUES ($1, '1', EXTRACT(EPOCH FROM NOW())::INT)
+       ON CONFLICT ("key") DO NOTHING
+       RETURNING "key"
+     )
+     UPDATE "users"
+     SET "lastAutoTrafficReset" = "lastTrafficReset"
+     WHERE "lastAutoTrafficReset" IS NULL
+       AND "lastTrafficReset" IS NOT NULL
+       AND EXISTS (SELECT 1 FROM claimed)`,
+    [LAST_AUTO_TRAFFIC_RESET_BACKFILL_MARKER],
+  );
+}
+
 const tables: TableDef[] = [
   {
     name: "users",
@@ -100,7 +147,7 @@ const tables: TableDef[] = [
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficUsed", "bigint", { notNull: true, default: 0 }),
       c("trafficBillingResetBytes", "bigint", { notNull: true, default: 0 }),
       c("expiresAt", "epoch"), c("trafficAutoReset", "bool", { notNull: true, default: false }),
-      c("trafficResetDay", "int", { notNull: true, default: 1 }), c("lastTrafficReset", "epoch"),
+      c("trafficResetDay", "int", { notNull: true, default: 1 }), c("lastTrafficReset", "epoch"), c("lastAutoTrafficReset", "epoch"),
       c("telegramId", "text"), c("telegramUsername", "text"), c("telegramFirstName", "text"), c("telegramLastName", "text"),
       c("telegramLinkedAt", "epoch"), c("telegramLastSeenAt", "epoch"), c("telegramAnnouncementSubscribed", "bool", { notNull: true, default: false }), c("telegramBindCode", "text"),
       c("telegramBindCodeExpiresAt", "epoch"), c("telegramLoginCode", "text"), c("telegramLoginCodeExpiresAt", "epoch"),
@@ -458,6 +505,7 @@ async function ensureMysqlSchema(pool: Pool) {
       [key, value],
     );
   }
+  await backfillMysqlLastAutoTrafficReset(pool);
 }
 
 function indexName(prefix: string, table: string, cols: string[]) {
@@ -490,6 +538,7 @@ async function ensurePostgresqlSchema(pool: pg.Pool) {
       [key, value],
     );
   }
+  await backfillPostgresqlLastAutoTrafficReset(pool);
 }
 
 function ensureSqliteSchema(sqlite: Database.Database) {
@@ -516,6 +565,7 @@ function ensureSqliteSchema(sqlite: Database.Database) {
       "INSERT OR IGNORE INTO system_settings (key, value, updatedAt) VALUES (?, ?, unixepoch())",
     ).run(key, value);
   }
+  backfillSqliteLastAutoTrafficReset(sqlite);
 }
 
 export async function ensureDatabaseSchema(target?: Pool | pg.Pool | Database.Database) {

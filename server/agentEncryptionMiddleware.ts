@@ -123,6 +123,9 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
   }
 
   const tokenForResp = token;
+  // Bind the response timestamp window to the panel's protocol clock. The
+  // Agent authenticates the encrypted envelope before using this hint.
+  res.setHeader("X-ForwardX-Panel-Time", String(panelCryptoNowMs()));
   const originalJson = res.json.bind(res);
   res.json = (body?: any) => {
     const env = encryptPayload(body, tokenForResp);

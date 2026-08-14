@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { sendTelegramMessage } from "./telegramBot";
 import { getTelegramAdminRecipients } from "./repositories/userRepository";
 import { formatForwardRuleProtocol, FORWARD_TYPE_LABELS, type ForwardType } from "../shared/forwardTypes";
@@ -11,7 +12,34 @@ type ForwardRuleErrorPayload = {
 };
 
 const RULE_ERROR_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
+const RULE_ERROR_NOTIFY_CACHE_MAX = 10_000;
 const lastRuleErrorNotifyAt = new Map<string, number>();
+
+export function pruneForwardRuleErrorNotifyCache(now = Date.now()) {
+  let deleted = 0;
+  for (const [signature, lastAt] of lastRuleErrorNotifyAt) {
+    if (now - lastAt < RULE_ERROR_NOTIFY_COOLDOWN_MS) continue;
+    lastRuleErrorNotifyAt.delete(signature);
+    deleted += 1;
+  }
+  return deleted;
+}
+
+export function shouldNotifyForwardRuleError(ruleId: number, message?: string | null, now = Date.now()) {
+  const normalized = String(message || "").trim() || "runtime-error";
+  const digest = crypto.createHash("sha256").update(normalized).digest("base64url");
+  const signature = `${ruleId}:${digest}`;
+  const lastAt = lastRuleErrorNotifyAt.get(signature) || 0;
+  if (now - lastAt < RULE_ERROR_NOTIFY_COOLDOWN_MS) return false;
+  pruneForwardRuleErrorNotifyCache(now);
+  while (lastRuleErrorNotifyAt.size >= RULE_ERROR_NOTIFY_CACHE_MAX) {
+    const oldest = lastRuleErrorNotifyAt.keys().next().value as string | undefined;
+    if (!oldest) break;
+    lastRuleErrorNotifyAt.delete(oldest);
+  }
+  lastRuleErrorNotifyAt.set(signature, now);
+  return true;
+}
 
 function escapeHtml(value: unknown) {
   return String(value ?? "")
@@ -70,14 +98,9 @@ export async function notifyForwardRuleError(payload: ForwardRuleErrorPayload) {
   if (!ruleId || !payload.rule?.telegramErrorNotifyEnabled) return;
   if (!(await isTelegramBotReady())) return;
 
-  const signature = `${ruleId}:${String(payload.message || "").trim() || "runtime-error"}`;
-  const now = Date.now();
-  const lastAt = lastRuleErrorNotifyAt.get(signature) || 0;
-  if (now - lastAt < RULE_ERROR_NOTIFY_COOLDOWN_MS) return;
-  lastRuleErrorNotifyAt.set(signature, now);
-
   const recipients = await getTelegramAdminRecipients();
   if (recipients.length === 0) return;
+  if (!shouldNotifyForwardRuleError(ruleId, payload.message)) return;
   const text = ruleErrorMessage(payload);
   let sent = 0;
   let failed = 0;
@@ -95,3 +118,6 @@ export async function notifyForwardRuleError(payload: ForwardRuleErrorPayload) {
     console.info(`[Telegram] Forward rule error notify rule=${ruleId} sent=${sent} failed=${failed}`);
   }
 }
+
+const notifyCacheCleanupTimer = setInterval(() => pruneForwardRuleErrorNotifyCache(), RULE_ERROR_NOTIFY_COOLDOWN_MS);
+notifyCacheCleanupTimer.unref?.();

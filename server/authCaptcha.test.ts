@@ -75,3 +75,17 @@ test("limits challenge generation per IP and releases the limit after the window
   assert.doesNotThrow(() => service.createImageChallenge("203.0.113.9", "login", 31_001));
   assert.doesNotThrow(() => service.createImageChallenge("203.0.113.10", "login", 30_300));
 });
+
+test("bounds attacker-controlled rate-limit keys and prunes expired entries", () => {
+  const service = createService({ maxRateLimitKeys: 3 });
+  for (let index = 0; index < 10; index += 1) {
+    service.recordLoginFailure(`192.0.2.${index}`, `user-${index}`, 40_000 + index);
+    service.createImageChallenge(`198.51.100.${index}`, "login", 40_000 + index);
+  }
+  assert.equal(service.stateSizesForTest().loginFailures, 3);
+  assert.equal(service.stateSizesForTest().refreshTimestamps, 3);
+
+  service.pruneExpired(51_000);
+  assert.equal(service.stateSizesForTest().loginFailures, 0);
+  assert.equal(service.stateSizesForTest().refreshTimestamps, 0);
+});
