@@ -7,7 +7,11 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
-import { combineTunnelRuleLatencySample, tunnelRuleLatencySampleSucceeded } from "./ruleLatency";
+import {
+  canReuseRecentTunnelLatencySample,
+  combineTunnelRuleLatencySample,
+  tunnelRuleLatencySampleSucceeded,
+} from "./ruleLatency";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { waitForTunnelLatencyRefresh } from "./tunnelLatencyRefresh";
 import { getTunnelAutoHopDetails } from "./tunnelAutoLatencyState";
@@ -281,10 +285,18 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
-      const tunnelLatency = tunnelLatencySampleIsAfterBaseline(refreshedTunnelLatency, tunnelLatencyBaselineId)
+      const tunnel = await db.getTunnelById(meta.tunnelId);
+      const tunnelLatencyRefreshed = tunnelLatencySampleIsAfterBaseline(
+        refreshedTunnelLatency,
+        tunnelLatencyBaselineId,
+      );
+      const tunnelProbeReused = !tunnelLatencyRefreshed && canReuseRecentTunnelLatencySample({
+        sample: refreshedTunnelLatency,
+        tunnel,
+      });
+      const tunnelLatency = tunnelLatencyRefreshed || tunnelProbeReused
         ? refreshedTunnelLatency
         : null;
-      const tunnel = await db.getTunnelById(meta.tunnelId);
       const combinedLatency = combineTunnelRuleLatencySample({
         targetLatencyMs: cleanLatency,
         targetIsTimeout: !success,
@@ -348,6 +360,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       ];
       if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
       if (tunnelProbeTimedOut) messageParts.push("隧道段探测超时");
+      if (tunnelProbeReused) messageParts.push("隧道探测未刷新，沿用最近成功样本");
       if (cleanMessage && !success) messageParts.push(cleanMessage);
       const detailMessage = cleanMessage || messageParts.join("; ");
       const structuredMessage = structuredLinkTestMessage({

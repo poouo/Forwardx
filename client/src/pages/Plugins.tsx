@@ -760,7 +760,7 @@ function ChinaWhitelistHostStatusSummary({
                 <p className="mt-1.5 truncate text-xs text-muted-foreground" title={regions || "未配置区域"}>
                   {data.backend === "none" ? "未检测到防火墙规则" : `${data.backend || "-"} · ${Number(data.ruleCount || 0)} 条 CIDR`}
                   {regions ? ` · ${regions}` : ""}
-                  {data.serviceActive ? " · 已持久化" : ""}
+                  {(data.serviceEnabled ?? data.serviceActive) ? " · 已持久化" : ""}
                 </p>
               ) : failed ? (
                 <p className="mt-1.5 line-clamp-2 text-xs text-destructive">{result.error || result.stderr || result.output || "Agent 未返回状态"}</p>

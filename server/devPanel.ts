@@ -282,7 +282,7 @@ async function seedHosts(adminId: number) {
     telegramTrafficAlertEnabled: true,
     trafficAlertThresholdPercent: 80,
     telegramRenewalReminderEnabled: true,
-    renewalReminderDays: 7,
+    renewalReminderDays: 3,
     trafficAutoReset: true,
     trafficResetDay: 1,
   };

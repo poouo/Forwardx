@@ -411,7 +411,8 @@ write_openrc_service() {
 name="$SERVICE_NAME"
 description="ForwardX Panel"
 command="/bin/sh"
-command_args="-lc $(shell_quote "cd $APP_DIR && set -a && . $APP_DIR/.env && set +a && exec $node_bin dist/index.js")"
+# The Node entrypoint loads .env through dotenv/config; do not source it in a shell.
+command_args="-lc $(shell_quote "cd \"$APP_DIR\" && exec env DOTENV_CONFIG_PATH=\"$APP_DIR/.env\" DOTENV_CONFIG_OVERRIDE=true \"$node_bin\" dist/index.js")"
 command_background=true
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="$APP_DIR/data/panel.log"
@@ -437,7 +438,8 @@ write_sysv_service() {
 ### END INIT INFO
 PIDFILE=/run/$SERVICE_NAME.pid
 LOGFILE=$APP_DIR/data/panel.log
-CMD=$(shell_quote "cd $APP_DIR && set -a && . $APP_DIR/.env && set +a && exec $node_bin dist/index.js")
+# The Node entrypoint loads .env through dotenv/config; do not source it in a shell.
+CMD=$(shell_quote "cd \"$APP_DIR\" && exec env DOTENV_CONFIG_PATH=\"$APP_DIR/.env\" DOTENV_CONFIG_OVERRIDE=true \"$node_bin\" dist/index.js")
 start() {
   mkdir -p /run "$APP_DIR/data"
   if [ -s "\$PIDFILE" ] && kill -0 "\$(cat "\$PIDFILE")" 2>/dev/null; then return 0; fi
@@ -717,9 +719,12 @@ install_runtime_dependencies() {
 
 write_env() {
   local jwt_secret="${JWT_SECRET:-}"
+  local existing_padding_enabled padding_enabled
   if [ -z "$jwt_secret" ]; then
     jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
   fi
+  existing_padding_enabled="$(get_env_value FORWARDX_TRAFFIC_PADDING_ENABLED || true)"
+  padding_enabled="${FORWARDX_TRAFFIC_PADDING_ENABLED:-$existing_padding_enabled}"
 
   mkdir -p "$APP_DIR/data"
   cat > "$APP_DIR/.env" <<EOF
@@ -732,8 +737,11 @@ JWT_SECRET=$jwt_secret
 FORWARDX_PORT_CONFIG_PATH=$APP_DIR/.env
 FORWARDX_PORT_MANAGEMENT=local
 FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
-FORWARDX_UPGRADE_COMMAND="/bin/bash -lc 'SCRIPT=\"$APP_DIR/scripts/install-panel-local.sh\"; if [ -f \"\$SCRIPT\" ] && /bin/bash -n \"\$SCRIPT\" >/dev/null 2>&1; then exec /bin/bash \"\$SCRIPT\" upgrade; fi; DIRECT_URL=\"https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts/install-panel-local.sh\"; ACCEL=\"\${FORWARDX_GITHUB_ACCELERATOR_URL:-}\"; URL=\"\$DIRECT_URL\"; if [ -n \"\$ACCEL\" ]; then URL=\"\${ACCEL%/}/\$DIRECT_URL\"; fi; TMP=\"\$(mktemp)\"; if ! curl -fsSL \"\$URL\" -o \"\$TMP\" || ! /bin/bash -n \"\$TMP\" >/dev/null 2>&1; then rm -f \"\$TMP\"; TMP=\"\$(mktemp)\"; if [ \"\$URL\" = \"\$DIRECT_URL\" ] || ! curl -fsSL \"\$DIRECT_URL\" -o \"\$TMP\" || ! /bin/bash -n \"\$TMP\" >/dev/null 2>&1; then rm -f \"\$TMP\"; exit 1; fi; fi; if [ \"\$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo env FORWARDX_GITHUB_ACCELERATOR_URL=\"\$ACCEL\" bash \"\$TMP\" upgrade; STATUS=\$?; else env FORWARDX_GITHUB_ACCELERATOR_URL=\"\$ACCEL\" bash \"\$TMP\" upgrade; STATUS=\$?; fi; rm -f \"\$TMP\"; exit \"\$STATUS\"'"
+FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgrade"
 EOF
+  if [ -n "$padding_enabled" ]; then
+    printf 'FORWARDX_TRAFFIC_PADDING_ENABLED=%s\n' "$padding_enabled" >> "$APP_DIR/.env"
+  fi
 }
 
 install_panel() {
@@ -817,13 +825,11 @@ reset_admin_password() {
   set +e
   (
     cd "$APP_DIR" || exit 1
-    set -a
-    . "$APP_DIR/.env"
-    set +a
     cli_args=(--stdin)
     if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ]; then cli_args+=(--enable-account); fi
     printf '%s\n%s\n%s\n' "$selector" "$password" "$confirmation" \
-      | "$node_bin" dist/reset-admin-password.js "${cli_args[@]}"
+      | env DOTENV_CONFIG_PATH="$APP_DIR/.env" DOTENV_CONFIG_OVERRIDE=true \
+        "$node_bin" dist/reset-admin-password.js "${cli_args[@]}"
   )
   status=$?
   set -e

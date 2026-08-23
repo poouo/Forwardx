@@ -1501,6 +1501,7 @@ func TestRuntimeProbeResultsAreDiscardedAfterCompletedAction(t *testing.T) {
 	rules, tunnels, groups, services = filterRuntimeProbeResultsAfterActions(
 		startEpoch,
 		false,
+		false,
 		rules,
 		tunnels,
 		groups,
@@ -1511,6 +1512,81 @@ func TestRuntimeProbeResultsAreDiscardedAfterCompletedAction(t *testing.T) {
 	}
 	if len(services) != 1 || services[0]["serviceId"] != 4 {
 		t.Fatalf("service result was discarded with runtime results: %v", services)
+	}
+}
+
+func TestForcedRuntimeProbeDiscardIsRetainedForRetry(t *testing.T) {
+	for {
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	previousForce := agentMetricsForceTCPing.Swap(false)
+	previousRunning := atomic.SwapInt32(&tcpingCollectRunning, 0)
+	previousPending := atomic.SwapInt64(&actionPendingCount, 0)
+	previousEpoch := runtimeActionEpoch.Load()
+	t.Cleanup(func() {
+		agentMetricsForceTCPing.Store(previousForce)
+		atomic.StoreInt32(&tcpingCollectRunning, previousRunning)
+		atomic.StoreInt64(&actionPendingCount, previousPending)
+		runtimeActionEpoch.Store(previousEpoch)
+		select {
+		case <-agentMetricsWakeCh:
+		default:
+		}
+	})
+
+	startEpoch := runtimeActionEpoch.Load()
+	runtimeActionEpoch.Add(1)
+	rules, tunnels, groups, services := filterRuntimeProbeResultsAfterActions(
+		startEpoch,
+		false,
+		true,
+		[]map[string]any{{"ruleId": 1}},
+		[]map[string]any{{"tunnelId": 2}},
+		[]map[string]any{{"groupId": 3}},
+		[]map[string]any{{"serviceId": 4}},
+	)
+	if len(rules) != 0 || len(tunnels) != 0 || len(groups) != 0 || len(services) != 1 {
+		t.Fatalf("unexpected filtered probe results rules=%v tunnels=%v groups=%v services=%v", rules, tunnels, groups, services)
+	}
+	if !agentMetricsForceTCPing.Load() {
+		t.Fatal("forced runtime probe was not retained after action discard")
+	}
+	select {
+	case <-agentMetricsWakeCh:
+	default:
+		t.Fatal("retained forced runtime probe did not wake metrics scheduler")
+	}
+}
+
+func TestNonForcedRuntimeProbeDiscardDoesNotRetainForce(t *testing.T) {
+	previousForce := agentMetricsForceTCPing.Swap(false)
+	previousPending := atomic.SwapInt64(&actionPendingCount, 0)
+	previousEpoch := runtimeActionEpoch.Load()
+	t.Cleanup(func() {
+		agentMetricsForceTCPing.Store(previousForce)
+		atomic.StoreInt64(&actionPendingCount, previousPending)
+		runtimeActionEpoch.Store(previousEpoch)
+	})
+
+	startEpoch := runtimeActionEpoch.Load()
+	runtimeActionEpoch.Add(1)
+	filterRuntimeProbeResultsAfterActions(
+		startEpoch,
+		false,
+		false,
+		[]map[string]any{{"ruleId": 1}},
+		nil,
+		nil,
+		nil,
+	)
+	if agentMetricsForceTCPing.Load() {
+		t.Fatal("non-forced runtime probe discard unexpectedly retained a force request")
 	}
 }
 

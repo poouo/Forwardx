@@ -5,6 +5,8 @@ import {
 } from "@shared/latencyProbe";
 
 export const TUNNEL_RULE_LATENCY_FRESH_MS = 5 * 60 * 1000;
+const TUNNEL_RULE_LATENCY_CLOCK_SKEW_MS = 60 * 1000;
+const TUNNEL_RULE_LATENCY_UPDATE_GRACE_MS = 1000;
 
 type TunnelRuleLatencyReport = {
   targetPort?: unknown;
@@ -31,6 +33,60 @@ function validLatency(value: unknown) {
   if (typeof value === "string" && value.trim() === "") return null;
   const latency = Number(value);
   return Number.isFinite(latency) && latency >= 0 ? latency : null;
+}
+
+function epochMs(value: unknown) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  const text = String(value).trim();
+  if (!text) return 0;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * A rule self-test may finish before the distributed tunnel probe report does.
+ * Reusing a recent successful sample is safe only while the tunnel still
+ * reports success and no tunnel configuration/test update occurred after that
+ * sample. Failed, stale, or pre-update samples must continue to fail closed.
+ */
+export function canReuseRecentTunnelLatencySample(input: {
+  sample: any;
+  tunnel: any;
+  nowMs?: number;
+  maxAgeMs?: number;
+}) {
+  const sample = input.sample;
+  if (!sample || sample.isTimeout === true || validLatency(sample.latencyMs) === null) return false;
+  const recordedAtMs = epochMs(sample.recordedAt);
+  if (!recordedAtMs) return false;
+  const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now();
+  const maxAgeMs = Number.isFinite(input.maxAgeMs)
+    ? Math.max(0, Number(input.maxAgeMs))
+    : TUNNEL_RULE_LATENCY_FRESH_MS;
+  if (recordedAtMs > nowMs + TUNNEL_RULE_LATENCY_CLOCK_SKEW_MS) return false;
+  if (nowMs - recordedAtMs > maxAgeMs) return false;
+  if (String(input.tunnel?.lastTestStatus || "").trim().toLowerCase() !== "success") return false;
+
+  // Tunnel updates are stored at one-second precision on all supported DBs.
+  // Allow a small write-ordering grace, but reject a sample from before a
+  // configuration change or a later failed/manual test.
+  const updatedAtMs = epochMs(input.tunnel?.updatedAt);
+  const lastTestAtMs = epochMs(input.tunnel?.lastTestAt);
+  const invalidatedAtMs = Math.max(updatedAtMs, lastTestAtMs);
+  if (invalidatedAtMs > 0 && recordedAtMs + TUNNEL_RULE_LATENCY_UPDATE_GRACE_MS < invalidatedAtMs) return false;
+  return true;
 }
 
 export function tunnelRuleLatencyTopologyKey(rule: any, tunnel: any, targetIp: unknown = rule?.targetIp) {

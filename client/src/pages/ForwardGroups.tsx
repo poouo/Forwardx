@@ -871,7 +871,23 @@ export function ForwardGroupsContent({
   searchQuery = "",
 }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
-  const { data: hosts } = trpc.hosts.options.useQuery();
+  // Keep a same-scope fallback for older/database deployments where the
+  // compact options projection can fail. An error should not masquerade as an
+  // empty host list and disable creation indefinitely.
+  const hostsOptionsQuery = trpc.hosts.options.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const useHostsFallback = hostsOptionsQuery.isError
+    || (hostsOptionsQuery.isFetched && (hostsOptionsQuery.data?.length ?? 0) === 0);
+  const hostsFallbackQuery = trpc.hosts.list.useQuery(undefined, {
+    enabled: useHostsFallback,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const hosts = (hostsOptionsQuery.data?.length ?? 0) > 0
+    ? hostsOptionsQuery.data
+    : hostsFallbackQuery.data ?? hostsOptionsQuery.data;
   const { data: tunnels } = trpc.tunnels.options.useQuery();
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);

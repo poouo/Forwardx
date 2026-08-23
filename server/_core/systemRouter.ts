@@ -1669,6 +1669,11 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       url: all.githubAcceleratorUrl ?? "",
       panelUpdateEnabled: all.githubAcceleratorPanelUpdateEnabled === "true",
     },
+    trafficPadding: {
+      // Keep the developer-only capability out of the public settings
+      // response. The admin response below exposes the actual startup flag.
+      globalEnabled: false,
+    },
     agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
     database: databaseSettingsSummary(all, false),
     mysql: {
@@ -1900,6 +1905,9 @@ export const systemRouter = router({
         webhookHeaders: all.ddnsWebhookHeaders ?? "",
       },
       agentEncryption: "aes-256-ctr+hmac-sha256", // 加密方案标识
+      trafficPadding: {
+        globalEnabled: ENV.trafficPaddingEnabled,
+      },
       upgrade: {
         enabled: !!ENV.upgradeCommand.trim(),
         docker: deploymentInfo.docker,

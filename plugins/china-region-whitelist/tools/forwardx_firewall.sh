@@ -468,8 +468,11 @@ cn_render_apply_commands_nft() {
     printf '    ct state established,related accept\n'
     for ((i = 0; i < ${#policy_ports[@]}; i++)); do
       port_set="ports_$((i + 1))"; allow_set="policy_allow_$((i + 1))"
-      printf '    ct status dnat ct original proto-dst @%s ip saddr @%s accept\n' "${port_set}" "${allow_set}"
-      printf '    ct status dnat ct original proto-dst @%s meta nfproto ipv4 reject\n' "${port_set}"
+      # `ct original proto-dst` is typed as an inet_service only after nft
+      # knows the layer-4 protocol. Without this selector nft rejects the
+      # complete batch with "datatype mismatch" on DNAT/FORWARD rules.
+      printf '    meta l4proto { tcp, udp } ct status dnat ct original proto-dst @%s ip saddr @%s accept\n' "${port_set}" "${allow_set}"
+      printf '    meta l4proto { tcp, udp } ct status dnat ct original proto-dst @%s meta nfproto ipv4 reject\n' "${port_set}"
     done
     if [[ "${has_global}" == "true" ]]; then
       if [[ "${forward_mode}" == "selected" ]]; then
@@ -621,6 +624,11 @@ cn_show_persistence_status() {
       echo "开机恢复：已启用"
     else
       echo "开机恢复：未启用"
+    fi
+    if systemctl is-active --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+      echo "规则服务：运行中"
+    else
+      echo "规则服务：未运行"
     fi
   else
     echo "开机恢复：系统未提供 systemctl"

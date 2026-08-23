@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   AuthCaptchaService,
@@ -14,6 +15,35 @@ function createService(overrides: ConstructorParameters<typeof AuthCaptchaServic
     refreshMaxPerWindow: 3,
     svgGenerator: () => ({ text: "A7K9P", data: "<svg></svg>" }),
     ...overrides,
+  });
+}
+
+function capPrng(seed: string, length: number) {
+  let state = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    state ^= seed.charCodeAt(index);
+    state += (state << 1) + (state << 4) + (state << 7) + (state << 8) + (state << 24);
+  }
+  state >>>= 0;
+  let result = "";
+  while (result.length < length) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    result += (state >>> 0).toString(16).padStart(8, "0");
+  }
+  return result.substring(0, length);
+}
+
+function capSolutions(token: string, challenge: { c: number; s: number; d: number }) {
+  return Array.from({ length: challenge.c }, (_, index) => {
+    const salt = capPrng(`${token}${index + 1}`, challenge.s);
+    const target = capPrng(`${token}${index + 1}d`, challenge.d);
+    for (let nonce = 0; nonce < 2_000_000; nonce += 1) {
+      const digest = createHash("sha256").update(`${salt}${nonce}`).digest("hex");
+      if (digest.startsWith(target)) return nonce;
+    }
+    throw new Error("unable to solve Cap test challenge");
   });
 }
 
@@ -88,4 +118,18 @@ test("bounds attacker-controlled rate-limit keys and prunes expired entries", ()
   service.pruneExpired(51_000);
   assert.equal(service.stateSizesForTest().loginFailures, 0);
   assert.equal(service.stateSizesForTest().refreshTimestamps, 0);
+});
+
+test("Cap challenges are bound to IP and purpose and tokens are single-use", async () => {
+  const service = createService();
+  const issued = await service.createCapChallenge("192.0.2.40", "login");
+  assert.ok(issued.token);
+  const solutions = capSolutions(issued.token!, issued.challenge);
+  const redeemed = await service.redeemCapChallenge("192.0.2.40", "login", issued.token!, solutions);
+  assert.equal(redeemed.success, true);
+  assert.ok(redeemed.token);
+  assert.equal(await service.verifyCapToken("192.0.2.41", "login", redeemed.token!), false);
+  assert.equal(await service.verifyCapToken("192.0.2.40", "register", redeemed.token!), false);
+  assert.equal(await service.verifyCapToken("192.0.2.40", "login", redeemed.token!), true);
+  assert.equal(await service.verifyCapToken("192.0.2.40", "login", redeemed.token!), false);
 });

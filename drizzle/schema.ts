@@ -258,12 +258,18 @@ export const hosts = table("hosts", {
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
   purchasedAt: epoch("purchasedAt"),
   stoppedAt: epoch("stoppedAt"),
+  // Host billing calendar. The legacy stoppedAt value remains the source of
+  // truth; these fields only control optional automatic cycle extension.
+  billingCycleMonths: int("billingCycleMonths").notNull().default(1),
+  billingMonth: int("billingMonth").notNull().default(1),
+  billingDay: int("billingDay").notNull().default(1),
+  expiryHandling: varchar("expiryHandling", { length: 24 }).notNull().default("none"),
   trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),
   trafficMeasureMode: varchar("trafficMeasureMode", { length: 16 }).notNull().default("both"),
   telegramTrafficAlertEnabled: boolean("telegramTrafficAlertEnabled").notNull().default(false),
   trafficAlertThresholdPercent: int("trafficAlertThresholdPercent").notNull().default(20),
   telegramRenewalReminderEnabled: boolean("telegramRenewalReminderEnabled").notNull().default(false),
-  renewalReminderDays: int("renewalReminderDays").notNull().default(7),
+  renewalReminderDays: int("renewalReminderDays").notNull().default(3),
   trafficAutoReset: boolean("trafficAutoReset").notNull().default(false),
   trafficResetDay: int("trafficResetDay").notNull().default(1),
   lastTrafficReset: epoch("lastTrafficReset"),
@@ -478,6 +484,10 @@ export const tunnels = table("tunnels", {
   mimicPort: int("mimicPort").notNull().default(0),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),
   trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
+  // Optional ForwardX V1 cover traffic. Disabled values are stored as zero.
+  trafficPaddingEnabled: boolean("trafficPaddingEnabled").notNull().default(false),
+  trafficPaddingRatio: int("trafficPaddingRatio").notNull().default(0),
+  trafficPaddingMaxMbps: int("trafficPaddingMaxMbps").notNull().default(0),
   portRangeStart: int("portRangeStart"),
   portRangeEnd: int("portRangeEnd"),
   networkType: varchar("networkType", { length: 32 }).notNull().default("public"),

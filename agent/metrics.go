@@ -1421,6 +1421,7 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	results, tunnels, forwardGroups, services = filterRuntimeProbeResultsAfterActions(
 		startActionEpoch,
 		startedWithActionsPending,
+		force,
 		results,
 		tunnels,
 		forwardGroups,
@@ -1451,13 +1452,14 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	}
 }
 
-func filterRuntimeProbeResultsAfterActions(startActionEpoch uint64, startedWithActionsPending bool, results, tunnels, forwardGroups, services []map[string]any) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
+func filterRuntimeProbeResultsAfterActions(startActionEpoch uint64, startedWithActionsPending bool, force bool, results, tunnels, forwardGroups, services []map[string]any) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
 	endActionEpoch := runtimeActionEpoch.Load()
 	pending := atomic.LoadInt64(&actionPendingCount)
 	if !startedWithActionsPending && pending == 0 && endActionEpoch == startActionEpoch {
 		return results, tunnels, forwardGroups, services
 	}
-	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 {
+	discardedRuntimeProbes := len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0
+	if discardedRuntimeProbes {
 		logVerbosef(
 			"tcping runtime results discarded after action change epoch=%d->%d pending=%d rules=%d tunnels=%d groups=%d",
 			startActionEpoch,
@@ -1467,6 +1469,11 @@ func filterRuntimeProbeResultsAfterActions(startActionEpoch uint64, startedWithA
 			len(tunnels),
 			len(forwardGroups),
 		)
+	}
+	if force && discardedRuntimeProbes {
+		// The scheduler consumed the force bit before this collection started.
+		// Keep one retry so the probe is rerun after the new runtime is ready.
+		retainForcedTCPingRequest()
 	}
 	return nil, nil, nil, services
 }

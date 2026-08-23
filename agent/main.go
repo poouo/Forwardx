@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.190"
+var Version = "2.2.191"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2589,6 +2589,9 @@ type fxpSpec struct {
 	RelayPeerID              string            `json:"relayPeerId,omitempty"`
 	RelayKey                 string            `json:"relayKey,omitempty"`
 	DNSGeneration            int               `json:"dnsGeneration,omitempty"`
+	TrafficPaddingEnabled    bool              `json:"trafficPaddingEnabled,omitempty"`
+	TrafficPaddingRatio      int               `json:"trafficPaddingRatio,omitempty"`
+	TrafficPaddingMaxMbps    int               `json:"trafficPaddingMaxMbps,omitempty"`
 }
 
 type fxpExitEndpoint struct {
@@ -9006,6 +9009,30 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 		return spec
 	}
 	spec.Entries = nil
+	// Keep the Agent-side boundary independent from panel validation. This is
+	// intentionally conservative so hand-edited desired-state/config files
+	// cannot request unbounded cover traffic.
+	if spec.TransportVersion != "v1" || normalizeRuntimeProtocol(spec.Protocol) == "udp" || !spec.TrafficPaddingEnabled {
+		spec.TrafficPaddingEnabled = false
+		spec.TrafficPaddingRatio = 0
+		spec.TrafficPaddingMaxMbps = 0
+	} else {
+		if spec.TrafficPaddingRatio < 1 {
+			spec.TrafficPaddingEnabled = false
+			spec.TrafficPaddingRatio = 0
+			spec.TrafficPaddingMaxMbps = 0
+		} else {
+			if spec.TrafficPaddingRatio > 50 {
+				spec.TrafficPaddingRatio = 50
+			}
+			if spec.TrafficPaddingMaxMbps < 0 {
+				spec.TrafficPaddingMaxMbps = 0
+			}
+			if spec.TrafficPaddingMaxMbps > 1000 {
+				spec.TrafficPaddingMaxMbps = 1000
+			}
+		}
+	}
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
@@ -9099,6 +9126,9 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.RelayPeerID,
 		spec.RelayKey,
 		strconv.Itoa(spec.DNSGeneration),
+		strconv.FormatBool(spec.TrafficPaddingEnabled),
+		strconv.Itoa(spec.TrafficPaddingRatio),
+		strconv.Itoa(spec.TrafficPaddingMaxMbps),
 	}
 	for _, exit := range spec.Exits {
 		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key), strings.TrimSpace(exit.PeerID))

@@ -919,8 +919,10 @@ cn_render_nft_port_policy_forward_rules() {
   local index="$1"
   local _port_spec="$2"
   local _selectors="$3"
-  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
-  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
+  # Constrain the L4 protocol before matching the original destination port;
+  # otherwise nft cannot infer inet_service and rejects the whole batch.
+  printf '    meta l4proto { tcp, udp } ct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
+  printf '    meta l4proto { tcp, udp } ct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
 }
 
 cn_render_clear_commands() {
@@ -1099,7 +1101,16 @@ cn_show_persistence_status() {
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl is-enabled "${CN_SERVICE_NAME}" 2>/dev/null || true
+    if systemctl is-enabled --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+      echo "开机恢复：已启用"
+    else
+      echo "开机恢复：未启用"
+    fi
+    if systemctl is-active --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+      echo "规则服务：运行中"
+    else
+      echo "规则服务：未运行"
+    fi
   else
     echo "systemd: 未检测到"
   fi

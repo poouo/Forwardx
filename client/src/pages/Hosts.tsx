@@ -591,6 +591,8 @@ function HostWorldMap({
 }
 
 type HostTrafficMeasureMode = "outbound" | "both" | "max";
+type HostBillingCycleMonths = 1 | 3 | 6 | 12 | 24 | 36;
+type HostExpiryAction = "none" | "extend_cycle";
 
 const HOST_TRAFFIC_GB_BYTES = 1024 ** 3;
 
@@ -608,6 +610,10 @@ type HostFormData = {
   stoppedAt: string;
   trafficLimitGb: string;
   trafficMeasureMode: HostTrafficMeasureMode;
+  billingCycleMonths: HostBillingCycleMonths;
+  billingMonth: number;
+  billingDay: number;
+  expiryHandling: HostExpiryAction;
   telegramTrafficAlertEnabled: boolean;
   trafficAlertThresholdPercent: number;
   telegramRenewalReminderEnabled: boolean;
@@ -636,10 +642,14 @@ const defaultFormData: HostFormData = {
   stoppedAt: "",
   trafficLimitGb: "",
   trafficMeasureMode: "both",
+  billingCycleMonths: 1,
+  billingMonth: 1,
+  billingDay: 1,
+  expiryHandling: "none",
   telegramTrafficAlertEnabled: false,
   trafficAlertThresholdPercent: 20,
   telegramRenewalReminderEnabled: false,
-  renewalReminderDays: 7,
+  renewalReminderDays: 3,
   trafficAutoReset: false,
   trafficResetDay: 1,
   ddnsEnabled: false,
@@ -654,12 +664,30 @@ function clampMonthlyResetDay(value: number) {
   return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
 }
 
+function normalizeHostBillingCycleMonths(value: unknown): HostBillingCycleMonths {
+  const months = Math.floor(Number(value));
+  if (months === 3 || months === 6 || months === 12 || months === 24 || months === 36) return months;
+  return 1;
+}
+
+function clampBillingMonth(value: number) {
+  return Math.min(12, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function clampBillingDay(value: number) {
+  return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function normalizeHostExpiryAction(value: unknown): HostExpiryAction {
+  return value === "extend_cycle" ? "extend_cycle" : "none";
+}
+
 function clampTrafficAlertThresholdPercent(value: number) {
   return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
 }
 
 function clampRenewalReminderDays(value: number) {
-  return Math.min(365, Math.max(1, Math.floor(Number(value) || 7)));
+  return Math.min(365, Math.max(1, Math.floor(Number(value) || 3)));
 }
 
 function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
@@ -1788,6 +1816,10 @@ function HostsContent() {
       stoppedAt: formatDateTimeLocal(host.stoppedAt),
       trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
+      billingCycleMonths: normalizeHostBillingCycleMonths(host.billingCycleMonths),
+      billingMonth: clampBillingMonth(host.billingMonth),
+      billingDay: clampBillingDay(host.billingDay),
+      expiryHandling: normalizeHostExpiryAction(host.expiryHandling),
       telegramTrafficAlertEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramTrafficAlertEnabled,
       trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(host.trafficAlertThresholdPercent),
       telegramRenewalReminderEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramRenewalReminderEnabled,
@@ -1883,6 +1915,10 @@ function HostsContent() {
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
           trafficLimit: trafficLimitBytes,
           trafficMeasureMode: form.trafficMeasureMode,
+          billingCycleMonths: normalizeHostBillingCycleMonths(form.billingCycleMonths),
+          billingMonth: clampBillingMonth(form.billingMonth),
+          billingDay: clampBillingDay(form.billingDay),
+          expiryHandling: normalizeHostExpiryAction(form.expiryHandling),
           telegramTrafficAlertEnabled: canSaveTelegramReminder && form.telegramTrafficAlertEnabled,
           trafficAlertThresholdPercent,
           telegramRenewalReminderEnabled: canSaveTelegramReminder && form.telegramRenewalReminderEnabled,
@@ -3250,6 +3286,71 @@ function HostsContent() {
                             onChange={(value) => setForm({ ...form, stoppedAt: value })}
                             align="end"
                           />
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <Label className="text-sm">账单周期</Label>
+                          <Select
+                            value={String(normalizeHostBillingCycleMonths(form.billingCycleMonths))}
+                            onValueChange={(value) => setForm({ ...form, billingCycleMonths: normalizeHostBillingCycleMonths(value) })}
+                          >
+                            <SelectTrigger className="h-8 min-w-0">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1">月付</SelectItem>
+                              <SelectItem value="3">季付</SelectItem>
+                              <SelectItem value="6">半年付</SelectItem>
+                              <SelectItem value="12">年付</SelectItem>
+                              <SelectItem value="24">两年付</SelectItem>
+                              <SelectItem value="36">三年付</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <Label className="text-sm">账单月日</Label>
+                          <div className="grid min-w-0 grid-cols-2 gap-2">
+                            <Select
+                              value={String(clampBillingMonth(form.billingMonth))}
+                              onValueChange={(value) => setForm({ ...form, billingMonth: clampBillingMonth(Number(value)) })}
+                            >
+                              <SelectTrigger className="h-8 min-w-0">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+                                  <SelectItem key={month} value={String(month)}>{month} 月</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={String(clampBillingDay(form.billingDay))}
+                              onValueChange={(value) => setForm({ ...form, billingDay: clampBillingDay(Number(value)) })}
+                            >
+                              <SelectTrigger className="h-8 min-w-0">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                                  <SelectItem key={day} value={String(day)}>{day} 日</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <Label className="text-sm">机器到期处理</Label>
+                          <Select
+                            value={normalizeHostExpiryAction(form.expiryHandling)}
+                            onValueChange={(value) => setForm({ ...form, expiryHandling: normalizeHostExpiryAction(value) })}
+                          >
+                            <SelectTrigger className="h-8 min-w-0">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">不处理</SelectItem>
+                              <SelectItem value="extend_cycle">周期顺延</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div className="min-w-0 space-y-1">
                           <Label className="text-sm">套餐流量</Label>

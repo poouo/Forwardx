@@ -27,6 +27,7 @@ import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
+import { ENV } from "./env";
 
 export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -77,6 +78,31 @@ async function backfillTunnelProxyProtocolSplit() {
   );
   await setSetting(marker, String(Math.floor(Date.now() / 1000)));
   console.log("[Database] Backfilled split PROXY Protocol settings for tunnel rules");
+}
+
+/**
+ * Traffic padding is an opt-in developer capability. If the panel was
+ * previously configured with it but the startup environment no longer has an
+ * explicit true value, clear persisted tunnel settings as well as runtime
+ * capability state so removing the environment variable is a real disable.
+ */
+async function resetTrafficPaddingWhenDisabled() {
+  if (ENV.trafficPaddingEnabled) return 0;
+  const q = quoteIdentifier;
+  const result = await executeRaw(
+    `UPDATE ${q("tunnels")}
+        SET ${q("trafficPaddingEnabled")} = ${boolLiteral(false)},
+            ${q("trafficPaddingRatio")} = 0,
+            ${q("trafficPaddingMaxMbps")} = 0
+      WHERE ${q("trafficPaddingEnabled")} = ${boolLiteral(true)}
+         OR ${q("trafficPaddingRatio")} <> 0
+         OR ${q("trafficPaddingMaxMbps")} <> 0`,
+  );
+  const reset = rawAffectedRows(result);
+  if (reset > 0) {
+    console.log(`[TrafficPadding] Cleared persisted tunnel settings because FORWARDX_TRAFFIC_PADDING_ENABLED is not true count=${reset}`);
+  }
+  return reset;
 }
 
 function legacyRateLimitMbpsExpr(column: string) {
@@ -234,6 +260,9 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await resetTrafficPaddingWhenDisabled().catch((error) => {
+      console.warn("[TrafficPadding] Startup cleanup skipped:", error instanceof Error ? error.message : String(error));
+    });
     await refreshDatabasePoolSettings().catch((error) => {
       console.warn("[Database] Automatic pool sizing skipped:", error instanceof Error ? error.message : String(error));
     });

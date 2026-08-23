@@ -42,10 +42,20 @@ render_config_commands() {
 }
 
 apply_config() {
-  cn_require_root
-  cn_source_config
-  cn_require_commands
-  render_config_commands | cn_run_rendered_commands
+  cn_require_root || return $?
+  cn_source_config || return $?
+  cn_require_commands || return $?
+  # This function is also called from `if apply_config`; relying on
+  # errexit in that context lets a failed nft batch fall through and report
+  # success. Capture the pipeline status explicitly and propagate it.
+  local apply_status
+  if render_config_commands | cn_run_rendered_commands; then
+    :
+  else
+    apply_status=$?
+    echo "白名单防火墙规则应用失败（退出码: ${apply_status}）" >&2
+    return "${apply_status}"
+  fi
   cn_install_systemd_service
   echo "已按 ForwardX 插件配置应用白名单规则。"
 }
@@ -129,6 +139,7 @@ status_rules_json() {
   fi
   local configured="false"
   local applied="false"
+  local service_enabled="false"
   local service_active="false"
   local actual_backend="none"
   local configured_backend="${CN_FIREWALL_BACKEND:-auto}"
@@ -213,10 +224,18 @@ status_rules_json() {
     fi
   fi
 
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
-    service_active="true"
-  elif command -v rc-service >/dev/null 2>&1 && rc-service "${CN_SERVICE_NAME%.service}" status >/dev/null 2>&1; then
-    service_active="true"
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-enabled --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+      service_enabled="true"
+    fi
+    if systemctl is-active --quiet "${CN_SERVICE_NAME}" 2>/dev/null; then
+      service_active="true"
+    fi
+  elif command -v rc-service >/dev/null 2>&1; then
+    if rc-service "${CN_SERVICE_NAME%.service}" status >/dev/null 2>&1; then
+      service_enabled="true"
+      service_active="true"
+    fi
   fi
 
   printf '{'
@@ -226,6 +245,7 @@ status_rules_json() {
   printf '"privileged":%s,' "${privileged}"
   printf '"configured":%s,' "${configured}"
   printf '"applied":%s,' "${applied}"
+  printf '"serviceEnabled":%s,' "${service_enabled}"
   printf '"serviceActive":%s,' "${service_active}"
   printf '"backend":"%s",' "$(json_escape "${actual_backend}")"
   printf '"configuredBackend":"%s",' "$(json_escape "${configured_backend}")"

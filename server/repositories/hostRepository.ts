@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import {
   agentTokens,
   forwardGroupMembers,
@@ -35,7 +35,13 @@ import {
   isPresenceCapableHostConfirmedOffline,
   removePresenceCapableHost,
 } from "../agentFastLiveness";
-import { billingCalendarParts, billingDaysInMonth, billingMonthStart } from "../../shared/billingTime";
+import {
+  billingAddMonthsClamped,
+  billingCalendarParts,
+  billingDateTime,
+  billingDaysInMonth,
+  billingMonthStart,
+} from "../../shared/billingTime";
 
 // ==================== Host Queries ====================
 
@@ -379,46 +385,133 @@ export async function getHostUpgradeCandidates(input: Omit<HostListQuery, keyof 
   return rows.map(withComputedOnline);
 }
 
+function compactHostOption(host: any) {
+  return {
+    id: host?.id,
+    userId: host?.userId,
+    name: host?.name,
+    ip: host?.ip,
+    ipv4: host?.ipv4,
+    ipv6: host?.ipv6,
+    entryIp: host?.entryIp,
+    tunnelEntryIp: host?.tunnelEntryIp,
+    hostType: host?.hostType,
+    isOnline: host?.isOnline,
+    lastHeartbeat: host?.lastHeartbeat,
+    agentVersion: host?.agentVersion,
+    ddnsEnabled: host?.ddnsEnabled,
+    ddnsDomain: host?.ddnsDomain,
+    portRangeStart: host?.portRangeStart,
+    portRangeEnd: host?.portRangeEnd,
+    portAllowlist: host?.portAllowlist,
+    blockHttp: host?.blockHttp,
+    blockSocks: host?.blockSocks,
+    blockTls: host?.blockTls,
+    geoCountryCode: host?.geoCountryCode,
+    geoCountryName: host?.geoCountryName,
+    geoRegion: host?.geoRegion,
+    geoEmoji: host?.geoEmoji,
+    geoLatitudeMicro: host?.geoLatitudeMicro,
+    geoLongitudeMicro: host?.geoLongitudeMicro,
+    geoUpdatedAt: host?.geoUpdatedAt,
+  };
+}
+
+function normalizeRawHostDate(value: unknown) {
+  if (value === null || value === undefined || value === "") return value ?? null;
+  if (value instanceof Date) return value;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return new Date(numeric < 100_000_000_000 ? numeric * 1000 : numeric);
+  }
+  const parsed = new Date(String(value));
+  return Number.isFinite(parsed.getTime()) ? parsed : value;
+}
+
+function normalizeRawHostRow(row: Record<string, any>): Record<string, any> {
+  return {
+    ...row,
+    lastHeartbeat: normalizeRawHostDate(row.lastHeartbeat),
+    createdAt: normalizeRawHostDate(row.createdAt),
+    updatedAt: normalizeRawHostDate(row.updatedAt),
+    geoUpdatedAt: normalizeRawHostDate(row.geoUpdatedAt),
+  };
+}
+
 export async function getHostOptions(ownerUserId?: number, allowedHostIds?: number[], sortUserId?: number) {
   const db = await getDb();
   if (!db) return [];
   const condition = hostListCondition({ ownerUserId, allowedHostIds });
-  const preferredHostIds = await getUserHostDisplayOrder(sortUserId);
-  const query = db
-    .select({
-      id: hosts.id,
-      userId: hosts.userId,
-      name: hosts.name,
-      ip: hosts.ip,
-      ipv4: hosts.ipv4,
-      ipv6: hosts.ipv6,
-      entryIp: hosts.entryIp,
-      tunnelEntryIp: hosts.tunnelEntryIp,
-      hostType: hosts.hostType,
-      isOnline: hosts.isOnline,
-      lastHeartbeat: hosts.lastHeartbeat,
-      agentVersion: hosts.agentVersion,
-      ddnsEnabled: hosts.ddnsEnabled,
-      ddnsDomain: hosts.ddnsDomain,
-      portRangeStart: hosts.portRangeStart,
-      portRangeEnd: hosts.portRangeEnd,
-      portAllowlist: hosts.portAllowlist,
-      blockHttp: hosts.blockHttp,
-      blockSocks: hosts.blockSocks,
-      blockTls: hosts.blockTls,
-      geoCountryCode: hosts.geoCountryCode,
-      geoCountryName: hosts.geoCountryName,
-      geoRegion: hosts.geoRegion,
-      geoEmoji: hosts.geoEmoji,
-      geoLatitudeMicro: hosts.geoLatitudeMicro,
-      geoLongitudeMicro: hosts.geoLongitudeMicro,
-      geoUpdatedAt: hosts.geoUpdatedAt,
-    })
-    .from(hosts);
-  const rows = condition
-    ? await query.where(condition).orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }))
-    : await query.orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }));
-  return rows.map(withComputedOnline);
+
+  try {
+    const preferredHostIds = await getUserHostDisplayOrder(sortUserId);
+    const query = db
+      .select({
+        id: hosts.id,
+        userId: hosts.userId,
+        name: hosts.name,
+        ip: hosts.ip,
+        ipv4: hosts.ipv4,
+        ipv6: hosts.ipv6,
+        entryIp: hosts.entryIp,
+        tunnelEntryIp: hosts.tunnelEntryIp,
+        hostType: hosts.hostType,
+        isOnline: hosts.isOnline,
+        lastHeartbeat: hosts.lastHeartbeat,
+        agentVersion: hosts.agentVersion,
+        ddnsEnabled: hosts.ddnsEnabled,
+        ddnsDomain: hosts.ddnsDomain,
+        portRangeStart: hosts.portRangeStart,
+        portRangeEnd: hosts.portRangeEnd,
+        portAllowlist: hosts.portAllowlist,
+        blockHttp: hosts.blockHttp,
+        blockSocks: hosts.blockSocks,
+        blockTls: hosts.blockTls,
+        geoCountryCode: hosts.geoCountryCode,
+        geoCountryName: hosts.geoCountryName,
+        geoRegion: hosts.geoRegion,
+        geoEmoji: hosts.geoEmoji,
+        geoLatitudeMicro: hosts.geoLatitudeMicro,
+        geoLongitudeMicro: hosts.geoLongitudeMicro,
+        geoUpdatedAt: hosts.geoUpdatedAt,
+      })
+      .from(hosts);
+    const rows = condition
+      ? await query.where(condition).orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }))
+      : await query.orderBy(...hostListOrder({ ownerUserId, allowedHostIds, sortUserId, preferredHostIds }));
+    return rows.map(withComputedOnline).map(compactHostOption);
+  } catch (error) {
+    // Older databases and some dialect/driver combinations can reject the
+    // compact projection or its computed ordering. A failed options query
+    // must not look like an account has no hosts: fall back to SELECT * and
+    // apply the same visibility/order rules in memory. This also keeps all
+    // callers (not only the chain/tunnel UI) compatible during migration.
+    console.warn(
+      `[Hosts] compact options query failed; using compatibility fallback owner=${Number(ownerUserId || 0) || "all"}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    // Drizzle expands `db.select().from(hosts)` to every column declared in
+    // the current schema, so it is not a real SELECT * fallback when an older
+    // database is missing one of those columns. Use the raw driver query,
+    // whose projection is resolved by the database itself, and apply the
+    // visibility predicate in memory.
+    const fallbackRows: Array<Record<string, any>> = await queryRaw<Record<string, any>>(`SELECT * FROM ${quoteIdentifier("hosts")}`);
+    const allowed = new Set((allowedHostIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0));
+    let visibleRows = fallbackRows
+      .map((row) => normalizeRawHostRow(row))
+      .filter((row) => Number(ownerUserId || 0) <= 0
+        || Number(row.userId) === Number(ownerUserId)
+        || allowed.has(Number(row.id)))
+      .map(withComputedOnline);
+    const preferredHostIds = await getUserHostDisplayOrder(sortUserId).catch(() => [] as number[]);
+    const orderedRows = orderHostsForUser(visibleRows, preferredHostIds);
+    // Keep the compatibility path subject to the same compact response
+    // contract as the primary projection; in particular, never expose the
+    // persisted Agent token to an options consumer.
+    return orderedRows.map(compactHostOption);
+  }
 }
 
 export async function orderVisibleHostsForUser<T extends { id?: unknown; sortOrder?: unknown; createdAt?: unknown }>(hostRows: T[], userId: number) {
@@ -754,6 +847,125 @@ export async function markHostTrafficReset(hostId: number) {
   if (!db) return;
   await db.update(hosts).set({ lastTrafficReset: nowDate(), updatedAt: nowDate() }).where(eq(hosts.id, hostId));
 }
+
+const HOST_BILLING_CYCLE_MONTHS = new Set([1, 3, 6, 12, 24, 36]);
+
+function hostBillingCycleMonths(value: unknown) {
+  const months = Math.floor(Number(value));
+  return HOST_BILLING_CYCLE_MONTHS.has(months) ? months : 1;
+}
+
+function hostBillingMonth(value: unknown) {
+  return Math.min(12, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function hostBillingDay(value: unknown) {
+  return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function hostDate(value: unknown) {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value : null;
+  const text = String(value ?? "").trim();
+  const numeric = Number(value);
+  const date = text && Number.isFinite(numeric) && /^\d+(?:\.\d+)?$/.test(text)
+    ? new Date(numeric < 100_000_000_000 ? numeric * 1000 : numeric)
+    : new Date(value as any);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+/**
+ * Calculate the next host expiry while keeping all calendar arithmetic in the
+ * panel billing timezone. Monthly/quarterly/half-year cycles advance from the
+ * current expiry and use billingDay; annual cycles additionally honour
+ * the configured billingMonth. Short cycles retain the original month
+ * because a month anchor is not meaningful for a monthly period.
+ */
+export function nextHostBillingExpiry(
+  stoppedAt: Date,
+  cycleMonthsValue: unknown,
+  billingMonthValue: unknown,
+  billingDayValue: unknown,
+) {
+  const cycleMonths = hostBillingCycleMonths(cycleMonthsValue);
+  const billingMonth = hostBillingMonth(billingMonthValue);
+  const billingDay = hostBillingDay(billingDayValue);
+  const current = billingCalendarParts(stoppedAt);
+  let next: Date;
+
+  if (cycleMonths >= 12) {
+    const years = Math.max(1, Math.floor(cycleMonths / 12));
+    const year = current.year + years;
+    const day = Math.min(billingDay, billingDaysInMonth(year, billingMonth));
+    next = billingDateTime(year, billingMonth, day, current.hour, current.minute, current.second, stoppedAt.getMilliseconds());
+  } else {
+    const advanced = billingAddMonthsClamped(stoppedAt, cycleMonths);
+    const target = billingCalendarParts(advanced);
+    const day = Math.min(billingDay, billingDaysInMonth(target.year, target.month));
+    next = billingDateTime(target.year, target.month, day, current.hour, current.minute, current.second, stoppedAt.getMilliseconds());
+  }
+
+  // A malformed/legacy anchor must never leave an already expired value in
+  // place. Advance until it is strictly in the future (bounded for safety).
+  let guard = 0;
+  while (next.getTime() <= stoppedAt.getTime() && guard++ < 1200) {
+    const previous = next;
+    if (cycleMonths >= 12) {
+      const nextYear = billingCalendarParts(previous).year + Math.max(1, Math.floor(cycleMonths / 12));
+      const day = Math.min(billingDay, billingDaysInMonth(nextYear, billingMonth));
+      next = billingDateTime(nextYear, billingMonth, day, current.hour, current.minute, current.second, stoppedAt.getMilliseconds());
+    } else {
+      const advanced = billingAddMonthsClamped(previous, cycleMonths);
+      const target = billingCalendarParts(advanced);
+      const day = Math.min(billingDay, billingDaysInMonth(target.year, target.month));
+      next = billingDateTime(target.year, target.month, day, current.hour, current.minute, current.second, stoppedAt.getMilliseconds());
+    }
+  }
+  return next;
+}
+
+/** Extend hosts whose configured expiry action is cycle-based.
+ *
+ * The conditional update makes the sweep idempotent across multiple panel
+ * instances: if another worker advances the same host first, this update is a
+ * no-op. Existing hosts default to `none` and are therefore untouched.
+ */
+export async function extendDueHostBillingPeriods(now = new Date()) {
+  const db = await getDb();
+  if (!db) return 0;
+  const dueHosts = await db.select().from(hosts).where(and(
+    eq(hosts.expiryHandling, "extend_cycle"),
+    isNotNull(hosts.stoppedAt),
+  ));
+  let extended = 0;
+  for (const host of dueHosts as any[]) {
+    const stoppedAt = hostDate(host.stoppedAt);
+    if (!stoppedAt || stoppedAt.getTime() > now.getTime()) continue;
+    const next = nextHostBillingExpiry(
+      stoppedAt,
+      host.billingCycleMonths,
+      host.billingMonth,
+      host.billingDay,
+    );
+    // Catch up a host that was offline for several billing periods in one
+    // sweep so reminders immediately use the next future expiry.
+    let future = next;
+    let guard = 0;
+    while (future.getTime() <= now.getTime() && guard++ < 1200) {
+      future = nextHostBillingExpiry(future, host.billingCycleMonths, host.billingMonth, host.billingDay);
+    }
+    const result = await db.update(hosts).set({
+      stoppedAt: future,
+      updatedAt: nowDate(),
+    }).where(and(
+      eq(hosts.id, Number(host.id)),
+      eq(hosts.expiryHandling, "extend_cycle"),
+      eq(hosts.stoppedAt, stoppedAt),
+    ));
+    if (rawAffectedRows(result) > 0) extended += 1;
+  }
+  return extended;
+}
+
 export async function getHostByAgentToken(token: string) {
   const db = await getDb();
   if (!db) return undefined;

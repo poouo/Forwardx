@@ -659,6 +659,7 @@ services:
       POSTGRES_DATABASE: ${POSTGRES_DATABASE:-}
       POSTGRES_SSL: ${POSTGRES_SSL:-false}
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
+      FORWARDX_TRAFFIC_PADDING_ENABLED: ${FORWARDX_TRAFFIC_PADDING_ENABLED:-false}
     volumes:
       - forwardx-data:/data
     logging:
@@ -676,7 +677,7 @@ EOF
 
 write_env() {
   local image="$1"
-  local existing_jwt jwt_secret
+  local existing_jwt jwt_secret existing_padding_enabled padding_enabled
   if ! valid_port "$PORT"; then
     PORT="9810"
   fi
@@ -686,6 +687,8 @@ write_env() {
   if [ -z "$jwt_secret" ]; then
     jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
   fi
+  existing_padding_enabled="$(get_env_value FORWARDX_TRAFFIC_PADDING_ENABLED || true)"
+  padding_enabled="${FORWARDX_TRAFFIC_PADDING_ENABLED:-$existing_padding_enabled}"
 
   cat > "$APP_DIR/.env" <<EOF
 PORT=$PORT
@@ -696,6 +699,9 @@ FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
 FORWARDX_IMAGE=$image
 FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
 EOF
+  if [ -n "$padding_enabled" ]; then
+    printf 'FORWARDX_TRAFFIC_PADDING_ENABLED=%s\n' "$padding_enabled" >> "$APP_DIR/.env"
+  fi
 }
 
 remove_existing_panel_containers() {

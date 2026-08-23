@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildTunnelRuleLatencyProbe,
+  canReuseRecentTunnelLatencySample,
   combineTunnelRuleLatencySample,
+  TUNNEL_RULE_LATENCY_FRESH_MS,
   tunnelRuleLatencySampleSucceeded,
   tunnelRuleLatencyTopologyKey,
   validateTunnelRuleLatencyReport,
@@ -109,4 +111,40 @@ test("missing latency values cannot become a synthetic zero-millisecond path", (
     tunnelLatencyMs: null,
     tunnelRecordedAt: recordedAt,
   }), null);
+});
+
+test("a recent successful tunnel sample can be reused while a refresh is still pending", () => {
+  const nowMs = Date.parse("2026-07-20T10:00:00Z");
+  const recordedAt = new Date(nowMs - 2_000);
+  assert.equal(canReuseRecentTunnelLatencySample({
+    sample: { latencyMs: 8, isTimeout: false, recordedAt },
+    tunnel: {
+      lastTestStatus: "success",
+      lastTestAt: recordedAt,
+      updatedAt: recordedAt,
+    },
+    nowMs,
+  }), true);
+});
+
+test("recent tunnel sample reuse fails closed for stale, failed, or changed tunnels", () => {
+  const nowMs = Date.parse("2026-07-20T10:00:00Z");
+  const recordedAt = new Date(nowMs - 2_000);
+  const base = {
+    sample: { latencyMs: 8, isTimeout: false, recordedAt },
+    tunnel: { lastTestStatus: "success", lastTestAt: recordedAt, updatedAt: recordedAt },
+    nowMs,
+  };
+  assert.equal(canReuseRecentTunnelLatencySample({
+    ...base,
+    sample: { ...base.sample, recordedAt: new Date(nowMs - TUNNEL_RULE_LATENCY_FRESH_MS - 1) },
+  }), false);
+  assert.equal(canReuseRecentTunnelLatencySample({
+    ...base,
+    tunnel: { ...base.tunnel, lastTestStatus: "failed" },
+  }), false);
+  assert.equal(canReuseRecentTunnelLatencySample({
+    ...base,
+    tunnel: { ...base.tunnel, updatedAt: new Date(nowMs) },
+  }), false);
 });

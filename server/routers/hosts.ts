@@ -18,6 +18,7 @@ import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyH
 import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
 import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
+import { billingCalendarParts } from "@shared/billingTime";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -59,6 +60,10 @@ const hostSortOrderSchema = z.number().int().min(0).max(200).optional();
 
 const optionalDateInputSchema = z.string().trim().max(64).nullable().optional();
 const hostTrafficMeasureModeSchema = z.enum(["outbound", "both", "max"]).default("both");
+const hostBillingCycleMonthsSchema = z.union([
+  z.literal(1), z.literal(3), z.literal(6), z.literal(12), z.literal(24), z.literal(36),
+]);
+const hostExpiryActionSchema = z.enum(["none", "extend_cycle"]);
 const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6"]);
 const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA"]);
 const hostDdnsDomainSchema = z.string().trim().max(253).nullable().optional();
@@ -152,7 +157,29 @@ function normalizeTrafficAlertThresholdPercent(value: unknown) {
 }
 
 function normalizeRenewalReminderDays(value: unknown) {
-  return Math.min(365, Math.max(1, Math.floor(Number(value) || 7)));
+  return Math.min(365, Math.max(1, Math.floor(Number(value) || 3)));
+}
+
+const HOST_BILLING_CYCLE_MONTHS = [1, 3, 6, 12, 24, 36] as const;
+type HostBillingCycleMonths = (typeof HOST_BILLING_CYCLE_MONTHS)[number];
+
+function normalizeHostBillingCycleMonths(value: unknown): HostBillingCycleMonths {
+  const months = Math.floor(Number(value));
+  return (HOST_BILLING_CYCLE_MONTHS as readonly number[]).includes(months)
+    ? months as HostBillingCycleMonths
+    : 1;
+}
+
+function normalizeHostBillingMonth(value: unknown) {
+  return Math.min(12, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function normalizeHostBillingDay(value: unknown) {
+  return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function normalizeHostExpiryAction(value: unknown) {
+  return value === "extend_cycle" ? "extend_cycle" : "none";
 }
 
 function normalizeHostDdnsIpVersion(value: unknown, recordType?: string) {
@@ -209,12 +236,17 @@ function hostTrafficConfigPayload(input: {
   trafficAlertThresholdPercent?: number;
   telegramRenewalReminderEnabled?: boolean;
   renewalReminderDays?: number;
+  billingCycleMonths?: number;
+  billingMonth?: number;
+  billingDay?: number;
+  expiryHandling?: "none" | "extend_cycle";
   trafficAutoReset?: boolean;
   trafficResetDay?: number;
 }) {
   const purchasedAt = parseOptionalDateInput(input.purchasedAt, "机器购买时间");
   const stoppedAt = parseOptionalDateInput(input.stoppedAt, "机器停止时间");
   assertHostTrafficDates(purchasedAt, stoppedAt);
+  const stoppedAtMonth = stoppedAt ? billingCalendarParts(stoppedAt).month : 1;
   return {
     purchasedAt,
     stoppedAt,
@@ -224,6 +256,10 @@ function hostTrafficConfigPayload(input: {
     trafficAlertThresholdPercent: normalizeTrafficAlertThresholdPercent(input.trafficAlertThresholdPercent),
     telegramRenewalReminderEnabled: !!input.telegramRenewalReminderEnabled,
     renewalReminderDays: normalizeRenewalReminderDays(input.renewalReminderDays),
+    billingCycleMonths: normalizeHostBillingCycleMonths(input.billingCycleMonths),
+    billingMonth: normalizeHostBillingMonth(input.billingMonth ?? stoppedAtMonth),
+    billingDay: normalizeHostBillingDay(input.billingDay),
+    expiryHandling: normalizeHostExpiryAction(input.expiryHandling),
     trafficAutoReset: !!input.trafficAutoReset,
     trafficResetDay: input.trafficResetDay ?? 1,
   };
@@ -674,7 +710,20 @@ export const hostsRouter = router({
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const scope = await visibleHostQueryScope(ctx.user);
-      const hosts = await db.getHostOptions(scope.ownerUserId, scope.allowedHostIds, scope.sortUserId);
+      let hosts: any[];
+      try {
+        hosts = await db.getHostOptions(scope.ownerUserId, scope.allowedHostIds, scope.sortUserId) as any[];
+      } catch (error) {
+        // Keep compact host consumers usable when a deployment has a transient
+        // projection/order incompatibility. The fallback uses the same scope;
+        // it never broadens a non-admin user's host visibility.
+        console.warn(
+          `[Hosts] options projection failed user=${ctx.user.id}; falling back to list query:`,
+          error instanceof Error ? error.message : String(error),
+        );
+        const visible = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
+        hosts = visible.map(compactHostForList);
+      }
       scheduleHostGeoRefresh(hosts);
       return hosts;
     }),
@@ -971,6 +1020,10 @@ export const hostsRouter = router({
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
         renewalReminderDays: z.number().int().min(1).max(365).optional(),
+        billingCycleMonths: hostBillingCycleMonthsSchema.optional(),
+        billingMonth: z.number().int().min(1).max(12).optional(),
+        billingDay: z.number().int().min(1).max(31).optional(),
+        expiryHandling: hostExpiryActionSchema.optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         ddnsEnabled: z.boolean().optional(),
@@ -994,7 +1047,7 @@ export const hostsRouter = router({
         const agentToken = nanoid(32);
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
-          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 7, trafficAutoReset: false, trafficResetDay: 1 };
+          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 3, billingCycleMonths: 1, billingMonth: 1, billingDay: 1, expiryHandling: "none", trafficAutoReset: false, trafficResetDay: 1 };
         if (ctx.user.role === "admin" && (trafficConfig.telegramTrafficAlertEnabled || trafficConfig.telegramRenewalReminderEnabled)) {
           await assertTelegramBotConfiguredForHostReminder();
         }
@@ -1056,6 +1109,10 @@ export const hostsRouter = router({
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
         renewalReminderDays: z.number().int().min(1).max(365).optional(),
+        billingCycleMonths: hostBillingCycleMonthsSchema.optional(),
+        billingMonth: z.number().int().min(1).max(12).optional(),
+        billingDay: z.number().int().min(1).max(31).optional(),
+        expiryHandling: hostExpiryActionSchema.optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         ddnsEnabled: z.boolean().optional(),
@@ -1111,7 +1168,7 @@ export const hostsRouter = router({
               (data as any).lastDdnsError = null;
             }
           }
-          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
+          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "billingCycleMonths", "billingMonth", "billingDay", "expiryHandling", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
           if (hasTrafficConfigInput) {
             const purchasedAt = (data as any).purchasedAt !== undefined
               ? parseOptionalDateInput((data as any).purchasedAt, "机器购买时间")
@@ -1128,6 +1185,10 @@ export const hostsRouter = router({
             if ((data as any).trafficAlertThresholdPercent !== undefined) (data as any).trafficAlertThresholdPercent = normalizeTrafficAlertThresholdPercent((data as any).trafficAlertThresholdPercent);
             if ((data as any).telegramRenewalReminderEnabled !== undefined) (data as any).telegramRenewalReminderEnabled = !!(data as any).telegramRenewalReminderEnabled;
             if ((data as any).renewalReminderDays !== undefined) (data as any).renewalReminderDays = normalizeRenewalReminderDays((data as any).renewalReminderDays);
+            if ((data as any).billingCycleMonths !== undefined) (data as any).billingCycleMonths = normalizeHostBillingCycleMonths((data as any).billingCycleMonths);
+            if ((data as any).billingMonth !== undefined) (data as any).billingMonth = normalizeHostBillingMonth((data as any).billingMonth);
+            if ((data as any).billingDay !== undefined) (data as any).billingDay = normalizeHostBillingDay((data as any).billingDay);
+            if ((data as any).expiryHandling !== undefined) (data as any).expiryHandling = normalizeHostExpiryAction((data as any).expiryHandling);
             if ((data as any).trafficAutoReset !== undefined) (data as any).trafficAutoReset = !!(data as any).trafficAutoReset;
             if ((data as any).trafficResetDay !== undefined) (data as any).trafficResetDay = Math.min(31, Math.max(1, Number((data as any).trafficResetDay) || 1));
             const nextTelegramTrafficAlertEnabled = (data as any).telegramTrafficAlertEnabled !== undefined
@@ -1141,7 +1202,7 @@ export const hostsRouter = router({
             }
           }
         } else {
-          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
+          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "billingCycleMonths", "billingMonth", "billingDay", "expiryHandling", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
         }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];

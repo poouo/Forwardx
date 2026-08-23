@@ -19,24 +19,27 @@ import { startBackgroundServices } from "./backgroundServices";
 import { initializePanelClock } from "./panelClock";
 import { ENV } from "./env";
 import { resolveTrustProxySetting } from "./trustProxy";
+import { authCapRouter } from "./authCaptcha";
 
 installPanelLogger();
 
 const serverDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 
-function isPortAvailable(port: number): Promise<boolean> {
+function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.listen(port, () => {
+    const onListening = () => {
       server.close(() => resolve(true));
-    });
+    };
+    if (host) server.listen(port, host, onListening);
+    else server.listen(port, onListening);
     server.on("error", () => resolve(false));
   });
 }
 
-async function findAvailablePort(startPort = 9810): Promise<number> {
+async function findAvailablePort(startPort = 9810, host?: string): Promise<number> {
   for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) return port;
+    if (await isPortAvailable(port, host)) return port;
   }
   throw new Error(`No available port found starting from ${startPort}`);
 }
@@ -116,6 +119,7 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
   app.use(cookieParser());
   installMobileCors(app);
+  app.use(authCapRouter);
   app.use(agentRouter);
   app.use(migrationRouter);
   app.use(
@@ -129,9 +133,11 @@ async function startServer() {
 
   const preferredPort = Number.parseInt(process.env.PORT || "9810", 10);
   const isProduction = process.env.NODE_ENV === "production";
-  const port = isProduction ? preferredPort : await findAvailablePort(preferredPort);
+  const isDevPanel = process.env.FORWARDX_DEV_PANEL === "1";
+  const listenHost = isDevPanel ? (process.env.FORWARDX_DEV_SERVER_HOST || "127.0.0.1") : undefined;
+  const port = isProduction ? preferredPort : await findAvailablePort(preferredPort, listenHost);
 
-  if (isProduction && !(await isPortAvailable(preferredPort))) {
+  if (isProduction && !(await isPortAvailable(preferredPort, listenHost))) {
     throw new Error(`Port ${preferredPort} is already in use`);
   }
 
@@ -139,10 +145,12 @@ async function startServer() {
     console.warn(`[Server] Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  server.listen(port, () => {
+  const onListening = () => {
     console.info(`Server running on ${protocol}://localhost:${port}/`);
     console.info(`[Server] ForwardX panel started on ${protocol.toUpperCase()} port ${port}`);
-  });
+  };
+  if (listenHost) server.listen(port, listenHost, onListening);
+  else server.listen(port, onListening);
 
   if (databaseStatus.ready) {
     startBackgroundServices();

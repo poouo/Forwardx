@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -254,6 +255,159 @@ func TestForwardXTCPRoundTrip(t *testing.T) {
 	}
 	if string(buf) != "forwardx" {
 		t.Fatalf("unexpected echo %q", string(buf))
+	}
+}
+
+func TestForwardXTrafficPaddingTCPRoundTrip(t *testing.T) {
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			conn, acceptErr := targetLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+
+	key := "padding-roundtrip-key"
+	targetPort := targetLn.Addr().(*net.TCPAddr).Port
+	exitPort := freeTCPPort(t)
+	entryPort := freeTCPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role: "exit", TunnelID: 301, ListenPort: exitPort, Protocol: "tcp", Key: key,
+			TrafficPaddingEnabled: true, TrafficPaddingRatio: 20, TrafficPaddingMaxMbps: 1,
+		})
+	}()
+	waitForTCP(t, exitPort)
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role: "entry", TunnelID: 301, RuleID: 302, ListenPort: entryPort, Protocol: "tcp",
+			ExitHost: "127.0.0.1", ExitPort: exitPort, TargetIP: "127.0.0.1", TargetPort: targetPort,
+			Key: key, TrafficPaddingEnabled: true, TrafficPaddingRatio: 20, TrafficPaddingMaxMbps: 1,
+		})
+	}()
+	waitForTCP(t, entryPort)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	payload := bytes.Repeat([]byte("padding"), 128)
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("padded TCP round trip mismatch: got=%d want=%d", len(got), len(payload))
+	}
+}
+
+func TestTrafficPaddingBudgetIsSharedAcrossEmitters(t *testing.T) {
+	first := newTrafficPaddingEmitterConfig(true, 50, 1)
+	if first == nil || first.budget == nil {
+		t.Fatal("expected a traffic padding budget")
+	}
+	second := &trafficPaddingEmitter{budget: first.budget}
+	now := time.Now()
+	got := first.allowance(100*1024, now) + second.allowance(100*1024, now)
+	if got > int(first.budget.burst) {
+		t.Fatalf("shared padding budget exceeded burst: got=%d burst=%.0f", got, first.budget.burst)
+	}
+}
+
+func TestTrafficPaddingWriteFailureDisablesOnlyPadding(t *testing.T) {
+	emitter := newTrafficPaddingEmitterConfig(true, 50, 1)
+	if emitter == nil {
+		t.Fatal("expected a traffic padding emitter")
+	}
+	if err := writeTrafficPadding(nil, emitter, 1024); err != nil {
+		t.Fatalf("padding failure should be downgraded: %v", err)
+	}
+	emitter.mu.Lock()
+	disabled := emitter.disabled
+	emitter.mu.Unlock()
+	if !disabled {
+		t.Fatal("expected padding to be disabled after a write failure")
+	}
+	if err := writeTrafficPadding(nil, emitter, 1024); err != nil {
+		t.Fatalf("disabled padding should remain best effort: %v", err)
+	}
+}
+
+func TestTrafficPaddingNegotiationKeepsLegacyPeerDisabled(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	cfg := config{Role: "exit", TunnelID: 302, RuleID: 0, ListenPort: 12345, Key: "padding-legacy-key", TrafficPaddingEnabled: true, TrafficPaddingRatio: 20, TrafficPaddingMaxMbps: 1}
+	errCh := make(chan error, 1)
+	go func() {
+		sec, err := newServerSecureConn(serverConn, cfg)
+		if err == nil {
+			if sec.trafficPadding {
+				err = errors.New("legacy handshake unexpectedly negotiated padding")
+			}
+			_ = sec.conn.Close()
+		}
+		errCh <- err
+	}()
+	salt := make([]byte, fxpSaltSize)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeFull(clientConn, salt); err != nil {
+		t.Fatal(err)
+	}
+	client, err := newSessionSecureConn(clientConn, cfg.Key, salt, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
+	if err := client.writeFrame(hello); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := client.readFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reply fxpHandshake
+	if err := json.Unmarshal(ack, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.TrafficPadding {
+		t.Fatal("legacy handshake reply advertised traffic padding")
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalizeTrafficPaddingDisablesUDPOnlyRuntime(t *testing.T) {
+	cfg := normalizeConfig(config{
+		Protocol:              "udp",
+		TrafficPaddingEnabled: true,
+		TrafficPaddingRatio:   20,
+		TrafficPaddingMaxMbps: 10,
+	})
+	if cfg.TrafficPaddingEnabled || cfg.TrafficPaddingRatio != 0 || cfg.TrafficPaddingMaxMbps != 0 {
+		t.Fatalf("UDP-only runtime retained TCP traffic padding: %#v", cfg)
 	}
 }
 

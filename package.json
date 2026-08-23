@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.276",
+  "version": "2.3.277",
   "description": "ForwardX 多主机端口转发与隧道管理面板",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -35,6 +35,8 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "@cap.js/server": "^4.0.5",
+    "@cap.js/widget": "^0.1.57",
     "@capacitor/android": "^8.3.4",
     "@capacitor/app": "^8.1.0",
     "@capacitor/browser": "^8.0.3",

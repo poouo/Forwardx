@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import "@cap.js/widget";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,6 +79,63 @@ function captchaRetryAfterSeconds(message: string) {
   return match ? Math.max(1, Number(match[1])) : 0;
 }
 
+function CapVerificationField(props: {
+  purpose: "login" | "register";
+  disabled?: boolean;
+  resetKey: number;
+  onToken: (token: string) => void;
+  onError: (message: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const widget = document.createElement("cap-widget");
+    const panelBase = mobileAuth.isNative ? mobileAuth.normalizePanelUrl(mobileAuth.getPanelUrl()) : "";
+    widget.setAttribute("data-cap-api-endpoint", `${panelBase}/api/auth/cap/${props.purpose}/`);
+    widget.setAttribute("data-cap-worker-count", "2");
+    widget.setAttribute("data-cap-i18n-initial-state", "点击验证");
+    widget.setAttribute("data-cap-i18n-verifying-label", "验证中...");
+    widget.setAttribute("data-cap-i18n-solved-label", "验证通过");
+    widget.setAttribute("data-cap-i18n-error-label", "验证失败，请重试");
+    widget.setAttribute("data-cap-i18n-verify-aria-label", "点击验证你是真人");
+    if (props.disabled) {
+      widget.setAttribute("aria-disabled", "true");
+      widget.style.pointerEvents = "none";
+      widget.style.opacity = "0.65";
+    }
+    const handleSolve = (event: Event) => {
+      const token = String((event as CustomEvent<{ token?: string }>).detail?.token || "").trim();
+      if (token) props.onToken(token);
+    };
+    const handleReset = () => props.onToken("");
+    const handleError = (event: Event) => {
+      props.onToken("");
+      props.onError(String((event as CustomEvent<{ message?: string }>).detail?.message || "CAPTCHA_INVALID"));
+    };
+    widget.addEventListener("solve", handleSolve);
+    widget.addEventListener("reset", handleReset);
+    widget.addEventListener("error", handleError);
+    container.replaceChildren(widget);
+    return () => {
+      widget.removeEventListener("solve", handleSolve);
+      widget.removeEventListener("reset", handleReset);
+      widget.removeEventListener("error", handleError);
+      widget.remove();
+    };
+  }, [props.disabled, props.onError, props.onToken, props.purpose, props.resetKey]);
+
+  return (
+    <div className="space-y-2">
+      <Label>人机验证</Label>
+      <div ref={containerRef} className="min-h-14" aria-live="polite" />
+    </div>
+  );
+}
+
+const ignoreCapError = () => undefined;
+
 function ImageCaptchaField(props: {
   id: string;
   value: string;
@@ -88,7 +146,18 @@ function ImageCaptchaField(props: {
   disabled?: boolean;
   onChange: (value: string) => void;
   onRefresh: () => void;
+  resetKey?: number;
 }) {
+  return (
+    <CapVerificationField
+      purpose={props.id === "reg-captcha" ? "register" : "login"}
+      disabled={props.disabled}
+      resetKey={props.resetKey ?? 0}
+      onToken={props.onChange}
+      onError={ignoreCapError}
+    />
+  );
+  /*
   return (
     <div className="space-y-2">
       <Label htmlFor={props.id}>验证码</Label>
@@ -133,6 +202,7 @@ function ImageCaptchaField(props: {
       />
     </div>
   );
+  */
 }
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
@@ -168,6 +238,7 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [captchaChallenge, setCaptchaChallenge] = useState<CaptchaChallengeState | null>(null);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [loginCaptchaRequiredFor, setLoginCaptchaRequiredFor] = useState<string | null>(null);
   const [captchaCooldownUntil, setCaptchaCooldownUntil] = useState(0);
   const [telegramLoginCode, setTelegramLoginCode] = useState<string | null>(null);
@@ -225,7 +296,9 @@ export default function Login() {
   });
   const serverRequiresLoginCaptcha = captchaStatusQuery.data?.required === true;
   const loginCaptchaRequired = serverRequiresLoginCaptcha || loginCaptchaRequiredFor === normalizedUsername;
-  const captchaVisible = mode === "register" || loginCaptchaRequired;
+  // The image challenge remains available only for old clients; the current
+  // page uses the self-hosted Cap widget below.
+  const captchaVisible = false;
   const captchaPurpose = mode === "register" ? "register" as const : "login" as const;
 
   const createCaptchaMutation = trpc.auth.createCaptcha.useMutation();
@@ -315,7 +388,8 @@ export default function Login() {
       }
       if (msg === "CAPTCHA_REQUIRED" || msg === "CAPTCHA_REQUIRED_AFTER_FAIL") {
         setLoginCaptchaRequiredFor(variables.username.trim().toLowerCase());
-        requestCaptcha("login");
+        setCaptchaAnswer("");
+        setCaptchaResetKey((value) => value + 1);
         if (msg === "CAPTCHA_REQUIRED_AFTER_FAIL") {
           toast.error("用户名或密码错误，请输入验证码后重试");
         } else {
@@ -324,7 +398,8 @@ export default function Login() {
       } else if (msg === "CAPTCHA_INVALID") {
         setLoginCaptchaRequiredFor(variables.username.trim().toLowerCase());
         toast.error("验证码错误或已过期，请重新输入");
-        requestCaptcha("login");
+        setCaptchaAnswer("");
+        setCaptchaResetKey((value) => value + 1);
       } else {
         toast.error(msg || "登录失败");
         if (msg === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) {
@@ -495,7 +570,8 @@ export default function Login() {
         return;
       }
       toast.error(msg === "CAPTCHA_INVALID" ? "验证码错误或已过期，请重新输入" : msg || "注册失败");
-      requestCaptcha("register");
+      setCaptchaAnswer("");
+      setCaptchaResetKey((value) => value + 1);
     },
   });
 
@@ -632,18 +708,13 @@ export default function Login() {
     }
     if (loginCaptchaRequired) {
       if (!captchaAnswer.trim()) {
-        toast.error("请输入图片验证码");
-        return;
-      }
-      if (!captchaChallenge || captchaChallenge.purpose !== "login") {
-        toast.error("验证码尚未加载，请刷新后重试");
+        toast.error("请先完成人机验证");
         return;
       }
       loginMutation.mutate({
         username: username.trim(),
         password,
-        captchaId: captchaChallenge.captchaId,
-        captchaAnswer: captchaAnswer.trim(),
+        capToken: captchaAnswer.trim(),
         mobile: mobileAuth.isNative,
       });
     } else {
@@ -693,15 +764,11 @@ export default function Login() {
       }
     }
     if (!captchaAnswer.trim()) {
-      toast.error("请输入图片验证码");
+      toast.error("请先完成人机验证");
       return;
     }
     if (name.trim().length > DISPLAY_NAME_MAX_LENGTH) {
       toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
-      return;
-    }
-    if (!captchaChallenge || captchaChallenge.purpose !== "register") {
-      toast.error("验证码加载失败，请刷新");
       return;
     }
     registerMutation.mutate({
@@ -710,8 +777,7 @@ export default function Login() {
       name: name.trim() || undefined,
       email: email.trim() || undefined,
       emailCode: emailCode.trim() || undefined,
-      captchaId: captchaChallenge.captchaId,
-      captchaAnswer: captchaAnswer.trim(),
+      capToken: captchaAnswer.trim(),
     });
   };
 
@@ -927,6 +993,7 @@ export default function Login() {
                   refreshTitle={captchaRefreshTitle}
                   disabled={isPending}
                   onChange={setCaptchaAnswer}
+                  resetKey={captchaResetKey}
                   onRefresh={() => requestCaptcha("login", false)}
                 />
               )}
@@ -1138,6 +1205,7 @@ export default function Login() {
                 refreshTitle={captchaRefreshTitle}
                 disabled={isPending || !hasMobilePanelUrl}
                 onChange={setCaptchaAnswer}
+                resetKey={captchaResetKey}
                 onRefresh={() => requestCaptcha("register", false)}
               />
 

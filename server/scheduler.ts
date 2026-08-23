@@ -490,9 +490,12 @@ async function runTelegramReminders() {
       const stoppedAt = new Date(host.stoppedAt).getTime();
       if (!Number.isFinite(stoppedAt)) continue;
       const daysLeft = Math.ceil((stoppedAt - now) / (24 * 60 * 60 * 1000));
-      const reminderDays = Math.min(365, Math.max(1, Math.floor(Number(host.renewalReminderDays || 7))));
+      const reminderDays = Math.min(365, Math.max(1, Math.floor(Number(host.renewalReminderDays || 3))));
       if (daysLeft < 0 || daysLeft > reminderDays) continue;
-      const key = dayKey(`telegramReminder:hostRenewal:${host.id}:${daysLeft}`, owner.id);
+      // Include the expiry timestamp so a cycle extension can send the same
+      // configured reminder again for the new billing period.
+      const expiryKey = Math.floor(stoppedAt / 1000);
+      const key = dayKey(`telegramReminder:hostRenewal:${host.id}:${expiryKey}:${daysLeft}`, owner.id);
       if (await db.getSetting(key)) continue;
       await sendTelegramMessage(
         owner.telegramId,
@@ -535,6 +538,17 @@ async function runHostStatusSweep() {
     await sweepOfflineHostsAndNotify();
   } catch (error) {
     console.error("[Scheduler] Host status sweep error:", error);
+  }
+}
+
+async function runHostBillingCycleExtension() {
+  try {
+    const extendedHosts = await db.extendDueHostBillingPeriods();
+    if (extendedHosts > 0) {
+      console.log(`[Scheduler] Host billing cycle extension: ${extendedHosts} host(s) advanced`);
+    }
+  } catch (error) {
+    console.error("[Scheduler] Host billing cycle extension error:", error);
   }
 }
 
@@ -610,6 +624,9 @@ export function startScheduler() {
     await runSubscriptionExpirationCheck();
     await runExpirationCheck();
   });
+  const hostBillingCycleCheck = createNonOverlappingScheduledTask("host billing cycle extension", async () => {
+    await runHostBillingCycleExtension();
+  });
   const selfTestTimeoutSweep = createNonOverlappingScheduledTask("self-test timeout sweep", async () => {
     await runSelfTestTimeoutSweep();
   });
@@ -669,6 +686,9 @@ export function startScheduler() {
   // the broad recovery sweep evaluates persisted heartbeat timestamps.
   repeatAfter(forwardingMaintenance, 5 * 60 * 1000, 20_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
+  // Keep host expiry dates responsive without changing the account-expiration
+  // scan cadence or creating a timer per host.
+  repeatAfter(hostBillingCycleCheck, 5 * 60 * 1000, 18_000);
   repeatAfter(monthlyTrafficReset, 60 * 60 * 1000, 20_000);
   runAtBillingMidnight(monthlyTrafficReset);
   repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);

@@ -1,4 +1,7 @@
-export const HOST_OFFLINE_NOTIFICATION_DEBOUNCE_MS = 15_000;
+// Do not notify for a host that recovers shortly after a transient liveness
+// failure. The fast liveness state still changes immediately for recovery and
+// failover; this delay only suppresses notification noise.
+export const HOST_OFFLINE_NOTIFICATION_DEBOUNCE_MS = 30_000;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SetTimer = (callback: () => void, delayMs: number) => TimerHandle;

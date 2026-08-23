@@ -269,6 +269,7 @@ export const authRouter = router({
       password: z.string().min(1, "请输入密码"),
       captchaId: z.string().optional(),
       captchaAnswer: z.string().trim().min(1).max(12).optional(),
+      capToken: z.string().trim().min(1).max(256).optional(),
       mobile: z.boolean().optional(),
       twoFactorCode: z.string().optional(),
     }))
@@ -284,16 +285,23 @@ export const authRouter = router({
       }
 
       if (needsCaptcha(ip, input.username)) {
-        if (!input.captchaId || !input.captchaAnswer) {
+        let captchaValid = false;
+        if (input.capToken) {
+          captchaValid = await authCaptcha.verifyCapToken(ip, "login", input.capToken);
+        } else if (input.captchaId && input.captchaAnswer) {
+          // Keep accepting the image challenge for older clients during the
+          // rollout. New clients use Cap's server-verifiable PoW token.
+          captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "login");
+        }
+        if (!input.capToken && !input.captchaId && !input.captchaAnswer) {
           console.warn(`[Auth] Login requires captcha username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error("CAPTCHA_REQUIRED");
         }
-        if (!authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "login")) {
+        if (!captchaValid) {
           recordPasswordFail(ip, input.username);
           console.warn(`[Auth] Login captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error("CAPTCHA_INVALID");
         }
-        authCaptcha.clearLoginCaptchaRequirement(ip, input.username);
       }
 
       const user = await db.authenticateUser(input.username, input.password);
@@ -395,8 +403,9 @@ export const authRouter = router({
       name: z.string().trim().max(DISPLAY_NAME_MAX_LENGTH).optional(),
       email: z.string().email("邮箱格式不正确").optional(),
       emailCode: z.string().optional(),
-      captchaId: z.string(),
-      captchaAnswer: z.string().trim().min(1).max(12),
+      captchaId: z.string().optional(),
+      captchaAnswer: z.string().trim().min(1).max(12).optional(),
+      capToken: z.string().trim().min(1).max(256).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
@@ -404,9 +413,18 @@ export const authRouter = router({
         console.warn(`[Auth] Register rejected disabled username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
         throw new Error("当前注册未开放，请联系管理员");
       }
-      if (!authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, getRequestIp(ctx), "register")) {
-        console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
-        throw new Error("CAPTCHA_INVALID");
+      const ip = getRequestIp(ctx);
+      let captchaValid = false;
+      if (input.capToken) {
+        captchaValid = await authCaptcha.verifyCapToken(ip, "register", input.capToken);
+      } else if (input.captchaId && input.captchaAnswer) {
+        // Legacy image challenge compatibility for clients that have not yet
+        // loaded the Cap widget.
+        captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "register");
+      }
+      if (!captchaValid) {
+        console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
+        throw new Error(input.capToken || input.captchaId ? "CAPTCHA_INVALID" : "CAPTCHA_REQUIRED");
       }
       const emailConfig = await getEmailConfig();
       const usernameEmail = ensureAllowedEmail(input.username, emailConfig);
@@ -426,7 +444,13 @@ export const authRouter = router({
         }
         verifiedEmail = true;
       }
-      const { captchaId: _captchaId, captchaAnswer: _captchaAnswer, emailCode: _emailCode, ...userData } = input;
+      const {
+        captchaId: _captchaId,
+        captchaAnswer: _captchaAnswer,
+        capToken: _capToken,
+        emailCode: _emailCode,
+        ...userData
+      } = input;
       const id = await db.registerUser({
         ...userData,
         username: usernameEmail,

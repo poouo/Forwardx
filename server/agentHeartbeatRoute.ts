@@ -88,6 +88,7 @@ import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTop
 import { resolveLocalForwardXTransportVersion, resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+import { effectiveTrafficPadding } from "./trafficPaddingConfig";
 import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
 import {
   getMimicLifecycleRevisionSignature,
@@ -2742,6 +2743,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     };
     const applyForwardXTransport = async (fxpSpec: any, tunnel: any) => {
+      // Padding is negotiated per FXP connection and must be present on every
+      // entry/relay/exit spec in a chain. The shared normalizer deliberately
+      // disables it for GOST and V2, keeping those runtimes byte-for-byte
+      // compatible with their existing protocol.
+      const trafficPadding = effectiveTrafficPadding(tunnel, {
+        mode: tunnel?.mode,
+        forwardxVersion: tunnel?.forwardxVersion,
+      });
+      Object.assign(fxpSpec, trafficPadding);
       if (!isForwardXWireGuardV2(tunnel)) {
         fxpSpec.transportVersion = "v1";
         return fxpSpec;

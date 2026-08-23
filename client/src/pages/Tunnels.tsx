@@ -105,6 +105,14 @@ import {
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
 import {
+  normalizeTrafficPadding,
+  TRAFFIC_PADDING_MAX_MBPS_MAX,
+  TRAFFIC_PADDING_RATIO_MAX,
+  TRAFFIC_PADDING_RATIO_MIN,
+  trafficPaddingInputIsValid,
+  trafficPaddingRuntimeSupported,
+} from "@shared/trafficPadding";
+import {
   normalizeTunnelRelayMode,
   tunnelRelayFailoverSupported,
   type TunnelRelayMode,
@@ -170,6 +178,9 @@ type TunnelForm = {
   mimicPort: number;
   rateLimitMbps: number;
   trafficMultiplier: number;
+  trafficPaddingEnabled: boolean;
+  trafficPaddingRatio: number;
+  trafficPaddingMaxMbps: number;
   networkType: "public" | "private";
   connectHost: string;
   proxyProtocolReceive: boolean;
@@ -325,6 +336,9 @@ const defaultForm: TunnelForm = {
   mimicPort: 0,
   rateLimitMbps: 0,
   trafficMultiplier: 1,
+  trafficPaddingEnabled: false,
+  trafficPaddingRatio: 0,
+  trafficPaddingMaxMbps: 0,
   networkType: "public",
   connectHost: "",
   proxyProtocolReceive: false,
@@ -2176,7 +2190,29 @@ function tunnelMatchesLinkSearch(
 function TunnelsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
-  const { data: hosts } = trpc.hosts.options.useQuery();
+  // The compact options query is preferred for the editors. Keep the older
+  // list query as a same-scope fallback: an options failure must not make the
+  // create action look like the account has no hosts.
+  const hostsOptionsQuery = trpc.hosts.options.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const useHostsFallback = hostsOptionsQuery.isError
+    || (hostsOptionsQuery.isFetched && (hostsOptionsQuery.data?.length ?? 0) === 0);
+  const hostsFallbackQuery = trpc.hosts.list.useQuery(undefined, {
+    enabled: useHostsFallback,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const hosts = (hostsOptionsQuery.data?.length ?? 0) > 0
+    ? hostsOptionsQuery.data
+    : hostsFallbackQuery.data ?? hostsOptionsQuery.data;
+  const hasResolvedHosts = hostsFallbackQuery.data !== undefined
+    || (hostsOptionsQuery.data !== undefined && !useHostsFallback)
+    || (hostsOptionsQuery.data?.length ?? 0) > 0;
+  const hostsQueryLoading = !hasResolvedHosts
+    && (hostsOptionsQuery.isLoading || (useHostsFallback && hostsFallbackQuery.isLoading));
+  const hostsQueryFailed = hostsFallbackQuery.isError && (hosts?.length ?? 0) === 0;
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -2696,6 +2732,14 @@ function TunnelsContent() {
     const exitGroupId = Number(tunnel?.exitGroupId || 0) > 0 ? Number(tunnel.exitGroupId) : null;
     const displayRoute = stripExternalTunnelHosts(hopHostIds, hopConnectHosts, entryGroupId, exitGroupId);
     const mode = normalizeTunnelModeForForm(tunnel.mode || "tls");
+    const normalizedPadding = normalizeTrafficPadding({
+      trafficPaddingEnabled: !!tunnel.trafficPaddingEnabled,
+      trafficPaddingRatio: Number(tunnel.trafficPaddingRatio || 0),
+      trafficPaddingMaxMbps: Number(tunnel.trafficPaddingMaxMbps || 0),
+    }, {
+      mode,
+      forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
+    });
     const proxySupported = isTunnelProxyProtocolSupported(mode);
     const transportTuningSupported = isTunnelTransportTuningSupported(mode);
     const proxyAnyEnabled = proxySupported && (
@@ -2721,6 +2765,7 @@ function TunnelsContent() {
       mimicPort: Number(tunnel.mimicPort || 0),
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
+      ...normalizedPadding,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
       proxyProtocolReceive: proxySupported && !!tunnel.proxyProtocolReceive,
@@ -2969,6 +3014,25 @@ function TunnelsContent() {
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
+    const forwardxVersion = submitForm.mode === "forwardx" ? submitForm.forwardxVersion : "v1";
+    if (submitForm.trafficPaddingEnabled && !trafficPaddingInputIsValid({
+      trafficPaddingEnabled: true,
+      trafficPaddingRatio: submitForm.trafficPaddingRatio,
+      trafficPaddingMaxMbps: submitForm.trafficPaddingMaxMbps,
+    })) {
+      toast.error(`流量填充比例必须为 ${TRAFFIC_PADDING_RATIO_MIN}-${TRAFFIC_PADDING_RATIO_MAX} 的整数，速率上限为 0-${TRAFFIC_PADDING_MAX_MBPS_MAX} Mbps`);
+      return;
+    }
+    const trafficPadding = systemSettings?.trafficPadding?.globalEnabled === true
+      ? normalizeTrafficPadding({
+          trafficPaddingEnabled: submitForm.trafficPaddingEnabled,
+          trafficPaddingRatio: submitForm.trafficPaddingRatio,
+          trafficPaddingMaxMbps: submitForm.trafficPaddingMaxMbps,
+        }, {
+          mode: submitForm.mode,
+          forwardxVersion,
+        })
+      : {};
     if (!isTunnelSupported(submitForm)) {
       toast.error(unsupportedProtocolTitle);
       return;
@@ -3051,7 +3115,7 @@ function TunnelsContent() {
       relayMode: orderedHopHostIds.length >= 4 && tunnelRelayFailoverSupported(submitForm.mode)
         ? submitForm.relayMode
         : "chain",
-      forwardxVersion: submitForm.mode === "forwardx" ? submitForm.forwardxVersion : "v1",
+      forwardxVersion,
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
@@ -3059,6 +3123,7 @@ function TunnelsContent() {
       mimicPort: transportTuningSupported && (submitForm.udpOverTcp || submitForm.forwardxVersion === "v2") ? submitForm.mimicPort : 0,
       rateLimitMbps,
       trafficMultiplier,
+      ...trafficPadding,
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
@@ -3171,6 +3236,10 @@ function TunnelsContent() {
     const nextMode = normalizeTunnelModeForForm(mode);
     const proxySupported = isTunnelProxyProtocolSupported(nextMode);
     const transportTuningSupported = isTunnelTransportTuningSupported(nextMode);
+    const paddingSupported = trafficPaddingRuntimeSupported({
+      mode: nextMode,
+      forwardxVersion: form.forwardxVersion,
+    });
     if (!proxySupported) setTunnelProxyPanelOpen(false);
     setForm((prev) => ({
       ...prev,
@@ -3183,6 +3252,11 @@ function TunnelsContent() {
       proxyProtocolVersion: proxySupported ? prev.proxyProtocolVersion : 1,
       tcpFastOpen: transportTuningSupported ? prev.tcpFastOpen : false,
       udpOverTcp: transportTuningSupported ? prev.udpOverTcp : false,
+      ...(paddingSupported ? {} : {
+        trafficPaddingEnabled: false,
+        trafficPaddingRatio: 0,
+        trafficPaddingMaxMbps: 0,
+      }),
     }));
   };
   const importNginxPemFiles = async (files: readonly File[]) => {
@@ -3439,7 +3513,13 @@ function TunnelsContent() {
                 false,
                 "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
               )}
-              onClick={() => setForm((prev) => ({ ...prev, forwardxVersion: "v2" }))}
+              onClick={() => setForm((prev) => ({
+                ...prev,
+                forwardxVersion: "v2",
+                trafficPaddingEnabled: false,
+                trafficPaddingRatio: 0,
+                trafficPaddingMaxMbps: 0,
+              }))}
             >
               <Network className={segmentedIconClassName(form.forwardxVersion === "v2", "mt-0.5")} />
               <span className="min-w-0">
@@ -3469,6 +3549,58 @@ function TunnelsContent() {
           </div>
         )}
       </>
+    );
+  };
+  const renderTrafficPaddingOptions = () => {
+    if (user?.role !== "admin" || systemSettings?.trafficPadding?.globalEnabled !== true) return null;
+    const supported = trafficPaddingRuntimeSupported({
+      mode: form.mode,
+      forwardxVersion: form.forwardxVersion,
+    });
+    if (!supported) return null;
+    const enabled = form.trafficPaddingEnabled;
+    return (
+      <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <Label className="text-sm">流量填充</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">按比例增加回程填充数据，不改变真实业务内容</p>
+          </div>
+          <Switch
+            checked={enabled}
+            onCheckedChange={(checked) => setForm((prev) => checked
+              ? { ...prev, trafficPaddingEnabled: true, trafficPaddingRatio: prev.trafficPaddingRatio || 10 }
+              : { ...prev, trafficPaddingEnabled: false, trafficPaddingRatio: 0, trafficPaddingMaxMbps: 0 })}
+          />
+        </div>
+        {enabled && (
+          <div className="grid gap-2 border-t border-border/45 pt-2 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">填充比例 (%)</Label>
+              <Input
+                type="number"
+                min={TRAFFIC_PADDING_RATIO_MIN}
+                max={TRAFFIC_PADDING_RATIO_MAX}
+                step={1}
+                value={form.trafficPaddingRatio || ""}
+                onChange={(event) => setForm((prev) => ({ ...prev, trafficPaddingRatio: Number.parseInt(event.target.value, 10) || 0 }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">填充上限 (Mbps)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={TRAFFIC_PADDING_MAX_MBPS_MAX}
+                step={1}
+                value={form.trafficPaddingMaxMbps || ""}
+                placeholder="安全默认"
+                onChange={(event) => setForm((prev) => ({ ...prev, trafficPaddingMaxMbps: Number.parseInt(event.target.value, 10) || 0 }))}
+              />
+            </div>
+          </div>
+        )}
+      </div>
     );
   };
   const renderTunnelRuntimeOptions = () => {
@@ -3750,8 +3882,12 @@ function TunnelsContent() {
         : activeSectionCreatesGroup
           ? canCreateGroup
           : false;
-  const createDisabledTitle = !canCreateActive
-    ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "当前页签缺少可用主机或转发协议")
+  const createDisabledTitle = hostsQueryFailed
+    ? "主机列表加载失败，请重试后再创建"
+    : hostsQueryLoading
+      ? "正在加载主机列表"
+      : !canCreateActive
+        ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "当前页签缺少可用主机或转发协议")
     : !canCreateTunnel && activeSection === "tunnels"
       ? "暂无可用隧道协议"
       : !canCreateChain && activeSection === "chains"
@@ -4638,6 +4774,7 @@ function TunnelsContent() {
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {renderTunnelRuntimeOptions()}
                     {renderForwardXVersionOptions()}
+                    {renderTrafficPaddingOptions()}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
@@ -4946,6 +5083,7 @@ function TunnelsContent() {
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {renderTunnelRuntimeOptions()}
             {renderForwardXVersionOptions()}
+            {renderTrafficPaddingOptions()}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>

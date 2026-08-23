@@ -36,7 +36,7 @@ function nextTurn() {
   return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-test("recovery cancels the pending 15 second offline notification", () => {
+test("recovery cancels the pending 30 second offline notification", () => {
   const clock = fakeTimerHarness();
   const notifications: number[] = [];
   const debouncer = new HostOfflineNotificationDebouncer({

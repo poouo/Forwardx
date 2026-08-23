@@ -61,23 +61,29 @@ type envelope struct {
 }
 
 type fxpHandshake struct {
-	V        int   `json:"v"`
-	TS       int64 `json:"ts"`
-	TunnelID int   `json:"tunnelId"`
+	V              int   `json:"v"`
+	TS             int64 `json:"ts"`
+	TunnelID       int   `json:"tunnelId"`
+	TrafficPadding bool  `json:"trafficPadding,omitempty"`
 }
 
 type secureConn struct {
-	conn          net.Conn
-	lenWriteAEAD  cipher.AEAD
-	dataWriteAEAD cipher.AEAD
-	lenReadAEAD   cipher.AEAD
-	dataReadAEAD  cipher.AEAD
-	lengthAD      []byte
-	payloadAD     []byte
-	writeDir      uint32
-	readDir       uint32
-	writeCounter  uint64
-	readCounter   uint64
+	conn                  net.Conn
+	lenWriteAEAD          cipher.AEAD
+	dataWriteAEAD         cipher.AEAD
+	lenReadAEAD           cipher.AEAD
+	dataReadAEAD          cipher.AEAD
+	lengthAD              []byte
+	payloadAD             []byte
+	writeDir              uint32
+	readDir               uint32
+	writeCounter          uint64
+	readCounter           uint64
+	writeMu               sync.Mutex
+	trafficPadding        bool
+	trafficPaddingRatio   int
+	trafficPaddingMaxMbps int
+	trafficPaddingBudget  *trafficPaddingBudget
 }
 
 type fxpWireContext struct {
@@ -131,10 +137,11 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.114"
+	fxpRuntimeVersion    = "2.2.115"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
+	fxpFramePaddingFlag  = uint32(1 << 31)
 
 	// Exit and relay ports are reachable by other nodes and must remain bounded
 	// even when user-facing access limits are disabled. The active limits are
@@ -797,6 +804,7 @@ func (runtime *entryRuntime) serve(done <-chan struct{}) error {
 }
 
 func runEntry(done <-chan struct{}, cfg config) error {
+	cfg = withTrafficPaddingBudget(cfg)
 	runtime, err := prepareEntryRuntime(cfg)
 	if err != nil {
 		return err
@@ -805,6 +813,17 @@ func runEntry(done <-chan struct{}, cfg config) error {
 }
 
 func runEntryGroup(done <-chan struct{}, cfg config) error {
+	// Entry-group stores padding settings on each child entry. Derive one
+	// process-wide budget from the first enabled TCP entry so concurrent rules
+	// cannot multiply the configured cap.
+	var sharedBudget *trafficPaddingBudget
+	for _, candidate := range cfg.Entries {
+		candidate = normalizeConfig(candidate)
+		if normalizeProtocol(candidate.Protocol) != "udp" && candidate.TrafficPaddingEnabled && candidate.TrafficPaddingRatio > 0 {
+			sharedBudget = newTrafficPaddingBudget(true, candidate.TrafficPaddingRatio, candidate.TrafficPaddingMaxMbps)
+			break
+		}
+	}
 	runtimes := make([]*entryRuntime, 0, len(cfg.Entries))
 	closeRuntimes := func() {
 		for _, runtime := range runtimes {
@@ -818,6 +837,7 @@ func runEntryGroup(done <-chan struct{}, cfg config) error {
 			return nil
 		default:
 		}
+		entry.trafficPaddingBudget = sharedBudget
 		runtime, err := prepareEntryRuntime(entry)
 		if err != nil {
 			closeRuntimes()
@@ -1626,6 +1646,7 @@ func (s *udpEntrySession) close() {
 }
 
 func runExit(done <-chan struct{}, cfg config) error {
+	cfg = withTrafficPaddingBudget(cfg)
 	var wg sync.WaitGroup
 	var sessionWG sync.WaitGroup
 	errCh := make(chan error, 2)
@@ -1781,7 +1802,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		fxpVerbosef("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
 	}
 	fxpVerbosef("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
-	return proxyPlainSecure(target, sec, nil, nil, nil)
+	return proxyPlainSecureWithTrafficPadding(target, sec, nil, nil, nil, newTrafficPaddingEmitter(sec))
 }
 
 func handleExitUDP(sec *secureConn, hello helloFrame) error {
@@ -1863,6 +1884,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayKey == "" {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
+	cfg = withTrafficPaddingBudget(cfg)
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, UDPPort: cfg.UDPRelayExitPort, Key: cfg.RelayKey}, cfg.ExitStrategy)
 	var wg sync.WaitGroup
 	var sessionWG sync.WaitGroup
@@ -1998,6 +2020,15 @@ func handleRelaySessionWithStartup(upConn net.Conn, cfg config, selector *exitEn
 	// Connect to downstream (like entry)
 	downCfg := cfg
 	downCfg.Key = cfg.RelayKey
+	// Padding is end-to-end. An older upstream (or a peer with the feature
+	// disabled) cannot consume padding frames, so avoid negotiating cover
+	// traffic on the downstream leg in that case.
+	if !upSec.trafficPadding {
+		downCfg.TrafficPaddingEnabled = false
+		downCfg.TrafficPaddingRatio = 0
+		downCfg.TrafficPaddingMaxMbps = 0
+		downCfg.trafficPaddingBudget = nil
+	}
 	selectionKey := strings.TrimSpace(hello.SelectionKey)
 	if selectionKey == "" {
 		selectionKey = strings.TrimSpace(hello.ProxySourceIP)
@@ -2033,9 +2064,17 @@ func relayBidir(up *secureConn, down *secureConn) error {
 
 func relayCopy(src, dst *secureConn) error {
 	for {
-		frame, err := src.readFrame()
+		frame, padding, err := src.readTypedFrame()
 		if err != nil {
 			return err
+		}
+		if padding {
+			if dst.trafficPadding {
+				if err := dst.writePaddingFrame(frame); err != nil {
+					return err
+				}
+			}
+			continue
 		}
 		if len(frame) == 0 {
 			return dst.writeFrame(nil)
@@ -2047,7 +2086,22 @@ func relayCopy(src, dst *secureConn) error {
 }
 
 func proxyPlainSecure(plain net.Conn, sec *secureConn, inLimiter, outLimiter *limiter, counter *trafficCounter) error {
-	return proxyPlainSecureWithPolicy(plain, sec, inLimiter, outLimiter, counter, protocolPolicy{}, nil, nil)
+	return proxyPlainSecureWithTrafficPadding(plain, sec, inLimiter, outLimiter, counter, nil)
+}
+
+func proxyPlainSecureWithTrafficPadding(plain net.Conn, sec *secureConn, inLimiter, outLimiter *limiter, counter *trafficCounter, padding *trafficPaddingEmitter) error {
+	errCh := make(chan error, 2)
+	var inCounter, outCounter *atomic.Uint64
+	if counter != nil {
+		inCounter = &counter.in
+		outCounter = &counter.out
+	}
+	go func() { errCh <- copyPlainToSecureWithPadding(sec, plain, inLimiter, inCounter, padding) }()
+	go func() { errCh <- copySecureToPlain(plain, sec, outLimiter, outCounter) }()
+	return waitBidirectional(errCh, func() {
+		_ = plain.Close()
+		_ = sec.conn.Close()
+	})
 }
 
 func proxyPlainSecureWithPolicy(plain net.Conn, sec *secureConn, inLimiter, outLimiter *limiter, counter *trafficCounter, policy protocolPolicy, onBlock func(string), initialSample []byte) error {
@@ -2107,7 +2161,15 @@ func copyPlainToSecure(dst *secureConn, src net.Conn, limiter *limiter, counter 
 	return copyPlainToSecureWithPolicy(dst, src, limiter, counter, protocolPolicy{}, nil, nil)
 }
 
+func copyPlainToSecureWithPadding(dst *secureConn, src net.Conn, limiter *limiter, counter *atomic.Uint64, padding *trafficPaddingEmitter) error {
+	return copyPlainToSecureWithPolicyAndPadding(dst, src, limiter, counter, protocolPolicy{}, nil, nil, padding)
+}
+
 func copyPlainToSecureWithPolicy(dst *secureConn, src net.Conn, limiter *limiter, counter *atomic.Uint64, policy protocolPolicy, onBlock func(string), initialSample []byte) error {
+	return copyPlainToSecureWithPolicyAndPadding(dst, src, limiter, counter, policy, onBlock, initialSample, nil)
+}
+
+func copyPlainToSecureWithPolicyAndPadding(dst *secureConn, src net.Conn, limiter *limiter, counter *atomic.Uint64, policy protocolPolicy, onBlock func(string), initialSample []byte, padding *trafficPaddingEmitter) error {
 	buf := getFXPByteBuffer(32 * 1024)
 	defer putFXPByteBuffer(buf)
 	sample := make([]byte, 0, fxpProtocolSampleMax)
@@ -2161,6 +2223,9 @@ func copyPlainToSecureWithPolicy(dst *secureConn, src net.Conn, limiter *limiter
 			}
 			if counter != nil {
 				counter.Add(uint64(n))
+			}
+			if err := writeTrafficPadding(dst, padding, n); err != nil {
+				return err
 			}
 		}
 		if err != nil {
@@ -2322,7 +2387,7 @@ func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext)
 	if err != nil {
 		return nil, err
 	}
-	hs, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
+	hs, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID, TrafficPadding: cfg.TrafficPaddingEnabled && cfg.TrafficPaddingRatio > 0})
 	if err := sec.writeFrame(hs); err != nil {
 		return nil, err
 	}
@@ -2333,6 +2398,15 @@ func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext)
 	var reply fxpHandshake
 	if err := json.Unmarshal(ack, &reply); err != nil || reply.V != fxpHandshakeVersion || reply.TunnelID != cfg.TunnelID {
 		return nil, errors.New("fxp handshake rejected")
+	}
+	sec.trafficPadding = cfg.TrafficPaddingEnabled && cfg.TrafficPaddingRatio > 0 && reply.TrafficPadding
+	if sec.trafficPadding {
+		sec.trafficPaddingRatio = cfg.TrafficPaddingRatio
+		sec.trafficPaddingMaxMbps = cfg.TrafficPaddingMaxMbps
+		sec.trafficPaddingBudget = cfg.trafficPaddingBudget
+		if sec.trafficPaddingBudget == nil {
+			sec.trafficPaddingBudget = newTrafficPaddingBudget(true, sec.trafficPaddingRatio, sec.trafficPaddingMaxMbps)
+		}
 	}
 	if err := clearFXPConnDeadline(conn); err != nil && !isClosedErr(err) {
 		return nil, err
@@ -2468,7 +2542,17 @@ func finishServerHandshake(sec *secureConn, cfg config, ack []byte, wire fxpWire
 	if wire.compat {
 		log.Printf("fxp accepted compatibility wire context=%s tunnel=%d", wire.name, cfg.TunnelID)
 	}
-	reply, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
+	requestedPadding := hs.TrafficPadding
+	sec.trafficPadding = cfg.TrafficPaddingEnabled && cfg.TrafficPaddingRatio > 0 && requestedPadding
+	if sec.trafficPadding {
+		sec.trafficPaddingRatio = cfg.TrafficPaddingRatio
+		sec.trafficPaddingMaxMbps = cfg.TrafficPaddingMaxMbps
+		sec.trafficPaddingBudget = cfg.trafficPaddingBudget
+		if sec.trafficPaddingBudget == nil {
+			sec.trafficPaddingBudget = newTrafficPaddingBudget(true, sec.trafficPaddingRatio, sec.trafficPaddingMaxMbps)
+		}
+	}
+	reply, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID, TrafficPadding: sec.trafficPadding})
 	if err := sec.writeFrame(reply); err != nil {
 		return nil, err
 	}
@@ -2526,21 +2610,51 @@ func blake3Derive(secret, salt, context []byte, masterContext string, length int
 }
 
 func (c *secureConn) writeFrame(plain []byte) error {
-	return c.writeEncryptedFrame(plain)
+	return c.writeEncryptedFrame(plain, false)
 }
 
 func (c *secureConn) readFrame() ([]byte, error) {
-	return c.readEncryptedFrame()
+	for {
+		frame, padding, err := c.readTypedFrame()
+		if err != nil {
+			return nil, err
+		}
+		if padding {
+			continue
+		}
+		return frame, nil
+	}
 }
 
-func (c *secureConn) writeEncryptedFrame(plain []byte) error {
+func (c *secureConn) writePaddingFrame(plain []byte) error {
+	if c == nil || !c.trafficPadding {
+		return errors.New("traffic padding is not negotiated")
+	}
+	if len(plain) == 0 {
+		return errors.New("empty traffic padding frame")
+	}
+	return c.writeEncryptedFrame(plain, true)
+}
+
+func (c *secureConn) writeEncryptedFrame(plain []byte, padding bool) error {
+	if c == nil {
+		return errors.New("nil secure connection")
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if len(plain) > fxpMaxFrame {
 		return errors.New("frame too large")
 	}
+	if padding && !c.trafficPadding {
+		return errors.New("traffic padding is not negotiated")
+	}
 	counter := c.writeCounter
-	c.writeCounter++
 	var lenPlain [4]byte
-	binary.BigEndian.PutUint32(lenPlain[:], uint32(len(plain)))
+	length := uint32(len(plain))
+	if padding {
+		length |= fxpFramePaddingFlag
+	}
+	binary.BigEndian.PutUint32(lenPlain[:], length)
 	wireSize := 4 + c.lenWriteAEAD.Overhead() + len(plain) + c.dataWriteAEAD.Overhead()
 	wire := getFXPByteBuffer(wireSize)
 	defer putFXPByteBuffer(wire)
@@ -2558,48 +2672,77 @@ func (c *secureConn) writeEncryptedFrame(plain []byte) error {
 	if written != len(wire) {
 		return io.ErrShortWrite
 	}
+	c.writeCounter++
 	return err
 }
 
 func (c *secureConn) readEncryptedFrame() ([]byte, error) {
+	frame, _, err := c.readTypedFrame()
+	return frame, err
+}
+
+func (c *secureConn) readTypedFrame() ([]byte, bool, error) {
 	counter := c.readCounter
 	c.readCounter++
 	var lenCipher [64]byte
 	lenSize := 4 + c.lenReadAEAD.Overhead()
 	if lenSize > len(lenCipher) {
-		return nil, errors.New("invalid encrypted frame length")
+		return nil, false, errors.New("invalid encrypted frame length")
 	}
 	if _, err := io.ReadFull(c.conn, lenCipher[:lenSize]); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	n, err := c.decryptFrameLength(counter, lenCipher[:lenSize])
+	n, padding, err := c.decryptFrameMetadata(counter, lenCipher[:lenSize])
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	dataCipher := getFXPByteBuffer(int(n) + c.dataReadAEAD.Overhead())
 	defer putFXPByteBuffer(dataCipher)
 	if _, err := io.ReadFull(c.conn, dataCipher); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return c.decryptFrameData(counter, dataCipher)
+	frame, err := c.decryptFrameData(counter, dataCipher)
+	if err != nil {
+		return nil, false, err
+	}
+	if padding && !c.trafficPadding {
+		return nil, false, errors.New("unnegotiated traffic padding frame")
+	}
+	return frame, padding, nil
 }
 
 func (c *secureConn) decryptFrameLength(counter uint64, lenCipher []byte) (uint32, error) {
+	n, padding, err := c.decryptFrameMetadata(counter, lenCipher)
+	if err != nil {
+		return 0, err
+	}
+	if padding {
+		return 0, errors.New("padding frame not allowed here")
+	}
+	return n, nil
+}
+
+func (c *secureConn) decryptFrameMetadata(counter uint64, lenCipher []byte) (uint32, bool, error) {
 	var nonce [12]byte
 	var plain [4]byte
 	fillFXPNonce(nonce[:], c.readDir, counter, 0)
 	lenPlain, err := c.lenReadAEAD.Open(plain[:0], nonce[:], lenCipher, c.lengthAD)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if len(lenPlain) != 4 {
-		return 0, errors.New("invalid frame length")
+		return 0, false, errors.New("invalid frame length")
 	}
-	n := binary.BigEndian.Uint32(lenPlain)
+	raw := binary.BigEndian.Uint32(lenPlain)
+	padding := raw&fxpFramePaddingFlag != 0
+	n := raw &^ fxpFramePaddingFlag
 	if n > fxpMaxFrame {
-		return 0, fmt.Errorf("invalid frame size %d", n)
+		return 0, false, fmt.Errorf("invalid frame size %d", n)
 	}
-	return n, nil
+	if padding && n == 0 {
+		return 0, false, errors.New("invalid empty padding frame")
+	}
+	return n, padding, nil
 }
 
 func (c *secureConn) decryptFrameData(counter uint64, dataCipher []byte) ([]byte, error) {

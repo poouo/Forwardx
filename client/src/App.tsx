@@ -46,6 +46,8 @@ function isLoginRoute(location: string) {
   return location.startsWith("/login");
 }
 
+const isLocalDevPanel = (import.meta as any).env?.VITE_FORWARDX_DEV_PANEL === "1";
+
 function AdminRoute({ component: Component }: { component: RoutableComponent }) {
   const { user, loading } = useAuth();
   if (loading) return null;
@@ -128,6 +130,13 @@ function SetupGate() {
   const [location] = useLocation();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
   const loginRoute = isLoginRoute(location);
+
+  // The local dev panel injects the seeded administrator in the server
+  // context, so showing a login form here only creates a needless gate.
+  if (isLocalDevPanel && (loginRoute || location === "/session-wait")) {
+    return <Redirect to="/" />;
+  }
+
   const setup = trpc.setup.status.useQuery(undefined, {
     enabled: hasMobilePanelUrl && !loginRoute,
     retry: false,

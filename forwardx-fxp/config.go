@@ -23,6 +23,7 @@ func readConfig(path string) (config, error) {
 }
 
 func normalizeConfig(cfg config) config {
+	cfg = normalizeTrafficPadding(cfg)
 	cfg.Role = strings.ToLower(strings.TrimSpace(cfg.Role))
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
@@ -83,6 +84,12 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.Key == "" {
 		return errors.New("empty key")
+	}
+	if cfg.TrafficPaddingRatio < 0 || cfg.TrafficPaddingRatio > fxpTrafficPaddingMaxRatio {
+		return fmt.Errorf("bad traffic padding ratio %d", cfg.TrafficPaddingRatio)
+	}
+	if cfg.TrafficPaddingMaxMbps < 0 || cfg.TrafficPaddingMaxMbps > fxpTrafficPaddingMaxConfigured {
+		return fmt.Errorf("bad traffic padding max mbps %d", cfg.TrafficPaddingMaxMbps)
 	}
 	if cfg.ListenPort <= 0 || cfg.ListenPort > 65535 {
 		return fmt.Errorf("bad listen port %d", cfg.ListenPort)

@@ -218,10 +218,11 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   const manifest = normalizePluginManifest(source);
   const schema = manifest.resourceSchemas?.find((view) => view.id === "whitelist-host-manager");
 
-  assert.equal(manifest.version, "0.7.0");
+  assert.equal(manifest.version, "0.7.1");
   assert.equal(manifest.usageViews?.[0]?.hostScope, "all");
   assert.ok(schema);
   assert.equal(schema.columns?.some((column) => column.key === "regionSummary"), true);
+  assert.equal(schema.columns?.find((column) => column.key === "serviceEnabled")?.type, "status");
   assert.equal(schema.columns?.find((column) => column.key === "serviceActive")?.type, "status");
   assert.equal(schema.operations?.create?.actionId, "save-whitelist-config");
   assert.equal(schema.operations?.update?.actionId, "save-whitelist-config");
@@ -246,8 +247,20 @@ test("official whitelist exposes per-host province configuration CRUD", () => {
   assert.doesNotMatch(agentRunner, /\bpython3\b/);
   assert.match(agentRunner, /command -v jq/);
   assert.match(agentRuntime, /systemctl is-enabled --quiet/);
-  assert.doesNotMatch(agentRuntime, /systemctl is-active --quiet/);
+  assert.match(agentRuntime, /systemctl is-active --quiet/);
+  assert.match(agentRunner, /\"serviceEnabled\":%s/);
   assert.doesNotMatch(agentRuntime, /GHUNLIL|firewall_lib\.sh/);
+  // DNAT port selectors must constrain the L4 protocol before nft evaluates
+  // `ct original proto-dst`; otherwise nft reports a datatype mismatch and
+  // rejects the complete FORWARD chain atomically.
+  assert.match(firewallAdapter, /meta l4proto \{ tcp, udp \} ct status dnat ct original proto-dst @%s/);
+  const legacyFirewallLib = fs.readFileSync(
+    path.resolve(process.cwd(), "plugins/china-region-whitelist/tools/firewall_lib.sh"),
+    "utf8",
+  );
+  assert.match(legacyFirewallLib, /meta l4proto \{ tcp, udp \} ct status dnat ct original proto-dst @port_policy_%s_ports/);
+  assert.match(agentRunner, /if render_config_commands \| cn_run_rendered_commands; then/);
+  assert.match(agentRunner, /apply_status=\$\?/);
 });
 
 test("official Live2D widget exposes safe declarative settings and runtime defaults", () => {

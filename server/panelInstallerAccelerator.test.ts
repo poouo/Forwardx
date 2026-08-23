@@ -276,18 +276,23 @@ test("both installers persist the accelerator and Docker keeps GHCR image pulls 
   assert.doesNotMatch(panelStarter, /GITHUB_ACCELERATOR_URL/);
 });
 
-test("the local raw upgrade fallback tries the accelerator before direct GitHub", () => {
-  const writeEnv = section(localSource, "write_env() {", "install_panel() {");
-  const rawUrl = 'DIRECT_URL=\\"https://raw.githubusercontent.com/';
-  const accelerated = 'URL=\\"\\${ACCEL%/}/\\$DIRECT_URL\\"';
-  const direct = 'curl -fsSL \\"\\$DIRECT_URL\\" -o \\"\\$TMP\\"';
-  assert.notEqual(writeEnv.indexOf(rawUrl), -1);
-  assert.notEqual(writeEnv.indexOf(accelerated), -1);
-  assert.notEqual(writeEnv.indexOf(direct), -1);
-  assert.ok(writeEnv.indexOf(accelerated) < writeEnv.indexOf(direct));
-  assert.match(writeEnv, /\/bin\/bash -n \\"\\\$TMP\\"/);
-  assert.match(writeEnv, /env FORWARDX_GITHUB_ACCELERATOR_URL=\\"\\\$ACCEL\\" bash/);
-  assert.match(writeEnv, /rm -f \\"\\\$TMP\\"; exit \\"\\\$STATUS\\"/);
+test("the local upgrade command delegates to the installer script", { skip: !bash }, () => {
+  const result = runHarness({
+    installer: installers[0],
+    endMarker: "install_panel() {",
+    args: ["upgrade"],
+    body: `
+JWT_SECRET=test-secret
+write_env
+set -a
+. "$APP_DIR/.env"
+set +a
+printf 'UPGRADE=%s\\n' "$FORWARDX_UPGRADE_COMMAND"
+`,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /UPGRADE=\/bin\/bash .*scripts\/install-panel-local\.sh upgrade/);
+  assert.doesNotMatch(result.stdout, /SCRIPT|DIRECT_URL|mktemp/);
 });
 
 test("the local installer validates the complete archive before removing the current panel", () => {
@@ -312,4 +317,22 @@ test("both installers expose a password reset action without accepting password 
   assert.match(dockerSource, /Password reset CLI is missing from the running container/);
   assert.match(dockerSource, /docker exec -it "\$CONTAINER_NAME" node dist\/reset-admin-password\.js/);
   assert.match(localSource, /Password reset CLI is missing from \$APP_DIR/);
+});
+
+test("local password reset lets the CLI load dotenv without sourcing executable .env content", () => {
+  const reset = section(localSource, "reset_admin_password() {", "case \"$ACTION\" in");
+  const nonSystemdServices = section(localSource, "write_openrc_service() {", "write_service() {");
+
+  // reset-admin runs the Node CLI from APP_DIR, where dotenv/config reads .env.
+  // Sourcing the whole file here evaluates FORWARDX_UPGRADE_COMMAND and its
+  // literal $SCRIPT under set -u, aborting before the password reset starts.
+  assert.match(reset, /cd "\$APP_DIR" \\|\\| exit 1/);
+  assert.doesNotMatch(reset, /(^|\n)\s*\.\s+"\$APP_DIR\/\.env"/);
+  assert.doesNotMatch(reset, /set -a[\s\S]*\.\s+"\$APP_DIR\/\.env"/);
+  assert.match(reset, /dist\/reset-admin-password\.js/);
+  assert.match(reset, /DOTENV_CONFIG_PATH="\$APP_DIR\/\.env"/);
+  assert.match(reset, /DOTENV_CONFIG_OVERRIDE=true/);
+  assert.doesNotMatch(nonSystemdServices, /\.\s+\"\$APP_DIR\/\.env\"/);
+  assert.match(nonSystemdServices, /DOTENV_CONFIG_PATH=\\"\$APP_DIR\/\.env\\"/g);
+  assert.equal(nonSystemdServices.match(/DOTENV_CONFIG_OVERRIDE=true/g)?.length, 2);
 });

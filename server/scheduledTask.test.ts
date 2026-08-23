@@ -15,6 +15,7 @@ import {
 test("manual self-tests outlive the Agent runtime readiness budget", () => {
   assert.equal(SELF_TEST_TIMEOUT_SECONDS, 8);
   assert.equal(RUNTIME_SELF_TEST_TIMEOUT_SECONDS, 45);
+  assert.equal(FORWARD_TUNNEL_LATENCY_WAIT_MS, 18_000);
   assert.ok(RUNTIME_SELF_TEST_TIMEOUT_SECONDS > 4 + 20);
   assert.ok(FORWARD_TUNNEL_LATENCY_WAIT_MS > 8_000);
   assert.ok(FORWARD_TUNNEL_LATENCY_WAIT_MS < RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000);
