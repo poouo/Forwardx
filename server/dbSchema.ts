@@ -322,6 +322,7 @@ const tables: TableDef[] = [
       c("secret", "text"), c("listenPort", "int", { notNull: true }), c("mimicPort", "int", { notNull: true, default: 0 }),
       c("rateLimitMbps", "int", { notNull: true, default: 0 }),
       c("trafficMultiplier", "int", { notNull: true, default: 100 }),
+      // Legacy columns retained for migration compatibility; runtime ignores them.
       c("trafficPaddingEnabled", "bool", { notNull: true, default: false }),
       c("trafficPaddingRatio", "int", { notNull: true, default: 0 }),
       c("trafficPaddingMaxMbps", "int", { notNull: true, default: 0 }),

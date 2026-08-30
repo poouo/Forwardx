@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
+import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
@@ -12,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
-import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, getLatencyStabilityStats, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { pollingInterval } from "@/lib/polling";
 import { cn } from "@/lib/utils";
 
@@ -153,6 +154,21 @@ export default function HostProbeServiceLatencyDialog({
     () => filterLatencySeriesByTimeRange(data as any[], timeRangeHours),
     [data, timeRangeHours],
   );
+
+  const stats = useMemo(() => {
+    const visibleIds = new Set(visibleServiceIds);
+    const samples = (rangedData as any[])
+      .filter((row) => visibleIds.has(Number(row.serviceId)))
+      .map((row) => {
+        const isTimeout = !!row.isTimeout;
+        return {
+          latency: Number(row.latencyMs),
+          isTimeout,
+        };
+      })
+      .filter((sample) => sample.isTimeout || (Number.isFinite(sample.latency) && sample.latency > 0));
+    return getLatencyStabilityStats(samples);
+  }, [rangedData, visibleServiceIds]);
 
   useEffect(() => {
     if (!open) {
@@ -359,6 +375,7 @@ export default function HostProbeServiceLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
+        <LatencyStabilityStats stats={stats} sampleLabel="探测次数" />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>

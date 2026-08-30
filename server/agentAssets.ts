@@ -21,6 +21,48 @@ export const AGENT_ASSET_NAME_SET = new Set<string>(AGENT_ASSET_NAMES);
 
 const serverDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 
+function hasElfMagic(buffer: Uint8Array) {
+  return buffer.length >= 4
+    && buffer[0] === 0x7f
+    && buffer[1] === 0x45
+    && buffer[2] === 0x4c
+    && buffer[3] === 0x46;
+}
+
+function isBundledElfAsset(filePath: string) {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const header = Buffer.alloc(4);
+    const bytesRead = fs.readSync(fd, header, 0, header.length, 0);
+    return bytesRead === header.length && hasElfMagic(header);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Ignore close errors while rejecting an invalid asset.
+      }
+    }
+  }
+}
+
+async function isCachedElfAsset(filePath: string) {
+  let file: fsp.FileHandle | undefined;
+  try {
+    file = await fsp.open(filePath, "r");
+    const header = Buffer.alloc(4);
+    const result = await file.read(header, 0, header.length, 0);
+    return result.bytesRead === header.length && hasElfMagic(header);
+  } catch {
+    return false;
+  } finally {
+    await file?.close().catch(() => undefined);
+  }
+}
+
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }
@@ -89,7 +131,7 @@ export function getBundledAgentAssetPath(version: string, asset: string) {
   for (const candidate of getAgentAssetCandidates(normalized, asset)) {
     try {
       const stat = fs.statSync(candidate);
-      if (stat.isFile() && stat.size > 0) return candidate;
+      if (stat.isFile() && stat.size > 0 && isBundledElfAsset(candidate)) return candidate;
     } catch {
       // Try next bundled asset location.
     }
@@ -138,6 +180,10 @@ async function downloadAgentAssetToCache(version: string, asset: string) {
         await file.close();
       }
       if (written <= 0) continue;
+      if (!(await isCachedElfAsset(tmpPath))) {
+        console.warn(`[AgentAssets] Downloaded asset is not an ELF binary ${asset} v${releaseVersion}`);
+        continue;
+      }
       await fsp.chmod(tmpPath, 0o755).catch(() => undefined);
       await fsp.rename(tmpPath, cachePath);
       return cachePath;

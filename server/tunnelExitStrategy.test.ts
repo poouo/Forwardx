@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { exitGroupUsesMultipleExits, normalizeExitGroupStrategy } from "../shared/exitStrategy";
-import { forwardXExitStrategy, gostExitSelector, planExitGroupTunnelEndpoints } from "./tunnelExitStrategy";
+import {
+  forwardXExitStrategy,
+  gostExitSelector,
+  planExitGroupTunnelEndpoints,
+  shouldUseFastTunnelFailover,
+} from "./tunnelExitStrategy";
 
 test("normalizes exit-group strategies without enabling unknown values", () => {
   assert.equal(normalizeExitGroupStrategy("fallback"), "fallback");
@@ -21,6 +26,13 @@ test("maps shared exit strategies to GOST and ForwardX selectors", () => {
   assert.equal(gostExitSelector("ip_hash").strategy, "hash");
   assert.equal(forwardXExitStrategy("none"), "round_robin");
   assert.equal(forwardXExitStrategy("ip_hash"), "ip_hash");
+});
+
+test("enables fast dialing for every multi-exit strategy", () => {
+  assert.equal(shouldUseFastTunnelFailover(0), false);
+  assert.equal(shouldUseFastTunnelFailover(1), false);
+  assert.equal(shouldUseFastTunnelFailover(2), true);
+  assert.equal(shouldUseFastTunnelFailover(1, true), true);
 });
 
 test("reorders exit-group endpoints without changing ports already assigned to a host", () => {

@@ -61,6 +61,15 @@ export function forwardXExitStrategy(value: unknown) {
   return strategy === "none" ? "round_robin" : strategy;
 }
 
+/**
+ * A failed multi-exit dial must not wait on the runtime's longer default
+ * timeout before the handler retries another exit. Relay failover uses the
+ * same fast path even when it has no exit group.
+ */
+export function shouldUseFastTunnelFailover(exitCandidateCount: number, relayFailover = false) {
+  return relayFailover || Number(exitCandidateCount) > 1;
+}
+
 export function gostExitSelector(value: unknown) {
   const strategy = normalizeExitGroupStrategy(value);
   return {

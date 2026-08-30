@@ -302,11 +302,18 @@ export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boo
     nftDeleteCommentedRulesCmd(nftTrafficPreroutingChain, comment),
     nftDeleteCommentedRulesCmd(nftTrafficPostroutingChain, comment),
     nftDeleteCommentedRulesCmd(nftTrafficForwardChain, comment),
-    nftOptional(`nft flush chain inet ${nftTable} ${nftChain("in", ruleId)}`),
-    nftOptional(`nft delete chain inet ${nftTable} ${nftChain("in", ruleId)}`),
-    nftOptional(`nft flush chain inet ${nftTable} ${nftChain("out", ruleId)}`),
-    nftOptional(`nft delete chain inet ${nftTable} ${nftChain("out", ruleId)}`),
   ];
+  // Tunnel/orphan snapshots can legitimately omit a rule ID. Never target a
+  // synthetic in_0/out_0 chain in that case; comment/port cleanup above is
+  // still sufficient for the kernel rules associated with the port.
+  if (ruleId > 0) {
+    cmds.push(
+      nftOptional(`nft flush chain inet ${nftTable} ${nftChain("in", ruleId)}`),
+      nftOptional(`nft delete chain inet ${nftTable} ${nftChain("in", ruleId)}`),
+      nftOptional(`nft flush chain inet ${nftTable} ${nftChain("out", ruleId)}`),
+      nftOptional(`nft delete chain inet ${nftTable} ${nftChain("out", ruleId)}`),
+    );
+  }
   if (options.cleanupConntrack) {
     cmds.push(...buildConntrackCleanupCmds(Number(rule.sourcePort), rule.protocol));
   }
@@ -314,6 +321,34 @@ export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boo
     cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`);
   }
   return cmds;
+}
+
+/**
+ * Remove both kernel forwarding backends before handing a listener to a
+ * process-backed runtime.  A rule can be changed from nftables/iptables while
+ * its local state marker is missing or stale, so the new action must not rely
+ * solely on the Agent's best-effort state lookup.
+ */
+export function buildKernelForwardTransitionCleanupCmds(rule: any): string[] {
+  return [
+    ...buildIptablesForwardCleanupCmds(rule),
+    // Keep Agent state files intact; the successful apply writes the new owner
+    // after the listener is ready, and cleanup of those files is handled by the
+    // normal handoff/removal path.
+    ...buildNftCleanupCmds(rule, { removeStateFiles: false }),
+  ];
+}
+
+/**
+ * Keep native kernel backend rebuilds cheap: each builder already cleans its
+ * own backend, so only remove the other backend during a transition.
+ */
+export function buildNftTransitionCleanupCmds(rule: any): string[] {
+  return buildNftCleanupCmds(rule, { removeStateFiles: false });
+}
+
+export function buildIptablesTransitionCleanupCmds(rule: any): string[] {
+  return buildIptablesForwardCleanupCmds(rule);
 }
 
 export function buildNftForwardCmds(rule: any): string[] {

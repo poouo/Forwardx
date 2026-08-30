@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCountingChainCmds,
+  buildIptablesTransitionCleanupCmds,
+  buildKernelForwardTransitionCleanupCmds,
+  buildNftCleanupCmds,
   buildNftForwardCmds,
+  buildNftTransitionCleanupCmds,
   restartMimicServiceIfConfigChangedCmd,
 } from "./agentActionCommands";
 
@@ -79,6 +83,55 @@ test("nft forwarding has compatibility fallbacks for selector and masquerade fai
   assert.match(commands, /rule failed, fallback=fwx-rule-42-masquerade-tcp/);
   assert.match(commands, /postrouting meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 masquerade comment/);
   assert.match(commands, /forwarding chains are unavailable/);
+});
+
+test("kernel transition cleanup removes both nftables and iptables state", () => {
+  const commands = buildKernelForwardTransitionCleanupCmds({
+    id: 42,
+    sourcePort: 22022,
+    targetIp: "203.0.113.10",
+    targetPort: 443,
+    protocol: "both",
+  }).join("\n");
+
+  // A process-backed replacement must clean a previous kernel backend even
+  // when the Agent's per-port owner marker is missing or stale.
+  assert.match(commands, /iptables -t nat -S PREROUTING/);
+  assert.match(commands, /nft list table inet forwardx/);
+  assert.match(commands, /fwx-rule-42/);
+  // Transition cleanup must not remove the state marker before the new action
+  // has successfully written its owner.
+  assert.doesNotMatch(commands, /rm -f .*port_22022\.rule/);
+});
+
+test("native backend transitions clean only the opposite backend", () => {
+  const rule = {
+    id: 42,
+    sourcePort: 22022,
+    targetIp: "203.0.113.10",
+    targetPort: 443,
+    protocol: "tcp",
+  };
+  const nftCleanup = buildNftTransitionCleanupCmds(rule).join("\n");
+  const iptablesCleanup = buildIptablesTransitionCleanupCmds(rule).join("\n");
+
+  assert.match(nftCleanup, /nft list table inet forwardx/);
+  assert.doesNotMatch(nftCleanup, /iptables -t nat/);
+  assert.match(iptablesCleanup, /iptables -t nat/);
+  assert.doesNotMatch(iptablesCleanup, /nft list table inet forwardx/);
+});
+
+test("nft cleanup without a rule id avoids synthetic chains", () => {
+  const commands = buildNftCleanupCmds({
+    id: 0,
+    sourcePort: 22022,
+    targetIp: "203.0.113.10",
+    targetPort: 443,
+    protocol: "tcp",
+  }).join("\n");
+
+  assert.doesNotMatch(commands, /forwardx in_0|forwardx out_0/);
+  assert.match(commands, /port='22022'/);
 });
 
 test("process counters do not attribute shared target traffic to every listener", () => {

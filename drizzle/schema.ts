@@ -484,7 +484,7 @@ export const tunnels = table("tunnels", {
   mimicPort: int("mimicPort").notNull().default(0),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),
   trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
-  // Optional ForwardX V1 cover traffic. Disabled values are stored as zero.
+  // Legacy columns retained for migration compatibility; runtime ignores them.
   trafficPaddingEnabled: boolean("trafficPaddingEnabled").notNull().default(false),
   trafficPaddingRatio: int("trafficPaddingRatio").notNull().default(0),
   trafficPaddingMaxMbps: int("trafficPaddingMaxMbps").notNull().default(0),

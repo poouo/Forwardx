@@ -18,6 +18,7 @@ import {
   shouldReconcileProtocolGuardBackend,
   stableDesiredStateHash,
 } from "./agentHeartbeatRoute";
+import { normalizeTransportTuningInput } from "./routers/rules.crud";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
 import { HOST_ONLINE_TTL_MS } from "./repositories/hostRepository";
 import {
@@ -40,6 +41,32 @@ import {
   shouldPersistAgentPresence,
   shouldDeferAgentWorkForLocalState,
 } from "./agentHeartbeatGate";
+
+test("Realm legacy transport tuning is normalized off", () => {
+  const normalized = normalizeTransportTuningInput(
+    { tcpFastOpen: true, zeroCopy: true },
+    "tcp",
+    "realm",
+    false,
+    { clearUnsupported: true },
+  );
+
+  assert.equal(normalized.tcpFastOpen, false);
+  assert.equal(normalized.zeroCopy, false);
+  assert.throws(
+    () => normalizeTransportTuningInput({ tcpFastOpen: true }, "tcp", "realm", false),
+    /当前转发方式不支持 TCP Fast Open/,
+  );
+
+  const forwardx = normalizeTransportTuningInput(
+    { tcpFastOpen: true },
+    "tcp",
+    "gost",
+    false,
+    { tunnelRoute: true, forwardxTunnel: true },
+  );
+  assert.equal(forwardx.tcpFastOpen, true);
+});
 
 test("retires stale ForwardX Nginx state without requiring or reinstalling Nginx", () => {
   const plan = buildNginxRuntimeRetirementPlan();

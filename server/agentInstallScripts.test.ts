@@ -92,7 +92,16 @@ test("Agent binary downloads fail when the downloaded file cannot be installed",
   const script = generateInstallScript("https://panel.example.com");
   const downloader = scriptSection(script, "download_url_binary() {", "download_github_binary() {");
 
-  assert.match(downloader, /if ! install -m 0755 "\$\{DST\}\.tmp" "\$DST"; then/);
+  assert.match(script, /elf_binary_healthy\(\)/);
+  assert.match(script, /file -b "\$BIN"/);
+  assert.match(script, /MAGIC="\$\(od -An -tx1 -N4/);
+  assert.match(script, /MACHINE="\$\(od -An -tx1 -j18 -N2/);
+  assert.match(downloader, /elf_binary_healthy "\$TMP_FILE"/);
+  assert.match(downloader, /不是当前主机可执行的 ELF 二进制/);
+  assert.match(downloader, /TMP_FILE=\"\" STATUS_FILE=\"\"/);
+  assert.match(downloader, /mktemp "\$\{DST\}\.tmp\.XXXXXX"/);
+  assert.match(downloader, /if ! chmod 0755 "\$TMP_FILE" \|\| ! mv -f "\$TMP_FILE" "\$DST"; then/);
+  assert.doesNotMatch(downloader, /install -m 0755 "\$\{DST\}\.tmp" "\$DST"/);
   assert.match(downloader, /echo "\[警告\] \$LABEL 安装失败: \$DST"/);
   assert.match(downloader, /return 1/);
 });
@@ -116,6 +125,71 @@ test("Agent upgrade config normalization preserves unknown fields and applies mi
   assert.doesNotMatch(normalizer, /\{\s*panelUrl\s*:/);
   assert.match(normalizer, /if ! chmod 600 "\$TMP"; then/);
   assert.match(normalizer, /if ! mv -f "\$TMP" "\$CONFIG_DIR\/config\.json"; then/);
+});
+
+test("Agent upgrade keeps a usable existing FXP when its asset is unavailable", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");
+
+  assert.match(
+    upgrade,
+    /if ! RELEASE_VERSION="\$FXP_RELEASE_VERSION" download_release_binary "forwardx-fxp-linux-\$\{GO_ARCH\}" "\$FXP_BIN" "ForwardX FXP" "0"; then/,
+  );
+  assert.match(upgrade, /保留现有 runtime/);
+  assert.doesNotMatch(upgrade, /download_release_binary "forwardx-fxp-linux-\$\{GO_ARCH\}" "\$FXP_BIN" "ForwardX FXP" "0" \|\| true/);
+});
+
+test("gost runtime upgrades validate a same-directory candidate before replacement", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const panel = scriptSection(script, "install_runtime_from_panel() {", "install_runtime_from_github() {");
+  const github = scriptSection(script, "install_runtime_from_github() {", "install_runtime() {");
+  const installer = scriptSection(script, "install_runtime() {", "install_go_agent() {");
+  const commit = scriptSection(script, "commit_runtime_candidate() {", "nginx_self_check() {");
+
+  assert.match(panel, /mktemp "\$\{RUNTIME_BIN\}\.candidate\.XXXXXX"/);
+  assert.match(panel, /download_panel_binary "\$URL" "\$STAGED_RUNTIME" "gost runtime"/);
+  assert.match(panel, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
+  assert.doesNotMatch(panel, /download_panel_binary "\$URL" "\$RUNTIME_BIN"/);
+
+  assert.match(github, /install -m 0755 "\$GOST_BIN" "\$STAGED_RUNTIME"/);
+  assert.match(github, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
+  assert.doesNotMatch(github, /install -m 0755 "\$GOST_BIN" "\$RUNTIME_BIN"/);
+
+  assert.match(commit, /runtime_self_check "\$CANDIDATE"/);
+  assert.match(commit, /mv -f "\$CANDIDATE" "\$RUNTIME_BIN"/);
+  assert.doesNotMatch(installer, /rm -f "\$RUNTIME_BIN"/);
+  assert.match(installer, /install -m 0755 "\$BIN" "\$STAGED_RUNTIME"/);
+  assert.match(installer, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
+});
+
+test("realm installer validates a staged candidate before replacing the existing binary", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const download = scriptSection(script, "install_realm_from_url() {", "is_github_accelerator_enabled() {");
+  const commit = scriptSection(script, "commit_realm_candidate() {", "install_realm_from_url() {");
+  const installer = scriptSection(script, "install_realm() {", "runtime_self_check() {");
+
+  assert.match(download, /mktemp "\$\{REALM_PATH\}\.candidate\.XXXXXX"/);
+  assert.match(download, /install -m 0755 "\$REALM_BIN" "\$STAGED_REALM"/);
+  assert.match(download, /commit_realm_candidate "\$STAGED_REALM"/);
+  assert.doesNotMatch(download, /install -m 0755 "\$REALM_BIN" "\$REALM_PATH"/);
+  assert.doesNotMatch(download, /rm -f "\$REALM_PATH"/);
+  assert.match(commit, /realm_binary_healthy "\$CANDIDATE"/);
+  assert.match(commit, /mv -f "\$CANDIDATE" "\$REALM_PATH"/);
+  assert.doesNotMatch(installer, /rm -f "\$REALM_PATH"/);
+});
+
+test("nginx installer validates a staged candidate and preserves the existing runtime on failure", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const nginx = scriptSection(script, "install_nginx_runtime() {", "install_runtime_from_panel() {");
+  const commit = scriptSection(script, "commit_nginx_candidate() {", "install_nginx_runtime() {");
+
+  assert.match(nginx, /mktemp "\$\{NGINX_BIN\}\.candidate\.XXXXXX"/);
+  assert.match(nginx, /install -m 0755 "\$BIN" "\$STAGED_NGINX"/);
+  assert.match(nginx, /commit_nginx_candidate "\$STAGED_NGINX"/);
+  assert.doesNotMatch(nginx, /install -m 0755 "\$BIN" "\$NGINX_BIN"/);
+  assert.doesNotMatch(nginx, /rm -f "\$NGINX_BIN"/);
+  assert.match(commit, /nginx_self_check "\$CANDIDATE"/);
+  assert.match(commit, /mv -f "\$CANDIDATE" "\$NGINX_BIN"/);
 });
 
 test("Managed systemd units receive bounded logging defaults idempotently", () => {

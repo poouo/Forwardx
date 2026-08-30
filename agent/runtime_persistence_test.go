@@ -53,55 +53,6 @@ func TestPersistFXPSpecScrubsPanelCredentialsAndSupportsPartialRemoval(t *testin
 	}
 }
 
-func TestFXPTrafficPaddingNormalizationAndSignature(t *testing.T) {
-	base := fxpSpec{
-		Role: "entry", TransportVersion: "v1", TunnelID: 120, RuleID: 121,
-		ListenPort: 23120, Protocol: "tcp", ExitHost: "198.51.100.120",
-		ExitPort: 23121, Key: "runtime-secret",
-	}
-
-	// Padding is opt-in and is bounded again at the Agent boundary, even when
-	// a malformed desired-state payload bypasses panel-side validation.
-	unsafe := base
-	unsafe.TrafficPaddingEnabled = true
-	unsafe.TrafficPaddingRatio = 999
-	unsafe.TrafficPaddingMaxMbps = 999999
-	normalized := normalizeFXPSpec(unsafe)
-	if !normalized.TrafficPaddingEnabled || normalized.TrafficPaddingRatio != 50 || normalized.TrafficPaddingMaxMbps != 1000 {
-		t.Fatalf("unexpected bounded traffic padding: %#v", normalized)
-	}
-
-	// Non-V1 runtimes must never carry the V1-only option.
-	v2 := unsafe
-	v2.TransportVersion = "v2"
-	v2 = normalizeFXPSpec(v2)
-	if v2.TrafficPaddingEnabled || v2.TrafficPaddingRatio != 0 || v2.TrafficPaddingMaxMbps != 0 {
-		t.Fatalf("V2 retained V1 traffic padding: %#v", v2)
-	}
-
-	udp := unsafe
-	udp.Protocol = "udp"
-	udp = normalizeFXPSpec(udp)
-	if udp.TrafficPaddingEnabled || udp.TrafficPaddingRatio != 0 || udp.TrafficPaddingMaxMbps != 0 {
-		t.Fatalf("UDP-only runtime retained TCP traffic padding: %#v", udp)
-	}
-
-	changed := base
-	changed.TrafficPaddingEnabled = true
-	changed.TrafficPaddingRatio = 10
-	changed.TrafficPaddingMaxMbps = 8
-	if fxpServerSignature(base) == fxpServerSignature(changed) {
-		t.Fatal("traffic padding changes did not alter FXP runtime signature")
-	}
-
-	changed.TrafficPaddingEnabled = false
-	changed.TrafficPaddingRatio = 10
-	changed.TrafficPaddingMaxMbps = 8
-	if fxpServerSignature(base) != fxpServerSignature(changed) {
-		t.Fatal("disabled traffic padding stale values altered FXP runtime signature")
-	}
-}
-
 func TestPersistedFXPRemovalRespectsProtocolLanes(t *testing.T) {
 	usePersistentRuntimeTestDirs(t)
 	base := fxpSpec{

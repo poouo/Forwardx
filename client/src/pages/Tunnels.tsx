@@ -105,14 +105,6 @@ import {
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
 import {
-  normalizeTrafficPadding,
-  TRAFFIC_PADDING_MAX_MBPS_MAX,
-  TRAFFIC_PADDING_RATIO_MAX,
-  TRAFFIC_PADDING_RATIO_MIN,
-  trafficPaddingInputIsValid,
-  trafficPaddingRuntimeSupported,
-} from "@shared/trafficPadding";
-import {
   normalizeTunnelRelayMode,
   tunnelRelayFailoverSupported,
   type TunnelRelayMode,
@@ -178,9 +170,6 @@ type TunnelForm = {
   mimicPort: number;
   rateLimitMbps: number;
   trafficMultiplier: number;
-  trafficPaddingEnabled: boolean;
-  trafficPaddingRatio: number;
-  trafficPaddingMaxMbps: number;
   networkType: "public" | "private";
   connectHost: string;
   proxyProtocolReceive: boolean;
@@ -336,9 +325,6 @@ const defaultForm: TunnelForm = {
   mimicPort: 0,
   rateLimitMbps: 0,
   trafficMultiplier: 1,
-  trafficPaddingEnabled: false,
-  trafficPaddingRatio: 0,
-  trafficPaddingMaxMbps: 0,
   networkType: "public",
   connectHost: "",
   proxyProtocolReceive: false,
@@ -2188,7 +2174,7 @@ function tunnelMatchesLinkSearch(
 }
 
 function TunnelsContent() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const utils = trpc.useUtils();
   // The compact options query is preferred for the editors. Keep the older
   // list query as a same-scope fallback: an options failure must not make the
@@ -2213,7 +2199,20 @@ function TunnelsContent() {
   const hostsQueryLoading = !hasResolvedHosts
     && (hostsOptionsQuery.isLoading || (useHostsFallback && hostsFallbackQuery.isLoading));
   const hostsQueryFailed = hostsFallbackQuery.isError && (hosts?.length ?? 0) === 0;
-  const { data: systemSettings } = trpc.system.getSettings.useQuery();
+  // Wait for the session query before loading settings.  The server deliberately
+  // hides developer-only capabilities from anonymous requests; starting this
+  // query at the same time as auth can otherwise cache the anonymous response
+  // (globalEnabled=false) for the whole page lifetime.
+  const { data: systemSettings } = trpc.system.getSettings.useQuery(undefined, {
+    enabled: !authLoading,
+    // The response is role-sensitive: an anonymous request intentionally
+    // returns globalEnabled=false. Always refresh once this page has a
+    // resolved session so a cached anonymous response cannot hide the admin
+    // ForwardX V1 option.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+  });
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
@@ -2732,14 +2731,6 @@ function TunnelsContent() {
     const exitGroupId = Number(tunnel?.exitGroupId || 0) > 0 ? Number(tunnel.exitGroupId) : null;
     const displayRoute = stripExternalTunnelHosts(hopHostIds, hopConnectHosts, entryGroupId, exitGroupId);
     const mode = normalizeTunnelModeForForm(tunnel.mode || "tls");
-    const normalizedPadding = normalizeTrafficPadding({
-      trafficPaddingEnabled: !!tunnel.trafficPaddingEnabled,
-      trafficPaddingRatio: Number(tunnel.trafficPaddingRatio || 0),
-      trafficPaddingMaxMbps: Number(tunnel.trafficPaddingMaxMbps || 0),
-    }, {
-      mode,
-      forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
-    });
     const proxySupported = isTunnelProxyProtocolSupported(mode);
     const transportTuningSupported = isTunnelTransportTuningSupported(mode);
     const proxyAnyEnabled = proxySupported && (
@@ -2765,7 +2756,6 @@ function TunnelsContent() {
       mimicPort: Number(tunnel.mimicPort || 0),
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
-      ...normalizedPadding,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
       proxyProtocolReceive: proxySupported && !!tunnel.proxyProtocolReceive,
@@ -3015,24 +3005,6 @@ function TunnelsContent() {
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     const forwardxVersion = submitForm.mode === "forwardx" ? submitForm.forwardxVersion : "v1";
-    if (submitForm.trafficPaddingEnabled && !trafficPaddingInputIsValid({
-      trafficPaddingEnabled: true,
-      trafficPaddingRatio: submitForm.trafficPaddingRatio,
-      trafficPaddingMaxMbps: submitForm.trafficPaddingMaxMbps,
-    })) {
-      toast.error(`流量填充比例必须为 ${TRAFFIC_PADDING_RATIO_MIN}-${TRAFFIC_PADDING_RATIO_MAX} 的整数，速率上限为 0-${TRAFFIC_PADDING_MAX_MBPS_MAX} Mbps`);
-      return;
-    }
-    const trafficPadding = systemSettings?.trafficPadding?.globalEnabled === true
-      ? normalizeTrafficPadding({
-          trafficPaddingEnabled: submitForm.trafficPaddingEnabled,
-          trafficPaddingRatio: submitForm.trafficPaddingRatio,
-          trafficPaddingMaxMbps: submitForm.trafficPaddingMaxMbps,
-        }, {
-          mode: submitForm.mode,
-          forwardxVersion,
-        })
-      : {};
     if (!isTunnelSupported(submitForm)) {
       toast.error(unsupportedProtocolTitle);
       return;
@@ -3123,7 +3095,6 @@ function TunnelsContent() {
       mimicPort: transportTuningSupported && (submitForm.udpOverTcp || submitForm.forwardxVersion === "v2") ? submitForm.mimicPort : 0,
       rateLimitMbps,
       trafficMultiplier,
-      ...trafficPadding,
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
@@ -3185,7 +3156,6 @@ function TunnelsContent() {
       return;
     }
     const chainProxyProtocolSupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
-    const chainRealmOptimizationSupported = chainCreateForm.forwardType === "realm";
     createChainMutation.mutate({
       name,
       entryGroupId: chainCreateForm.entryGroupId || null,
@@ -3195,8 +3165,9 @@ function TunnelsContent() {
       proxyProtocolReceive: chainProxyProtocolSupported && chainCreateForm.proxyProtocolReceive,
       proxyProtocolSend: chainProxyProtocolSupported && chainCreateForm.proxyProtocolSend,
       proxyProtocolVersion: chainProxyProtocolSupported && Number(chainCreateForm.proxyProtocolVersion) === 2 ? 2 : 1,
-      tcpFastOpen: chainRealmOptimizationSupported && chainCreateForm.tcpFastOpen,
-      zeroCopy: chainRealmOptimizationSupported && chainCreateForm.zeroCopy,
+      // Realm 2.9.x removed its legacy fast_open/zero_copy options.
+      tcpFastOpen: false,
+      zeroCopy: false,
       domain: null,
       recordType: "A",
       failoverSeconds: 60,
@@ -3221,25 +3192,20 @@ function TunnelsContent() {
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
   const setChainForwardType = (forwardType: ForwardType) => {
     const proxySupported = forwardType === "gost" || forwardType === "realm";
-    const realmOptimizationSupported = forwardType === "realm";
     setChainCreateForm((prev) => ({
       ...prev,
       forwardType,
       proxyProtocolReceive: proxySupported ? prev.proxyProtocolReceive : false,
       proxyProtocolSend: proxySupported ? prev.proxyProtocolSend : false,
       proxyProtocolVersion: proxySupported ? prev.proxyProtocolVersion : 1,
-      tcpFastOpen: realmOptimizationSupported ? prev.tcpFastOpen : false,
-      zeroCopy: realmOptimizationSupported ? prev.zeroCopy : false,
+      tcpFastOpen: false,
+      zeroCopy: false,
     }));
   };
   const setTunnelMode = (mode: TunnelForm["mode"]) => {
     const nextMode = normalizeTunnelModeForForm(mode);
     const proxySupported = isTunnelProxyProtocolSupported(nextMode);
     const transportTuningSupported = isTunnelTransportTuningSupported(nextMode);
-    const paddingSupported = trafficPaddingRuntimeSupported({
-      mode: nextMode,
-      forwardxVersion: form.forwardxVersion,
-    });
     if (!proxySupported) setTunnelProxyPanelOpen(false);
     setForm((prev) => ({
       ...prev,
@@ -3252,11 +3218,6 @@ function TunnelsContent() {
       proxyProtocolVersion: proxySupported ? prev.proxyProtocolVersion : 1,
       tcpFastOpen: transportTuningSupported ? prev.tcpFastOpen : false,
       udpOverTcp: transportTuningSupported ? prev.udpOverTcp : false,
-      ...(paddingSupported ? {} : {
-        trafficPaddingEnabled: false,
-        trafficPaddingRatio: 0,
-        trafficPaddingMaxMbps: 0,
-      }),
     }));
   };
   const importNginxPemFiles = async (files: readonly File[]) => {
@@ -3392,9 +3353,8 @@ function TunnelsContent() {
   );
   const renderChainRuntimeOptions = () => {
     const proxySupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
-    const realmOptimizationSupported = chainCreateForm.forwardType === "realm";
-    const advancedConfigured = (proxySupported && (chainCreateForm.proxyProtocolReceive || chainCreateForm.proxyProtocolSend))
-      || (realmOptimizationSupported && (chainCreateForm.tcpFastOpen || chainCreateForm.zeroCopy));
+    const advancedConfigured = proxySupported
+      && (chainCreateForm.proxyProtocolReceive || chainCreateForm.proxyProtocolSend);
     return (
       <div className="rounded-lg border border-border/60 bg-muted/20">
         <button
@@ -3404,7 +3364,7 @@ function TunnelsContent() {
         >
           <div className="min-w-0">
             <div className="text-sm font-medium">高级设置</div>
-            <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
+            <div className="text-xs text-muted-foreground">PROXY Protocol</div>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
@@ -3445,28 +3405,6 @@ function TunnelsContent() {
                     checked={proxySupported && chainCreateForm.proxyProtocolSend}
                     disabled={!proxySupported}
                     onCheckedChange={(proxyProtocolSend) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolSend }))}
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div className="space-y-2 border-t border-border/45 pt-3">
-              <Label className="text-sm">传输优化</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
-                  <span className="min-w-0 truncate text-sm">TCP Fast Open</span>
-                  <Switch
-                    checked={realmOptimizationSupported && chainCreateForm.tcpFastOpen}
-                    disabled={!realmOptimizationSupported}
-                    onCheckedChange={(tcpFastOpen) => setChainCreateForm((prev) => ({ ...prev, tcpFastOpen }))}
-                  />
-                </label>
-                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
-                  <span className="min-w-0 truncate text-sm">zero-copy</span>
-                  <Switch
-                    checked={realmOptimizationSupported && chainCreateForm.zeroCopy}
-                    disabled={!realmOptimizationSupported}
-                    onCheckedChange={(zeroCopy) => setChainCreateForm((prev) => ({ ...prev, zeroCopy }))}
                   />
                 </label>
               </div>
@@ -3516,9 +3454,6 @@ function TunnelsContent() {
               onClick={() => setForm((prev) => ({
                 ...prev,
                 forwardxVersion: "v2",
-                trafficPaddingEnabled: false,
-                trafficPaddingRatio: 0,
-                trafficPaddingMaxMbps: 0,
               }))}
             >
               <Network className={segmentedIconClassName(form.forwardxVersion === "v2", "mt-0.5")} />
@@ -3549,58 +3484,6 @@ function TunnelsContent() {
           </div>
         )}
       </>
-    );
-  };
-  const renderTrafficPaddingOptions = () => {
-    if (user?.role !== "admin" || systemSettings?.trafficPadding?.globalEnabled !== true) return null;
-    const supported = trafficPaddingRuntimeSupported({
-      mode: form.mode,
-      forwardxVersion: form.forwardxVersion,
-    });
-    if (!supported) return null;
-    const enabled = form.trafficPaddingEnabled;
-    return (
-      <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <Label className="text-sm">流量填充</Label>
-            <p className="mt-0.5 text-xs text-muted-foreground">按比例增加回程填充数据，不改变真实业务内容</p>
-          </div>
-          <Switch
-            checked={enabled}
-            onCheckedChange={(checked) => setForm((prev) => checked
-              ? { ...prev, trafficPaddingEnabled: true, trafficPaddingRatio: prev.trafficPaddingRatio || 10 }
-              : { ...prev, trafficPaddingEnabled: false, trafficPaddingRatio: 0, trafficPaddingMaxMbps: 0 })}
-          />
-        </div>
-        {enabled && (
-          <div className="grid gap-2 border-t border-border/45 pt-2 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label className="text-xs">填充比例 (%)</Label>
-              <Input
-                type="number"
-                min={TRAFFIC_PADDING_RATIO_MIN}
-                max={TRAFFIC_PADDING_RATIO_MAX}
-                step={1}
-                value={form.trafficPaddingRatio || ""}
-                onChange={(event) => setForm((prev) => ({ ...prev, trafficPaddingRatio: Number.parseInt(event.target.value, 10) || 0 }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">填充上限 (Mbps)</Label>
-              <Input
-                type="number"
-                min={0}
-                max={TRAFFIC_PADDING_MAX_MBPS_MAX}
-                step={1}
-                value={form.trafficPaddingMaxMbps || ""}
-                placeholder="安全默认"
-                onChange={(event) => setForm((prev) => ({ ...prev, trafficPaddingMaxMbps: Number.parseInt(event.target.value, 10) || 0 }))}
-              />
-            </div>
-          </div>
-        )}
-      </div>
     );
   };
   const renderTunnelRuntimeOptions = () => {
@@ -4774,7 +4657,6 @@ function TunnelsContent() {
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {renderTunnelRuntimeOptions()}
                     {renderForwardXVersionOptions()}
-                    {renderTrafficPaddingOptions()}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
@@ -5083,7 +4965,6 @@ function TunnelsContent() {
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {renderTunnelRuntimeOptions()}
             {renderForwardXVersionOptions()}
-            {renderTrafficPaddingOptions()}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>

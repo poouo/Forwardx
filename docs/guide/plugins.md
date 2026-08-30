@@ -555,7 +555,7 @@ pnpm plugins:package
 
 ### ForwardX 中国区域白名单
 
-插件 ID：`china-region-whitelist`，当前版本：`0.7.0`，许可证：AGPL-3.0-only。
+插件 ID：`china-region-whitelist`，当前版本：`0.7.1`，许可证：AGPL-3.0-only。
 
 按主机实时管理中国大陆全国、省级 CIDR 和 ASN 白名单规则。插件程序和数据会自动同步到所有已选 Agent 主机，每台主机的配置与状态独立保存。
 

@@ -23,7 +23,6 @@ services:
       POSTGRES_DATABASE: ${POSTGRES_DATABASE:-}
       POSTGRES_SSL: ${POSTGRES_SSL:-false}
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
-      FORWARDX_TRAFFIC_PADDING_ENABLED: ${FORWARDX_TRAFFIC_PADDING_ENABLED:-false}
     volumes:
       - forwardx-data:/data
     logging:

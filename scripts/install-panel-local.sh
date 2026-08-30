@@ -719,13 +719,9 @@ install_runtime_dependencies() {
 
 write_env() {
   local jwt_secret="${JWT_SECRET:-}"
-  local existing_padding_enabled padding_enabled
   if [ -z "$jwt_secret" ]; then
     jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
   fi
-  existing_padding_enabled="$(get_env_value FORWARDX_TRAFFIC_PADDING_ENABLED || true)"
-  padding_enabled="${FORWARDX_TRAFFIC_PADDING_ENABLED:-$existing_padding_enabled}"
-
   mkdir -p "$APP_DIR/data"
   cat > "$APP_DIR/.env" <<EOF
 NODE_ENV=production
@@ -739,9 +735,6 @@ FORWARDX_PORT_MANAGEMENT=local
 FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
 FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgrade"
 EOF
-  if [ -n "$padding_enabled" ]; then
-    printf 'FORWARDX_TRAFFIC_PADDING_ENABLED=%s\n' "$padding_enabled" >> "$APP_DIR/.env"
-  fi
 }
 
 install_panel() {

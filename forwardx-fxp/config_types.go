@@ -55,9 +55,4 @@ type config struct {
 	UDPRelayExitPort         int            `json:"udpRelayExitPort,omitempty"`
 	RelayKey                 string         `json:"relayKey,omitempty"`
 	DNSGeneration            int            `json:"dnsGeneration,omitempty"`
-	TrafficPaddingEnabled    bool           `json:"trafficPaddingEnabled,omitempty"`
-	TrafficPaddingRatio      int            `json:"trafficPaddingRatio,omitempty"`
-	TrafficPaddingMaxMbps    int            `json:"trafficPaddingMaxMbps,omitempty"`
-	// Process-local shared budget; omitted from persisted JSON/config signatures.
-	trafficPaddingBudget *trafficPaddingBudget `json:"-"`
 }

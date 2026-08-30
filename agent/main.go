@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.191"
+var Version = "2.2.192"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2589,9 +2589,6 @@ type fxpSpec struct {
 	RelayPeerID              string            `json:"relayPeerId,omitempty"`
 	RelayKey                 string            `json:"relayKey,omitempty"`
 	DNSGeneration            int               `json:"dnsGeneration,omitempty"`
-	TrafficPaddingEnabled    bool              `json:"trafficPaddingEnabled,omitempty"`
-	TrafficPaddingRatio      int               `json:"trafficPaddingRatio,omitempty"`
-	TrafficPaddingMaxMbps    int               `json:"trafficPaddingMaxMbps,omitempty"`
 }
 
 type fxpExitEndpoint struct {
@@ -7058,7 +7055,7 @@ func fxpMatchesRunning(spec *fxpSpec, desiredGroups ...*fxpSpec) bool {
 		}
 		if !matches {
 			raw, err := os.ReadFile(configPath)
-			if err == nil {
+			if err == nil && !fxpConfigUsesRemovedTrafficPadding(raw) {
 				var group fxpSpec
 				if json.Unmarshal(raw, &group) == nil {
 					group = normalizeFXPSpec(group)
@@ -9009,30 +9006,6 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 		return spec
 	}
 	spec.Entries = nil
-	// Keep the Agent-side boundary independent from panel validation. This is
-	// intentionally conservative so hand-edited desired-state/config files
-	// cannot request unbounded cover traffic.
-	if spec.TransportVersion != "v1" || normalizeRuntimeProtocol(spec.Protocol) == "udp" || !spec.TrafficPaddingEnabled {
-		spec.TrafficPaddingEnabled = false
-		spec.TrafficPaddingRatio = 0
-		spec.TrafficPaddingMaxMbps = 0
-	} else {
-		if spec.TrafficPaddingRatio < 1 {
-			spec.TrafficPaddingEnabled = false
-			spec.TrafficPaddingRatio = 0
-			spec.TrafficPaddingMaxMbps = 0
-		} else {
-			if spec.TrafficPaddingRatio > 50 {
-				spec.TrafficPaddingRatio = 50
-			}
-			if spec.TrafficPaddingMaxMbps < 0 {
-				spec.TrafficPaddingMaxMbps = 0
-			}
-			if spec.TrafficPaddingMaxMbps > 1000 {
-				spec.TrafficPaddingMaxMbps = 1000
-			}
-		}
-	}
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
@@ -9126,9 +9099,6 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.RelayPeerID,
 		spec.RelayKey,
 		strconv.Itoa(spec.DNSGeneration),
-		strconv.FormatBool(spec.TrafficPaddingEnabled),
-		strconv.Itoa(spec.TrafficPaddingRatio),
-		strconv.Itoa(spec.TrafficPaddingMaxMbps),
 	}
 	for _, exit := range spec.Exits {
 		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strconv.Itoa(exit.UDPPort), strings.TrimSpace(exit.Key), strings.TrimSpace(exit.PeerID))
@@ -9372,6 +9342,12 @@ func fxpProcessUsesPanelCredentialDigest(process *fxpProcess, expected string) b
 }
 
 func fxpProcessMatchesCurrentRuntime(process *fxpProcess) bool {
+	if process == nil {
+		return false
+	}
+	if fxpRuntimeConfigUsesRemovedTrafficPadding(process.configPath) {
+		return false
+	}
 	return fxpProcessUsesCurrentExecutable(process) && fxpProcessUsesPanelCredentialDigest(process, "")
 }
 
@@ -9412,6 +9388,9 @@ func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSna
 			continue
 		}
 		var spec fxpSpec
+		if fxpConfigUsesRemovedTrafficPadding(raw) {
+			continue
+		}
 		if json.Unmarshal(raw, &spec) == nil {
 			spec = normalizeFXPSpec(spec)
 			if spec.TransportVersion != forwardXWireGuardVersion && runtimeProtocolsOverlap(spec.Protocol, protocol) &&
@@ -9427,7 +9406,7 @@ func fxpRuntimeReadyForRulePort(ruleID int, port int, protocol string, listenSna
 			continue
 		}
 		var group fxpSpec
-		if json.Unmarshal(raw, &group) != nil {
+		if fxpConfigUsesRemovedTrafficPadding(raw) || json.Unmarshal(raw, &group) != nil {
 			continue
 		}
 		group = normalizeFXPSpec(group)
@@ -9500,7 +9479,7 @@ func fxpRuntimeReadyForTunnelPort(tunnelID int, port int, listenSnapshot *runtim
 			continue
 		}
 		var spec fxpSpec
-		if json.Unmarshal(raw, &spec) != nil {
+		if fxpConfigUsesRemovedTrafficPadding(raw) || json.Unmarshal(raw, &spec) != nil {
 			continue
 		}
 		spec = normalizeFXPSpec(spec)
@@ -9526,6 +9505,10 @@ func adoptExistingFXP(spec fxpSpec, signature string, configPath string, expecte
 	}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
+		return false
+	}
+	if fxpConfigUsesRemovedTrafficPadding(raw) {
+		logf("fxp runtime uses removed traffic-padding config; forcing rebuild config=%s", configPath)
 		return false
 	}
 	var existing fxpSpec

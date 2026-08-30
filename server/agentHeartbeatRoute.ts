@@ -51,11 +51,14 @@ import { planGostTunnelHopRelay, planGostTunnelRuleProtocol } from "./gostTunnel
 import {
   buildCountingChainCmds,
   buildCountingCleanupCmds,
+  buildKernelForwardTransitionCleanupCmds,
   buildIptablesForwardCleanupCmds,
   buildIptablesForwardCmds,
+  buildIptablesTransitionCleanupCmds,
   buildManagedPortCleanupCmds,
   buildNftCleanupCmds,
   buildNftForwardCmds,
+  buildNftTransitionCleanupCmds,
   killByPatternCmd,
   removeManagedServiceCmd,
   restartManagedServiceIfConfigChangedCmd,
@@ -88,8 +91,7 @@ import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTop
 import { resolveLocalForwardXTransportVersion, resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
-import { effectiveTrafficPadding } from "./trafficPaddingConfig";
-import { forwardXExitStrategy, gostExitSelector } from "./tunnelExitStrategy";
+import { forwardXExitStrategy, gostExitSelector, shouldUseFastTunnelFailover } from "./tunnelExitStrategy";
 import {
   getMimicLifecycleRevisionSignature,
   hashConfig,
@@ -2743,15 +2745,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     };
     const applyForwardXTransport = async (fxpSpec: any, tunnel: any) => {
-      // Padding is negotiated per FXP connection and must be present on every
-      // entry/relay/exit spec in a chain. The shared normalizer deliberately
-      // disables it for GOST and V2, keeping those runtimes byte-for-byte
-      // compatible with their existing protocol.
-      const trafficPadding = effectiveTrafficPadding(tunnel, {
-        mode: tunnel?.mode,
-        forwardxVersion: tunnel?.forwardxVersion,
-      });
-      Object.assign(fxpSpec, trafficPadding);
       if (!isForwardXWireGuardV2(tunnel)) {
         fxpSpec.transportVersion = "v1";
         return fxpSpec;
@@ -3339,12 +3332,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             && isCurrentHostTunnelEntry(tunnel);
           const relayFailover = useMultiHopEntry && isTunnelRelayFailover(tunnel, tunnelHops);
           const exitCandidateCount = tunnel ? tunnelExitEndpointsForRule(r, tunnel).length : 0;
-          const exitStrategy = normalizeExitGroupStrategy((tunnel as any)?.loadBalanceStrategy);
           const routeRetries = Math.max(
             relayFailover ? tunnelRelayCandidates(tunnelHops as any[]).length - 1 : 0,
             exitCandidateCount - 1,
           );
-          const fastFailover = relayFailover || (exitCandidateCount > 1 && exitStrategy === "fallback");
+          // Every multi-exit strategy must fail over promptly when a node is
+          // blackholed.  The selector already retries the remaining nodes;
+          // leaving the default dial timeout here makes round-robin/random/
+          // hash wait on the dead endpoint before that retry can happen.
+          const fastFailover = shouldUseFastTunnelFailover(exitCandidateCount, relayFailover);
           const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
           const tunnelProxyPlan = tunnel ? tunnelProxyProtocolPlan(r) : null;
           const protocolPlan = tunnel ? planGostTunnelRuleProtocol({
@@ -4047,6 +4043,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
       if (rule.forwardType === "iptables") {
         const cmds: string[] = [
+          ...buildNftTransitionCleanupCmds(rule),
           ...buildIptablesForwardCleanupCmds(rule),
           ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
           ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
@@ -4064,6 +4061,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       if (rule.forwardType === "nftables") {
         const cmds = [
+          ...buildIptablesTransitionCleanupCmds(rule),
           ...buildNftCleanupCmds(rule, { removeStateFiles: false, cleanupConntrack: true }),
           ...buildManagedPortCleanupCmds(Number(rule.sourcePort), rule.targetIp, rule.targetPort, rule.protocol),
         ];
@@ -4092,6 +4090,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           protocol: rule.protocol,
           svcName,
           commands: [
+            ...buildKernelForwardTransitionCleanupCmds(rule),
             removeManagedServiceCmd(svcName),
             killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
             ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
@@ -4117,6 +4116,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(...legacySocatCleanupCmds(rule.sourcePort, rule.protocol));
         }
         removeCmds.push(socatKillByProtocolCmd(rule.sourcePort, rule.protocol));
+        removeCmds.push(...buildKernelForwardTransitionCleanupCmds(rule));
         removeCmds.push(...cleanupGuardBackendCmds(rule));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
         removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
@@ -4143,6 +4143,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           commands: [
+            ...buildKernelForwardTransitionCleanupCmds(rule),
             ...buildNginxPortCleanupCmds(rule),
             ...cleanupGuardBackendCmds(rule),
           ],
@@ -4161,6 +4162,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               ...buildNginxPortCleanupCmds(rule),
               ...cleanupGuardBackendCmds(rule),
             ],
@@ -4180,6 +4182,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           commands: [
+            ...buildKernelForwardTransitionCleanupCmds(rule),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ],
@@ -4350,12 +4353,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
         : undefined;
       const cleanupCmds = SHARED_NGINX_FORWARD_TYPES.has(forwardType)
-        ? buildNginxPortCleanupCmds({
-          sourcePort: port,
-          targetIp: local.targetIp || "",
-          targetPort: Number(local.targetPort || 0),
-          protocol,
-        })
+        ? [
+          // A local nginx state record may be the result of a previous
+          // nftables -> nginx handoff.  Shared-nginx cleanup intentionally
+          // keeps the shared daemon alive, so also remove any per-rule kernel
+          // forwarding state left behind by an older Agent.
+          ...buildKernelForwardTransitionCleanupCmds({
+            id: Number(local.ruleId || 0),
+            sourcePort: port,
+            targetIp: local.targetIp || "",
+            targetPort: Number(local.targetPort || 0),
+            protocol,
+          }),
+          ...buildNginxPortCleanupCmds({
+            sourcePort: port,
+            targetIp: local.targetIp || "",
+            targetPort: Number(local.targetPort || 0),
+            protocol,
+          }),
+        ]
         : [
           ...buildManagedPortCleanupCmds(port, local.targetIp, local.targetPort, protocol),
           ...(fxp ? [] : [
@@ -4418,8 +4434,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (isKernelForwardRule(rule)) return true;
       return Number(local.ruleId || 0) === Number(rule?.id || 0);
     };
+    const localRuleHasKernelForwardState = (rule: any) => {
+      if (!hasReportedRuntimeState) return false;
+      const local = findLocalRuleState(
+        Number(rule?.sourcePort || 0),
+        rule?.protocol,
+        Number(rule?.id || 0),
+      );
+      return !!local
+        && Number(local.ruleId || 0) === Number(rule?.id || 0)
+        && isKernelForwardRule(local);
+    };
     const shouldForceStoppedKernelRuleCleanup = (rule: any) => !!rule?.resourceAccessDenied
-      || (supportsDesiredState && isKernelForwardRule(rule) && localRuleNeedsRemoval(rule));
+      || (supportsDesiredState && (
+        (isKernelForwardRule(rule) && localRuleNeedsRemoval(rule))
+        // The desired rule may already be disabled after a backend edit. If
+        // the Agent still reports the same rule as an iptables/nftables owner,
+        // issue one cleanup action so a stale kernel redirect cannot survive.
+        || localRuleHasKernelForwardState(rule)
+      ));
 
     const settleStoppedRule = async (rule: any) => {
       const id = Number(rule?.id || 0);
@@ -4813,8 +4846,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[network]",
               `use_udp = ${isForwardRuleProtocolUdpEnabled(rule.protocol) ? "true" : "false"}`,
-              `zero_copy = ${(rule as any).zeroCopy && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
-              `fast_open = ${(rule as any).tcpFastOpen && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
               "tcp_timeout = 300",
               "udp_timeout = 30",
               "ipv6_only = false",
@@ -4948,6 +4979,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             failover: guardFailover,
           });
         } else if (rule.forwardType === "iptables") {
+          // Remove any stale nftables state left by a previous backend before
+          // installing iptables rules for this listener.
+          cmds.push(...buildNftTransitionCleanupCmds(rule));
           cmds.push(...buildIptablesForwardCmds(rule));
           for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, rule.forwardType)) cmds.push(c);
           for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
@@ -4963,6 +4997,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: cmds,
           });
         } else if (rule.forwardType === "nftables") {
+          // The nft builder self-cleans nftables; the transition helper also
+          // removes an older iptables DNAT/FORWARD layout.
+          cmds.push(...buildIptablesTransitionCleanupCmds(rule));
           cmds.push(...buildNftForwardCmds(rule));
           for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
           actions.push({
@@ -4986,8 +5023,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             "",
             "[network]",
             `use_udp = ${isForwardRuleProtocolUdpEnabled(rule.protocol) ? "true" : "false"}`,
-            `zero_copy = ${(rule as any).zeroCopy && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
-            `fast_open = ${(rule as any).tcpFastOpen && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
             "tcp_timeout = 300",
             "udp_timeout = 30",
             "ipv6_only = false",
@@ -5034,6 +5069,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             svcName,
             unit,
             preCommands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               ...cleanupGuardBackendCmds(rule),
               ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
               `mkdir -p ${shQuote(REALM_CONFIG_DIR)}`,
@@ -5049,6 +5085,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         } else if (rule.forwardType === "socat") {
           // socat 转发：用户态进程，通过 systemd 管理
           const socatPreCmds: string[] = [
+            ...buildKernelForwardTransitionCleanupCmds(rule),
             ...cleanupGuardBackendCmds(rule),
             `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
           ];
@@ -5168,6 +5205,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: rule.protocol,
             networkInterface: hostInterface,
             commands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               ...cleanupGuardBackendCmds(rule),
               nginxRuntimeVerifyCmd(),
             ],
@@ -5186,7 +5224,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
-              commands: [nginxRuntimeVerifyCmd()],
+              commands: [
+                ...buildKernelForwardTransitionCleanupCmds(rule),
+                nginxRuntimeVerifyCmd(),
+              ],
             });
             continue;
           }
@@ -5268,6 +5309,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               protocol: rule.protocol,
               networkInterface: hostInterface,
               commands: (!rule.isRunning || shouldRefreshForwardXEntryRule || shouldRepairLocalRule) ? [
+                ...buildKernelForwardTransitionCleanupCmds(rule),
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, "forwardx"),
               ] : [],
@@ -5288,6 +5330,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: rule.protocol,
             networkInterface: hostInterface,
             commands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               ...cleanupGuardBackendCmds(rule),
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, rule.forwardType),
               ...buildRuleAccessLimitCmds(rule),
@@ -5304,6 +5347,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const cmds: string[] = [];
         if (rule.forwardType === "iptables") {
           cmds.push(
+            ...buildNftTransitionCleanupCmds(rule),
             ...buildIptablesForwardCleanupCmds(rule),
             ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
@@ -5334,6 +5378,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: rule.protocol,
             svcName,
             commands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               removeManagedServiceCmd(svcName),
               killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
               ...legacyRealmCleanupCmds(rule.sourcePort, rule.protocol),
@@ -5359,6 +5404,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             removeCmds.push(...legacySocatCleanupCmds(rule.sourcePort, rule.protocol));
           }
           removeCmds.push(socatKillByProtocolCmd(rule.sourcePort, rule.protocol));
+          removeCmds.push(...buildKernelForwardTransitionCleanupCmds(rule));
           removeCmds.push(...cleanupGuardBackendCmds(rule));
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
@@ -5385,6 +5431,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: [
+              ...buildKernelForwardTransitionCleanupCmds(rule),
               ...buildNginxPortCleanupCmds(rule),
             ],
           });
@@ -5402,6 +5449,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               commands: [
+                ...buildKernelForwardTransitionCleanupCmds(rule),
                 ...buildNginxPortCleanupCmds(rule),
                 ...cleanupGuardBackendCmds(rule),
               ],
@@ -5412,6 +5460,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ? (await forwardXEntryRoute(tunnel)).key
             : "";
           const removeCmds: string[] = [
+            ...buildKernelForwardTransitionCleanupCmds(rule),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ];

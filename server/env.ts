@@ -43,12 +43,6 @@ function readIntEnv(names: string[], fallback: number, min: number, max: number)
   return fallback;
 }
 
-function readFlagEnv(name: string, fallback = false) {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return fallback;
-  return /^(1|true|yes|on)$/i.test(raw.trim());
-}
-
 export const ENV = {
   cookieSecret: readOrCreateCookieSecret(),
   mysqlUrl: process.env.MYSQL_URL ?? "",
@@ -76,9 +70,6 @@ export const ENV = {
   panelSslEnabled: process.env.FORWARDX_PANEL_SSL_ENABLED === "true",
   panelSslCertPath: process.env.FORWARDX_PANEL_SSL_CERT_PATH ?? "",
   panelSslKeyPath: process.env.FORWARDX_PANEL_SSL_KEY_PATH ?? "",
-  // Optional developer-controlled global cover-traffic override. The flag is
-  // read once at startup; unsupported runtimes still normalize it to zero.
-  trafficPaddingEnabled: readFlagEnv("FORWARDX_TRAFFIC_PADDING_ENABLED", false),
   // Only trusted reverse proxies may supply X-Forwarded-* client metadata.
   // Keep loopback-only as the secure default; Docker/reverse-proxy deployments
   // can explicitly set FORWARDX_TRUST_PROXY to their proxy subnet or hop count.

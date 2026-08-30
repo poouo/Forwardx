@@ -199,10 +199,13 @@ export function normalizeTransportTuningInput(input: {
   const udpOverTcpProtocolSupported = protocol === "udp" || protocol === "both";
   const tunnelRoute = !!options?.tunnelRoute;
   const forwardxTunnel = !!options?.forwardxTunnel;
-  const fastOpenSupported = !isForwardChain && protocolSupported && (
-    forwardType === "realm" || (forwardType === "gost" && tunnelRoute && forwardxTunnel)
-  );
-  const zeroCopySupported = !isForwardChain && protocolSupported && forwardType === "realm" && !tunnelRoute;
+  // Realm 2.9.x removed the network.fast_open and network.zero_copy options
+  // (the old TOML keys are silently ignored). Keep the database columns for
+  // migration compatibility, but never advertise or persist these options for
+  // Realm. ForwardX's own TFO implementation remains supported below.
+  const fastOpenSupported = !isForwardChain && protocolSupported
+    && forwardType === "gost" && tunnelRoute && forwardxTunnel;
+  const zeroCopySupported = false;
   const udpOverTcpSupported = !isForwardChain && udpOverTcpProtocolSupported && forwardType === "gost" && tunnelRoute && forwardxTunnel;
   const tcpFastOpen = fastOpenSupported && !!input.tcpFastOpen;
   const zeroCopy = zeroCopySupported && !!input.zeroCopy;

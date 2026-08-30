@@ -15,17 +15,6 @@ import { structuredLinkTestMessage } from "../linkTestMessages";
 import { isValidHostOrIp } from "../networkAddress";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import {
-  normalizeTrafficPadding,
-  TRAFFIC_PADDING_MAX_MBPS_MAX,
-  TRAFFIC_PADDING_RATIO_MAX,
-  TRAFFIC_PADDING_RATIO_MIN,
-  trafficPaddingInputIsValid,
-} from "../../shared/trafficPadding";
-import {
-  assertTrafficPaddingEnableAuthorized,
-  trafficPaddingConfigurationRequiresAuthorization,
-} from "../trafficPaddingAuthorization";
-import {
   releaseHostPortReservations,
   reserveAvailableHostPort,
   reserveSpecificHostPort,
@@ -799,9 +788,6 @@ export const tunnelsRouter = router({
         mimicPort: z.number().int().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         trafficMultiplier: z.number().int().min(1).max(5000).optional().default(100),
-        trafficPaddingEnabled: z.boolean().optional().default(false),
-        trafficPaddingRatio: z.number().int().min(0).max(TRAFFIC_PADDING_RATIO_MAX).optional().default(0),
-        trafficPaddingMaxMbps: z.number().int().min(0).max(TRAFFIC_PADDING_MAX_MBPS_MAX).optional().default(0),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
@@ -830,16 +816,6 @@ export const tunnelsRouter = router({
         try {
         const normalizedMode = normalizeTunnelMode(input.mode);
         const forwardxVersion = normalizedMode === "forwardx" ? normalizeForwardXVersion(input.forwardxVersion) : "v1";
-        if (input.trafficPaddingEnabled && !trafficPaddingInputIsValid(input as any)) {
-          throw new Error(`流量填充比例必须为 ${TRAFFIC_PADDING_RATIO_MIN}-${TRAFFIC_PADDING_RATIO_MAX} 的整数，速率上限为 0-${TRAFFIC_PADDING_MAX_MBPS_MAX} Mbps`);
-        }
-        const trafficPadding = normalizeTrafficPadding(input as any, {
-          mode: normalizedMode,
-          forwardxVersion,
-        });
-        if (trafficPadding.trafficPaddingEnabled) {
-          assertTrafficPaddingEnableAuthorized(ctx.user);
-        }
         const certDomain = normalizedMode === "nginx_stream" ? normalizeCertDomain((input as any).certDomain) : null;
         const nginxCert = normalizeNginxCertInput(input as any, normalizedMode === "nginx_stream");
         const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 3) ? input.hopHostIds : null;
@@ -993,7 +969,6 @@ export const tunnelsRouter = router({
           listenPort,
           mimicPort,
           trafficMultiplier: normalizeTrafficMultiplier(input.trafficMultiplier),
-          ...trafficPadding,
           secret,
           userId: ctx.user.id,
         } as any);
@@ -1057,9 +1032,6 @@ export const tunnelsRouter = router({
         mimicPort: z.number().int().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         trafficMultiplier: z.number().int().min(1).max(5000).optional(),
-        trafficPaddingEnabled: z.boolean().optional(),
-        trafficPaddingRatio: z.number().int().min(0).max(TRAFFIC_PADDING_RATIO_MAX).optional(),
-        trafficPaddingMaxMbps: z.number().int().min(0).max(TRAFFIC_PADDING_MAX_MBPS_MAX).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
@@ -1168,42 +1140,6 @@ export const tunnelsRouter = router({
         if ((data as any).trafficMultiplier !== undefined) {
           (data as any).trafficMultiplier = normalizeTrafficMultiplier((data as any).trafficMultiplier);
         }
-        const requestedTrafficPadding = {
-          trafficPaddingEnabled: (data as any).trafficPaddingEnabled !== undefined
-            ? (data as any).trafficPaddingEnabled
-            : (tunnel as any).trafficPaddingEnabled,
-          trafficPaddingRatio: (data as any).trafficPaddingRatio !== undefined
-            ? (data as any).trafficPaddingRatio
-            : (tunnel as any).trafficPaddingRatio,
-          trafficPaddingMaxMbps: (data as any).trafficPaddingMaxMbps !== undefined
-            ? (data as any).trafficPaddingMaxMbps
-            : (tunnel as any).trafficPaddingMaxMbps,
-        };
-        const trafficPaddingProvided = (data as any).trafficPaddingEnabled !== undefined
-          || (data as any).trafficPaddingRatio !== undefined
-          || (data as any).trafficPaddingMaxMbps !== undefined;
-        if (
-          trafficPaddingProvided
-          && requestedTrafficPadding.trafficPaddingEnabled === true
-          && !trafficPaddingInputIsValid(requestedTrafficPadding)
-        ) {
-          throw new Error(`流量填充比例必须为 ${TRAFFIC_PADDING_RATIO_MIN}-${TRAFFIC_PADDING_RATIO_MAX} 的整数，速率上限为 0-${TRAFFIC_PADDING_MAX_MBPS_MAX} Mbps`);
-        }
-        const trafficPadding = normalizeTrafficPadding(requestedTrafficPadding, {
-          mode: nextModeForRuntime,
-          forwardxVersion: nextForwardXVersion,
-        });
-        const previousTrafficPadding = normalizeTrafficPadding(tunnel as any, {
-          mode: normalizeTunnelMode((tunnel as any).mode),
-          forwardxVersion: normalizeForwardXVersion((tunnel as any).forwardxVersion),
-        });
-        // Keep the capability gate server-side. Disabling and unrelated edits
-        // are allowed; only a newly enabled or changed padding configuration
-        // needs the reserved capability.
-        if (trafficPaddingConfigurationRequiresAuthorization(previousTrafficPadding, trafficPadding)) {
-          assertTrafficPaddingEnableAuthorized(ctx.user);
-        }
-        Object.assign(data as any, trafficPadding);
         const tunnelRuntimeKeys = [
           "proxyProtocolReceive",
           "proxyProtocolSend",
@@ -1424,7 +1360,7 @@ export const tunnelsRouter = router({
           .some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key])
           || hopChanged
           || loadBalanceChanged;
-        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "trafficPaddingEnabled", "trafficPaddingRatio", "trafficPaddingMaxMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

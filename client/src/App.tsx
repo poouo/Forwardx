@@ -131,17 +131,20 @@ function SetupGate() {
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
   const loginRoute = isLoginRoute(location);
 
-  // The local dev panel injects the seeded administrator in the server
-  // context, so showing a login form here only creates a needless gate.
-  if (isLocalDevPanel && (loginRoute || location === "/session-wait")) {
-    return <Redirect to="/" />;
-  }
-
+  // Keep this hook unconditional.  Local development redirects /login to the
+  // seeded dashboard, and returning before the query here makes the hook list
+  // change when the redirect completes.
   const setup = trpc.setup.status.useQuery(undefined, {
     enabled: hasMobilePanelUrl && !loginRoute,
     retry: false,
     refetchOnWindowFocus: false,
   });
+
+  // The local dev panel injects the seeded administrator in the server
+  // context, so showing a login form here only creates a needless gate.
+  if (isLocalDevPanel && (loginRoute || location === "/session-wait")) {
+    return <Redirect to="/" />;
+  }
 
   if (!hasMobilePanelUrl) {
     if (location !== "/login") return <Redirect to="/login" />;

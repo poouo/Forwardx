@@ -112,7 +112,7 @@ func TestConnGateConcurrentAcquireNeverExceedsHardLimit(t *testing.T) {
 
 func TestListenerConnGatesHaveDefaultsAndReleasePendingAfterHello(t *testing.T) {
 	gates := newListenerConnGates(config{})
-	if gates.active.maxConnections != fxpListenerMaxConnections || gates.active.maxPerIP != fxpListenerMaxConnectionsPerIP {
+	if gates.active.maxConnections != fxpListenerMaxConnections || gates.active.maxPerIP != 0 {
 		t.Fatalf("unexpected active defaults: total=%d perIP=%d", gates.active.maxConnections, gates.active.maxPerIP)
 	}
 	if gates.pending.maxConnections != fxpListenerMaxPendingConnections || gates.pending.maxPerIP != fxpListenerMaxPendingPerIP {
@@ -147,8 +147,8 @@ func TestListenerConnGatesHaveDefaultsAndReleasePendingAfterHello(t *testing.T) 
 	}
 
 	configured := newListenerConnGates(config{MaxConnections: 100, MaxIPs: 7})
-	if configured.active.maxConnections != 100 || configured.active.maxPerIP != 100 {
-		t.Fatalf("configured total limit was not honored independently of the end-user IP limit: total=%d perIP=%d", configured.active.maxConnections, configured.active.maxPerIP)
+	if configured.active.maxConnections != 100 || configured.active.maxPerIP != 0 {
+		t.Fatalf("configured total limit was not honored independently of the upstream IP: total=%d perIP=%d", configured.active.maxConnections, configured.active.maxPerIP)
 	}
 	if configured.pending.maxConnections != 100 || configured.pending.maxPerIP != 100 {
 		t.Fatalf("pending limits should be capped by configured limits: total=%d perIP=%d", configured.pending.maxConnections, configured.pending.maxPerIP)
@@ -156,10 +156,61 @@ func TestListenerConnGatesHaveDefaultsAndReleasePendingAfterHello(t *testing.T) 
 
 	oversized := newListenerConnGates(config{
 		MaxConnections: fxpListenerMaxConnections + 1,
-		MaxIPs:         fxpListenerMaxConnectionsPerIP + 1,
+		MaxIPs:         1,
 	})
-	if oversized.active.maxConnections != fxpListenerMaxConnections || oversized.active.maxPerIP != fxpListenerMaxConnectionsPerIP {
+	if oversized.active.maxConnections != fxpListenerMaxConnections || oversized.active.maxPerIP != 0 {
 		t.Fatalf("configured limits exceeded hard bounds: total=%d perIP=%d", oversized.active.maxConnections, oversized.active.maxPerIP)
+	}
+}
+
+func TestListenerConnGatesDoNotTreatAnEntryAgentAsOneUser(t *testing.T) {
+	gates := newListenerConnGates(config{MaxConnections: 2})
+	addr := &net.TCPAddr{IP: net.ParseIP("203.0.113.9"), Port: 50000}
+
+	startupFirst, releaseFirst, ok, reason := gates.acquire(addr)
+	if !ok {
+		t.Fatalf("first upstream connection rejected: %s", reason)
+	}
+	startupSecond, releaseSecond, ok, reason := gates.acquire(addr)
+	if !ok {
+		releaseFirst()
+		t.Fatalf("second upstream connection rejected: %s", reason)
+	}
+	startupFirst()
+	startupSecond()
+	if _, _, ok, reason := gates.acquire(addr); ok || reason != "active/maxConnections" {
+		t.Fatalf("third connection should hit the global limit, got ok=%v reason=%q", ok, reason)
+	}
+	releaseSecond()
+	releaseFirst()
+}
+
+func TestListenerConnGatesAllowMoreThanLegacyPerIPLimitFromOneEntry(t *testing.T) {
+	const admitted = 4097
+	gates := newListenerConnGates(config{MaxConnections: admitted + 32})
+	addr := &net.TCPAddr{IP: net.ParseIP("203.0.113.10"), Port: 50001}
+	releases := make([]func(), 0, admitted)
+	for i := 0; i < admitted; i++ {
+		startupComplete, release, ok, reason := gates.acquire(addr)
+		if !ok {
+			for _, cleanup := range releases {
+				cleanup()
+			}
+			t.Fatalf("connection %d from one entry agent rejected: %s", i+1, reason)
+		}
+		// Handshake completion releases the stricter pending per-IP lease;
+		// active connections remain protected by the listener-wide limit.
+		startupComplete()
+		releases = append(releases, release)
+	}
+	if active, _ := gates.active.stats(); active != admitted {
+		t.Fatalf("active=%d, want %d", active, admitted)
+	}
+	for _, release := range releases {
+		release()
+	}
+	if active, _ := gates.active.stats(); active != 0 {
+		t.Fatalf("active gate did not drain: %d", active)
 	}
 }
 

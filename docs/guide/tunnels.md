@@ -73,7 +73,7 @@ Nginx 仅保留 Stream 模式：
 
 ## 高级设置
 
-界面按隧道类型显示 PROXY Protocol、TCP Fast Open、zero-copy、流量倍率、出站策略和传输参数。未显示的参数不受当前类型支持。
+界面按隧道类型显示 PROXY Protocol、TCP Fast Open、流量倍率、出站策略和传输参数。TCP Fast Open 仅在 ForwardX 隧道的受支持路径提供；Realm 的旧 `fast_open`/`zero_copy` 选项不再生成。未显示的参数不受当前类型支持。
 
 修改隧道拓扑后，面板会生成新的拓扑标识；旧拓扑迟到的探测结果不会写入新图表。
 

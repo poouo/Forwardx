@@ -1145,8 +1145,10 @@ export function ForwardGroupsContent({
       proxyProtocolReceive: !!group.proxyProtocolReceive,
       proxyProtocolSend: !!group.proxyProtocolSend,
       proxyProtocolVersion: Number(group.proxyProtocolVersion) === 2 ? 2 : 1,
-      tcpFastOpen: !!group.tcpFastOpen,
-      zeroCopy: !!group.zeroCopy,
+      // Realm 2.9.x no longer supports its legacy fast_open/zero_copy keys.
+      // Keep old fields readable but never expose stale enabled state.
+      tcpFastOpen: false,
+      zeroCopy: false,
       udpOverTcp: !!group.udpOverTcp,
       udpOverTcpPort: Number(group.udpOverTcpPort || 0),
       failoverEnabled: false,
@@ -1548,8 +1550,8 @@ export function ForwardGroupsContent({
       proxyProtocolExitReceive: false,
       proxyProtocolExitSend: false,
       proxyProtocolVersion: runtimeConfigSupported && Number(form.proxyProtocolVersion) === 2 ? 2 : 1,
-      tcpFastOpen: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.tcpFastOpen,
-      zeroCopy: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.zeroCopy,
+      tcpFastOpen: false,
+      zeroCopy: false,
       udpOverTcp: false,
       udpOverTcpPort: null,
       failoverEnabled: false,
@@ -1767,10 +1769,9 @@ export function ForwardGroupsContent({
   const runtimeConfigMode = isPortMode || isChainMode || activeGroupMode === "failover";
   const runtimeTcpOptionsSupported = runtimeConfigMode && form.protocol !== "udp";
   const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm");
-  const runtimeRealmOptimizationSupported = runtimeTcpOptionsSupported && form.forwardType === "realm";
   const advancedSettingsConfigured = runtimeProxyProtocolSupported
-    ? (form.proxyProtocolReceive || form.proxyProtocolSend || form.tcpFastOpen || form.zeroCopy)
-    : (form.tcpFastOpen || form.zeroCopy);
+    ? (form.proxyProtocolReceive || form.proxyProtocolSend)
+    : false;
   const canManualCheck = activeGroupMode === "failover" || activeGroupMode === "entry";
   const modeMeta: Record<GroupMode, {
     title: string;
@@ -2445,8 +2446,8 @@ export function ForwardGroupsContent({
                           forwardType,
                           proxyProtocolReceive: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolReceive,
                           proxyProtocolSend: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolSend,
-                          tcpFastOpen: tcpSupported && forwardType === "realm" && form.tcpFastOpen,
-                          zeroCopy: tcpSupported && forwardType === "realm" && form.zeroCopy,
+                          tcpFastOpen: false,
+                          zeroCopy: false,
                         });
                       }}
                     >
@@ -2505,7 +2506,7 @@ export function ForwardGroupsContent({
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-medium">高级设置</div>
-                    <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
+                    <div className="text-xs text-muted-foreground">PROXY Protocol</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge variant={advancedSettingsConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
@@ -2544,19 +2545,6 @@ export function ForwardGroupsContent({
                       {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。</p>}
                     </div>
 
-                    <div className="space-y-2 border-t border-border/50 pt-3">
-                      <Label className="text-sm">传输优化</Label>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                          <span className="text-sm">TCP Fast Open</span>
-                          <Switch checked={runtimeRealmOptimizationSupported && form.tcpFastOpen} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, tcpFastOpen: checked })} />
-                        </label>
-                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                          <span className="text-sm">zero-copy</span>
-                          <Switch checked={runtimeRealmOptimizationSupported && form.zeroCopy} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, zeroCopy: checked })} />
-                        </label>
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>

@@ -181,7 +181,6 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const runtimeTcpOptionsSupported = runtimeConfigSupported && protocol !== "udp";
   const forwardType = runtimeConfigSupported ? (input.forwardType || "iptables") : groupType === "tunnel" ? "gost" : "iptables";
   const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (forwardType === "gost" || forwardType === "realm");
-  const runtimeRealmOptimizationSupported = runtimeTcpOptionsSupported && forwardType === "realm";
   const commonData = {
     name: input.name,
     remark: isCollectionGroup ? null : input.remark?.trim() || null,
@@ -196,8 +195,10 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     proxyProtocolExitReceive: false,
     proxyProtocolExitSend: false,
     proxyProtocolVersion: runtimeProxyProtocolSupported && Number(input.proxyProtocolVersion) === 2 ? 2 : 1,
-    tcpFastOpen: runtimeRealmOptimizationSupported && !!input.tcpFastOpen,
-    zeroCopy: runtimeRealmOptimizationSupported && !!input.zeroCopy,
+    // Realm 2.9.x no longer implements network.fast_open/zero_copy. Keep the
+    // columns in the schema for old data, but normalize new group data off.
+    tcpFastOpen: false,
+    zeroCopy: false,
     udpOverTcp: false,
     udpOverTcpPort: null,
     failoverEnabled: false,

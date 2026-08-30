@@ -495,6 +495,14 @@ function groupModeOf(group: any): ForwardGroupMode {
   return mode === "port" || mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
 }
 
+// Older SQLite/MySQL rows can contain values written before the runtime
+// selector normalized its enum input. Keep generated child rules compatible
+// with those rows without changing the persisted data in a sync pass.
+function normalizeRuntimeForwardType(value: unknown, fallback = "iptables") {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized || fallback;
+}
+
 function isCollectionGroupMode(mode: ForwardGroupMode) {
   return mode === "entry" || mode === "exit";
 }
@@ -2669,12 +2677,21 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const protocol = String(templateRule.protocol || "both");
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
   const protocolUdpSupported = protocol === "udp" || protocol === "both";
-  const isPortGroup = groupModeOf(group) === "port";
-  const directRuntimeSource = isPortGroup ? group : templateRule;
+  const groupMode = groupModeOf(group);
+  const isPortGroup = groupMode === "port";
+  // Failover groups expose the direct runtime tool and PROXY options in the
+  // group editor.  Only use those overrides when an explicit runtime that
+  // supports the options was selected; otherwise preserve legacy templates.
+  const groupForwardType = String((group as any)?.forwardType || "").trim().toLowerCase();
+  const preferGroupRuntime = isPortGroup
+    || (groupMode === "failover" && (groupForwardType === "gost" || groupForwardType === "realm"));
+  const directRuntimeSource = preferGroupRuntime ? group : templateRule;
   const failoverRuntimeSource = templateRule;
-  const directForwardType = String((directRuntimeSource as any).forwardType || "iptables");
+  const directForwardType = normalizeRuntimeForwardType((directRuntimeSource as any).forwardType);
   const directProxySupported = protocolTcpSupported && (directForwardType === "gost" || directForwardType === "realm");
-  const directRealmOptimizationSupported = protocolTcpSupported && directForwardType === "realm";
+  // Realm 2.9.x ignores network.fast_open and network.zero_copy. Child rules
+  // must therefore never inherit these legacy flags from a group/template.
+  const directRealmOptimizationSupported = false;
   const templateFailoverEnabled = !!(failoverRuntimeSource as any).failoverEnabled && protocol === "tcp";
   const directFailoverEnabled = templateFailoverEnabled && directForwardType === "gost";
   const tunnelMode = String(tunnel?.mode || "").toLowerCase();
@@ -2856,11 +2873,12 @@ async function ensureChainRuleForTemplate(
     if (!targetIp) throw new Error("Next chain host has no usable connect address");
   }
 
-  const chainForwardType = String((group as any).forwardType || templateRule.forwardType || "iptables");
+  const chainForwardType = normalizeRuntimeForwardType((group as any).forwardType || templateRule.forwardType);
   const protocol = String(templateRule.protocol || "both");
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
   const chainProxyProtocolSupported = protocolTcpSupported && (chainForwardType === "gost" || chainForwardType === "realm");
-  const chainRealmOptimizationSupported = protocolTcpSupported && chainForwardType === "realm";
+  // Realm 2.9.x removed the legacy transport optimization options.
+  const chainRealmOptimizationSupported = false;
   const {
     disabledByUser: childDisabledByUser,
     disabledByTunnel: childDisabledByTunnel,

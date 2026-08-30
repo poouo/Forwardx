@@ -63,7 +63,7 @@ ForwardX 使用独立的 `forwardx-nginx` 运行时，监听规则配置的入�
 
 ## 高级设置
 
-PROXY Protocol、TCP Fast Open、zero-copy、流量倍率和出站策略等链路级参数在对应资源中配置。界面只显示当前工具支持的选项，后端仍会校验不兼容配置。
+PROXY Protocol、TCP Fast Open、流量倍率和出站策略等链路级参数在对应资源中配置。TCP Fast Open 仅在受支持的 ForwardX/GOST 路径提供；Realm 的旧 `fast_open`/`zero_copy` 选项不再生成。界面只显示当前工具支持的选项，后端仍会校验不兼容配置。
 
 出站策略在转发规则中选择，但仅对支持该能力的隧道或端口转发工具显示。
 
