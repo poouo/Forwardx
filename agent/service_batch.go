@@ -201,12 +201,24 @@ func systemdServicesActive(names []string) map[string]bool {
 	for _, name := range names {
 		args = append(args, name+".service")
 	}
-	out, _ := commandCombinedOutputWithTimeout(10*time.Second, "systemctl", args...)
+	out, err := commandCombinedOutputWithTimeout(10*time.Second, "systemctl", args...)
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	inactiveCount := 0
+	unknownCount := 0
 	for index, name := range names {
 		if index < len(lines) {
-			active[name] = strings.TrimSpace(lines[index]) == "active"
+			state := strings.TrimSpace(lines[index])
+			active[name] = state == "active"
+			if state != "active" {
+				inactiveCount++
+			}
+		} else {
+			active[name] = false
+			unknownCount++
 		}
+	}
+	if (err != nil || inactiveCount > 0 || unknownCount > 0) && shouldLogAgentReport("systemd-active-check", agentReportLogInterval) {
+		logf("systemd service check incomplete=%v services=%d inactive=%d unknown=%d error=%v", err != nil, len(names), inactiveCount, unknownCount, err)
 	}
 	return active
 }

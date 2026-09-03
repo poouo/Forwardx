@@ -100,12 +100,25 @@ function installSecurityHeaders(app: express.Express) {
 }
 
 async function startServer() {
-  await initializePanelClock();
-  const databaseStatus = await initDatabase();
+  const startupStartedAt = Date.now();
+  const runStartupStep = async <T>(name: string, work: () => Promise<T> | T) => {
+    const startedAt = Date.now();
+    try {
+      return await work();
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      if (durationMs >= 2_000) {
+        console.warn(`[Server] startup step slow step=${name} durationMs=${durationMs}`);
+      }
+    }
+  };
+
+  await runStartupStep("panel-clock", () => initializePanelClock());
+  const databaseStatus = await runStartupStep("database", () => initDatabase());
 
   const app = express();
   app.set("trust proxy", resolveTrustProxySetting(ENV.trustProxy));
-  const panelSsl = await loadPanelSslRuntimeConfig();
+  const panelSsl = await runStartupStep("panel-ssl", () => loadPanelSslRuntimeConfig());
   const protocol = panelSsl.enabled ? "https" : "http";
   const server = panelSsl.enabled && panelSsl.options
     ? createHttpsServer(panelSsl.options, app)
@@ -135,7 +148,9 @@ async function startServer() {
   const isProduction = process.env.NODE_ENV === "production";
   const isDevPanel = process.env.FORWARDX_DEV_PANEL === "1";
   const listenHost = isDevPanel ? (process.env.FORWARDX_DEV_SERVER_HOST || "127.0.0.1") : undefined;
-  const port = isProduction ? preferredPort : await findAvailablePort(preferredPort, listenHost);
+  const port = isProduction
+    ? preferredPort
+    : await runStartupStep("find-port", () => findAvailablePort(preferredPort, listenHost));
 
   if (isProduction && !(await isPortAvailable(preferredPort, listenHost))) {
     throw new Error(`Port ${preferredPort} is already in use`);
@@ -147,7 +162,10 @@ async function startServer() {
 
   const onListening = () => {
     console.info(`Server running on ${protocol}://localhost:${port}/`);
-    console.info(`[Server] ForwardX panel started on ${protocol.toUpperCase()} port ${port}`);
+    console.info(
+      `[Server] ForwardX panel started on ${protocol.toUpperCase()} port ${port}`
+        + ` startupMs=${Date.now() - startupStartedAt} database=${databaseStatus.ready ? "ready" : "not-ready"}`,
+    );
   };
   if (listenHost) server.listen(port, listenHost, onListening);
   else server.listen(port, onListening);

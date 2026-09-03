@@ -70,21 +70,71 @@ type SqliteConnectionLockContext = {
 
 const sqliteConnectionLockContext = new AsyncLocalStorage<SqliteConnectionLockContext>();
 let sqliteConnectionQueue: Promise<void> = Promise.resolve();
+let sqliteConnectionPending = 0;
+let sqliteConnectionSliceStartedAt = Date.now();
+let sqliteConnectionSliceOperations = 0;
+const SQLITE_CONNECTION_SLICE_MAX_MS = 8;
+const SQLITE_CONNECTION_SLICE_MAX_OPERATIONS = 32;
+const SQLITE_CONNECTION_SLOW_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const SQLITE_CONNECTION_SLOW_WAIT_MS = 2_000;
+const SQLITE_CONNECTION_SLOW_HOLD_MS = 2_000;
+let sqliteConnectionSlowLogAt = 0;
 
-async function withSqliteConnectionLock<T>(sqlite: Database.Database, work: () => Promise<T> | T): Promise<T> {
+function logSlowSqliteConnection(label: string, waitMs: number, holdMs: number) {
+  if (waitMs < SQLITE_CONNECTION_SLOW_WAIT_MS && holdMs < SQLITE_CONNECTION_SLOW_HOLD_MS) return;
+  const now = Date.now();
+  if (now - sqliteConnectionSlowLogAt < SQLITE_CONNECTION_SLOW_LOG_INTERVAL_MS) return;
+  sqliteConnectionSlowLogAt = now;
+  console.warn(
+    `[Database] SQLite operation slow label=${label} waitMs=${Math.max(0, Math.round(waitMs))}`
+      + ` holdMs=${Math.max(0, Math.round(holdMs))} pending=${sqliteConnectionPending}`,
+  );
+}
+
+async function yieldContendedSqliteQueueIfNeeded(wasQueued: boolean) {
+  if (!wasQueued) {
+    sqliteConnectionSliceStartedAt = Date.now();
+    sqliteConnectionSliceOperations = 0;
+    return;
+  }
+  const now = Date.now();
+  if (
+    sqliteConnectionSliceOperations < SQLITE_CONNECTION_SLICE_MAX_OPERATIONS
+    && now - sqliteConnectionSliceStartedAt < SQLITE_CONNECTION_SLICE_MAX_MS
+  ) return;
+  sqliteConnectionSliceStartedAt = now;
+  sqliteConnectionSliceOperations = 0;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  sqliteConnectionSliceStartedAt = Date.now();
+}
+
+async function withSqliteConnectionLock<T>(
+  sqlite: Database.Database,
+  work: () => Promise<T> | T,
+  label = "query",
+): Promise<T> {
   const inherited = sqliteConnectionLockContext.getStore();
   if (inherited?.active && inherited.sqlite === sqlite) return work();
 
+  const wasQueued = sqliteConnectionPending > 0;
+  const queuedAt = Date.now();
+  sqliteConnectionPending += 1;
   const previous = sqliteConnectionQueue;
   let release: () => void = () => {};
   sqliteConnectionQueue = new Promise<void>((resolve) => { release = resolve; });
   await previous;
+  const waitMs = Date.now() - queuedAt;
+  await yieldContendedSqliteQueueIfNeeded(wasQueued);
+  sqliteConnectionSliceOperations += 1;
 
   const lock = { sqlite, active: true };
+  const startedAt = Date.now();
   try {
     return await sqliteConnectionLockContext.run(lock, work);
   } finally {
+    logSlowSqliteConnection(String(label || "query"), waitMs, Date.now() - startedAt);
     lock.active = false;
+    sqliteConnectionPending = Math.max(0, sqliteConnectionPending - 1);
     release();
   }
 }
@@ -96,7 +146,7 @@ function createSqliteDrizzleDatabase(sqlite: Database.Database): Db {
       if (method === "run") return { rows: [], ...statement.run(...params) };
       if (method === "get") return { rows: statement.raw().get(...params) };
       return { rows: statement.raw().all(...params) };
-    })
+    }, `drizzle-${method}`)
   );
   return drizzleSqliteProxy(callback) as Db;
 }
@@ -693,7 +743,7 @@ export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promis
           throw error;
         }
         return transactionResult;
-      });
+      }, "transaction");
     } finally {
       await runAfterSettledCallbacks(afterSettled);
     }
@@ -708,7 +758,7 @@ export async function withSqliteExclusive<T>(work: (sqlite: Database.Database) =
   if (!_db || !_kind) await connectDatabase();
   if (_kind !== "sqlite" || !_sqlite) throw new Error("SQLite direct migration requires an active SQLite database");
   const sqlite = _sqlite;
-  return withSqliteConnectionLock(sqlite, () => work(sqlite));
+  return withSqliteConnectionLock(sqlite, () => work(sqlite), "exclusive");
 }
 
 export function getDatabaseKind() {
@@ -775,7 +825,7 @@ export async function executeRaw(sqlText: string, params: any[] = []) {
   if (_kind === "sqlite") {
     const sqlite = active?.sqlite || _sqlite;
     if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).run(...normalizedParams));
+    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).run(...normalizedParams), "executeRaw");
   }
   if (_kind === "postgresql") {
     const executor = active?.postgresClient || _pgPool;
@@ -798,7 +848,7 @@ export async function queryRaw<T = Record<string, any>>(sqlText: string, params:
   if (_kind === "sqlite") {
     const sqlite = active?.sqlite || _sqlite;
     if (!sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).all(...normalizedParams) as T[]);
+    return withSqliteConnectionLock(sqlite, () => sqlite.prepare(sqlText).all(...normalizedParams) as T[], "queryRaw");
   }
   if (_kind === "postgresql") {
     const executor = active?.postgresClient || _pgPool;

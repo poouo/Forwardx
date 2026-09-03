@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { appendPanelLog } from "./_core/panelLogger";
 
 export type PluginAgentTaskStatus = "queued" | "running" | "success" | "error" | "timeout";
 export type PluginAgentGroupStatus = "queued" | "running" | "success" | "partial" | "error" | "timeout";
@@ -73,6 +74,7 @@ export type PluginAgentTaskGroup = {
 type PluginAgentTaskGroupState = PluginAgentTaskGroup & {
   timeoutTimer?: NodeJS.Timeout;
   expiresAt: number;
+  failureLogged?: boolean;
 };
 
 type PluginAgentTaskHost = {
@@ -104,6 +106,22 @@ const TASK_DISPATCH_GRACE_MS = 35_000;
 const MAX_TASKS_PER_HOST = 20;
 const taskQueues = new Map<number, PluginAgentTask[]>();
 const taskGroups = new Map<string, PluginAgentTaskGroupState>();
+
+function logToken(value: unknown, limit = 96) {
+  return String(value || "-")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit) || "-";
+}
+
+function logPluginTaskGroup(level: "info" | "warn", event: string, group: PluginAgentTaskGroupState, extra = "") {
+  appendPanelLog(
+    level,
+    `[PluginTask] ${event} group=${logToken(group.groupId, 64)} plugin=${logToken(group.pluginId)} action=${logToken(group.actionId)}`
+      + ` hosts=${group.total} completed=${group.completed} status=${group.status}${extra ? ` ${extra}` : ""}`,
+  );
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -253,10 +271,16 @@ function markGroupTimedOut(groupId: string) {
   removeQueuedTasks(groupId);
   group.updatedAt = finishedAt;
   refreshGroup(group);
+  logPluginTaskGroup(
+    "warn",
+    "group-timeout",
+    group,
+    `queued=${group.total} completed=${group.completed} timeoutResults=${group.results.filter((result) => result.status === "timeout").length}`,
+  );
 }
 
 function publicGroup(group: PluginAgentTaskGroupState): PluginAgentTaskGroup {
-  const { timeoutTimer: _timeoutTimer, expiresAt: _expiresAt, ...value } = group;
+  const { timeoutTimer: _timeoutTimer, expiresAt: _expiresAt, failureLogged: _failureLogged, ...value } = group;
   return {
     ...value,
     results: value.results.map((result) => ({ ...result })),
@@ -347,6 +371,7 @@ export function enqueuePluginAgentTaskGroup(input: PluginAgentTaskGroupInput) {
   );
   group.timeoutTimer.unref?.();
   taskGroups.set(groupId, group);
+  logPluginTaskGroup("info", "group-queued", group, `timeoutMs=${timeoutMs}`);
   return publicGroup(group);
 }
 
@@ -381,6 +406,10 @@ export function takePluginAgentTasks(
     group.updatedAt = dispatchedAt;
     refreshGroup(group);
   }
+  if (tasks.length > 0) {
+    const groups = new Set(tasks.map((task) => task.groupId));
+    appendPanelLog("info", `[PluginTask] dispatched host=${id} count=${tasks.length} groups=${groups.size}`);
+  }
   return tasks;
 }
 
@@ -401,6 +430,7 @@ export function completePluginAgentTask(hostId: number, input: PluginAgentTaskRe
   const result = group.results.find((item) => item.taskId === taskId && item.hostId === id);
   if (!result) return false;
   if (isTerminalTaskStatus(result.status)) return true;
+  const wasDone = group.done;
   const completedAt = nowIso();
   const finishedAt = normalizeText(input.finishedAt, 80) || completedAt;
   const timedOut = input.timedOut === true;
@@ -433,6 +463,28 @@ export function completePluginAgentTask(hostId: number, input: PluginAgentTaskRe
   if (!result.output && result.error) result.output = result.error;
   group.updatedAt = completedAt;
   refreshGroup(group);
+  // Keep one representative failure per group; the completion summary below
+  // contains the authoritative counts without producing one log per host.
+  if (!success && !group.failureLogged) {
+    group.failureLogged = true;
+    appendPanelLog(
+      "warn",
+      `[PluginTask] task-failed group=${logToken(group.groupId, 64)} plugin=${logToken(group.pluginId)} action=${logToken(group.actionId)}`
+        + ` host=${id} status=${result.status} timedOut=${timedOut}`
+        + ` durationMs=${result.agentDurationMs ?? 0} queueMs=${result.queueDurationMs ?? 0}`,
+    );
+  }
+  if (!wasDone && group.done) {
+    const successful = group.results.filter((item) => item.status === "success").length;
+    const failed = group.results.filter((item) => item.status === "error").length;
+    const timedOutCount = group.results.filter((item) => item.status === "timeout").length;
+    logPluginTaskGroup(
+      group.status === "success" ? "info" : "warn",
+      "group-complete",
+      group,
+      `success=${successful} failed=${failed} timeout=${timedOutCount}`,
+    );
+  }
   return true;
 }
 

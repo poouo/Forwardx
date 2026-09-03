@@ -388,6 +388,10 @@ export const forwardGroups = table("forward_groups", {
   exitStrategy: varchar("exitStrategy", { length: 32 }).notNull().default("round_robin"),
   entryGroupId: int("entryGroupId"),
   forwardType: varchar("forwardType", { length: 32 }).notNull().default("iptables"),
+  // Failover groups created before group-level runtime inheritance was
+  // introduced keep their legacy template-driven child semantics until an
+  // administrator explicitly saves the group.
+  failoverRuntimeInheritanceEnabled: boolean("failoverRuntimeInheritanceEnabled").notNull().default(false),
   domain: text("domain"),
   recordType: varchar("recordType", { length: 16 }).notNull().default("A"),
   sourcePort: int("sourcePort").notNull().default(1),

@@ -2684,7 +2684,9 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   // supports the options was selected; otherwise preserve legacy templates.
   const groupForwardType = String((group as any)?.forwardType || "").trim().toLowerCase();
   const preferGroupRuntime = isPortGroup
-    || (groupMode === "failover" && (groupForwardType === "gost" || groupForwardType === "realm"));
+    || (groupMode === "failover"
+      && dbBool((group as any)?.failoverRuntimeInheritanceEnabled)
+      && (groupForwardType === "gost" || groupForwardType === "realm"));
   const directRuntimeSource = preferGroupRuntime ? group : templateRule;
   const failoverRuntimeSource = templateRule;
   const directForwardType = normalizeRuntimeForwardType((directRuntimeSource as any).forwardType);
@@ -2751,6 +2753,35 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     pendingDelete: false,
     userId: Number(templateRule.userId),
   };
+
+  // A 2.3.278 background sync could have copied group-level runtime fields
+  // into legacy failover children. Keep those fields stable while the group
+  // remains in compatibility mode; an explicit group save opts into the new
+  // inheritance semantics and can intentionally reconcile them.
+  if (existing && groupMode === "failover" && !dbBool((group as any)?.failoverRuntimeInheritanceEnabled)) {
+    const runtimeKeys = [
+      "forwardType",
+      "proxyProtocolReceive",
+      "proxyProtocolSend",
+      "proxyProtocolVersion",
+    ];
+    for (const key of runtimeKeys) {
+      const existingValue = existing?.[key];
+      const groupValue = (group as any)?.[key];
+      const templateValue = templateRule?.[key];
+      const equal = key === "forwardType"
+        ? normalizeRuntimeForwardType(existingValue) === normalizeRuntimeForwardType(groupValue)
+        : key.startsWith("proxyProtocol") && key !== "proxyProtocolVersion"
+          ? dbBool(existingValue) === dbBool(groupValue)
+          : nullableNumber(existingValue) === nullableNumber(groupValue);
+      const groupDiffersFromTemplate = key === "forwardType"
+        ? normalizeRuntimeForwardType(groupValue) !== normalizeRuntimeForwardType(templateValue)
+        : key.startsWith("proxyProtocol") && key !== "proxyProtocolVersion"
+          ? dbBool(groupValue) !== dbBool(templateValue)
+          : nullableNumber(groupValue) !== nullableNumber(templateValue);
+      if (equal && groupDiffersFromTemplate) payload[key] = existingValue;
+    }
+  }
 
   if (existing) {
     if (canPreserveChildRuleRuntime(existing, payload, options)) {
@@ -3261,6 +3292,7 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
     : Math.max(0, Math.floor(Number((data as any).sortOrder) || 0));
   const id = await insertAndGetId("forward_groups", {
     ...data,
+    failoverRuntimeInheritanceEnabled: (data as any).failoverRuntimeInheritanceEnabled ?? true,
     groupMode,
     sortOrder,
     forwardType: (data as any).forwardType || "iptables",

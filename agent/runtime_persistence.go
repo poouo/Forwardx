@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -636,9 +637,11 @@ func restorePersistedFailoverIfCurrent(candidate persistedFailover, message *act
 }
 
 func restorePersistedForwardXRuntimes(cfg Config) {
+	startedAt := time.Now()
 	migrateRuntimeFXPConfigsToPersistent()
 	restoredWireGuard := 0
-	for _, spec := range loadPersistedWireGuardSpecs() {
+	wireGuardSpecs := loadPersistedWireGuardSpecs()
+	for _, spec := range wireGuardSpecs {
 		restored, current, err := restorePersistedWireGuardSpecIfCurrent(spec)
 		if !current {
 			logf("local WireGuard runtime restore skipped stale snapshot tunnel=%d", spec.TunnelID)
@@ -652,9 +655,11 @@ func restorePersistedForwardXRuntimes(cfg Config) {
 			restoredWireGuard++
 		}
 	}
-	restoredFXP := restorePersistedFXPSpecs(cfg, loadPersistedFXPSpecs())
+	fxpSpecs := loadPersistedFXPSpecs()
+	restoredFXP := restorePersistedFXPSpecs(cfg, fxpSpecs)
 	restoredFailover := 0
-	for _, stored := range loadPersistedFailovers() {
+	failoverSpecs := loadPersistedFailovers()
+	for _, stored := range failoverSpecs {
 		ok, current := restorePersistedFailoverIfCurrent(stored, nil, nil)
 		if !current {
 			logf("local failover restore skipped stale snapshot rule=%d source=%d", stored.RuleID, stored.SourcePort)
@@ -664,9 +669,16 @@ func restorePersistedForwardXRuntimes(cfg Config) {
 			restoredFailover++
 		}
 	}
-	if restoredWireGuard > 0 || restoredFXP > 0 || restoredFailover > 0 {
-		logf("local runtime restore complete wireguard=%d fxp=%d failover=%d", restoredWireGuard, restoredFXP, restoredFailover)
-	}
+	logf(
+		"local runtime restore complete wireguard=%d/%d fxp=%d/%d failover=%d/%d duration=%s",
+		restoredWireGuard,
+		len(wireGuardSpecs),
+		restoredFXP,
+		len(fxpSpecs),
+		restoredFailover,
+		len(failoverSpecs),
+		time.Since(startedAt).Round(time.Millisecond),
+	)
 }
 
 func restorePersistedFXPSpecs(cfg Config, specs []fxpSpec) int {

@@ -35,6 +35,7 @@ import { issueAgentAuthChallenges } from "./agentAuthChallenge";
 import { panelCryptoNowMs } from "./panelClock";
 import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
 import { observePresenceCapableHostActivity } from "./agentFastLiveness";
+import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -63,6 +64,11 @@ agentRouter.get("/api/agent/auth-challenge", (req, res) => {
 
 const AGENT_STREAM_AUTH_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const agentStreamAuthLogCache = new Map<string, number>();
+const agentStreamAuthLogCacheCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  pruneMapEntries(agentStreamAuthLogCache, (loggedAt) => now - loggedAt >= 60 * 60 * 1000);
+}, 10 * 60 * 1000);
+agentStreamAuthLogCacheCleanupTimer.unref?.();
 
 function agentErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
@@ -74,11 +80,11 @@ function isAgentStreamAuthFailure(error: unknown, message = agentErrorMessage(er
 }
 
 function shouldLogAgentStreamAuthFailure(message: string) {
-  const key = message.toLowerCase();
   const now = Date.now();
+  const key = message.toLowerCase();
   const last = agentStreamAuthLogCache.get(key) || 0;
   if (now - last < AGENT_STREAM_AUTH_LOG_INTERVAL_MS) return false;
-  agentStreamAuthLogCache.set(key, now);
+  setBoundedMapValue(agentStreamAuthLogCache, key, now, 2048);
   return true;
 }
 
@@ -204,26 +210,27 @@ async function openAgentEventStream(input: {
   setAgentEventStreamHeaders(res, "keep-alive");
   res.flushHeaders?.();
 
-  const writeEncryptedEvent = (type: string, data: any) => {
-    res.write(`event: message\n`);
-    res.write(`data: ${JSON.stringify(encryptPayload({ type, data }, token))}\n\n`);
-  };
+  // Keep TCP failure detection enabled for long-lived streams. Application-level
+  // heartbeats and the bounded writer in agentEvents handle proxy/socket stalls.
+  res.socket?.setKeepAlive?.(true, 30_000);
+  res.socket?.setNoDelay?.(true);
 
-  registerAgentEventClient(host.id, token, res);
+  const eventStream = registerAgentEventClient(host.id, token, res, { heartbeatIntervalMs: 25_000 });
   if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
-  writeEncryptedEvent("ready", { success: true });
+  eventStream.writeEvent("ready", { success: true });
 
-  const heartbeat = setInterval(() => {
-    // SSE comments keep proxies awake without an encryption + JSON allocation
-    // on every connection. Agents ignore comment lines by design.
-    res.write(": ping\n\n");
-  }, 25000);
-
-  req.on("close", () => {
-    clearInterval(heartbeat);
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    req.off("aborted", cleanup);
+    req.off("close", cleanup);
     unregisterAgentEventClient(host.id, res);
     if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} disconnected`);
-  });
+  };
+  req.once("aborted", cleanup);
+  req.once("close", cleanup);
+  eventStream.onClose(cleanup);
 }
 
 // 为所有 /api/agent/* POST 接口启用加密中间件（GET install.sh 等不需要）

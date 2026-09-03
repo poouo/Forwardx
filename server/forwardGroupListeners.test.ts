@@ -32,9 +32,9 @@ test("forward group sync creates an enabled child listener for every enabled mem
         await insert("hosts", ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"], [id, "host-" + id, ip, ip, 1, 1, now]);
       }
       await insert("forward_groups", [
-        "id", "name", "groupType", "groupMode", "forwardType", "proxyProtocolSend", "proxyProtocolVersion", "domain", "recordType", "targetIp",
+        "id", "name", "groupType", "groupMode", "forwardType", "failoverRuntimeInheritanceEnabled", "proxyProtocolSend", "proxyProtocolVersion", "domain", "recordType", "targetIp",
         "userId", "isEnabled", "activeMemberId", "failoverSeconds", "recoverSeconds", "autoFailback",
-      ], [10, "group", "host", "failover", " GOST ", 1, 2, "edge.example.test", "A", "0.0.0.0", 1, 1, null, 60, 120, 1]);
+      ], [10, "group", "host", "failover", " GOST ", 1, 1, 2, "edge.example.test", "A", "0.0.0.0", 1, 1, null, 60, 120, 1]);
       await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [101, 10, "host", 1, 0, 1]);
       await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [102, 10, "host", 2, 1, 1]);
       await insert("forward_rules", [
@@ -62,6 +62,162 @@ test("forward group sync creates an enabled child listener for every enabled mem
         'SELECT "updatedAt" FROM "forward_rules" WHERE "id" = 101',
       );
       assert.notEqual(afterResync[0]?.updatedAt, beforeResync[0]?.updatedAt, "a stopped child must be re-dispatched");
+    } finally {
+      await runtime.closeDatabase();
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  fs.rmSync(directory, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("legacy failover groups keep child runtime fields until explicitly opted in", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-runtime-compat-"));
+  const databasePath = path.join(directory, "runtime-compat.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const q = (name) => '"' + name + '"';
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO " + q(table) + " (" + columns.map(q).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      const now = Math.floor(Date.now() / 1000);
+      await insert("hosts", ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat"], [1, "host-1", "198.51.100.10", "198.51.100.10", 1, 1, now]);
+      await insert("forward_groups", [
+        "id", "name", "groupType", "groupMode", "forwardType", "failoverRuntimeInheritanceEnabled",
+        "proxyProtocolSend", "proxyProtocolVersion", "targetIp", "userId", "isEnabled",
+      ], [10, "legacy", "host", "failover", "gost", 0, 1, 2, "0.0.0.0", 1, 1]);
+      await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [101, 10, "host", 1, 0, 1]);
+      await insert("forward_rules", [
+        "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate",
+        "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning",
+      ], [100, 1, "template", "realm", "tcp", 10, 1, 16000, "203.0.113.10", 80, 1, 1, 1]);
+
+      const forwardGroups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      let children = await runtime.queryRaw(
+        'SELECT "id", "forwardType", "proxyProtocolSend" FROM "forward_rules" WHERE "forwardGroupId" = ? AND "isForwardGroupTemplate" = 0',
+        [10],
+      );
+      assert.deepEqual(children.map((row) => ({ forwardType: row.forwardType, proxyProtocolSend: Number(row.proxyProtocolSend) })), [{ forwardType: "realm", proxyProtocolSend: 0 }]);
+      const childId = Number(children[0].id);
+
+      // Model the child state written by v2.3.278 and verify a background sync
+      // does not silently rewrite it while the compatibility flag is off.
+      await runtime.executeRaw('UPDATE "forward_rules" SET "forwardType" = ?, "proxyProtocolSend" = ?, "isRunning" = 1 WHERE "id" = ?', ["gost", 1, childId]);
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      children = await runtime.queryRaw('SELECT "forwardType", "proxyProtocolSend" FROM "forward_rules" WHERE "id" = ?', [childId]);
+      assert.deepEqual(children.map((row) => ({ forwardType: row.forwardType, proxyProtocolSend: Number(row.proxyProtocolSend) })), [{ forwardType: "gost", proxyProtocolSend: 1 }]);
+
+      // An explicit group save opts in and intentionally reconciles the child.
+      await forwardGroups.updateForwardGroup(10, { failoverRuntimeInheritanceEnabled: true });
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      children = await runtime.queryRaw('SELECT "forwardType", "proxyProtocolSend", "proxyProtocolVersion" FROM "forward_rules" WHERE "id" = ?', [childId]);
+      assert.deepEqual(children.map((row) => ({ forwardType: row.forwardType, proxyProtocolSend: Number(row.proxyProtocolSend), proxyProtocolVersion: Number(row.proxyProtocolVersion) })), [{ forwardType: "gost", proxyProtocolSend: 1, proxyProtocolVersion: 2 }]);
+    } finally {
+      await runtime.closeDatabase();
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  fs.rmSync(directory, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("legacy failover compatibility scan only warns and never rewrites child rules", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-runtime-scan-"));
+  const databasePath = path.join(directory, "runtime-scan.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const db = await import(moduleUrl("server/db.ts"));
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO \"" + table + "\" (" + columns.map((column) => "\"" + column + "\"").join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      await insert("forward_groups", [
+        "id", "name", "groupMode", "forwardType", "failoverRuntimeInheritanceEnabled",
+        "proxyProtocolSend", "proxyProtocolVersion", "targetIp", "userId",
+      ], [10, "legacy", "failover", "realm", 0, 1, 2, "0.0.0.0", 1]);
+      await insert("forward_rules", [
+        "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate",
+        "sourcePort", "targetIp", "targetPort", "proxyProtocolSend", "proxyProtocolVersion", "userId",
+      ], [100, 1, "template", "realm", "tcp", 10, 1, 16000, "203.0.113.10", 80, 0, 1, 1]);
+      await insert("forward_rules", [
+        "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "forwardGroupRuleId", "isForwardGroupTemplate",
+        "sourcePort", "targetIp", "targetPort", "proxyProtocolSend", "proxyProtocolVersion", "userId",
+      ], [101, 1, "child", "realm", "tcp", 10, 100, 0, 16000, "203.0.113.10", 80, 1, 2, 1]);
+      // Tunnel members derive runtime options from the tunnel, so they must not
+      // be reported as a legacy group-level inheritance mismatch.
+      await insert("forward_rules", [
+        "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "forwardGroupRuleId", "isForwardGroupTemplate",
+        "sourcePort", "targetIp", "targetPort", "tunnelId", "proxyProtocolSend", "proxyProtocolVersion", "userId",
+      ], [102, 1, "tunnel-child", "gost", "tcp", 10, 100, 0, 16001, "203.0.113.10", 80, 77, 0, 1, 1]);
+
+      const before = await runtime.queryRaw(
+        'SELECT "id", "forwardType", "proxyProtocolSend", "proxyProtocolVersion" FROM "forward_rules" WHERE "id" IN (101, 102) ORDER BY "id"',
+      );
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => warnings.push(args.join(" "));
+      let affected;
+      try {
+        affected = await db.warnLegacyForwardGroupRuntimeInheritanceOnce();
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.equal(affected, 1);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /no rules were changed/);
+      assert.match(warnings[0], /child rule IDs=101/);
+
+      const after = await runtime.queryRaw(
+        'SELECT "id", "forwardType", "proxyProtocolSend", "proxyProtocolVersion" FROM "forward_rules" WHERE "id" IN (101, 102) ORDER BY "id"',
+      );
+      assert.deepEqual(after, before);
+      const marker = await runtime.queryRaw('SELECT "value" FROM "system_settings" WHERE "key" = ?', ["forward-group-runtime-inheritance-compat-v1"]);
+      assert.equal(marker.length, 1);
+
+      const secondWarnings = [];
+      console.warn = (...args) => secondWarnings.push(args.join(" "));
+      try {
+        assert.equal(await db.warnLegacyForwardGroupRuntimeInheritanceOnce(), 0);
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.equal(secondWarnings.length, 0);
     } finally {
       await runtime.closeDatabase();
     }

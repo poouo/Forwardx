@@ -25,6 +25,13 @@ FORWARDX_CURL_LOW_SPEED_TIME="${FORWARDX_CURL_LOW_SPEED_TIME:-60}"
 FORWARDX_INSTALL_MIMIC="${FORWARDX_INSTALL_MIMIC:-ask}"
 FORWARDX_MIMIC_INSTALLER_URL="${FORWARDX_MIMIC_INSTALLER_URL:-https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-mimic.sh}"
 FORWARDX_MIMIC_VERSION="${FORWARDX_MIMIC_VERSION:-0.7.1}"
+# Keep Realm on the glibc-compatible release by default. Set this explicitly
+# to opt into another Realm release, for example 2.9.6.
+FORWARDX_REALM_VERSION_EXPLICIT="false"
+if [ -n "${FORWARDX_REALM_VERSION:-}" ]; then
+  FORWARDX_REALM_VERSION_EXPLICIT="true"
+fi
+FORWARDX_REALM_VERSION="${FORWARDX_REALM_VERSION:-2.9.4}"
 SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
@@ -152,6 +159,8 @@ run_panel_installer() {
     FORWARDX_INSTALL_MIMIC="$FORWARDX_INSTALL_MIMIC" \
     FORWARDX_MIMIC_INSTALLER_URL="$FORWARDX_MIMIC_INSTALLER_URL" \
     FORWARDX_MIMIC_VERSION="$FORWARDX_MIMIC_VERSION" \
+    FORWARDX_REALM_VERSION_EXPLICIT="$FORWARDX_REALM_VERSION_EXPLICIT" \
+    FORWARDX_REALM_VERSION="$FORWARDX_REALM_VERSION" \
     bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0

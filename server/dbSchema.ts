@@ -268,7 +268,7 @@ const tables: TableDef[] = [
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("remark", "text"), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
       c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }), c("exitStrategy", "varchar", { length: 32, notNull: true, default: "round_robin" }), c("entryGroupId", "int"),
-      c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
+      c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("failoverRuntimeInheritanceEnabled", "bool", { notNull: true, default: false }), c("domain", "text"),
       c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true, default: 1 }),
       c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true }),
       c("targetPort", "int", { notNull: true, default: 1 }), c("rateLimitMbps", "int", { notNull: true, default: 0 }),

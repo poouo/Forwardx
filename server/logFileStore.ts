@@ -15,9 +15,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PAGE_LIMIT = 200;
 const MAX_PAGE_LIMIT = 500;
 const pendingAppends = new Map<string, string[]>();
+const pendingAppendBytes = new Map<string, number>();
+const pendingAppendDrops = new Map<string, number>();
+const pendingAppendDropLoggedAt = new Map<string, number>();
 const appendFlushScheduled = new Set<string>();
 const fileOperationQueues = new Map<string, Promise<void>>();
 const ensuredLogDirs = new Set<string>();
+const MAX_PENDING_APPEND_ENTRIES = 10_000;
+const MAX_PENDING_APPEND_BYTES = 4 * 1024 * 1024;
 
 export type JsonLogPageOptions = {
   level?: string | null;
@@ -74,6 +79,7 @@ function queuePendingAppend(filePath: string) {
   const chunks = pendingAppends.get(filePath);
   if (!chunks?.length) return fileOperationQueues.get(filePath) || Promise.resolve();
   pendingAppends.delete(filePath);
+  pendingAppendBytes.delete(filePath);
   const content = chunks.join("");
   return queueFileOperation(filePath, async () => {
     ensureLogDir();
@@ -137,15 +143,45 @@ function normalizeLevel(level: unknown) {
 
 export function appendJsonLog(filePath: string, entry: FileLogEntry) {
   ensureLogDir();
+  const serialized = `${JSON.stringify(entry)}\n`;
+  const serializedBytes = Buffer.byteLength(serialized, "utf8");
+  if (serializedBytes > MAX_PENDING_APPEND_BYTES) {
+    recordPendingAppendDrop(filePath);
+    return;
+  }
   const chunks = pendingAppends.get(filePath) || [];
-  chunks.push(`${JSON.stringify(entry)}\n`);
+  let queuedBytes = pendingAppendBytes.get(filePath) || 0;
+  let dropped = 0;
+  while (
+    chunks.length >= MAX_PENDING_APPEND_ENTRIES
+    || queuedBytes + serializedBytes > MAX_PENDING_APPEND_BYTES
+  ) {
+    const removed = chunks.shift();
+    if (removed === undefined) break;
+    queuedBytes = Math.max(0, queuedBytes - Buffer.byteLength(removed, "utf8"));
+    dropped += 1;
+  }
+  if (dropped > 0) recordPendingAppendDrop(filePath, dropped);
+  chunks.push(serialized);
+  queuedBytes += serializedBytes;
   pendingAppends.set(filePath, chunks);
+  pendingAppendBytes.set(filePath, queuedBytes);
   if (appendFlushScheduled.has(filePath)) return;
   appendFlushScheduled.add(filePath);
   setImmediate(() => {
     appendFlushScheduled.delete(filePath);
     void queuePendingAppend(filePath);
   });
+}
+
+function recordPendingAppendDrop(filePath: string, count = 1) {
+  const dropped = (pendingAppendDrops.get(filePath) || 0) + Math.max(1, count);
+  pendingAppendDrops.set(filePath, dropped);
+  const now = Date.now();
+  const lastLoggedAt = pendingAppendDropLoggedAt.get(filePath) || 0;
+  if (now - lastLoggedAt < 60 * 1000) return;
+  pendingAppendDropLoggedAt.set(filePath, now);
+  process.stderr.write(`[ForwardX] log write backlog capped file=${filePath}; droppedPending=${dropped}\n`);
 }
 
 export async function readRecentJsonLogPageAsync<T extends FileLogEntry = FileLogEntry>(
@@ -268,6 +304,9 @@ export async function flushJsonLogWrites(filePath?: string) {
 
 export function clearJsonLogStateForTests() {
   pendingAppends.clear();
+  pendingAppendBytes.clear();
+  pendingAppendDrops.clear();
+  pendingAppendDropLoggedAt.clear();
   appendFlushScheduled.clear();
   fileOperationQueues.clear();
   ensuredLogDirs.clear();

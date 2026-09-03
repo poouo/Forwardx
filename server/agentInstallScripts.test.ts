@@ -175,7 +175,29 @@ test("realm installer validates a staged candidate before replacing the existing
   assert.doesNotMatch(download, /rm -f "\$REALM_PATH"/);
   assert.match(commit, /realm_binary_healthy "\$CANDIDATE"/);
   assert.match(commit, /mv -f "\$CANDIDATE" "\$REALM_PATH"/);
+  assert.match(script, /realm health check:/);
   assert.doesNotMatch(installer, /rm -f "\$REALM_PATH"/);
+});
+
+test("realm installer pins the compatible default and preserves an explicit override", () => {
+  const script = generateInstallScript("https://panel.example.com");
+
+  assert.match(script, /FORWARDX_REALM_VERSION="\$\{FORWARDX_REALM_VERSION:-2\.9\.4\}"/);
+  assert.match(script, /FORWARDX_REALM_VERSION_EXPLICIT=/);
+  assert.match(script, /local VERSION="\$\{FORWARDX_REALM_VERSION:-2\.9\.4\}" LATEST_VERSION/);
+  assert.match(script, /printf "%s\\n" "v\$\{VERSION#v\}"/);
+  assert.match(script, /glibc2\.28 compatibility/);
+  assert.match(script, /realm-\$\{REALM_ARCH\}-glibc2\.28\.tar\.gz/);
+  assert.match(script, /default target applies to new installs/);
+});
+
+test("GitHub Agent entry script forwards the Realm version override", () => {
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-agent.sh"), "utf8");
+
+  assert.match(script, /FORWARDX_REALM_VERSION="\$\{FORWARDX_REALM_VERSION:-2\.9\.4\}"/);
+  assert.match(script, /FORWARDX_REALM_VERSION_EXPLICIT="false"/);
+  assert.match(script, /FORWARDX_REALM_VERSION="\$FORWARDX_REALM_VERSION" \\\n\s+bash "\$tmp_script"/);
+  assert.match(script, /FORWARDX_REALM_VERSION_EXPLICIT="\$FORWARDX_REALM_VERSION_EXPLICIT" \\\n\s+FORWARDX_REALM_VERSION=/);
 });
 
 test("nginx installer validates a staged candidate and preserves the existing runtime on failure", () => {

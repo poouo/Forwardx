@@ -37,6 +37,7 @@ import {
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { agentTcpingReportGate } from "./agentTcpingReportGate";
 import { selectAgentTrafficReportInterval } from "./agentHeartbeatGate";
+import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -138,9 +139,15 @@ function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null, group: any
 
 const trafficReportLogIntervalMs = 10_000;
 const tcpingReportLogIntervalMs = 30_000;
+// Keep one operational traffic summary per host every few minutes. Per-rule
+// samples remain opt-in via FORWARDX_VERBOSE_AGENT_REPORTS.
+const trafficReportSummaryLogIntervalMs = 5 * 60_000;
+const REPORT_LOG_CACHE_MAX = 20_000;
+const REPORT_LOG_CACHE_RETENTION_MS = 60 * 60 * 1000;
 
 type TrafficReportLogBucket = {
   lastLoggedAt: number;
+  updatedAt: number;
   samples: number;
   bytesIn: number;
   bytesOut: number;
@@ -150,11 +157,26 @@ type TrafficReportLogBucket = {
 const trafficReportLogBuckets = new Map<string, TrafficReportLogBucket>();
 const reportLogTimes = new Map<string, number>();
 
+function pruneReportLogCaches(now = Date.now()) {
+  pruneMapEntries(
+    trafficReportLogBuckets,
+    (bucket) => !Number.isFinite(bucket.updatedAt) || now - bucket.updatedAt >= REPORT_LOG_CACHE_RETENTION_MS,
+  );
+  pruneMapEntries(
+    reportLogTimes,
+    (loggedAt) => !Number.isFinite(loggedAt) || now - loggedAt >= REPORT_LOG_CACHE_RETENTION_MS,
+  );
+}
+
+const reportLogCacheCleanupTimer = setInterval(() => pruneReportLogCaches(), 10 * 60 * 1000);
+reportLogCacheCleanupTimer.unref?.();
+
 function logTrafficReportSample(key: string, label: string, bytesIn: number, bytesOut: number, connections: number) {
   if (!VERBOSE_AGENT_REPORTS) return;
   const now = Date.now();
   const bucket = trafficReportLogBuckets.get(key) || {
     lastLoggedAt: 0,
+    updatedAt: now,
     samples: 0,
     bytesIn: 0,
     bytesOut: 0,
@@ -164,26 +186,55 @@ function logTrafficReportSample(key: string, label: string, bytesIn: number, byt
   bucket.bytesIn += Math.max(0, Number(bytesIn) || 0);
   bucket.bytesOut += Math.max(0, Number(bytesOut) || 0);
   bucket.connectionsMax = Math.max(bucket.connectionsMax, Number(connections) || 0);
+  bucket.updatedAt = now;
   if (bucket.lastLoggedAt === 0 || now - bucket.lastLoggedAt >= trafficReportLogIntervalMs) {
     console.log(`${label} samples=${bucket.samples} in=${bucket.bytesIn} out=${bucket.bytesOut} connectionsMax=${bucket.connectionsMax}`);
-    trafficReportLogBuckets.set(key, {
+    setBoundedMapValue(trafficReportLogBuckets, key, {
       lastLoggedAt: now,
+      updatedAt: now,
       samples: 0,
       bytesIn: 0,
       bytesOut: 0,
       connectionsMax: 0,
-    });
+    }, REPORT_LOG_CACHE_MAX);
     return;
   }
-  trafficReportLogBuckets.set(key, bucket);
+  setBoundedMapValue(trafficReportLogBuckets, key, bucket, REPORT_LOG_CACHE_MAX);
 }
 
 function shouldLogReport(key: string, intervalMs: number) {
   const now = Date.now();
   const last = reportLogTimes.get(key) || 0;
   if (now - last < intervalMs) return false;
-  reportLogTimes.set(key, now);
+  setBoundedMapValue(reportLogTimes, key, now, REPORT_LOG_CACHE_MAX);
   return true;
+}
+
+function logTrafficReportSummary(input: {
+  hostId: number;
+  hostName?: string;
+  reported: number;
+  accepted: number;
+  routedAway: number;
+  ignored: number;
+  bytesIn: number;
+  bytesOut: number;
+  hostBytesIn?: number;
+  hostBytesOut?: number;
+  duplicate?: boolean;
+  durationMs: number;
+}) {
+  if (input.hostId <= 0 || !shouldLogReport(`traffic-summary:${input.hostId}`, trafficReportSummaryLogIntervalMs)) return;
+  const name = String(input.hostName || "-").replace(/[\r\n\t]+/g, " ").slice(0, 96);
+  const hostBytes = input.hostBytesIn !== undefined || input.hostBytesOut !== undefined
+    ? ` hostBytes=${Math.max(0, Number(input.hostBytesIn) || 0)}/${Math.max(0, Number(input.hostBytesOut) || 0)}`
+    : "";
+  console.info(
+    `[Agent Traffic] summary host=${input.hostId} name=${name} reported=${input.reported} accepted=${input.accepted}`
+      + ` routedAway=${input.routedAway} ignored=${input.ignored}`
+      + ` bytes=${Math.max(0, Number(input.bytesIn) || 0)}/${Math.max(0, Number(input.bytesOut) || 0)}`
+      + `${hostBytes} duplicate=${input.duplicate === true} duration=${Math.max(0, Number(input.durationMs) || 0)}ms`,
+  );
 }
 
 function logTcpingReportSummary(
@@ -529,6 +580,11 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
   let logHostId = 0;
   let logHostName = "";
   let reportedStatCount = 0;
+  let acceptedStatCount = 0;
+  let routedAwayStatCount = 0;
+  let ignoredStatCount = 0;
+  let acceptedBytesIn = 0;
+  let acceptedBytesOut = 0;
   let strictTrafficAccounting = false;
   let trafficReportId = "";
   let trafficReportProducerId = "";
@@ -540,7 +596,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
     logHostId = Number((host as any).id || 0);
-    logHostName = String((host as any).name || "").trim();
+    logHostName = cleanTunnelSeriesLabel((host as any).name, "-");
     trafficReportId = typeof req.body?.reportId === "string"
       ? req.body.reportId.trim().slice(0, 128)
       : "";
@@ -578,10 +634,37 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         }
       });
       if (duplicateTrafficReport) {
+        logTrafficReportSummary({
+          hostId: logHostId,
+          hostName: logHostName,
+          reported: 0,
+          accepted: 0,
+          routedAway: 0,
+          ignored: 0,
+          bytesIn: 0,
+          bytesOut: 0,
+          hostBytesIn: hostTraffic ? Number(hostTraffic.bytesIn) || 0 : undefined,
+          hostBytesOut: hostTraffic ? Number(hostTraffic.bytesOut) || 0 : undefined,
+          duplicate: true,
+          durationMs: Date.now() - requestStartedAt,
+        });
         res.json({ success: true, duplicate: true });
         return;
       }
       const durationMs = Date.now() - requestStartedAt;
+      logTrafficReportSummary({
+        hostId: logHostId,
+        hostName: logHostName,
+        reported: 0,
+        accepted: 0,
+        routedAway: 0,
+        ignored: 0,
+        bytesIn: 0,
+        bytesOut: 0,
+        hostBytesIn: hostTraffic ? Number(hostTraffic.bytesIn) || 0 : undefined,
+        hostBytesOut: hostTraffic ? Number(hostTraffic.bytesOut) || 0 : undefined,
+        durationMs,
+      });
       if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {
         console.warn(`[Agent Traffic] slow host=${logHostId} name=${logHostName || "-"} stats=0 duration=${durationMs}ms`);
       }
@@ -662,13 +745,16 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       const bytesOut = Number(stat.bytesOut) || 0;
       const context = contextsByRuleId.get(Number(stat.ruleId)) as any;
       if (!context) {
+        ignoredStatCount += 1;
         continue;
       }
       const { rule, tunnel, group } = context;
       if ((rule as any).pendingDelete || !(rule as any).isEnabled) {
+        ignoredStatCount += 1;
         continue;
       }
       if (!shouldAccountForwardRuleTraffic(rule, group)) {
+        ignoredStatCount += 1;
         continue;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);
@@ -679,6 +765,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         extraExitHostsByTunnelId.get(Number(tunnel?.id || tunnelId)),
       );
       if (!accountingHostIds.has(Number(host.id))) {
+        routedAwayStatCount += 1;
         const ruleBytes = bytesIn + bytesOut;
         if (ruleBytes > 0 && tunnel && !isForwardXTunnel(tunnel)) {
           logTrafficReportSample(
@@ -701,6 +788,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         },
         userId: Number(rule.userId),
       });
+      acceptedStatCount += 1;
+      acceptedBytesIn += bytesIn;
+      acceptedBytesOut += bytesOut;
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
         if (!(rule as any).isRunning) runningRuleIds.add(Number(rule.id));
@@ -772,11 +862,36 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     }));
 
     if (duplicateTrafficReport) {
+      logTrafficReportSummary({
+        hostId: logHostId,
+        hostName: logHostName,
+        reported: reportedStatCount,
+        accepted: 0,
+        routedAway: 0,
+        ignored: 0,
+        bytesIn: 0,
+        bytesOut: 0,
+        duplicate: true,
+        durationMs: Date.now() - requestStartedAt,
+      });
       res.json({ success: true, duplicate: true });
       return;
     }
 
     const durationMs = Date.now() - requestStartedAt;
+    logTrafficReportSummary({
+      hostId: logHostId,
+      hostName: logHostName,
+      reported: reportedStatCount,
+      accepted: acceptedStatCount,
+      routedAway: routedAwayStatCount,
+      ignored: ignoredStatCount,
+      bytesIn: acceptedBytesIn,
+      bytesOut: acceptedBytesOut,
+      hostBytesIn: hostTraffic ? Number(hostTraffic.bytesIn) || 0 : undefined,
+      hostBytesOut: hostTraffic ? Number(hostTraffic.bytesOut) || 0 : undefined,
+      durationMs,
+    });
     if (durationMs >= 2_000 && shouldLogReport(`traffic-slow:${logHostId}`, 60_000)) {
       console.warn(`[Agent Traffic] slow host=${logHostId} name=${logHostName || "-"} stats=${reportedStatCount} duration=${durationMs}ms`);
     }

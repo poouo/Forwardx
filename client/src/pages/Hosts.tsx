@@ -3243,7 +3243,7 @@ function HostsContent() {
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
                     <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-{nginxFeatureEnabled ? "支持 ForwardX、Realm、GOST、Socat 和 Nginx；不支持 iptables/nftables。" : "支持 ForwardX、Realm、GOST 和 Socat；不支持 iptables/nftables。"}
+命中的连接会被拒绝，规则仍保持运行。{nginxFeatureEnabled ? "支持 ForwardX、Realm、GOST、Socat 和 Nginx；不支持 iptables/nftables。" : "支持 ForwardX、Realm、GOST 和 Socat；不支持 iptables/nftables。"}
                     </p>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">

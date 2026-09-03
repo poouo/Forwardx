@@ -170,6 +170,9 @@ func startActionStatusReporter() {
 
 func actionStatusReporterLoop() {
 	retryDelay := actionStatusRetryMinDelay
+	var backlogSince time.Time
+	var backlogPeak int
+	var backlogFailures int
 	for {
 		<-actionStatusReporterWake
 		time.Sleep(actionStatusFlushInterval)
@@ -180,8 +183,16 @@ func actionStatusReporterLoop() {
 			}
 			if err := sendActionStatusReports(reports); err != nil {
 				restoreActionStatusReports(reports)
+				pending := pendingActionStatusReportCount()
+				if backlogSince.IsZero() {
+					backlogSince = time.Now()
+				}
+				if pending > backlogPeak {
+					backlogPeak = pending
+				}
+				backlogFailures++
 				if shouldLogAgentReport("action-status-batch-failed", agentReportLogInterval) {
-					logf("action status batch failed count=%d pending=%d retry=%s: %v", len(reports), pendingActionStatusReportCount(), retryDelay, err)
+					logf("action status batch failed count=%d pending=%d backlogAge=%s backlogPeak=%d consecutiveFailures=%d retry=%s: %v", len(reports), pending, time.Since(backlogSince).Round(time.Millisecond), backlogPeak, backlogFailures, retryDelay, err)
 				}
 				time.Sleep(retryDelay)
 				if retryDelay < actionStatusRetryMaxDelay {
@@ -194,8 +205,25 @@ func actionStatusReporterLoop() {
 				break
 			}
 			retryDelay = actionStatusRetryMinDelay
+			pending := pendingActionStatusReportCount()
+			if !backlogSince.IsZero() {
+				if pending > backlogPeak {
+					backlogPeak = pending
+				}
+				if pending == 0 {
+					age := time.Since(backlogSince).Round(time.Millisecond)
+					if shouldLogAgentReport("action-status-backlog-recovered", agentReportLogInterval) {
+						logf("action status backlog recovered age=%s peak=%d failures=%d", age, backlogPeak, backlogFailures)
+					}
+					backlogSince = time.Time{}
+					backlogPeak = 0
+					backlogFailures = 0
+				} else if shouldLogAgentReport("action-status-backlog-progress", agentReportLogInterval) {
+					logf("action status backlog continues pending=%d age=%s peak=%d failures=%d", pending, time.Since(backlogSince).Round(time.Millisecond), backlogPeak, backlogFailures)
+				}
+			}
 			if agentVerboseLogs {
-				logf("action status batch reported count=%d pending=%d", len(reports), pendingActionStatusReportCount())
+				logf("action status batch reported count=%d pending=%d", len(reports), pending)
 			}
 		}
 	}
@@ -235,11 +263,20 @@ func sendActionStatusReports(reports []queuedActionStatusReport) error {
 		if !actionStatusBatchUnsupported(err) {
 			return err
 		}
-		for _, report := range group.reports {
+		if shouldLogAgentReport("action-status-batch-fallback", agentReportLogInterval) {
+			logf("action status batch unsupported; falling back to single reports count=%d", len(group.reports))
+		}
+		for index, report := range group.reports {
 			var singleOut map[string]any
 			if singleErr := post(report.cfg, "/api/agent/rule-status", report.payload, &singleOut); singleErr != nil {
+				if shouldLogAgentReport("action-status-batch-fallback-failed", agentReportLogInterval) {
+					logf("action status single-report fallback failed sent=%d remaining=%d: %v", index, len(group.reports)-index, singleErr)
+				}
 				return singleErr
 			}
+		}
+		if shouldLogAgentReport("action-status-batch-fallback-ok", agentReportLogInterval) {
+			logf("action status single-report fallback completed count=%d", len(group.reports))
 		}
 	}
 	return nil

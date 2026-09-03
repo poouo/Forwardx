@@ -7,6 +7,7 @@ import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints } from "./router
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
 import { createTelegramWebAppLoginChallenge } from "./telegramWebAppLogin";
+import { withTelegramApiTimeout } from "./telegramApiTimeout";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
 import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
@@ -614,16 +615,19 @@ async function getTelegramSettings() {
 async function telegramApi<T = any>(method: string, body?: Record<string, unknown>): Promise<T> {
   const settings = await getTelegramSettings();
   if (!settings.token) throw new Error("Telegram Bot Token is not configured");
-  const resp = await fetch(`https://api.telegram.org/bot${settings.token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
+  return withTelegramApiTimeout(method, async (signal) => {
+    const resp = await fetch(`https://api.telegram.org/bot${settings.token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+      signal,
+    });
+    const json = await resp.json().catch(() => null) as any;
+    if (!resp.ok || !json?.ok) {
+      throw new Error(json?.description || `Telegram API ${method} failed: ${resp.status}`);
+    }
+    return json.result as T;
   });
-  const json = await resp.json().catch(() => null) as any;
-  if (!resp.ok || !json?.ok) {
-    throw new Error(json?.description || `Telegram API ${method} failed: ${resp.status}`);
-  }
-  return json.result as T;
 }
 
 type InlineKeyboardButton = {

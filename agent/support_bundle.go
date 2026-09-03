@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -20,6 +21,12 @@ type supportBundleJob struct {
 }
 
 const supportBundleCompletedRetention = 30 * time.Minute
+
+// A support bundle runs several diagnostic commands and each command has its
+// own timeout. Keep the waiting queue bounded so a burst of distinct requests
+// cannot retain an unbounded number of configs and task IDs in memory.
+const supportBundleMaxQueuedJobs = 8
+const supportBundleMaxTaskIDLength = 128
 
 // supportBundleScheduler prevents duplicate SSE deliveries from launching
 // overlapping command sets. Distinct administrator requests remain queued and
@@ -46,6 +53,12 @@ func (scheduler *supportBundleScheduler) schedule(cfg Config, request supportBun
 	if taskID == "" {
 		return false
 	}
+	if len(taskID) > supportBundleMaxTaskIDLength {
+		if shouldLogAgentReport("support-bundle-task-id-too-long", agentReportLogInterval) {
+			logf("support bundle request rejected task=%s reason=task-id-too-long", compactLogField(taskID, supportBundleMaxTaskIDLength))
+		}
+		return false
+	}
 	request.TaskID = taskID
 	now := time.Now()
 	scheduler.mu.Lock()
@@ -56,6 +69,14 @@ func (scheduler *supportBundleScheduler) schedule(cfg Config, request supportBun
 	}
 	if _, exists := scheduler.tasks[taskID]; exists {
 		scheduler.mu.Unlock()
+		return false
+	}
+	if scheduler.running && len(scheduler.queue) >= supportBundleMaxQueuedJobs {
+		queued := len(scheduler.queue)
+		scheduler.mu.Unlock()
+		if shouldLogAgentReport("support-bundle-queue-full", agentReportLogInterval) {
+			logf("support bundle request rejected task=%s reason=queue-full queued=%d limit=%d", compactLogField(taskID, supportBundleMaxTaskIDLength), queued, supportBundleMaxQueuedJobs)
+		}
 		return false
 	}
 	scheduler.tasks[taskID] = time.Time{}
@@ -78,7 +99,15 @@ func (scheduler *supportBundleScheduler) schedule(cfg Config, request supportBun
 
 func (scheduler *supportBundleScheduler) run(job supportBundleJob) {
 	for {
-		reported := scheduler.process(job.cfg, job.request)
+		reported := false
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logf("support bundle processing panicked task=%s error=%s", compactLogField(job.request.TaskID, supportBundleMaxTaskIDLength), compactLogField(fmt.Sprint(recovered), 256))
+				}
+			}()
+			reported = scheduler.process(job.cfg, job.request)
+		}()
 		scheduler.mu.Lock()
 		if reported {
 			scheduler.tasks[job.request.TaskID] = time.Now()
@@ -180,6 +209,7 @@ func enforceSupportOutputTotalLimit(results []supportCommandResult, limit int) {
 func supportCommandSpecs() []supportCommandSpec {
 	return []supportCommandSpec{
 		{"agent-journal-current-boot", "journalctl -u forwardx-agent -b -n 600 --no-pager 2>&1 || tail -n 600 /var/log/forwardx-agent/agent-go.log 2>&1", supportJournalOutputLimit},
+		{"agent-upgrade-log", "if [ -f /var/log/forwardx-agent/agent-upgrade.log ]; then tail -n 300 /var/log/forwardx-agent/agent-upgrade.log; else echo missing; fi 2>&1", supportCommandOutputLimit},
 		{"agent-journal-previous-boot", "journalctl -u forwardx-agent -b -1 -n 300 --no-pager 2>&1 || true", supportJournalOutputLimit},
 		{"service-status", "systemctl status forwardx-agent forwardx-runtime forwardx-tunnel-runtime forwardx-nginx --no-pager -l 2>&1 || true", supportCommandOutputLimit},
 		{"service-restarts", "systemctl show forwardx-agent forwardx-runtime forwardx-tunnel-runtime forwardx-nginx -p Id -p ActiveState -p SubState -p NRestarts -p ExecMainStartTimestamp 2>&1 || true", supportCommandOutputLimit},
@@ -233,14 +263,27 @@ func collectAndReportSupportBundle(cfg Config, request supportBundleRequest) boo
 	if taskID == "" {
 		return false
 	}
+	startedAt := time.Now()
 	diagnostics := collectSupportDiagnostics()
+	logTaskID := compactLogField(taskID, supportBundleMaxTaskIDLength)
+	commandCount := 0
+	if commands, ok := diagnostics["commands"].([]supportCommandResult); ok {
+		commandCount = len(commands)
+	}
+	collectionDuration := time.Since(startedAt)
+	if collectionDuration >= 10*time.Second && shouldLogAgentReport("support-bundle-collect-slow", agentReportLogInterval) {
+		logf("support bundle collection slow task=%s commands=%d duration=%s", logTaskID, commandCount, collectionDuration.Round(time.Millisecond))
+	}
 	var response map[string]any
 	if err := post(cfg, "/api/agent/support-bundle-result", map[string]any{
 		"taskId":      taskID,
 		"diagnostics": diagnostics,
 	}, &response); err != nil {
-		logf("support bundle report failed task=%s error=%v", taskID, err)
+		logf("support bundle report failed task=%s error=%s", logTaskID, compactLogField(fmt.Sprint(err), 256))
 		return false
+	}
+	if shouldLogAgentReport("support-bundle-report-ok", agentHeartbeatSummaryLogInterval) {
+		logf("support bundle reported task=%s commands=%d collectDuration=%s totalDuration=%s", logTaskID, commandCount, collectionDuration.Round(time.Millisecond), time.Since(startedAt).Round(time.Millisecond))
 	}
 	return true
 }

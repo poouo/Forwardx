@@ -1137,8 +1137,12 @@ func collectTraffic(cfg Config) time.Duration {
 			if seconds, ok := response["trafficReportInterval"].(float64); ok {
 				setActiveTrafficReportIntervalSeconds(int(seconds))
 			}
-			if err := completePendingTrafficReport(pending); err != nil && shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
-				logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, err)
+			if err := completePendingTrafficReport(pending); err != nil {
+				if shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
+					logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, err)
+				}
+			} else if shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+				logf("traffic report retry ok stats=%d hostTraffic=%v", pending.StatCount, pending.HasHostTraffic)
 			}
 		}
 		nextInterval = trafficCollectionIntervalForRuleCount(len(states))
@@ -1214,6 +1218,16 @@ func collectTraffic(cfg Config) time.Duration {
 	if shouldIncludeHostTraffic(reportRuleTraffic, now) {
 		hostTraffic = hostTrafficSnapshot()
 	}
+	var reportBytesIn uint64
+	var reportBytesOut uint64
+	for _, stat := range stats {
+		if value, ok := trafficReportUint(stat["bytesIn"]); ok {
+			reportBytesIn += value
+		}
+		if value, ok := trafficReportUint(stat["bytesOut"]); ok {
+			reportBytesOut += value
+		}
+	}
 	payload := map[string]any{"stats": stats}
 	if hostTraffic != nil {
 		payload["hostTraffic"] = hostTraffic
@@ -1255,13 +1269,17 @@ func collectTraffic(cfg Config) time.Duration {
 				setActiveTrafficReportIntervalSeconds(int(seconds))
 			}
 			completeErr := completePendingTrafficReport(pending)
-			if completeErr != nil && shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
-				logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, completeErr)
-			}
-			if completeErr == nil && agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
-				logf("traffic report ok watched=%d stats=%d", watched, len(stats))
+			if completeErr != nil {
+				if shouldLogAgentReport("traffic-report-complete-failed", agentReportLogInterval) {
+					logf("traffic report baseline commit failed stats=%d: %v", pending.StatCount, completeErr)
+				}
+			} else if shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+				logf("traffic report ok watched=%d collectable=%d stats=%d bytes=%d/%d hostTraffic=%v", watched, len(states), len(stats), reportBytesIn, reportBytesOut, hostTraffic != nil)
 			}
 		}
+	}
+	if len(states) > 0 && len(stats) == 0 && hostTraffic == nil && shouldLogAgentReport("traffic-collect-empty", 5*time.Minute) {
+		logf("traffic collect no deltas watched=%d collectable=%d discovered=%d", watched, len(states), len(discoveredStates))
 	}
 	nextInterval = trafficCollectionIntervalForRuleCount(len(states))
 	return trafficCollectBackoffInterval(nextInterval, time.Since(started))

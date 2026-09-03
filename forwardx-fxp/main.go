@@ -135,7 +135,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.116"
+	fxpRuntimeVersion    = "2.2.117"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -995,13 +995,13 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		reportProtocolBlock(cfg, proto)
 	}
 	if len(first) > 0 {
-		inLimiter.wait(len(first))
-		if err := sec.writeFrame(first); err != nil {
-			return err
-		}
 		if proto := detectBlockedProtocol(first, policy); proto != "" {
 			reportBlock(proto)
 			return nil
+		}
+		inLimiter.wait(len(first))
+		if err := sec.writeFrame(first); err != nil {
+			return err
 		}
 	}
 	counter := &trafficCounter{}
@@ -2155,33 +2155,19 @@ func copyPlainToSecureWithPolicy(dst *secureConn, src net.Conn, limiter *limiter
 		proto := detectBlockedProtocol(sample, policy)
 		return proto, proto != ""
 	}
-	firstData := len(initialSample) == 0
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
+			if proto, blocked := inspect(chunk); blocked {
+				if onBlock != nil {
+					go onBlock(proto)
+				}
+				return fmt.Errorf("protocol blocked: %s", proto)
+			}
 			limiter.wait(n)
-			if firstData {
-				firstData = false
-				if wErr := dst.writeFrame(chunk); wErr != nil {
-					return wErr
-				}
-				if proto, blocked := inspect(chunk); blocked {
-					if onBlock != nil {
-						go onBlock(proto)
-					}
-					return fmt.Errorf("protocol blocked: %s", proto)
-				}
-			} else {
-				if proto, blocked := inspect(chunk); blocked {
-					if onBlock != nil {
-						go onBlock(proto)
-					}
-					return fmt.Errorf("protocol blocked: %s", proto)
-				}
-				if wErr := dst.writeFrame(chunk); wErr != nil {
-					return wErr
-				}
+			if wErr := dst.writeFrame(chunk); wErr != nil {
+				return wErr
 			}
 			if counter != nil {
 				counter.Add(uint64(n))
@@ -2734,17 +2720,54 @@ func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
 }
 
 func detectHTTPProtocol(data []byte) bool {
-	if len(data) >= 24 && string(data[:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+	if bytes.HasPrefix(data, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
 		return true
 	}
-	methods := []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "CONNECT ", "TRACE "}
-	upper := strings.ToUpper(string(data[:minInt(len(data), 16)]))
-	for _, method := range methods {
-		if strings.HasPrefix(upper, method) {
-			return true
+	limit := minInt(len(data), 256)
+	if limit < len("GET / HTTP/1.0\r\n") {
+		return false
+	}
+	lineEnd := bytes.Index(data[:limit], []byte("\r\n"))
+	if lineEnd < 0 {
+		return false
+	}
+	parts := bytes.Split(data[:lineEnd], []byte{' '})
+	if len(parts) != 3 {
+		return false
+	}
+	method := string(parts[0])
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE":
+	default:
+		return false
+	}
+	version := string(parts[2])
+	if version != "HTTP/1.0" && version != "HTTP/1.1" {
+		return false
+	}
+	return validHTTPRequestTarget(method, parts[1])
+}
+
+func validHTTPRequestTarget(method string, target []byte) bool {
+	if len(target) == 0 {
+		return false
+	}
+	for _, value := range target {
+		if value < 0x21 || value > 0x7e {
+			return false
 		}
 	}
-	return false
+	if method == "CONNECT" {
+		return bytes.Contains(target, []byte{':'})
+	}
+	if bytes.Equal(target, []byte("*")) {
+		return method == "OPTIONS"
+	}
+	if target[0] == '/' {
+		return true
+	}
+	lower := bytes.ToLower(target)
+	return bytes.HasPrefix(lower, []byte("http://")) || bytes.HasPrefix(lower, []byte("https://"))
 }
 
 func detectTLSProtocol(data []byte) bool {

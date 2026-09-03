@@ -661,6 +661,9 @@ func desiredManagedServiceReady(a action, serviceName string, unit string) bool 
 		return true
 	}
 	if !managedServiceActive(serviceName) {
+		if shouldLogAgentReport("desired-service-inactive:"+serviceName, agentReportLogInterval) {
+			logf("desired service inactive; reapply needed service=%s %s", serviceName, actionLogSummary(a))
+		}
 		return false
 	}
 	if strings.TrimSpace(unit) == "" {
@@ -689,6 +692,9 @@ func desiredRuntimeServicesHealthy() bool {
 			continue
 		}
 		if !managedServiceActive(name) {
+			if shouldLogAgentReport("desired-runtime-service-inactive:"+name, agentReportLogInterval) {
+				logf("desired runtime service inactive service=%s", name)
+			}
 			return false
 		}
 	}

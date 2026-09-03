@@ -23,6 +23,8 @@ const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
 const TRAFFIC_BUCKET_RETENTION_HOURS = 72;
 const LEGACY_TRAFFIC_REPORT_RETENTION_HOURS = 7 * 24;
+const SQLITE_HISTORY_DELETE_BATCH_SIZE = 2_000;
+const SQLITE_LATEST_METRIC_HOST_BATCH_SIZE = 100;
 // v3 repairs bucket gaps left by older best-effort writes. Current traffic
 // writes update raw rows, counters and buckets in one transaction.
 const TRAFFIC_BUCKET_BACKFILL_MARKER = "v3";
@@ -97,6 +99,117 @@ function retentionCutoffSeconds(retainHours: number) {
   return Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
 }
 
+async function yieldToEventLoop() {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function deleteExpiredHistoryRows(
+  tableName: string,
+  timeColumn: string,
+  cutoff: number,
+  options: { whereSql?: string; whereParams?: unknown[] } = {},
+) {
+  const q = quoteIdentifier;
+  const whereSql = String(options.whereSql || "").trim();
+  const prefix = whereSql ? `${whereSql} AND ` : "";
+  const whereParams = options.whereParams || [];
+
+  if (getDatabaseKind() !== "sqlite") {
+    return executeRaw(
+      `DELETE FROM ${q(tableName)} WHERE ${prefix}${q(timeColumn)} < ?`,
+      [...whereParams, cutoff],
+    );
+  }
+
+  let deleted = 0;
+  while (true) {
+    const result = await executeRaw(
+      `DELETE FROM ${q(tableName)}
+        WHERE ${q("id")} IN (
+          SELECT ${q("id")}
+            FROM ${q(tableName)}
+           WHERE ${prefix}${q(timeColumn)} < ?
+           ORDER BY ${q(timeColumn)} ASC, ${q("id")} ASC
+           LIMIT ?
+        )`,
+      [...whereParams, cutoff, SQLITE_HISTORY_DELETE_BATCH_SIZE],
+    );
+    const affected = rawAffectedRows(result);
+    deleted += affected;
+    if (affected < SQLITE_HISTORY_DELETE_BATCH_SIZE) return deleted;
+    // better-sqlite3 is synchronous. Releasing the connection lock between
+    // bounded batches lets heartbeats and panel reads run during cleanup.
+    await yieldToEventLoop();
+  }
+}
+
+async function queryLatestHostMetricRows(
+  hostIds: number[],
+  columns: readonly string[],
+) {
+  const q = quoteIdentifier;
+
+  if (getDatabaseKind() !== "sqlite") {
+    const placeholders = hostIds.map(() => "?").join(",");
+    const selected = columns.map((column) => `hm.${q(column)}`).join(",\n                  ");
+    return queryRaw<any>(
+      `SELECT ${columns.map((column) => `ranked.${q(column)}`).join(",\n              ")},
+              ranked.rn
+         FROM (
+           SELECT ${selected},
+                  ROW_NUMBER() OVER (
+                    PARTITION BY hm.${q("hostId")}
+                    ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
+                  ) AS rn
+             FROM ${q("host_metrics")} hm
+            WHERE hm.${q("hostId")} IN (${placeholders})
+         ) ranked
+        WHERE ranked.rn <= 2
+        ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
+      hostIds,
+    );
+  }
+
+  const sortedHostIds = [...hostIds].sort((a, b) => a - b);
+  const rows: any[] = [];
+  for (let offset = 0; offset < sortedHostIds.length; offset += SQLITE_LATEST_METRIC_HOST_BATCH_SIZE) {
+    const batch = sortedHostIds.slice(offset, offset + SQLITE_LATEST_METRIC_HOST_BATCH_SIZE);
+    const innerColumns = columns.map((column) => q(column)).join(", ");
+    const outerColumns = columns.map((column) => `recent.${q(column)}`).join(", ");
+    const perHostQueries = batch.map(() => (
+      `SELECT ${outerColumns}
+         FROM (
+           SELECT ${innerColumns}
+             FROM ${q("host_metrics")}
+            WHERE ${q("hostId")} = ?
+            ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
+            LIMIT 2
+         ) recent`
+    ));
+    const batchRows = await queryRaw<any>(
+      `SELECT combined.*
+         FROM (${perHostQueries.join("\nUNION ALL\n")}) combined
+        ORDER BY combined.${q("hostId")} ASC,
+                 combined.${q("recordedAt")} DESC,
+                 combined.${q("id")} DESC`,
+      batch,
+    );
+    rows.push(...batchRows);
+  }
+
+  let previousHostId = 0;
+  let rank = 0;
+  return rows.map((row) => {
+    const hostId = Number(row?.hostId || 0);
+    if (hostId !== previousHostId) {
+      previousHostId = hostId;
+      rank = 0;
+    }
+    rank += 1;
+    return { ...row, rn: rank };
+  });
+}
+
 function canUseTrafficBuckets(since?: Date) {
   if (!since) return false;
   return epochSeconds(since) >= retentionCutoffSeconds(TRAFFIC_BUCKET_RETENTION_HOURS);
@@ -114,16 +227,14 @@ export async function cleanOldHostMetrics(retainHours: number = 72) {
   const db = await getDb();
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("host_metrics")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("host_metrics", "recordedAt", cutoff);
 }
 
 export async function getLatestHostMetrics(hostId: number, limit = 60) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(hostMetrics).where(eq(hostMetrics.hostId, hostId)).orderBy(desc(hostMetrics.recordedAt)).limit(limit);
+  return db.select().from(hostMetrics).where(eq(hostMetrics.hostId, hostId))
+    .orderBy(desc(hostMetrics.recordedAt), desc(hostMetrics.id)).limit(limit);
 }
 
 export async function getLatestHostMetricRows(hostIds?: number[]) {
@@ -133,52 +244,11 @@ export async function getLatestHostMetricRows(hostIds?: number[]) {
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0)));
   if (ids.length === 0) return [];
-  const q = quoteIdentifier;
-  const placeholders = ids.map(() => "?").join(",");
-  const rows = await queryRaw<any>(
-    `SELECT ranked.${q("id")},
-            ranked.${q("hostId")},
-            ranked.${q("cpuUsage")},
-            ranked.${q("memoryUsage")},
-            ranked.${q("memoryUsed")},
-            ranked.${q("swapUsage")},
-            ranked.${q("swapUsed")},
-            ranked.${q("swapTotal")},
-            ranked.${q("networkIn")},
-            ranked.${q("networkOut")},
-            ranked.${q("diskUsage")},
-            ranked.${q("diskUsed")},
-            ranked.${q("diskTotal")},
-            ranked.${q("uptime")},
-            ranked.${q("recordedAt")},
-            ranked.rn
-       FROM (
-         SELECT hm.${q("id")},
-                hm.${q("hostId")},
-                hm.${q("cpuUsage")},
-                hm.${q("memoryUsage")},
-                hm.${q("memoryUsed")},
-                hm.${q("swapUsage")},
-                hm.${q("swapUsed")},
-                hm.${q("swapTotal")},
-                hm.${q("networkIn")},
-                hm.${q("networkOut")},
-                hm.${q("diskUsage")},
-                hm.${q("diskUsed")},
-                hm.${q("diskTotal")},
-                hm.${q("uptime")},
-                hm.${q("recordedAt")},
-                ROW_NUMBER() OVER (
-                  PARTITION BY hm.${q("hostId")}
-                  ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
-                ) AS rn
-           FROM ${q("host_metrics")} hm
-          WHERE hm.${q("hostId")} IN (${placeholders})
-       ) ranked
-      WHERE ranked.rn <= 2
-      ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
-    ids,
-  ).catch(() => []);
+  const rows = await queryLatestHostMetricRows(ids, [
+    "id", "hostId", "cpuUsage", "memoryUsage", "memoryUsed", "swapUsage",
+    "swapUsed", "swapTotal", "networkIn", "networkOut", "diskUsage",
+    "diskUsed", "diskTotal", "uptime", "recordedAt",
+  ]).catch(() => []);
   const mapped = (rows as any[])
     .map((row) => ({
       id: Number(row?.id || 0),
@@ -252,31 +322,9 @@ export async function getLatestHostMetricSnapshots(hostIds?: number[]) {
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0)));
   if (ids.length === 0) return [];
-  const q = quoteIdentifier;
-  const placeholders = ids.map(() => "?").join(",");
-  const rows = await queryRaw<any>(
-    `SELECT ranked.${q("id")},
-            ranked.${q("hostId")},
-            ranked.${q("networkIn")},
-            ranked.${q("networkOut")},
-            ranked.${q("recordedAt")},
-            ranked.rn
-       FROM (
-         SELECT hm.${q("id")},
-                hm.${q("hostId")},
-                hm.${q("networkIn")},
-                hm.${q("networkOut")},
-                hm.${q("recordedAt")},
-                ROW_NUMBER() OVER (
-                  PARTITION BY hm.${q("hostId")}
-                  ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
-                ) AS rn
-           FROM ${q("host_metrics")} hm
-          WHERE hm.${q("hostId")} IN (${placeholders})
-       ) ranked
-      WHERE ranked.rn <= 2
-      ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
+  const rows = await queryLatestHostMetricRows(
     ids,
+    ["id", "hostId", "networkIn", "networkOut", "recordedAt"],
   ).catch(() => []);
   return (rows as any[]).map(mapLatestHostMetricSnapshot).filter((row) => row.hostId > 0);
 }
@@ -882,17 +930,12 @@ export async function cleanOldTrafficStats(retainHours: number = 72) {
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
   const reportCutoff = retentionCutoffSeconds(Math.max(retainHours, LEGACY_TRAFFIC_REPORT_RETENTION_HOURS));
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("agent_traffic_reports")}
-      WHERE ${quoteIdentifier("producerId")} IS NULL AND ${quoteIdentifier("receivedAt")} < ?`,
-    [reportCutoff],
-  ).catch(() => undefined);
+  await deleteExpiredHistoryRows("agent_traffic_reports", "receivedAt", reportCutoff, {
+    whereSql: `${quoteIdentifier("producerId")} IS NULL`,
+  }).catch(() => undefined);
   const billingBackfilled = await getSetting(TRAFFIC_BILLING_RULE_USAGE_BACKFILL_SETTING).catch(() => null);
   if (!billingBackfilled) return;
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("traffic_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("traffic_stats", "recordedAt", cutoff);
 }
 
 async function tableRowCount(tableName: string) {
@@ -1180,12 +1223,10 @@ export async function cleanOldTrafficStatBuckets(retainHours: number = 72) {
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
   const safeCutoff = Math.max(0, cutoff - TRAFFIC_BUCKET_SECONDS);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("traffic_stat_buckets")}
-      WHERE ${quoteIdentifier("bucketMinutes")} = ?
-        AND ${quoteIdentifier("bucketStart")} < ?`,
-    [TRAFFIC_BUCKET_MINUTES, safeCutoff],
-  );
+  await deleteExpiredHistoryRows("traffic_stat_buckets", "bucketStart", safeCutoff, {
+    whereSql: `${quoteIdentifier("bucketMinutes")} = ?`,
+    whereParams: [TRAFFIC_BUCKET_MINUTES],
+  });
 }
 
 export async function ensureTrafficStatBucketsBackfilled(options: {
@@ -2787,24 +2828,15 @@ export async function cleanOldTcpingStats(retainHours: number = 72) {
   const db = await getDb();
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("tcping_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
-    [cutoff],
-  );
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("forward_group_latency_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("tcping_stats", "recordedAt", cutoff);
+  await deleteExpiredHistoryRows("forward_group_latency_stats", "recordedAt", cutoff);
 }
 
 export async function cleanOldTunnelLatencyStats(retainHours: number = 72) {
   const db = await getDb();
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("tunnel_latency_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("tunnel_latency_stats", "recordedAt", cutoff);
 }
 
 export type TimedOutForwardTest = {

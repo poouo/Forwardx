@@ -8,11 +8,28 @@ import (
 )
 
 func TestDetectHTTPProtocolRequiresRequestLine(t *testing.T) {
-	if detectHTTPProtocol([]byte("GET /")) {
-		t.Fatal("expected short prefix to be rejected")
+	for _, sample := range []string{
+		"GET /",
+		"GET / HTTP/1.1",
+		"GET / HTTP/1.1\n",
+		"GET / HTTP/3.0\r\n",
+		"GET\t/\tHTTP/1.1\r\n",
+		"GET /\x00 HTTP/1.1\r\n",
+		"GET example.com HTTP/1.1\r\n",
+	} {
+		if detectHTTPProtocol([]byte(sample)) {
+			t.Fatalf("unexpected HTTP detection for %q", sample)
+		}
 	}
-	if !detectHTTPProtocol([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n")) {
-		t.Fatal("expected full request line to be detected")
+	for _, sample := range []string{
+		"GET / HTTP/1.1\r\nHost: example.com\r\n",
+		"OPTIONS * HTTP/1.0\r\n",
+		"CONNECT example.com:443 HTTP/1.1\r\n",
+		"GET https://example.com/ HTTP/1.1\r\n",
+	} {
+		if !detectHTTPProtocol([]byte(sample)) {
+			t.Fatalf("expected HTTP detection for %q", sample)
+		}
 	}
 }
 

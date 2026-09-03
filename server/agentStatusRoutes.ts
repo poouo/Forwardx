@@ -13,26 +13,30 @@ import { notifyForwardRuleError } from "./forwardRuleErrorNotifier";
 import { mapWithConcurrency } from "./asyncPool";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
+import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
 
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
 
 const STATUS_IMPORTANT_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const PROTOCOL_BLOCK_LOG_INTERVAL_MS = 30 * 60 * 1000;
 const STATUS_LOG_CACHE_MAX_SIZE = 5000;
+const STATUS_LOG_CACHE_RETENTION_MS = 60 * 60 * 1000;
 const statusLogCache = new Map<string, { value: string; loggedAt: number }>();
+
+const statusLogCacheCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  pruneMapEntries(statusLogCache, (cached) => !Number.isFinite(cached.loggedAt) || now - cached.loggedAt >= STATUS_LOG_CACHE_RETENTION_MS);
+}, 10 * 60 * 1000);
+statusLogCacheCleanupTimer.unref?.();
 
 function shouldLogStatus(key: string, value: string, important = false, minIntervalMs = STATUS_IMPORTANT_LOG_INTERVAL_MS) {
   const now = Date.now();
-  if (statusLogCache.size > STATUS_LOG_CACHE_MAX_SIZE) {
-    for (const [cacheKey, cached] of statusLogCache) {
-      if (now - cached.loggedAt > minIntervalMs * 2) statusLogCache.delete(cacheKey);
-    }
-  }
 
   const cached = statusLogCache.get(key);
   if (cached == null || cached.value !== value) {
-    statusLogCache.set(key, { value, loggedAt: now });
+    setBoundedMapValue(statusLogCache, key, { value, loggedAt: now }, STATUS_LOG_CACHE_MAX_SIZE);
     return true;
   }
   if (important && now - cached.loggedAt >= minIntervalMs) {
@@ -131,11 +135,20 @@ type AgentStatusApplyResult = {
   body: Record<string, any>;
 };
 
+function safeStatusLogText(value: unknown, limit = 96) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, limit) || "-";
+}
+
 async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatusApplyResult> {
   const { ruleId, tunnelId, statusType, isRunning } = payload || {};
   const rawMessage = typeof payload?.message === "string" ? payload.message.trim() : "";
   const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
-  const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
+  const logMessage = safeStatusLogText(message, 300);
+  const hostLogText = `host=${host.id} name=${safeStatusLogText(host.name)}`;
   const statusOrderKey = agentStatusOrderingKey(host.id, payload || {});
   if (!agentStatusOrderGuard.accept(statusOrderKey, payload?.issuedAt)) {
     if (shouldLogStatus(`${statusOrderKey}:stale-epoch`, `issuedAt=${Number(payload?.issuedAt || 0)}`)) {
@@ -145,10 +158,14 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
   }
   if (statusType === "runtime") {
     const runtimeType = String(payload?.forwardType || "runtime").trim() || "runtime";
-    if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}:message=${message}`, !isRunning || !!message)) {
+    // Error details can contain dynamic errno/addresses. Use the runtime state
+    // as the throttling signature so changing diagnostics do not bypass the
+    // five-minute warning interval; the latest message is still included when
+    // a status transition or interval allows a log.
+    if (shouldLogStatus(`runtime:${runtimeType}:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
       appendPanelLog(
         !!isRunning ? "info" : "warn",
-        `[Runtime] status type=${runtimeType} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        `[Runtime] status type=${safeStatusLogText(runtimeType, 64)} ${hostLogText} running=${!!isRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
       );
     }
     if (runtimeType.startsWith("plugin-") && runtimeType.endsWith("-sync")) {
@@ -179,7 +196,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
       if (shouldLogStatus(`tunnel:${tunnelId}:stale-port:${host.id}`, `reported=${reportedPort}:expected=${expectedText}`)) {
         appendPanelLog(
           "info",
-          `[Tunnel] status ignored stale listener tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} reportedPort=${reportedPort} expectedPorts=${expectedText}`,
+          `[Tunnel] status ignored stale listener tunnel=${tunnelId} name=${safeStatusLogText((tunnel as any)?.name)} ${hostLogText} reportedPort=${reportedPort} expectedPorts=${expectedText}`,
         );
       }
       return { status: 200, body: { success: true, ignored: true, stale: true } };
@@ -216,14 +233,14 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
       if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}:ready=${topology.readyCount}/${topology.hostCount}`, !nextRunning || !!message)) {
         appendPanelLog(
           nextRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${isExtraExit ? "extraExit=" : ""}${hostLogText} running=${!!isRunning} effective=${nextRunning} ready=${topology.readyCount}/${topology.hostCount}${message ? ` message=${message}` : ""}`,
+          `[Tunnel] status tunnel=${tunnelId} name=${safeStatusLogText((tunnel as any)?.name)} ${isExtraExit ? "extraExit=" : ""}${hostLogText} running=${!!isRunning} effective=${nextRunning} ready=${topology.readyCount}/${topology.hostCount}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
         );
       }
       return { status: 200, body: { success: true } };
     }
     if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
       if (shouldLogStatus(`tunnel:${tunnelId}:ignored:${host.id}`, `running=${!!isRunning}`, !!message)) {
-        appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+        appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} name=${safeStatusLogText((tunnel as any)?.name)} ${hostLogText} running=${!!isRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`);
       }
       return { status: 200, body: { success: true, ignored: true } };
     }
@@ -234,7 +251,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     if (shouldLogStatus(`tunnel:${tunnelId}:direct:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}`, !nextRunning || !!message)) {
       appendPanelLog(
         nextRunning ? "info" : "warn",
-        `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
+        `[Tunnel] status tunnel=${tunnelId} name=${safeStatusLogText((tunnel as any)?.name)} ${hostLogText} running=${!!isRunning} effective=${nextRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
       );
     }
     return { status: 200, body: { success: true } };
@@ -271,7 +288,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     if (shouldLogStatus(`rule:${ruleId}:stale-tunnel:${host.id}`, `reported=${reportedRuleTunnelId}:current=${currentRuleTunnelId}`, true)) {
       appendPanelLog(
         "info",
-        `[Rule] status ignored stale tunnel rule=${ruleId} name=${String((rule as any).name || "-")} reportedTunnel=${reportedRuleTunnelId || "-"} currentTunnel=${currentRuleTunnelId || "-"} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        `[Rule] status ignored stale tunnel rule=${ruleId} name=${safeStatusLogText((rule as any).name)} reportedTunnel=${reportedRuleTunnelId || "-"} currentTunnel=${currentRuleTunnelId || "-"} ${hostLogText} running=${!!isRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
       );
     }
     return { status: 200, body: { success: true, ignored: true } };
@@ -283,7 +300,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     if (shouldLogStatus(`rule:${ruleId}:stale-port:${host.id}`, `reported=${reportedRulePort}:current=${currentRulePort}`)) {
       appendPanelLog(
         "info",
-        `[Rule] status ignored stale listener rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedPort=${reportedRulePort} currentPort=${currentRulePort}`,
+        `[Rule] status ignored stale listener rule=${ruleId} name=${safeStatusLogText((rule as any).name)} ${hostLogText} reportedPort=${reportedRulePort} currentPort=${currentRulePort}`,
       );
     }
     return { status: 200, body: { success: true, ignored: true, stale: true } };
@@ -295,7 +312,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     if (shouldLogStatus(`rule:${ruleId}:stale-protocol:${host.id}`, `reported=${reportedProtocol}:current=${currentProtocol}`)) {
       appendPanelLog(
         "info",
-        `[Rule] status ignored stale protocol rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedProtocol=${reportedProtocol} currentProtocol=${currentProtocol}`,
+        `[Rule] status ignored stale protocol rule=${ruleId} name=${safeStatusLogText((rule as any).name)} ${hostLogText} reportedProtocol=${reportedProtocol} currentProtocol=${currentProtocol}`,
       );
     }
     return { status: 200, body: { success: true, ignored: true, stale: true } };
@@ -307,7 +324,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     if (shouldLogStatus(`rule:${ruleId}:stale-target-port:${host.id}`, `reported=${reportedTargetPort}:current=${currentTargetPort}`)) {
       appendPanelLog(
         "info",
-        `[Rule] status ignored stale target rule=${ruleId} name=${String((rule as any).name || "-")} ${hostLogText} reportedTargetPort=${reportedTargetPort} currentTargetPort=${currentTargetPort}`,
+        `[Rule] status ignored stale target rule=${ruleId} name=${safeStatusLogText((rule as any).name)} ${hostLogText} reportedTargetPort=${reportedTargetPort} currentTargetPort=${currentTargetPort}`,
       );
     }
     return { status: 200, body: { success: true, ignored: true, stale: true } };
@@ -349,7 +366,7 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
   if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
     appendPanelLog(
       !!isRunning ? "info" : "warn",
-      `[Rule] status rule=${ruleId} name=${String((rule as any).name || "-")} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${(rule as any).forwardType || "-"} proto=${(rule as any).protocol || "-"} target=${String((rule as any).targetIp || "-")}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        `[Rule] status rule=${ruleId} name=${safeStatusLogText((rule as any).name)} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${safeStatusLogText((rule as any).forwardType, 32)} proto=${safeStatusLogText((rule as any).protocol, 32)} target=${safeStatusLogText((rule as any).targetIp)}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
     );
   }
   return { status: 200, body: { success: true } };
@@ -400,18 +417,18 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
       return;
     }
 
-    const label = protocol.toUpperCase();
-    const reason = `检测到该端口使用 ${label} 协议，管理员已禁止在此入口主机使用，请勿使用此协议`;
-    await db.disableForwardRuleByProtocolBlock(ruleId, reason);
-    if (tunnel) {
-      await db.updateTunnel((tunnel as any).id, { isRunning: false } as any);
-      for (const entryHostId of tunnelEntryHostIds) pushAgentRefresh(Number(entryHostId), "protocol-block-entry");
-      pushAgentRefresh(Number((tunnel as any).exitHostId), "protocol-block-exit");
-    } else {
-      pushAgentRefresh(Number((rule as any).hostId), "protocol-block-rule");
+    // The Agent already rejected this connection. Keeping the rule enabled is
+    // essential because an unauthenticated Internet scanner must not be able
+    // to disable an entire forwarding rule by sending one forbidden request.
+    const logKey = `protocol-block:${ruleId}:${host.id}:${protocol}`;
+    const logValue = `port=${sourcePort || (rule as any).sourcePort}`;
+    if (shouldLogStatus(logKey, logValue, true, PROTOCOL_BLOCK_LOG_INTERVAL_MS)) {
+      appendPanelLog(
+        "warn",
+        `[ProtocolBlock] connection rejected rule=${ruleId} tunnel=${tunnel ? (tunnel as any).id : "-"} host=${host.id} port=${sourcePort || (rule as any).sourcePort} protocol=${protocol} ruleKeptEnabled=true`,
+      );
     }
-    appendPanelLog("warn", `[ProtocolBlock] rule=${ruleId} tunnel=${tunnel ? (tunnel as any).id : "-"} host=${host.id} port=${sourcePort || (rule as any).sourcePort} protocol=${protocol}`);
-    res.json({ success: true });
+    res.json({ success: true, connectionRejected: true, ruleKeptEnabled: true });
   } catch (error) {
     console.error("[Agent Protocol Block] Error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -419,6 +436,7 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
 });
 
 agentRouter.post("/api/agent/rule-status-batch", async (req: Request, res: Response) => {
+  const requestStartedAt = Date.now();
   try {
     const host = await getAgentHostFromRequest(req);
     if (!host) {
@@ -451,6 +469,22 @@ agentRouter.post("/api/agent/rule-status-batch", async (req: Request, res: Respo
       }
       accepted += 1;
       if (result.body?.ignored) ignored += 1;
+    }
+    // Batch callbacks can contain a mixture of stale/unauthorized entries.
+    // Keep one aggregate diagnostic per host every five minutes so operators
+    // can distinguish a noisy but healthy Agent from a consistently rejected
+    // status stream without persisting any payload details.
+    if ((ignored > 0 || rejected.length > 0)
+      && shouldLogStatus(
+        `batch:${host.id}`,
+        "ignored-or-rejected",
+        true,
+        STATUS_IMPORTANT_LOG_INTERVAL_MS,
+      )) {
+      appendPanelLog(
+        rejected.length > 0 ? "warn" : "info",
+        `[AgentStatusBatch] host=${host.id} received=${statuses.length} accepted=${accepted} ignored=${ignored} rejected=${rejected.length} duration=${Math.max(0, Date.now() - requestStartedAt)}ms`,
+      );
     }
     res.json({ success: true, accepted, ignored, rejected });
   } catch (error) {

@@ -190,6 +190,10 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     groupType,
     protocol,
     forwardType,
+    // New groups opt into group-level runtime inheritance. Existing rows are
+    // backfilled with false by the schema migration and become opted in only
+    // after an explicit administrator save.
+    failoverRuntimeInheritanceEnabled: true,
     proxyProtocolReceive: runtimeProxyProtocolSupported && !!input.proxyProtocolReceive,
     proxyProtocolSend: runtimeProxyProtocolSupported && !!input.proxyProtocolSend,
     proxyProtocolExitReceive: false,

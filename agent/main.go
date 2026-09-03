@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.192"
+var Version = "2.2.193"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -75,6 +75,11 @@ const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
 const transientAgentCommLogInterval = 5 * time.Minute
+
+// A successful heartbeat is useful when diagnosing a silent Agent, but it
+// must not turn the normal heartbeat cadence into a log stream.  Anomalous
+// responses use the shorter agentReportLogInterval below.
+const agentHeartbeatSummaryLogInterval = 5 * time.Minute
 const agentEventStreamReconnectMinDelay = 3 * time.Second
 const agentEventStreamReconnectMaxDelay = 30 * time.Second
 const agentEventStreamStableResetInterval = 5 * time.Minute
@@ -1054,6 +1059,16 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 			listens, ok = readGostRuntimeServiceListens(cfg.path)
 		}
 		hasWork := ok && len(listens) > 0
+		if !ok {
+			if _, statErr := os.Stat(cfg.path); statErr == nil && shouldLogAgentReport("runtime-config-unreadable:"+cfg.kind, agentReportLogInterval) {
+				logf("runtime readiness config unreadable kind=%s service=%s path=%s", cfg.kind, cfg.service, cfg.path)
+			}
+		} else if len(listens) == 0 && shouldLogAgentReport("runtime-config-empty:"+cfg.kind, 5*time.Minute) {
+			// An empty managed config is valid when no rules use this runtime. It is
+			// recorded at a low rate because it helps distinguish an idle runtime
+			// from a malformed or truncated config during support investigations.
+			logf("runtime readiness config empty kind=%s service=%s path=%s", cfg.kind, cfg.service, cfg.path)
+		}
 		for _, listen := range listens {
 			if port := addrPort(listen.Addr); port > 0 {
 				readiness.runtimePorts[port] = true
@@ -1077,6 +1092,9 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		}
 		readiness.serviceActiveCache[cfg.service] = active
 		if hasWork && !active {
+			if shouldLogAgentReport("runtime-service-inactive:"+cfg.kind, agentReportLogInterval) {
+				logf("runtime readiness service inactive kind=%s service=%s listeners=%d path=%s", cfg.kind, cfg.service, len(listens), cfg.path)
+			}
 			readiness.sharedRuntimeReady = false
 			switch cfg.kind {
 			case "nginx":
@@ -2500,16 +2518,41 @@ func (scheduler *desiredStatePushScheduler) schedule(cfg Config, push agentDesir
 	if scheduler.running {
 		scheduler.pending = &job
 		scheduler.mu.Unlock()
+		if shouldLogAgentReport("desired-state-push-coalesced", agentHeartbeatSummaryLogInterval) {
+			actionCount := 0
+			if push.DesiredState != nil {
+				actionCount = len(push.DesiredState.Actions)
+			}
+			logf("desired state push coalesced actions=%d runningRules=%d latencyProbes=%d", actionCount, len(push.RunningRules), len(push.RuleLatencyProbes))
+		}
 		return
 	}
 	scheduler.running = true
 	scheduler.mu.Unlock()
+	if shouldLogAgentReport("desired-state-push-queued", agentHeartbeatSummaryLogInterval) {
+		actionCount := 0
+		if push.DesiredState != nil {
+			actionCount = len(push.DesiredState.Actions)
+		}
+		logf("desired state push accepted actions=%d runningRules=%d latencyProbes=%d", actionCount, len(push.RunningRules), len(push.RuleLatencyProbes))
+	}
 	go scheduler.run(job)
 }
 
 func (scheduler *desiredStatePushScheduler) run(job desiredStatePushJob) {
 	for {
+		startedAt := time.Now()
 		scheduler.process(job.cfg, job.push)
+		scheduler.mu.Lock()
+		hasPending := scheduler.pending != nil
+		scheduler.mu.Unlock()
+		if shouldLogAgentReport("desired-state-push-processed", agentHeartbeatSummaryLogInterval) {
+			actionCount := 0
+			if job.push.DesiredState != nil {
+				actionCount = len(job.push.DesiredState.Actions)
+			}
+			logf("desired state push processed actions=%d duration=%s pending=%v", actionCount, time.Since(startedAt).Round(time.Millisecond), hasPending)
+		}
 		scheduler.mu.Lock()
 		if scheduler.pending == nil {
 			scheduler.running = false
@@ -2672,7 +2715,14 @@ func main() {
 	// the panel send the desired state immediately. The action queue and FXP
 	// control lock make restore and server-driven reconciliation idempotent when
 	// they overlap.
-	_ = register(cfg)
+	if err := register(cfg); err != nil {
+		// Registration is intentionally non-fatal; the regular heartbeat path
+		// will retry communication. Keep the failure visible in the Agent log so
+		// an installation that never reaches the panel is diagnosable.
+		logAgentCommError("register", err)
+	} else if shouldLogAgentReport("register-ok", agentHeartbeatSummaryLogInterval) {
+		logf("agent registration succeeded version=%s", Version)
+	}
 	resetDesiredActionRecordsAfterAgentUpgrade()
 	startDesiredActionRecordsFlusher()
 	startActionStatusReporter()
@@ -3401,6 +3451,66 @@ func register(cfg Config) error {
 	return post(cfg, "/api/agent/register", payload, &out)
 }
 
+// logHeartbeatResponse records the control-plane result without including the
+// request payload (which may contain target addresses or other user data).
+// Stable heartbeats are sampled; responses that require work are sampled more
+// frequently so a stalled reconciliation can be diagnosed promptly.
+func logHeartbeatResponse(mode string, resp *heartbeatResp, duration time.Duration) {
+	if resp == nil {
+		return
+	}
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "full"
+	}
+	desiredActions := 0
+	if resp.DesiredState != nil {
+		desiredActions = len(resp.DesiredState.Actions)
+	}
+	anomalous := resp.RequestLocalState
+	anomalous = anomalous || resp.ReconciliationCoalesced
+	anomalous = anomalous || resp.AgentUpgrade != nil || resp.PanelMigration != nil
+	anomalous = anomalous || len(resp.Actions) > 0 || len(resp.SelfTests) > 0
+	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.PluginTasks) > 0
+	interval := agentHeartbeatSummaryLogInterval
+	if anomalous {
+		interval = agentReportLogInterval
+	}
+	if !shouldLogAgentReport("heartbeat-response:"+mode, interval) {
+		return
+	}
+	receivedRevision, appliedRevision, _, _ := desiredRevisionSnapshot()
+	logf(
+		"heartbeat response mode=%s duration=%s actions=%d desiredActions=%d runningRules=%d tunnelProbes=%d "+
+			"selfTests=%d interactive=%d/%d/%d next=%ds coalesced=%v requestLocalState=%v "+
+			"metricsOnly=%v forceTcping=%v pendingActions=%d queued=%d ingress=%d workers=%d/%d "+
+			"revisions=%d/%d eventStream=%v",
+		mode,
+		duration.Round(time.Millisecond),
+		len(resp.Actions),
+		desiredActions,
+		len(resp.RunningRules),
+		len(resp.TunnelProbes),
+		len(resp.SelfTests),
+		len(resp.LookingGlassTests),
+		len(resp.Iperf3Tasks),
+		len(resp.PluginTasks),
+		resp.NextInterval,
+		resp.ReconciliationCoalesced,
+		resp.RequestLocalState,
+		resp.MetricsOnly,
+		resp.ForceTCPing,
+		atomic.LoadInt64(&actionPendingCount),
+		len(actionQueue),
+		actionIngress.len(),
+		atomic.LoadInt64(&actionWorkerStartedCount),
+		actionWorkerConcurrency,
+		receivedRevision,
+		appliedRevision,
+		agentEventStreamConnected.Load(),
+	)
+}
+
 func heartbeatStaticChanged(a, b heartbeatStaticSnapshot) bool {
 	return a.PrimaryIP != b.PrimaryIP ||
 		a.IPv4 != b.IPv4 ||
@@ -3594,6 +3704,7 @@ func defaultIPv6NetworkInterface(raw []byte) string {
 }
 
 func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
+	startedAt := time.Now()
 	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
@@ -3717,6 +3828,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		}
 		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
+	logHeartbeatResponse("full", &resp, time.Since(startedAt))
 	compactAgentReports.Store(resp.CompactReports)
 	agentPresenceSupported.Store(resp.PresenceSupported)
 	if resp.TrafficReportInterval > 0 {
@@ -3815,6 +3927,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 }
 
 func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
+	startedAt := time.Now()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
 	if primaryIP == "" {
@@ -3907,6 +4020,7 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 	if err := postHeartbeat(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
 		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
+	logHeartbeatResponse("keepalive", &resp, time.Since(startedAt))
 	compactAgentReports.Store(resp.CompactReports)
 	agentPresenceSupported.Store(resp.PresenceSupported)
 	if resp.TrafficReportInterval > 0 {
@@ -4578,6 +4692,9 @@ func runAgentEventStream(cfg Config) error {
 		)
 	}
 	agentEventStreamConnected.Store(true)
+	if shouldLogAgentReport("event-stream-connected", agentHeartbeatSummaryLogInterval) {
+		logf("event stream connected")
+	}
 	recordPanelMigrationStreamConnection(true)
 	defer func() {
 		agentEventStreamConnected.Store(false)
@@ -4615,6 +4732,9 @@ func runAgentEventStream(cfg Config) error {
 					} else if handleLegacyPanelMigrationUpgrade(cfg, &up) {
 						return io.EOF
 					} else {
+						if shouldLogAgentReport("event-stream-upgrade", agentReportLogInterval) {
+							logf("event stream upgrade requested target=%s release=%s", compactLogField(up.TargetVersion, 128), compactLogField(up.ReleaseVersion, 128))
+						}
 						go selfUpgrade(cfg, &up)
 					}
 				} else if msg.Type == "agent-refresh" {
@@ -4623,7 +4743,10 @@ func runAgentEventStream(cfg Config) error {
 						logf("decode agent-refresh payload: %v", err)
 					} else if refresh.ForceMimicCheck {
 						invalidateMimicEnvironmentCache()
-						logf("mimic environment cache invalidated reason=%s", strings.TrimSpace(refresh.Reason))
+						logf("mimic environment cache invalidated reason=%s", compactLogField(refresh.Reason, 160))
+					}
+					if (refresh.Urgent || refresh.ForceMimicCheck) && shouldLogAgentReport("event-stream-refresh-urgent", agentReportLogInterval) {
+						logf("event stream refresh received urgent=%v forceMimicCheck=%v reason=%s", refresh.Urgent, refresh.ForceMimicCheck, compactLogField(refresh.Reason, 160))
 					}
 					wakeHeartbeatFromSSE(refresh.Urgent)
 				} else if msg.Type == "agent-desired-state" {
@@ -4631,6 +4754,15 @@ func runAgentEventStream(cfg Config) error {
 					if err := json.Unmarshal(msg.Data, &push); err != nil {
 						logf("decode agent-desired-state payload: %v", err)
 					} else {
+						if shouldLogAgentReport("event-stream-desired-state", agentHeartbeatSummaryLogInterval) {
+							actionCount := 0
+							revision := int64(0)
+							if push.DesiredState != nil {
+								actionCount = len(push.DesiredState.Actions)
+								revision = push.DesiredState.ConfigRevision
+							}
+							logf("event stream desired state received revision=%d actions=%d runningRules=%d latencyProbes=%d", revision, actionCount, len(push.RunningRules), len(push.RuleLatencyProbes))
+						}
 						agentDesiredStatePushes.schedule(cfg, push)
 					}
 				} else if msg.Type == "agent-panel-migration" {
@@ -4645,7 +4777,14 @@ func runAgentEventStream(cfg Config) error {
 					if err := json.Unmarshal(msg.Data, &request); err != nil {
 						logf("decode agent-support-bundle payload: %v", err)
 					} else {
-						agentSupportBundles.schedule(cfg, request)
+						accepted := agentSupportBundles.schedule(cfg, request)
+						interval := agentHeartbeatSummaryLogInterval
+						if !accepted {
+							interval = agentReportLogInterval
+						}
+						if shouldLogAgentReport("event-stream-support-bundle", interval) {
+							logf("event stream support bundle received task=%s accepted=%v", compactLogField(request.TaskID, 128), accepted)
+						}
 					}
 				}
 			}
@@ -5461,6 +5600,9 @@ func runtimeActionServicesHealthy(a action) bool {
 	}
 	for _, name := range services {
 		if !managedServiceActive(name) {
+			if shouldLogAgentReport("runtime-action-service-inactive:"+strings.TrimSpace(a.ForwardType)+":"+name, agentReportLogInterval) {
+				logf("runtime action service inactive service=%s forwardType=%s op=%s", name, strings.TrimSpace(a.ForwardType), strings.TrimSpace(a.Op))
+			}
 			return false
 		}
 	}
@@ -12921,24 +13063,50 @@ func detectHTTPProtocol(data []byte) bool {
 		return true
 	}
 	limit := minInt(len(data), 256)
-	if limit < 8 {
+	if limit < len("GET / HTTP/1.0\r\n") {
 		return false
 	}
-	lineEnd := bytes.IndexByte(data[:limit], '\n')
+	lineEnd := bytes.Index(data[:limit], []byte("\r\n"))
 	if lineEnd < 0 {
 		return false
 	}
-	line := strings.TrimSuffix(string(data[:lineEnd]), "\r")
-	parts := strings.Fields(line)
+	parts := bytes.Split(data[:lineEnd], []byte{' '})
 	if len(parts) != 3 {
 		return false
 	}
-	switch strings.ToUpper(parts[0]) {
+	method := string(parts[0])
+	switch method {
 	case "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE":
 	default:
 		return false
 	}
-	return parts[2] == "HTTP/1.0" || parts[2] == "HTTP/1.1"
+	version := string(parts[2])
+	if version != "HTTP/1.0" && version != "HTTP/1.1" {
+		return false
+	}
+	return validHTTPRequestTarget(method, parts[1])
+}
+
+func validHTTPRequestTarget(method string, target []byte) bool {
+	if len(target) == 0 {
+		return false
+	}
+	for _, value := range target {
+		if value < 0x21 || value > 0x7e {
+			return false
+		}
+	}
+	if method == "CONNECT" {
+		return bytes.Contains(target, []byte{':'})
+	}
+	if bytes.Equal(target, []byte("*")) {
+		return method == "OPTIONS"
+	}
+	if target[0] == '/' {
+		return true
+	}
+	lower := bytes.ToLower(target)
+	return bytes.HasPrefix(lower, []byte("http://")) || bytes.HasPrefix(lower, []byte("https://"))
 }
 
 func detectTLSProtocol(data []byte) bool {
@@ -13977,6 +14145,26 @@ func compactLogOutput(text string) string {
 	compact := strings.Join(parts, " | ")
 	if len(compact) > 900 {
 		return compact[:900] + "..."
+	}
+	return compact
+}
+
+// compactLogField keeps control-plane values on one log line. Values are
+// normally generated by the panel, but stripping newlines also protects the
+// local diagnostic file if a malformed value is ever returned.
+func compactLogField(value string, limit int) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	compact := strings.Join(strings.Fields(strings.TrimSpace(cleaned)), " ")
+	if compact == "" {
+		return "-"
+	}
+	if limit > 0 && len(compact) > limit {
+		return compact[:limit] + "..."
 	}
 	return compact
 }

@@ -16,6 +16,7 @@ import {
   selectProtocolGuardProxyProtocol,
   selectForwardChainListenerPort,
   shouldReconcileProtocolGuardBackend,
+  stableStateSignature,
   stableDesiredStateHash,
 } from "./agentHeartbeatRoute";
 import { normalizeTransportTuningInput } from "./routers/rules.crud";
@@ -549,6 +550,29 @@ test("desired-state aggregate hash ignores delivery timestamps and per-action tr
     stableDesiredStateHash([{ ...action, issuedAt: 200, configHash: "delivery-b" }]),
   );
   assert.notEqual(stableDesiredStateHash([action]), stableDesiredStateHash([{ ...action, ruleId: 8 }]));
+});
+
+test("state signatures remain stable across nested object and array ordering", () => {
+  const first = {
+    rules: [
+      { id: 2, protocols: ["udp", "tcp"], target: { port: 443, host: "b.example" } },
+      { id: 1, protocols: ["tcp"], target: { host: "a.example", port: 80 } },
+    ],
+    enabled: true,
+  };
+  const reordered = {
+    enabled: true,
+    rules: [
+      { target: { port: 80, host: "a.example" }, protocols: ["tcp"], id: 1 },
+      { target: { host: "b.example", port: 443 }, protocols: ["tcp", "udp"], id: 2 },
+    ],
+  };
+
+  assert.equal(stableStateSignature(first), stableStateSignature(reordered));
+  assert.notEqual(
+    stableStateSignature(first),
+    stableStateSignature({ ...reordered, enabled: false }),
+  );
 });
 
 test("forward-chain target reconciliation uses the downstream listener port", () => {

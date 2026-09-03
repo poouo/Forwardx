@@ -132,6 +132,8 @@ const fxpEndpointStatusCache = new Map<string, string>();
 const AGENT_HOST_CACHE_MAX = 10_000;
 const AGENT_DYNAMIC_CACHE_MAX = 20_000;
 const AGENT_CACHE_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+const AGENT_HEARTBEAT_SUMMARY_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const agentHeartbeatSummaryLogCache = new Map<number, number>();
 // 孤儿端口迟滞：hostId -> (ruleId:port:protocol -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
@@ -152,6 +154,7 @@ export function pruneAgentHeartbeatCaches(now = Date.now()) {
   pruneMapEntries(agentRuntimeSyncActionCache, (entry) => stale(entry.sentAt));
   pruneMapEntries(agentPluginSyncActionCache, (entry) => stale(entry.sentAt));
   pruneMapEntries(agentRuntimeDriftLogCache, (loggedAt) => stale(loggedAt));
+  pruneMapEntries(agentHeartbeatSummaryLogCache, (loggedAt) => stale(loggedAt));
   pruneMapEntries(agentLocalRuntimeStateCache, (entry) => stale(entry.updatedAt));
 }
 
@@ -440,8 +443,12 @@ function stableActionSignature(actions: any[]) {
 function canonicalizeStateSection(value: any): any {
   if (Array.isArray(value)) {
     return value
-      .map((item) => canonicalizeStateSection(item))
-      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+      .map((item) => {
+        const canonicalValue = canonicalizeStateSection(item);
+        return { canonicalValue, sortKey: JSON.stringify(canonicalValue) };
+      })
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+      .map(({ canonicalValue }) => canonicalValue);
   }
   if (value && typeof value === "object") {
     return Object.keys(value)
@@ -455,7 +462,7 @@ function canonicalizeStateSection(value: any): any {
   return value;
 }
 
-function stableStateSignature(value: any) {
+export function stableStateSignature(value: any) {
   return crypto
     .createHash("sha256")
     .update(`${AGENT_STATE_SIGNATURE_SCHEMA}\n${JSON.stringify(canonicalizeStateSection(value))}`)
@@ -749,6 +756,69 @@ function getOrphanPortStreaks(hostId: number): Map<string, number> {
     setBoundedMapValue(agentOrphanPortStreakCache, id, streaks, AGENT_HOST_CACHE_MAX);
   }
   return streaks;
+}
+
+function logAgentHeartbeatSummary(input: {
+  hostId: number;
+  hostName?: string;
+  expectedRules: number;
+  reportedRules: number;
+  reportedServices: number;
+  actions: number;
+  pendingApply: number;
+  pendingRemove: number;
+  recoveryPending: boolean;
+  requestLocalState: boolean;
+  coalesced?: boolean;
+  stable: boolean;
+  runtimeDrift?: number;
+  metricsWatching?: boolean;
+  nextInterval?: number;
+  interactiveTasks?: number;
+}) {
+  const hostId = Number(input.hostId);
+  if (!Number.isFinite(hostId) || hostId <= 0) return;
+  const now = Date.now();
+  const last = agentHeartbeatSummaryLogCache.get(hostId) || 0;
+  if (last > 0 && now - last < AGENT_HEARTBEAT_SUMMARY_LOG_INTERVAL_MS) return;
+  setBoundedMapValue(agentHeartbeatSummaryLogCache, hostId, now, AGENT_HOST_CACHE_MAX);
+  const name = String(input.hostName || "-")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, 96) || "-";
+  const safeCount = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
+  };
+  const pending = safeCount(input.pendingApply) + safeCount(input.pendingRemove);
+  const status = input.coalesced
+    ? "reconciliation-coalesced"
+    : input.requestLocalState
+      ? "local-state-requested"
+      : input.recoveryPending
+        ? "recovery-pending"
+        : input.stable
+          ? "stable"
+          : pending > 0
+            ? "actions-pending"
+            : "reconciling";
+  appendPanelLog(
+    "info",
+    `[AgentHeartbeat] summary host=${hostId} name=${name} status=${status}`
+      + ` expectedRules=${safeCount(input.expectedRules)}`
+      + ` reportedRules=${safeCount(input.reportedRules)}`
+      + ` reportedServices=${safeCount(input.reportedServices)}`
+      + ` actions=${safeCount(input.actions)}`
+      + ` pendingApply=${safeCount(input.pendingApply)}`
+      + ` pendingRemove=${safeCount(input.pendingRemove)}`
+      + ` drift=${safeCount(input.runtimeDrift)}`
+      + ` metricsWatching=${input.metricsWatching === true}`
+      + ` interactiveTasks=${safeCount(input.interactiveTasks)}`
+      + (Number.isFinite(Number(input.nextInterval)) ? ` nextInterval=${safeCount(input.nextInterval)}` : "")
+      + ` recoveryPending=${input.recoveryPending}`
+      + ` requestLocalState=${input.requestLocalState}`,
+  );
 }
 
 function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssuedAt: number) {
@@ -1324,12 +1394,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         }
         const panelMigration = await getPanelMigrationAgentDirective(logHostId);
+        const coalescedRequestLocalState = !!normalizeRuntimeStateSignature(req.body?.localStateSignature);
+        logAgentHeartbeatSummary({
+          hostId: logHostId,
+          hostName: logHostName,
+          expectedRules: 0,
+          reportedRules: 0,
+          reportedServices: 0,
+          actions: 0,
+          pendingApply: 0,
+          pendingRemove: 0,
+          recoveryPending: !wasOnline,
+          requestLocalState: coalescedRequestLocalState,
+          coalesced: true,
+          stable: false,
+          nextInterval: 5,
+        });
         res.json({
           success: true,
           actions: [],
           selfTests: [],
           nextInterval: 5,
-          requestLocalState: !!normalizeRuntimeStateSignature(req.body?.localStateSignature),
+          requestLocalState: coalescedRequestLocalState,
           compactReports: true,
           presenceSupported: true,
           reconciliationCoalesced: true,
@@ -1607,6 +1693,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (busyHeartbeat) {
       const panelUrl = await resolveAgentAdvertisedPanelUrl();
       const metricsWatching = isHostMetricsWatching(host.id);
+      logAgentHeartbeatSummary({
+        hostId: logHostId,
+        hostName: logHostName,
+        expectedRules: 0,
+        reportedRules: Array.isArray(localRuntimeState.state?.rules) ? localRuntimeState.state.rules.length : 0,
+        reportedServices: Array.isArray(localRuntimeState.state?.services) ? localRuntimeState.state.services.length : 0,
+        actions: 0,
+        pendingApply: 0,
+        pendingRemove: 0,
+        recoveryPending: recoveryTriggered
+          || (!!previousHost.agentRecoveryStartedAt && !previousHost.agentRecoveryCompletedAt),
+        requestLocalState: localRuntimeState.requestLocalState,
+        stable: false,
+        metricsWatching,
+        nextInterval: metricsWatching ? 3 : 5,
+      });
       res.json(buildBusyAgentHeartbeatResponse({
         panelUrl,
         requestLocalState: localRuntimeState.requestLocalState,
@@ -1648,6 +1750,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     });
     if (stablePlan) {
       const metricsWatching = isHostMetricsWatching(host.id);
+      logAgentHeartbeatSummary({
+        hostId: logHostId,
+        hostName: logHostName,
+        expectedRules: 0,
+        reportedRules: Array.isArray(localRuntimeState.state?.rules) ? localRuntimeState.state.rules.length : 0,
+        reportedServices: Array.isArray(localRuntimeState.state?.services) ? localRuntimeState.state.services.length : 0,
+        actions: 0,
+        pendingApply: 0,
+        pendingRemove: 0,
+        recoveryPending: false,
+        requestLocalState: false,
+        stable: true,
+        metricsWatching,
+        nextInterval: metricsWatching ? 3 : stablePlan.idleNextInterval,
+      });
       res.json({
         success: true,
         actions: [],
@@ -6401,6 +6518,32 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     } else {
       agentStableHeartbeatPlanCache.invalidate(host.id);
     }
+    const pendingApplyCount = activeWorkActions.filter((action: any) => action?.op === "apply").length;
+    const pendingRemoveCount = activeWorkActions.filter((action: any) => action?.op === "remove").length;
+    logAgentHeartbeatSummary({
+      hostId: logHostId,
+      hostName: logHostName,
+      expectedRules: runningRules.length,
+      reportedRules: reportedLocalRules.length,
+      reportedServices: reportedRuntimeServices.length,
+      actions: orderedActions.length,
+      pendingApply: pendingApplyCount,
+      pendingRemove: pendingRemoveCount,
+      recoveryPending: recoveryWasInProgress && (pendingApplyCount > 0 || localRuntimeState.requestLocalState),
+      requestLocalState: localRuntimeState.requestLocalState,
+      stable: stablePlanReady,
+      runtimeDrift: new Set(runtimeDriftedRuleIds).size,
+      metricsWatching,
+      nextInterval,
+      interactiveTasks: hasInteractiveTasks ? (
+        lookingGlassTests.length
+        + iperf3Tasks.length
+        + pluginTasks.length
+        + (hasPendingPluginTasks ? 1 : 0)
+        + (forceTcping ? 1 : 0)
+        + (hasPendingMultiHopRuntime && !hasTunnelApplyActions ? 1 : 0)
+      ) : 0,
+    });
     res.json({
       success: true,
       actions: supportsDesiredState ? [] : orderedActions,

@@ -100,6 +100,98 @@ async function clearLegacyTrafficPaddingOnce() {
   return cleared;
 }
 
+function databaseBool(value: unknown) {
+  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+}
+
+function normalizedRuntimeType(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function legacyRuntimeFieldDiffers(key: string, left: unknown, right: unknown) {
+  if (key === "forwardType") return normalizedRuntimeType(left) !== normalizedRuntimeType(right);
+  if (key === "proxyProtocolVersion") return Number(left || 0) !== Number(right || 0);
+  return databaseBool(left) !== databaseBool(right);
+}
+
+// v2.3.278 briefly applied failover group-level runtime settings to existing
+// child rules during the startup sweep. Keep this migration read-only: old
+// groups remain in compatibility mode until an administrator explicitly saves
+// them, while the scan identifies rules that may need review.
+export async function warnLegacyForwardGroupRuntimeInheritanceOnce() {
+  const marker = "forward-group-runtime-inheritance-compat-v1";
+  if (await getSetting(marker)) return 0;
+  const q = quoteIdentifier;
+  const rows = await queryRaw<any>(
+    `SELECT g.${q("id")} AS ${q("groupId")},
+            g.${q("name")} AS ${q("groupName")},
+            g.${q("forwardType")} AS ${q("groupForwardType")},
+            g.${q("failoverRuntimeInheritanceEnabled")} AS ${q("inheritanceEnabled")},
+            g.${q("proxyProtocolReceive")} AS ${q("groupProxyProtocolReceive")},
+            g.${q("proxyProtocolSend")} AS ${q("groupProxyProtocolSend")},
+            g.${q("proxyProtocolVersion")} AS ${q("groupProxyProtocolVersion")},
+            c.${q("id")} AS ${q("childRuleId")},
+            c.${q("forwardType")} AS ${q("childForwardType")},
+            c.${q("proxyProtocolReceive")} AS ${q("childProxyProtocolReceive")},
+            c.${q("proxyProtocolSend")} AS ${q("childProxyProtocolSend")},
+            c.${q("proxyProtocolVersion")} AS ${q("childProxyProtocolVersion")},
+            c.${q("tunnelId")} AS ${q("childTunnelId")},
+            t.${q("forwardType")} AS ${q("templateForwardType")},
+            t.${q("proxyProtocolReceive")} AS ${q("templateProxyProtocolReceive")},
+            t.${q("proxyProtocolSend")} AS ${q("templateProxyProtocolSend")},
+            t.${q("proxyProtocolVersion")} AS ${q("templateProxyProtocolVersion")}
+       FROM ${q("forward_groups")} g
+       INNER JOIN ${q("forward_rules")} c
+         ON c.${q("forwardGroupId")} = g.${q("id")}
+        AND c.${q("isForwardGroupTemplate")} = ${boolLiteral(false)}
+        AND c.${q("pendingDelete")} = ${boolLiteral(false)}
+       LEFT JOIN ${q("forward_rules")} t
+         ON t.${q("id")} = c.${q("forwardGroupRuleId")}
+        AND t.${q("forwardGroupId")} = g.${q("id")}
+        AND t.${q("isForwardGroupTemplate")} = ${boolLiteral(true)}
+       WHERE g.${q("groupMode")} = ?`,
+    ["failover"],
+  );
+  const affected = (rows as any[]).filter((row) => {
+    if (databaseBool(row.inheritanceEnabled)) return false;
+    // Tunnel members intentionally derive their runtime tool/PROXY fields
+    // from the tunnel, so a difference from the group is expected.
+    if (Number(row.childTunnelId || 0) > 0) return false;
+    const groupType = normalizedRuntimeType(row.groupForwardType);
+    if (groupType !== "gost" && groupType !== "realm") return false;
+    // Legacy failover children should follow their template. A 2.3.278
+    // startup sweep instead copied the group fields, so compare both sides:
+    // report only when the group differs from its template and the child no
+    // longer matches that template. This catches copied fields even when the
+    // child happens to equal the group exactly.
+    if (row.templateForwardType == null) return false;
+    const runtimeKeys: Array<[string, unknown, unknown, unknown]> = [
+      ["forwardType", row.groupForwardType, row.childForwardType, row.templateForwardType],
+      ["proxyProtocolReceive", row.groupProxyProtocolReceive, row.childProxyProtocolReceive, row.templateProxyProtocolReceive],
+      ["proxyProtocolSend", row.groupProxyProtocolSend, row.childProxyProtocolSend, row.templateProxyProtocolSend],
+      ["proxyProtocolVersion", row.groupProxyProtocolVersion, row.childProxyProtocolVersion, row.templateProxyProtocolVersion],
+    ];
+    const groupDiffersFromTemplate = runtimeKeys.some(([key, groupValue, , templateValue]) => legacyRuntimeFieldDiffers(String(key), groupValue, templateValue));
+    if (!groupDiffersFromTemplate) return false;
+    return runtimeKeys.some(([key, , childValue, templateValue]) => legacyRuntimeFieldDiffers(String(key), childValue, templateValue));
+  });
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  if (affected.length === 0) return 0;
+  const groupIds = Array.from(new Set(affected.map((row) => Number(row.groupId)).filter((id) => id > 0)));
+  const childIds = affected.map((row) => Number(row.childRuleId)).filter((id) => id > 0);
+  const sampleGroups = affected
+    .map((row) => `${Number(row.groupId)}:${String(row.groupName || "group")}`)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(0, 20)
+    .join(", ");
+  console.warn(
+    `[Database] COMPATIBILITY WARNING: ${affected.length} failover child rule(s) in ${groupIds.length} legacy group(s) have runtime fields inconsistent with their template/group; no rules were changed. `
+      + `Review child rule IDs=${childIds.slice(0, 50).join(",")}${childIds.length > 50 ? ",..." : ""}; groups=${sampleGroups}${groupIds.length > 20 ? ",..." : ""}. `
+      + "Save a group explicitly after reviewing its PROXY/转发工具 settings to enable group-level inheritance.",
+  );
+  return affected.length;
+}
+
 function legacyRateLimitMbpsExpr(column: string) {
   const q = quoteIdentifier;
   const col = q(column);
@@ -246,39 +338,53 @@ export async function clearLegacyTunnelRuleLatencyHistoryOnce() {
 }
 
 export async function initDatabase() {
+  const initializationStartedAt = Date.now();
+  const runInitializationStep = async <T>(name: string, work: () => Promise<T> | T) => {
+    const startedAt = Date.now();
+    try {
+      return await work();
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      // Startup maintenance is intentionally quiet when it is fast. A slow
+      // step is actionable when a local panel appears stuck during boot.
+      if (durationMs >= 2_000) {
+        console.warn(`[Database] initialization step slow step=${name} durationMs=${durationMs}`);
+      }
+    }
+  };
   try {
-    const db = await connectDatabase();
+    const db = await runInitializationStep("connect", () => connectDatabase());
     const kind = getDatabaseKind();
     if (!db || !kind) {
       console.warn("[Database] Not configured. Open the panel to complete setup.");
       return { configured: false, ready: false, hasAdmin: false } as const;
     }
 
-    await ensureDatabaseSchema();
-    await clearLegacyTrafficPaddingOnce().then((count) => {
+    await runInitializationStep("schema", () => ensureDatabaseSchema());
+    await runInitializationStep("clear-legacy-traffic-padding", () => clearLegacyTrafficPaddingOnce().then((count) => {
       if (count > 0) console.log(`[Database] Cleared legacy traffic padding settings count=${count}`);
     }).catch((error) => {
       console.warn("[Database] Legacy traffic padding cleanup skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await refreshDatabasePoolSettings().catch((error) => {
+    }));
+    await runInitializationStep("refresh-pool-settings", () => refreshDatabasePoolSettings().catch((error) => {
       console.warn("[Database] Automatic pool sizing skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await clearLegacyTunnelRuleLatencyHistoryOnce().then((count) => {
+    }));
+    await runInitializationStep("clear-legacy-latency", () => clearLegacyTunnelRuleLatencyHistoryOnce().then((count) => {
       if (count > 0) console.log(`[Database] Cleared legacy tunnel rule latency samples count=${count}`);
     }).catch((error) => {
       console.warn("[Database] Legacy tunnel rule latency cleanup skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await repairPortForwardRuleHostReferencesOnce().then((repairs) => {
+    }));
+    await runInitializationStep("repair-rule-hosts", () => repairPortForwardRuleHostReferencesOnce().then((repairs) => {
       if (repairs.length > 0) console.log(`[Database] Repaired stale port-forward rule hosts count=${repairs.length}`);
     }).catch((error) => {
       console.warn("[Database] Port-forward rule host repair skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await repairConflictingProtocolPortRules().then((repairs) => {
+    }));
+    await runInitializationStep("repair-port-conflicts", () => repairConflictingProtocolPortRules().then((repairs) => {
       if (repairs.length > 0) console.warn(`[Database] Disabled conflicting same-port rules count=${repairs.length}`);
     }).catch((error) => {
       console.warn("[Database] Same-port rule conflict repair skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await repairForwardGroupRuleIntegrity().then((repair) => {
+    }));
+    await runInitializationStep("repair-forward-groups", () => repairForwardGroupRuleIntegrity().then((repair) => {
       const total = repair.orphanRules + repair.legacyRules + repair.legacyPointers + repair.orphanTemplates;
       if (total > 0) {
         console.warn(
@@ -289,78 +395,84 @@ export async function initDatabase() {
       }
     }).catch((error) => {
       console.warn("[Database] Forward-group rule integrity repair skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await purgeSettledPendingForwardRuleDeletes().then((count) => {
+    }));
+    // Run the compatibility scan after relationship repairs so valid template
+    // pointers are visible and retired/orphaned children are excluded. This
+    // remains before any scheduler-driven group synchronization.
+    await runInitializationStep("scan-forward-group-compatibility", () => warnLegacyForwardGroupRuntimeInheritanceOnce().catch((error) => {
+      console.warn("[Database] Forward-group runtime inheritance compatibility scan skipped:", error instanceof Error ? error.message : String(error));
+    }));
+    await runInitializationStep("purge-pending-rules", () => purgeSettledPendingForwardRuleDeletes().then((count) => {
       if (count > 0) console.log(`[Database] Purged settled pending forward rules count=${count}`);
     }).catch((error) => {
       console.warn("[Database] Pending forward rule purge skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillTunnelProxyProtocolSplit().catch((error) => {
+    }));
+    await runInitializationStep("backfill-proxy-protocol", () => backfillTunnelProxyProtocolSplit().catch((error) => {
       console.warn("[Database] PROXY Protocol split backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillRateLimitsToMbps().catch((error) => {
+    }));
+    await runInitializationStep("backfill-rate-limits", () => backfillRateLimitsToMbps().catch((error) => {
       console.warn("[Database] Rate limit unit backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillLinkManagementSortOrder().catch((error) => {
+    }));
+    await runInitializationStep("backfill-link-order", () => backfillLinkManagementSortOrder().catch((error) => {
       console.warn("[Database] Link management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillForwardRuleSortOrder().catch((error) => {
+    }));
+    await runInitializationStep("backfill-rule-order", () => backfillForwardRuleSortOrder().catch((error) => {
       console.warn("[Database] Forward rule sort order backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillHostManagementSortOrder().catch((error) => {
+    }));
+    await runInitializationStep("backfill-host-order", () => backfillHostManagementSortOrder().catch((error) => {
       console.warn("[Database] Host management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillTunnelExitGroups().catch((error) => {
+    }));
+    await runInitializationStep("backfill-tunnel-exit-groups", () => backfillTunnelExitGroups().catch((error) => {
       console.warn("[Database] Tunnel exit group reference backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillTrafficBillingRuleUsageFromStats().catch((error) => {
+    }));
+    await runInitializationStep("backfill-traffic-billing", () => backfillTrafficBillingRuleUsageFromStats().catch((error) => {
       console.warn("[TrafficBilling] Rule usage backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await ensureTrafficStatBucketsBackfilled().catch((error) => {
+    }));
+    await runInitializationStep("backfill-traffic-buckets", () => ensureTrafficStatBucketsBackfilled().catch((error) => {
       console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await ensureUserTrafficCountersBackfilled().catch((error) => {
+    }));
+    await runInitializationStep("backfill-traffic-counters", () => ensureUserTrafficCountersBackfilled().catch((error) => {
       console.warn("[TrafficCounter] Startup cumulative counter backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await cleanOldTrafficStats(72).catch((error) => {
+    }));
+    await runInitializationStep("cleanup-traffic-stats", () => cleanOldTrafficStats(72).catch((error) => {
       console.warn("[TrafficSummary] Startup traffic stats cleanup skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await cleanOldTrafficStatBuckets(72).catch((error) => {
+    }));
+    await runInitializationStep("cleanup-traffic-buckets", () => cleanOldTrafficStatBuckets(72).catch((error) => {
       console.warn("[TrafficSummary] Startup traffic bucket cleanup skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
+    }));
+    await runInitializationStep("backfill-manual-entitlements", () => backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
       console.warn("[Database] Manual entitlement backfill skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await seedDevPanelData().catch((error) => {
+    }));
+    await runInitializationStep("seed-dev-panel", () => seedDevPanelData().catch((error) => {
       console.warn("[DevPanel] Seed data skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await repairSubscriptionBillingStateOnce().then((result) => {
+    }));
+    await runInitializationStep("repair-subscription-billing", () => repairSubscriptionBillingStateOnce().then((result) => {
       if (result.users > 0) {
         console.log(`[Database] Reconciled subscription billing users=${result.users} resets=${result.resets}`);
       }
     }).catch((error) => {
       console.warn("[Database] Subscription billing reconciliation skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await ensureBundledDeveloperAnnouncements().catch((error) => {
+    }));
+    await runInitializationStep("ensure-announcements", () => ensureBundledDeveloperAnnouncements().catch((error) => {
       console.warn("[Announcement] Bundled developer announcements skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await maintainCurrentPostgresqlDatabase().catch((error) => {
+    }));
+    await runInitializationStep("postgres-health-check", () => maintainCurrentPostgresqlDatabase().catch((error) => {
       console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await maintainCurrentMysqlDatabase().catch((error) => {
+    }));
+    await runInitializationStep("mysql-health-check", () => maintainCurrentMysqlDatabase().catch((error) => {
       console.warn("[MySQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
-    });
-    const migratedAvatars = await migrateLegacyUserAvatarsOnce();
+    }));
+    const migratedAvatars = await runInitializationStep("migrate-avatars", () => migrateLegacyUserAvatarsOnce());
     if (migratedAvatars > 0) {
       console.log(`[Database] Migrated legacy preset avatars count=${migratedAvatars}`);
     }
-    const hasAdmin = await hasAdminUser();
+    const hasAdmin = await runInitializationStep("check-admin", () => hasAdminUser());
     if (hasAdmin) markLocalSetupComplete();
-    console.log(`[Database] Initialization complete (${kind}, ${hasAdmin ? "admin exists" : "no admin yet"})`);
+    console.log(`[Database] Initialization complete (${kind}, ${hasAdmin ? "admin exists" : "no admin yet"}) durationMs=${Date.now() - initializationStartedAt}`);
     return { configured: true, ready: true, hasAdmin, kind } as const;
   } catch (error) {
     const message = summarizeDatabaseStartupError(error);
-    console.error(`[Database] Initialization failed: ${message}`);
+    console.error(`[Database] Initialization failed after ${Date.now() - initializationStartedAt}ms: ${message}`);
     return { configured: true, ready: false, hasAdmin: false, error: message } as const;
   }
 }
