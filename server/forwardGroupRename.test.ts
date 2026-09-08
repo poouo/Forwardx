@@ -178,7 +178,10 @@ test("forward resource renames propagate without restarting unchanged runtimes",
       ))[0];
       assert.equal(Number(refreshedTunnel.exitHostId), 3, "the remaining exit must become the tunnel primary");
       assert.equal(Number(refreshedTunnel.loadBalanceEnabled), 0, "a single exit must disable load balancing");
-      assert.equal(Number(tunnelRuleState.tunnelExitPort), 25011, "the remaining exit must retain its rule port");
+      // Promoting the existing extra exit keeps its listener port.  The rule
+      // must follow that listener instead of retaining a stale independent
+      // mapping port.
+      assert.equal(Number(tunnelRuleState.tunnelExitPort), 25010, "the remaining exit must retain its listener port");
       assert.equal((await runtime.queryRaw('SELECT "id" FROM "tunnel_exit_nodes" WHERE "tunnelId" = 300')).length, 0);
       assert.equal((await runtime.queryRaw('SELECT "id" FROM "forward_rule_tunnel_exits" WHERE "ruleId" = 310')).length, 0);
 
