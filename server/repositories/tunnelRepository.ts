@@ -16,9 +16,10 @@ import {
 } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
-import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
+import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { releaseHostPortReservations, reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "../portReservations";
 import { getHostById } from "./hostRepository";
+import { getForwardRulesByTunnel } from "./forwardRuleRepository";
 import { sqlBool } from "./repositoryUtils";
 import { mapWithConcurrency } from "../asyncPool";
 import { withKeyedTaskLock } from "../keyedTaskLock";
@@ -32,6 +33,85 @@ import {
 import { resolveRuleProxyProtocolOptions } from "../gostProxyProtocol";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 import { LINK_PROBE_FRESH_MS, LINK_PROBE_MAX_FUTURE_SKEW_MS } from "../../shared/linkProbePolicy";
+
+function databaseBool(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
+// The Agent uses the tunnel row's listener for the lowest-id active GOST
+// rule. Nginx Stream follows the same convention. Keep this predicate local
+// to the allocation repository so every writer applies the same ownership
+// rule; ForwardX has a separate endpoint allocator and is intentionally not
+// included here.
+const SHARED_TUNNEL_PRIMARY_LISTENER_MODES = new Set([
+  "tls",
+  "wss",
+  "tcp",
+  "mtls",
+  "mwss",
+  "mtcp",
+  "nginx_stream",
+]);
+
+export function usesSharedTunnelPrimaryListener(tunnel: any) {
+  return SHARED_TUNNEL_PRIMARY_LISTENER_MODES.has(String(tunnel?.mode || "").trim().toLowerCase());
+}
+
+/**
+ * A port may be shared only with the exact tunnel resource that owns it.
+ *
+ * Historically the allocator accepted just `{ tunnelId, port }` and treated
+ * every row belonging to that tunnel as self-owned.  That is unsafe for
+ * multi-exit/multi-hop tunnels: an extra listener (or a hop) could then be
+ * silently reused as the primary listener.  Keep the old shape compatible by
+ * defaulting it to the primary tunnel row, while allowing callers that are
+ * replacing an extra/hop row to identify that exact row.
+ */
+export type TunnelListenerResourceKind = "primary" | "extra" | "hop";
+
+export type TunnelListenerExemption = {
+  tunnelId: number;
+  port: number;
+  kind?: TunnelListenerResourceKind;
+  resourceId?: number;
+};
+
+type TunnelListenerExemptionInput = TunnelListenerExemption | TunnelListenerExemption[];
+
+function normalizeTunnelListenerExemption(value: unknown): TunnelListenerExemption | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as any;
+  const tunnelId = Number(candidate.tunnelId || 0);
+  const port = Number(candidate.port || 0);
+  if (!Number.isInteger(tunnelId) || tunnelId <= 0 || !Number.isInteger(port) || port <= 0 || port > 65535) return undefined;
+  const rawKind = String(candidate.kind || "primary").trim().toLowerCase();
+  const kind: TunnelListenerResourceKind = rawKind === "extra" || rawKind === "hop" ? rawKind : "primary";
+  const resourceId = Number(candidate.resourceId || 0);
+  // Extra/hop rows have their own identities.  Requiring that identity keeps
+  // a malformed or partially migrated descriptor from exempting every row of
+  // the same kind that happens to use the same port.
+  if ((kind === "extra" || kind === "hop") && (!Number.isInteger(resourceId) || resourceId <= 0)) return undefined;
+  return {
+    tunnelId,
+    port,
+    kind,
+    ...(Number.isInteger(resourceId) && resourceId > 0 ? { resourceId } : {}),
+  };
+}
+
+function normalizeTunnelListenerExemptions(value: unknown): TunnelListenerExemption[] | undefined {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeTunnelListenerExemption(item))
+      .filter((item): item is TunnelListenerExemption => !!item);
+  }
+  const normalized = normalizeTunnelListenerExemption(value);
+  return normalized ? [normalized] : undefined;
+}
 
 // ==================== Tunnel Queries ====================
 
@@ -348,7 +428,7 @@ export async function backfillTunnelExitGroupReferences() {
   const groupIdsBySignature = new Map<string, number[]>();
   for (const group of exitGroups as any[]) {
     const signature = (members as any[])
-      .filter((member) => Number(member.groupId) === Number(group.id) && member.isEnabled !== false && Number(member.hostId || 0) > 0)
+      .filter((member) => Number(member.groupId) === Number(group.id) && databaseBool(member.isEnabled, true) && Number(member.hostId || 0) > 0)
       .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
       .map((member) => Number(member.hostId))
       .join(",");
@@ -368,7 +448,7 @@ export async function backfillTunnelExitGroupReferences() {
     const signature = [
       Number(tunnel.exitHostId || 0),
       ...(exitNodes as any[])
-        .filter((node) => node.isEnabled !== false && Number(node.hostId || 0) > 0)
+        .filter((node) => databaseBool(node.isEnabled, true) && Number(node.hostId || 0) > 0)
         .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))
         .map((node) => Number(node.hostId)),
     ].filter((id) => id > 0).join(",");
@@ -584,20 +664,20 @@ export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, 
     const proxyOptions = resolveRuleProxyProtocolOptions(rule, tunnel);
     const desired = {
       ...proxyOptions,
-      tcpFastOpen: forwardx && tcpSupported && !!tunnel.tcpFastOpen,
+      tcpFastOpen: forwardx && tcpSupported && databaseBool(tunnel.tcpFastOpen),
       zeroCopy: false,
-      udpOverTcp: forwardx && udpSupported && !!tunnel.udpOverTcp,
+      udpOverTcp: forwardx && udpSupported && databaseBool(tunnel.udpOverTcp),
       udpOverTcpPort: null,
     };
     const changed = (
-      !!rule.proxyProtocolReceive !== desired.proxyProtocolReceive
-      || !!rule.proxyProtocolSend !== desired.proxyProtocolSend
-      || !!rule.proxyProtocolExitReceive !== desired.proxyProtocolExitReceive
-      || !!rule.proxyProtocolExitSend !== desired.proxyProtocolExitSend
+      databaseBool(rule.proxyProtocolReceive) !== desired.proxyProtocolReceive
+      || databaseBool(rule.proxyProtocolSend) !== desired.proxyProtocolSend
+      || databaseBool(rule.proxyProtocolExitReceive) !== desired.proxyProtocolExitReceive
+      || databaseBool(rule.proxyProtocolExitSend) !== desired.proxyProtocolExitSend
       || Number(rule.proxyProtocolVersion || 1) !== desired.proxyProtocolVersion
-      || !!rule.tcpFastOpen !== desired.tcpFastOpen
-      || !!rule.zeroCopy !== desired.zeroCopy
-      || !!rule.udpOverTcp !== desired.udpOverTcp
+      || databaseBool(rule.tcpFastOpen) !== desired.tcpFastOpen
+      || databaseBool(rule.zeroCopy) !== desired.zeroCopy
+      || databaseBool(rule.udpOverTcp) !== desired.udpOverTcp
       || rule.udpOverTcpPort != null
     );
     if (!changed) continue;
@@ -713,17 +793,17 @@ async function isForwardGroupRuntimeEnabled(groupId: number) {
     groupMode: forwardGroups.groupMode,
     entryGroupId: forwardGroups.entryGroupId,
   }).from(forwardGroups).where(eq(forwardGroups.id, groupId)).limit(1))[0] as any;
-  if (!group || !group.isEnabled) return false;
+  if (!group || !databaseBool(group.isEnabled)) return false;
   if (String(group.groupMode || "") !== "chain" || Number(group.entryGroupId || 0) <= 0) return true;
   const entryGroup = (await db.select({
     isEnabled: forwardGroups.isEnabled,
     groupMode: forwardGroups.groupMode,
   }).from(forwardGroups).where(eq(forwardGroups.id, Number(group.entryGroupId))).limit(1))[0] as any;
-  return !!entryGroup?.isEnabled && String(entryGroup.groupMode || "") === "entry";
+  return databaseBool(entryGroup?.isEnabled) && String(entryGroup.groupMode || "") === "entry";
 }
 
 async function canRestoreForwardRuleAfterTunnel(rule: any) {
-  if (rule.disabledByUser || rule.disabledByGroup || String(rule.protocolBlockReason || "").trim()) return false;
+  if (databaseBool(rule.disabledByUser) || databaseBool(rule.disabledByGroup) || String(rule.protocolBlockReason || "").trim()) return false;
   const groupId = Number(rule.forwardGroupId || 0);
   if (groupId > 0 && !(await isForwardGroupRuntimeEnabled(groupId))) return false;
 
@@ -740,10 +820,10 @@ async function canRestoreForwardRuleAfterTunnel(rule: any) {
     }).from(forwardRules).where(eq(forwardRules.id, templateId)).limit(1))[0] as any;
     if (
       !template
-      || template.pendingDelete
-      || !template.isEnabled
-      || template.disabledByGroup
-      || template.disabledByUser
+      || databaseBool(template.pendingDelete)
+      || !databaseBool(template.isEnabled)
+      || databaseBool(template.disabledByGroup)
+      || databaseBool(template.disabledByUser)
       || String(template.protocolBlockReason || "").trim()
     ) return false;
   }
@@ -754,7 +834,7 @@ async function canRestoreForwardRuleAfterTunnel(rule: any) {
       .from(forwardGroupMembers)
       .where(eq(forwardGroupMembers.id, memberId))
       .limit(1))[0] as any;
-    if (!member?.isEnabled) return false;
+    if (!databaseBool(member?.isEnabled)) return false;
   }
   return true;
 }
@@ -801,11 +881,12 @@ export async function findAvailableTunnelExitPort(
     ? sql`${forwardRuleTunnelExits.ruleId} NOT IN (${sql.join(excludedIds.map((id) => sql`${id}`), sql`, `)})`
     : undefined;
   const host = await getHostById(exitHostId) as any;
-  const policy = portPolicyFrom({
-    portRangeStart: preferredStart ?? host?.portRangeStart,
-    portRangeEnd: preferredEnd ?? host?.portRangeEnd,
-    portAllowlist: host?.portAllowlist,
-  });
+  // Exit ports must always satisfy the host's NAT policy.  The optional
+  // preferred range (normally supplied by a tunnel) is an additional
+  // restriction, not a replacement for the host policy.  In particular,
+  // legacy rows may contain 0 for an unset range; passing that value through
+  // used to turn a restricted host into an unrestricted 20k-65k allocation.
+  const policy = combineHostPortPolicyWithRange(host, preferredStart, preferredEnd);
   const usedRuleConds: any[] = [
     eq(forwardRules.hostId, exitHostId),
     eq(forwardRules.isForwardGroupTemplate, false),
@@ -855,6 +936,484 @@ export async function findAvailableTunnelExitPort(
   return pickAvailablePort(policy, used, { start: 20000, end: 65535 });
 }
 
+/**
+ * Reserve a tunnel exit port while enforcing the destination Agent's port
+ * policy.  Existing tunnel rows are deliberately treated as a preference:
+ * an out-of-policy value (for example a stale high port after moving to a
+ * NAT-only host) is discarded and replaced with a valid allocation.
+ */
+export async function reserveTunnelExitPort(options: {
+  hostId: number;
+  preferredStart?: number | null;
+  preferredEnd?: number | null;
+  currentPort?: unknown;
+  reservedPorts?: number[];
+  excludeRuleIds?: number | number[];
+  /**
+   * A primary tunnel rule may intentionally reuse the listener owned by the
+   * same tunnel.  This must be opt-in: secondary rules and extra-exit
+   * mappings must treat that listener as occupied, otherwise a stale mapping
+   * can silently bind on top of the tunnel service.
+  */
+  allowSameTunnelListener?: boolean;
+  /**
+   * Optional precise resource to exempt while replacing an existing row.
+   * `allowSameTunnelListener` remains as a backwards-compatible shorthand
+   * for the primary tunnel listener.
+   */
+  sameTunnelResource?: TunnelListenerExemptionInput;
+  excludeTunnelId?: number;
+  protocol?: unknown;
+}): Promise<HostPortReservation | null> {
+  const hostId = Number(options.hostId || 0);
+  if (!Number.isInteger(hostId) || hostId <= 0) return null;
+  const host = await getHostById(hostId) as any;
+  if (!host) return null;
+  const preferredStart = options.preferredStart;
+  const preferredEnd = options.preferredEnd;
+  const hasPreferredRange = Number.isInteger(Number(preferredStart))
+    && Number.isInteger(Number(preferredEnd))
+    && Number(preferredStart) >= 1
+    && Number(preferredEnd) <= 65535
+    && Number(preferredStart) <= Number(preferredEnd);
+  const policy = combineHostPortPolicyWithRange(host, preferredStart, preferredEnd);
+  const protocol = options.protocol ?? "both";
+  const currentPort = Number(options.currentPort || 0);
+  const reservedPorts = Array.isArray(options.reservedPorts) ? options.reservedPorts : [];
+  const excludeRuleIds = options.excludeRuleIds;
+  // When a caller is repairing/reusing a tunnel listener, exempt only that
+  // exact listener row.  Excluding the whole tunnel would also hide its
+  // other listeners/mimic ports and can create a same-tunnel collision.
+  const sameTunnelListener = options.sameTunnelResource !== undefined
+    ? normalizeTunnelListenerExemptions(options.sameTunnelResource)
+    : (options.allowSameTunnelListener
+      && Number(options.excludeTunnelId || 0) > 0
+      && currentPort > 0
+      ? [{ tunnelId: Number(options.excludeTunnelId), port: currentPort, kind: "primary" as const }]
+      : undefined);
+  const explicitlyReserved = new Set(reservedPorts
+    .map((port) => Number(port))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535));
+  const isUsed = (port: number) => isPortUsedOnHost(
+    hostId,
+    port,
+    excludeRuleIds,
+    protocol,
+    // A tunnel id by itself is not a sufficient ownership identity when a
+    // tunnel has multiple listeners (primary, extra exits and hops).  The
+    // generic allocator therefore never applies the legacy "exclude the
+    // whole tunnel" shortcut.  Reuse is allowed only through the precise
+    // `sameTunnelResource` descriptor above; callers that need a same-tunnel
+    // exemption must provide that descriptor explicitly.
+    undefined,
+    true,
+    sameTunnelListener,
+  );
+
+  // Reuse a stored port only when it still belongs to the effective policy.
+  // An invalid old value is intentionally not returned as a hard conflict;
+  // callers can transparently repair it by taking the allocation path below.
+  if (currentPort > 0
+    && !explicitlyReserved.has(currentPort)
+    && isPortAllowedByPolicy(currentPort, policy)) {
+    const preserved = await reserveSpecificHostPort({
+      hostId,
+      port: currentPort,
+      protocol,
+      isUsed,
+    });
+    if (preserved) return preserved;
+  }
+
+  return reserveAvailableHostPort({
+    hostId,
+    protocol,
+    findPort: (processReservedPorts) => findAvailableTunnelExitPort(
+      hostId,
+      hasPreferredRange ? Number(preferredStart) : undefined,
+      hasPreferredRange ? Number(preferredEnd) : undefined,
+      [...reservedPorts, ...processReservedPorts],
+      Array.isArray(excludeRuleIds) ? excludeRuleIds : excludeRuleIds == null ? [] : [Number(excludeRuleIds)],
+    ),
+    isUsed,
+  });
+}
+
+/**
+ * Reserve a tunnel's shared listener port while treating the tunnel's own
+ * rows as self-owned.  This is useful when repairing legacy data after an
+ * Agent NAT policy changes: a stale listener is only a preference, and a new
+ * in-policy port can be selected without making the caller manually duplicate
+ * the rule/mapping exclusion logic.
+ */
+export async function reserveTunnelListenerPort(
+  tunnelInput: any,
+  options: {
+    hostId?: number;
+    currentPort?: unknown;
+    reservedPorts?: number[];
+    excludeRuleIds?: number | number[];
+    protocol?: unknown;
+  } = {},
+): Promise<HostPortReservation | null> {
+  const tunnelId = Number(tunnelInput?.id || 0);
+  const hostId = Number(options.hostId || tunnelInput?.exitHostId || 0);
+  if (!Number.isInteger(hostId) || hostId <= 0) return null;
+  let excludeRuleIds = options.excludeRuleIds;
+  if (excludeRuleIds == null && tunnelId > 0) {
+    const db = await getDb();
+    if (db) {
+      // A tunnel listener may be shared by the Agent's primary GOST rule,
+      // but secondary rules still own independent exit ports.  Excluding all
+      // rules here (the old fallback) made a stale secondary exit port
+      // invisible during listener allocation and allowed a collision.  Only
+      // exempt the lowest-id active GOST rule, which is the same primary
+      // convention used by the Agent runtime.
+      const rows = await db.select({
+        id: forwardRules.id,
+        isEnabled: forwardRules.isEnabled,
+        pendingDelete: forwardRules.pendingDelete,
+        isForwardGroupTemplate: forwardRules.isForwardGroupTemplate,
+        forwardType: forwardRules.forwardType,
+      })
+        .from(forwardRules)
+        .where(eq(forwardRules.tunnelId, tunnelId));
+      const primaryId = (rows as any[])
+        .filter((row) => (
+          !databaseBool(row.pendingDelete)
+          && !databaseBool(row.isForwardGroupTemplate)
+          && databaseBool(row.isEnabled)
+          && String(row.forwardType || "").trim().toLowerCase() === "gost"
+        ))
+        .map((row) => Number(row.id || 0))
+        .filter((id) => Number.isInteger(id) && id > 0)
+        .sort((left, right) => left - right)[0];
+      excludeRuleIds = primaryId ? [primaryId] : [];
+    }
+  }
+  const host = await getHostById(hostId) as any;
+  const listenerPort = Number(options.currentPort ?? tunnelInput?.listenPort ?? 0);
+  let sameTunnelResource: TunnelListenerExemptionInput | undefined;
+  if (tunnelId > 0 && listenerPort > 0) {
+    const resources: TunnelListenerExemption[] = [{
+      tunnelId,
+      port: listenerPort,
+      kind: "primary",
+      resourceId: tunnelId,
+    }];
+    // A multi-hop tunnel persists the final hop as a mirror of the primary
+    // listener. Exempt that exact hop row as well; exempting the whole
+    // tunnel would incorrectly hide unrelated extra/hop listeners.
+    const finalHop = (await getTunnelHops(tunnelId))
+      .filter((hop: any) => Number(hop?.hostId || 0) === hostId)
+      .sort((left: any, right: any) => Number(right?.seq || 0) - Number(left?.seq || 0))[0];
+    if (finalHop
+      && Number(finalHop.listenPort || 0) === listenerPort
+      && Number(finalHop.id || 0) > 0) {
+      resources.push({
+        tunnelId,
+        port: listenerPort,
+        kind: "hop",
+        resourceId: Number(finalHop.id),
+      });
+    }
+    sameTunnelResource = resources;
+  }
+  return reserveTunnelExitPort({
+    hostId,
+    preferredStart: host?.portRangeStart,
+    preferredEnd: host?.portRangeEnd,
+    currentPort: listenerPort,
+    reservedPorts: options.reservedPorts,
+    excludeRuleIds,
+    // The listener belongs to this tunnel.  Without this opt-in the generic
+    // exit-port helper sees the tunnel's own listen row as a conflict and
+    // reallocates a new port on every update that omits listenPort.
+    allowSameTunnelListener: true,
+    sameTunnelResource,
+    excludeTunnelId: tunnelId > 0 ? tunnelId : undefined,
+    protocol: options.protocol ?? "both",
+  });
+}
+
+/**
+ * Ensure a persisted tunnel listener still belongs to the destination Agent's
+ * effective port policy.  Tunnel rows can outlive a NAT range change (and
+ * older releases could save a high, unrestricted port).  Callers that create
+ * a rule must repair the tunnel row first; changing only the rule's
+ * `tunnelExitPort` would leave an nginx-stream listener on the old port while
+ * the rule points at the new one.
+ *
+ * The returned reservation is intentionally kept by the caller until its
+ * related rule/tunnel write has completed.  This closes the small race in
+ * which another concurrent allocator could claim the repaired listener.
+ */
+export async function ensureTunnelListenerPortPolicy(
+  tunnelInput: any,
+  options: {
+    hostId?: number;
+    currentPort?: unknown;
+    excludeRuleIds?: number | number[];
+    protocol?: unknown;
+    syncSharedPrimaryRule?: boolean;
+  } = {},
+): Promise<{
+  tunnel: any;
+  port: number;
+  changed: boolean;
+  reservation: HostPortReservation;
+} | null> {
+  const tunnelId = Number(tunnelInput?.id || 0);
+  if (!Number.isInteger(tunnelId) || tunnelId <= 0) return null;
+  const currentTunnel = await getTunnelById(tunnelId) || tunnelInput;
+  const hostId = Number(options.hostId || currentTunnel?.exitHostId || 0);
+  if (!Number.isInteger(hostId) || hostId <= 0) return null;
+  const currentPort = Number(options.currentPort ?? currentTunnel?.listenPort ?? 0);
+  const reservation = await reserveTunnelListenerPort(currentTunnel, {
+    hostId,
+    currentPort,
+    excludeRuleIds: options.excludeRuleIds,
+    protocol: options.protocol ?? "both",
+  });
+  if (!reservation) return null;
+
+  const nextPort = Number(reservation.port);
+  const changed = nextPort !== currentPort
+    || Number(currentTunnel?.exitHostId || 0) !== hostId;
+  const syncSharedPrimaryRule = options.syncSharedPrimaryRule ?? usesSharedTunnelPrimaryListener(currentTunnel);
+  try {
+    if (changed) {
+      await updateTunnel(tunnelId, {
+        listenPort: nextPort,
+        // A listener repair invalidates the previous runtime state.  The
+        // normal refresh path will reapply the tunnel and its rules.
+        isRunning: false,
+      } as any);
+      await syncTunnelListenerPortReferences(tunnelId, nextPort, {
+        syncSharedPrimaryRule,
+        hostId,
+      });
+    }
+    // Keep the object consumed by the current request in sync with the row we
+    // just repaired; otherwise the subsequent rule allocation would still
+    // use the stale listener value.
+    tunnelInput.listenPort = nextPort;
+    if (Number(tunnelInput.exitHostId || 0) === hostId) tunnelInput.exitHostId = hostId;
+    return {
+      tunnel: tunnelInput,
+      port: nextPort,
+      changed,
+      reservation,
+    };
+  } catch (error) {
+    reservation.release();
+    throw error;
+  }
+}
+
+/**
+ * Keep the persisted references that share a tunnel listener in sync after a
+ * listener repair. The final multi-hop row always follows the tunnel
+ * listener. The Agent also uses the listener for the lowest-id active GOST
+ * rule (for every GOST transport, plus nginx_stream), so that primary rule
+ * must follow it as well.
+ */
+export async function syncTunnelListenerPortReferences(
+  tunnelIdValue: number,
+  listenPortValue: number,
+  options: { syncSharedPrimaryRule?: boolean; hostId?: number } = {},
+) {
+  const tunnelId = Number(tunnelIdValue || 0);
+  const listenPort = Number(listenPortValue || 0);
+  const db = await getDb();
+  if (!db || !Number.isInteger(tunnelId) || tunnelId <= 0 || !Number.isInteger(listenPort) || listenPort <= 0) return;
+
+  const hops = await db.select({ id: tunnelHops.id, seq: tunnelHops.seq, hostId: tunnelHops.hostId })
+    .from(tunnelHops)
+    .where(eq(tunnelHops.tunnelId, tunnelId))
+    .orderBy(desc(tunnelHops.seq));
+  const finalHop = hops[0];
+  if (finalHop && (!options.hostId || Number(finalHop.hostId) === Number(options.hostId))) {
+    await db.update(tunnelHops).set({ listenPort, updatedAt: nowDate() } as any)
+      .where(eq(tunnelHops.id, Number(finalHop.id)));
+  }
+
+  if (!options.syncSharedPrimaryRule) return;
+  const rules = await db.select({
+    id: forwardRules.id,
+    isEnabled: forwardRules.isEnabled,
+    pendingDelete: forwardRules.pendingDelete,
+    isForwardGroupTemplate: forwardRules.isForwardGroupTemplate,
+    forwardType: forwardRules.forwardType,
+  }).from(forwardRules).where(eq(forwardRules.tunnelId, tunnelId));
+  const primary = (rules as any[])
+    .filter((rule) => (
+      !databaseBool(rule.pendingDelete)
+      && !databaseBool(rule.isForwardGroupTemplate)
+      && databaseBool(rule.isEnabled)
+      && String(rule.forwardType || "").trim().toLowerCase() === "gost"
+    ))
+    .sort((left, right) => Number(left.id) - Number(right.id))[0];
+  if (primary) {
+    await db.update(forwardRules).set({
+      tunnelExitPort: listenPort,
+      isRunning: false,
+      updatedAt: nowDate(),
+    } as any).where(eq(forwardRules.id, Number(primary.id)));
+  }
+}
+
+/**
+ * Revalidate the primary exit-port fields after a tunnel endpoint changes.
+ *
+ * `tunnelExitPort` is persisted on the entry rule, but it is a listener on
+ * the tunnel's exit Agent.  Moving a tunnel to another Agent (or repairing
+ * its listener after a NAT policy change) therefore makes the old value only
+ * a preference.  Keep disabled, pending-delete and template rows untouched;
+ * they are not part of the Agent data plane and rotating them can create
+ * surprising conflicts when they are restored later.
+ *
+ * GOST and Nginx Stream have one shared primary listener per tunnel. The
+ * lowest-id active GOST rule is the runtime primary and must point at
+ * `tunnel.listenPort`; all other active GOST rules receive independent exit
+ * ports. Load-balanced mapping rows are reconciled separately.
+ */
+export async function reconcileTunnelRulePrimaryExitPorts(
+  tunnelInput: any,
+  options: {
+    hostId?: number;
+    listenPort?: number;
+    /**
+     * Reservations held by the surrounding tunnel update. The primary
+     * managed GOST/Nginx rule may reuse the tunnel listener reservation;
+     * all other rules must treat those ports as occupied while they are
+     * allocated.  Reservations acquired by this helper are released here,
+     * while caller-owned reservations remain held until its transaction ends.
+     */
+    reservations?: readonly HostPortReservation[];
+  } = {},
+) {
+  const tunnelId = Number(tunnelInput?.id || 0);
+  if (!Number.isInteger(tunnelId) || tunnelId <= 0) return { processed: 0, changed: 0 };
+  const tunnel = await getTunnelById(tunnelId) || tunnelInput;
+  const mode = String(tunnel?.mode || "").trim().toLowerCase();
+  // ForwardX does not use forwardRules.tunnelExitPort for its transport; its
+  // endpoint/mimic state is reconciled by the dedicated ForwardX paths.
+  if (!tunnel || mode === "forwardx") return { processed: 0, changed: 0 };
+  const hostId = Number(options.hostId || tunnel?.exitHostId || 0);
+  const listenPort = Number(options.listenPort ?? tunnel?.listenPort ?? 0);
+  if (!Number.isInteger(hostId) || hostId <= 0) return { processed: 0, changed: 0 };
+  const host = await getHostById(hostId) as any;
+  if (!host) return { processed: 0, changed: 0 };
+  const rules = (await getForwardRulesByTunnel(tunnelId) as any[])
+    .filter((rule) => (
+      rule
+      && !databaseBool(rule.pendingDelete)
+      && !databaseBool(rule.isForwardGroupTemplate)
+      && databaseBool(rule.isEnabled)
+      && String(rule.forwardType || "").trim().toLowerCase() === "gost"
+    ))
+    .sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+  if (rules.length === 0) return { processed: 0, changed: 0 };
+
+  const activeRuleIds = rules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
+  const sharedPrimaryId = usesSharedTunnelPrimaryListener(tunnel) ? activeRuleIds[0] || 0 : 0;
+  const reservedPorts: number[] = [];
+  const heldReservations: HostPortReservation[] = [];
+  const callerReservations = Array.isArray(options.reservations)
+    ? options.reservations
+    : [];
+  // Keep ports acquired by the enclosing tunnel update visible to the
+  // allocator even though they are not persisted until the transaction is
+  // committed.  This prevents a secondary rule from selecting a newly
+  // allocated listener/extra endpoint.
+  for (const reservation of callerReservations) {
+    if (Number(reservation?.hostId) !== hostId) continue;
+    const port = Number(reservation?.port || 0);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535 && !reservedPorts.includes(port)) {
+      reservedPorts.push(port);
+    }
+  }
+  let changed = 0;
+  const db = await getDb();
+  if (!db) return { processed: 0, changed: 0 };
+
+  try {
+    for (const rule of rules) {
+      const ruleId = Number(rule.id || 0);
+      if (!Number.isInteger(ruleId) || ruleId <= 0) continue;
+      const isSharedPrimary = sharedPrimaryId > 0 && ruleId === sharedPrimaryId;
+      const previousPort = Number(rule.tunnelExitPort || 0);
+      const preferredPort = isSharedPrimary ? listenPort : previousPort;
+      if (isSharedPrimary && preferredPort <= 0) {
+        throw new Error("隧道缺少有效的出口监听端口");
+      }
+
+      // A tunnel update may already hold the listener reservation. Reusing it
+      // for the shared primary avoids a false "port busy" result and keeps the
+      // reservation alive until the enclosing transaction has written every
+      // related row.  Only the exact listener port is reusable; extra/hop
+      // reservations must remain conflicts for rule-level allocations.
+      const callerListenerReservation = isSharedPrimary
+        ? callerReservations.find((reservation) => (
+          Number(reservation?.hostId) === hostId
+          && Number(reservation?.port) === preferredPort
+        ))
+        : undefined;
+      let reservation: HostPortReservation | null = callerListenerReservation || null;
+      if (!reservation) {
+        reservation = await reserveTunnelExitPort({
+          hostId,
+          preferredStart: host.portRangeStart,
+          preferredEnd: host.portRangeEnd,
+          currentPort: preferredPort,
+          reservedPorts,
+          excludeRuleIds: activeRuleIds,
+          // Only the shared primary may share the tunnel listener. The exact
+          // resource descriptor prevents an extra/hop listener in the same
+          // tunnel from being mistaken for the primary socket.
+          ...(isSharedPrimary
+            ? {
+              sameTunnelResource: {
+                tunnelId,
+                port: preferredPort,
+                kind: "primary" as const,
+                resourceId: tunnelId,
+              },
+              allowSameTunnelListener: true,
+            }
+            : {}),
+          excludeTunnelId: tunnelId,
+          protocol: "both",
+        });
+      }
+      if (!reservation) {
+        throw new Error(`出口 Agent ${host.name || hostId} 已无可用隧道端口`);
+      }
+      if (!callerListenerReservation) heldReservations.push(reservation);
+      const nextPort = Number(reservation.port);
+      if (!reservedPorts.includes(nextPort)) reservedPorts.push(nextPort);
+
+      // For shared primary runtimes the tunnel listener is authoritative. Never accept
+      // a fallback allocation here: that would make the rule point at a port
+      // where the tunnel runtime is not listening.
+      if (isSharedPrimary && nextPort !== preferredPort) {
+        throw new Error(`隧道监听端口 ${preferredPort} 无法复用`);
+      }
+      if (nextPort === previousPort) continue;
+      await db.update(forwardRules).set({
+        tunnelExitPort: nextPort,
+        isRunning: false,
+        updatedAt: nowDate(),
+      } as any).where(eq(forwardRules.id, ruleId));
+      changed += 1;
+    }
+    return { processed: rules.length, changed };
+  } finally {
+    releaseHostPortReservations(heldReservations);
+  }
+}
+
 export async function isTunnelListenPortUsed(exitHostId: number, listenPort: number, excludeTunnelId?: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
@@ -882,19 +1441,32 @@ const mimicPortAllocationLocks = new Map<number, Promise<{
   changed: boolean;
 }>>();
 
-async function allocateTunnelMimicPort(hostId: number, reservedPorts: number[]) {
+async function allocateTunnelMimicPort(
+  hostId: number,
+  reservedPorts: number[],
+  options: { listenPort?: number; tunnelId?: number } = {},
+) {
   const host = await getHostById(hostId) as any;
   if (!host) return null;
+  const listenPort = Number(options.listenPort || 0);
+  const tunnelId = Number(options.tunnelId || 0);
   return reserveAvailableHostPort({
     hostId,
     protocol: "both",
     findPort: (processReservedPorts) => findAvailableTunnelExitPort(
       hostId,
-      host.portRangeStart,
-      host.portRangeEnd,
-      [...reservedPorts, ...processReservedPorts],
+      // The host policy (including any explicit allowlist entries) is the
+      // source of truth for mimic UDP ports.  Passing the host range back as
+      // a second intersecting policy can accidentally discard allowlist
+      // ports, so leave the optional preferred range unset here.
+      undefined,
+      undefined,
+      [...reservedPorts, ...processReservedPorts, ...(listenPort > 0 ? [listenPort] : [])],
     ),
-    isUsed: (port) => isPortUsedOnHost(hostId, port, undefined, "both"),
+    isUsed: async (port) => (
+      port === listenPort
+      || await isPortUsedOnHost(hostId, port, undefined, "both", tunnelId > 0 ? tunnelId : undefined)
+    ),
   });
 }
 
@@ -912,6 +1484,7 @@ export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[
     const hops = hopsInput.map((hop) => ({ ...hop }));
     const exitNodes = exitNodesInput.map((node) => ({ ...node }));
     const reservedByHost = new Map<number, number[]>();
+    const usedByHost = new Map<number, Set<number>>();
     const heldReservations: HostPortReservation[] = [];
     let changed = false;
     const reserve = (hostId: number, ...ports: unknown[]) => {
@@ -923,14 +1496,78 @@ export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[
       reservedByHost.set(hostId, current);
       return current;
     };
+    // Reserve every listener up front.  A mimic port must never shadow a
+    // listener belonging to another row in this tunnel, even when that row
+    // appears later in the input array.
+    const reserveListeners = (items: any[], fallbackHostId?: number) => {
+      for (const item of items) {
+        const hostId = Number(item?.hostId || fallbackHostId || 0);
+        const listenPort = Number(item?.listenPort || 0);
+        if (hostId > 0 && listenPort > 0) reserve(hostId, listenPort);
+      }
+    };
+    reserveListeners(hops);
+    reserveListeners(exitNodes);
+    // The tunnel row mirrors the final hop's listener. Include it as well for
+    // malformed/partially migrated rows where the hop list is missing its
+    // final entry.
+    reserveListeners([{ hostId: tunnel.exitHostId, listenPort: tunnel.listenPort }]);
+
+    // Read persisted usage once per host.  ensureForwardXMimicPorts runs on
+    // heartbeat reconciliation; issuing the full multi-table occupancy query
+    // for every already-valid mimic port would otherwise add substantial
+    // SQLite/event-loop overhead on installations with many tunnels.
+    const usedPortsForHost = async (hostId: number) => {
+      const cached = usedByHost.get(hostId);
+      if (cached) return cached;
+      const used = await getUsedPortsOnHost(hostId, undefined, "both", tunnelId);
+      usedByHost.set(hostId, used);
+      return used;
+    };
+
     const ensurePort = async (hostId: number, listenPort: number, currentPort: unknown) => {
       const current = Number(currentPort || 0);
-      const reserved = reserve(hostId, listenPort, current);
-      if (current > 0 && current !== listenPort) return current;
-      const reservation = await allocateTunnelMimicPort(hostId, reserved);
+      const reserved = reserve(hostId, listenPort);
+      const alreadyReserved = reserved.includes(current);
+      const host = await getHostById(hostId) as any;
+      const hostPolicy = portPolicyFrom(host);
+      const usedPorts = await usedPortsForHost(hostId);
+      // Existing values are preferences, not an exemption from the current
+      // NAT policy or occupancy checks.  This repairs stale values after a
+      // host range/allowlist change and prevents two tunnel rows from sharing
+      // one mimic socket.
+      if (current > 0
+        && current !== listenPort
+        && !alreadyReserved
+        && isPortAllowedByPolicy(current, hostPolicy)
+        && !usedPorts.has(current)) {
+        // Keep the preserved value in the same in-process reservation table
+        // used by newly allocated ports.  Without this, two concurrent
+        // heartbeat reconciliations could both observe the same valid legacy
+        // value and subsequently allocate another row on top of it.
+        const preservedReservation = await reserveSpecificHostPort({
+          hostId,
+          port: current,
+          protocol: "both",
+          // `usedPorts` is a snapshot taken once for this tunnel/host.  It
+          // includes all persisted occupants outside this tunnel; the local
+          // reservation prevents races inside this panel process while the
+          // reconciliation transaction is being written.
+          isUsed: async (port) => usedPorts.has(port),
+        });
+        if (preservedReservation) {
+          heldReservations.push(preservedReservation);
+          reserved.push(current);
+          return current;
+        }
+        // A concurrent allocator won the reservation after the snapshot;
+        // fall through to choose a different port.
+      }
+      const reservation = await allocateTunnelMimicPort(hostId, reserved, { listenPort, tunnelId });
       if (!reservation) return 0;
       heldReservations.push(reservation);
       reserve(hostId, reservation.port);
+      usedPorts.add(reservation.port);
       return reservation.port;
     };
 
@@ -974,7 +1611,7 @@ export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[
     }
 
     for (const node of exitNodes) {
-      if (node?.isEnabled === false) continue;
+      if (!databaseBool(node?.isEnabled, true)) continue;
       const hostId = Number(node.hostId || 0);
       const listenPort = Number(node.listenPort || 0);
       if (hostId <= 0 || listenPort <= 0) continue;
@@ -1138,6 +1775,7 @@ export async function isPortUsedOnHost(
   protocol?: unknown,
   excludeTunnelId?: number,
   excludeRuleExitPorts = true,
+  allowTunnelListener?: TunnelListenerExemptionInput,
 ): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
@@ -1147,6 +1785,9 @@ export async function isPortUsedOnHost(
       .filter((id) => Number.isInteger(id) && id > 0),
   ));
   const excludedTunnelId = Number(excludeTunnelId || 0);
+  const listenerExemptions = allowTunnelListener === undefined
+    ? undefined
+    : normalizeTunnelListenerExemptions(allowTunnelListener);
   const conds: any[] = [
     eq(forwardRules.hostId, hostId),
     eq(forwardRules.sourcePort, sourcePort),
@@ -1190,21 +1831,58 @@ export async function isPortUsedOnHost(
     .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
     .where(and(...exitConds));
   if ((Number(exitRows[0]?.count) || 0) > 0) return true;
-  const tunnelRows = await db.select({ id: tunnels.id }).from(tunnels).where(and(
+  const tunnelRows = await db.select({ id: tunnels.id, listenPort: tunnels.listenPort, mimicPort: tunnels.mimicPort }).from(tunnels).where(and(
     eq(tunnels.exitHostId, hostId),
     sql`(${tunnels.listenPort} = ${sourcePort} OR ${tunnels.mimicPort} = ${sourcePort})`,
   ));
-  if (tunnelRows.some((row: any) => Number(row.id) !== excludedTunnelId)) return true;
-  const extraRows = await db.select({ tunnelId: tunnelExitNodes.tunnelId }).from(tunnelExitNodes).where(and(
+  if (tunnelRows.some((row: any) => {
+    const sameTunnel = excludedTunnelId > 0 && Number(row.id) === excludedTunnelId;
+    const sameListener = listenerExemptions?.some((exemption) => (
+      exemption.kind === "primary"
+      && Number(row.id) === Number(exemption.tunnelId)
+      && (!exemption.resourceId || Number(row.id) === Number(exemption.resourceId))
+      && Number(row.listenPort) === Number(exemption.port)
+      && Number(row.listenPort) === Number(sourcePort)
+    ));
+    if (listenerExemptions !== undefined) return !sameListener;
+    // Without a precise exemption, preserve the legacy excludeTunnelId
+    // behaviour used by mimic reconciliation (all rows in the current tunnel
+    // are self-owned). Callers reserving a listener should pass an exemption
+    // so that extra/hop rows are not accidentally ignored.
+    return !sameTunnel;
+  })) return true;
+  const extraRows = await db.select({ id: tunnelExitNodes.id, tunnelId: tunnelExitNodes.tunnelId, listenPort: tunnelExitNodes.listenPort, mimicPort: tunnelExitNodes.mimicPort }).from(tunnelExitNodes).where(and(
     eq(tunnelExitNodes.hostId, hostId),
     sql`(${tunnelExitNodes.listenPort} = ${sourcePort} OR ${tunnelExitNodes.mimicPort} = ${sourcePort})`,
   ));
-  if (extraRows.some((row: any) => Number(row.tunnelId) !== excludedTunnelId)) return true;
-  const hopRows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(and(
+  if (extraRows.some((row: any) => {
+    const sameTunnel = excludedTunnelId > 0 && Number(row.tunnelId) === excludedTunnelId;
+    const sameListener = listenerExemptions?.some((exemption) => (
+      exemption.kind === "extra"
+      && Number(row.tunnelId) === Number(exemption.tunnelId)
+      && (!exemption.resourceId || Number(row.id) === Number(exemption.resourceId))
+      && Number(row.listenPort) === Number(exemption.port)
+      && Number(row.listenPort) === Number(sourcePort)
+    ));
+    if (listenerExemptions !== undefined) return !sameListener;
+    return !sameTunnel;
+  })) return true;
+  const hopRows = await db.select({ id: tunnelHops.id, tunnelId: tunnelHops.tunnelId, listenPort: tunnelHops.listenPort, mimicPort: tunnelHops.mimicPort }).from(tunnelHops).where(and(
     eq(tunnelHops.hostId, hostId),
     sql`(${tunnelHops.listenPort} = ${sourcePort} OR ${tunnelHops.mimicPort} = ${sourcePort})`,
   ));
-  return hopRows.some((row: any) => Number(row.tunnelId) !== excludedTunnelId);
+  return hopRows.some((row: any) => {
+    const sameTunnel = excludedTunnelId > 0 && Number(row.tunnelId) === excludedTunnelId;
+    const sameListener = listenerExemptions?.some((exemption) => (
+      exemption.kind === "hop"
+      && Number(row.tunnelId) === Number(exemption.tunnelId)
+      && (!exemption.resourceId || Number(row.id) === Number(exemption.resourceId))
+      && Number(row.listenPort) === Number(exemption.port)
+      && Number(row.listenPort) === Number(sourcePort)
+    ));
+    if (listenerExemptions !== undefined) return !sameListener;
+    return !sameTunnel;
+  });
 }
 
 /** 在主机端口区间内找一个未被占用的随机端口 */
@@ -1220,18 +1898,15 @@ export async function findAvailablePort(
   const db = await getDb();
   if (!db) return null;
   const host = await getHostById(hostId) as any;
-  const hostPolicy = portPolicyFrom(host);
-  const explicitPolicy = rangeStart != null && rangeEnd != null
-    ? portPolicyFrom({ portRangeStart: rangeStart, portRangeEnd: rangeEnd })
-    : null;
   const subscriptionPolicy = allowedRanges.length > 0
     ? portPolicyFrom({ portRanges: allowedRanges })
     : null;
-  const policy = combinePortPolicies(
-    hostPolicy,
-    ...(explicitPolicy ? [explicitPolicy] : []),
-    ...(subscriptionPolicy ? [subscriptionPolicy] : []),
-  );
+  // Preserve host allowlist ports when the explicit range is simply the
+  // host's own configured range; a narrower tunnel range remains restrictive.
+  let policy = combineHostPortPolicyWithRange(host, rangeStart, rangeEnd);
+  if (subscriptionPolicy) {
+    policy = combinePortPolicies(policy, subscriptionPolicy);
+  }
   const usedPorts = await getUsedPortsOnHost(hostId, excludeRuleIds, protocol, undefined, false);
   for (const reservedPort of reservedPorts) {
     const port = Number(reservedPort);
@@ -1281,7 +1956,7 @@ export async function replaceTunnelExitNodes(tunnelId: number, nodes: Array<Omit
       listenPort: Number(node.listenPort),
       mimicPort: Number((node as any).mimicPort || 0),
       connectHost: node.connectHost ?? null,
-      isEnabled: node.isEnabled !== false,
+      isEnabled: databaseBool(node.isEnabled, true),
     } as any);
   }
   });
@@ -1344,21 +2019,76 @@ export async function syncTunnelExitGroupEndpoints(
     if (planned.length === 0) throw new Error("Enabled exit group must contain at least one enabled host");
 
     const heldReservations: HostPortReservation[] = [];
+    // The Agent's lowest-id active GOST rule owns the shared tunnel listener.
+    // Do not exclude every rule in the tunnel here: secondary GOST rules use
+    // independent exit ports, and hiding them could cause a collision.
+    const activeManagedRuleIds = (mappedRules as any[])
+      .filter((rule) => (
+        rule
+        && !databaseBool(rule.pendingDelete)
+        && !databaseBool(rule.isForwardGroupTemplate)
+        && databaseBool(rule.isEnabled)
+        && String(rule.forwardType || "").trim().toLowerCase() === "gost"
+      ))
+      .map((rule) => Number(rule.id || 0))
+      .filter((id) => Number.isInteger(id) && id > 0)
+      .sort((left, right) => left - right);
+    const primaryManagedRuleId = usesSharedTunnelPrimaryListener(currentTunnel)
+      ? (activeManagedRuleIds[0] || 0)
+      : 0;
+    const listenerSharingRuleIds = primaryManagedRuleId > 0 ? [primaryManagedRuleId] : [];
     try {
-      for (const endpoint of planned) {
-        if (endpoint.listenPort > 0) continue;
+      for (let endpointIndex = 0; endpointIndex < planned.length; endpointIndex += 1) {
+        const endpoint = planned[endpointIndex];
         const host = await getHostById(endpoint.hostId) as any;
         if (!host) throw new Error(`Exit Agent ${endpoint.hostId} does not exist`);
-        const reservation = await reserveAvailableHostPort({
+        const existingExtraNode = (existingNodes as any[]).find(
+          (node) => Number(node?.hostId || 0) === Number(endpoint.hostId),
+        );
+        const existingEndpointPort = Number(endpoint.listenPort || 0);
+        // The primary endpoint belongs to the tunnel row.  Extra endpoints
+        // are separate tunnel_exit_nodes rows and may preserve only their own
+        // exact row while it is being replaced.  Never let an extra/hop row
+        // be hidden merely because it shares this tunnel id.
+        const currentPrimaryHostId = Number(currentTunnel.exitHostId || 0);
+        const sameTunnelResource = endpointIndex === 0
+          ? (existingExtraNode && Number(existingExtraNode.id || 0) > 0 && existingEndpointPort > 0
+            // An extra endpoint can be promoted to primary. It is about to be
+            // removed/replaced, so its exact row may transfer the listener.
+            ? {
+              tunnelId: tunnelId,
+              port: existingEndpointPort,
+              kind: "extra" as const,
+              resourceId: Number(existingExtraNode.id),
+            }
+            : (existingEndpointPort > 0
+              ? { tunnelId: tunnelId, port: existingEndpointPort, kind: "primary" as const, resourceId: tunnelId }
+              : undefined))
+          : (endpoint.hostId === currentPrimaryHostId && existingEndpointPort > 0
+            // Conversely, when the old primary is demoted to an extra
+            // endpoint, its listener can transfer to the new extra row.
+            ? { tunnelId: tunnelId, port: existingEndpointPort, kind: "primary" as const, resourceId: tunnelId }
+            : (existingExtraNode && Number(existingExtraNode.id || 0) > 0 && existingEndpointPort > 0
+              ? {
+                tunnelId: tunnelId,
+                port: existingEndpointPort,
+                kind: "extra" as const,
+                resourceId: Number(existingExtraNode.id),
+              }
+              : undefined));
+        // Existing endpoint listeners are preferences, not an exemption from
+        // the current Agent NAT policy.  Revalidate them on every group sync
+        // so a host range change repairs stale high ports automatically.
+        const reservation = await reserveTunnelExitPort({
           hostId: endpoint.hostId,
+          preferredStart: host.portRangeStart,
+          preferredEnd: host.portRangeEnd,
+          currentPort: endpoint.listenPort,
+          excludeRuleIds: listenerSharingRuleIds,
+          allowSameTunnelListener: endpointIndex === 0,
+          sameTunnelResource,
+          excludeTunnelId: tunnelId,
           protocol: "both",
-          findPort: (reservedPorts) => findAvailableTunnelExitPort(
-            endpoint.hostId,
-            host.portRangeStart,
-            host.portRangeEnd,
-            reservedPorts,
-          ),
-          isUsed: (port) => isPortUsedOnHost(endpoint.hostId, port, undefined, "both", tunnelId),
         });
         if (!reservation) throw new Error(`Exit Agent ${host.name || endpoint.hostId} has no available tunnel port`);
         heldReservations.push(reservation);
@@ -1390,7 +2120,10 @@ export async function syncTunnelExitGroupEndpoints(
       })));
       const nextSignature = JSON.stringify(planned);
       const endpointsChanged = previousSignature !== nextSignature;
-      const loadBalanceChanged = !!currentTunnel.loadBalanceEnabled !== (nextNodes.length > 0);
+      // Database adapters may return boolean columns as strings (notably
+      // SQLite/JSON-backed legacy rows).  `!!"0"` is true, so normalize the
+      // persisted value before deciding whether the runtime state changed.
+      const loadBalanceChanged = databaseBool(currentTunnel.loadBalanceEnabled) !== (nextNodes.length > 0);
       const changed = endpointsChanged
         || String(currentTunnel.loadBalanceStrategy || "") !== strategy
         || loadBalanceChanged;
@@ -1434,46 +2167,45 @@ export async function syncTunnelExitGroupEndpoints(
         ...(changed ? { isRunning: false } : {}),
       };
       if (String(refreshedTunnel.mode || "").toLowerCase() === "forwardx"
-        && (!!refreshedTunnel.udpOverTcp || String(refreshedTunnel.forwardxVersion || "").toLowerCase() === "v2")) {
+        && (databaseBool(refreshedTunnel.udpOverTcp) || String(refreshedTunnel.forwardxVersion || "").toLowerCase() === "v2")) {
         const refreshedHops = await getTunnelHops(tunnelId);
         const refreshedNodes = await getTunnelExitNodes(tunnelId);
         const ensured = await ensureForwardXMimicPorts(refreshedTunnel, refreshedHops, refreshedNodes);
         refreshedTunnel = ensured.tunnel;
       }
       if (endpointsChanged && mappedRules.length > 0) {
+        // Endpoint reservations protect allocation while the tunnel and its
+        // exit-node rows are being written.  Release them before allocating
+        // rule-level exit ports: rules in this tunnel are allowed to reuse
+        // the endpoint listener (especially the primary nginx/GOST rule),
+        // and keeping the reservation would make reserveTunnelExitPort see
+        // its own listener as an external conflict and move the rule to a
+        // different port.  The persisted tunnel rows now provide the normal
+        // conflict check for concurrent callers.
+        releaseHostPortReservations(heldReservations);
+        heldReservations.length = 0;
         await mapWithConcurrency(mappedRules as any[], 8, async (rule) => {
           const ruleId = Number(rule.id || 0);
           const preferredPorts = ruleExitPortsByHostId.get(ruleId) || new Map<number, number>();
-          let primaryRulePort = Number(preferredPorts.get(primary.hostId) || 0);
+          // The primary managed rule shares the tunnel listener. When an exit
+          // group changes its primary host, prefer the newly planned listener
+          // instead of allocating a second arbitrary port.
+          const sharedPrimaryPort = primaryManagedRuleId === ruleId ? Number(primary.listenPort || 0) : 0;
+          let primaryRulePort = sharedPrimaryPort || Number(preferredPorts.get(primary.hostId) || 0);
           let primaryReservation: HostPortReservation | null = null;
           try {
-            if (primaryRulePort > 0) {
-              primaryReservation = await reserveSpecificHostPort({
-                hostId: primary.hostId,
-                port: primaryRulePort,
-                protocol: "both",
-                isUsed: (port) => isPortUsedOnHost(primary.hostId, port, [ruleId], "both", tunnelId),
-              });
-              if (!primaryReservation) {
-                throw new Error(`Tunnel rule ${ruleId} exit port ${primaryRulePort} is already used on Agent ${primary.hostId}`);
-              }
-            } else {
-              primaryReservation = await reserveAvailableHostPort({
-                hostId: primary.hostId,
-                protocol: "both",
-                findPort: (reservedPorts) => findAvailableTunnelExitPort(
-                  primary.hostId,
-                  primaryHost?.portRangeStart,
-                  primaryHost?.portRangeEnd,
-                  reservedPorts,
-                  [ruleId],
-                ),
-                isUsed: (port) => isPortUsedOnHost(primary.hostId, port, [ruleId], "both", tunnelId),
-              });
-              if (!primaryReservation) throw new Error(`Exit Agent ${primaryHost?.name || primary.hostId} has no available rule port`);
-              primaryRulePort = primaryReservation.port;
-              preferredPorts.set(primary.hostId, primaryRulePort);
-            }
+            primaryReservation = await reserveTunnelExitPort({
+              hostId: primary.hostId,
+              preferredStart: primaryHost?.portRangeStart,
+              preferredEnd: primaryHost?.portRangeEnd,
+              currentPort: primaryRulePort,
+              excludeRuleIds: [ruleId],
+              allowSameTunnelListener: primaryManagedRuleId === ruleId,
+              excludeTunnelId: tunnelId,
+            });
+            if (!primaryReservation) throw new Error(`Exit Agent ${primaryHost?.name || primary.hostId} has no available rule port`);
+            primaryRulePort = primaryReservation.port;
+            preferredPorts.set(primary.hostId, primaryRulePort);
             await database.update(forwardRules).set({
               tunnelExitPort: primaryRulePort,
               isRunning: false,
@@ -1526,7 +2258,7 @@ export async function getTunnelExitEndpoints(tunnel: any) {
       mimicPort: Number(node.mimicPort || 0),
       connectHost: String(node.connectHost || "").trim() || null,
       primary: false,
-      isEnabled: node.isEnabled !== false,
+      isEnabled: databaseBool(node.isEnabled, true),
     })),
   ].filter((endpoint) => endpoint.hostId > 0 && endpoint.listenPort > 0 && endpoint.isEnabled);
 }
@@ -1634,12 +2366,64 @@ export async function reconcileForwardRuleTunnelExits(
   const tunnelId = Number(tunnel?.id || rule?.tunnelId || 0);
   if (!ruleId || !tunnelId) return [];
   return withKeyedTaskLock(`rule-tunnel-exits:${ruleId}`, async () => {
+  /*
+   * The lowest-id active GOST rule is the primary route for every managed
+   * GOST/Nginx tunnel (the same convention used by the Agent), so its
+   * bookkeeping port must always follow the tunnel endpoint's listenPort.
+   * Reconcile it here as well as secondary mappings so every call site shares
+   * the same invariant.
+   *
+   * Values read from SQLite/MySQL are not guaranteed to have the same boolean
+   * representation. Do not use a double-negation for active-rule selection:
+   * strings such as "0" are truthy in JavaScript and would steal the primary
+   * slot from a disabled rule.
+   */
+  if (usesSharedTunnelPrimaryListener(tunnel)) {
+    const tunnelRules = await getForwardRulesByTunnel(tunnelId);
+    const candidates = (tunnelRules as any[])
+      .filter((candidate) => (
+        candidate
+        && !databaseBool(candidate.pendingDelete)
+        && !databaseBool(candidate.isForwardGroupTemplate)
+        && databaseBool(candidate.isEnabled)
+        && String(candidate.forwardType || "").trim().toLowerCase() === "gost"
+      ));
+    // Include a freshly-created rule if a replica/read pool has not exposed
+    // it yet, as long as its supplied runtime fields identify an active GOST.
+    if (!candidates.some((candidate) => Number(candidate.id) === ruleId)
+      && !databaseBool(rule?.pendingDelete)
+      && !databaseBool(rule?.isForwardGroupTemplate)
+      && databaseBool(rule?.isEnabled, true)
+      && String(rule?.forwardType || "gost").trim().toLowerCase() === "gost") {
+      candidates.push(rule);
+    }
+    const primaryRule = candidates
+      .filter((candidate) => Number(candidate?.id || 0) > 0)
+      .sort((left, right) => Number(left.id) - Number(right.id))[0];
+    if (primaryRule && Number(primaryRule.id) === ruleId) {
+      const endpointListenPort = Number((tunnel as any)?.listenPort || 0);
+      if (endpointListenPort > 0 && Number(rule?.tunnelExitPort || 0) !== endpointListenPort) {
+        const db = await getDb();
+        if (db) {
+          await db.update(forwardRules).set({
+            tunnelExitPort: endpointListenPort,
+            // Force the normal runtime refresh after repairing stale data.
+            isRunning: false,
+            updatedAt: nowDate(),
+          } as any).where(eq(forwardRules.id, ruleId));
+        }
+        // Callers consume this object later in the same heartbeat.
+        rule.tunnelExitPort = endpointListenPort;
+        rule.isRunning = false;
+      }
+    }
+  }
   if (String((tunnel as any)?.mode || "").toLowerCase() === "forwardx") {
     await clearForwardRuleTunnelExits(ruleId);
     return [];
   }
   const endpoints = (await getTunnelExitEndpoints(tunnel)).filter((endpoint) => !endpoint.primary);
-  if (!(tunnel as any).loadBalanceEnabled || endpoints.length === 0) {
+  if (!databaseBool((tunnel as any).loadBalanceEnabled) || endpoints.length === 0) {
     await clearForwardRuleTunnelExits(ruleId);
     return [];
   }
@@ -1647,7 +2431,17 @@ export async function reconcileForwardRuleTunnelExits(
   const existingByNodeId = new Map<number, any>();
   const existingByHostId = new Map<number, any>();
   const existingBySeq = new Map<number, any>();
-  const reservedPorts: number[] = [];
+  // Port numbers only conflict on the same Agent. Keeping one global list
+  // would incorrectly make e.g. port 22600 on exit A block port 22600 on
+  // independent exit B, and can report "no available port" when each host
+  // has a single identical NAT slot.
+  const reservedPortsByHostId = new Map<number, number[]>();
+  const reservedPortsForHost = (hostId: number) => {
+    const id = Number(hostId || 0);
+    const ports = reservedPortsByHostId.get(id) || [];
+    reservedPortsByHostId.set(id, ports);
+    return ports;
+  };
   const heldReservations: HostPortReservation[] = [];
   for (const row of existing as any[]) {
     existingByNodeId.set(Number(row.exitNodeId), row);
@@ -1663,36 +2457,21 @@ export async function reconcileForwardRuleTunnelExits(
     const existingRow = nodeMatch
       || hostMatch
       || (Number(sequenceMatch?.exitHostId) === Number(endpoint.hostId) ? sequenceMatch : undefined);
-    let tunnelExitPort = Number(existingRow?.tunnelExitPort || preferredPortsByHostId.get(Number(endpoint.hostId)) || 0);
-    if (tunnelExitPort > 0) {
-      const reservation = await reserveSpecificHostPort({
-        hostId: Number(endpoint.hostId),
-        port: tunnelExitPort,
-        protocol: "both",
-        isUsed: (port) => isPortUsedOnHost(Number(endpoint.hostId), port, [ruleId], "both"),
-      });
-      if (!reservation) throw new Error(`Tunnel exit port ${tunnelExitPort} is already used or being allocated`);
-      heldReservations.push(reservation);
-    }
-    if (!tunnelExitPort) {
-      const exitHost = await getHostById(Number(endpoint.hostId));
-      const reservation = await reserveAvailableHostPort({
-        hostId: Number(endpoint.hostId),
-        protocol: "both",
-        findPort: (processReservedPorts) => findAvailableTunnelExitPort(
-          Number(endpoint.hostId),
-          (exitHost as any)?.portRangeStart,
-          (exitHost as any)?.portRangeEnd,
-          [...reservedPorts, ...processReservedPorts],
-          [ruleId],
-        ),
-        isUsed: (port) => isPortUsedOnHost(Number(endpoint.hostId), port, [ruleId], "both"),
-      });
-      if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
-      heldReservations.push(reservation);
-      tunnelExitPort = reservation.port;
-    }
-    reservedPorts.push(tunnelExitPort);
+    const exitHost = await getHostById(Number(endpoint.hostId)) as any;
+    const tunnelExitPortReservation = await reserveTunnelExitPort({
+      hostId: Number(endpoint.hostId),
+      preferredStart: exitHost?.portRangeStart,
+      preferredEnd: exitHost?.portRangeEnd,
+      currentPort: Number(existingRow?.tunnelExitPort || preferredPortsByHostId.get(Number(endpoint.hostId)) || 0),
+      reservedPorts: reservedPortsForHost(Number(endpoint.hostId)),
+      excludeRuleIds: [ruleId],
+      excludeTunnelId: tunnelId,
+    });
+    if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
+    heldReservations.push(tunnelExitPortReservation);
+    const tunnelExitPort = tunnelExitPortReservation.port;
+    const hostReservedPorts = reservedPortsForHost(Number(endpoint.hostId));
+    if (!hostReservedPorts.includes(tunnelExitPort)) hostReservedPorts.push(tunnelExitPort);
     nextRows.push({
       tunnelId,
       exitNodeId: Number(endpoint.exitNodeId),

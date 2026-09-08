@@ -47,7 +47,7 @@ import {
   HostRegionBadge,
   metricUsageProgressClass,
 } from "@/components/hosts/hostDisplay";
-import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, getLatencyYAxisTicks, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { cn } from "@/lib/utils";
 import NotFound from "@/pages/NotFound";
 
@@ -597,14 +597,22 @@ function ServiceChartTooltip({ active, payload, label, services }: any) {
       <div className="space-y-1">
         {services.map((service: any, index: number) => {
           const raw = point[`service_${service.id}Raw`];
+          const counts = normalizeLatencyProbeCounts(raw);
           return (
             <div key={service.id} className="flex min-w-[180px] items-center justify-between gap-4 text-xs">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: serviceChartColors[index % serviceChartColors.length] }} />
                 <span className="truncate">{service.name}</span>
               </span>
-              <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
-                {raw?.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+              <span className="text-right">
+                <span className={counts.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
+                  {counts.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+                </span>
+                {counts.probeCount > 1 && counts.probeSuccesses < counts.probeCount ? (
+                  <span className="block text-[10px] font-normal text-muted-foreground">
+                    丢包 {counts.probeCount - counts.probeSuccesses}/{counts.probeCount}
+                  </span>
+                ) : null}
               </span>
             </div>
           );
@@ -629,13 +637,16 @@ function buildServiceLatencyChart(series: any[], services: any[]) {
       label: formatChartTime(bucket),
       fullLabel: formatFullDateTime(bucket),
     };
-    const isTimeout = !!row.isTimeout;
+    const counts = normalizeLatencyProbeCounts(row);
+    const isTimeout = counts.isTimeout;
     const latency = isTimeout ? null : Number(row.latencyMs);
     point[key] = isTimeout ? 0 : Number.isFinite(latency) ? latency : null;
     point[`${key}Timeout`] = isTimeout;
     point[`${key}Raw`] = {
       latencyMs: Number.isFinite(latency) ? latency : null,
       isTimeout,
+      probeCount: counts.probeCount,
+      probeSuccesses: counts.probeSuccesses,
     };
     buckets.set(bucket, point);
   }

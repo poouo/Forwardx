@@ -7,6 +7,7 @@ import { ENV } from "../env";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import { normalizeForwardRuleProtocol, type ForwardRuleProtocol } from "../../shared/forwardTypes";
 import { normalizeExitGroupStrategy, type ExitGroupStrategy } from "../../shared/exitStrategy";
+import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
 
 export type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
@@ -68,12 +69,14 @@ export function normalizeForwardGroupMembers(
   if (groupMode === "port" && members.length !== 1) {
     throw new Error("端口转发需要配置 1 台所属主机");
   }
-  if (groupMode === "chain" && (members.length < minChainMembers || members.length > 5)) {
-    if (options.externalEntry) throw new Error("转发链需要配置 1-5 台主机");
-    throw new Error("转发链需要配置 2-5 台主机");
+  if (groupMode === "chain" && (members.length < minChainMembers || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
+    if (options.externalEntry) throw new Error(`转发链需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+    throw new Error(`转发链需要配置 2-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
   }
-  if (isCollectionGroup && (members.length < 1 || members.length > 5)) {
-    throw new Error(groupMode === "entry" ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
+  if (isCollectionGroup && (members.length < 1 || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
+    throw new Error(groupMode === "entry"
+      ? `入口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
+      : `出口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
   }
   const seen = new Set<string>();
   return members.map((member, index) => {

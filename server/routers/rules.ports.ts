@@ -7,7 +7,7 @@ import {
   requireTrafficBillingAccessIfConfigured,
   requireTunnelUseOrTrafficBillingAccess,
 } from "./helpers";
-import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
+import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const randomPortInputSchema = z.object({
   hostId: z.number().optional(),
@@ -78,12 +78,10 @@ export const portsRulesRouter = router({
         const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== hostId) throw new Error("隧道入口主机与规则主机不一致");
         const host = await db.getHostById(hostId);
-        policy = combinePortPolicies(
-          portPolicyFrom(host as any),
-          portPolicyFrom({
-            portRangeStart: (tunnel as any).portRangeStart,
-            portRangeEnd: (tunnel as any).portRangeEnd,
-          }),
+        policy = combineHostPortPolicyWithRange(
+          host as any,
+          (tunnel as any).portRangeStart,
+          (tunnel as any).portRangeEnd,
         );
       } else {
         const { host } = await requireHostUseAccess(ctx, hostId);

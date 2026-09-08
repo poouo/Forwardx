@@ -118,10 +118,12 @@ func addTCPingReportUnits(groups map[string][]string, kind string, reports []map
 		}
 		unitKey := tcpingReportUnitKey(kind, report)
 		state := fmt.Sprintf(
-			"%s=%t:%s",
+			"%s=%t:%s:%d/%d",
 			tcpingProbeStateKey(kind, report),
 			tcpingReportStatus(report),
 			tcpingReportText(report, "healthStatus"),
+			tcpingReportInt(report, "probeCount"),
+			tcpingReportInt(report, "probeSuccesses"),
 		)
 		groups[unitKey] = append(groups[unitKey], state)
 	}

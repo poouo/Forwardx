@@ -121,6 +121,24 @@ func TestTCPingReportGateRetriesFailedPostsAndSendsFiveMinuteSnapshots(t *testin
 	}
 }
 
+func TestTCPingReportGateSendsPacketLossRecoveryWithoutWaiting(t *testing.T) {
+	gate := newTCPingReportGate()
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	report := tcpingGateResult(7, false, 10)
+	report["probeCount"] = 5
+	report["probeSuccesses"] = 4
+	first := gate.plan([]map[string]any{report}, nil, nil, nil, false, now)
+	if len(first.results) != 1 {
+		t.Fatal("first packet-loss report should be sent")
+	}
+	gate.commit(first)
+	report["probeSuccesses"] = 5
+	recovered := gate.plan([]map[string]any{report}, nil, nil, nil, false, now.Add(time.Second))
+	if len(recovered.results) != 1 {
+		t.Fatal("packet-loss recovery should not wait for the five-minute snapshot")
+	}
+}
+
 func TestTCPingReportGateForceAndTunnelRulesBypassSuppression(t *testing.T) {
 	gate := newTCPingReportGate()
 	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)

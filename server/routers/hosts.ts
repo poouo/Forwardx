@@ -19,6 +19,7 @@ import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
 import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
 import { billingCalendarParts } from "@shared/billingTime";
+import { normalizeAgentProbeCounts } from "@shared/agentDtos";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -547,24 +548,35 @@ function publicProbeServiceAppliesToHost(service: any, hostId: number) {
 }
 
 function compactPublicProbeService(service: any, latest?: any) {
+  const latestCounts = latest
+    ? normalizeAgentProbeCounts({ ...latest, isTimeout: !!latest.isTimeout })
+    : null;
   return {
     id: Number(service?.id || 0),
     name: String(service?.name || ""),
     method: service?.method === "ping" ? "ping" : "tcping",
     latest: latest ? {
       latencyMs: latest.latencyMs == null ? null : Number(latest.latencyMs),
-      isTimeout: !!latest.isTimeout,
+      isTimeout: latestCounts ? latestCounts.probeSuccesses <= 0 : !!latest.isTimeout,
+      // Keep packet-level counters in the public monitor response so a
+      // partial-loss ping (for example 4/5 replies) is not collapsed into a
+      // binary success when the detail page builds its statistics.
+      probeCount: latestCounts?.probeCount ?? 1,
+      probeSuccesses: latestCounts?.probeSuccesses ?? 0,
       recordedAt: latest.recordedAt || null,
     } : null,
   };
 }
 
 function compactPublicProbeSeries(row: any) {
+  const counts = normalizeAgentProbeCounts({ ...row, isTimeout: !!row?.isTimeout });
   return {
     serviceId: Number(row?.serviceId || 0),
     hostId: Number(row?.hostId || 0),
     latencyMs: row?.latencyMs == null ? null : Number(row.latencyMs),
-    isTimeout: !!row?.isTimeout,
+    isTimeout: counts.probeSuccesses <= 0,
+    probeCount: counts.probeCount,
+    probeSuccesses: counts.probeSuccesses,
     recordedAt: row?.recordedAt || null,
   };
 }

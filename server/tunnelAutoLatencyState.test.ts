@@ -34,6 +34,53 @@ test("automatic tunnel probes retain fresh per-hop source and target details", (
   assert.ok(details.every((detail) => detail.recordedAt > 0));
 });
 
+test("automatic tunnel hop aggregation preserves partial packet loss", () => {
+  const base = { tunnelId: 94010, hopCount: 2, generation: "partial-loss" };
+  assert.equal(recordTunnelAutoHopLatency({
+    ...base,
+    hopIndex: 0,
+    latencyMs: 12,
+    isTimeout: false,
+    probeCount: 3,
+    probeSuccesses: 2,
+  }), null);
+  assert.deepEqual(recordTunnelAutoHopLatency({
+    ...base,
+    hopIndex: 1,
+    latencyMs: 18,
+    isTimeout: false,
+    probeCount: 3,
+    probeSuccesses: 3,
+  }), {
+    success: true,
+    latencyMs: 30,
+    probeCount: 3,
+    probeSuccesses: 2,
+  });
+  const details = getTunnelAutoHopDetails(base);
+  assert.ok(details);
+  assert.equal(details[0].probeCount, 3);
+  assert.equal(details[0].probeSuccesses, 2);
+});
+
+test("automatic tunnel all-packet loss is not rewritten as a binary success", () => {
+  const base = { tunnelId: 94011, hopCount: 2, generation: "full-loss", pathKey: "relay-1", allowEarlyFailure: true };
+  const aggregate = recordTunnelAutoHopLatency({
+    ...base,
+    hopIndex: 0,
+    latencyMs: null,
+    isTimeout: true,
+    probeCount: 3,
+    probeSuccesses: 0,
+  });
+  assert.deepEqual(aggregate, {
+    success: false,
+    latencyMs: null,
+    probeCount: 3,
+    probeSuccesses: 0,
+  });
+});
+
 test("automatic tunnel details reject a different topology generation", () => {
   const base = { tunnelId: 94002, hopCount: 1, generation: "new-topology" };
   recordTunnelAutoHopLatency({

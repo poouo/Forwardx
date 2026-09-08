@@ -3,6 +3,8 @@ export const MAX_LATENCY_CHART_MS = 500;
 export type LatencyStabilitySample = {
   latency: number;
   isTimeout?: boolean | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 };
 
 export type LatencyStabilityRating = {
@@ -26,6 +28,35 @@ export type LatencyStabilityStats = {
   score: number | null;
   rating: LatencyStabilityRating;
 };
+
+export type NormalizedLatencyProbeCounts = {
+  probeCount: number;
+  probeSuccesses: number;
+  /** True only when every represented probe failed. */
+  isTimeout: boolean;
+};
+
+/**
+ * Normalize packet counters received from old and new panel/Agent versions.
+ * Older rows have no counters (or may have the database's zero default), so
+ * a non-timeout row retains the historical one-success-sample semantics.
+ */
+export function normalizeLatencyProbeCounts(sample: Pick<LatencyStabilitySample, "isTimeout" | "probeCount" | "probeSuccesses"> | null | undefined): NormalizedLatencyProbeCounts {
+  const rawCount = Number(sample?.probeCount);
+  const probeCount = Number.isInteger(rawCount) && rawCount >= 1 ? Math.min(rawCount, 1024) : 1;
+  const rawSuccesses = Number(sample?.probeSuccesses);
+  const hasSuccesses = sample?.probeSuccesses !== undefined
+    && sample?.probeSuccesses !== null
+    && Number.isInteger(rawSuccesses);
+  let probeSuccesses = hasSuccesses ? rawSuccesses : (sample?.isTimeout ? 0 : probeCount);
+  probeSuccesses = Math.max(0, Math.min(probeCount, probeSuccesses));
+  if (!sample?.isTimeout && probeSuccesses === 0) probeSuccesses = probeCount;
+  return {
+    probeCount,
+    probeSuccesses,
+    isTimeout: !!sample?.isTimeout && probeSuccesses <= 0,
+  };
+}
 
 export type PeakCutSample = {
   [key: string]: unknown;
@@ -153,14 +184,18 @@ function processPeakCutValues(values: number[], alpha: number) {
 }
 
 export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): LatencyStabilityStats {
-  const total = samples.length;
-  const timeout = samples.filter((sample) => !!sample.isTimeout).length;
+  const weightedSamples = samples.map((sample) => {
+    const counts = normalizeLatencyProbeCounts(sample);
+    return { sample, ...counts };
+  });
+  const total = weightedSamples.reduce((sum, item) => sum + item.probeCount, 0);
+  const timeout = weightedSamples.reduce((sum, item) => sum + item.probeCount - item.probeSuccesses, 0);
   const lossRate = total > 0 ? (timeout / total) * 100 : 0;
-  const values = samples
-    .filter((sample) => !sample.isTimeout && Number.isFinite(sample.latency) && sample.latency > 0)
-    .map((sample) => sample.latency)
-    .sort((a, b) => a - b);
-  const valid = values.length;
+  const weightedValues = weightedSamples
+    .filter(({ sample, probeSuccesses }) => probeSuccesses > 0 && Number.isFinite(sample.latency) && sample.latency > 0)
+    .map(({ sample, probeSuccesses }) => ({ value: sample.latency, weight: probeSuccesses }))
+    .sort((a, b) => a.value - b.value);
+  const valid = weightedValues.reduce((sum, item) => sum + item.weight, 0);
   const maxLossRun = getMaxLossRun(samples);
 
   if (total === 0) {
@@ -202,13 +237,17 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
     };
   }
 
-  const sum = values.reduce((acc, value) => acc + value, 0);
-  const p50 = percentile(values, 50);
-  const p95 = percentile(values, 95);
-  const deviations = values.map((value) => Math.abs(value - p50)).sort((a, b) => a - b);
-  const jitter = percentile(deviations, 50);
+  const sum = weightedValues.reduce((acc, item) => acc + item.value * item.weight, 0);
+  const p50 = weightedPercentile(weightedValues, 50);
+  const p95 = weightedPercentile(weightedValues, 95);
+  const deviations = weightedValues
+    .map((item) => ({ value: Math.abs(item.value - p50), weight: item.weight }))
+    .sort((a, b) => a.value - b.value);
+  const jitter = weightedPercentile(deviations, 50);
   const spikeThreshold = p50 + Math.max(50, jitter * 4);
-  const spikeRate = values.filter((value) => value > spikeThreshold).length / Math.max(valid, 1);
+  const spikeRate = weightedValues
+    .filter((item) => item.value > spikeThreshold)
+    .reduce((sum, item) => sum + item.weight, 0) / Math.max(valid, 1);
 
   const lossScore = interpolateScore(lossRate, [
     [0, 100],
@@ -288,8 +327,8 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
     timeout,
     valid,
     lossRate,
-    max: values[valid - 1],
-    min: values[0],
+    max: weightedValues[weightedValues.length - 1].value,
+    min: weightedValues[0].value,
     avg: Math.round(sum / valid),
     p50: Math.round(p50),
     p95: Math.round(p95),
@@ -311,14 +350,22 @@ export function getLatencyStabilityRating(score: number | null): LatencyStabilit
   return { label: "严重不可用", className: "text-destructive" };
 }
 
-function percentile(sortedValues: number[], percentileValue: number) {
+function weightedPercentile(
+  sortedValues: Array<{ value: number; weight: number }>,
+  percentileValue: number,
+) {
   if (sortedValues.length === 0) return 0;
-  if (sortedValues.length === 1) return sortedValues[0];
-  const index = (percentileValue / 100) * (sortedValues.length - 1);
-  const lower = Math.floor(index);
-  const upper = Math.ceil(index);
-  if (lower === upper) return sortedValues[lower];
-  return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * (index - lower);
+  const totalWeight = sortedValues.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
+  if (totalWeight <= 0) return 0;
+  const target = (Math.max(0, Math.min(100, percentileValue)) / 100) * (totalWeight - 1);
+  let cumulative = 0;
+  for (const item of sortedValues) {
+    const weight = Math.max(0, item.weight);
+    if (weight <= 0) continue;
+    if (target < cumulative + weight) return item.value;
+    cumulative += weight;
+  }
+  return sortedValues[sortedValues.length - 1].value;
 }
 
 function interpolateScore(value: number, points: Array<[number, number]>) {
@@ -339,7 +386,9 @@ function getMaxLossRun(samples: LatencyStabilitySample[]) {
   let current = 0;
   let max = 0;
   for (const sample of samples) {
-    if (sample.isTimeout) {
+    const { probeCount, probeSuccesses, isTimeout } = normalizeLatencyProbeCounts(sample);
+    const hasLoss = isTimeout || probeSuccesses < probeCount;
+    if (hasLoss) {
       current += 1;
       max = Math.max(max, current);
     } else {

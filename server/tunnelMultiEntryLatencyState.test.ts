@@ -143,6 +143,87 @@ test("multi-entry relay candidates retain independent aggregates", () => {
   assert.equal(getTunnelMultiEntryLatency({ ...base, pathKey: "relay-2" })?.success, false);
 });
 
+test("multi-entry aggregate retains partial counters for the available entry", () => {
+  const base = {
+    tunnelId: 93008,
+    expectedEntryHostIds: [10, 11],
+    hopIndex: 0,
+    hopCount: 1,
+    generation: "partial-direct-v1",
+  };
+  assert.deepEqual(recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 10,
+    sourceLabel: "entry-a",
+    latencyMs: 24,
+    isTimeout: false,
+    probeCount: 5,
+    probeSuccesses: 4,
+  }), {
+    success: true,
+    partial: true,
+    latencyMs: 24,
+    details: [
+      { hostId: 10, label: "entry-a", latencyMs: 24, isTimeout: false, probeCount: 5, probeSuccesses: 4 },
+    ],
+    probeCount: 5,
+    probeSuccesses: 4,
+  });
+  assert.deepEqual(recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 11,
+    sourceLabel: "entry-b",
+    latencyMs: null,
+    isTimeout: true,
+    probeCount: 5,
+    probeSuccesses: 0,
+  }), {
+    success: true,
+    partial: true,
+    latencyMs: 24,
+    details: [
+      { hostId: 10, label: "entry-a", latencyMs: 24, isTimeout: false, probeCount: 5, probeSuccesses: 4 },
+      { hostId: 11, label: "entry-b", latencyMs: null, isTimeout: true, probeCount: 5, probeSuccesses: 0 },
+    ],
+    probeCount: 5,
+    probeSuccesses: 4,
+  });
+});
+
+test("multi-entry aggregation preserves partial packet loss on an entry path", () => {
+  const base = {
+    tunnelId: 93010,
+    expectedEntryHostIds: [10, 11],
+    hopIndex: 0,
+    hopCount: 1,
+    generation: "partial-entry-v1",
+  };
+  const first = recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 10,
+    sourceLabel: "entry-a",
+    latencyMs: 20,
+    isTimeout: false,
+    probeCount: 3,
+    probeSuccesses: 2,
+  });
+  assert.equal(first?.success, true);
+  assert.equal(first?.probeSuccesses, 2);
+  const aggregate = recordTunnelMultiEntryLatency({
+    ...base,
+    sourceHostId: 11,
+    sourceLabel: "entry-b",
+    latencyMs: 24,
+    isTimeout: false,
+    probeCount: 3,
+    probeSuccesses: 3,
+  });
+  assert.equal(aggregate?.success, true);
+  assert.equal(aggregate?.probeCount, 3);
+  assert.equal(aggregate?.probeSuccesses, 3);
+  assert.equal(aggregate?.details.find((detail) => detail.hostId === 10)?.probeSuccesses, 2);
+});
+
 test("multi-entry state exposes entry and shared hop samples for the rule test", () => {
   const base = {
     tunnelId: 94003,

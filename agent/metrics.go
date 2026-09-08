@@ -25,11 +25,16 @@ import (
 )
 
 const (
-	agentStateDir              = "/var/lib/forwardx-agent"
-	tcpingRuleBatchSize        = 24
-	tcpingProbeBatchSize       = 12
-	tcpingMaxConcurrency       = 32
-	tcpingProbeTimeout         = 2 * time.Second
+	agentStateDir        = "/var/lib/forwardx-agent"
+	tcpingRuleBatchSize  = 24
+	tcpingProbeBatchSize = 12
+	tcpingMaxConcurrency = 32
+	tcpingProbeTimeout   = 2 * time.Second
+	// TCP connect probes are sampled in a small bounded batch so the UI can
+	// report intermittent failures instead of every sample being 1/1.  The
+	// probes share one deadline and run concurrently, keeping the existing
+	// per-target timeout and avoiding a serial 3x slowdown.
+	tcpingTCPProbeCount        = 3
 	tcpingWireGuardTimeout     = 8 * time.Second
 	tcpingPingProbeCount       = 5
 	systemPingConcurrency      = 8
@@ -517,6 +522,17 @@ type tcpingTask struct {
 type tcpingTaskResult struct {
 	Kind    string
 	Payload map[string]any
+}
+
+// probeMeasurement keeps packet-level information that used to be collapsed
+// into a single boolean timeout.  Ping probes send several ICMP packets, so a
+// successful sample may still contain packet loss.
+type probeMeasurement struct {
+	LatencyMs      int
+	Reachable      bool
+	Detail         string
+	ProbeCount     int
+	ProbeSuccesses int
 }
 
 func compactTrafficStat(stat map[string]any) []any {
@@ -1819,24 +1835,50 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 }
 
 func executeTCPingTaskWithWireGuardProbe(task tcpingTask, wireGuardProbe func(int, string, int, time.Duration) (int, wireGuardProbeStatus)) tcpingTaskResult {
-	var latency int
-	var reachable bool
+	return executeTCPingTaskWithProbes(task, wireGuardProbe, pingLatencyDetailed)
+}
+
+func executeTCPingTaskWithProbes(
+	task tcpingTask,
+	wireGuardProbe func(int, string, int, time.Duration) (int, wireGuardProbeStatus),
+	pingProbe func(string, time.Duration, int) probeMeasurement,
+) tcpingTaskResult {
+	measurement := probeMeasurement{ProbeCount: 1}
 	if task.Kind == "forwardGroup" && task.Method == "self" {
-		latency = 0
-		reachable = true
+		measurement.Reachable = true
+		measurement.ProbeSuccesses = 1
 	} else if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
-		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
+		if pingProbe != nil {
+			measurement = pingProbe(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
+		}
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
 		status := wireGuardProbeTimeout
+		var latency int
 		if wireGuardProbe != nil {
 			latency, status = wireGuardProbe(task.TunnelID, task.WireGuardPeerID, task.TargetPort, tcpingWireGuardTimeout)
 		}
 		if status == wireGuardProbeNotReady {
 			return tcpingTaskResult{}
 		}
-		reachable = status == wireGuardProbeSuccess
+		measurement.LatencyMs = latency
+		measurement.Reachable = status == wireGuardProbeSuccess
+		if measurement.Reachable {
+			measurement.ProbeSuccesses = 1
+		}
 	} else {
-		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
+		measurement = tcpLatencyWithProbes(task.TargetIP, task.TargetPort, tcpingProbeTimeout, tcpingTCPProbeCount)
+	}
+	if measurement.ProbeCount < 1 {
+		measurement.ProbeCount = 1
+	}
+	if measurement.ProbeSuccesses < 0 {
+		measurement.ProbeSuccesses = 0
+	}
+	if measurement.ProbeSuccesses > measurement.ProbeCount {
+		measurement.ProbeSuccesses = measurement.ProbeCount
+	}
+	if measurement.ProbeSuccesses == 0 {
+		measurement.Reachable = false
 	}
 	payload := map[string]any{}
 	switch task.Kind {
@@ -1888,15 +1930,85 @@ func executeTCPingTaskWithWireGuardProbe(task tcpingTask, wireGuardProbe func(in
 	if task.TopologyKey != "" {
 		payload["topologyKey"] = task.TopologyKey
 	}
-	if reachable {
-		payload["latencyMs"] = latency
+	payload["probeCount"] = measurement.ProbeCount
+	payload["probeSuccesses"] = measurement.ProbeSuccesses
+	if measurement.Reachable {
+		payload["latencyMs"] = measurement.LatencyMs
 		payload["isTimeout"] = false
 	} else {
 		payload["latencyMs"] = 0
 		payload["isTimeout"] = true
 	}
-	applyForwardGroupHealthDecision(task, reachable, payload, time.Now())
+	applyForwardGroupHealthDecision(task, measurement.Reachable, payload, time.Now())
 	return tcpingTaskResult{Kind: task.Kind, Payload: payload}
+}
+
+// tcpLatencyWithProbes performs a bounded batch of TCP connection attempts
+// under one timeout window.  A TCP connect is intentionally used here rather
+// than an application request: it preserves the existing health-check
+// semantics while exposing partial TCP loss (for example 2/3 successful
+// connects) to the panel.  DNS resolution and the dial timeout remain inside
+// tcpLatencyResolved, so each attempt follows the same target handling as the
+// legacy single-probe path.
+func tcpLatencyWithProbes(host string, port int, timeout time.Duration, count int) probeMeasurement {
+	// Do not allow a caller/configuration mistake to turn this helper into an
+	// unbounded goroutine factory. Runtime TCPing currently requests three
+	// attempts; retaining a small hard cap keeps future call sites safe too.
+	if count < 1 {
+		count = 1
+	}
+	if count > tcpingTCPProbeCount {
+		count = tcpingTCPProbeCount
+	}
+	if timeout <= 0 {
+		timeout = tcpingProbeTimeout
+	}
+	type result struct {
+		latency   int
+		reachable bool
+	}
+	results := make(chan result, count)
+	deadline := time.Now().Add(timeout)
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				results <- result{}
+				return
+			}
+			latency, reachable, _ := tcpLatencyResolved(host, port, remaining)
+			results <- result{latency: latency, reachable: reachable}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	latencyTotal := 0
+	successes := 0
+	for item := range results {
+		if !item.reachable {
+			continue
+		}
+		successes++
+		if item.latency > 0 {
+			latencyTotal += item.latency
+		}
+	}
+	measurement := probeMeasurement{
+		ProbeCount:     count,
+		ProbeSuccesses: successes,
+		Reachable:      successes > 0,
+	}
+	if successes > 0 {
+		measurement.LatencyMs = latencyTotal / successes
+		if measurement.LatencyMs < 1 {
+			measurement.LatencyMs = 1
+		}
+	}
+	return measurement
 }
 
 func readTargetInfo(port string) (string, int, string, bool) {
@@ -2093,15 +2205,26 @@ func pingFamilyArg(host string) string {
 }
 
 func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, bool, string) {
+	result := pingLatencyDetailed(host, timeout, count)
+	return result.LatencyMs, result.Reachable, result.Detail
+}
+
+// pingLatencyDetailed is the packet-count preserving variant used by runtime
+// telemetry.  The legacy pingLatencyWithCount API intentionally remains a
+// three-value wrapper because self-tests and older call sites use it.
+func pingLatencyDetailed(host string, timeout time.Duration, count int) probeMeasurement {
 	target := normalizeNetworkTargetHost(host)
 	if target == "" {
-		return 0, false, "目标为空"
+		return probeMeasurement{ProbeCount: maxProbeCount(count), Detail: "目标为空"}
 	}
 	if count < 1 {
 		count = 1
 	}
-	if latency, ok, detail, err := nativePingLatencyWithCount(target, timeout, count); err == nil {
-		return latency, ok, detail
+	if latency, ok, detail, sent, successes, err := nativePingLatencyDetailed(target, timeout, count); err == nil {
+		return probeMeasurement{
+			LatencyMs: latency, Reachable: ok, Detail: detail,
+			ProbeCount: normalizeProbeCount(sent, count), ProbeSuccesses: clampProbeSuccesses(successes, sent, ok),
+		}
 	} else if shouldLogAgentReport("native-ping-fallback", 5*time.Minute) {
 		logf("native ping unavailable target=%s: %v; falling back to system ping", target, err)
 	}
@@ -2116,7 +2239,7 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 	case systemPingSlots <- struct{}{}:
 		defer func() { <-systemPingSlots }()
 	case <-ctx.Done():
-		return 0, false, "system ping queue timeout"
+		return probeMeasurement{ProbeCount: count, Detail: "system ping queue timeout"}
 	}
 	timeoutSeconds := int(timeout.Seconds())
 	if timeoutSeconds < 1 {
@@ -2135,31 +2258,130 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 		}
 		args = append(args, "-n", strconv.Itoa(count), "-w", strconv.Itoa(int(timeout.Milliseconds())), target)
 	}
-	output, err := exec.CommandContext(ctx, "ping", args...).CombinedOutput()
+	pingCommand := exec.CommandContext(ctx, "ping", args...)
+	// Keep Unix ping output deterministic regardless of the Agent host locale.
+	// Windows does not honor these variables consistently, so its localized
+	// summary/reply formats are handled by the parser below as well.
+	if runtime.GOOS != "windows" {
+		env := os.Environ()
+		filteredEnv := make([]string, 0, len(env)+3)
+		for _, entry := range env {
+			name := entry
+			if separator := strings.IndexByte(name, '='); separator >= 0 {
+				name = name[:separator]
+			}
+			switch name {
+			case "LC_ALL", "LANG", "LANGUAGE":
+				continue
+			}
+			filteredEnv = append(filteredEnv, entry)
+		}
+		pingCommand.Env = append(filteredEnv, "LC_ALL=C", "LANG=C", "LANGUAGE=C")
+	}
+	output, err := pingCommand.CombinedOutput()
 	elapsed := int(time.Since(start).Milliseconds())
 	if elapsed < 1 {
 		elapsed = 1
 	}
 	text := string(output)
-	if ctx.Err() == context.DeadlineExceeded {
-		return 0, false, "timeout"
-	}
+	sent, successes := parsePingProbeCounts(text, count)
 	if parsed := parsePingLatencyMs(text); parsed > 0 {
-		return parsed, true, ""
+		// A few ping implementations print an average/reply latency but omit
+		// the packet summary. Preserve the historical reachable result instead
+		// of turning that valid output into a synthetic 0/N loss sample; the
+		// reply-line parser above still provides exact counts when available.
+		if successes <= 0 {
+			successes = 1
+		}
+		return probeMeasurement{
+			LatencyMs: parsed, Reachable: true, ProbeCount: normalizeProbeCount(sent, count),
+			ProbeSuccesses: clampProbeSuccesses(successes, sent, true),
+		}
+	}
+	// A command can reach the client deadline after printing one or more
+	// replies (for example when the final packet is lost).  Parse the output
+	// before treating the deadline as a total failure so partial packet loss is
+	// not discarded.  Only return the generic timeout when no reply was
+	// observed at all.
+	partialLatency := 0
+	if successes > 0 {
+		partialLatency = elapsed
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return probeMeasurement{
+			LatencyMs:      partialLatency,
+			Reachable:      successes > 0,
+			ProbeCount:     normalizeProbeCount(sent, count),
+			ProbeSuccesses: clampProbeSuccesses(successes, sent, false),
+			Detail:         "timeout",
+		}
 	}
 	if err != nil {
 		detail := strings.TrimSpace(text)
 		if detail == "" {
 			detail = err.Error()
 		}
-		return 0, false, detail
+		return probeMeasurement{
+			LatencyMs:      partialLatency,
+			Reachable:      successes > 0,
+			ProbeCount:     normalizeProbeCount(sent, count),
+			ProbeSuccesses: clampProbeSuccesses(successes, sent, false),
+			Detail:         detail,
+		}
 	}
-	return elapsed, true, ""
+	if successes <= 0 {
+		return probeMeasurement{ProbeCount: normalizeProbeCount(sent, count), Detail: "no ping replies"}
+	}
+	return probeMeasurement{
+		LatencyMs: elapsed, Reachable: true, ProbeCount: normalizeProbeCount(sent, count),
+		ProbeSuccesses: clampProbeSuccesses(successes, sent, true),
+	}
+}
+
+func maxProbeCount(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 1024 {
+		return 1024
+	}
+	return value
+}
+
+func normalizeProbeCount(sent, fallback int) int {
+	if sent <= 0 {
+		sent = fallback
+	}
+	return maxProbeCount(sent)
+}
+
+func clampProbeSuccesses(successes, count int, reachable bool) int {
+	if successes <= 0 && reachable {
+		successes = 1
+	}
+	if successes < 0 {
+		successes = 0
+	}
+	if count < 1 {
+		count = 1
+	}
+	if successes > count {
+		successes = count
+	}
+	return successes
 }
 
 func nativePingLatencyWithCount(target string, timeout time.Duration, count int) (int, bool, string, error) {
+	latency, ok, detail, _, _, err := nativePingLatencyDetailed(target, timeout, count)
+	return latency, ok, detail, err
+}
+
+func nativePingLatencyDetailed(target string, timeout time.Duration, count int) (int, bool, string, int, int, error) {
+	if count < 1 {
+		count = 1
+	}
 	if runtime.GOOS == "windows" {
-		return 0, false, "", fmt.Errorf("native ping unsupported on windows")
+		return 0, false, "", count, 0, fmt.Errorf("native ping unsupported on windows")
 	}
 	if timeout <= 0 {
 		timeout = tcpingProbeTimeout
@@ -2168,43 +2390,70 @@ func nativePingLatencyWithCount(target string, timeout time.Duration, count int)
 	if net.ParseIP(target) == nil {
 		resolved := resolveNetworkTargetIPs(target, timeout)
 		if len(resolved) == 0 {
-			return 0, false, "resolve failed", nil
+			return 0, false, "resolve failed", count, 0, nil
 		}
 		targets = resolved
 	}
 	var lastErr error
+	// Keep the best partial result as a fallback, but continue trying every
+	// resolved address.  A hostname can resolve to an unreachable IPv4 first
+	// and a healthy address second; returning the first zero-success sample
+	// would regress the old "try all addresses" behavior.
+	partialLatency := 0
+	partialSent := 0
+	partialSuccesses := 0
+	partialDetail := ""
 	for _, value := range targets {
 		ip := net.ParseIP(value)
 		if ip == nil {
 			continue
 		}
-		latency, ok, err := nativePingIP(ip, timeout, count)
+		latency, ok, err, sent, successes := nativePingIPDetailed(ip, timeout, count)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		if ok {
-			return latency, true, value, nil
+			return latency, true, value, sent, successes, nil
+		}
+		// Preserve a partial result even when every packet timed out.  This is
+		// useful for distinguishing a complete loss from a resolver failure,
+		// while still allowing another resolved address to succeed.
+		if sent > 0 {
+			if successes > partialSuccesses || (successes == partialSuccesses && sent > partialSent) {
+				partialLatency = latency
+				partialSent = sent
+				partialSuccesses = successes
+				partialDetail = value
+			}
 		}
 	}
-	if lastErr != nil {
-		return 0, false, "", lastErr
+	if partialSent > 0 {
+		return partialLatency, false, partialDetail, partialSent, partialSuccesses, nil
 	}
-	return 0, false, "timeout", nil
+	if lastErr != nil {
+		return 0, false, "", count, 0, lastErr
+	}
+	return 0, false, "timeout", count, 0, nil
 }
 
 func nativePingIP(ip net.IP, timeout time.Duration, count int) (int, bool, error) {
+	latency, ok, err, _, _ := nativePingIPDetailed(ip, timeout, count)
+	return latency, ok, err
+}
+
+func nativePingIPDetailed(ip net.IP, timeout time.Duration, count int) (int, bool, error, int, int) {
 	ipv4 := ip.To4()
 	if ipv4 == nil {
-		return 0, false, fmt.Errorf("native ping currently supports ipv4 only")
+		return 0, false, fmt.Errorf("native ping currently supports ipv4 only"), 0, 0
 	}
 	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
 	if err != nil {
-		return 0, false, err
+		return 0, false, err, 0, 0
 	}
 	defer conn.Close()
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return 0, false, err
+		return 0, false, err, 0, 0
 	}
 	id := os.Getpid() & 0xffff
 	baseSeq := int(time.Now().UnixNano()) & 0xffff
@@ -2214,7 +2463,7 @@ func nativePingIP(ip net.IP, timeout time.Duration, count int) (int, bool, error
 		packet := buildICMPEchoRequest(8, id, seq)
 		sentAt[seq] = time.Now()
 		if _, err := conn.WriteTo(packet, &net.IPAddr{IP: ipv4}); err != nil {
-			return 0, false, err
+			return 0, false, err, len(sentAt), 0
 		}
 	}
 	buf := make([]byte, 1500)
@@ -2252,9 +2501,15 @@ func nativePingIP(ip net.IP, timeout time.Duration, count int) (int, bool, error
 		}
 	}
 	if successes == 0 {
-		return 0, false, nil
+		return 0, false, nil, count, 0
 	}
-	return totalLatency / successes, true, nil
+	latency := totalLatency / successes
+	if latency < 1 {
+		// Millisecond precision cannot represent a local/very fast reply as
+		// zero: the panel treats a non-positive latency as an invalid sample.
+		latency = 1
+	}
+	return latency, true, nil, count, successes
 }
 
 func buildICMPEchoRequest(typ byte, id int, seq int) []byte {
@@ -2298,6 +2553,7 @@ func parsePingLatencyMs(output string) int {
 	summaryPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:rtt|round-trip)[^=]*=\s*[0-9]+(?:\.[0-9]+)?/([0-9]+(?:\.[0-9]+)?)`),
 		regexp.MustCompile(`(?i)Average\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
+		regexp.MustCompile(`(?:平均|平均值)[^=：:]*[=：:]\s*([0-9]+(?:\.[0-9]+)?)\s*(?:毫秒|ms)`),
 		regexp.MustCompile(`(?i)avg[/=]\s*([0-9]+(?:\.[0-9]+)?)`),
 	}
 	for _, pattern := range summaryPatterns {
@@ -2308,7 +2564,13 @@ func parsePingLatencyMs(output string) int {
 			}
 		}
 	}
-	timePattern := regexp.MustCompile(`time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`)
+	// Windows commonly prints local replies as "time<1ms" (and Chinese
+	// installations as "时间<1ms"). Treat that as the smallest representable
+	// latency instead of dropping an otherwise successful reply.
+	if regexp.MustCompile(`(?i)(?:time|时间)\s*<\s*1\s*(?:ms|毫秒)`).MatchString(output) {
+		return 1
+	}
+	timePattern := regexp.MustCompile(`(?i)(?:time|时间)[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*(?:ms|毫秒)`)
 	timeMatches := timePattern.FindAllStringSubmatch(output, -1)
 	if len(timeMatches) > 0 {
 		total := 0
@@ -2327,7 +2589,7 @@ func parsePingLatencyMs(output string) int {
 		}
 	}
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
+		regexp.MustCompile(`(?i)(?:time|时间)[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*(?:ms|毫秒)`),
 	}
 	for _, pattern := range patterns {
 		matches := pattern.FindStringSubmatch(output)
@@ -2339,6 +2601,41 @@ func parsePingLatencyMs(output string) int {
 		}
 	}
 	return 0
+}
+
+// parsePingProbeCounts extracts packet totals from common iputils and Windows
+// ping summaries.  A missing summary is treated as an unknown count by the
+// caller, which then safely falls back to the requested probe count.
+func parsePingProbeCounts(output string, fallback int) (int, int) {
+	count := maxProbeCount(fallback)
+	text := strings.TrimSpace(output)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(\d+)\s+packets?\s+transmitted,\s*(\d+)\s+(?:packets?\s+)?received`),
+		regexp.MustCompile(`(?i)packets?:\s*sent\s*=\s*(\d+),\s*received\s*=\s*(\d+)`),
+		regexp.MustCompile(`(?i)packets?\s*[:：]\s*sent\s*[=:：]\s*(\d+)\s*[,，]\s*received\s*[=:：]\s*(\d+)`),
+		regexp.MustCompile(`(?:数据包|数据包数)\s*[:：]?\s*(?:已发送|发送)\s*[=:：]\s*(\d+).*?(?:已接收|接收)\s*[=:：]\s*(\d+)`),
+		regexp.MustCompile(`(?i)(\d+)\s*(?:个)?(?:数据包|packets?).*?(\d+)\s*(?:个)?(?:已接收|received)`),
+	}
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(text)
+		if len(matches) < 3 {
+			continue
+		}
+		sent, sentErr := strconv.Atoi(matches[1])
+		received, receivedErr := strconv.Atoi(matches[2])
+		if sentErr != nil || receivedErr != nil || sent < 1 || received < 0 {
+			continue
+		}
+		return maxProbeCount(sent), minInt(received, sent)
+	}
+	// Some BusyBox builds and localized Windows ping versions omit the final
+	// packet summary but still print one line per reply. Count those reply
+	// lines so a valid latency is not incorrectly classified as a total loss.
+	replyLines := regexp.MustCompile(`(?im)(?:\btime|时间)\s*(?:[=<]\s*[0-9]+(?:\.[0-9]+)?|<\s*1)\s*(?:ms|毫秒)`).FindAllStringIndex(text, -1)
+	if len(replyLines) > 0 {
+		return count, minInt(len(replyLines), count)
+	}
+	return count, 0
 }
 
 func roundPositiveLatency(value string) int {

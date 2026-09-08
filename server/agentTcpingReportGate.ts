@@ -84,7 +84,16 @@ function addUnits(
 ) {
   for (const report of reports) {
     const key = reportUnitKey(hostId, kind, report);
-    const state = `${probeStateKey(kind, report)}=${!!report.isTimeout}:${text((report as any).healthStatus)}`;
+    // Packet counters are part of the report state. A ping can remain
+    // reachable while changing from (for example) 4/5 to 5/5 replies; if
+    // they were omitted here the steady-state gate would suppress that
+    // change for five minutes and the chart would show stale loss data.
+    const item = report as any;
+    const probeCount = Number.isInteger(Number(item.probeCount)) ? Number(item.probeCount) : 1;
+    const probeSuccesses = Number.isInteger(Number(item.probeSuccesses))
+      ? Number(item.probeSuccesses)
+      : (item.isTimeout ? 0 : probeCount);
+    const state = `${probeStateKey(kind, report)}=${!!report.isTimeout}:${text(item.healthStatus)}:${probeCount}/${probeSuccesses}`;
     const values = units.get(key) || [];
     values.push(state);
     units.set(key, values);

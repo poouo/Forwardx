@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  combineTunnelRuleProbeCounts,
   readyTunnelRelayAggregates,
   shouldAccountForwardRuleTraffic,
   summarizeTunnelBranches,
@@ -34,6 +35,38 @@ test("multi-exit tunnel is unavailable only when every exit fails", () => {
     { latencyMs: 0, isTimeout: true },
   ]);
   assert.deepEqual(summary, { unavailable: true, partial: false, latencyMs: null });
+});
+
+test("multi-exit tunnel summary preserves partial probe counters from the selected branch", () => {
+  const summary = summarizeTunnelBranches([
+    { latencyMs: 35, isTimeout: false, probeCount: 5, probeSuccesses: 4 },
+    { latencyMs: null, isTimeout: true, probeCount: 5, probeSuccesses: 0 },
+  ]);
+  assert.deepEqual(summary, {
+    unavailable: false,
+    partial: true,
+    latencyMs: 35,
+    probeCount: 5,
+    probeSuccesses: 4,
+  });
+});
+
+test("composed tunnel rule probe uses the lower segment success ratio", () => {
+  assert.deepEqual(combineTunnelRuleProbeCounts({
+    target: { probeCount: 5, probeSuccesses: 5, isTimeout: false },
+    tunnel: { probeCount: 5, probeSuccesses: 4, isTimeout: false },
+    combinedIsTimeout: false,
+  }), { probeCount: 5, probeSuccesses: 4 });
+  assert.deepEqual(combineTunnelRuleProbeCounts({
+    target: { probeCount: 5, probeSuccesses: 4, isTimeout: false },
+    tunnel: { probeCount: 1, probeSuccesses: 1, isTimeout: false },
+    combinedIsTimeout: false,
+  }), { probeCount: 5, probeSuccesses: 4 });
+  assert.deepEqual(combineTunnelRuleProbeCounts({
+    target: { probeCount: 5, probeSuccesses: 5, isTimeout: false },
+    tunnel: { probeCount: 5, probeSuccesses: 0, isTimeout: true },
+    combinedIsTimeout: true,
+  }), { probeCount: 5, probeSuccesses: 0 });
 });
 
 test("traffic accounting accepts every ForwardX entry-group host", () => {
@@ -142,6 +175,35 @@ test("tunnel relay paths aggregate independently and fail immediately", () => {
   }), { success: false, latencyMs: null });
   assert.deepEqual(getTunnelAutoHopAggregate(tunnelId, 2, "relay-topology", "relay-1", true), { success: true, latencyMs: 40 });
   assert.deepEqual(getTunnelAutoHopAggregate(tunnelId, 2, "relay-topology", "relay-2", true), { success: false, latencyMs: null });
+});
+
+test("tunnel hop aggregation preserves partial probe counters", () => {
+  const tunnelId = 91005;
+  assert.equal(recordTunnelAutoHopLatency({
+    tunnelId,
+    hopIndex: 0,
+    hopCount: 2,
+    latencyMs: 12,
+    isTimeout: false,
+    probeCount: 5,
+    probeSuccesses: 4,
+    generation: "partial-hop",
+  }), null);
+  assert.deepEqual(recordTunnelAutoHopLatency({
+    tunnelId,
+    hopIndex: 1,
+    hopCount: 2,
+    latencyMs: 28,
+    isTimeout: false,
+    probeCount: 5,
+    probeSuccesses: 5,
+    generation: "partial-hop",
+  }), {
+    success: true,
+    latencyMs: 40,
+    probeCount: 5,
+    probeSuccesses: 4,
+  });
 });
 
 test("tunnel relay summary waits for pending candidates after an early failure", () => {
@@ -259,6 +321,35 @@ test("forward-chain hop aggregation never mixes topology generations", () => {
     isTimeout: false,
     generation: "new",
   }), { success: true, latencyMs: 25 });
+});
+
+test("forward-chain aggregation retains partial packet loss", () => {
+  const groupId = 92002;
+  assert.equal(recordForwardGroupAutoHopLatency({
+    groupId,
+    hopIndex: 0,
+    hopCount: 2,
+    latencyMs: 8,
+    isTimeout: false,
+    probeCount: 5,
+    probeSuccesses: 4,
+    generation: "partial-loss",
+  }), null);
+  assert.deepEqual(recordForwardGroupAutoHopLatency({
+    groupId,
+    hopIndex: 1,
+    hopCount: 2,
+    latencyMs: 16,
+    isTimeout: false,
+    probeCount: 5,
+    probeSuccesses: 5,
+    generation: "partial-loss",
+  }), {
+    success: true,
+    latencyMs: 24,
+    probeCount: 5,
+    probeSuccesses: 4,
+  });
 });
 
 test("forward-chain traffic counts only the first internal listener", () => {

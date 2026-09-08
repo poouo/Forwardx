@@ -4,7 +4,7 @@ export type ExitGroupTunnelMember = {
   hostId?: number | null;
   connectHost?: string | null;
   priority?: number | null;
-  isEnabled?: boolean | number | null;
+  isEnabled?: boolean | number | string | null;
 };
 
 export type TunnelExitEndpointSnapshot = {
@@ -21,8 +21,18 @@ export type PlannedTunnelExitEndpoint = {
   connectHost: string | null;
 };
 
-function memberEnabled(value: ExitGroupTunnelMember["isEnabled"]) {
-  return value !== false && value !== 0;
+function memberEnabled(value: unknown) {
+  // SQLite/MySQL adapters may expose a boolean column as a number or string.
+  // In particular, the string "0" is truthy in JavaScript and must not make
+  // a disabled exit participate in endpoint planning.  Missing values retain
+  // the schema's enabled-by-default behaviour.
+  if (value === undefined || value === null || value === "") return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "0" || normalized === "false") return false;
+  }
+  return true;
 }
 
 export function planExitGroupTunnelEndpoints(

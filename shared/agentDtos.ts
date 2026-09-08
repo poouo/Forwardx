@@ -20,6 +20,10 @@ export type AgentTcpingResult = {
   topologyKey?: string;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  /** Number of packets/connection attempts represented by this sample. */
+  probeCount?: number;
+  /** Number of attempts that completed successfully. */
+  probeSuccesses?: number;
   healthStatus?: "unknown" | "healthy" | "unhealthy";
   healthPending?: boolean;
 };
@@ -33,6 +37,8 @@ export type AgentTunnelTcpingResult = {
   topologyKey?: string;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
   hopIndex?: number;
   hopCount?: number;
   seriesKey?: string | null;
@@ -47,6 +53,8 @@ export type AgentHostProbeServiceResult = {
   topologyKey?: string;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
   method?: "tcping" | "ping" | string;
 };
 export type AgentForwardGroupLatencyResult = {
@@ -55,6 +63,8 @@ export type AgentForwardGroupLatencyResult = {
   probeType?: "chain" | "china" | string;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
   hopIndex?: number;
   hopCount?: number;
   method?: "tcp" | "ping" | string;
@@ -65,6 +75,49 @@ export type AgentForwardGroupLatencyResult = {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
   healthPending?: boolean;
 };
+
+export type AgentProbeCounts = {
+  probeCount: number;
+  probeSuccesses: number;
+};
+
+export type AgentProbeCountNormalizationOptions = {
+  /**
+   * Database rows created before packet counters existed contain the column
+   * default (0) even for a successful sample. Keep that compatibility
+   * behavior at read sites, but allow the wire ingress path to preserve an
+   * explicitly reported zero-success result.
+   */
+  legacyZeroAsSuccess?: boolean;
+};
+
+/**
+ * Normalize optional packet counters at the trust boundary.  Counters were
+ * added after the original Agent protocol, therefore omitted values retain
+ * the old one-sample semantics (a timeout has zero successes, otherwise one).
+ */
+export function normalizeAgentProbeCounts(value: {
+  probeCount?: unknown;
+  probeSuccesses?: unknown;
+  isTimeout?: unknown;
+} | null | undefined, options: AgentProbeCountNormalizationOptions = {}): AgentProbeCounts {
+  const rawCount = Number(value?.probeCount);
+  const probeCount = Number.isInteger(rawCount) && rawCount >= 1 && rawCount <= 1024 ? rawCount : 1;
+  const rawSuccesses = Number(value?.probeSuccesses);
+  const hasSuccesses = value?.probeSuccesses !== undefined && value?.probeSuccesses !== null
+    && Number.isInteger(rawSuccesses);
+  let probeSuccesses = hasSuccesses ? rawSuccesses : (value?.isTimeout === true ? 0 : probeCount);
+  if (probeSuccesses < 0) probeSuccesses = 0;
+  if (probeSuccesses > probeCount) probeSuccesses = probeCount;
+  // A legacy successful row may have acquired the new DB default (0).
+  // Treat it as one successful sample at database/read boundaries. The wire
+  // ingress passes legacyZeroAsSuccess=false so an explicit 0 is retained.
+  const legacyZeroAsSuccess = options.legacyZeroAsSuccess !== false;
+  if (probeSuccesses === 0 && value?.isTimeout !== true && (!hasSuccesses || legacyZeroAsSuccess)) {
+    probeSuccesses = probeCount;
+  }
+  return { probeCount, probeSuccesses };
+}
 
 export type SelfTestMeta =
   | {
@@ -180,6 +233,11 @@ function validAgentProbeResult(item: any, idKey: string) {
   if (!Number.isInteger(id) || id <= 0) return false;
   if (item.latencyMs !== undefined && item.latencyMs !== null && !Number.isFinite(Number(item.latencyMs))) return false;
   if (item.isTimeout !== undefined && typeof item.isTimeout !== "boolean") return false;
+  // Keep these counters bounded: they are telemetry metadata, not a free-form
+  // payload.  Older Agents omit them and are handled as one probe server-side.
+  if (item.probeCount !== undefined && (!Number.isInteger(Number(item.probeCount)) || Number(item.probeCount) < 1 || Number(item.probeCount) > 1024)) return false;
+  if (item.probeSuccesses !== undefined && (!Number.isInteger(Number(item.probeSuccesses)) || Number(item.probeSuccesses) < 0 || Number(item.probeSuccesses) > 1024)) return false;
+  if (item.probeCount !== undefined && item.probeSuccesses !== undefined && Number(item.probeSuccesses) > Number(item.probeCount)) return false;
   if (item.targetPort !== undefined && (!Number.isInteger(Number(item.targetPort)) || Number(item.targetPort) < 0 || Number(item.targetPort) > 65535)) return false;
   if (item.sourcePort !== undefined && (!Number.isInteger(Number(item.sourcePort)) || Number(item.sourcePort) < 0 || Number(item.sourcePort) > 65535)) return false;
   if (item.targetIp !== undefined && !validShortString(item.targetIp, 512)) return false;

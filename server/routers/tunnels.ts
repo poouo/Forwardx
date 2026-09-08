@@ -16,7 +16,6 @@ import { isValidHostOrIp } from "../networkAddress";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import {
   releaseHostPortReservations,
-  reserveAvailableHostPort,
   reserveSpecificHostPort,
   type HostPortReservation,
 } from "../portReservations";
@@ -65,6 +64,28 @@ function normalizeTunnelMode(mode: unknown) {
   return String(mode || "").trim().toLowerCase();
 }
 
+// Database adapters do not all return booleans in the same representation
+// (SQLite commonly yields 0/1 while MySQL may yield strings). Keep runtime
+// selection consistent across create/update/reconciliation paths.
+function dbBool(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
+export function isExplicitListenPortRequest(
+  provided: boolean,
+  requestedPort: number,
+  currentPort: number,
+  explicitHint?: boolean,
+) {
+  return provided
+    && requestedPort > 0
+    && (explicitHint === true || (explicitHint === undefined && requestedPort !== currentPort));
+}
+
 async function requireForwardXWireGuardAgentVersions(hostIds: number[]) {
   const ids = Array.from(new Set(hostIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
   const hosts = await Promise.all(ids.map(async (id) => ({ id, host: await db.getHostById(id) as any })));
@@ -108,19 +129,19 @@ function normalizeTunnelRuntimeOptions(input: any, mode: unknown) {
   const proxySupported = isTunnelProxyProtocolSupported(mode);
   const forwardxMode = isTunnelForwardXMode(mode);
   const proxyAny = proxySupported && (
-    !!input.proxyProtocolReceive ||
-    !!input.proxyProtocolSend ||
-    !!input.proxyProtocolExitReceive ||
-    !!input.proxyProtocolExitSend
+    dbBool(input.proxyProtocolReceive) ||
+    dbBool(input.proxyProtocolSend) ||
+    dbBool(input.proxyProtocolExitReceive) ||
+    dbBool(input.proxyProtocolExitSend)
   );
   return {
-    proxyProtocolReceive: proxySupported && !!input.proxyProtocolReceive,
-    proxyProtocolSend: proxySupported && !!input.proxyProtocolSend,
-    proxyProtocolExitReceive: proxySupported && !!input.proxyProtocolExitReceive,
-    proxyProtocolExitSend: proxySupported && !!input.proxyProtocolExitSend,
+    proxyProtocolReceive: proxySupported && dbBool(input.proxyProtocolReceive),
+    proxyProtocolSend: proxySupported && dbBool(input.proxyProtocolSend),
+    proxyProtocolExitReceive: proxySupported && dbBool(input.proxyProtocolExitReceive),
+    proxyProtocolExitSend: proxySupported && dbBool(input.proxyProtocolExitSend),
     proxyProtocolVersion: proxyAny && Number(input.proxyProtocolVersion) === 2 ? 2 : 1,
-    tcpFastOpen: forwardxMode && !!input.tcpFastOpen,
-    udpOverTcp: forwardxMode && !!input.udpOverTcp,
+    tcpFastOpen: forwardxMode && dbBool(input.tcpFastOpen),
+    udpOverTcp: forwardxMode && dbBool(input.udpOverTcp),
   };
 }
 
@@ -148,7 +169,7 @@ async function validateMimicUdpPort(input: {
 
 async function ensureConfiguredMimicPorts(tunnelId: number) {
   const tunnel = await db.getTunnelById(tunnelId) as any;
-  if (!tunnel || !isTunnelForwardXMode(tunnel.mode) || (!tunnel.udpOverTcp && !isForwardXWireGuardV2(tunnel))) return null;
+  if (!tunnel || !isTunnelForwardXMode(tunnel.mode) || (!dbBool(tunnel.udpOverTcp) && !isForwardXWireGuardV2(tunnel))) return null;
   const [hops, exitNodes] = await Promise.all([
     hopRepo.getTunnelHops(tunnelId),
     hopRepo.getTunnelExitNodes(tunnelId),
@@ -259,7 +280,7 @@ async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | u
   const group = await db.getForwardGroupById(id) as any;
   if (!group || String(group.groupMode || "failover") !== "entry") throw new Error("入口组不存在或类型不正确");
   if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) throw new Error("无权使用此入口组");
-  if (requireEnabled && !group.isEnabled) throw new Error("入口组未启用");
+  if (requireEnabled && !dbBool(group.isEnabled)) throw new Error("入口组未启用");
   return group;
 }
 
@@ -269,7 +290,7 @@ async function requireExitGroupAccess(ctx: any, exitGroupId: number | null | und
   const group = await db.getForwardGroupById(id) as any;
   if (!group || String(group.groupMode || "failover") !== "exit") throw new Error("出口组不存在或类型不正确");
   if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) throw new Error("无权使用此出口组");
-  if (requireEnabled && !group.isEnabled) throw new Error("出口组未启用");
+  if (requireEnabled && !dbBool(group.isEnabled)) throw new Error("出口组未启用");
   return group;
 }
 
@@ -283,9 +304,9 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
   const entryGroupId = Number(tunnel?.entryGroupId || 0);
   if (entryGroupId > 0) {
     const group = await db.getForwardGroupById(entryGroupId) as any;
-    if (group && group.isEnabled && String(group.groupMode || "") === "entry") {
+    if (group && dbBool(group.isEnabled) && String(group.groupMode || "") === "entry") {
       const members = [...(group.members || [])]
-        .filter((member: any) => member && member.isEnabled !== false && member.memberType === "host")
+        .filter((member: any) => member && dbBool(member.isEnabled, true) && member.memberType === "host")
         .sort((a: any, b: any) => Number(a?.priority || 0) - Number(b?.priority || 0));
       for (const member of members) pushId(member.hostId);
     }
@@ -346,7 +367,6 @@ async function buildExtraExitNodes(ctx: any, options: {
   mode: string;
   exits?: Array<{ hostId: number; connectHost?: string | null }> | null;
   existingNodes?: any[];
-  explicitListenPort?: number;
   excludeRuleIds?: number[];
   reservations: HostPortReservation[];
 }) {
@@ -370,43 +390,48 @@ async function buildExtraExitNodes(ctx: any, options: {
     seen.add(hostId);
     const host = await requireHostAccess(ctx, hostId);
     const connectHost = normalizeOptionalConnectForHost(raw[i]?.connectHost ?? null, host);
-    const explicitListenPort = Number(options.explicitListenPort || 0);
-    let listenPort = explicitListenPort > 0 ? explicitListenPort : Number(existingByHost.get(hostId)?.listenPort || 0);
-    if (explicitListenPort > 0) {
-      const policy = portPolicyFrom(host as any);
-      if (!isPortAllowedByPolicy(explicitListenPort, policy)) {
-        throw new Error(portPolicyErrorMessage(policy, `负载出口 ${host?.name || hostId} 监听端口`));
-      }
-      const reservation = await reserveSpecificHostPort({
-        hostId,
-        port: explicitListenPort,
-        protocol: "both",
-        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
-      });
-      if (!reservation) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${explicitListenPort} 已被占用或正在分配`);
-      options.reservations.push(reservation);
-    } else if (listenPort > 0) {
-      const reservation = await reserveSpecificHostPort({
-        hostId,
+    // Each exit Agent owns an independent listener. Never copy the primary
+    // Agent's explicit port here: different NAT ranges are expected, and a
+    // primary port may be invalid on this host. Existing per-host values are
+    // retained only as preferences and revalidated against that host policy.
+    const existingNode = existingByHost.get(hostId);
+    let listenPort = Number(existingNode?.listenPort || 0);
+    const existingResourceId = Number(existingNode?.id || 0);
+    const sameTunnelResource = options.tunnelId && existingResourceId > 0 && listenPort > 0
+      ? {
+        tunnelId: Number(options.tunnelId),
         port: listenPort,
-        protocol: "both",
-        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
-      });
-      if (!reservation) throw new Error(`负载出口 ${host?.name || hostId} 端口 ${listenPort} 已被占用或正在分配`);
-      options.reservations.push(reservation);
-    }
-    if (!listenPort) {
-      const reservation = await reserveAvailableHostPort({
+        kind: "extra" as const,
+        resourceId: existingResourceId,
+      }
+      : undefined;
+    if (listenPort > 0) {
+      // A previously saved extra-exit listener may no longer satisfy the
+      // destination Agent's NAT range. Treat it as a preference and repair it
+      // transparently.
+      const reservation = await hopRepo.reserveTunnelExitPort({
         hostId,
+        preferredStart: (host as any)?.portRangeStart,
+        preferredEnd: (host as any)?.portRangeEnd,
+        currentPort: listenPort,
+        excludeRuleIds: options.excludeRuleIds,
+        sameTunnelResource,
+        excludeTunnelId: options.tunnelId,
         protocol: "both",
-        findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
-          hostId,
-          (host as any)?.portRangeStart,
-          (host as any)?.portRangeEnd,
-          reservedPorts,
-          options.excludeRuleIds,
-        ),
-        isUsed: (port) => db.isPortUsedOnHost(hostId, port, options.excludeRuleIds, "both", options.tunnelId),
+      });
+      if (!reservation) throw new Error(`出口 Agent ${host?.name || hostId} 已无可用隧道端口`);
+      options.reservations.push(reservation);
+      listenPort = reservation.port;
+    } else {
+      const reservation = await hopRepo.reserveTunnelExitPort({
+        hostId,
+        preferredStart: (host as any)?.portRangeStart,
+        preferredEnd: (host as any)?.portRangeEnd,
+        currentPort: 0,
+        excludeRuleIds: options.excludeRuleIds,
+        sameTunnelResource,
+        excludeTunnelId: options.tunnelId,
+        protocol: "both",
       });
       if (!reservation) throw new Error(`出口 Agent ${host?.name || hostId} 已无可用隧道端口`);
       options.reservations.push(reservation);
@@ -461,7 +486,7 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
         hostId: Number(node.hostId),
         listenPort: Number(node.listenPort),
         connectHost: String(node.connectHost || "").trim() || null,
-        isEnabled: node.isEnabled !== false,
+        isEnabled: dbBool(node.isEnabled, true),
       }))
       .filter((node: any) => node.hostId > 0);
     if (normalizedExtraExitNodes.length > 0) {
@@ -514,10 +539,10 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
     exitStrategy: normalizeExitGroupStrategy(group.exitStrategy),
     domain: group.domain ?? null,
     recordType: group.recordType ?? "A",
-    isEnabled: group.isEnabled !== false,
+    isEnabled: dbBool(group.isEnabled, true),
     lastStatus: group.lastStatus ?? null,
     lastMessage: group.lastMessage ?? null,
-    chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+    chinaHealthCheckEnabled: dbBool(group.chinaHealthCheckEnabled),
     members: (group.members || []).map((member: any) => ({
       id: Number(member.id),
       groupId: Number(member.groupId),
@@ -525,7 +550,7 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
       hostId: member.hostId ?? null,
       tunnelId: member.tunnelId ?? null,
       priority: Number(member.priority || 0),
-      isEnabled: member.isEnabled !== false,
+      isEnabled: dbBool(member.isEnabled, true),
       chinaHealthStatus: member.chinaHealthStatus ?? null,
       host: hostSummary(hostMap.get(Number(member.hostId || 0))),
     })),
@@ -565,7 +590,7 @@ async function attachTunnelEndpointHosts(tunnels: any[], options: { includeLaten
 
 async function getTunnelDeleteImpact(tunnelId: number) {
   const rules = ((await db.getForwardRulesByTunnel(tunnelId)) as any[])
-    .filter((rule) => !rule.pendingDelete);
+    .filter((rule) => !dbBool(rule?.pendingDelete));
   return {
     forwardRuleCount: rules.length,
     forwardRules: rules.slice(0, 8).map((rule) => ({
@@ -866,11 +891,12 @@ export const tunnelsRouter = router({
             if (!reservation) throw new Error(`出口 Agent 端口 ${listenPort} 已被占用或正在分配`);
             heldReservations.push(reservation);
           } else {
-            const reservation = await reserveAvailableHostPort({
+            const reservation = await hopRepo.reserveTunnelExitPort({
               hostId: exitHostId,
+              preferredStart: exit?.portRangeStart,
+              preferredEnd: exit?.portRangeEnd,
+              currentPort: 0,
               protocol: "both",
-              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(exitHostId, exit?.portRangeStart, exit?.portRangeEnd, reservedPorts),
-              isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, undefined, "both"),
             });
             if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
             heldReservations.push(reservation);
@@ -882,7 +908,7 @@ export const tunnelsRouter = router({
         const connectHost = hopHostIds
           ? normalizeTunnelConnect(input.connectHost)
           : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
-        const loadBalanceEnabled = !!input.loadBalanceEnabled;
+        const loadBalanceEnabled = dbBool(input.loadBalanceEnabled);
         const loadBalanceStrategy = loadBalanceEnabled
           ? inheritedExitGroupStrategy(exitGroup, input.loadBalanceStrategy)
           : "round_robin";
@@ -892,7 +918,6 @@ export const tunnelsRouter = router({
           enabled: loadBalanceEnabled,
           mode: normalizedMode,
           exits: input.loadBalanceExits || [],
-          explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
           reservations: heldReservations,
         });
         if (forwardxVersion === "v2") {
@@ -984,11 +1009,12 @@ export const tunnelsRouter = router({
               port = listenPort; // Last hop = exit listen port (auto-assigned above)
             } else {
               const host = await db.getHostById(hopHostIds[i]) as any;
-              const reservation = await reserveAvailableHostPort({
+              const reservation = await hopRepo.reserveTunnelExitPort({
                 hostId: hopHostIds[i],
+                preferredStart: host?.portRangeStart,
+                preferredEnd: host?.portRangeEnd,
+                currentPort: 0,
                 protocol: "both",
-                findPort: (reservedPorts) => db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd, reservedPorts),
-                isUsed: (candidate) => db.isPortUsedOnHost(hopHostIds[i], candidate, undefined, "both"),
               });
               if (!reservation) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
               heldReservations.push(reservation);
@@ -1029,6 +1055,10 @@ export const tunnelsRouter = router({
         relayMode: tunnelRelayModeSchema.optional(),
         forwardxVersion: forwardXVersionSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
+        // Non-persistent client hint: false means the value is merely the
+        // form's persisted value and may be repaired after a route change.
+        // When omitted, retain the legacy changed-value heuristic.
+        listenPortExplicit: z.boolean().optional(),
         mimicPort: z.number().int().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         trafficMultiplier: z.number().int().min(1).max(5000).optional(),
@@ -1071,9 +1101,14 @@ export const tunnelsRouter = router({
           ? normalizeForwardXVersion((input as any).forwardxVersion ?? (tunnel as any).forwardxVersion)
           : "v1";
         const referencedRules = await db.getForwardRulesByTunnel(input.id);
-        const activeReferencedRuleCount = (referencedRules as any[]).filter((rule) => !rule?.pendingDelete).length;
+        const activeReferencedRuleCount = (referencedRules as any[]).filter((rule) => !dbBool(rule?.pendingDelete)).length;
         const primaryManagedTunnelRuleId = (referencedRules as any[])
-          .filter((rule: any) => rule && !rule.pendingDelete && rule.isEnabled && String(rule.forwardType || "") === "gost")
+          .filter((rule: any) => (
+            rule
+            && !dbBool(rule.pendingDelete)
+            && dbBool(rule.isEnabled)
+            && String(rule.forwardType || "").trim().toLowerCase() === "gost"
+          ))
           .map((rule: any) => Number(rule.id || 0))
           .filter((ruleId: number) => ruleId > 0)
           .sort((a: number, b: number) => a - b)[0] || 0;
@@ -1125,6 +1160,7 @@ export const tunnelsRouter = router({
           hopHostIds: _ignoredHopHostIds,
           hopConnectHosts: _ignoredHopConnectHosts,
           loadBalanceExits: _ignoredLoadBalanceExits,
+          listenPortExplicit: _listenPortExplicit,
           blockHttp: _ignoredBlockHttp,
           blockSocks: _ignoredBlockSocks,
           blockTls: _ignoredBlockTls,
@@ -1159,7 +1195,9 @@ export const tunnelsRouter = router({
         }
         const modeChanged = (data as any).mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode);
         const forwardXVersionChanged = nextForwardXVersion !== normalizeForwardXVersion((tunnel as any).forwardxVersion);
-        const nextUdpOverTcp = (data as any).udpOverTcp !== undefined ? !!(data as any).udpOverTcp : !!(tunnel as any).udpOverTcp;
+        const nextUdpOverTcp = (data as any).udpOverTcp !== undefined
+          ? dbBool((data as any).udpOverTcp)
+          : dbBool((tunnel as any).udpOverTcp);
         const nextMimicEnabled = nextModeForRuntime === "forwardx" && nextUdpOverTcp;
         const nextWireGuardEnabled = nextModeForRuntime === "forwardx" && nextForwardXVersion === "v2";
         const nextDedicatedUdpPortEnabled = nextMimicEnabled || nextWireGuardEnabled;
@@ -1187,54 +1225,99 @@ export const tunnelsRouter = router({
           throw new Error("隧道可用端口范围起始值不能大于结束值");
         }
         const exitHostChanged = Number(exitHostId) !== Number((tunnel as any).exitHostId || 0);
-        if ((data as any).listenPort !== undefined || exitHostChanged) {
-          const listenPort = Number((data as any).listenPort) || 0;
-          if (listenPort <= 0) {
-            const reservation = await reserveAvailableHostPort({
-              hostId: exitHostId,
-              protocol: "both",
-              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
-                exitHostId,
-                (exit as any).portRangeStart,
-                (exit as any).portRangeEnd,
-                reservedPorts,
-              ),
-              isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, primaryManagedTunnelRuleId || undefined, "both", id),
-            });
-            if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
-            heldReservations.push(reservation);
-            (data as any).listenPort = reservation.port;
-          } else {
-            const listenerChanged = listenPort !== Number((tunnel as any).listenPort || 0)
-              || exitHostId !== Number((tunnel as any).exitHostId || 0);
-            if (listenerChanged) {
-              const policy = portPolicyFrom(exit as any);
-              if (!isPortAllowedByPolicy(listenPort, policy)) {
-                throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
-              }
-              const reservation = await reserveSpecificHostPort({
-                hostId: exitHostId,
-                port: listenPort,
-                protocol: "both",
-                isUsed: (port) => db.isPortUsedOnHost(exitHostId, port, primaryManagedTunnelRuleId || undefined, "both", id),
-              });
-              if (!reservation) throw new Error(`出口 Agent 端口 ${listenPort} 已被占用或正在分配`);
-              heldReservations.push(reservation);
-            }
-            (data as any).listenPort = listenPort;
+        let listenerPortChanged = false;
+        const listenPortInputProvided = (data as any).listenPort !== undefined;
+        const currentTunnelListenPort = Number((tunnel as any).listenPort || 0);
+        const requestedListenPort = Number((data as any).listenPort) || 0;
+        // The edit form sends the persisted listenPort even when the user did
+        // not touch the field. Treat an unchanged value as an automatic
+        // preference so load-balanced exits keep their own NAT ranges and a
+        // stale legacy port can be repaired instead of being rejected as an
+        // explicit choice. A changed non-zero value remains strict.
+        const explicitListenPortChanged = isExplicitListenPortRequest(
+          listenPortInputProvided,
+          requestedListenPort,
+          currentTunnelListenPort,
+          _listenPortExplicit,
+        );
+        const automaticListenPortRequested = listenPortInputProvided && requestedListenPort <= 0;
+        const listenerRuleExclusions = primaryManagedTunnelRuleId > 0
+          ? [primaryManagedTunnelRuleId]
+          : [];
+        if (explicitListenPortChanged) {
+          // A port explicitly entered by the operator remains strict: do not
+          // silently move it to another port.  Automatic/legacy repair is
+          // handled only when the value is omitted or set to zero.
+          const listenerChanged = requestedListenPort !== currentTunnelListenPort
+            || exitHostChanged;
+          const policy = portPolicyFrom(exit as any);
+          if (!isPortAllowedByPolicy(requestedListenPort, policy)) {
+            throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
           }
+          if (listenerChanged) {
+            const reservation = await reserveSpecificHostPort({
+              hostId: exitHostId,
+              port: requestedListenPort,
+              protocol: "both",
+              isUsed: (port) => db.isPortUsedOnHost(
+                exitHostId,
+                port,
+                listenerRuleExclusions,
+                "both",
+                id,
+                true,
+                { tunnelId: id, port, kind: "primary", resourceId: id },
+              ),
+            });
+            if (!reservation) throw new Error(`出口 Agent 端口 ${requestedListenPort} 已被占用或正在分配`);
+            heldReservations.push(reservation);
+          }
+          (data as any).listenPort = requestedListenPort;
+          listenerPortChanged = listenerChanged;
+        } else {
+          const reservation = await hopRepo.reserveTunnelListenerPort(tunnel, {
+            hostId: exitHostId,
+            currentPort: automaticListenPortRequested ? 0 : currentTunnelListenPort,
+            // Only the primary tunnel rule is allowed to share the tunnel
+            // listener. Secondary rule exit ports must still be treated as
+            // occupied while repairing the listener.
+            excludeRuleIds: listenerRuleExclusions,
+            protocol: "both",
+          });
+          if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
+          heldReservations.push(reservation);
+          (data as any).listenPort = reservation.port;
+          listenerPortChanged = reservation.port !== currentTunnelListenPort
+            || exitHostChanged;
         }
         // When a user selects automatic allocation, the resolved primary port
         // must also replace the saved ports for every load-balanced exit.
-        const sharedExitListenPort = Number((data as any).listenPort || 0);
+        // Only an explicitly entered listenPort should be copied to every
+        // load-balanced exit.  When the field is omitted (or set to 0 for
+        // automatic allocation), each NAT exit keeps its own persisted port
+        // or receives a port from its own host policy.  Reusing the resolved
+        // primary port here breaks exits whose NAT ranges differ.
         if (nextDedicatedUdpPortEnabled && (data as any).mimicPort !== undefined) {
-          (data as any).mimicPort = await validateMimicUdpPort({
-            port: (data as any).mimicPort,
-            exitHostId,
-            exitHost: exit,
-            listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
-            tunnelId: id,
-          });
+          const requestedMimicPort = Number((data as any).mimicPort || 0);
+          const existingMimicPort = Number((tunnel as any).mimicPort || 0);
+          // The edit form historically submits the persisted mimicPort on
+          // every save.  Treat an unchanged value as a preference and let
+          // ensureForwardXMimicPorts revalidate/repair it after the tunnel
+          // and exit rows are written.  This is important when a NAT range or
+          // exit host changed: rejecting the stale value here would prevent
+          // the automatic repair from ever running.  A genuinely changed
+          // non-zero value remains an explicit, strictly validated choice.
+          const unchangedPersistedMimicPort = requestedMimicPort > 0
+            && requestedMimicPort === existingMimicPort;
+          if (!unchangedPersistedMimicPort) {
+            (data as any).mimicPort = await validateMimicUdpPort({
+              port: (data as any).mimicPort,
+              exitHostId,
+              exitHost: exit,
+              listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
+              tunnelId: id,
+            });
+          }
         } else if (!nextDedicatedUdpPortEnabled) {
           (data as any).mimicPort = 0;
         }
@@ -1252,7 +1335,9 @@ export const tunnelsRouter = router({
         (data as any).entryHostId = entryHostId;
         (data as any).exitHostId = exitHostId;
         const normalizedRequestedHopIds = hopHostIds ? hopHostIds : (switchToRegular ? [] : existingHopHostIds);
-        const nextLoadBalanceEnabled = (data as any).loadBalanceEnabled !== undefined ? !!(data as any).loadBalanceEnabled : !!(tunnel as any).loadBalanceEnabled;
+        const nextLoadBalanceEnabled = (data as any).loadBalanceEnabled !== undefined
+          ? dbBool((data as any).loadBalanceEnabled)
+          : dbBool((tunnel as any).loadBalanceEnabled);
         const nextLoadBalanceStrategy = nextLoadBalanceEnabled
           ? normalizeTunnelLoadBalanceStrategy((data as any).loadBalanceStrategy ?? (tunnel as any).loadBalanceStrategy)
           : "round_robin";
@@ -1270,13 +1355,14 @@ export const tunnelsRouter = router({
           mode: nextModeForRuntime,
           exits: requestedExtraExits,
           existingNodes: existingExtraExitNodes,
-          explicitListenPort: sharedExitListenPort,
           excludeRuleIds: primaryManagedTunnelRuleId > 0 ? [primaryManagedTunnelRuleId] : [],
           reservations: heldReservations,
         });
         (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
         (data as any).loadBalanceStrategy = (data as any).loadBalanceEnabled ? nextLoadBalanceStrategy : "round_robin";
-        const nextTunnelEnabled = (data as any).isEnabled !== undefined ? !!(data as any).isEnabled : !!(tunnel as any).isEnabled;
+        const nextTunnelEnabled = (data as any).isEnabled !== undefined
+          ? dbBool((data as any).isEnabled)
+          : dbBool((tunnel as any).isEnabled);
         const nextEntryGroupId = (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId;
         const nextExitGroupId = (data as any).exitGroupId !== undefined ? (data as any).exitGroupId : (tunnel as any).exitGroupId;
         const nextExitGroup = await requireExitGroupAccess(ctx, nextExitGroupId, nextTunnelEnabled);
@@ -1328,13 +1414,14 @@ export const tunnelsRouter = router({
           connectHost: String(node.connectHost || "").trim() || null,
           listenPort: Number(node.listenPort) || 0,
         })));
-        const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
+        const loadBalanceChanged = (data as any).loadBalanceEnabled !== undefined
+          && dbBool((data as any).loadBalanceEnabled) !== dbBool((tunnel as any).loadBalanceEnabled)
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
         const mimicActivationChanged = nextMimicEnabled && nextTunnelEnabled && (
           !isTunnelForwardXMode((tunnel as any).mode)
-          || !(tunnel as any).udpOverTcp
-          || !(tunnel as any).isEnabled
+          || !dbBool((tunnel as any).udpOverTcp)
+          || !dbBool((tunnel as any).isEnabled)
           || hopChanged
           || loadBalanceChanged
           || (data as any).entryGroupId !== undefined
@@ -1361,9 +1448,20 @@ export const tunnelsRouter = router({
           || hopChanged
           || loadBalanceChanged;
         let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
-        const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
+        const enabledChanged = (data as any).isEnabled !== undefined
+          && dbBool((data as any).isEnabled) !== dbBool((tunnel as any).isEnabled);
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
+        // Switching an existing tunnel into a shared-listener transport can
+        // change which rule owns the listener even when its numeric port is
+        // unchanged. Re-sync the primary rule in that case as well.
+        if (listenerPortChanged || (modeChanged && hopRepo.usesSharedTunnelPrimaryListener({ ...tunnel, ...data, mode: nextModeForRuntime }))) {
+          await hopRepo.syncTunnelListenerPortReferences(
+            id,
+            Number((data as any).listenPort || 0),
+            { syncSharedPrimaryRule: hopRepo.usesSharedTunnelPrimaryListener({ ...tunnel, ...data, mode: nextModeForRuntime }) },
+          );
+        }
         const syncedRuntimeRuleCount = await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
         if (syncedRuntimeRuleCount > 0 || ((modeChanged || forwardXVersionChanged) && activeReferencedRuleCount > 0)) {
           appendPanelLog("info", `[Tunnel] runtime options synchronized tunnel=${id} mode=${nextModeForRuntime} forwardx=${nextForwardXVersion} rules=${syncedRuntimeRuleCount}`);
@@ -1372,12 +1470,12 @@ export const tunnelsRouter = router({
         const hopIdsToWrite = hopHostIds || existingHopHostIds;
         if (shouldWriteHops && hopIdsToWrite.length >= 3) {
           const hops: { hostId: number; listenPort: number; connectHost?: string | null }[] = [];
-          const existingPortByHostId = new Map<number, number>();
+          const existingHopByHostId = new Map<number, any>();
           for (const hop of existingHops || []) {
             const hostId = Number((hop as any).hostId);
             const listenPort = Number((hop as any).listenPort);
-            if (hostId > 0 && listenPort > 0 && !existingPortByHostId.has(hostId)) {
-              existingPortByHostId.set(hostId, listenPort);
+            if (hostId > 0 && listenPort > 0 && !existingHopByHostId.has(hostId)) {
+              existingHopByHostId.set(hostId, hop);
             }
           }
           for (let i = 0; i < hopIdsToWrite.length; i++) {
@@ -1385,28 +1483,31 @@ export const tunnelsRouter = router({
             if (i === hopIdsToWrite.length - 1) {
               port = Number((data as any).listenPort) || Number((tunnel as any).listenPort) || 0;
             } else {
-              port = existingPortByHostId.get(hopIdsToWrite[i]) || 0;
-              if (port > 0) {
-                const reservation = await reserveSpecificHostPort({
-                  hostId: hopIdsToWrite[i],
-                  port,
-                  protocol: "both",
-                  isUsed: (candidate) => db.isPortUsedOnHost(hopIdsToWrite[i], candidate, undefined, "both", id),
-                });
-                if (!reservation) throw new Error(`主机 ${hopIdsToWrite[i]} 端口 ${port} 已被占用或正在分配`);
-                heldReservations.push(reservation);
-              } else {
-                const hopHost = await db.getHostById(hopIdsToWrite[i]) as any;
-                const reservation = await reserveAvailableHostPort({
-                  hostId: hopIdsToWrite[i],
-                  protocol: "both",
-                  findPort: (reservedPorts) => db.findAvailableTunnelExitPort(hopIdsToWrite[i], hopHost?.portRangeStart, hopHost?.portRangeEnd, reservedPorts),
-                  isUsed: (candidate) => db.isPortUsedOnHost(hopIdsToWrite[i], candidate, undefined, "both", id),
-                });
-                if (!reservation) throw new Error(`主机 ${hopHost?.name || hopIdsToWrite[i]} 已无可用端口`);
-                heldReservations.push(reservation);
-                port = reservation.port;
-              }
+              const hopHost = await db.getHostById(hopIdsToWrite[i]) as any;
+              const existingHop = existingHopByHostId.get(hopIdsToWrite[i]);
+              const existingHopPort = Number(existingHop?.listenPort || 0);
+              const reservation = await hopRepo.reserveTunnelExitPort({
+                hostId: hopIdsToWrite[i],
+                preferredStart: hopHost?.portRangeStart,
+                preferredEnd: hopHost?.portRangeEnd,
+                currentPort: existingHopPort,
+                reservedPorts: heldReservations
+                  .filter((item) => item.hostId === Number(hopIdsToWrite[i]))
+                  .map((item) => item.port),
+                sameTunnelResource: Number(existingHop?.id || 0) > 0 && existingHopPort > 0
+                  ? {
+                    tunnelId: id,
+                    port: existingHopPort,
+                    kind: "hop",
+                    resourceId: Number(existingHop.id),
+                  }
+                  : undefined,
+                excludeTunnelId: id,
+                protocol: "both",
+              });
+              if (!reservation) throw new Error(`主机 ${hopHost?.name || hopIdsToWrite[i]} 已无可用端口`);
+              heldReservations.push(reservation);
+              port = reservation.port;
             }
             const normalizedHopConnectHost = i > 0 ? normalizedRequestedHopConnectHosts[i] : null;
             hops.push({ hostId: hopIdsToWrite[i], listenPort: port, connectHost: normalizedHopConnectHost });
@@ -1417,10 +1518,45 @@ export const tunnelsRouter = router({
         }
         if ((data as any).loadBalanceEnabled) {
           await hopRepo.replaceTunnelExitNodes(id, extraExitNodes);
-          await hopRepo.reconcileTunnelRuleExitMappings(id);
         } else {
           await hopRepo.clearTunnelExitNodes(id);
           await hopRepo.clearForwardRuleTunnelExitsByTunnel(id);
+        }
+        // `forwardRules.tunnelExitPort` belongs to the tunnel's exit Agent,
+        // so changing the exit host/listener (or switching into a non-
+        // ForwardX transport) invalidates every active GOST rule's previous
+        // value.  Reconcile after endpoint rows are written: the helper can
+        // then see the new listener/extra rows and, for nginx-stream, reuse
+        // the listener reservation already held by this transaction.
+        const shouldReconcileTunnelRulePorts = nextModeForRuntime !== "forwardx"
+          && (exitHostChanged || listenerPortChanged || modeChanged || loadBalanceChanged);
+        if (shouldReconcileTunnelRulePorts) {
+          const reconciled = await hopRepo.reconcileTunnelRulePrimaryExitPorts(
+            {
+              ...tunnel,
+              ...data,
+              id,
+              entryHostId,
+              exitHostId,
+              listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
+              mode: nextModeForRuntime,
+            },
+            {
+              hostId: exitHostId,
+              listenPort: Number((data as any).listenPort || (tunnel as any).listenPort || 0),
+              reservations: heldReservations,
+            },
+          );
+          if (reconciled.changed > 0) {
+            keyChanged = true;
+            appendPanelLog("info", `[Tunnel] exit rule ports reconciled tunnel=${id} host=${exitHostId} changed=${reconciled.changed}`);
+          }
+        }
+        if ((data as any).loadBalanceEnabled) {
+          // Mapping reconciliation runs after primary ports have been fixed;
+          // it can therefore use the repaired primary value as its preference
+          // without reintroducing a stale/out-of-policy port.
+          await hopRepo.reconcileTunnelRuleExitMappings(id);
         }
         const ensuredMimic = nextDedicatedUdpPortEnabled ? await ensureConfiguredMimicPorts(id) : null;
         if (ensuredMimic?.changed && !keyChanged) {
@@ -1428,7 +1564,7 @@ export const tunnelsRouter = router({
           await db.updateTunnel(id, { isRunning: false } as any);
         }
         if (enabledChanged) {
-          if ((data as any).isEnabled) {
+          if (dbBool((data as any).isEnabled)) {
             await db.restoreForwardRulesByTunnel(id);
           } else {
             await db.disableForwardRulesByTunnel(id);
@@ -1528,9 +1664,9 @@ export const tunnelsRouter = router({
         const entryTestHostIds = await getTunnelEntryTestHostIds(tunnel);
         const hasEntryGroupTest = entryTestHostIds.length > 1;
         const runtimeRefreshMode = planManualTunnelTestRefresh({
-          isRunning: tunnel.isRunning,
+          isRunning: dbBool(tunnel.isRunning),
           hopHostCount: tunnelHopHostIds.length,
-          loadBalanceEnabled: tunnel.loadBalanceEnabled,
+          loadBalanceEnabled: dbBool(tunnel.loadBalanceEnabled),
           extraExitCount: tunnelExtraExitHostIds.length,
         });
         if (runtimeRefreshMode === "coordinated" && tunnelHopHostIds.length >= 3) {
@@ -1559,16 +1695,12 @@ export const tunnelsRouter = router({
             }
           } else {
             // Legacy/broken data fallback: allocate a valid exit listen port on demand.
-            const reservation = await reserveAvailableHostPort({
+            const reservation = await hopRepo.reserveTunnelExitPort({
               hostId: Number(tunnel.exitHostId),
+              preferredStart: (exit as any).portRangeStart,
+              preferredEnd: (exit as any).portRangeEnd,
+              currentPort: 0,
               protocol: "both",
-              findPort: (reservedPorts) => db.findAvailableTunnelExitPort(
-                tunnel.exitHostId,
-                (exit as any).portRangeStart,
-                (exit as any).portRangeEnd,
-                reservedPorts,
-              ),
-              isUsed: (port) => db.isPortUsedOnHost(Number(tunnel.exitHostId), port, undefined, "both", Number(tunnel.id)),
             });
             if (reservation) {
               try {
@@ -1781,7 +1913,7 @@ export const tunnelsRouter = router({
           return { success: false, latencyMs: null, message, pending: true };
         }
         const extraExitEndpoints = (
-          tunnel.loadBalanceEnabled && normalizeExitGroupStrategy(tunnel.loadBalanceStrategy) !== "none"
+          dbBool(tunnel.loadBalanceEnabled) && normalizeExitGroupStrategy(tunnel.loadBalanceStrategy) !== "none"
             ? (tunnelExtraExitNodes || [])
             : []
         )

@@ -18,6 +18,7 @@ import {
   shouldReconcileProtocolGuardBackend,
   stableStateSignature,
   stableDesiredStateHash,
+  normalizeAgentRuntimeBoolean,
 } from "./agentHeartbeatRoute";
 import { normalizeTransportTuningInput } from "./routers/rules.crud";
 import { hasAgentVersionChanged } from "./agentRouteUtils";
@@ -43,6 +44,19 @@ import {
   shouldDeferAgentWorkForLocalState,
 } from "./agentHeartbeatGate";
 
+test("normalizes legacy database boolean strings before runtime planning", () => {
+  assert.equal(normalizeAgentRuntimeBoolean("0"), false);
+  assert.equal(normalizeAgentRuntimeBoolean(0), false);
+  assert.equal(normalizeAgentRuntimeBoolean("false"), false);
+  assert.equal(normalizeAgentRuntimeBoolean("1"), true);
+  assert.equal(normalizeAgentRuntimeBoolean(1), true);
+  assert.equal(normalizeAgentRuntimeBoolean("true"), true);
+  // Optional/unknown values remain untouched so callers can apply their
+  // field-specific historical default (for example `isEnabled !== false`).
+  assert.equal(normalizeAgentRuntimeBoolean(undefined), undefined);
+  assert.equal(normalizeAgentRuntimeBoolean("legacy"), "legacy");
+});
+
 test("Realm legacy transport tuning is normalized off", () => {
   const normalized = normalizeTransportTuningInput(
     { tcpFastOpen: true, zeroCopy: true },
@@ -67,6 +81,19 @@ test("Realm legacy transport tuning is normalized off", () => {
     { tunnelRoute: true, forwardxTunnel: true },
   );
   assert.equal(forwardx.tcpFastOpen, true);
+});
+
+test("legacy string booleans do not enable tunnel transport options", () => {
+  const normalized = normalizeTransportTuningInput(
+    { tcpFastOpen: "0" as any, udpOverTcp: "0" as any, zeroCopy: "0" as any },
+    "tcp",
+    "gost",
+    false,
+    { tunnelRoute: true, forwardxTunnel: true, clearUnsupported: true },
+  );
+  assert.equal(normalized.tcpFastOpen, false);
+  assert.equal(normalized.udpOverTcp, false);
+  assert.equal(normalized.zeroCopy, false);
 });
 
 test("retires stale ForwardX Nginx state without requiring or reinstalling Nginx", () => {

@@ -83,6 +83,12 @@ export async function getForwardRules(userId?: number, hostId?: number) {
 
 
 export type ForwardRuleListCategory = "all" | "local" | "tunnel" | "chain" | "group";
+/**
+ * A concrete link resource selected by the Rules page's two-level filter.
+ * `local` refers to a saved port-forward group (groupMode=port), while
+ * `tunnel`, `chain`, and `group` refer to their corresponding root resource.
+ */
+export type ForwardRuleResourceType = "local" | "tunnel" | "chain" | "group";
 
 export type ForwardRuleListQuery = PageRequest & {
   ownerUserId?: number;
@@ -91,12 +97,15 @@ export type ForwardRuleListQuery = PageRequest & {
   searchVisibleTunnelIds?: number[];
   searchVisibleForwardGroupIds?: number[];
   entryHostId?: number | null;
+  resourceType?: ForwardRuleResourceType | null;
+  resourceId?: number | null;
   category: ForwardRuleListCategory;
   search?: string;
 };
 
 type ForwardRuleFilterControls = {
   includeEntryHost?: boolean;
+  includeResource?: boolean;
   includeSearch?: boolean;
   includeCategory?: boolean;
 };
@@ -261,8 +270,10 @@ function buildForwardRuleSqlFilter(
   controls: ForwardRuleFilterControls = {},
 ): ForwardRuleSqlFilter {
   const includeEntryHost = controls.includeEntryHost !== false;
+  const includeResource = controls.includeResource !== false;
   const includeSearch = controls.includeSearch !== false;
   const includeCategory = controls.includeCategory !== false;
+  const categorySql = forwardRuleListCategorySql();
   const conditions = [
     "COALESCE(" + ruleColumn("r", "pendingDelete") + ", " + boolLiteral(false) + ") = " + boolLiteral(false),
     "COALESCE(" + ruleColumn("r", "forwardGroupRuleId") + ", 0) = 0",
@@ -283,7 +294,43 @@ function buildForwardRuleSqlFilter(
     params.push(...entryHostFilter.params);
   }
 
-  const categorySql = forwardRuleListCategorySql();
+  const resourceId = Math.floor(Number(input.resourceId || 0));
+  const resourceType = input.resourceType || null;
+  if (includeResource && resourceType) {
+    if (!["local", "tunnel", "chain", "group"].includes(resourceType)) {
+      conditions.push("1 = 0");
+    } else if (resourceId <= 0) {
+      // A type-only selection is the first level of the two-level picker.
+      conditions.push(categorySql + " = ?");
+      params.push(resourceType);
+    } else {
+      // Keep the resource predicate explicit instead of relying only on the
+      // category CASE expression.  This prevents an id collision between a
+      // host, tunnel, and forward group from selecting an unrelated rule.
+      const resourceColumn = ruleColumn("r", "forwardGroupId");
+      if (resourceType === "tunnel") {
+        conditions.push(
+          "(" + ruleColumn("r", "tunnelId") + " = ? AND "
+          + "COALESCE(" + ruleColumn("r", "forwardGroupId") + ", 0) = 0)",
+        );
+        params.push(resourceId);
+      } else {
+        const expectedGroupMode = resourceType === "local" ? "port" : resourceType === "chain" ? "chain" : "failover";
+        const groupModeColumn = ruleColumn("g", "groupMode");
+        const groupModePredicate = expectedGroupMode === "failover"
+          // Older rows may have a NULL/legacy groupMode; the application
+          // normalizer treats those values as failover groups.
+          ? "(" + groupModeColumn + " = 'failover' OR " + groupModeColumn + " IS NULL"
+            + " OR " + groupModeColumn + " NOT IN ('port', 'chain', 'entry', 'exit'))"
+          : groupModeColumn + " = ?";
+        conditions.push(
+          "(" + resourceColumn + " = ? AND " + groupModePredicate + ")",
+        );
+        params.push(resourceId);
+        if (expectedGroupMode !== "failover") params.push(expectedGroupMode);
+      }
+    }
+  }
   const tokens = includeSearch
     ? String(input.search || "").trim().toLowerCase().split(/\s+/).filter(Boolean)
     : [];

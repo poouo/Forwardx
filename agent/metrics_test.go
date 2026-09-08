@@ -1622,6 +1622,151 @@ func TestExecuteTCPingTaskReportsStableWireGuardDialTimeout(t *testing.T) {
 	}
 }
 
+func TestExecuteTCPingTaskPreservesPartialPingLoss(t *testing.T) {
+	task := tcpingTask{
+		Kind:      "service",
+		ServiceID: 42,
+		Method:    "ping",
+		TargetIP:  "192.0.2.1",
+	}
+	result := executeTCPingTaskWithProbes(
+		task,
+		nil,
+		func(string, time.Duration, int) probeMeasurement {
+			return probeMeasurement{
+				LatencyMs:      18,
+				Reachable:      true,
+				ProbeCount:     5,
+				ProbeSuccesses: 4,
+			}
+		},
+	)
+	if result.Payload == nil {
+		t.Fatal("partial-loss ping result was discarded")
+	}
+	if result.Payload["isTimeout"] != false || result.Payload["latencyMs"] != 18 {
+		t.Fatalf("unexpected partial-loss payload: %v", result.Payload)
+	}
+	if result.Payload["probeCount"] != 5 || result.Payload["probeSuccesses"] != 4 {
+		t.Fatalf("ping packet counts were not preserved: %v", result.Payload)
+	}
+}
+
+func TestTCPLatencyWithProbesPreservesPartialTCPFailures(t *testing.T) {
+	originalDial := dialNetworkTimeout
+	t.Cleanup(func() { dialNetworkTimeout = originalDial })
+
+	var calls atomic.Int32
+	dialNetworkTimeout = func(string, string, time.Duration) (net.Conn, error) {
+		// Two of the three synthetic connection attempts succeed.  The returned
+		// pipe is closed immediately by tcpLatencyResolved after the dial sample.
+		if calls.Add(1) <= 2 {
+			conn, peer := net.Pipe()
+			_ = peer.Close()
+			return conn, nil
+		}
+		return nil, errors.New("synthetic tcp timeout")
+	}
+
+	measurement := tcpLatencyWithProbes("192.0.2.1", 443, 250*time.Millisecond, 3)
+	if measurement.ProbeCount != 3 || measurement.ProbeSuccesses != 2 {
+		t.Fatalf("TCP probe counters = %d/%d, want 2/3", measurement.ProbeSuccesses, measurement.ProbeCount)
+	}
+	if !measurement.Reachable || measurement.LatencyMs <= 0 {
+		t.Fatalf("partial TCP result should remain reachable with latency: %+v", measurement)
+	}
+}
+
+func TestTCPLatencyWithProbesBoundsAttemptCount(t *testing.T) {
+	originalDial := dialNetworkTimeout
+	t.Cleanup(func() { dialNetworkTimeout = originalDial })
+
+	var calls atomic.Int32
+	dialNetworkTimeout = func(string, string, time.Duration) (net.Conn, error) {
+		calls.Add(1)
+		return nil, errors.New("synthetic tcp timeout")
+	}
+	measurement := tcpLatencyWithProbes("192.0.2.1", 443, 50*time.Millisecond, 1000)
+	if measurement.ProbeCount != tcpingTCPProbeCount || calls.Load() != int32(tcpingTCPProbeCount) {
+		t.Fatalf("TCP probe count was not bounded: measurement=%+v calls=%d", measurement, calls.Load())
+	}
+}
+
+func TestExecuteTCPingTaskReportsPartialTCPFailures(t *testing.T) {
+	originalDial := dialNetworkTimeout
+	t.Cleanup(func() { dialNetworkTimeout = originalDial })
+
+	var calls atomic.Int32
+	dialNetworkTimeout = func(string, string, time.Duration) (net.Conn, error) {
+		if calls.Add(1) == 1 {
+			conn, peer := net.Pipe()
+			_ = peer.Close()
+			return conn, nil
+		}
+		return nil, errors.New("synthetic tcp timeout")
+	}
+
+	result := executeTCPingTaskWithProbes(tcpingTask{
+		Kind: "service", ServiceID: 9, Method: "tcping", TargetIP: "192.0.2.1", TargetPort: 443,
+	}, nil, pingLatencyDetailed)
+	if result.Payload == nil {
+		t.Fatal("TCPing result was discarded")
+	}
+	if result.Payload["probeCount"] != tcpingTCPProbeCount || result.Payload["probeSuccesses"] != 1 {
+		t.Fatalf("unexpected TCP probe counters: %v", result.Payload)
+	}
+	if result.Payload["isTimeout"] != false {
+		t.Fatalf("partial TCP success should not be marked as a timeout: %v", result.Payload)
+	}
+}
+
+func TestParsePingProbeCounts(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantSent    int
+		wantSuccess int
+	}{
+		{name: "iputils", output: "5 packets transmitted, 4 received, 20% packet loss", wantSent: 5, wantSuccess: 4},
+		{name: "busybox", output: "5 packets transmitted, 3 packets received, 40% packet loss", wantSent: 5, wantSuccess: 3},
+		{name: "windows", output: "Packets: Sent = 5, Received = 2, Lost = 3 (60% loss)", wantSent: 5, wantSuccess: 2},
+		{name: "windows-cn", output: "数据包: 已发送 = 5，已接收 = 2，丢失 = 3 (60% 丢失)", wantSent: 5, wantSuccess: 2},
+		{name: "reply-lines-without-summary", output: "Reply from 192.0.2.1: time=12ms\nReply from 192.0.2.1: time=14ms", wantSent: 5, wantSuccess: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fallback := 1
+			if tc.name == "reply-lines-without-summary" {
+				fallback = 5
+			}
+			sent, successes := parsePingProbeCounts(tc.output, fallback)
+			if sent != tc.wantSent || successes != tc.wantSuccess {
+				t.Fatalf("got %d/%d want %d/%d", successes, sent, tc.wantSuccess, tc.wantSent)
+			}
+		})
+	}
+}
+
+func TestParseLocalizedPingLatency(t *testing.T) {
+	output := "来自 192.0.2.1 的回复: 字节=32 时间<1ms TTL=54\n" +
+		"来自 192.0.2.1 的回复: 字节=32 时间=12ms TTL=54"
+	if latency := parsePingLatencyMs(output); latency <= 0 {
+		t.Fatalf("localized ping replies produced no latency: %d", latency)
+	}
+}
+
+func TestParseSubMillisecondPingRepliesAsSuccessfulSamples(t *testing.T) {
+	output := "来自 127.0.0.1 的回复: 字节=32 时间<1ms TTL=128\n" +
+		"来自 127.0.0.1 的回复: 字节=32 时间<1ms TTL=128"
+	if latency := parsePingLatencyMs(output); latency != 1 {
+		t.Fatalf("sub-millisecond ping latency = %d, want 1", latency)
+	}
+	sent, successes := parsePingProbeCounts(output, 5)
+	if sent != 5 || successes != 2 {
+		t.Fatalf("sub-millisecond ping counts = %d/%d, want 2/5", successes, sent)
+	}
+}
+
 func TestTCPingDynamicBatchLimitScalesWithoutUnboundedRuns(t *testing.T) {
 	tests := []struct {
 		total  int

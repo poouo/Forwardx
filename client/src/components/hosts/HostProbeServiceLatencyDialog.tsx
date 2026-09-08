@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
-import { applyLatencyPeakCut, getLatencyStabilityStats, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, getLatencyStabilityStats, getLatencyYAxisTicks, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { pollingInterval } from "@/lib/polling";
 import { cn } from "@/lib/utils";
 
@@ -68,22 +68,26 @@ function compactHostServiceChart(points: any[], serviceIds: number[]) {
       const key = `service_${id}`;
       let maxLatency: number | null = null;
       let sawTimeout = false;
+      let probeCount = 0;
+      let probeSuccesses = 0;
       for (const item of bucket) {
         const raw = item[`${key}Raw`];
         if (!raw) continue;
-        if (raw.isTimeout) {
-          sawTimeout = true;
-          continue;
-        }
+        const counts = normalizeLatencyProbeCounts(raw);
+        const count = counts.probeCount;
+        const successes = counts.probeSuccesses;
+        probeCount += count;
+        probeSuccesses += successes;
+        if (successes < count) sawTimeout = true;
         const latency = Number(raw.latencyMs);
-        if (Number.isFinite(latency) && latency > 0) {
+        if (successes > 0 && Number.isFinite(latency) && latency > 0) {
           maxLatency = Math.max(maxLatency || 0, latency);
         }
       }
-      const isTimeout = maxLatency === null && sawTimeout;
+      const isTimeout = probeSuccesses === 0 && sawTimeout;
       point[key] = isTimeout ? 0 : maxLatency;
       point[`${key}Timeout`] = isTimeout;
-      point[`${key}Raw`] = { latencyMs: maxLatency, isTimeout };
+      point[`${key}Raw`] = { latencyMs: maxLatency, isTimeout, probeCount, probeSuccesses };
     }
 
     compacted.push(point);
@@ -109,8 +113,15 @@ function ChartTooltip({ active, payload, label, services, allServices }: any) {
                 <span className="h-2 w-2 rounded-full" style={{ background: colors[Math.max(colorIndex, index, 0) % colors.length] }} />
                 <span className="truncate">{service.name}</span>
               </span>
-              <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
-                {raw?.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+              <span className="text-right">
+                <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
+                  {raw?.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+                </span>
+                {Number(raw?.probeCount) > 1 && Number(raw?.probeSuccesses) < Number(raw?.probeCount) ? (
+                  <span className="block text-[10px] font-normal text-muted-foreground">
+                    丢包 {Number(raw.probeCount) - Number(raw.probeSuccesses)}/{Number(raw.probeCount)}
+                  </span>
+                ) : null}
               </span>
             </div>
           );
@@ -164,6 +175,8 @@ export default function HostProbeServiceLatencyDialog({
         return {
           latency: Number(row.latencyMs),
           isTimeout,
+          probeCount: row.probeCount,
+          probeSuccesses: row.probeSuccesses,
         };
       })
       .filter((sample) => sample.isTimeout || (Number.isFinite(sample.latency) && sample.latency > 0));
@@ -193,7 +206,7 @@ export default function HostProbeServiceLatencyDialog({
   };
 
   const rawChart = useMemo(() => {
-    const aggregates = new Map<string, { bucket: number; serviceId: number; sum: number; count: number; timeout: number }>();
+    const aggregates = new Map<string, { bucket: number; serviceId: number; sum: number; count: number; timeout: number; probeCount: number; probeSuccesses: number }>();
     for (const row of rangedData as any[]) {
       const at = new Date(row.recordedAt).getTime();
       if (!Number.isFinite(at)) continue;
@@ -201,11 +214,16 @@ export default function HostProbeServiceLatencyDialog({
       if (!serviceId) continue;
       const bucket = Math.floor(at / 60000) * 60000;
       const key = `${bucket}:${serviceId}`;
-      const aggregate = aggregates.get(key) || { bucket, serviceId, sum: 0, count: 0, timeout: 0 };
-      if (row.isTimeout) aggregate.timeout += 1;
-      else if (row.latencyMs != null && Number.isFinite(Number(row.latencyMs))) {
-        aggregate.sum += Number(row.latencyMs);
-        aggregate.count += 1;
+      const aggregate = aggregates.get(key) || { bucket, serviceId, sum: 0, count: 0, timeout: 0, probeCount: 0, probeSuccesses: 0 };
+      const counts = normalizeLatencyProbeCounts(row);
+      const probeCount = counts.probeCount;
+      const probeSuccesses = counts.probeSuccesses;
+      aggregate.probeCount += probeCount;
+      aggregate.probeSuccesses += probeSuccesses;
+      aggregate.timeout += probeCount - probeSuccesses;
+      if (probeSuccesses > 0 && row.latencyMs != null && Number.isFinite(Number(row.latencyMs))) {
+        aggregate.sum += Number(row.latencyMs) * probeSuccesses;
+        aggregate.count += probeSuccesses;
       }
       aggregates.set(key, aggregate);
     }
@@ -213,11 +231,16 @@ export default function HostProbeServiceLatencyDialog({
     for (const aggregate of aggregates.values()) {
       const point = byBucket.get(aggregate.bucket) || { at: aggregate.bucket, label: formatTime(new Date(aggregate.bucket)), fullLabel: formatFullTime(new Date(aggregate.bucket)) };
       const key = `service_${aggregate.serviceId}`;
-      const isTimeout = aggregate.count === 0 && aggregate.timeout > 0;
+      const isTimeout = aggregate.probeSuccesses === 0 && aggregate.timeout > 0;
       const latencyMs = aggregate.count > 0 ? Math.round(aggregate.sum / aggregate.count) : null;
       point[key] = isTimeout ? 0 : latencyMs;
       point[`${key}Timeout`] = isTimeout;
-      point[`${key}Raw`] = { latencyMs, isTimeout };
+      point[`${key}Raw`] = {
+        latencyMs,
+        isTimeout,
+        probeCount: aggregate.probeCount,
+        probeSuccesses: aggregate.probeSuccesses,
+      };
       byBucket.set(aggregate.bucket, point);
     }
     return Array.from(byBucket.values()).sort((a, b) => a.at - b.at);

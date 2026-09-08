@@ -11,7 +11,7 @@ import {
   type LatencyTimeRangeHours,
 } from "@/components/LatencyTimeRangeSelect";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
-import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -82,6 +82,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { MAX_FORWARD_GROUP_MEMBERS } from "@shared/forwardGroup";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { addHostNodeMeta, addNodeMetaAliases, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import {
@@ -522,12 +523,16 @@ type GroupLatencyPoint = {
   latency: number;
   chartLatency: number;
   isTimeout: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
 };
 
 type GroupLatencySeriesDatum = {
   recordedAt: string | Date;
   latencyMs?: number | null;
   isTimeout?: boolean | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 };
 
 const groupLatencySeriesCache = new Map<number, GroupLatencySeriesDatum[]>();
@@ -574,13 +579,19 @@ function ForwardGroupLatencyDialog({
 
   const rawChartData = useMemo<GroupLatencyPoint[]>(() => {
     if (!rangedSeriesData.length) return [];
-    return rangedSeriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => ({
-      label: formatGroupLatencyTime(d.recordedAt),
-      fullLabel: formatGroupLatencyTime(d.recordedAt),
-      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
-      chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
-      isTimeout: !!d.isTimeout,
-    }));
+    return rangedSeriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => {
+      const counts = normalizeLatencyProbeCounts(d);
+      const latency = Number(d.latencyMs) || 0;
+      return {
+        label: formatGroupLatencyTime(d.recordedAt),
+        fullLabel: formatGroupLatencyTime(d.recordedAt),
+        latency: counts.isTimeout ? 0 : latency,
+        chartLatency: counts.isTimeout ? 0 : clipLatencyForChart(latency),
+        isTimeout: counts.isTimeout,
+        probeCount: counts.probeCount,
+        probeSuccesses: counts.probeSuccesses,
+      };
+    });
   }, [rangedSeriesData]);
   const chartData = useMemo<GroupLatencyPoint[]>(() => {
     if (!peakCutEnabled) return rawChartData;
@@ -644,6 +655,11 @@ function ForwardGroupLatencyDialog({
                         <p className={item.isTimeout ? "text-destructive" : "text-foreground"}>
                           {item.isTimeout ? "\u8d85\u65f6/\u4e0d\u53ef\u8fbe" : `${item.latency}ms`}
                         </p>
+                        {Number(item.probeCount) > 1 && Number(item.probeSuccesses) < Number(item.probeCount) ? (
+                          <p className="text-muted-foreground">
+                            丢包 {Number(item.probeCount) - Number(item.probeSuccesses)}/{Number(item.probeCount)}（{(((Number(item.probeCount) - Number(item.probeSuccesses)) / Number(item.probeCount)) * 100).toFixed(0)}%）
+                          </p>
+                        ) : null}
                       </div>
                     );
                   }}
@@ -1317,8 +1333,10 @@ export function ForwardGroupsContent({
       toast.error("端口转发只能选择 1 台所属主机");
       return;
     }
-    if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= 5) {
-      toast.error(form.groupMode === "chain" ? "转发链最多支持 5 台主机" : "入口组/出口组最多支持 5 台主机");
+    if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= MAX_FORWARD_GROUP_MEMBERS) {
+      toast.error(form.groupMode === "chain"
+        ? `转发链最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`
+        : `入口组/出口组最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
       return;
     }
     const effectiveType = effectiveGroupType;
@@ -1476,11 +1494,17 @@ export function ForwardGroupsContent({
       if (form.members.length !== 1) return toast.error("端口转发需要选择 1 台所属主机");
     } else if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
-      if (form.members.length < minChainMembers || form.members.length > 5) {
-        return toast.error(form.entryGroupId ? "转发链需要配置 1-5 台主机" : "转发链需要配置 2-5 台主机");
+      if (form.members.length < minChainMembers || form.members.length > MAX_FORWARD_GROUP_MEMBERS) {
+        return toast.error(form.entryGroupId
+          ? `转发链需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
+          : `转发链需要配置 2-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
       }
     } else if (isEntryGroup || isExitGroup) {
-      if (form.members.length < 1 || form.members.length > 5) return toast.error(isEntryGroup ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
+      if (form.members.length < 1 || form.members.length > MAX_FORWARD_GROUP_MEMBERS) {
+        return toast.error(isEntryGroup
+          ? `入口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
+          : `出口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+      }
     } else if (form.members.length === 0) {
       return toast.error("请至少添加一个成员");
     }
@@ -2558,7 +2582,7 @@ export function ForwardGroupsContent({
                     hosts={hosts || []}
                     initialHopIds={form.members.map((member) => Number(member.hostId || 0)).filter(Boolean)}
                     initialHopConnectHosts={form.members.map((member) => member.connectHost || null)}
-                    maxHops={5}
+                    maxHops={MAX_FORWARD_GROUP_MEMBERS}
                     externalEntry={!!form.entryGroupId}
                     excludedHostIds={entryGroupHostIds(form.entryGroupId)}
                     onChange={updateChainMemberIds}

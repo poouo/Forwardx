@@ -18,6 +18,7 @@ import {
   getLatencyYAxisMax,
   getLatencyYAxisTicks,
   isLatencySeriesCacheFresh,
+  normalizeLatencyProbeCounts,
 } from "@/lib/latencyChart";
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
@@ -28,12 +29,16 @@ type TcpingChartPoint = {
   latency: number;
   chartLatency: number;
   isTimeout: boolean;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 };
 
 type TcpingSeriesDatum = {
   recordedAt: string | Date;
   latencyMs?: number | null;
   isTimeout?: boolean | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 };
 
 const tcpingSeriesCache = new Map<number, TcpingSeriesDatum[]>();
@@ -53,7 +58,8 @@ function TcpingTooltipContent({ active, payload, label }: any) {
   const data = payload[0]?.payload;
   if (!data) return null;
   const latency = Number(data.latency || 0);
-  const isTimeout = !!data.isTimeout;
+  const counts = normalizeLatencyProbeCounts(data);
+  const isTimeout = counts.isTimeout;
   return (
     <div className="pointer-events-none rounded-lg border border-border bg-card px-3 py-2 shadow-md">
       <p className="mb-1 text-xs text-muted-foreground">{data.fullLabel || label}</p>
@@ -68,6 +74,11 @@ function TcpingTooltipContent({ active, payload, label }: any) {
       ) : (
         <p className="text-sm text-muted-foreground">无数据</p>
       )}
+      {counts.probeCount > 1 && counts.probeSuccesses < counts.probeCount ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          丢包 {counts.probeCount - counts.probeSuccesses}/{counts.probeCount}（{((counts.probeCount - counts.probeSuccesses) / counts.probeCount * 100).toFixed(0)}%）
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -110,13 +121,19 @@ function TcpingDetailDialog({
 
   const rawChartData = useMemo<TcpingChartPoint[]>(() => {
     if (!rangedSeriesData.length) return [];
-    return rangedSeriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => ({
-      label: formatTcpingTime(d.recordedAt),
-      fullLabel: formatTcpingTime(d.recordedAt),
-      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
-      chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
-      isTimeout: !!d.isTimeout,
-    }));
+    return rangedSeriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => {
+      const counts = normalizeLatencyProbeCounts(d);
+      const latency = Number(d.latencyMs) || 0;
+      return {
+        label: formatTcpingTime(d.recordedAt),
+        fullLabel: formatTcpingTime(d.recordedAt),
+        latency: counts.isTimeout ? 0 : latency,
+        chartLatency: counts.isTimeout ? 0 : clipLatencyForChart(latency),
+        isTimeout: counts.isTimeout,
+        probeCount: counts.probeCount,
+        probeSuccesses: counts.probeSuccesses,
+      };
+    });
   }, [rangedSeriesData]);
 
   const chartData = useMemo<TcpingChartPoint[]>(() => {

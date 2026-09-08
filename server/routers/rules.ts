@@ -24,10 +24,13 @@ async function withRuleResourceAccess<T extends any>(value: T, user: { id: numbe
 
 
 type RuleListCategory = "all" | "local" | "tunnel" | "chain" | "group";
+type RuleResourceType = "local" | "tunnel" | "chain" | "group";
 type RuleListFilters = {
   userId?: number;
   scope?: "self" | "all";
   entryHostId?: number | null;
+  resourceType?: RuleResourceType | null;
+  resourceId?: number | null;
   category: RuleListCategory;
   search: string;
 };
@@ -55,6 +58,8 @@ async function getRuleListRepositoryInput(
       ? Array.from(accessScope.useGroupIds || accessScope.groupIds)
       : undefined,
     entryHostId: input.entryHostId,
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
     category: input.category,
     search: input.search,
   };
@@ -90,6 +95,8 @@ export const rulesRouter = router({
       userId: z.number().optional(),
       scope: z.enum(["self", "all"]).optional(),
       entryHostId: z.number().int().positive().nullable().optional(),
+      resourceType: z.enum(["local", "tunnel", "chain", "group"]).nullable().optional(),
+      resourceId: z.number().int().positive().nullable().optional(),
       category: z.enum(["all", "local", "tunnel", "chain", "group"]).default("all"),
       search: z.string().trim().max(200).optional().default(""),
     }))
@@ -105,6 +112,8 @@ export const rulesRouter = router({
       userId: z.number().optional(),
       scope: z.enum(["self", "all"]).optional(),
       entryHostId: z.number().int().positive().nullable().optional(),
+      resourceType: z.enum(["local", "tunnel", "chain", "group"]).nullable().optional(),
+      resourceId: z.number().int().positive().nullable().optional(),
       category: z.enum(["all", "local", "tunnel", "chain", "group"]).default("all"),
       search: z.string().trim().max(200).optional().default(""),
     }))
@@ -118,6 +127,8 @@ export const rulesRouter = router({
       userId: z.number().optional(),
       scope: z.enum(["self", "all"]).optional(),
       entryHostId: z.number().int().positive().nullable().optional(),
+      resourceType: z.enum(["local", "tunnel", "chain", "group"]).nullable().optional(),
+      resourceId: z.number().int().positive().nullable().optional(),
       category: z.enum(["all", "local", "tunnel", "chain", "group"]).default("all"),
       search: z.string().trim().max(200).optional().default(""),
     }))

@@ -52,7 +52,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
-import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
@@ -61,6 +61,7 @@ import { pollingInterval } from "@/lib/polling";
 import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
+import { MAX_FORWARD_GROUP_MEMBERS } from "@shared/forwardGroup";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -219,6 +220,8 @@ type TunnelLatencySeriesDatum = {
   isTimeout?: boolean | null;
   seriesKey?: string | null;
   seriesLabel?: string | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 };
 
 type TunnelLatencySeriesMeta = {
@@ -1321,11 +1324,14 @@ function TunnelLatencyDialog({
         fullLabel: formatTunnelLatencyTime(at),
       };
       const key = normalizeTunnelLatencySeriesKey(item.seriesKey);
-      const isTimeout = !!item.isTimeout;
+      const counts = normalizeLatencyProbeCounts(item);
+      const isTimeout = counts.isTimeout;
       const latency = isTimeout ? 0 : (Number(item.latencyMs) || 0);
       point[`${key}Latency`] = latency;
       point[`${key}ChartLatency`] = isTimeout ? 0 : clipLatencyForChart(latency);
       point[`${key}Timeout`] = isTimeout;
+      point[`${key}ProbeCount`] = counts.probeCount;
+      point[`${key}ProbeSuccesses`] = counts.probeSuccesses;
       byTime.set(time, point);
     }
     return Array.from(byTime.entries()).sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
@@ -1348,6 +1354,8 @@ function TunnelLatencyDialog({
       .map((point) => ({
         latency: Number(point[meta.rawKey] || 0),
         isTimeout: !!point[meta.timeoutKey],
+        probeCount: Number(point[`${meta.key}ProbeCount`] || 1),
+        probeSuccesses: Number(point[`${meta.key}ProbeSuccesses`]),
       }));
   }, [chartData, seriesMeta]);
 
@@ -1419,8 +1427,15 @@ function TunnelLatencyDialog({
                                   <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: timeout ? "var(--color-destructive)" : meta.color }} />
                                   <span className="truncate">{meta.label}</span>
                                 </span>
-                                <span className={timeout ? "font-semibold text-destructive" : "font-semibold tabular-nums"}>
-                                  {timeout ? "超时" : `${Number(item[meta.rawKey] || 0)}ms`}
+                                <span className="text-right">
+                                  <span className={timeout ? "font-semibold text-destructive" : "font-semibold tabular-nums"}>
+                                    {timeout ? "超时" : `${Number(item[meta.rawKey] || 0)}ms`}
+                                  </span>
+                                  {Number(item[`${meta.key}ProbeCount`]) > 1 && Number(item[`${meta.key}ProbeSuccesses`]) < Number(item[`${meta.key}ProbeCount`]) ? (
+                                    <span className="block text-[10px] font-normal text-muted-foreground">
+                                      丢包 {Number(item[`${meta.key}ProbeCount`]) - Number(item[`${meta.key}ProbeSuccesses`])}/{Number(item[`${meta.key}ProbeCount`])}
+                                    </span>
+                                  ) : null}
                                 </span>
                               </div>
                             );
@@ -2216,6 +2231,7 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
+  const [listenPortExplicit, setListenPortExplicit] = useState(false);
   const nginxCertFileInputRef = useRef<HTMLInputElement | null>(null);
   const nginxCertDragDepthRef = useRef(0);
   const nginxCertImportRequestRef = useRef(0);
@@ -2679,6 +2695,7 @@ function TunnelsContent() {
     setTunnelProxyPanelOpen(false);
     setTunnelAdvancedOpen(false);
     setEditingId(null);
+    setListenPortExplicit(false);
   };
 
   const resetChainCreateForm = () => {
@@ -2701,6 +2718,7 @@ function TunnelsContent() {
       loadBalanceExits: [],
       exitGroupId: null,
     });
+    setListenPortExplicit(false);
     setTunnelAdvancedOpen(false);
   };
 
@@ -2779,6 +2797,7 @@ function TunnelsContent() {
     setTunnelProxyPanelOpen(proxyAnyEnabled);
     setTunnelAdvancedOpen(false);
     setEditingId(tunnel.id);
+    setListenPortExplicit(false);
     setShowDialog(true);
   };
 
@@ -3123,6 +3142,7 @@ function TunnelsContent() {
           connectHost: exit.connectHost || null,
         }))
         : [],
+      listenPortExplicit: editingId ? listenPortExplicit : true,
     };
     if (editingId) updateMutation.mutate({ id: editingId, ...payload });
     else createMutation.mutate(payload);
@@ -3135,8 +3155,8 @@ function TunnelsContent() {
       toast.error(chainCreateForm.entryGroupId ? "请填写转发链名称并至少选择一台主机" : "请填写转发链名称并至少选择两台主机");
       return;
     }
-    if (chainCreateForm.hopHostIds.length > 5) {
-      toast.error("转发链最多支持 5 台主机");
+    if (chainCreateForm.hopHostIds.length > MAX_FORWARD_GROUP_MEMBERS) {
+      toast.error(`转发链最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
       return;
     }
     const normalizedConnectHosts = normalizeChainConnectHostsForHosts(
@@ -4660,7 +4680,7 @@ function TunnelsContent() {
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
-                        <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                        <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder="自动分配" />
                       </div>
                       <div className="space-y-2">
                         <Label>隧道限速 (Mbps)</Label>
@@ -4746,7 +4766,7 @@ function TunnelsContent() {
                         hosts={hosts || []}
                         initialHopIds={chainCreateForm.hopHostIds}
                         initialHopConnectHosts={chainCreateForm.hopConnectHosts}
-                        maxHops={5}
+                        maxHops={MAX_FORWARD_GROUP_MEMBERS}
                         externalEntry={!!chainCreateForm.entryGroupId}
                         excludedHostIds={externalChainEntryHostIds(chainCreateForm.entryGroupId)}
                         onChange={(ids) => {
@@ -4968,7 +4988,7 @@ function TunnelsContent() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
-                <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder="自动分配" />
               </div>
               <div className="space-y-2">
                 <Label>隧道限速 (Mbps)</Label>

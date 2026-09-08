@@ -135,6 +135,43 @@ export function portPolicyFrom(source: PortPolicySource | null | undefined): Por
   });
 }
 
+/**
+ * Combine a host's effective port policy with an optional preferred range.
+ *
+ * Host ranges and `portAllowlist` are a union: the allowlist contains extra
+ * ports that are valid in addition to the configured range.  Most callers
+ * pass the host range back as a "preferred" range while selecting a port.
+ * Intersecting the two policies naively would discard those extra ports
+ * (for example range 22600-22600 + allowlist 23001).  Treat an identical
+ * preferred range as informational and retain the complete host policy;
+ * genuinely narrower ranges are still intersected as an additional limit.
+ */
+export function combineHostPortPolicyWithRange(
+  hostSource: PortPolicySource | null | undefined,
+  preferredStart?: unknown,
+  preferredEnd?: unknown,
+) {
+  const hostPolicy = portPolicyFrom(hostSource);
+  const preferredStartNumber = optionalPort(preferredStart);
+  const preferredEndNumber = optionalPort(preferredEnd);
+  if (preferredStartNumber === null
+    || preferredEndNumber === null
+    || preferredStartNumber > preferredEndNumber) {
+    return hostPolicy;
+  }
+  if (hostPolicy.rangeStart === preferredStartNumber
+    && hostPolicy.rangeEnd === preferredEndNumber) {
+    return hostPolicy;
+  }
+  return combinePortPolicies(
+    hostPolicy,
+    portPolicyFrom({
+      portRangeStart: preferredStartNumber,
+      portRangeEnd: preferredEndNumber,
+    }),
+  );
+}
+
 export function portPolicyHasRestriction(policy: PortPolicy) {
   return !!policy.denyAll
     || (policy.rangeStart !== null && policy.rangeEnd !== null)

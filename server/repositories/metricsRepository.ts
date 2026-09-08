@@ -18,6 +18,7 @@ import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 import { getSetting, setSetting } from "./settingsRepository";
 import { appendPanelLog } from "../_core/panelLogger";
 import { notifyTunnelLatencyRefresh } from "../tunnelLatencyRefresh";
+import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -97,6 +98,25 @@ function warnUserTrafficCounterOnce(error: unknown, context?: { ruleId?: number;
 function retentionCutoffSeconds(retainHours: number) {
   const hours = Math.max(1, Math.floor(Number(retainHours) || 0));
   return Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
+}
+
+function withProbeCounts<T extends { isTimeout?: unknown; probeCount?: unknown; probeSuccesses?: unknown }>(stat: T) {
+  // This is a write boundary.  An explicitly supplied zero-success sample
+  // must remain a failure even when its legacy timeout flag is inconsistent;
+  // the compatibility fallback belongs only on read paths for old rows.
+  const probeCounts = normalizeAgentProbeCounts(stat, { legacyZeroAsSuccess: false });
+  return {
+    ...stat,
+    ...probeCounts,
+    // Counters are authoritative for the sample-level timeout flag. This
+    // also makes partially successful rows written by older Agents readable
+    // without hiding their latency behind `isTimeout=true`.
+    isTimeout: probeCounts.probeSuccesses <= 0,
+  };
+}
+
+function mappedProbeCounts(row: { isTimeout?: unknown; probeCount?: unknown; probeSuccesses?: unknown }) {
+  return normalizeAgentProbeCounts({ ...row, isTimeout: rowBool(row.isTimeout) });
 }
 
 async function yieldToEventLoop() {
@@ -2417,14 +2437,14 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
 export async function insertTcpingStat(stat: InsertTcpingStat) {
   const db = await getDb();
   if (!db) return;
-  await db.insert(tcpingStats).values(stat);
+  await db.insert(tcpingStats).values(withProbeCounts(stat) as InsertTcpingStat);
 }
 
 export async function insertTcpingStats(stats: InsertTcpingStat[]) {
   const db = await getDb();
   if (!db) return;
   if (stats.length === 0) return;
-  await db.insert(tcpingStats).values(stats);
+  await db.insert(tcpingStats).values(stats.map((stat) => withProbeCounts(stat)) as InsertTcpingStat[]);
 }
 
 /** Insert a tunnel latency sample and update latest tunnel test state. */
@@ -2434,14 +2454,18 @@ export async function insertTunnelLatencyStat(
 ) {
   const db = await getDb();
   if (!db) return;
-  await db.insert(tunnelLatencyStats).values(stat);
+  const normalizedStat = withProbeCounts(stat) as InsertTunnelLatencyStat;
+  await db.insert(tunnelLatencyStats).values(normalizedStat);
   const seriesKey = String((stat as any).seriesKey || "").trim().toLowerCase();
   if (!seriesKey || seriesKey === "total") notifyTunnelLatencyRefresh(stat.tunnelId);
   if (options.updateTunnel === false) return;
-  const status = stat.isTimeout ? "failed" : "success";
+  // Use the normalized counters for the live tunnel status as well as for the
+  // stored row. Otherwise an explicit 0/N sample could be persisted as a
+  // timeout while the tunnel summary was still updated to "success".
+  const status = normalizedStat.isTimeout ? "failed" : "success";
   const now = nowDate();
   const updates: any = {
-    lastLatencyMs: stat.isTimeout ? null : (stat.latencyMs ?? null),
+    lastLatencyMs: normalizedStat.isTimeout ? null : (normalizedStat.latencyMs ?? null),
     lastTestStatus: status,
     lastTestAt: now,
     updatedAt: now,
@@ -2463,10 +2487,12 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
     return new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
   }
   const q = quoteIdentifier;
-  const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown; seriesKey: string | null }>(
+  const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; probeCount: unknown; probeSuccesses: unknown; recordedAt: unknown; seriesKey: string | null }>(
     `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
             s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("probeCount")} AS ${q("probeCount")},
+            s.${q("probeSuccesses")} AS ${q("probeSuccesses")},
             s.${q("recordedAt")} AS ${q("recordedAt")},
             s.${q("seriesKey")} AS ${q("seriesKey")}
        FROM ${q("tunnel_latency_stats")} s
@@ -2479,11 +2505,12 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
        ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}`,
     ids,
   );
-  const latest = new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
+  const latest = new Map<number, { latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>();
   for (const row of rows) {
     latest.set(Number(row.tunnelId), {
       latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
       isTimeout: rowBool(row.isTimeout),
+      ...mappedProbeCounts(row),
       recordedAt: rowDate(row.recordedAt),
     });
   }
@@ -2513,12 +2540,14 @@ export async function getLatestTunnelLatencySeries(tunnelIds: number[]) {
   }
   const q = quoteIdentifier;
   const seriesExpr = `COALESCE(NULLIF(s.${q("seriesKey")}, ''), 'total')`;
-  const rows = await queryRaw<{ tunnelId: number; seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+  const rows = await queryRaw<{ tunnelId: number; seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; probeCount: unknown; probeSuccesses: unknown; recordedAt: unknown }>(
     `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
             ${seriesExpr} AS ${q("seriesKey")},
             s.${q("seriesLabel")} AS ${q("seriesLabel")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
             s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("probeCount")} AS ${q("probeCount")},
+            s.${q("probeSuccesses")} AS ${q("probeSuccesses")},
             s.${q("recordedAt")} AS ${q("recordedAt")}
        FROM ${q("tunnel_latency_stats")} s
        INNER JOIN (
@@ -2531,7 +2560,7 @@ export async function getLatestTunnelLatencySeries(tunnelIds: number[]) {
        ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}` ,
     ids,
   );
-  const grouped = new Map<number, Array<{ seriesKey: string; seriesLabel: string | null; latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>>();
+  const grouped = new Map<number, Array<{ seriesKey: string; seriesLabel: string | null; latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>>();
   for (const row of rows) {
     const tunnelId = Number(row.tunnelId);
     if (!Number.isFinite(tunnelId) || tunnelId <= 0) continue;
@@ -2542,6 +2571,7 @@ export async function getLatestTunnelLatencySeries(tunnelIds: number[]) {
       seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
       latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
       isTimeout: rowBool(row.isTimeout),
+      ...mappedProbeCounts(row),
       recordedAt: rowDate(row.recordedAt),
     });
     grouped.set(tunnelId, series);
@@ -2574,11 +2604,13 @@ export async function getTunnelLatencyBranchSeriesForTotal(tunnelId: number, tot
   const q = quoteIdentifier;
   const totalSeries = `(s.${q("seriesKey")} IS NULL OR s.${q("seriesKey")} = '' OR s.${q("seriesKey")} = 'total')`;
   const previousTotalSeries = `(previous.${q("seriesKey")} IS NULL OR previous.${q("seriesKey")} = '' OR previous.${q("seriesKey")} = 'total')`;
-  const rows = await queryRaw<{ seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+  const rows = await queryRaw<{ seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; probeCount: unknown; probeSuccesses: unknown; recordedAt: unknown }>(
     `SELECT s.${q("seriesKey")} AS ${q("seriesKey")},
             s.${q("seriesLabel")} AS ${q("seriesLabel")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
             s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("probeCount")} AS ${q("probeCount")},
+            s.${q("probeSuccesses")} AS ${q("probeSuccesses")},
             s.${q("recordedAt")} AS ${q("recordedAt")}
        FROM ${q("tunnel_latency_stats")} s
       WHERE s.${q("tunnelId")} = ?
@@ -2602,6 +2634,7 @@ export async function getTunnelLatencyBranchSeriesForTotal(tunnelId: number, tot
     [normalizedTunnelId, normalizedTunnelId, normalizedTotalId, normalizedTotalId, normalizedTotalId, normalizedTunnelId],
   );
   return rows.map((row) => ({
+    ...mappedProbeCounts(row),
     seriesKey: normalizeTunnelLatencySeriesKey(row.seriesKey),
     seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
@@ -2615,14 +2648,14 @@ export async function getTunnelLatencySeries(
   opts: { since?: Date; limit?: number } = {}
 ) {
   const db = await getDb();
-  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date; seriesKey: string; seriesLabel: string | null }>;
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date; seriesKey: string; seriesLabel: string | null }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 20_000, 50_000);
   const q = quoteIdentifier;
   const startedAt = Date.now();
   const page = limitOffset(limit);
-  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown; seriesKey: string | null; seriesLabel: string | null }>(
-    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}, ${q("seriesKey")}, ${q("seriesLabel")}
+  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; probeCount: unknown; probeSuccesses: unknown; recordedAt: unknown; seriesKey: string | null; seriesLabel: string | null }>(
+    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}, ${q("seriesKey")}, ${q("seriesLabel")}
        FROM ${q("tunnel_latency_stats")}
       WHERE ${q("tunnelId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
@@ -2638,6 +2671,7 @@ export async function getTunnelLatencySeries(
     return {
       latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
       isTimeout: rowBool(row.isTimeout),
+      ...mappedProbeCounts(row),
       recordedAt: rowDate(row.recordedAt),
       seriesKey: key || "total",
       seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
@@ -2648,7 +2682,7 @@ export async function getTunnelLatencySeries(
 export async function insertForwardGroupLatencyStat(stat: InsertForwardGroupLatencyStat) {
   const db = await getDb();
   if (!db) return;
-  await db.insert(forwardGroupLatencyStats).values(stat);
+  await db.insert(forwardGroupLatencyStats).values(withProbeCounts(stat) as InsertForwardGroupLatencyStat);
 }
 
 export async function getForwardGroupLatencySeries(
@@ -2656,14 +2690,14 @@ export async function getForwardGroupLatencySeries(
   opts: { since?: Date; limit?: number } = {}
 ) {
   const db = await getDb();
-  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000);
   const q = quoteIdentifier;
   const startedAt = Date.now();
   const page = limitOffset(limit);
-  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
-    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
+  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; probeCount: unknown; probeSuccesses: unknown; recordedAt: unknown }>(
+    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}
        FROM ${q("forward_group_latency_stats")}
       WHERE ${q("groupId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
@@ -2677,6 +2711,7 @@ export async function getForwardGroupLatencySeries(
   return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
     isTimeout: rowBool(row.isTimeout),
+    ...mappedProbeCounts(row),
     recordedAt: rowDate(row.recordedAt),
   }));
 }
@@ -2686,7 +2721,7 @@ export async function getTcpingSeriesByRule(
   opts: { since?: Date; limit?: number } = {}
 ) {
   const db = await getDb();
-  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000); // 24h * 120 per hour max
   const q = quoteIdentifier;
@@ -2713,7 +2748,7 @@ export async function getTcpingSeriesByRule(
       const childIds = chainChildren.map((row: any) => Number(row.id)).filter((id: number) => id > 0);
       const page = limitOffset(Math.max(limit * childIds.length, limit));
       const rawRows = await queryRaw<any>(
-        `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
+        `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}
            FROM ${q("tcping_stats")}
          WHERE ${q("ruleId")} IN (${childIds.map(() => "?").join(",")})
            AND ${q("recordedAt")} >= ?
@@ -2722,13 +2757,44 @@ export async function getTcpingSeriesByRule(
         [...childIds, epochSeconds(since), ...page.params],
       );
       const bucketMs = 30_000;
-      const byBucket = new Map<number, { latencyMs: number; timeoutCount: number; count: number; recordedAt: Date }>();
+      const byBucket = new Map<number, {
+        latencyMs: number;
+        timeoutCount: number;
+        count: number;
+        probeCount: number;
+        probeSuccesses: number;
+        recordedAt: Date;
+      }>();
       for (const row of (rawRows as any[]).reverse()) {
         const at = rowDate(row.recordedAt);
         const key = Math.floor(at.getTime() / bucketMs) * bucketMs;
-        const prev = byBucket.get(key) || { latencyMs: 0, timeoutCount: 0, count: 0, recordedAt: at };
-        if (rowBool(row.isTimeout) || row.latencyMs === null || row.latencyMs === undefined) {
-          prev.timeoutCount += 1;
+        const prev = byBucket.get(key) || {
+          latencyMs: 0,
+          timeoutCount: 0,
+          count: 0,
+          probeCount: 0,
+          probeSuccesses: 0,
+          recordedAt: at,
+        };
+        // Child rows may represent a multi-packet ping. Preserve those
+        // counters while retaining the historical chain latency aggregation.
+        const rawProbeCount = Number(row.probeCount);
+        const probeCount = Number.isInteger(rawProbeCount) && rawProbeCount >= 1 && rawProbeCount <= 1024
+          ? rawProbeCount
+          : 1;
+        const rawProbeSuccesses = Number(row.probeSuccesses);
+        let probeSuccesses = Number.isInteger(rawProbeSuccesses)
+          ? Math.max(0, Math.min(probeCount, rawProbeSuccesses))
+          : (rowBool(row.isTimeout) ? 0 : probeCount);
+        // Rows written before the counters existed (or by an older panel
+        // after the columns were added) have a zero success default while
+        // still carrying isTimeout=false. Treat those as one successful
+        // sample for backwards compatibility.
+        if (!rowBool(row.isTimeout) && probeSuccesses === 0) probeSuccesses = probeCount;
+        prev.probeCount += probeCount;
+        prev.probeSuccesses += probeSuccesses;
+        if (probeSuccesses <= 0 || row.latencyMs === null || row.latencyMs === undefined) {
+          prev.timeoutCount += probeCount;
         } else {
           prev.latencyMs += Number(row.latencyMs) || 0;
         }
@@ -2739,11 +2805,24 @@ export async function getTcpingSeriesByRule(
       return Array.from(byBucket.entries())
         .sort((a, b) => a[0] - b[0])
         .slice(-limit)
-        .map(([, bucket]) => ({
-          latencyMs: bucket.timeoutCount > 0 || bucket.count < childIds.length ? null : bucket.latencyMs,
-          isTimeout: bucket.timeoutCount > 0 || bucket.count < childIds.length,
-          recordedAt: bucket.recordedAt,
-        }));
+        .map(([, bucket]) => {
+          // A bucket is a timeout only when every represented packet failed.
+          // Partial packet loss must remain a valid latency sample so the
+          // chart can calculate a non-zero loss rate from the counters.
+          // A child that did not report in this bucket is retained as one
+          // failed attempt, matching the pre-counter chain semantics.
+          const missingChildAttempts = Math.max(0, childIds.length - bucket.count);
+          const totalProbeCount = Math.max(1, bucket.probeCount + missingChildAttempts);
+          const probeSuccesses = Math.max(0, Math.min(totalProbeCount, bucket.probeSuccesses));
+          const isTimeout = probeSuccesses <= 0;
+          return {
+            latencyMs: isTimeout ? null : bucket.latencyMs,
+            isTimeout,
+            probeCount: totalProbeCount,
+            probeSuccesses,
+            recordedAt: bucket.recordedAt,
+          };
+        });
     }
     const nonChainChildren = (childRows as any[])
       .map((row: any) => ({
@@ -2768,7 +2847,7 @@ export async function getTcpingSeriesByRule(
   }
   const page = limitOffset(limit);
   const rows = await queryRaw<any>(
-    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
+    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}
        FROM ${q("tcping_stats")}
       WHERE ${q("ruleId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
@@ -2778,6 +2857,7 @@ export async function getTcpingSeriesByRule(
   return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
     isTimeout: rowBool(row.isTimeout),
+    ...mappedProbeCounts(row),
     recordedAt: rowDate(row.recordedAt),
   }));
 }
@@ -2799,13 +2879,23 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     params.push(...ruleIds);
   }
   const bucketExpr = bucketExprSql("s", bucketSec);
+  const effectiveProbeCount = `CASE WHEN s.${q("probeCount")} BETWEEN 1 AND 1024 THEN s.${q("probeCount")} ELSE 1 END`;
+  const effectiveProbeSuccesses = `CASE
+      WHEN s.${q("isTimeout")} = ${rawBoolSql(true)}
+           AND (s.${q("probeSuccesses")} IS NULL OR s.${q("probeSuccesses")} <= 0) THEN 0
+      WHEN s.${q("probeSuccesses")} > 0 THEN
+        CASE WHEN s.${q("probeSuccesses")} > (${effectiveProbeCount})
+             THEN (${effectiveProbeCount}) ELSE s.${q("probeSuccesses")} END
+      WHEN s.${q("isTimeout")} = ${rawBoolSql(true)} THEN 0
+      ELSE (${effectiveProbeCount})
+    END`;
   const rows = await queryRaw<any>(
     `SELECT ${bucketExpr} AS ${q("bucket")},
-            COALESCE(AVG(CASE WHEN s.${q("isTimeout")} = ${rawBoolSql(false)} AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("avgLatency")},
-            COALESCE(MAX(CASE WHEN s.${q("isTimeout")} = ${rawBoolSql(false)} AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("maxLatency")},
-            COALESCE(MIN(CASE WHEN s.${q("isTimeout")} = ${rawBoolSql(false)} AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("minLatency")},
-            SUM(CASE WHEN s.${q("isTimeout")} = ${rawBoolSql(true)} THEN 1 ELSE 0 END) AS ${q("timeoutCount")},
-            COUNT(*) AS ${q("totalCount")}
+            COALESCE(AVG(CASE WHEN (${effectiveProbeSuccesses}) > 0 AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("avgLatency")},
+            COALESCE(MAX(CASE WHEN (${effectiveProbeSuccesses}) > 0 AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("maxLatency")},
+            COALESCE(MIN(CASE WHEN (${effectiveProbeSuccesses}) > 0 AND s.${q("latencyMs")} IS NOT NULL THEN s.${q("latencyMs")} END), 0) AS ${q("minLatency")},
+            SUM((${effectiveProbeCount}) - (${effectiveProbeSuccesses})) AS ${q("timeoutCount")},
+            SUM(${effectiveProbeCount}) AS ${q("totalCount")}
        FROM ${q("tcping_stats")} s
       WHERE ${conditions.join(" AND ")}
       GROUP BY ${bucketExpr}

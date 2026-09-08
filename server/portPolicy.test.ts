@@ -1,12 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  combineHostPortPolicyWithRange,
   combinePortPolicies,
   isPortAllowedByPolicy,
   pickAvailablePort,
   portPolicyFrom,
   type PortPolicy,
 } from "./portPolicy";
+
+test("an identical preferred host range keeps extra allowlist ports", () => {
+  const host = {
+    portRangeStart: 22600,
+    portRangeEnd: 22600,
+    portAllowlist: "23001",
+  };
+  const effective = combineHostPortPolicyWithRange(host, 22600, 22600);
+
+  assert.equal(isPortAllowedByPolicy(22600, effective), true);
+  assert.equal(isPortAllowedByPolicy(23001, effective), true);
+  assert.equal(isPortAllowedByPolicy(23002, effective), false);
+});
+
+test("a narrower preferred range still restricts host extra ports", () => {
+  const host = {
+    portRangeStart: 22600,
+    portRangeEnd: 22699,
+    portAllowlist: "23001",
+  };
+  const effective = combineHostPortPolicyWithRange(host, 22600, 22650);
+
+  assert.equal(isPortAllowedByPolicy(22650, effective), true);
+  assert.equal(isPortAllowedByPolicy(22651, effective), false);
+  assert.equal(isPortAllowedByPolicy(23001, effective), false);
+});
 
 test("disjoint subscription port ranges do not authorize the gap", () => {
   const plan = portPolicyFrom({

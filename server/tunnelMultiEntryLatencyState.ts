@@ -3,6 +3,8 @@ export type TunnelEntryLatencyDetail = {
   label: string;
   latencyMs: number | null;
   isTimeout: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
 };
 
 export type TunnelMultiEntryHopDetail = {
@@ -12,6 +14,8 @@ export type TunnelMultiEntryHopDetail = {
   toHostId: number | null;
   latencyMs: number | null;
   isTimeout: boolean;
+  probeCount?: number;
+  probeSuccesses?: number;
   recordedAt: number;
 };
 
@@ -22,6 +26,8 @@ type ProbeResult = {
   fromHostId: number;
   toHostId: number | null;
   hopIndex: number;
+  probeCount: number;
+  probeSuccesses: number;
   recordedAt: number;
 };
 
@@ -39,6 +45,8 @@ export type TunnelMultiEntryLatencyAggregate = {
   partial: boolean;
   latencyMs: number | null;
   details: TunnelEntryLatencyDetail[];
+  probeCount?: number;
+  probeSuccesses?: number;
 };
 
 const states = new Map<string, MultiEntryPathState>();
@@ -84,7 +92,73 @@ function cleanExpiredStates(now: number) {
 }
 
 function resultSucceeded(result: ProbeResult | undefined) {
-  return !!result && !result.isTimeout && Number(result.latencyMs || 0) > 0;
+  return !!result && result.probeSuccesses > 0 && Number(result.latencyMs || 0) > 0;
+}
+
+function normalizeProbeCounts(input: {
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
+  isTimeout?: boolean;
+}) {
+  const rawCount = Number(input.probeCount);
+  const probeCount = Number.isInteger(rawCount) && rawCount >= 1 && rawCount <= 1024 ? rawCount : 1;
+  const rawSuccesses = Number(input.probeSuccesses);
+  const hasSuccesses = input.probeSuccesses !== undefined && input.probeSuccesses !== null
+    && Number.isInteger(rawSuccesses);
+  let probeSuccesses = hasSuccesses ? rawSuccesses : (input.isTimeout ? 0 : probeCount);
+  probeSuccesses = Math.max(0, Math.min(probeCount, probeSuccesses));
+  return { probeCount, probeSuccesses };
+}
+
+function combineProbeCounts(results: ProbeResult[]) {
+  if (results.length === 0) return { probeCount: 1, probeSuccesses: 0 };
+  const probeCount = Math.max(...results.map((result) => Math.max(1, result.probeCount || 1)), 1);
+  const ratio = Math.min(...results.map((result) => {
+    const count = Math.max(1, result.probeCount || 1);
+    return Math.max(0, Math.min(count, result.probeSuccesses || 0)) / count;
+  }));
+  return {
+    probeCount,
+    probeSuccesses: Math.max(0, Math.min(probeCount, Math.floor(ratio * probeCount + 1e-9))),
+  };
+}
+
+/**
+ * Pick a representative counter set for an alternative-path aggregate.
+ *
+ * Entries in a multi-entry tunnel are failover/parallel alternatives rather
+ * than packets that all traverse the same path.  Counting every entry in the
+ * denominator would therefore report a loss whenever an unused entry is down.
+ * Prefer the successful entry with the best observed success ratio; when no
+ * entry succeeded, retain a conservative failure count from all available
+ * samples so a repeated (for example 0/3) probe is not collapsed to 1/0.
+ */
+function representativeProbeCounts(
+  details: Array<{ probeCount?: number; probeSuccesses?: number; isTimeout: boolean }>,
+  fallback: ProbeResult[] = [],
+) {
+  const candidates = details
+    .map((detail) => {
+      const count = Number.isInteger(Number(detail.probeCount)) && Number(detail.probeCount) >= 1
+        ? Math.min(1024, Number(detail.probeCount))
+        : 1;
+      const successes = Number.isInteger(Number(detail.probeSuccesses))
+        ? Math.max(0, Math.min(count, Number(detail.probeSuccesses)))
+        : (detail.isTimeout ? 0 : count);
+      return { probeCount: count, probeSuccesses: successes };
+    });
+  const successful = candidates
+    .filter((candidate) => candidate.probeSuccesses > 0)
+    .sort((left, right) => (
+      right.probeSuccesses / right.probeCount - left.probeSuccesses / left.probeCount
+    ));
+  if (successful.length > 0) return successful[0];
+  return combineProbeCounts(fallback);
+}
+
+function maybeAttachCounts<T extends { isTimeout: boolean }>(detail: T, counts: { probeCount: number; probeSuccesses: number }) {
+  if (counts.probeCount === 1 && counts.probeSuccesses === (detail.isTimeout ? 0 : 1)) return detail;
+  return { ...detail, ...counts };
 }
 
 function aggregateMultiEntryState(state: MultiEntryPathState, now: number): TunnelMultiEntryLatencyAggregate | null {
@@ -97,32 +171,42 @@ function aggregateMultiEntryState(state: MultiEntryPathState, now: number): Tunn
   }
   const sharedFailed = sharedResults.some((shared) => !resultSucceeded(shared));
   const sharedLatency = sharedResults.reduce((sum, shared) => sum + Number(shared.latencyMs || 0), 0);
-  const details = state.expectedEntryHostIds.flatMap((hostId) => {
+  const sharedCounts = combineProbeCounts(sharedResults);
+  const details: TunnelEntryLatencyDetail[] = state.expectedEntryHostIds.flatMap((hostId) => {
     const entry = state.entryHops.get(hostId);
     if (!entry && !sharedFailed) return [];
     const success = !sharedFailed && resultSucceeded(entry);
-    return [{
+    const entryCounts = entry ? combineProbeCounts([entry, ...sharedResults]) : { probeCount: sharedCounts.probeCount, probeSuccesses: 0 };
+    return [maybeAttachCounts({
       hostId,
       label: entry?.label || `入口 ${hostId}`,
       latencyMs: success ? Number(entry?.latencyMs || 0) + sharedLatency : null,
       isTimeout: !success,
-    }];
+    }, entryCounts)];
   });
   const successful = details.filter((detail) => !detail.isTimeout && Number(detail.latencyMs || 0) > 0);
   if (successful.length > 0) {
+    const representative = representativeProbeCounts(successful);
     return {
       success: true,
       partial: successful.length < state.expectedEntryHostIds.length,
       latencyMs: Math.max(...successful.map((detail) => Number(detail.latencyMs))),
       details,
+      ...(representative.probeCount !== 1 || representative.probeSuccesses !== 1 ? representative : {}),
     };
   }
   if (sharedFailed || details.length === state.expectedEntryHostIds.length) {
+    const availableResults = [
+      ...state.entryHops.values(),
+      ...sharedResults,
+    ];
+    const failureCounts = representativeProbeCounts([], availableResults);
     return {
       success: false,
       partial: false,
       latencyMs: null,
       details,
+      ...(failureCounts.probeCount !== 1 || failureCounts.probeSuccesses !== 0 ? failureCounts : {}),
     };
   }
   return null;
@@ -140,6 +224,8 @@ export function recordTunnelMultiEntryLatency(input: {
   generation?: string | null;
   pathKey?: string | null;
   toHostId?: number | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 }): TunnelMultiEntryLatencyAggregate | null {
   const tunnelId = Number(input.tunnelId);
   const sourceHostId = Number(input.sourceHostId);
@@ -182,6 +268,7 @@ export function recordTunnelMultiEntryLatency(input: {
     fromHostId: sourceHostId,
     toHostId: Number.isInteger(Number(input.toHostId)) && Number(input.toHostId) > 0 ? Number(input.toHostId) : null,
     hopIndex,
+    ...normalizeProbeCounts(input),
     recordedAt: now,
   };
   if (hopIndex === 0) state.entryHops.set(sourceHostId, result);
@@ -259,7 +346,7 @@ export function getTunnelMultiEntryHopDetails(input: {
     const entry = state.entryHops.get(hostId);
     if (!entry) continue;
     if (!isFresh(entry.recordedAt)) return null;
-    details.push({
+    const detail: TunnelMultiEntryHopDetail = {
       hopIndex: 0,
       hopCount,
       fromHostId: hostId,
@@ -267,13 +354,18 @@ export function getTunnelMultiEntryHopDetails(input: {
       latencyMs: entry.latencyMs,
       isTimeout: entry.isTimeout,
       recordedAt: entry.recordedAt,
-    });
+    };
+    if (entry.probeCount !== 1 || entry.probeSuccesses !== (entry.isTimeout ? 0 : 1)) {
+      detail.probeCount = entry.probeCount;
+      detail.probeSuccesses = entry.probeSuccesses;
+    }
+    details.push(detail);
   }
   for (let hopIndex = 1; hopIndex < hopCount; hopIndex += 1) {
     const shared = state.sharedHops.get(hopIndex);
     if (!shared) continue;
     if (!isFresh(shared.recordedAt)) return null;
-    details.push({
+    const detail: TunnelMultiEntryHopDetail = {
       hopIndex,
       hopCount,
       fromHostId: shared.fromHostId || null,
@@ -281,7 +373,12 @@ export function getTunnelMultiEntryHopDetails(input: {
       latencyMs: shared.latencyMs,
       isTimeout: shared.isTimeout,
       recordedAt: shared.recordedAt,
-    });
+    };
+    if (shared.probeCount !== 1 || shared.probeSuccesses !== (shared.isTimeout ? 0 : 1)) {
+      detail.probeCount = shared.probeCount;
+      detail.probeSuccesses = shared.probeSuccesses;
+    }
+    details.push(detail);
   }
   return details.length > 0 ? details : null;
 }

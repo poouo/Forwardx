@@ -488,6 +488,51 @@ test("database-backed list queries page, search, scope, and hydrate only request
       });
       assert.deepEqual(entryFiltered.items.map((item) => Number(item.id)), [102, 101]);
 
+      // The Rules page resource filter is two-level: first a route kind, then
+      // the concrete saved link.  Resource type is part of the predicate so
+      // an id shared by a tunnel and a group cannot select the wrong rule.
+      const localResourceFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        page: 1,
+        pageSize: 10,
+        resourceType: "local",
+        resourceId: 10,
+      });
+      assert.deepEqual(localResourceFiltered.items.map((item) => Number(item.id)), [102]);
+      const tunnelResourceFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        page: 1,
+        pageSize: 10,
+        resourceType: "tunnel",
+        resourceId: 20,
+      });
+      assert.deepEqual(tunnelResourceFiltered.items.map((item) => Number(item.id)), [101]);
+      const tunnelTypeFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        page: 1,
+        pageSize: 10,
+        resourceType: "tunnel",
+        resourceId: null,
+      });
+      assert.deepEqual(tunnelTypeFiltered.items.map((item) => Number(item.id)), [101]);
+      const chainResourceFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        searchVisibleForwardGroupIds: [10, 11, 13, 14],
+        page: 1,
+        pageSize: 10,
+        resourceType: "chain",
+        resourceId: 11,
+      });
+      assert.deepEqual(chainResourceFiltered.items.map((item) => Number(item.id)), [104]);
+      const mismatchedResourceFiltered = await rules.getForwardRulesPage({
+        ...visibleRuleInput,
+        page: 1,
+        pageSize: 10,
+        resourceType: "group",
+        resourceId: 10,
+      });
+      assert.deepEqual(mismatchedResourceFiltered.items, []);
+
       const revokedTunnelEntryFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,
         searchVisibleTunnelIds: [],

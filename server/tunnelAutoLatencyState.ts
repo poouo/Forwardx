@@ -5,6 +5,10 @@ export type TunnelAutoHopDetail = {
   toHostId: number | null;
   latencyMs: number | null;
   isTimeout: boolean;
+  /** Number of packet/connection attempts represented by this hop sample. */
+  probeCount?: number;
+  /** Number of attempts that succeeded. */
+  probeSuccesses?: number;
   recordedAt: number;
 };
 
@@ -15,6 +19,53 @@ type AutoHopResult = TunnelAutoHopDetail & {
 const byTunnel = new Map<string, Map<number, AutoHopResult>>();
 
 const AUTO_HOP_TTL_MS = 6 * 60 * 1000;
+
+type ProbeCounts = { probeCount: number; probeSuccesses: number };
+
+function normalizeProbeCounts(input: {
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
+  isTimeout?: boolean;
+}): ProbeCounts {
+  const rawCount = Number(input.probeCount);
+  const probeCount = Number.isInteger(rawCount) && rawCount >= 1 && rawCount <= 1024 ? rawCount : 1;
+  const rawSuccesses = Number(input.probeSuccesses);
+  const hasSuccesses = input.probeSuccesses !== undefined && input.probeSuccesses !== null
+    && Number.isInteger(rawSuccesses);
+  let probeSuccesses = hasSuccesses ? rawSuccesses : (input.isTimeout ? 0 : probeCount);
+  probeSuccesses = Math.max(0, Math.min(probeCount, probeSuccesses));
+  return { probeCount, probeSuccesses };
+}
+
+/**
+ * Combine hop-level probe counters conservatively. A packet is considered to
+ * have traversed the complete path only when every hop succeeded. We use the
+ * lowest per-hop success ratio and retain the largest attempt count so a
+ * partial loss on any hop is not collapsed into the legacy 1/1 sample.
+ */
+function aggregateProbeCounts(results: AutoHopResult[]): ProbeCounts {
+  if (results.length === 0) return { probeCount: 1, probeSuccesses: 0 };
+  const probeCount = Math.max(...results.map((result) => Math.max(1, result.probeCount || 1)), 1);
+  const successRatio = Math.min(...results.map((result) => {
+    const count = Math.max(1, result.probeCount || 1);
+    const successes = Math.max(0, Math.min(count, result.probeSuccesses || 0));
+    return successes / count;
+  }));
+  const probeSuccesses = Math.max(0, Math.min(probeCount, Math.floor(successRatio * probeCount + 1e-9)));
+  return { probeCount, probeSuccesses };
+}
+
+function attachAggregateProbeCounts<T extends { success: boolean; latencyMs: number | null }>(
+  aggregate: T,
+  results: AutoHopResult[],
+) {
+  const counts = aggregateProbeCounts(results);
+  // Preserve the old return shape for the ordinary 1/1 and 1/0 cases. This
+  // keeps existing callers compatible while exposing counters when they carry
+  // meaningful packet-level information.
+  if (counts.probeCount === 1 && counts.probeSuccesses === (aggregate.success ? 1 : 0)) return aggregate;
+  return { ...aggregate, ...counts };
+}
 
 function tunnelPathStateKey(tunnelId: number, pathKey?: string | null) {
   return `${tunnelId}:${String(pathKey || "default").trim().toLowerCase() || "default"}`;
@@ -47,9 +98,9 @@ function aggregateTunnelHopResults(stateKey: string, hopCount: number, generatio
   if (allowEarlyFailure && Array.from(hops.values()).some((result) => (
     result.generation === generation
     && now - result.recordedAt <= AUTO_HOP_TTL_MS
-    && (result.isTimeout || !result.latencyMs || result.latencyMs <= 0)
+    && ((result.probeSuccesses ?? (result.isTimeout ? 0 : 1)) <= 0 || !result.latencyMs || result.latencyMs <= 0)
   ))) {
-    return { success: false, latencyMs: null };
+    return attachAggregateProbeCounts({ success: false, latencyMs: null }, Array.from(hops.values()));
   }
 
   const results: AutoHopResult[] = [];
@@ -59,13 +110,14 @@ function aggregateTunnelHopResults(stateKey: string, hopCount: number, generatio
     results.push(result);
   }
 
-  if (results.some((result) => result.isTimeout || !result.latencyMs || result.latencyMs <= 0)) {
-    return { success: false, latencyMs: null };
-  }
-  return {
-    success: true,
-    latencyMs: results.reduce((sum, result) => sum + Number(result.latencyMs || 0), 0),
-  };
+  const counts = aggregateProbeCounts(results);
+  const successful = counts.probeSuccesses > 0 && results.every((result) => (
+    (result.probeSuccesses ?? (result.isTimeout ? 0 : 1)) > 0 && Number(result.latencyMs || 0) > 0
+  ));
+  return attachAggregateProbeCounts({
+    success: successful,
+    latencyMs: successful ? results.reduce((sum, result) => sum + Number(result.latencyMs || 0), 0) : null,
+  }, results);
 }
 
 export function recordTunnelAutoHopLatency(input: {
@@ -79,9 +131,13 @@ export function recordTunnelAutoHopLatency(input: {
   allowEarlyFailure?: boolean;
   fromHostId?: number | null;
   toHostId?: number | null;
+  probeCount?: number | null;
+  probeSuccesses?: number | null;
 }): null | {
   success: boolean;
   latencyMs: number | null;
+  probeCount?: number;
+  probeSuccesses?: number;
 } {
   const tunnelId = Number(input.tunnelId);
   const hopIndex = Number(input.hopIndex);
@@ -111,6 +167,7 @@ export function recordTunnelAutoHopLatency(input: {
     toHostId: Number.isInteger(Number(input.toHostId)) && Number(input.toHostId) > 0 ? Number(input.toHostId) : null,
     latencyMs: input.latencyMs,
     isTimeout: !!input.isTimeout,
+    ...normalizeProbeCounts(input),
     recordedAt: now,
   });
   return aggregateTunnelHopResults(stateKey, hopCount, generation, now, !!input.allowEarlyFailure);
@@ -162,7 +219,7 @@ export function getTunnelAutoHopDetails(input: {
     if (!result || result.hopCount !== hopCount || result.generation !== generation) return null;
     if (now - result.recordedAt > maxAgeMs) return null;
     if (referenceAt > 0 && Math.abs(result.recordedAt - referenceAt) > 30_000) return null;
-    details.push({
+    const detail: TunnelAutoHopDetail = {
       hopIndex: result.hopIndex,
       hopCount: result.hopCount,
       fromHostId: result.fromHostId,
@@ -170,7 +227,12 @@ export function getTunnelAutoHopDetails(input: {
       latencyMs: result.latencyMs,
       isTimeout: result.isTimeout,
       recordedAt: result.recordedAt,
-    });
+    };
+    if (result.probeCount !== 1 || result.probeSuccesses !== (result.isTimeout ? 0 : 1)) {
+      detail.probeCount = result.probeCount;
+      detail.probeSuccesses = result.probeSuccesses;
+    }
+    details.push(detail);
   }
   return details;
 }

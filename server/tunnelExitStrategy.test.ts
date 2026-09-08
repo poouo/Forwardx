@@ -65,3 +65,15 @@ test("leaves a new exit-group member without a port so the repository can alloca
     { hostId: 2, listenPort: 22002, mimicPort: 0, connectHost: null },
   ]);
 });
+
+test("treats string database false values as disabled exit members", () => {
+  const endpoints = planExitGroupTunnelEndpoints([
+    { hostId: 1, priority: 0, isEnabled: "0" as any },
+    { hostId: 2, priority: 1, isEnabled: "false" as any },
+    { hostId: 3, priority: 2, isEnabled: "1" as any },
+  ], []);
+
+  assert.deepEqual(endpoints, [
+    { hostId: 3, listenPort: 0, mimicPort: 0, connectHost: null },
+  ]);
+});

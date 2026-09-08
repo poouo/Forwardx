@@ -24,12 +24,14 @@ import {
   getForwardGroupChildRulesForTemplate,
   getForwardGroupTemplateRules,
   getForwardRuleById,
+  getForwardRulesByTunnel,
   markForwardRulePendingDelete,
   updateForwardRule,
 } from "./forwardRuleRepository";
 import { getHostById, getHosts, HOST_ONLINE_TTL_MS, isFreshHostHeartbeat } from "./hostRepository";
 import {
   disableForwardRulesByTunnel,
+  ensureTunnelListenerPortPolicy,
   findAvailablePort,
   findAvailableTunnelExitPort,
   getUsedPortsOnHost,
@@ -39,14 +41,16 @@ import {
   getTunnels,
   isPortUsedOnHost,
   reconcileForwardRuleTunnelExits,
+  reserveTunnelExitPort,
   resetForwardRulesByTunnel,
   restoreForwardRulesByTunnel,
   syncTunnelExitGroupEndpoints,
   updateTunnel,
+  usesSharedTunnelPrimaryListener,
 } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { findTrafficBillingResourceForRule, settleTrafficBillingRuleOnDelete, trafficBillingResourceCandidatesForRule } from "./trafficBillingRepository";
-import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
+import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latencyProbe";
 import {
@@ -72,6 +76,7 @@ import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
 import { getLastAuthenticatedAgentActivity } from "../agentActivity";
 import {
   getPresenceCapableHostLivenessSnapshot,
@@ -128,8 +133,12 @@ function nullableString(value: unknown) {
   return text || null;
 }
 
-function dbBool(value: unknown) {
-  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+function dbBool(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
 }
 
 function runtimeFieldEqual(current: unknown, next: unknown) {
@@ -149,8 +158,8 @@ async function updateForwardGroupRuntimeIfChanged(db: any, group: any, patch: Re
 
 function managedChildControlState(templateRule: any, existing: any) {
   return {
-    disabledByUser: !!templateRule?.disabledByUser,
-    disabledByTunnel: !!templateRule?.disabledByTunnel || !!existing?.disabledByTunnel,
+    disabledByUser: dbBool(templateRule?.disabledByUser),
+    disabledByTunnel: dbBool(templateRule?.disabledByTunnel) || dbBool(existing?.disabledByTunnel),
     // Protocol blocks are host-specific. A routine group sync must not clear a
     // real block reported by an Agent just because the visible template is on.
     protocolBlockReason: nullableString(templateRule?.protocolBlockReason)
@@ -165,7 +174,10 @@ function isMainBackupGostTunnelMode(mode: unknown) {
 }
 
 function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncForwardGroupRulesOptions) {
-  if (!options.preserveRuntime || !existing?.isEnabled || !existing?.isRunning || existing?.pendingDelete) return false;
+  if (!options.preserveRuntime
+    || !dbBool(existing?.isEnabled)
+    || !dbBool(existing?.isRunning)
+    || dbBool(existing?.pendingDelete)) return false;
   const numberKeys = [
     "hostId",
     "sourcePort",
@@ -519,15 +531,21 @@ function validateForwardGroupModeMembers(groupMode: ForwardGroupMode, groupType:
   }
   if (groupMode === "chain") {
     const minMembers = options.externalEntry ? 1 : 2;
-    if (members.length < minMembers || members.length > 5) {
-      throw new Error(options.externalEntry ? "Port forwarding chain requires 1-5 hosts" : "Port forwarding chain requires 2-5 hosts");
+    if (members.length < minMembers || members.length > MAX_FORWARD_GROUP_MEMBERS) {
+      throw new Error(options.externalEntry
+        ? `Port forwarding chain requires 1-${MAX_FORWARD_GROUP_MEMBERS} hosts`
+        : `Port forwarding chain requires 2-${MAX_FORWARD_GROUP_MEMBERS} hosts`);
     }
     if (groupType !== "host") throw new Error("Port forwarding chain only supports host members");
     if (members.some((member) => member.memberType !== "host")) throw new Error("Port forwarding chain only supports host members");
     return;
   }
   if (isCollectionGroupMode(groupMode)) {
-    if (members.length < 1 || members.length > 5) throw new Error(groupMode === "entry" ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
+    if (members.length < 1 || members.length > MAX_FORWARD_GROUP_MEMBERS) {
+      throw new Error(groupMode === "entry"
+        ? `入口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
+        : `出口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+    }
     if (groupType !== "host") throw new Error(groupMode === "entry" ? "入口组仅支持主机成员" : "出口组仅支持主机成员");
     if (members.some((member) => member.memberType !== "host")) throw new Error(groupMode === "entry" ? "入口组仅支持主机成员" : "出口组仅支持主机成员");
   }
@@ -592,14 +610,14 @@ async function normalizeForwardGroupMemberInput(
 
 function sortedMembers(group: any, enabledOnly = false) {
   const members = [...((group as any).members || [])].sort((a, b) => Number(a.priority) - Number(b.priority));
-  return enabledOnly ? members.filter((member: any) => !!member.isEnabled) : members;
+  return enabledOnly ? members.filter((member: any) => dbBool(member?.isEnabled)) : members;
 }
 
 async function chainEntryMembers(group: any) {
   const entryGroupId = Number((group as any)?.entryGroupId || 0);
   if (!entryGroupId) return [] as any[];
   const entryGroup = await getForwardGroupById(entryGroupId) as any;
-  if (!entryGroup || groupModeOf(entryGroup) !== "entry" || !entryGroup.isEnabled) return [] as any[];
+  if (!entryGroup || groupModeOf(entryGroup) !== "entry" || !dbBool(entryGroup.isEnabled)) return [] as any[];
   return sortedMembers(entryGroup, true).filter((member: any) => member.memberType === "host");
 }
 
@@ -682,13 +700,13 @@ async function refreshTunnelsUsingForwardGroup(
   const group = groupMode === "exit" ? await getForwardGroupById(id) as any : null;
   const exitStrategy = groupMode === "exit" ? normalizeExitGroupStrategy(group?.exitStrategy) : null;
   const exitMembers = group ? sortedMembers(group) : [];
-  const hasEnabledExitMember = exitMembers.some((member: any) => member?.memberType === "host" && member?.isEnabled !== false && Number(member?.isEnabled) !== 0);
+  const hasEnabledExitMember = exitMembers.some((member: any) => member?.memberType === "host" && dbBool(member?.isEnabled));
 
   for (const tunnel of affectedTunnels) {
     if (exitStrategy && group && hasEnabledExitMember) {
       const synced = await syncTunnelExitGroupEndpoints(tunnel, exitMembers, exitStrategy);
       Object.assign(tunnel, synced.tunnel);
-    } else if (exitStrategy && group?.isEnabled) {
+    } else if (exitStrategy && dbBool(group?.isEnabled)) {
       throw new Error("Enabled exit group must contain at least one enabled host");
     }
     await refreshControlledTunnelRuntime(tunnel, reason, { resetRules: true, extraHostIds: referencedHostIds });
@@ -1827,7 +1845,7 @@ async function firstAvailableResolvableMember(members: any[], group: any, record
   const activeMemberId = Number(group?.activeMemberId || 0);
   let pendingChinaHealth = false;
   for (const member of members) {
-    if (member?.isEnabled === false) continue;
+    if (!dbBool(member?.isEnabled, true)) continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
     const liveness = await resolveMemberAgentLiveness(member, now);
@@ -1881,7 +1899,7 @@ export async function validateForwardGroupRecordMembers(group: any, members: For
   const label = mode === "entry" ? "入口组" : "转发组";
   const missing: string[] = [];
   for (const member of members || []) {
-    if (member?.isEnabled === false) continue;
+    if (!dbBool(member?.isEnabled, true)) continue;
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (value) continue;
     let name = "";
@@ -1932,7 +1950,7 @@ export async function getForwardGroupDefaultHostId(groupId: number) {
   }
   const members = sortedMembers(group);
   for (const member of members) {
-    if (!member.isEnabled) continue;
+    if (!dbBool(member?.isEnabled)) continue;
     const hostId = await memberEntryHostId(member);
     if (hostId) return hostId;
   }
@@ -1947,7 +1965,7 @@ export async function getForwardGroupRuleEntryHostIds(groupId: number) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
   const members = sortedMembers(group);
-  const enabledMembers = members.filter((member: any) => !!member?.isEnabled);
+  const enabledMembers = members.filter((member: any) => dbBool(member?.isEnabled));
   const groupMode = groupModeOf(group);
   const chainEntries = groupMode === "chain" ? await chainEntryMembers(group) : [];
   // Only the public edge uses the user-selected source port. Downstream chain
@@ -1956,7 +1974,7 @@ export async function getForwardGroupRuleEntryHostIds(groupId: number) {
     ? (chainEntries.length > 0 ? chainEntries : enabledMembers.slice(0, 1))
     : members;
   const hostIds = await Promise.all(portMembers
-    .filter((member: any) => member?.isEnabled !== false)
+    .filter((member: any) => dbBool(member?.isEnabled, true))
     .map((member: any) => memberEntryHostId(member)));
   return Array.from(new Set(hostIds.filter((hostId) => Number.isInteger(hostId) && hostId > 0)))
     .sort((left, right) => left - right);
@@ -1985,12 +2003,10 @@ async function entryPortPolicyForMember(member: any): Promise<{ hostId: number; 
     if (!entryHost) throw new Error("Tunnel entry host does not exist");
     return {
       hostId: Number((tunnel as any).entryHostId || 0),
-      policy: combinePortPolicies(
-        portPolicyFrom(entryHost as any),
-        portPolicyFrom({
-          portRangeStart: (tunnel as any).portRangeStart,
-          portRangeEnd: (tunnel as any).portRangeEnd,
-        }),
+      policy: combineHostPortPolicyWithRange(
+        entryHost as any,
+        (tunnel as any).portRangeStart,
+        (tunnel as any).portRangeEnd,
       ),
     };
   }
@@ -2091,8 +2107,10 @@ export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ 
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
   const entryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
-  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > 5)) {
-    throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires at least two enabled hosts");
+  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
+    throw new Error(entryMembers.length > 0
+      ? `Port forwarding chain requires 1-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`
+      : "Port forwarding chain requires at least two enabled hosts");
   }
 
   let policy = portPolicyFrom(null);
@@ -2121,8 +2139,10 @@ export async function findAvailableForwardGroupPort(
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
   const entryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
-  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > 5)) {
-    throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires at least two enabled hosts");
+  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
+    throw new Error(entryMembers.length > 0
+      ? `Port forwarding chain requires 1-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`
+      : "Port forwarding chain requires at least two enabled hosts");
   }
 
   const entries: Array<{ hostId: number; ignoreRuleIds: number[] }> = [];
@@ -2202,14 +2222,16 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
     if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
   }
   if (groupMode === "chain") {
-    const enabledMembers = members.filter((member: any) => !!member.isEnabled);
+    const enabledMembers = members.filter((member: any) => dbBool(member?.isEnabled));
     const entryMembers = await chainEntryMembers(group);
     const minEnabledMembers = entryMembers.length > 0 ? 1 : 2;
     if (String((group as any).groupType || "host") !== "host") {
       throw new Error("Port forwarding chain only supports host members");
     }
-    if (enabledMembers.length < minEnabledMembers || enabledMembers.length > 5) {
-      throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
+    if (enabledMembers.length < minEnabledMembers || enabledMembers.length > MAX_FORWARD_GROUP_MEMBERS) {
+      throw new Error(entryMembers.length > 0
+        ? `Port forwarding chain requires 1-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`
+        : `Port forwarding chain requires 2-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`);
     }
     const hasExternalEntry = entryMembers.length > 0;
     for (const [index, member] of enabledMembers.entries()) {
@@ -2234,10 +2256,10 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
 
   const chainEntries = groupMode === "chain" ? await chainEntryMembers(group) : [];
   const portCheckMembers = groupMode === "chain"
-    ? (chainEntries.length > 0 ? chainEntries : members.filter((member: any) => !!member.isEnabled).slice(0, 1))
+    ? (chainEntries.length > 0 ? chainEntries : members.filter((member: any) => dbBool(member?.isEnabled)).slice(0, 1))
     : members;
   const firstChainMember = groupMode === "chain"
-    ? members.filter((member: any) => !!member.isEnabled)[0] || null
+    ? members.filter((member: any) => dbBool(member?.isEnabled))[0] || null
     : null;
   const excludedChildRuleIds = config.excludeTemplateRuleId
     ? (await getForwardGroupChildRulesForTemplate(Number(config.excludeTemplateRuleId)))
@@ -2245,7 +2267,7 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
       .filter((id: number) => Number.isInteger(id) && id > 0)
     : [];
   for (const member of portCheckMembers) {
-    if (!member.isEnabled) continue;
+    if (!dbBool(member?.isEnabled)) continue;
     const hostId = await memberEntryHostId(member);
     if (!hostId) throw new Error("Forward group member has no valid entry agent");
     await assertEntryPortAllowed(member, sourcePort);
@@ -2319,7 +2341,7 @@ export function filterForwardGroupFieldsForUse(
     telegramSwitchNotifyEnabled: !!group.telegramSwitchNotifyEnabled,
     ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
     autoFailback: group.autoFailback,
-    isEnabled: group.isEnabled,
+    isEnabled: dbBool(group.isEnabled, true),
     lastStatus: group.lastStatus,
     lastDdnsValue: group.lastDdnsValue,
     lastFailoverAt: group.lastFailoverAt,
@@ -2350,7 +2372,7 @@ export function filterForwardGroupFieldsForUse(
           chinaHealthLatencyMs: member.chinaHealthLatencyMs,
           chinaHealthCheckedAt: member.chinaHealthCheckedAt,
           priority: member.priority,
-          isEnabled: member.isEnabled,
+          isEnabled: dbBool(member.isEnabled, true),
           host: member.host && hostVisible ? {
             id: member.host.id,
             name: member.host.name,
@@ -2415,12 +2437,12 @@ async function dependentChainGroupIds(entryGroupId: number) {
 }
 
 async function forwardGroupRuntimeDependenciesEnabled(group: any) {
-  if (!group?.isEnabled) return false;
+  if (!dbBool(group?.isEnabled)) return false;
   if (groupModeOf(group) !== "chain") return true;
   const entryGroupId = Number(group?.entryGroupId || 0);
   if (entryGroupId <= 0) return true;
   const entryGroup = await getForwardGroupById(entryGroupId) as any;
-  return !!entryGroup?.isEnabled && groupModeOf(entryGroup) === "entry";
+  return dbBool(entryGroup?.isEnabled) && groupModeOf(entryGroup) === "entry";
 }
 
 async function refreshControlledForwardRules(rules: any[], reason: string) {
@@ -2442,7 +2464,7 @@ async function refreshControlledForwardRules(rules: any[], reason: string) {
 
 export async function refreshForwardGroupRuntime(groupId: number, reason = "forward-group-runtime-updated") {
   const rules = (await getForwardGroupChildRules(Number(groupId)) as any[])
-    .filter((rule) => !rule?.pendingDelete);
+    .filter((rule) => !dbBool(rule?.pendingDelete));
   await refreshControlledForwardRules(rules, reason);
   return rules.length;
 }
@@ -2457,7 +2479,7 @@ async function disableForwardRulesByGroupIds(groupIds: number[], reason: string)
     eq(forwardRules.pendingDelete, false),
   ));
   const controlledRules = (rules as any[]).filter((rule) => (
-    !!rule.isEnabled || !!rule.disabledByTunnel || !!rule.disabledByGroup
+    dbBool(rule.isEnabled) || dbBool(rule.disabledByTunnel) || dbBool(rule.disabledByGroup)
   ));
   const controlledIds = controlledRules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
   if (controlledIds.length > 0) {
@@ -2483,10 +2505,10 @@ async function restoreForwardRulesByGroupId(groupId: number, reason: string) {
     eq(forwardRules.pendingDelete, false),
   ));
   for (const rule of rules as any[]) {
-    const isTemplate = !!rule.isForwardGroupTemplate;
+    const isTemplate = dbBool(rule.isForwardGroupTemplate);
     const canEnableTemplate = isTemplate
-      && !rule.disabledByTunnel
-      && !rule.disabledByUser
+      && !dbBool(rule.disabledByTunnel)
+      && !dbBool(rule.disabledByUser)
       && !String(rule.protocolBlockReason || "").trim();
     await db.update(forwardRules).set({
       isEnabled: canEnableTemplate,
@@ -2508,7 +2530,7 @@ async function tunnelGroupDependenciesEnabled(tunnel: any) {
   for (const ref of refs) {
     if (ref.id <= 0) continue;
     const group = await getForwardGroupById(ref.id) as any;
-    if (!group?.isEnabled || groupModeOf(group) !== ref.mode) return false;
+    if (!dbBool(group?.isEnabled) || groupModeOf(group) !== ref.mode) return false;
   }
   return true;
 }
@@ -2527,7 +2549,7 @@ async function setTunnelsEnabledByGroup(groupId: number, groupMode: "entry" | "e
       const tunnel = await getTunnelById(tunnelId) as any;
       if (!tunnel) return;
       if (!isEnabled) {
-        if (!tunnel.isEnabled && !tunnel.disabledByGroup) return;
+        if (!dbBool(tunnel.isEnabled) && !dbBool(tunnel.disabledByGroup)) return;
         await updateTunnel(tunnelId, {
           isEnabled: false,
           isRunning: false,
@@ -2538,7 +2560,7 @@ async function setTunnelsEnabledByGroup(groupId: number, groupMode: "entry" | "e
         changed += 1;
         return;
       }
-      if (!tunnel.disabledByGroup || !(await tunnelGroupDependenciesEnabled(tunnel))) return;
+      if (!dbBool(tunnel.disabledByGroup) || !(await tunnelGroupDependenciesEnabled(tunnel))) return;
       await updateTunnel(tunnelId, {
         isEnabled: true,
         isRunning: false,
@@ -2556,13 +2578,13 @@ export async function setForwardGroupEnabled(groupId: number, isEnabled: boolean
   const group = await getForwardGroupById(groupId) as any;
   if (!group) throw new Error("转发资源不存在");
   const mode = groupModeOf(group);
-  const wasEnabled = !!group.isEnabled;
+  const wasEnabled = dbBool(group.isEnabled);
   if (isEnabled && mode === "exit" && !sortedMembers(group, true).some((member: any) => member?.memberType === "host")) {
     throw new Error("Enabled exit group must contain at least one enabled host");
   }
   if (isEnabled && mode === "chain" && Number(group.entryGroupId || 0) > 0) {
     const entryGroup = await getForwardGroupById(Number(group.entryGroupId)) as any;
-    if (!entryGroup?.isEnabled || groupModeOf(entryGroup) !== "entry") {
+    if (!dbBool(entryGroup?.isEnabled) || groupModeOf(entryGroup) !== "entry") {
       throw new Error("关联入口组未启用，请先开启入口组");
     }
   }
@@ -2616,9 +2638,33 @@ export async function setForwardGroupEnabled(groupId: number, isEnabled: boolean
   return { success: true, affectedRules, affectedTunnels };
 }
 
+async function preferredSharedTunnelListenPortForChild(tunnel: any, ruleId: number, enabled: boolean) {
+  if (!usesSharedTunnelPrimaryListener(tunnel)) return null;
+  const tunnelId = Number(tunnel?.id || 0);
+  const listenPort = Number(tunnel?.listenPort || 0);
+  if (tunnelId <= 0 || listenPort <= 0 || !dbBool(enabled, true)) return null;
+  const rules = await getForwardRulesByTunnel(tunnelId);
+  const activeIds = (rules as any[])
+    .filter((candidate) => (
+      candidate
+      && !dbBool(candidate.isForwardGroupTemplate)
+      && !dbBool(candidate.pendingDelete)
+      && dbBool(candidate.isEnabled)
+      && String(candidate.forwardType || "").trim().toLowerCase() === "gost"
+      && Number(candidate.id || 0) !== Number(ruleId || 0)
+    ))
+    .map((candidate) => Number(candidate.id || 0))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  const candidateId = Number(ruleId || 0);
+  if (candidateId <= 0) return activeIds.length === 0 ? listenPort : null;
+  activeIds.push(candidateId);
+  const primaryId = Math.min(...activeIds);
+  return primaryId === candidateId ? listenPort : null;
+}
+
 async function ensureMemberRuleForTemplate(group: any, templateRule: any, member: any, options: SyncForwardGroupRulesOptions = {}) {
   const existing = await existingChildRule(Number(templateRule.id), Number(member.id));
-  const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled;
+  const enabled = dbBool(group?.isEnabled) && dbBool(templateRule?.isEnabled) && dbBool(member?.isEnabled);
   if (!enabled) {
     if (existing) {
       await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
@@ -2647,32 +2693,50 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     tunnelId = Number(member.tunnelId);
     tunnel = await getTunnelById(tunnelId);
     if (!tunnel) throw new Error("Tunnel does not exist");
-    if (!tunnel.isEnabled) {
+    if (!dbBool(tunnel.isEnabled)) {
       if (existing) {
         await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
         await refreshRuleEndpoints(existing, "forward-group-tunnel-disabled");
       }
       return null;
     }
-    tunnelExitPort = Number(existing?.tunnelExitPort || 0) || null;
-    if (!tunnelExitPort) {
-      const exit = await getHostById(Number(tunnel.exitHostId));
-      const excludeRuleIds = [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean);
-      tunnelExitPortReservation = await reserveAvailableHostPort({
+    const exit = await getHostById(Number(tunnel.exitHostId));
+    const excludeRuleIds = [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean);
+    const listenerRepair = usesSharedTunnelPrimaryListener(tunnel)
+      ? await ensureTunnelListenerPortPolicy(tunnel, {
         hostId: Number(tunnel.exitHostId),
-        protocol: "both",
-        findPort: (reservedPorts) => findAvailableTunnelExitPort(
-          Number(tunnel.exitHostId),
-          (exit as any)?.portRangeStart,
-          (exit as any)?.portRangeEnd,
-          reservedPorts,
-          excludeRuleIds,
-        ),
-        isUsed: (port) => isPortUsedOnHost(Number(tunnel.exitHostId), port, excludeRuleIds, "both"),
-      });
-      if (!tunnelExitPortReservation) throw new Error("Tunnel exit agent has no available port");
-      tunnelExitPort = tunnelExitPortReservation.port;
+        syncSharedPrimaryRule: true,
+      })
+      : null;
+    if (usesSharedTunnelPrimaryListener(tunnel) && !listenerRepair) {
+      throw new Error("Tunnel exit agent has no available listener port");
     }
+    const sharedListenPort = await preferredSharedTunnelListenPortForChild(
+      tunnel,
+      Number(existing?.id || 0),
+      enabled,
+    );
+    // Reuse the listener reservation for the shared primary child. Secondary
+    // children must release it and receive their own exit port.
+    if (listenerRepair?.reservation && Number(sharedListenPort || 0) === listenerRepair.port) {
+      tunnelExitPortReservation = listenerRepair.reservation;
+    } else {
+      listenerRepair?.reservation.release();
+    }
+    if (!tunnelExitPortReservation) {
+      tunnelExitPortReservation = await reserveTunnelExitPort({
+        hostId: Number(tunnel.exitHostId),
+        preferredStart: (exit as any)?.portRangeStart,
+        preferredEnd: (exit as any)?.portRangeEnd,
+        currentPort: sharedListenPort ?? Number(existing?.tunnelExitPort || 0),
+        excludeRuleIds,
+        allowSameTunnelListener: Number(sharedListenPort || 0) > 0,
+        excludeTunnelId: Number(tunnel.id),
+        protocol: "both",
+      });
+    }
+    if (!tunnelExitPortReservation) throw new Error("Tunnel exit agent has no available port");
+    tunnelExitPort = tunnelExitPortReservation.port;
   }
   const protocol = String(templateRule.protocol || "both");
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
@@ -2694,7 +2758,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   // Realm 2.9.x ignores network.fast_open and network.zero_copy. Child rules
   // must therefore never inherit these legacy flags from a group/template.
   const directRealmOptimizationSupported = false;
-  const templateFailoverEnabled = !!(failoverRuntimeSource as any).failoverEnabled && protocol === "tcp";
+  const templateFailoverEnabled = dbBool((failoverRuntimeSource as any).failoverEnabled) && protocol === "tcp";
   const directFailoverEnabled = templateFailoverEnabled && directForwardType === "gost";
   const tunnelMode = String(tunnel?.mode || "").toLowerCase();
   const tunnelFailoverSupported = member.memberType === "tunnel" && isMainBackupGostTunnelMode(tunnelMode);
@@ -2725,25 +2789,25 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     sourcePort: Number(templateRule.sourcePort),
     targetIp: templateRule.targetIp,
     targetPort: Number(templateRule.targetPort),
-    telegramErrorNotifyEnabled: !!(templateRule as any).telegramErrorNotifyEnabled,
+    telegramErrorNotifyEnabled: dbBool((templateRule as any).telegramErrorNotifyEnabled),
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
-    proxyProtocolReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolReceive : directProxySupported && !!(directRuntimeSource as any).proxyProtocolReceive,
-    proxyProtocolSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolSend : directProxySupported && !!(directRuntimeSource as any).proxyProtocolSend,
-    proxyProtocolExitReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitReceive : false,
-    proxyProtocolExitSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitSend : false,
+    proxyProtocolReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && dbBool(tunnel.proxyProtocolReceive) : directProxySupported && dbBool((directRuntimeSource as any).proxyProtocolReceive),
+    proxyProtocolSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && dbBool(tunnel.proxyProtocolSend) : directProxySupported && dbBool((directRuntimeSource as any).proxyProtocolSend),
+    proxyProtocolExitReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && dbBool(tunnel.proxyProtocolExitReceive) : false,
+    proxyProtocolExitSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && dbBool(tunnel.proxyProtocolExitSend) : false,
     proxyProtocolVersion: member.memberType === "tunnel" ? (tunnelProxySupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1) : (directProxySupported && Number((directRuntimeSource as any).proxyProtocolVersion) === 2 ? 2 : 1),
-    tcpFastOpen: member.memberType === "tunnel" ? tunnelForwardx && protocolTcpSupported && !!tunnel.tcpFastOpen : directRealmOptimizationSupported && !!(directRuntimeSource as any).tcpFastOpen,
-    zeroCopy: member.memberType === "tunnel" ? false : directRealmOptimizationSupported && !!(directRuntimeSource as any).zeroCopy,
-    udpOverTcp: member.memberType === "tunnel" ? tunnelForwardx && protocolUdpSupported && !!tunnel.udpOverTcp : false,
+    tcpFastOpen: member.memberType === "tunnel" ? tunnelForwardx && protocolTcpSupported && dbBool(tunnel.tcpFastOpen) : directRealmOptimizationSupported && dbBool((directRuntimeSource as any).tcpFastOpen),
+    zeroCopy: member.memberType === "tunnel" ? false : directRealmOptimizationSupported && dbBool((directRuntimeSource as any).zeroCopy),
+    udpOverTcp: member.memberType === "tunnel" ? tunnelForwardx && protocolUdpSupported && dbBool(tunnel.udpOverTcp) : false,
     udpOverTcpPort: null,
     failoverEnabled: childFailoverEnabled,
     failoverStrategy: (failoverRuntimeSource as any).failoverStrategy || "fallback",
     failoverTargets: childFailoverEnabled ? (failoverRuntimeSource as any).failoverTargets || null : null,
     failoverSeconds: Number((failoverRuntimeSource as any).failoverSeconds || 60),
     recoverSeconds: Number((failoverRuntimeSource as any).recoverSeconds || 120),
-    autoFailback: (failoverRuntimeSource as any).autoFailback !== false,
+    autoFailback: dbBool((failoverRuntimeSource as any).autoFailback, true),
     isEnabled: !childDisabledByUser && !childDisabledByTunnel && !childProtocolBlockReason,
     disabledByGroup: false,
     disabledByTunnel: childDisabledByTunnel,
@@ -2791,6 +2855,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     await updateForwardRule(Number(existing.id), payload);
     if (member.memberType === "tunnel") {
       const tunnel = await getTunnelById(Number(tunnelId || 0));
+      tunnelExitPortReservation?.release();
+      tunnelExitPortReservation = null;
       if (tunnel) await reconcileForwardRuleTunnelExits({ ...existing, ...payload, id: existing.id }, tunnel);
     }
     await refreshRuleEndpoints({ ...existing, ...payload, id: existing.id }, "forward-group-child-updated");
@@ -2800,6 +2866,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const ruleId = await createForwardRule(payload);
   if (member.memberType === "tunnel") {
     const tunnel = await getTunnelById(Number(tunnelId || 0));
+    tunnelExitPortReservation?.release();
+    tunnelExitPortReservation = null;
     if (tunnel) await reconcileForwardRuleTunnelExits({ ...payload, id: ruleId }, tunnel);
   }
   await refreshRuleEndpoints({ ...payload, id: ruleId }, "forward-group-child-created");
@@ -2816,7 +2884,7 @@ async function reserveChainMemberListenerPort(
   options: Pick<SyncForwardGroupRulesOptions, "createMissing"> = {},
 ) {
   const existing = await existingChildRule(Number(templateRule.id), Number(member.id), hostId);
-  if (!templateRule?.isEnabled || (!existing && options.createMissing === false)) return null;
+  if (!dbBool(templateRule?.isEnabled) || (!existing && options.createMissing === false)) return null;
   const entry = await entryPortPolicyForMember(member);
   if (entry.hostId !== hostId) throw new Error("Port forwarding chain member host changed during allocation");
   const ignoreRuleIds = [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean);
@@ -2867,7 +2935,10 @@ async function ensureChainRuleForTemplate(
   const sourceHostId = Number(overrides.sourceHost?.id || sourceMember.hostId || 0);
   const existing = await existingChildRule(Number(templateRule.id), Number(member.id), sourceHostId);
   if (!existing && options.createMissing === false) return null;
-  const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled && !!sourceMember.isEnabled;
+  const enabled = dbBool(group?.isEnabled)
+    && dbBool(templateRule?.isEnabled)
+    && dbBool(member?.isEnabled)
+    && dbBool(sourceMember?.isEnabled);
   if (!enabled) {
     if (existing) {
       await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: false } as any);
@@ -2933,17 +3004,17 @@ async function ensureChainRuleForTemplate(
     sourcePort,
     targetIp,
     targetPort,
-    telegramErrorNotifyEnabled: !!(templateRule as any).telegramErrorNotifyEnabled,
+    telegramErrorNotifyEnabled: dbBool((templateRule as any).telegramErrorNotifyEnabled),
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
-    proxyProtocolReceive: chainProxyProtocolSupported && !!(group as any).proxyProtocolReceive,
-    proxyProtocolSend: chainProxyProtocolSupported && !!(group as any).proxyProtocolSend,
+    proxyProtocolReceive: chainProxyProtocolSupported && dbBool((group as any).proxyProtocolReceive),
+    proxyProtocolSend: chainProxyProtocolSupported && dbBool((group as any).proxyProtocolSend),
     proxyProtocolExitReceive: false,
     proxyProtocolExitSend: false,
     proxyProtocolVersion: chainProxyProtocolSupported && Number((group as any).proxyProtocolVersion) === 2 ? 2 : 1,
-    tcpFastOpen: chainRealmOptimizationSupported && !!(group as any).tcpFastOpen,
-    zeroCopy: chainRealmOptimizationSupported && !!(group as any).zeroCopy,
+    tcpFastOpen: chainRealmOptimizationSupported && dbBool((group as any).tcpFastOpen),
+    zeroCopy: chainRealmOptimizationSupported && dbBool((group as any).zeroCopy),
     udpOverTcp: false,
     udpOverTcpPort: null,
     failoverEnabled: false,
@@ -3045,7 +3116,7 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
   const members = sortedMembers(group) as any[];
   const groupMode = groupModeOf(group);
   const preserveRuntime = !!options.preserveRuntime;
-  const activeChainMembers = groupMode === "chain" ? members.filter((member: any) => !!member.isEnabled) : members;
+  const activeChainMembers = groupMode === "chain" ? members.filter((member: any) => dbBool(member?.isEnabled)) : members;
 
   if (groupMode === "port") {
     if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
@@ -3070,9 +3141,9 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
   }
 
   const runtimeDependenciesEnabled = await forwardGroupRuntimeDependenciesEnabled(group);
-  const hasEnabledTemplates = (templates as any[]).some((template) => !!template.isEnabled);
+  const hasEnabledTemplates = (templates as any[]).some((template) => dbBool(template?.isEnabled));
   if (!runtimeDependenciesEnabled || !hasEnabledTemplates) {
-    const childRules = (await getForwardGroupChildRules(groupId) as any[]).filter((rule) => !rule.pendingDelete);
+    const childRules = (await getForwardGroupChildRules(groupId) as any[]).filter((rule) => !dbBool(rule?.pendingDelete));
     const childIds = childRules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
     if (childIds.length > 0) {
       await db.update(forwardRules).set({
@@ -3142,8 +3213,10 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
     if (groupMode === "chain") {
       const entryMembers = activeChainEntryMembers;
       const minChainMembers = entryMembers.length > 0 ? 1 : 2;
-      if (activeChainMembers.length < minChainMembers || activeChainMembers.length > 5) {
-        throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
+      if (activeChainMembers.length < minChainMembers || activeChainMembers.length > MAX_FORWARD_GROUP_MEMBERS) {
+        throw new Error(entryMembers.length > 0
+          ? `Port forwarding chain requires 1-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`
+          : `Port forwarding chain requires 2-${MAX_FORWARD_GROUP_MEMBERS} enabled hosts`);
       }
       if (options.createMissing === false) {
         const existingListeners = await Promise.all(activeChainMembers.map(async (member: any) => {
@@ -3311,7 +3384,7 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
       tunnelId: member.memberType === "tunnel" ? member.tunnelId : null,
       connectHost: member.connectHost ?? null,
       priority: member.priority ?? index,
-      isEnabled: member.isEnabled ?? true,
+      isEnabled: dbBool(member.isEnabled, true),
       createdAt: nowDate(),
       updatedAt: nowDate(),
     });
@@ -3420,7 +3493,7 @@ export async function replaceForwardGroupMembers(
       && Number(row.memberType === "host" ? row.hostId : row.tunnelId) === Number(member.memberType === "host" ? member.hostId : member.tunnelId));
     const payload: Partial<InsertForwardGroupMember> = {
       priority: member.priority ?? index,
-      isEnabled: member.isEnabled ?? true,
+      isEnabled: dbBool(member.isEnabled, true),
       connectHost: member.connectHost ?? null,
       updatedAt: nowDate(),
     } as any;
@@ -3434,7 +3507,7 @@ export async function replaceForwardGroupMembers(
         tunnelId: member.memberType === "tunnel" ? member.tunnelId : null,
         connectHost: member.connectHost ?? null,
         priority: member.priority ?? index,
-        isEnabled: member.isEnabled ?? true,
+        isEnabled: dbBool(member.isEnabled, true),
         createdAt: nowDate(),
         updatedAt: nowDate(),
       });
@@ -3627,7 +3700,7 @@ async function evaluateMemberHealth(member: any, group: any) {
   let allRuleHealthAgentFinal = false;
   let nextProbeExpiryAt: number | null = null;
 
-  if (!member.isEnabled) {
+  if (!dbBool(member?.isEnabled)) {
     message = "Member disabled";
   } else if (childRules.length === 0) {
     message = "No forwarding rule is using this group yet";
@@ -4364,7 +4437,7 @@ async function runForwardGroupFailoverForGroups(
   const ddnsSettings = context?.ddnsSettings ?? await getDdnsSettings();
   const hostById = context?.hostById ?? new Map((await getHosts() as any[]).map((host: any) => [Number(host.id), host]));
   for (const group of groups as any[]) {
-    if (!group.isEnabled) continue;
+    if (!dbBool(group?.isEnabled)) continue;
     const mode = groupModeOf(group);
     if (mode === "chain" || mode === "port") continue;
     if (mode === "entry") {

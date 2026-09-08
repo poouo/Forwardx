@@ -8,6 +8,7 @@ import {
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolLiteral, bucketExpression, inList, quoteIdentifier } from "../dbCompat";
 import { clampPositiveInt, epochSeconds } from "./repositoryUtils";
+import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
 
 export type HostProbeMethod = "tcping" | "ping";
 export type HostProbeScope = "all" | "exclude" | "specific";
@@ -194,7 +195,16 @@ export async function getHostProbeTasksForHost(hostId: number) {
 export async function insertHostProbeServiceStats(stats: InsertHostProbeServiceStat[]) {
   const db = await getDb();
   if (!db || stats.length === 0) return;
-  await db.insert(hostProbeServiceStats).values(stats);
+  await db.insert(hostProbeServiceStats).values(stats.map((stat) => {
+    // Preserve an explicit zero-success report at the write boundary.  Read
+    // paths retain the legacy compatibility behavior for pre-counter rows.
+    const probeCounts = normalizeAgentProbeCounts(stat, { legacyZeroAsSuccess: false });
+    return {
+      ...stat,
+      ...probeCounts,
+      isTimeout: probeCounts.probeSuccesses <= 0,
+    };
+  }) as InsertHostProbeServiceStat[]);
 }
 
 export async function getLatestHostProbeServiceStats(serviceIds: number[], hostId?: number) {
@@ -212,6 +222,8 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[], hostI
             s.${q("hostId")} AS ${q("hostId")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
             s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("probeCount")} AS ${q("probeCount")},
+            s.${q("probeSuccesses")} AS ${q("probeSuccesses")},
             s.${q("recordedAt")} AS ${q("recordedAt")}
        FROM ${q("host_probe_service_stats")} s
        INNER JOIN (
@@ -225,11 +237,14 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[], hostI
   );
   const latest = new Map<number, any>();
   for (const row of rows) {
+    const storedTimeout = rowBool(row.isTimeout);
+    const probeCounts = normalizeAgentProbeCounts({ ...row, isTimeout: storedTimeout });
     latest.set(Number(row.serviceId), {
       serviceId: Number(row.serviceId),
       hostId: Number(row.hostId),
       latencyMs: row.latencyMs == null ? null : Number(row.latencyMs),
-      isTimeout: rowBool(row.isTimeout),
+      isTimeout: probeCounts.probeSuccesses <= 0,
+      ...probeCounts,
       recordedAt: rowDate(row.recordedAt),
     });
   }
@@ -295,20 +310,36 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
     Math.max(1, Math.ceil(bucketForLimit / 60) * 60),
   );
   const bucketExpr = bucketExpression("s", "recordedAt", bucketSeconds);
-  const successful = boolLiteral(false);
   const timedOut = boolLiteral(true);
+  const effectiveProbeCount = `CASE WHEN s.${q("probeCount")} BETWEEN 1 AND 1024 THEN s.${q("probeCount")} ELSE 1 END`;
+  const effectiveProbeSuccesses = `CASE
+              WHEN s.${q("isTimeout")} = ${timedOut}
+                   AND (s.${q("probeSuccesses")} IS NULL OR s.${q("probeSuccesses")} <= 0) THEN 0
+              WHEN s.${q("probeSuccesses")} > 0 THEN
+                CASE WHEN s.${q("probeSuccesses")} > (${effectiveProbeCount})
+                     THEN (${effectiveProbeCount}) ELSE s.${q("probeSuccesses")} END
+              WHEN s.${q("isTimeout")} = ${timedOut} THEN 0
+              -- A successful row from an older Agent has the new column's
+              -- zero default. Preserve all represented probes, just as the
+              -- read-side normalizer does.
+              ELSE (${effectiveProbeCount})
+            END`;
   const rows = await queryRaw<any>(
     `SELECT s.${q("serviceId")},
             s.${q("hostId")},
             ${bucketExpr} AS ${q("bucketStart")},
-            AVG(CASE WHEN s.${q("isTimeout")} = ${successful}
+            SUM(CASE WHEN (${effectiveProbeSuccesses}) > 0
                           AND s.${q("latencyMs")} IS NOT NULL
-                     THEN s.${q("latencyMs")} END) AS ${q("avgLatency")},
-            SUM(CASE WHEN s.${q("isTimeout")} = ${successful}
+                     THEN s.${q("latencyMs")} * (${effectiveProbeSuccesses}) ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN (${effectiveProbeSuccesses}) > 0
+                                  AND s.${q("latencyMs")} IS NOT NULL
+                             THEN (${effectiveProbeSuccesses}) ELSE 0 END), 0) AS ${q("avgLatency")},
+            SUM(CASE WHEN (${effectiveProbeSuccesses}) > 0
                           AND s.${q("latencyMs")} IS NOT NULL
-                     THEN 1 ELSE 0 END) AS ${q("sampleCount")},
-            SUM(CASE WHEN s.${q("isTimeout")} = ${timedOut}
-                     THEN 1 ELSE 0 END) AS ${q("timeoutCount")}
+                     THEN (${effectiveProbeSuccesses}) ELSE 0 END) AS ${q("sampleCount")},
+            SUM((${effectiveProbeCount}) - (${effectiveProbeSuccesses})) AS ${q("timeoutCount")}
+            ,SUM(${effectiveProbeCount}) AS ${q("probeCount")}
+            ,SUM(${effectiveProbeSuccesses}) AS ${q("probeSuccesses")}
        FROM ${q("host_probe_service_stats")} s
       WHERE ${conditions.join(" AND ")}
       GROUP BY s.${q("serviceId")}, s.${q("hostId")}, ${bucketExpr}
@@ -318,6 +349,8 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
   return rows.map((row) => {
     const sampleCount = Number(row.sampleCount) || 0;
     const timeoutCount = Number(row.timeoutCount) || 0;
+    const probeCount = Math.max(1, Number(row.probeCount) || sampleCount + timeoutCount || 1);
+    const probeSuccesses = Math.max(0, Math.min(probeCount, Number(row.probeSuccesses) || 0));
     const hasLatency = sampleCount > 0 && row.avgLatency != null;
     return {
       serviceId: Number(row.serviceId),
@@ -326,6 +359,8 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
       // A bucket is a timeout only when it has no successful latency sample.
       // This keeps a single transient timeout from hiding otherwise good data.
       isTimeout: !hasLatency && timeoutCount > 0,
+      probeCount,
+      probeSuccesses,
       recordedAt: rowDate(row.bucketStart),
     };
   });

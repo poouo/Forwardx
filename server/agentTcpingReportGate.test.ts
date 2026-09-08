@@ -59,6 +59,20 @@ test("TCPing gate retries uncommitted work and emits five minute snapshots", () 
   assert.deepEqual([...snapshot.transitionRuleIds], [], "a stable snapshot must not retrigger failover");
 });
 
+test("TCPing gate forwards packet-loss changes while a probe remains reachable", () => {
+  const gate = new AgentTcpingReportGate();
+  const now = Date.parse("2026-07-24T10:00:00Z");
+  const partial = { ruleId: 22, latencyMs: 14, isTimeout: false, probeCount: 5, probeSuccesses: 4, probeKey: "rule-22" };
+  const first = gate.plan(input({ results: [partial] }), now);
+  assert.equal(first.results.length, 1);
+  first.commit();
+
+  const recovered = gate.plan(input({
+    results: [{ ...partial, probeSuccesses: 5 }],
+  }), now + 1_000);
+  assert.equal(recovered.results.length, 1, "packet-loss changes must not wait for the five-minute snapshot");
+});
+
 test("TCPing gate marks rule failure and recovery as failover transitions", () => {
   const gate = new AgentTcpingReportGate();
   const now = Date.parse("2026-07-24T10:00:00Z");
