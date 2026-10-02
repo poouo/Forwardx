@@ -87,6 +87,11 @@ jobs:
           FORWARDX_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: pnpm check:versions
 
+      # Web startup tests require production assets even when a native APK
+      # for this version already exists and its rebuild can be skipped.
+      - name: Build web assets
+        run: pnpm build:client
+
       - name: Type check and test shared application code
         run: |
           pnpm exec tsc --noEmit
@@ -116,10 +121,6 @@ jobs:
             if (existing) {
               core.notice(`Android APK ${expectedName} already exists in ${releaseTag}; skipping APK rebuild for this panel release.`);
             }
-
-      - name: Build web assets
-        if: steps.existing_apk.outputs.exists != 'true'
-        run: pnpm build:client
 
       - name: Sync Capacitor Android project
         if: steps.existing_apk.outputs.exists != 'true'

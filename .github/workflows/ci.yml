@@ -47,9 +47,9 @@ jobs:
         run: |
           pnpm check:versions
           pnpm exec tsc --noEmit
+          pnpm build
           node --import tsx --test server/agentCrypto.test.ts
           pnpm test:server
-          pnpm build
           pnpm docs:build
 
       - name: Verify Agent and FXP
