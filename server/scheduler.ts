@@ -13,7 +13,8 @@ import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } fr
 import { cleanOldAddressGeoCache } from "./hostGeo";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
-import { createNonOverlappingScheduledTask } from "./scheduledTask";
+import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
+import { databaseHealth } from "./databaseHealthState";
 import {
   SELF_TEST_TIMEOUT_SECONDS,
   selfTestTimeoutSeconds,
@@ -612,6 +613,10 @@ function formatBytesLocal(bytes: number) {
 }
 
 export function startScheduler() {
+  const createNonOverlappingScheduledTask: typeof createScheduledTask = (name, task, options = {}) => createScheduledTask(name, task, {
+    ...options,
+    shouldRun: () => databaseHealth.snapshot().state !== "unavailable",
+  });
   hostStatusPrimePromise = primeHostStatusNotifier().finally(() => {
     hostStatusPrimePromise = null;
   });

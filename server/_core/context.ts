@@ -18,6 +18,9 @@ import {
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
 import { getActiveAuthSession, revokeAuthSession, touchAuthSession } from "../repositories/sessionRepository";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { TRPCError } from "@trpc/server";
+import { databaseHealth, describeDatabaseError } from "../databaseHealthState";
+import { DATABASE_UNAVAILABLE_MESSAGE } from "../../shared/databaseHealth";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -78,7 +81,7 @@ async function allowMultiDeviceLogin() {
   if (now - allowMultiDeviceLoginCache.loadedAt < MULTI_DEVICE_LOGIN_SETTING_CACHE_MS) {
     return allowMultiDeviceLoginCache.value;
   }
-  const value = (await db.getSetting("allowMultiDeviceLogin").catch(() => null)) === "true";
+  const value = (await db.getSetting("allowMultiDeviceLogin")) === "true";
   allowMultiDeviceLoginCache = { value, loadedAt: now };
   return value;
 }
@@ -162,7 +165,13 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
         source,
       },
     };
-  } catch {
+  } catch (error) {
+    if (describeDatabaseError(error) || databaseHealth.snapshot().state === "unavailable") {
+      databaseHealth.unavailable(error);
+      // A DB outage is not evidence that a cookie is invalid. Keep the session
+      // for recovery, but never bypass account/session checks or grant access.
+      throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
+    }
     if (source === "cookie") {
       clearSessionCookie(res, req);
     }
@@ -171,6 +180,9 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
 }
 
 export async function createContext({ req, res }: CreateExpressContextOptions): Promise<TrpcContext> {
+  if (databaseHealth.snapshot().state === "unavailable") {
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
+  }
   let user: User | null = null;
   let authSession: AuthSession | null = null;
   let authFailureReason: TrpcContext["authFailureReason"] = null;

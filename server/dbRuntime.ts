@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
 import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
+import { databaseHealth } from "./databaseHealthState";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -43,6 +44,28 @@ export type DatabaseConfig =
   | { type: "postgresql"; postgresql: PostgresqlConfig };
 
 type Db = any;
+
+function reportingDatabaseClient<T extends object>(client: T): T {
+  // Instrument only this panel's actual driver calls, not arbitrary network
+  // errors from SMTP, GitHub or testing a different database configuration.
+  return new Proxy(client, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (typeof value !== "function") return value;
+      if (key === "query" || key === "execute") {
+        return (...args: any[]) => {
+          try {
+            const result = Reflect.apply(value, target, args);
+            return result && typeof result.catch === "function"
+              ? result.catch((error: unknown) => { databaseHealth.unavailable(error); throw error; })
+              : result;
+          } catch (error) { databaseHealth.unavailable(error); throw error; }
+        };
+      }
+      return value.bind(target);
+    },
+  });
+}
 
 let _kind: DatabaseKind | null = null;
 let _pool: Pool | null = null;
@@ -141,12 +164,12 @@ async function withSqliteConnectionLock<T>(
 
 function createSqliteDrizzleDatabase(sqlite: Database.Database): Db {
   const callback: any = (sqlText: string, params: any[], method: "run" | "all" | "get" | "values") => (
-    withSqliteConnectionLock(sqlite, () => {
+    reportDatabaseErrors(() => withSqliteConnectionLock(sqlite, () => {
       const statement = sqlite.prepare(sqlText);
       if (method === "run") return { rows: [], ...statement.run(...params) };
       if (method === "get") return { rows: statement.raw().get(...params) };
       return { rows: statement.raw().all(...params) };
-    }, `drizzle-${method}`)
+    }, `drizzle-${method}`))
   );
   return drizzleSqliteProxy(callback) as Db;
 }
@@ -563,7 +586,37 @@ export async function testDatabaseConnection(config: DatabaseConfig) {
   }
 }
 
-export async function connectDatabase(config = readDatabaseConfig()) {
+let connectionAttempt: { key: string; promise: Promise<Db | null> } | null = null;
+
+export async function reportDatabaseErrors<T>(work: () => Promise<T>): Promise<T> {
+  try { return await work(); } catch (error) {
+    databaseHealth.unavailable(error);
+    throw error;
+  }
+}
+
+export async function connectDatabase(config = readDatabaseConfig()): Promise<Db | null> {
+  // A database outage must not make every HTTP request create/close a new pool.
+  const key = JSON.stringify(config);
+  if (connectionAttempt) {
+    if (connectionAttempt.key === key) return connectionAttempt.promise;
+    await connectionAttempt.promise.catch(() => undefined);
+    return connectDatabase(config);
+  }
+  const promise = connectDatabaseOnce(config).catch(async (error) => {
+    databaseHealth.configure(config?.type || null);
+    databaseHealth.unavailable(error);
+    await closeDatabase();
+    throw error;
+  });
+  connectionAttempt = { key, promise };
+  try { return await promise; } finally {
+    if (connectionAttempt?.promise === promise) connectionAttempt = null;
+  }
+}
+
+async function connectDatabaseOnce(config: DatabaseConfig | null) {
+  databaseHealth.configure(config?.type || null);
   if (!config) {
     _kind = null;
     _pool = null;
@@ -583,7 +636,7 @@ export async function connectDatabase(config = readDatabaseConfig()) {
     _pool = mysql.createPool(poolOptions(normalized));
     await _pool.query("SELECT 1");
     await assertSupportedMysqlServer((sqlText) => _pool!.query(sqlText));
-    _db = drizzleMysql(_pool) as Db;
+    _db = drizzleMysql(reportingDatabaseClient(_pool)) as Db;
     _kind = "mysql";
     console.log(`[Database] MySQL connected at ${normalized.host}:${normalized.port}/${normalized.database}`);
     return _db;
@@ -592,8 +645,11 @@ export async function connectDatabase(config = readDatabaseConfig()) {
   if (config.type === "postgresql") {
     const normalized = normalizePostgresql(config.postgresql);
     _pgPool = new pg.Pool(pgPoolOptions(normalized));
+    // node-postgres emits idle-client disconnects on the pool. Without an
+    // error listener, stopping PostgreSQL can terminate the entire Node process.
+    _pgPool.on("error", (error) => { databaseHealth.unavailable(error); });
     await _pgPool.query("SELECT 1");
-    _db = drizzlePostgres(_pgPool) as Db;
+    _db = drizzlePostgres(reportingDatabaseClient(_pgPool)) as Db;
     _kind = "postgresql";
     console.log(`[Database] PostgreSQL connected at ${normalized.host}:${normalized.port}/${normalized.database}`);
     return _db;
@@ -674,6 +730,10 @@ async function runAfterSettledCallbacks(callbacks: Array<() => Promise<void> | v
 }
 
 export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
+  return reportDatabaseErrors(() => runDatabaseTransaction(work));
+}
+
+async function runDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
   if (transactionContext.getStore()) return work();
   if (!_db || !_kind) await connectDatabase();
   if (_kind === "mysql") {
@@ -685,7 +745,7 @@ export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promis
     try {
       try {
         await connection.beginTransaction();
-        const db = drizzleMysql(connection as any) as Db;
+        const db = drizzleMysql(reportingDatabaseClient(connection) as any) as Db;
         result = await transactionContext.run({ db, mysqlConnection: connection, afterCommit, afterSettled }, work);
         await connection.commit();
       } catch (error) {
@@ -709,7 +769,7 @@ export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promis
     try {
       try {
         await client.query("BEGIN");
-        const db = drizzlePostgres(client as any) as Db;
+        const db = drizzlePostgres(reportingDatabaseClient(client) as any) as Db;
         result = await transactionContext.run({ db, postgresClient: client, afterCommit, afterSettled }, work);
         await client.query("COMMIT");
       } catch (error) {
@@ -814,6 +874,10 @@ function postgresSql(sqlText: string, params: any[] = []) {
 }
 
 export async function executeRaw(sqlText: string, params: any[] = []) {
+  return reportDatabaseErrors(() => executeRawImpl(sqlText, params));
+}
+
+async function executeRawImpl(sqlText: string, params: any[] = []) {
   const active = transactionContext.getStore();
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
@@ -837,6 +901,10 @@ export async function executeRaw(sqlText: string, params: any[] = []) {
 }
 
 export async function queryRaw<T = Record<string, any>>(sqlText: string, params: any[] = []): Promise<T[]> {
+  return reportDatabaseErrors(() => queryRawImpl<T>(sqlText, params));
+}
+
+async function queryRawImpl<T>(sqlText: string, params: any[]): Promise<T[]> {
   const active = transactionContext.getStore();
   const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {

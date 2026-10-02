@@ -78,6 +78,10 @@ import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
 import { getLastAuthenticatedAgentActivity } from "../agentActivity";
+import { hostTrafficExcluded } from "../../shared/hostTrafficPolicy";
+import { getTrafficExcludedHostIds } from "../hostTrafficPolicy";
+import { planTunnelTrafficParticipation } from "../hostTrafficRuntimePlan";
+import { isTunnelRelayFailover } from "../../shared/tunnelRelay";
 import {
   getPresenceCapableHostLivenessSnapshot,
   primePresenceCapableHosts,
@@ -338,6 +342,7 @@ function freshForwardGroupRuleProbe(stat: any, now: Date) {
 type MemberAgentLiveness = {
   hostId: number;
   available: boolean;
+  trafficExcluded: boolean;
   failureSince: Date | null;
   lastOfflineAt: number | null;
   signature: string;
@@ -346,6 +351,18 @@ type MemberAgentLiveness = {
 async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Promise<MemberAgentLiveness> {
   const hostId = await memberEntryHostId(member).catch(() => 0);
   const host = hostId > 0 ? await getHostById(hostId).catch(() => null) : null;
+  let trafficExcluded = hostTrafficExcluded(host);
+  if (member.memberType === "tunnel") {
+    const tunnel = await getTunnelById(Number(member.tunnelId));
+    if (tunnel) {
+      const [hops, exits, excluded] = await Promise.all([getTunnelHops(Number(tunnel.id)), getTunnelExitNodes(Number(tunnel.id)), getTrafficExcludedHostIds()]);
+      const plan = planTunnelTrafficParticipation(tunnel, hops, exits, [Number(tunnel.entryHostId)], excluded);
+      trafficExcluded ||= !dbBool(plan.tunnel.isEnabled) && dbBool(tunnel.isEnabled);
+      // Standalone tunnel members still depend on their fixed transit/exit.
+      if (!Number(tunnel.exitGroupId) && !dbBool(tunnel.loadBalanceEnabled)) trafficExcluded ||= excluded.has(Number(tunnel.exitHostId));
+      if (!isTunnelRelayFailover(tunnel, hops)) trafficExcluded ||= hops.slice(1, -1).some((hop: any) => excluded.has(Number(hop.hostId)));
+    }
+  }
   const fastState = hostId > 0 ? getPresenceCapableHostLivenessSnapshot(hostId) : null;
   const authenticatedAt = hostId > 0 ? getLastAuthenticatedAgentActivity(hostId) || 0 : 0;
   const heartbeatAt = toDate((host as any)?.lastHeartbeat)?.getTime() || 0;
@@ -366,7 +383,7 @@ async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Prom
   // Legacy hosts have no such timer, so their last known activity keeps the
   // existing 150-second compatibility window. A lone DB status flag is not a
   // hard health signal while that activity is still fresh.
-  const available = !!host && (fastState
+  const available = !!host && !trafficExcluded && (fastState
     ? !confirmedOffline
     : legacyActivityRecently);
   const failureAt = lastSeenAt > 0 ? Math.min(lastSeenAt, nowMs) : Math.min(lifecycleAt, nowMs);
@@ -374,11 +391,13 @@ async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Prom
   return {
     hostId,
     available,
+    trafficExcluded,
     failureSince: available ? null : new Date(failureAt),
     lastOfflineAt,
     signature: [
       hostId,
       available ? 1 : 0,
+      trafficExcluded ? 1 : 0,
       confirmedOffline ? 1 : 0,
       Number(fastState?.transitionEpoch || 0),
       lastOfflineAt || 0,
@@ -1754,6 +1773,9 @@ async function hydrateForwardGroupMemberEntryAddresses(members: any[]) {
       ddnsEnabled: hosts.ddnsEnabled,
       ddnsDomain: hosts.ddnsDomain,
       isOnline: hosts.isOnline,
+      trafficFailoverEnabled: hosts.trafficFailoverEnabled,
+      trafficFailoverExcluded: hosts.trafficFailoverExcluded,
+      trafficLimit: hosts.trafficLimit,
       lastHeartbeat: hosts.lastHeartbeat,
     }).from(hosts).where(inArray(hosts.id, hostIds))
     : [];
@@ -1849,6 +1871,7 @@ async function firstAvailableResolvableMember(members: any[], group: any, record
     const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
     const liveness = await resolveMemberAgentLiveness(member, now);
+    if (liveness.trafficExcluded) continue;
     if (!liveness.available) {
       const failoverAt = (liveness.failureSince?.getTime() || now) + failoverMs;
       if (Number(member.id || 0) === activeMemberId && now < failoverAt) {
@@ -2099,7 +2122,7 @@ function candidatePortsForGroup(policy: PortPolicy) {
   return ports.filter((port) => isPortAllowedByPolicy(port, policy));
 }
 
-export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ start: number; end: number } | null> {
+export async function getForwardGroupEntryPortPolicy(groupId: number): Promise<PortPolicy> {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
   const members = sortedMembers(group, true);
@@ -2122,6 +2145,11 @@ export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ 
     if (!entry.hostId) throw new Error("Forward group member has no valid entry agent");
     policy = combinePortPolicies(policy, entry.policy);
   }
+  return policy;
+}
+
+export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ start: number; end: number } | null> {
+  const policy = await getForwardGroupEntryPortPolicy(groupId);
   return policyRangeForGroup(policy);
 }
 
@@ -3700,7 +3728,11 @@ async function evaluateMemberHealth(member: any, group: any) {
   let allRuleHealthAgentFinal = false;
   let nextProbeExpiryAt: number | null = null;
 
-  if (!dbBool(member?.isEnabled)) {
+  if (agentLiveness.trafficExcluded) {
+    message = "主机流量达到故障转移阈值，已暂停组调度";
+    agentFailureFinal = true;
+    observedFailureSince = now;
+  } else if (!dbBool(member?.isEnabled)) {
     message = "Member disabled";
   } else if (childRules.length === 0) {
     message = "No forwarding rule is using this group yet";
@@ -3924,6 +3956,29 @@ async function preserveForwardGroupDdns(
   const groupId = Number(group.id);
   const domain = String(group.domain || "").trim();
   const recordType = normalizeForwardGroupRecordType(group.recordType);
+  const quotaExcluded = await getTrafficExcludedHostIds();
+  const enabledMembers = sortedMembers(group, true);
+  const quotaBlocked = [];
+  for (const member of enabledMembers) quotaBlocked.push((await resolveMemberAgentLiveness(member)).trafficExcluded);
+  if (quotaExcluded.size > 0 && quotaBlocked.some(Boolean)) {
+    // Preserve only addresses belonging to non-quota-blocked members. Ordinary
+    // health failures may keep their last DNS address; exhausted hosts may not.
+    const allowedValues = new Set<string>();
+    for (const [index, member] of enabledMembers.entries()) {
+      if (!quotaBlocked[index]) allowedValues.add(await memberDdnsValue(member, recordType));
+    }
+    const retainedValues = String(group.lastDdnsValue || "").split(",").map((value) => value.trim()).filter((value) => value && allowedValues.has(value));
+    if (ddnsSettings.enabled && ddnsSettings.provider !== "disabled" && group.ddnsAutoResolveEnabled !== false) {
+      await updateDdnsRecordValues({ groupId, domain, recordType, values: retainedValues, ttl: Number(ddnsSettings.ttl || 600) });
+    }
+    await updateForwardGroupRuntimeIfChanged(db, group, {
+      activeMemberId: null,
+      lastDdnsValue: retainedValues.join(",") || null,
+      lastStatus: "down",
+      lastMessage: retainedValues.length ? `${reason}；保留未超量入口，等待恢复` : "没有可用成员，超量主机已暂停参与；等待流量重置或关闭流量故障转移",
+    });
+    return;
+  }
   const retainedValue = await forwardGroupDdnsFallbackValue(group, recordType);
   const shouldReconcile = !!options.forceSync
     || (!!retainedValue && exactDdnsReconciliationDue(group, retainedValue));
@@ -4008,6 +4063,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   const failoverMs = forwardGroupFailoverDelayMs(group);
   const recoverMs = forwardGroupRecoverDelayMs(group);
   let pendingAgentHealth = false;
+  let trafficExcludedMemberCount = 0;
   const includeMember = (member: any, value: string) => {
     if (!values.includes(value)) {
       values.push(value);
@@ -4023,6 +4079,11 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
     const memberId = Number(member.id);
     initialAgentLivenessSnapshot.set(memberId, liveness.signature);
     agentLivenessByMemberId.set(memberId, liveness);
+    if (liveness.trafficExcluded) {
+      trafficExcludedMemberCount += 1;
+      if (!excluded.includes(value)) excluded.push(value);
+      continue;
+    }
     const checkedAt = chinaHealthEnabled ? member.chinaHealthCheckedAt : member.lastCheckedAt;
     const storedStatus = chinaHealthEnabled ? member.chinaHealthStatus : member.healthStatus;
     initialHealthSnapshot.set(
@@ -4181,7 +4242,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
   // A newly enabled health check starts with unknown member states.  Keep the
   // current provider record intact until at least one probe result arrives;
   // once results exist, only healthy members are emitted above.
-  if (pendingAgentHealth && (values.length === 0 || joined === previousValue)) {
+  if (trafficExcludedMemberCount === 0 && pendingAgentHealth && (values.length === 0 || joined === previousValue)) {
     await updateForwardGroupRuntimeIfChanged(db, group, {
       lastStatus: "unknown",
       lastMessage: "等待 Agent 健康度检测结果；暂不变更现有 DDNS 解析",
@@ -4306,11 +4367,12 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: Forwar
 
 async function markExitGroupReady(group: any) {
   const db = await getDb();
-  const members = sortedMembers(group, true) as any[];
+  const excluded = await getTrafficExcludedHostIds();
+  const members = (sortedMembers(group, true) as any[]).filter((member) => !excluded.has(Number(member.hostId)));
   await updateForwardGroupRuntimeIfChanged(db, group, {
     activeMemberId: Number(members[0]?.id || 0) || null,
     lastStatus: members.length > 0 ? "healthy" : "down",
-    lastMessage: members.length > 0 ? "出口组已保存，可在隧道中作为出口组选择。" : "出口组没有已启用主机。",
+    lastMessage: members.length > 0 ? "出口组已保存，可在隧道中作为出口组选择。" : "出口组没有可用主机，超量成员已暂停参与。",
   });
 }
 

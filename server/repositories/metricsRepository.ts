@@ -19,6 +19,7 @@ import { getSetting, setSetting } from "./settingsRepository";
 import { appendPanelLog } from "../_core/panelLogger";
 import { notifyTunnelLatencyRefresh } from "../tunnelLatencyRefresh";
 import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
+import { reconcileHostTrafficPolicy } from "../hostTrafficPolicy";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -526,6 +527,7 @@ export async function recordHostTrafficSample(hostId: number, sample: HostTraffi
          ${q("updatedAt")} = VALUES(${q("updatedAt")})`,
       values,
     );
+    await reconcileHostTrafficPolicy(id);
     return null;
   }
 
@@ -549,6 +551,7 @@ export async function recordHostTrafficSample(hostId: number, sample: HostTraffi
        ${q("updatedAt")} = ${incoming("updatedAt")}`,
     values,
   );
+  await reconcileHostTrafficPolicy(id);
   return null;
 }
 
@@ -605,6 +608,7 @@ export async function resetHostTraffic(hostId: number) {
         WHERE ${q("hostId")} = ?`,
       [nowSec, nowSec, id],
     );
+    await reconcileHostTrafficPolicy(id);
     return getHostTraffic(id);
   }
   const cols = ["hostId", "bytesIn", "bytesOut", "lastDeltaIn", "lastDeltaOut", "resetAt", "createdAt", "updatedAt"];
@@ -612,6 +616,7 @@ export async function resetHostTraffic(hostId: number) {
     `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
     [id, 0, 0, 0, 0, nowSec, nowSec, nowSec],
   ).catch(() => undefined);
+  await reconcileHostTrafficPolicy(id);
   return getHostTraffic(id);
 }
 
@@ -659,6 +664,7 @@ export async function correctHostTraffic(
     );
   }
 
+  await reconcileHostTrafficPolicy(id);
   return getHostTraffic(id);
 }
 // ==================== Traffic Stats Queries ====================

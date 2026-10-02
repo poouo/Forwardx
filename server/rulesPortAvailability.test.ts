@@ -132,6 +132,10 @@ test("forward-group port checks cover every entry and exclude the edited templat
         await userCaller.checkPort({ forwardGroupId: 10, sourcePort: 17700, protocol: "tcp" }),
         { used: true, reason: "套餐端口必须在 17400-17600 范围内" },
       );
+      assert.deepEqual(
+        await userCaller.effectivePortPolicy({ forwardGroupId: 10 }),
+        { rangeText: "17400-17600" },
+      );
       await assert.rejects(
         () => userCaller.checkPort({ forwardGroupId: 11, sourcePort: 17501, protocol: "tcp" }),
         /无权使用该转发组/,
@@ -224,6 +228,14 @@ test("direct-host create, port lookup, enable, and update paths enforce subscrip
       assert.deepEqual(
         await limitedCaller.checkPort({ hostId: 2, sourcePort: 17500, protocol: "tcp" }),
         { used: false },
+      );
+      assert.deepEqual(
+        await limitedCaller.effectivePortPolicy({ hostId: 2 }),
+        { rangeText: "17000-18000" },
+      );
+      assert.deepEqual(
+        await adminCaller.effectivePortPolicy({ hostId: 2 }),
+        { rangeText: "10000-20000" },
       );
       const randomPort = await limitedCaller.randomPort({ hostId: 2, protocol: "tcp" });
       assert.ok(randomPort.port >= 17000 && randomPort.port <= 18000, "random port escaped plan range: " + randomPort.port);

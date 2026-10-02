@@ -7,6 +7,7 @@ import superjson from "superjson";
 import App from "./App";
 import { mobileAuth } from "./lib/mobileAuth";
 import "./index.css";
+import { DATABASE_UNAVAILABLE_MESSAGE } from "@shared/databaseHealth";
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
 
@@ -29,6 +30,7 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       retry: (failureCount, error) => {
         if (error instanceof TRPCClientError) {
+          if (error.message === DATABASE_UNAVAILABLE_MESSAGE) return false;
           if (
             error.message === UNAUTHED_ERR_MSG ||
             error.message === ACCOUNT_DISABLED_ERR_MSG ||
@@ -72,6 +74,10 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 queryClient.getQueryCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.query.state.error;
+    if (error instanceof TRPCClientError && error.message === DATABASE_UNAVAILABLE_MESSAGE) {
+      void queryClient.invalidateQueries({ queryKey: ["database-health"] });
+      return;
+    }
     redirectToLoginIfUnauthorized(error);
     console.error("[API Query Error]", error);
   }
@@ -80,6 +86,10 @@ queryClient.getQueryCache().subscribe(event => {
 queryClient.getMutationCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
+    if (error instanceof TRPCClientError && error.message === DATABASE_UNAVAILABLE_MESSAGE) {
+      void queryClient.invalidateQueries({ queryKey: ["database-health"] });
+      return;
+    }
     redirectToLoginIfUnauthorized(error);
     console.error("[API Mutation Error]", error);
   }

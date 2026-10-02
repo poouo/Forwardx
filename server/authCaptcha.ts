@@ -318,7 +318,9 @@ export class AuthCaptchaService {
     const cutoff = now - this.refreshWindowMs;
     for (const [key, timestamps] of this.refreshTimestamps) {
       const active = timestamps.filter((timestamp) => timestamp > cutoff);
-      if (active.length > 0) setBoundedMapValue(this.refreshTimestamps, key, active, this.maxRateLimitKeys);
+      // Updating an existing key keeps the live Map iterator finite. The bounded
+      // setter deletes/reinserts it, which would make this loop revisit it forever.
+      if (active.length > 0) this.refreshTimestamps.set(key, active);
       else this.refreshTimestamps.delete(key);
     }
     this.pruneCapState(now);

@@ -4,13 +4,25 @@ import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { getSessionCookieOptions } from "./cookies";
 import { runWithConfigAuditContext } from "../configAudit";
+import { databaseHealth } from "../databaseHealthState";
+import { DATABASE_UNAVAILABLE_MESSAGE } from "../../shared/databaseHealth";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
 });
 
 export const router = t.router;
-export const publicProcedure = t.procedure;
+const databaseSafeProcedure = t.procedure.use(async ({ next }) => {
+  if (databaseHealth.snapshot().state === "unavailable") {
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
+  }
+  const result = await next();
+  if (!result.ok && databaseHealth.snapshot().state === "unavailable") {
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
+  }
+  return result;
+});
+export const publicProcedure = databaseSafeProcedure;
 
 const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;
@@ -37,9 +49,9 @@ const requireUser = t.middleware(async opts => {
   }, () => next({ ctx: { ...ctx, user: ctx.user } }));
 });
 
-export const protectedProcedure = t.procedure.use(requireUser);
+export const protectedProcedure = databaseSafeProcedure.use(requireUser);
 
-export const adminProcedure = t.procedure.use(
+export const adminProcedure = databaseSafeProcedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 

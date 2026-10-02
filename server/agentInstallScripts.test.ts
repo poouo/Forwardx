@@ -106,6 +106,22 @@ test("Agent binary downloads fail when the downloaded file cannot be installed",
   assert.match(downloader, /return 1/);
 });
 
+test("iperf3 is optional and cannot abort Agent installation", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const start = script.indexOf("install_deps() {");
+  const end = script.indexOf("install_realm() {", start);
+  assert.ok(start >= 0 && end > start, "missing dependency installation section");
+  const deps = script.slice(start, end);
+
+  // Core dependency validation must not treat the optional Looking Glass
+  // component as a hard requirement.
+  assert.match(deps, /for B in curl jq iptables od; do/);
+  assert.doesNotMatch(deps, /for B in curl jq iptables iperf3 od; do/);
+  assert.match(deps, /单独安装，失败不得阻断 Agent 主流程/);
+  assert.match(deps, /未能安装可选依赖: iperf3/);
+  assert.match(deps, /Agent 将继续安装/);
+});
+
 test("Agent upgrade config normalization preserves unknown fields and applies migration state", () => {
   const script = generateInstallScript("https://panel.example.com", {
     migrationFallbackPanelUrl: "https://old-panel.example.com",

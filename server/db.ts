@@ -27,6 +27,7 @@ import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
+import { databaseHealth } from "./databaseHealthState";
 
 export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -356,6 +357,7 @@ export async function initDatabase() {
     const db = await runInitializationStep("connect", () => connectDatabase());
     const kind = getDatabaseKind();
     if (!db || !kind) {
+      databaseHealth.notConfigured();
       console.warn("[Database] Not configured. Open the panel to complete setup.");
       return { configured: false, ready: false, hasAdmin: false } as const;
     }
@@ -469,8 +471,10 @@ export async function initDatabase() {
     const hasAdmin = await runInitializationStep("check-admin", () => hasAdminUser());
     if (hasAdmin) markLocalSetupComplete();
     console.log(`[Database] Initialization complete (${kind}, ${hasAdmin ? "admin exists" : "no admin yet"}) durationMs=${Date.now() - initializationStartedAt}`);
+    databaseHealth.healthy();
     return { configured: true, ready: true, hasAdmin, kind } as const;
   } catch (error) {
+    databaseHealth.unavailable(error, true);
     const message = summarizeDatabaseStartupError(error);
     console.error(`[Database] Initialization failed after ${Date.now() - initializationStartedAt}ms: ${message}`);
     return { configured: true, ready: false, hasAdmin: false, error: message } as const;
