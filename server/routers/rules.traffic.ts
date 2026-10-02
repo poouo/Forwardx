@@ -24,6 +24,7 @@ export const trafficRulesRouter = router({
       scope: z.enum(["rule", "all"]),
       ruleId: z.number().optional(),
       ruleIds: z.array(z.number()).max(5000).optional(),
+      userId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       let targetRuleIds: number[] = [];
@@ -36,7 +37,10 @@ export const trafficRulesRouter = router({
         const requestedRuleIds = Array.from(new Set<number>((input.ruleIds || [])
           .map((id) => Number(id))
           .filter((id): id is number => Number.isInteger(id) && id > 0)));
-        const visibleRules = await db.getForwardRules(ctx.user.role === "admin" ? undefined : ctx.user.id);
+        if (ctx.user.role !== "admin" && input.userId !== undefined && input.userId !== ctx.user.id) {
+          throw new Error("无权重置其他用户的规则");
+        }
+        const visibleRules = await db.getForwardRules(ctx.user.role === "admin" ? input.userId : ctx.user.id);
         const visibleRuleIds = new Set<number>((visibleRules || [])
           .map((rule: any) => Number(rule.id || 0))
           .filter((id: number): id is number => Number.isInteger(id) && id > 0));

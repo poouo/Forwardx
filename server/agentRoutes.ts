@@ -97,13 +97,21 @@ function migratedAgentPayload(panelUrl: string) {
   };
 }
 
-async function rejectAgentWhenPanelMigrated(_req: Request, res: Response, next: NextFunction) {
-  const migratedTo = await getMigratedToPanelUrl();
-  if (migratedTo) {
-    res.status(410).json(migratedAgentPayload(migratedTo));
-    return;
+async function rejectAgentWhenPanelMigrated(req: Request, res: Response, next: NextFunction) {
+  // agentRouter is mounted at the application root. Static pages/assets must
+  // not perform this DB lookup just because they pass through the router.
+  if (!req.path.startsWith("/api/agent/")) { next(); return; }
+  try {
+    const migratedTo = await getMigratedToPanelUrl();
+    if (migratedTo) {
+      res.status(410).json(migratedAgentPayload(migratedTo));
+      return;
+    }
+    next();
+  } catch (error) {
+    // Express 4 does not automatically forward rejected async middleware.
+    next(error);
   }
-  next();
 }
 
 async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: string) {

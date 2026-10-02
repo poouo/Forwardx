@@ -1,5 +1,6 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
+import { resolveRuleOperationOwner } from "../ruleOperationOwner";
 import * as db from "../db";
 import {
   requireHostUseAccess,
@@ -7,9 +8,10 @@ import {
   requireTrafficBillingAccessIfConfigured,
   requireTunnelUseOrTrafficBillingAccess,
 } from "./helpers";
-import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
+import { combineHostPortPolicyWithRange, combinePortPolicies, describePortPolicy, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const randomPortInputSchema = z.object({
+  userId: z.number().int().positive().optional(),
   hostId: z.number().optional(),
   tunnelId: z.number().nullable().optional(),
   forwardGroupId: z.number().optional(),
@@ -30,8 +32,55 @@ async function requireForwardGroupPortAccess(ctx: { user: { id: number; role: st
 }
 
 export const portsRulesRouter = router({
+  effectivePortPolicy: protectedProcedure
+    .input(z.object({
+      userId: z.number().int().positive().optional(),
+      hostId: z.number().int().positive().optional(),
+      forwardGroupId: z.number().int().positive().optional(),
+      tunnelId: z.number().int().positive().nullable().optional(),
+    }).refine(
+      (input) => !!input.hostId !== !!input.forwardGroupId,
+      { message: "请选择一个主机、隧道或转发组" },
+    ))
+    .query(async ({ input, ctx }) => {
+      ctx = { ...ctx, user: await resolveRuleOperationOwner(ctx.user, input.userId) };
+      let policy;
+      if (input.forwardGroupId) {
+        await requireForwardGroupPortAccess(ctx, input.forwardGroupId);
+        policy = await db.getForwardGroupEntryPortPolicy(input.forwardGroupId);
+        if (ctx.user.role !== "admin") {
+          const planRange = await db.getUserForwardGroupPlanPortRange(ctx.user.id, input.forwardGroupId);
+          if (planRange) {
+            policy = combinePortPolicies(policy, portPolicyFrom({ portRanges: planRange.ranges }));
+          }
+        }
+      } else {
+        const hostId = Number(input.hostId);
+        if (input.tunnelId) {
+          const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
+          if (tunnel.entryHostId !== hostId) throw new Error("隧道入口主机与规则主机不一致");
+          const host = await db.getHostById(hostId);
+          policy = combineHostPortPolicyWithRange(
+            host as any,
+            (tunnel as any).portRangeStart,
+            (tunnel as any).portRangeEnd,
+          );
+        } else {
+          const { host } = await requireHostUseAccess(ctx, hostId);
+          policy = portPolicyFrom(host as any);
+        }
+        if (ctx.user.role !== "admin") {
+          const planRange = await db.getUserPlanPortRange(ctx.user.id, hostId, input.tunnelId ?? undefined);
+          if (planRange) {
+            policy = combinePortPolicies(policy, portPolicyFrom({ portRanges: planRange.ranges }));
+          }
+        }
+      }
+      return { rangeText: describePortPolicy(policy) };
+    }),
   checkPort: protectedProcedure
     .input(z.object({
+      userId: z.number().int().positive().optional(),
       hostId: z.number().int().positive().optional(),
       forwardGroupId: z.number().int().positive().optional(),
       tunnelId: z.number().nullable().optional(),
@@ -43,6 +92,7 @@ export const portsRulesRouter = router({
       { message: "请选择一个主机、隧道或转发组" },
     ))
     .query(async ({ input, ctx }) => {
+      ctx = { ...ctx, user: await resolveRuleOperationOwner(ctx.user, input.userId) };
       if (input.excludeRuleId) {
         await requireRuleAccess(ctx, input.excludeRuleId);
       }
@@ -113,6 +163,7 @@ export const portsRulesRouter = router({
   randomPort: protectedProcedure
     .input(randomPortInputSchema)
     .query(async ({ input, ctx }) => {
+      ctx = { ...ctx, user: await resolveRuleOperationOwner(ctx.user, input.userId) };
       if (input.excludeRuleId) {
         await requireRuleAccess(ctx, input.excludeRuleId);
       }

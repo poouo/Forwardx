@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
@@ -118,6 +119,48 @@ test("bounds attacker-controlled rate-limit keys and prunes expired entries", ()
   service.pruneExpired(51_000);
   assert.equal(service.stateSizesForTest().loginFailures, 0);
   assert.equal(service.stateSizesForTest().refreshTimestamps, 0);
+});
+
+test("periodic captcha cleanup terminates with active and mixed refresh records", () => {
+  // A test-runner timeout cannot interrupt a synchronous Map iteration loop.
+  // Run this regression in a killable child so reintroducing it fails, not hangs.
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { AuthCaptchaService, CaptchaRefreshRateLimitError } from ${JSON.stringify(new URL("./authCaptcha.ts", import.meta.url).href)};
+    const service = new AuthCaptchaService({
+      refreshWindowMs: 1000,
+      refreshMaxPerWindow: 3,
+      svgGenerator: () => ({ text: "TEST", data: "<svg/>" }),
+    });
+    const mixedIp = "192.0.2.1";
+    const activeIp = "192.0.2.2";
+    const expiredIp = "192.0.2.3";
+    const challenge = service.createImageChallenge(mixedIp, "login", 1000);
+    service.createImageChallenge(mixedIp, "login", 1600);
+    service.createImageChallenge(expiredIp, "login", 900);
+    for (const now of [1600, 1700, 1800]) service.createImageChallenge(activeIp, "login", now);
+
+    // All refresh records are active; repeated cleanup must finish and retain limits.
+    service.pruneExpired(1850);
+    service.pruneExpired(1850);
+    assert.equal(service.stateSizesForTest().refreshTimestamps, 3);
+    assert.equal(service.verifyChallenge(challenge.captchaId, "TEST", mixedIp, "login", 1850), true);
+    assert.throws(() => service.createImageChallenge(activeIp, "login", 1850), CaptchaRefreshRateLimitError);
+
+    // Remove an expired key and only the old timestamp of the mixed key.
+    service.pruneExpired(2100);
+    service.pruneExpired(2100);
+    assert.equal(service.stateSizesForTest().refreshTimestamps, 2);
+    assert.throws(() => service.createImageChallenge(activeIp, "login", 2100), CaptchaRefreshRateLimitError);
+    service.createImageChallenge(mixedIp, "login", 2100);
+    service.createImageChallenge(mixedIp, "login", 2101);
+    assert.throws(() => service.createImageChallenge(mixedIp, "login", 2102), CaptchaRefreshRateLimitError);
+
+    service.pruneExpired(3101);
+    assert.equal(service.stateSizesForTest().refreshTimestamps, 0);
+  `], { timeout: 10_000, encoding: "utf8", windowsHide: true });
+  assert.equal(result.error, undefined, `captcha cleanup child failed: ${result.error}\n${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("Cap challenges are bound to IP and purpose and tokens are single-use", async () => {

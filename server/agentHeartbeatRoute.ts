@@ -107,6 +107,8 @@ import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 import { selectResolvedTargetIp } from "./dnsTargetResolution";
 import { buildForwardXMimicConfig } from "./mimicConfig";
 import { gateForwardRulesForRuntime } from "./linkAccessView";
+import { getTrafficExcludedHostIds } from "./hostTrafficPolicy";
+import { groupRuleTrafficBlocked, planTunnelTrafficParticipation } from "./hostTrafficRuntimePlan";
 import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
 import { observePresenceCapableHostActivity, registerPresenceCapableHost } from "./agentFastLiveness";
 import { recordAuthenticatedAgentActivity } from "./agentActivity";
@@ -2324,7 +2326,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const tunnelEntryHostIds = (tunnel: any) => {
       const tunnelId = Number(tunnel?.id || 0);
       const cached = tunnelEntryHostIdsByTunnelId.get(tunnelId);
-      if (cached && cached.length > 0) return cached;
+      if (cached) return cached;
       const entryHostId = Number(tunnel?.entryHostId || 0);
       return Number.isFinite(entryHostId) && entryHostId > 0 ? [entryHostId] : [];
     };
@@ -2403,6 +2405,88 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!tunnelExitRowsMatchNodes(rows, extraNodes)) {
         const nextRows = await db.reconcileForwardRuleTunnelExits(rule, tunnel);
         tunnelExitRowsByRuleId.set(Number(rule.id), nextRows as any[]);
+      }
+    }
+    // Apply quotas only after all persistent port planning. Every modification
+    // below is a runtime copy; saved membership, ports and enable switches stay intact.
+    const trafficExcludedHosts = await getTrafficExcludedHostIds();
+    if (trafficExcludedHosts.size > 0) {
+      const groupById = new Map<number, any>();
+      for (const rule of [...agentHostRules, ...agentAllRules] as any[]) {
+        const groupId = Number(rule.forwardGroupId || 0);
+        if (groupId > 0 && !groupById.has(groupId)) groupById.set(groupId, await db.getForwardGroupById(groupId));
+        const group = groupById.get(groupId);
+        const chainHostIds = String(group?.groupMode) === "chain"
+          ? (group.members || []).filter((m: any) => runtimeBool(m.isEnabled, true)).map((m: any) => Number(m.hostId)) : [];
+        if (groupRuleTrafficBlocked(rule, trafficExcludedHosts, chainHostIds)) {
+          rule.isEnabled = false;
+          rule.resourceAccessDenied = true;
+          rule.hostTrafficExcluded = true;
+        }
+        // A group member using a fixed tunnel cannot bypass its fixed endpoint.
+        const memberTunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+        const memberHops = memberTunnel ? tunnelHopsByTunnelId.get(Number(memberTunnel.id)) || [] : [];
+        const blockedFixedExit = memberTunnel && !Number(memberTunnel.exitGroupId) && !runtimeBool(memberTunnel.loadBalanceEnabled)
+          && trafficExcludedHosts.has(Number(memberTunnel.exitHostId));
+        const blockedTransit = memberTunnel && !isTunnelRelayFailover(memberTunnel, memberHops)
+          && memberHops.slice(1, -1).some((hop: any) => trafficExcludedHosts.has(Number(hop.hostId)));
+        if (groupId > 0 && (blockedFixedExit || blockedTransit)) {
+          rule.isEnabled = false;
+          rule.resourceAccessDenied = true;
+          rule.hostTrafficExcluded = true;
+        }
+      }
+      for (const tunnel of hostTunnels as any[]) {
+        const tunnelId = Number(tunnel.id);
+        const originalHops = tunnelHopsByTunnelId.get(tunnelId) || [];
+        const originalExits = tunnelExitNodesByTunnelId.get(tunnelId) || [];
+        const plan = planTunnelTrafficParticipation(tunnel, originalHops, originalExits,
+          tunnelEntryHostIdsByTunnelId.get(tunnelId) || [], trafficExcludedHosts);
+        if (Number(tunnel.entryGroupId) > 0) {
+          // Entry-group rules keep the original owner hostId in storage even
+          // when installed on another entry. Gate the current Agent, not that
+          // stored hostId, and leave global exit rules available to other entries.
+          for (const rule of agentHostRules as any[]) {
+            if (Number(rule.tunnelId) === tunnelId && trafficExcludedHosts.has(Number(host.id))) {
+              rule.isEnabled = false;
+              rule.resourceAccessDenied = true;
+              rule.hostTrafficExcluded = true;
+            }
+          }
+        }
+        // The original FXP endpoint must be explicitly removed on legacy
+        // Agents too; changing the runtime primary alone would orphan it.
+        if (String(tunnel.mode) === "forwardx" && (Number(tunnel.exitGroupId) > 0 || runtimeBool(tunnel.loadBalanceEnabled)) && trafficExcludedHosts.has(Number(host.id))) {
+          const localExit = Number(tunnel.exitHostId) === Number(host.id) ? tunnel
+            : originalExits.find((node: any) => Number(node.hostId) === Number(host.id));
+          if (localExit && Number(localExit.listenPort) > 0 && isTunnelRuntimeHostReady(tunnelId, Number(host.id))) actions.push({
+            tunnelId, ruleId: 0, statusType: "tunnel", op: "remove", forwardType: "forwardx-tunnel",
+            sourcePort: Number(localExit.listenPort), targetIp: host.ip, targetPort: Number(localExit.listenPort), protocol: "both", commands: [],
+            fxp: { role: "exit", tunnelId, ruleId: 0, listenPort: Number(localExit.listenPort) },
+          });
+        }
+        if (plan.promotedExit) {
+          // GOST allocates distinct ports per rule on each exit. Promotion must
+          // use that exit's mapping, never the old primary's port.
+          for (const rule of [...agentHostRules, ...agentAllRules] as any[]) {
+            if (Number(rule.tunnelId) !== tunnelId) continue;
+            const mapping = (tunnelExitRowsByRuleId.get(Number(rule.id)) || [])
+              .find((row: any) => Number(row.exitNodeId) === Number(plan.promotedExit.id));
+            if (mapping) rule.tunnelExitPort = Number(mapping.tunnelExitPort);
+          }
+        }
+        Object.assign(tunnel, plan.tunnel);
+        tunnelHopsByTunnelId.set(tunnelId, plan.hops);
+        tunnelExitNodesByTunnelId.set(tunnelId, plan.exits);
+        tunnelEntryHostIdsByTunnelId.set(tunnelId, plan.entryHostIds);
+        if (!runtimeBool(tunnel.isEnabled)) {
+          for (const rule of [...agentHostRules, ...agentAllRules] as any[]) {
+            if (Number(rule.tunnelId) !== tunnelId) continue;
+            rule.isEnabled = false;
+            rule.resourceAccessDenied = true;
+            rule.hostTrafficExcluded = true;
+          }
+        }
       }
     }
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，

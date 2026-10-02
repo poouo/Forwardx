@@ -8,6 +8,7 @@ export function createNonOverlappingScheduledTask(
     now?: () => number;
     slowTaskMs?: number;
     skipLogIntervalMs?: number;
+    shouldRun?: () => boolean;
   } = {},
 ) {
   const logger = options.logger ?? console;
@@ -18,6 +19,7 @@ export function createNonOverlappingScheduledTask(
   let lastSkipLogAt = Number.NEGATIVE_INFINITY;
 
   return async () => {
+    if (options.shouldRun && !options.shouldRun()) return false;
     if (running) {
       const skippedAt = now();
       if (skippedAt - lastSkipLogAt >= skipLogIntervalMs) {

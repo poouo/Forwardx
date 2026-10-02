@@ -161,7 +161,9 @@ export function pruneAuthRateLimitState(now = Date.now()) {
   for (const store of [challengeIssueStore, challengeIssueAccountStore, challengeIssueIpStore]) {
     for (const [key, timestamps] of store) {
       const active = timestamps.filter((timestamp) => timestamp > cutoff);
-      if (active.length > 0) setBoundedMapValue(store, key, active, AUTH_RATE_LIMIT_MAX_KEYS);
+      // Cleanup neither adds keys nor refreshes eviction order. Do not delete
+      // and reinsert an active key while iterating the same live Map.
+      if (active.length > 0) store.set(key, active);
       else store.delete(key);
     }
   }

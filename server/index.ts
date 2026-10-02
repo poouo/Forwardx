@@ -20,6 +20,8 @@ import { initializePanelClock } from "./panelClock";
 import { ENV } from "./env";
 import { resolveTrustProxySetting } from "./trustProxy";
 import { authCapRouter } from "./authCaptcha";
+import { registerDatabaseHealthRoutes, databaseUnavailableApiGuard, databaseRequestErrorHandler } from "./databaseHealthRoutes";
+import { startDatabaseHealthMonitor } from "./databaseHealthMonitor";
 
 installPanelLogger();
 
@@ -124,6 +126,9 @@ async function startServer() {
     ? createHttpsServer(panelSsl.options, app)
     : createHttpServer(app);
   installSecurityHeaders(app);
+  installMobileCors(app);
+  registerDatabaseHealthRoutes(app);
+  app.use(databaseUnavailableApiGuard);
 
   // Payment webhooks need the original request body for signature verification.
   app.use(paymentCallbackRouter);
@@ -131,7 +136,6 @@ async function startServer() {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
   app.use(cookieParser());
-  installMobileCors(app);
   app.use(authCapRouter);
   app.use(agentRouter);
   app.use(migrationRouter);
@@ -142,6 +146,7 @@ async function startServer() {
       createContext,
     }),
   );
+  app.use(databaseRequestErrorHandler);
   serveStatic(app);
 
   const preferredPort = Number.parseInt(process.env.PORT || "9810", 10);
@@ -173,8 +178,9 @@ async function startServer() {
   if (databaseStatus.ready) {
     startBackgroundServices();
   } else {
-    console.warn("[Server] Database is not ready; background tasks are paused until the database setup is fixed and the panel restarts");
+    console.warn("[Server] Database is not ready; Web diagnostics remain available and background tasks will start after database recovery");
   }
+  startDatabaseHealthMonitor({ initialized: databaseStatus.ready, initialize: initDatabase, onReady: () => { startBackgroundServices(); } });
 }
 
 startServer().catch((error) => {

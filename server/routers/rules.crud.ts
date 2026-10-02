@@ -25,6 +25,7 @@ import { ensureTunnelListenerPortPolicy, reserveTunnelExitPort, usesSharedTunnel
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
 import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
+import { resolveRuleOperationOwner } from "../ruleOperationOwner";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -1036,6 +1037,7 @@ export async function createDirectForwardRuleForActor(
 export const crudRulesRouter = router({
   create: protectedProcedure
     .input(z.object({
+      userId: z.number().int().positive().optional(),
       hostId: z.number().optional(),
       name: z.string().min(1).max(128),
       forwardType: forwardTypeSchema.default("iptables"),
@@ -1061,6 +1063,7 @@ export const crudRulesRouter = router({
       ...transportTuningInputShape,
     }))
     .mutation(async ({ input, ctx }) => {
+      ctx = { ...ctx, user: await resolveRuleOperationOwner(ctx.user, input.userId) };
       await requireRuleTelegramNotifyReady(input.telegramErrorNotifyEnabled);
       // 权限检查：管理员或有 canAddRules 权限的用户
       let currentUser = await db.getUserById(ctx.user.id);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   authRateLimitState,
@@ -79,4 +80,41 @@ test("periodic maintenance removes expired failure and challenge keys", () => {
 
   pruneAuthRateLimitState(now + 31 * 60 * 1000);
   assert.deepEqual(authRateLimitStoreSizesForTests(), { failures: 0, challengeIssues: 0 });
+});
+
+test("periodic 2FA cleanup terminates and preserves active account and IP limits", () => {
+  // Isolate the synchronous cleanup: a live Map iteration regression must not
+  // block the whole test runner or leave a CPU-bound background process behind.
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import {
+      recordTwoFactorChallengeIssue, pruneAuthRateLimitState,
+      twoFactorChallengeIssueState, authRateLimitStoreSizesForTests,
+    } from ${JSON.stringify(new URL("./authRateLimit.ts", import.meta.url).href)};
+    recordTwoFactorChallengeIssue("192.0.2.3", "expired", 900);
+    recordTwoFactorChallengeIssue("192.0.2.1", "mixed", 1000);
+    for (let i = 0; i < 4; i++) recordTwoFactorChallengeIssue("192.0.2.1", "mixed", 1500);
+    for (let i = 0; i < 5; i++) recordTwoFactorChallengeIssue("192.0.2.2", "active", 2000);
+
+    pruneAuthRateLimitState(2100);
+    pruneAuthRateLimitState(2100);
+    assert.equal(authRateLimitStoreSizesForTests().challengeIssues, 9);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.1", "mixed", 2100).limited, true);
+
+    // Old timestamps disappear, but valid timestamps continue to count.
+    pruneAuthRateLimitState(61000);
+    pruneAuthRateLimitState(61000);
+    assert.equal(authRateLimitStoreSizesForTests().challengeIssues, 6);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.1", "mixed", 61000).limited, false);
+    recordTwoFactorChallengeIssue("192.0.2.1", "mixed", 61001);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.1", "mixed", 61001).limited, true);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.2", "active", 61001).limited, true);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.99", "active", 61001).limited, true);
+    assert.equal(twoFactorChallengeIssueState("192.0.2.2", "another-user", 61001).limited, true);
+
+    pruneAuthRateLimitState(121001);
+    assert.deepEqual(authRateLimitStoreSizesForTests(), { failures: 0, challengeIssues: 0 });
+  `], { timeout: 10_000, encoding: "utf8", windowsHide: true });
+  assert.equal(result.error, undefined, `2FA cleanup child failed: ${result.error}\n${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });

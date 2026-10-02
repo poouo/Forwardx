@@ -610,6 +610,8 @@ type HostFormData = {
   stoppedAt: string;
   trafficLimitGb: string;
   trafficMeasureMode: HostTrafficMeasureMode;
+  trafficFailoverEnabled: boolean;
+  trafficFailoverThresholdPercent: number;
   billingCycleMonths: HostBillingCycleMonths;
   billingMonth: number;
   billingDay: number;
@@ -642,6 +644,8 @@ const defaultFormData: HostFormData = {
   stoppedAt: "",
   trafficLimitGb: "",
   trafficMeasureMode: "both",
+  trafficFailoverEnabled: false,
+  trafficFailoverThresholdPercent: 100,
   billingCycleMonths: 1,
   billingMonth: 1,
   billingDay: 1,
@@ -1816,6 +1820,8 @@ function HostsContent() {
       stoppedAt: formatDateTimeLocal(host.stoppedAt),
       trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
+      trafficFailoverEnabled: !!host.trafficFailoverEnabled,
+      trafficFailoverThresholdPercent: Math.min(100, Math.max(1, Number(host.trafficFailoverThresholdPercent) || 100)),
       billingCycleMonths: normalizeHostBillingCycleMonths(host.billingCycleMonths),
       billingMonth: clampBillingMonth(host.billingMonth),
       billingDay: clampBillingDay(host.billingDay),
@@ -1906,6 +1912,10 @@ function HostsContent() {
       }
     }
     const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
+    if (user?.role === "admin" && form.trafficFailoverEnabled && trafficLimitBytes <= 0) {
+      toast.error("开启流量故障转移需要设置大于 0 的套餐流量");
+      return;
+    }
     const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
     const renewalReminderDays = clampRenewalReminderDays(form.renewalReminderDays);
     const canSaveTelegramReminder = telegramBotSettingsLoaded ? telegramBotReady : true;
@@ -1915,6 +1925,8 @@ function HostsContent() {
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
           trafficLimit: trafficLimitBytes,
           trafficMeasureMode: form.trafficMeasureMode,
+          trafficFailoverEnabled: form.trafficFailoverEnabled,
+          trafficFailoverThresholdPercent: form.trafficFailoverThresholdPercent,
           billingCycleMonths: normalizeHostBillingCycleMonths(form.billingCycleMonths),
           billingMonth: clampBillingMonth(form.billingMonth),
           billingDay: clampBillingDay(form.billingDay),
@@ -3383,6 +3395,24 @@ function HostsContent() {
                               <SelectItem value="max">取最大值</SelectItem>
                             </SelectContent>
                           </Select>
+                        </div>
+                      </div>
+                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 space-y-0.5">
+                          <Label className="text-sm font-medium">流量故障转移</Label>
+                          <p className="text-xs text-muted-foreground">达到套餐流量的指定比例后，暂停此主机参与转发组及隧道入口/出口组；流量重置或关闭后恢复，不删除成员配置。</p>
+                          {editingId && displayHosts.find((host: any) => host.id === editingId)?.trafficFailoverExcluded && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400">当前已达到流量阈值，已暂停参与组调度（不影响主机在线状态）。</p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background">
+                            <Input className="h-8 rounded-none border-0 px-2 text-right" type="number" min={1} max={100} step={1}
+                              disabled={!form.trafficFailoverEnabled} value={form.trafficFailoverThresholdPercent}
+                              onChange={(e) => setForm({ ...form, trafficFailoverThresholdPercent: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />
+                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
+                          </div>
+                          <Switch checked={form.trafficFailoverEnabled} onCheckedChange={(checked) => setForm({ ...form, trafficFailoverEnabled: checked })} />
                         </div>
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">

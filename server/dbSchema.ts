@@ -189,6 +189,8 @@ const tables: TableDef[] = [
       c("billingCycleMonths", "int", { notNull: true, default: 1 }), c("billingMonth", "int", { notNull: true, default: 1 }),
       c("billingDay", "int", { notNull: true, default: 1 }), c("expiryHandling", "varchar", { length: 24, notNull: true, default: "none" }),
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficMeasureMode", "varchar", { length: 16, notNull: true, default: "both" }),
+      c("trafficFailoverEnabled", "bool", { notNull: true, default: false }), c("trafficFailoverThresholdPercent", "int", { notNull: true, default: 100 }),
+      c("trafficFailoverExcluded", "bool", { notNull: true, default: false }),
       c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAlertThresholdPercent", "int", { notNull: true, default: 20 }),
       c("telegramRenewalReminderEnabled", "bool", { notNull: true, default: false }), c("renewalReminderDays", "int", { notNull: true, default: 3 }),
       c("trafficAutoReset", "bool", { notNull: true, default: false }), c("trafficResetDay", "int", { notNull: true, default: 1 }),
@@ -209,6 +211,7 @@ const tables: TableDef[] = [
       ["userId", "createdAt"],
       ["agentToken"],
       ["isOnline", "lastHeartbeat"],
+      ["trafficFailoverExcluded"],
     ],
   },
   {

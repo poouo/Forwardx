@@ -542,6 +542,10 @@ export async function updateHost(id: number, data: Partial<InsertHost>) {
   const audit = shouldAuditConfigPatch(data as any);
   const before = audit ? await getHostById(id).catch(() => undefined) : undefined;
   await db.update(hosts).set({ ...data, updatedAt: nowDate() }).where(eq(hosts.id, id));
+  if (["trafficLimit", "trafficMeasureMode", "trafficFailoverEnabled", "trafficFailoverThresholdPercent"].some((key) => Object.prototype.hasOwnProperty.call(data, key))) {
+    const { reconcileHostTrafficPolicy } = await import("../hostTrafficPolicy");
+    await reconcileHostTrafficPolicy(id);
+  }
   if (Object.prototype.hasOwnProperty.call(data, "agentToken") || Object.prototype.hasOwnProperty.call(data, "name")) {
     invalidateAgentAuthTokenCandidates();
   }

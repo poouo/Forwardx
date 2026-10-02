@@ -7,6 +7,8 @@ import { spawn } from "child_process";
 import type { ServerOptions } from "https";
 import { ENV } from "./env";
 import { getAllSettings } from "./repositories/settingsRepository";
+import { getDatabaseConfigPath } from "./dbRuntime";
+import { databaseHealth } from "./databaseHealthState";
 
 export type PanelSslSettings = {
   enabled: boolean;
@@ -218,19 +220,56 @@ export async function generateSelfSignedPanelSslCertificate(inputHosts: string[]
   }
 }
 
+function panelSslRuntimeCachePath() {
+  return path.join(path.dirname(getDatabaseConfigPath()), "panel-ssl-runtime.json");
+}
+
+// Keep the last validated TLS configuration locally so a database outage at
+// boot does not silently replace the panel's HTTPS listener with HTTP.
+async function cachePanelSslSettings(settings: PanelSslSettings) {
+  const file = panelSslRuntimeCachePath();
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(temporary, JSON.stringify(settings), { mode: 0o600 });
+    await fs.promises.rename(temporary, file);
+    await fs.promises.chmod(file, 0o600);
+  } catch {
+    console.warn("[PanelSSL] Unable to save private TLS runtime cache; database-outage startup fallback may be unavailable");
+  } finally { await fs.promises.rm(temporary, { force: true }).catch(() => undefined); }
+}
+
+async function readCachedPanelSslSettings(): Promise<PanelSslSettings | null> {
+  try {
+    const file = panelSslRuntimeCachePath();
+    if ((await fs.promises.stat(file)).size > 512 * 1024) return null;
+    const parsed = JSON.parse(await fs.promises.readFile(file, "utf8"));
+    if (typeof parsed.enabled !== "boolean" || !["path", "pem"].includes(parsed.mode)) return null;
+    for (const key of ["certPath", "keyPath", "certPem", "keyPem"]) if (typeof parsed[key] !== "string") return null;
+    return { enabled: parsed.enabled, mode: parsed.mode, certPath: parsed.certPath, keyPath: parsed.keyPath, certPem: parsed.certPem, keyPem: parsed.keyPem };
+  } catch { return null; }
+}
+
 export async function loadPanelSslRuntimeConfig(): Promise<PanelSslRuntimeConfig> {
   let all: Record<string, string | null | undefined> = {};
+  let loaded = false;
   try {
+    if (databaseHealth.snapshot().state === "unavailable") throw new Error("Database unavailable");
     all = await getAllSettings();
+    loaded = true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[PanelSSL] Settings unavailable: ${message}; using environment SSL settings only`);
+    console.warn(`[PanelSSL] Settings unavailable: ${message}; using cached or environment SSL settings`);
   }
-  const settings = readPanelSslSettings(all);
-  if (!settings.enabled) return { enabled: false, settings };
+  const settings = !loaded ? (await readCachedPanelSslSettings()) || readPanelSslSettings(all) : readPanelSslSettings(all);
+  if (!settings.enabled) {
+    if (loaded) await cachePanelSslSettings(settings);
+    return { enabled: false, settings };
+  }
 
   try {
     const options = await validatePanelSslConfig(settings);
+    if (loaded) await cachePanelSslSettings(settings);
     return { enabled: true, settings, options: options || undefined };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

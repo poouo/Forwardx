@@ -14,6 +14,7 @@ import {
 import { panelCryptoNowMs } from "./panelClock";
 import { appendPanelLog } from "./_core/panelLogger";
 import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
+import { databaseHealth } from "./databaseHealthState";
 
 export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/register",
@@ -131,6 +132,11 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
       rememberEncryptedEnvelope(req.body);
     }
   } catch (err: any) {
+    if (databaseHealth.unavailable(err)) {
+      // A failed DB lookup is not an invalid Agent token/auth proof.
+      next(err);
+      return;
+    }
     const message = String(err?.message || "Unauthorized");
     logAgentAuthRejection(req, authStage, message);
     res.setHeader(

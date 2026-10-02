@@ -233,6 +233,8 @@ function hostTrafficConfigPayload(input: {
   stoppedAt?: string | null;
   trafficLimit?: number;
   trafficMeasureMode?: "outbound" | "both" | "max";
+  trafficFailoverEnabled?: boolean;
+  trafficFailoverThresholdPercent?: number;
   telegramTrafficAlertEnabled?: boolean;
   trafficAlertThresholdPercent?: number;
   telegramRenewalReminderEnabled?: boolean;
@@ -253,6 +255,8 @@ function hostTrafficConfigPayload(input: {
     stoppedAt,
     trafficLimit: Math.max(0, Math.floor(Number(input.trafficLimit || 0))),
     trafficMeasureMode: normalizeHostTrafficMeasureMode(input.trafficMeasureMode),
+    trafficFailoverEnabled: !!input.trafficFailoverEnabled,
+    trafficFailoverThresholdPercent: input.trafficFailoverThresholdPercent ?? 100,
     telegramTrafficAlertEnabled: !!input.telegramTrafficAlertEnabled,
     trafficAlertThresholdPercent: normalizeTrafficAlertThresholdPercent(input.trafficAlertThresholdPercent),
     telegramRenewalReminderEnabled: !!input.telegramRenewalReminderEnabled,
@@ -1028,6 +1032,8 @@ export const hostsRouter = router({
         stoppedAt: optionalDateInputSchema,
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
+        trafficFailoverEnabled: z.boolean().optional(),
+        trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
@@ -1059,7 +1065,8 @@ export const hostsRouter = router({
         const agentToken = nanoid(32);
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
-          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 3, billingCycleMonths: 1, billingMonth: 1, billingDay: 1, expiryHandling: "none", trafficAutoReset: false, trafficResetDay: 1 };
+          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", trafficFailoverEnabled: false, trafficFailoverThresholdPercent: 100, telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 3, billingCycleMonths: 1, billingMonth: 1, billingDay: 1, expiryHandling: "none", trafficAutoReset: false, trafficResetDay: 1 };
+        if (trafficConfig.trafficFailoverEnabled && trafficConfig.trafficLimit <= 0) throw new Error("开启流量故障转移需要设置大于 0 的套餐流量");
         if (ctx.user.role === "admin" && (trafficConfig.telegramTrafficAlertEnabled || trafficConfig.telegramRenewalReminderEnabled)) {
           await assertTelegramBotConfiguredForHostReminder();
         }
@@ -1117,6 +1124,8 @@ export const hostsRouter = router({
         stoppedAt: optionalDateInputSchema,
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
+        trafficFailoverEnabled: z.boolean().optional(),
+        trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
@@ -1152,6 +1161,14 @@ export const hostsRouter = router({
           ? normalizePortAllowlist(input.portAllowlist)
           : String((host as any).portAllowlist || "");
         const { id, ...data } = input;
+        if (ctx.user.role === "admin") {
+          const enabled = data.trafficFailoverEnabled ?? (host as any).trafficFailoverEnabled;
+          const limit = data.trafficLimit ?? (host as any).trafficLimit;
+          if (enabled && Number(limit) <= 0) throw new Error("开启流量故障转移需要设置大于 0 的套餐流量");
+        } else {
+          delete data.trafficFailoverEnabled;
+          delete data.trafficFailoverThresholdPercent;
+        }
         let ddnsConfigChanged = false;
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if ((data as any).sortOrder !== undefined) (data as any).sortOrder = Math.min(200, Math.max(0, Math.floor(Number((data as any).sortOrder) || 0)));
