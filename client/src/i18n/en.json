@@ -1,4 +1,9 @@
 {
+  "登录/注册人机验证": "Sign-in / sign-up verification",
+  "默认开启。建议使用 HTTPS；部分浏览器在 HTTP 下无法完成验证。": "Enabled by default. Use HTTPS: some browsers cannot verify over HTTP.",
+  "启用人机验证": "Enable human verification",
+  "关闭后登录和注册不再要求人机验证，但仍保留密码、登录限流、邮箱验证和双重验证。公网部署建议保持开启。": "Disables human verification only. Passwords, sign-in rate limits, email verification and 2FA still apply. Keep enabled for public deployments.",
+  "保存人机验证设置": "Save verification settings",
   "使用 Google 继续": "Continue with Google",
   "Google 账户登录": "Google sign-in",
   "配置 Google OAuth Web 客户端，允许用户使用 Google 注册和登录。密码登录保持可用。": "Configure a Google OAuth web client for sign-up and sign-in. Password sign-in remains available.",

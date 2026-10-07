@@ -39,6 +39,7 @@ Detailed guides are currently in Chinese; this README provides English installat
 - User permissions, traffic/port quotas, plans, balances, redemption codes, discount codes and payment integrations.
 - Email reminders, mutually exclusive Telegram / Discord notification channels (Telegram by default), panel/agent upgrades and Android/iOS clients. See the [notification setup guide](docs/guide/notifications.md).
 - Optional Google sign-in, AI-assisted queries and confirmed operations, and administrator-controlled per-rule quotas.
+- Human verification for sign-in/sign-up is enabled by default. Administrators can disable it under **Settings → System configuration** for HTTP browser compatibility without restarting. Passwords, sign-in rate limits, email verification and 2FA remain active. Use trusted HTTPS and keep verification enabled on public panels.
 - Plugin stores, third-party stores and dynamic agent resource management APIs.
 
 ## Resource Model
