@@ -2929,6 +2929,7 @@ type SystemSettingsSaveKey =
   | "networkTest"
   | "panelUrl"
   | "registration"
+  | "authCaptcha"
   | "twoFactor"
   | "sessionPolicy"
   | "updateAutoCheck"
@@ -4039,6 +4040,7 @@ function SystemInfoSection() {
   const [showPanelSslConfirm, setShowPanelSslConfirm] = useState(false);
   const [panelSslCountdown, setPanelSslCountdown] = useState(5);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [authCaptchaEnabled, setAuthCaptchaEnabled] = useState(true);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
@@ -4103,6 +4105,7 @@ function SystemInfoSection() {
       setPanelSslCertPem(settings.panelSsl?.certPem || "");
       setPanelSslKeyPem(settings.panelSsl?.keyPem || "");
       setRegistrationEnabled(settings.registrationEnabled ?? true);
+      setAuthCaptchaEnabled(settings.authCaptchaEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
       setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
@@ -4388,6 +4391,16 @@ function SystemInfoSection() {
 
   const handleSaveRegistration = () => {
     saveSystemSettings("registration", { registrationEnabled });
+  };
+
+  const handleSaveAuthCaptcha = () => {
+    saveSystemSettings("authCaptcha", { authCaptchaEnabled }, {
+      onSuccess: () => {
+        void utils.auth.emailConfig.invalidate();
+        void utils.auth.needsCaptcha.invalidate();
+        void utils.system.publicInfo.invalidate();
+      },
+    });
   };
 
   const handleSaveTwoFactor = () => {
@@ -5050,6 +5063,27 @@ function SystemInfoSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Shield className="h-4 w-4 shrink-0 text-primary" />{translateText("登录/注册人机验证")}
+          </CardTitle>
+          <CardDescription>{translateText("默认开启。建议使用 HTTPS；部分浏览器在 HTTP 下无法完成验证。")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">{translateText("启用人机验证")}</p>
+              <p className="text-xs text-muted-foreground">{translateText("关闭后登录和注册不再要求人机验证，但仍保留密码、登录限流、邮箱验证和双重验证。公网部署建议保持开启。")}</p>
+            </div>
+            <Switch aria-label={translateText("启用人机验证")} className="shrink-0" checked={authCaptchaEnabled} onCheckedChange={setAuthCaptchaEnabled} />
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleSaveAuthCaptcha} disabled={isSavingSetting("authCaptcha")}>{translateText("保存人机验证设置")}</Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">

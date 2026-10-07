@@ -8,6 +8,9 @@
 
 ### Features and configuration
 
+- Add an administrator-controlled sign-in/sign-up human-verification switch, enabled by default. Disabling it hides the widgets and skips only CAPTCHA checks on the server, preserving passwords, sign-in rate limits, email verification and 2FA. Include Chinese/English UI and HTTP compatibility guidance. Advance Android to `2.4.0` so installed clients detect this UI update.
+- Fix iOS IPA icon generation with a supported 32-bit CoreGraphics context and opaque PNG export. Add an actual macOS rendering regression test and actionable errors instead of a Swift crash.
+
 - Provide complete Chinese/English changelog histories and include both languages automatically in GitHub Releases, with checks for missing release sections or translations.
 - Reorganize deployment and usage documentation into Docker, local installation, databases, HTTPS, paths/logs, account recovery, migration and development guides. Update both READMEs, move AI and per-rule quota documentation to their own sections, and correct outdated commands, container environment handling, installer configuration preservation and consistent SQLite backups.
 - Add optional Google registration and sign-in, disabled by default. Administrators configure a Web OAuth client and callback in Settings; users can explicitly link accounts, confirm unlinking with a password, and set a password for a new Google-only account. Preserve registration controls, email allowlists, ordinary-user permissions, disabled-account checks, 2FA and session policies; never automatically merge accounts with matching emails. Protect flows with one-time browser-bound state, PKCE, signature/audience/nonce checks, request timeouts and rate limits. Keep secrets out of browser responses and plaintext audit logs, with Chinese/English UI and setup documentation.
@@ -37,7 +40,7 @@
 
 ### Versions and upgrade notes
 
-- Panel and APK release: 2.3.282; Android app: 2.3.99; iOS app: 1.0.0; Agent: 2.2.195; ForwardX FXP runtime remains `2.2.117`.
+- Panel and APK release: 2.3.282; Android app: 2.4.0; iOS app: 1.0.0; Agent: 2.2.195; ForwardX FXP runtime remains `2.2.117`.
 - Back up databases and custom deployment configuration before upgrading. Google sign-in is disabled by default; Telegram remains the default bot channel. Seamless migration requires the old URL and forwarding service to stay running.
 - Upgrade Agents to use incremental GOST additions. Initial API activation restarts the shared runtime once; subsequent additions can retain unchanged listeners. Edits, deletions and recovery may still rebuild runtimes.
 - The IPA is unsigned and requires user-provided signing/installation. Platform packages and Docker images build in independent GitHub Actions and may become available after the code push.

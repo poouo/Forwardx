@@ -1,25 +1,58 @@
-import AppKit
+import CoreGraphics
+import Darwin
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
-// Generate an opaque iOS icon from the existing project logo, not the Capacitor template icon.
-guard CommandLine.arguments.count == 3,
-      let source = NSImage(contentsOfFile: CommandLine.arguments[1]),
-      source.size.width > 0, source.size.height > 0,
-      let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024,
-                                    bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
-                                    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-      let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
-    fatalError("Cannot load logo or create iOS icon")
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write(Data(("iOS icon: " + message + "\n").utf8))
+    exit(1)
 }
-NSGraphicsContext.saveGraphicsState()
-NSGraphicsContext.current = context
-NSColor.white.setFill()
-NSRect(x: 0, y: 0, width: 1024, height: 1024).fill()
-let scale = min(896 / source.size.width, 896 / source.size.height)
-let size = NSSize(width: source.size.width * scale, height: source.size.height * scale)
-source.draw(in: NSRect(x: (1024 - size.width) / 2, y: (1024 - size.height) / 2,
-                      width: size.width, height: size.height))
-NSGraphicsContext.restoreGraphicsState()
-guard let png = bitmap.representation(using: .png, properties: [:]) else {
-    fatalError("Cannot encode iOS icon")
+
+guard CommandLine.arguments.count == 3 else {
+    fail("Usage: swift scripts/ios-icon.swift <source.png> <output.png>")
 }
-try png.write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: .atomic)
+let sourceURL = URL(fileURLWithPath: CommandLine.arguments[1])
+guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+      let source = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
+      source.width > 0, source.height > 0 else {
+    fail("Cannot decode source logo")
+}
+
+let dimension = 1024
+guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+      let context = CGContext(
+        data: nil, width: dimension, height: dimension,
+        bitsPerComponent: 8, bytesPerRow: dimension * 4,
+        space: colorSpace,
+        bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+      ) else {
+    fail("Cannot create opaque RGBX drawing context")
+}
+
+// macOS cannot draw into the old 24-bit AppKit bitmap reliably.
+// Use supported 32-bit RGBX storage while exporting an opaque RGB PNG.
+context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+context.fill(CGRect(x: 0, y: 0, width: dimension, height: dimension))
+context.interpolationQuality = .high
+let scale = min(896.0 / Double(source.width), 896.0 / Double(source.height))
+let width = Double(source.width) * scale
+let height = Double(source.height) * scale
+context.draw(source, in: CGRect(x: (1024.0 - width) / 2, y: (1024.0 - height) / 2,
+                               width: width, height: height))
+guard let icon = context.makeImage() else {
+    fail("Cannot render icon")
+}
+let encoded = NSMutableData()
+guard let destination = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else {
+    fail("Cannot create PNG encoder")
+}
+CGImageDestinationAddImage(destination, icon, nil)
+guard CGImageDestinationFinalize(destination) else {
+    fail("Cannot encode PNG")
+}
+do {
+    try (encoded as Data).write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: .atomic)
+} catch {
+    fail("Cannot write icon: " + error.localizedDescription)
+}

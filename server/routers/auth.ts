@@ -48,8 +48,9 @@ function recordTwoFactorFail(ip: string, username: string) {
   recordTwoFactorFailure(ip, username);
 }
 
-function needsCaptcha(ip: string, username: string): boolean {
-  return authCaptcha.requiresLoginCaptcha(ip, username);
+async function captchaEnabled(): Promise<boolean> {
+  // Missing settings (including existing installations) keep verification on.
+  return (await db.getSetting("authCaptchaEnabled")) !== "false";
 }
 
 function loginRateLimitState(ip: string, username: string) {
@@ -216,7 +217,7 @@ export const authRouter = router({
   emailConfig: publicProcedure.query(async () => {
     const config = await getEmailConfig();
     const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
-    return { verifyRegistration: config.enabled && config.verifyRegistration, registrationEnabled };
+    return { verifyRegistration: config.enabled && config.verifyRegistration, registrationEnabled, authCaptchaEnabled: await captchaEnabled() };
   }),
 
   sendEmailCode: publicProcedure
@@ -258,9 +259,10 @@ export const authRouter = router({
 
   needsCaptcha: publicProcedure
     .input(z.object({ username: z.string() }))
-    .query(({ input, ctx }) => {
+    .query(async ({ input, ctx }) => {
       const ip = ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
-      return { required: needsCaptcha(ip, input.username) };
+      const enabled = await captchaEnabled();
+      return { enabled, required: enabled && authCaptcha.requiresLoginCaptcha(ip, input.username) };
     }),
 
   login: publicProcedure
@@ -284,7 +286,8 @@ export const authRouter = router({
         });
       }
 
-      if (needsCaptcha(ip, input.username)) {
+      const useCaptcha = await captchaEnabled();
+      if (useCaptcha && authCaptcha.requiresLoginCaptcha(ip, input.username)) {
         let captchaValid = false;
         if (input.capToken) {
           captchaValid = await authCaptcha.verifyCapToken(ip, "login", input.capToken);
@@ -308,7 +311,7 @@ export const authRouter = router({
       if (!user) {
         recordPasswordFail(ip, input.username);
         console.warn(`[Auth] Login failed username=${maskIdentifier(input.username)} ip=${ip}`);
-        if (needsCaptcha(ip, input.username)) {
+        if (useCaptcha && authCaptcha.requiresLoginCaptcha(ip, input.username)) {
           throw new Error("CAPTCHA_REQUIRED_AFTER_FAIL");
         }
         throw new Error("用户名或密码错误");
@@ -414,17 +417,19 @@ export const authRouter = router({
         throw new Error("当前注册未开放，请联系管理员");
       }
       const ip = getRequestIp(ctx);
-      let captchaValid = false;
-      if (input.capToken) {
-        captchaValid = await authCaptcha.verifyCapToken(ip, "register", input.capToken);
-      } else if (input.captchaId && input.captchaAnswer) {
-        // Legacy image challenge compatibility for clients that have not yet
-        // loaded the Cap widget.
-        captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "register");
-      }
-      if (!captchaValid) {
-        console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
-        throw new Error(input.capToken || input.captchaId ? "CAPTCHA_INVALID" : "CAPTCHA_REQUIRED");
+      if (await captchaEnabled()) {
+        let captchaValid = false;
+        if (input.capToken) {
+          captchaValid = await authCaptcha.verifyCapToken(ip, "register", input.capToken);
+        } else if (input.captchaId && input.captchaAnswer) {
+          // Legacy image challenge compatibility for clients that have not yet
+          // loaded the Cap widget.
+          captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "register");
+        }
+        if (!captchaValid) {
+          console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
+          throw new Error(input.capToken || input.captchaId ? "CAPTCHA_INVALID" : "CAPTCHA_REQUIRED");
+        }
       }
       const emailConfig = await getEmailConfig();
       const usernameEmail = ensureAllowedEmail(input.username, emailConfig);

@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   AuthCaptchaService,
   CaptchaRefreshRateLimitError,
 } from "./authCaptcha";
+
+test("captcha setting defaults on, gates login/register and preserves authorization, limits and 2FA", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-captcha-settings-"));
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "server/authCaptchaSettings.fixture.ts"], {
+      encoding: "utf8", timeout: 45_000, windowsHide: true,
+      env: { ...process.env, DATABASE_CONFIG_PATH: path.join(directory, "database.json"), DATABASE_TYPE: "sqlite", SQLITE_PATH: path.join(directory, "auth.db"), JWT_SECRET: "captcha-fixture-secret-that-is-long-enough", FORWARDX_DEV_PANEL: "0", FORWARDX_LOG_DIR: path.join(directory, "logs") },
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function createService(overrides: ConstructorParameters<typeof AuthCaptchaService>[0] = {}) {
   return new AuthCaptchaService({
