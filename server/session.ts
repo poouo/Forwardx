@@ -73,13 +73,23 @@ export function stripSessionSensitiveFields<T extends Record<string, any>>(user:
   if (!user) return user as T | null | undefined;
   const {
     password,
+    googleSubject,
     twoFactorSecret,
     browserSessionToken,
     mobileSessionToken,
     telegramSessionToken,
+    discordBindCode,
+    discordBindCodeExpiresAt,
+    discordLoginCode,
+    discordLoginCodeExpiresAt,
+    telegramBindCode,
+    telegramBindCodeExpiresAt,
+    telegramLoginCode,
+    telegramLoginCodeExpiresAt,
     ...safeUser
   } = user as Record<string, any>;
   void password;
+  void googleSubject;
   void twoFactorSecret;
   void browserSessionToken;
   void mobileSessionToken;

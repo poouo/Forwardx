@@ -52,12 +52,12 @@ const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
 CardHeader.displayName = "CardHeader"
 
 const CardTitle = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("text-2xl font-semibold leading-none tracking-tight", className)} {...props} />
+  <div ref={ref} className={cn("min-w-0 break-words [&>svg]:shrink-0 text-2xl font-semibold leading-snug tracking-tight", className)} {...props} />
 ))
 CardTitle.displayName = "CardTitle"
 
 const CardDescription = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("text-sm text-muted-foreground", className)} {...props} />
+  <div ref={ref} className={cn("min-w-0 [overflow-wrap:anywhere] text-sm text-muted-foreground", className)} {...props} />
 ))
 CardDescription.displayName = "CardDescription"
 

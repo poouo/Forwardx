@@ -7,11 +7,10 @@ import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 import * as hopRepo from "../repositories/tunnelRepository";
-import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
+import { planManualTunnelProbes, queueManualTunnelProbeBatch } from "../tunnelManualProbe";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
-import { structuredLinkTestMessage } from "../linkTestMessages";
 import { isValidHostOrIp } from "../networkAddress";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import {
@@ -32,9 +31,7 @@ import { normalizeExitGroupStrategy } from "../../shared/exitStrategy";
 import { assertMimicEnvironment } from "../mimicEnvironment";
 import {
   defaultTunnelHostAddress,
-  selectEntryGroupTunnelTestAddress,
   selectTunnelDialAddress,
-  selectTunnelHopDialAddress,
 } from "../tunnelAddressSelection";
 import { planManualTunnelTestRefresh } from "../tunnelRuntimePlan";
 import {
@@ -780,6 +777,16 @@ export const tunnelsRouter = router({
       .mutation(async ({ input }) => {
         await db.reorderTunnels(input.ids, input.startIndex);
         return { success: true };
+      }),
+    probeStatistics: protectedProcedure
+      .input(z.object({ tunnelId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+      .query(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.tunnelId);
+        if (!tunnel) throw new Error("Tunnel not found");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("No permission to view this tunnel");
+        return tunnelQueryCache.get(`probeStatistics:${ctx.user.id}:${input.tunnelId}:${input.hours}`,
+          { ttlMs: 5_000, staleMs: 0 },
+          () => db.getProbeCounterStatistics("tunnel", input.tunnelId, new Date(Date.now() - input.hours * 3600_000)));
       }),
     latencySeries: protectedProcedure
     .input(z.object({
@@ -1662,7 +1669,6 @@ export const tunnelsRouter = router({
           .map((node: any) => Number(node.hostId))
           .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
         const entryTestHostIds = await getTunnelEntryTestHostIds(tunnel);
-        const hasEntryGroupTest = entryTestHostIds.length > 1;
         const runtimeRefreshMode = planManualTunnelTestRefresh({
           isRunning: dbBool(tunnel.isRunning),
           hopHostCount: tunnelHopHostIds.length,
@@ -1730,317 +1736,19 @@ export const tunnelsRouter = router({
           appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid test target. exitHost=${exit.id} target=${target || "-"} port=${targetPort || "-"}`);
           return { success: false, latencyMs: null, message };
         }
-        if (!hasEntryGroupTest && Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
-          const batchId = createTunnelHopBatch(Number(tunnel.id));
-          const pendingDetails: any[] = [];
-          const testHostIds = new Set<number>();
-          let queued = 0;
-          for (let i = 0; i < tunnelHops.length - 1; i++) {
-            const currentHop = tunnelHops[i] as any;
-            const nextHop = tunnelHops[i + 1] as any;
-            const fromHostId = Number(currentHop.hostId) || 0;
-            const nextHost = await db.getHostById(Number(nextHop.hostId));
-            const nextAddr = selectTunnelHopDialAddress(nextHop, nextHost, tunnel);
-            const nextPort = Number(nextHop.listenPort) || 0;
-            if (!fromHostId || !nextAddr || !nextPort) {
-              const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
-              await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-              await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
-              appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid hop target hop=${i + 1} fromHost=${fromHostId} target=${nextAddr || "-"} port=${nextPort || "-"}`);
-              return { success: false, latencyMs: null, message };
-            }
-            const hopLabel = `${i + 1}/${tunnelHops.length - 1} ${fromHostId}->${Number(nextHop.hostId)}`;
-            const currentHost = await db.getHostById(fromHostId);
-            const routeLabel = `第 ${i + 1} 跳 ${(currentHost as any)?.name || `主机${fromHostId}`} -> ${(nextHost as any)?.name || `主机${Number(nextHop.hostId)}`}`;
-            pendingDetails.push({
-              success: false,
-              latencyMs: null,
-              message: null,
-              hopLabel,
-              routeLabel,
-              method: "tcp",
-              pending: true,
-            });
-            const payload = {
-              kind: "tunnel-hop",
-              tunnelId: tunnel.id,
-              targetIp: nextAddr,
-              targetPort: nextPort,
-              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(nextHop.hostId || 0)) : undefined,
-              hopLabel,
-              routeLabel,
-              batchId,
-            };
-            const testId = await db.createForwardTest({
-              ruleId: 0,
-              hostId: fromHostId,
-              userId: tunnel.userId,
-              message: JSON.stringify(payload),
-            } as any);
-            registerTunnelHopTest(batchId, Number(testId));
-            testHostIds.add(fromHostId);
-            queued += 1;
-            appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued hop tcping ${hopLabel} target=${nextAddr}:${nextPort}`);
-          }
-          const message = structuredLinkTestMessage({
-            kind: "tunnel-hop-pending",
-            tunnelId: tunnel.id,
-            message: `多级隧道逐跳探测中：${queued} 段`,
-            details: pendingDetails,
-            totalLatencyMs: null,
-          });
-          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
-          for (const hostId of testHostIds) {
-            pushAgentRefresh(hostId, "tunnel-hop-selftest", { urgent: true });
-          }
-          return { success: false, latencyMs: null, message, pending: true };
-        }
-
-        if (hasEntryGroupTest) {
-          const nextHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? tunnelHops[1] as any : null;
-          const nextHostId = Number(nextHop?.hostId || tunnel.exitHostId || 0);
-          const nextHost = await db.getHostById(nextHostId);
-          const firstTarget = selectEntryGroupTunnelTestAddress(tunnel, nextHop, nextHost) || target;
-          const firstTargetPort = Number(nextHop?.listenPort || targetPort) || 0;
-          if (!nextHostId || !firstTarget || !firstTargetPort) {
-            const message = `TUNNEL_ENTRY_GROUP_TEST_TARGET_INVALID target=${firstTarget || "-"} port=${firstTargetPort || "-"}`;
-            await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-            await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
-            appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid entry-group test target target=${firstTarget || "-"} port=${firstTargetPort || "-"}`);
-            return { success: false, latencyMs: null, message };
-          }
-          const batchId = createTunnelHopBatch(Number(tunnel.id));
-          const pendingDetails: any[] = [];
-          const testHostIds = new Set<number>();
-          let queued = 0;
-          for (const entryHostId of entryTestHostIds) {
-            const entryHost = await db.getHostById(entryHostId);
-            const routeLabel = `${(entryHost as any)?.name || `主机${entryHostId}`} -> ${(nextHost as any)?.name || `主机${nextHostId}`}`;
-            const hopLabel = `入口 ${queued + 1}/${entryTestHostIds.length} ${entryHostId}->${nextHostId}`;
-            pendingDetails.push({
-              success: false,
-              latencyMs: null,
-              message: null,
-              hopLabel,
-              routeLabel,
-              method: "tcp",
-              pending: true,
-            });
-            const payload = {
-              kind: "tunnel-hop",
-              tunnelId: tunnel.id,
-              targetIp: firstTarget,
-              targetPort: firstTargetPort,
-              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(nextHostId) : undefined,
-              hopLabel,
-              routeLabel,
-              batchId,
-              latencyMode: "multi-source",
-            };
-            const testId = await db.createForwardTest({
-              ruleId: 0,
-              hostId: entryHostId,
-              userId: tunnel.userId,
-              message: JSON.stringify(payload),
-            } as any);
-            registerTunnelHopTest(batchId, Number(testId));
-            testHostIds.add(entryHostId);
-            queued += 1;
-            appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group TCPing ${hopLabel} target=${firstTarget}:${firstTargetPort}`);
-          }
-          if (Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
-            for (let i = 1; i < tunnelHops.length - 1; i++) {
-              const currentHop = tunnelHops[i] as any;
-              const nextHop = tunnelHops[i + 1] as any;
-              const fromHostId = Number(currentHop.hostId) || 0;
-              const currentHost = await db.getHostById(fromHostId);
-              const nextHost = await db.getHostById(Number(nextHop.hostId));
-              const nextAddr = selectTunnelHopDialAddress(nextHop, nextHost, tunnel);
-              const nextPort = Number(nextHop.listenPort) || 0;
-              if (!fromHostId || !nextAddr || !nextPort) {
-                const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
-                await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-                await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
-                appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid entry-group hop target hop=${i + 1} fromHost=${fromHostId} target=${nextAddr || "-"} port=${nextPort || "-"}`);
-                return { success: false, latencyMs: null, message };
-              }
-              const hopLabel = `${i + 1}/${tunnelHops.length - 1} ${fromHostId}->${Number(nextHop.hostId)}`;
-              const routeLabel = `第 ${i + 1} 跳 ${(currentHost as any)?.name || `主机${fromHostId}`} -> ${(nextHost as any)?.name || `主机${Number(nextHop.hostId)}`}`;
-              pendingDetails.push({
-                success: false,
-                latencyMs: null,
-                message: null,
-                hopLabel,
-                routeLabel,
-                method: "tcp",
-                pending: true,
-              });
-              const payload = {
-                kind: "tunnel-hop",
-                tunnelId: tunnel.id,
-                targetIp: nextAddr,
-                targetPort: nextPort,
-                wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(nextHop.hostId || 0)) : undefined,
-                hopLabel,
-                routeLabel,
-                batchId,
-                latencyMode: "multi-source",
-              };
-              const testId = await db.createForwardTest({
-                ruleId: 0,
-                hostId: fromHostId,
-                userId: tunnel.userId,
-                message: JSON.stringify(payload),
-              } as any);
-              registerTunnelHopTest(batchId, Number(testId));
-              testHostIds.add(fromHostId);
-              queued += 1;
-              appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group hop TCPing ${hopLabel} target=${nextAddr}:${nextPort}`);
-            }
-          }
-          const message = structuredLinkTestMessage({
-            kind: "tunnel-entry-group-pending",
-            tunnelId: tunnel.id,
-            message: `多入口隧道探测中：${entryTestHostIds.length} 个入口${queued > entryTestHostIds.length ? `，共 ${queued} 段` : ""}`,
-            details: pendingDetails,
-            totalLatencyMs: null,
-          });
-          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
-          for (const hostId of testHostIds) {
-            pushAgentRefresh(hostId, "tunnel-entry-group-selftest", { urgent: true });
-          }
-          appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-group TCPing entries=${entryTestHostIds.length} segments=${queued}`);
-          return { success: false, latencyMs: null, message, pending: true };
-        }
-        const extraExitEndpoints = (
-          dbBool(tunnel.loadBalanceEnabled) && normalizeExitGroupStrategy(tunnel.loadBalanceStrategy) !== "none"
-            ? (tunnelExtraExitNodes || [])
-            : []
-        )
-          .map((node: any) => ({
-            seq: Number(node.seq) || 0,
-            hostId: Number(node.hostId) || 0,
-            listenPort: Number(node.listenPort) || 0,
-            connectHost: String(node.connectHost || "").trim() || null,
-          }))
-          .filter((node: any) => node.hostId > 0 && node.listenPort > 0)
-          .sort((a: any, b: any) => a.seq - b.seq);
-        if (extraExitEndpoints.length > 0) {
-          const batchId = createTunnelHopBatch(Number(tunnel.id));
-          const pendingDetails: any[] = [];
-          const branchGroupKey = `tunnel-${tunnel.id}-load-balance`;
-          const branchGroupLabel = "多出口负载";
-          const primaryRouteLabel = `${(entry as any)?.name || `主机${tunnel.entryHostId}`} -> ${(exit as any)?.name || `主机${tunnel.exitHostId}`}`;
-          const primaryPayload = {
-            kind: "tunnel-hop",
-            tunnelId: tunnel.id,
-            targetIp: target,
-            targetPort,
-            wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(tunnel.exitHostId || 0)) : undefined,
-            hopLabel: `出口 1/${extraExitEndpoints.length + 1} ${tunnel.entryHostId}->${tunnel.exitHostId}`,
-            routeLabel: primaryRouteLabel,
-            batchId,
-            groupKey: branchGroupKey,
-            groupLabel: branchGroupLabel,
-            latencyMode: "max",
-          };
-          pendingDetails.push({
-            success: false,
-            latencyMs: null,
-            message: null,
-            hopLabel: primaryPayload.hopLabel,
-            routeLabel: primaryRouteLabel,
-            method: "tcp",
-            pending: true,
-            groupKey: branchGroupKey,
-            groupLabel: branchGroupLabel,
-          });
-          const primaryTestId = await db.createForwardTest({
-            ruleId: 0,
-            hostId: tunnel.entryHostId,
-            userId: tunnel.userId,
-            message: JSON.stringify(primaryPayload),
-          } as any);
-          registerTunnelHopTest(batchId, Number(primaryTestId));
-          let queued = 1;
-          for (const endpoint of extraExitEndpoints) {
-            const endpointHost = await db.getHostById(endpoint.hostId);
-            const endpointTarget = selectTunnelHopDialAddress(endpoint, endpointHost, tunnel);
-            const endpointPort = Number(endpoint.listenPort) || 0;
-            if (!endpointTarget || !endpointPort) {
-              const message = `TUNNEL_EXIT_TEST_TARGET_INVALID host=${endpoint.hostId} target=${endpointTarget || "-"} port=${endpointPort || "-"}`;
-              await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-              await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
-              appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid load-balance exit target host=${endpoint.hostId} target=${endpointTarget || "-"} port=${endpointPort || "-"}`);
-              return { success: false, latencyMs: null, message };
-            }
-            const hopLabel = `出口 ${queued + 1}/${extraExitEndpoints.length + 1} ${tunnel.entryHostId}->${endpoint.hostId}`;
-            const routeLabel = `${(entry as any)?.name || `主机${tunnel.entryHostId}`} -> ${(endpointHost as any)?.name || `主机${endpoint.hostId}`}`;
-            pendingDetails.push({
-              success: false,
-              latencyMs: null,
-              message: null,
-              hopLabel,
-              routeLabel,
-              method: "tcp",
-              pending: true,
-              groupKey: branchGroupKey,
-              groupLabel: branchGroupLabel,
-            });
-            const payload = {
-              kind: "tunnel-hop",
-              tunnelId: tunnel.id,
-              targetIp: endpointTarget,
-              targetPort: endpointPort,
-              wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(endpoint.hostId) : undefined,
-              hopLabel,
-              routeLabel,
-              batchId,
-              groupKey: branchGroupKey,
-              groupLabel: branchGroupLabel,
-              latencyMode: "max",
-            };
-            const testId = await db.createForwardTest({
-              ruleId: 0,
-              hostId: tunnel.entryHostId,
-              userId: tunnel.userId,
-              message: JSON.stringify(payload),
-            } as any);
-            registerTunnelHopTest(batchId, Number(testId));
-            queued += 1;
-            appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued load-balance TCPing ${hopLabel} target=${endpointTarget}:${endpointPort}`);
-          }
-          const message = structuredLinkTestMessage({
-            kind: "tunnel-load-balance-pending",
-            tunnelId: tunnel.id,
-            message: `多出口负载探测中：${queued} 个出口`,
-            details: pendingDetails,
-            totalLatencyMs: null,
-          });
-          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
-          pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest", { urgent: true });
-          appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued load-balance TCPing exits=${queued}`);
-          return { success: false, latencyMs: null, message, pending: true };
-        }
-
-        const payload = {
-          kind: "tunnel",
-          tunnelId: tunnel.id,
-          targetIp: target,
-          targetPort,
-          wireGuardPeerId: isForwardXWireGuardV2(tunnel) ? String(Number(tunnel.exitHostId || 0)) : undefined,
-        };
-        await db.createForwardTest({
-          ruleId: 0,
-          hostId: tunnel.entryHostId,
-          userId: tunnel.userId,
-          message: JSON.stringify(payload),
-        } as any);
-        const message = `TUNNEL_LINK_TEST_PENDING ${target}:${targetPort}`;
-        await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
-        pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest", { urgent: true });
-        appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-agent TCPing from entryHost=${entry.id} to exit ${target}:${targetPort}`);
-        return { success: false, latencyMs: null, message, pending: true };
+        const hostIds = Array.from(new Set([...entryTestHostIds, ...tunnelHopHostIds, Number(tunnel.exitHostId), ...tunnelExtraExitHostIds]));
+        const hostRows = await Promise.all(hostIds.map(id => db.getHostById(id)));
+        const probes = planManualTunnelProbes({
+          tunnel: { ...tunnel, listenPort: targetPort }, hops: tunnelHops || [],
+          exits: tunnelExtraExitNodes || [], entryHostIds: entryTestHostIds,
+          hosts: new Map(hostIds.map((id, index) => [id, hostRows[index]])),
+        });
+        const queued = await queueManualTunnelProbeBatch(tunnel, probes);
+        const sourceHosts = Array.from(new Set(probes.map(probe => probe.fromHostId)));
+        const delivered = sourceHosts.filter(id => pushAgentRefresh(id, "tunnel-selftest", { urgent: true })).length;
+        appendPanelLog(delivered === sourceHosts.length ? "info" : "warn",
+          `[TunnelTest] queued tunnel=${tunnel.id} batch=${queued.batchId} segments=${probes.length} sourceHosts=${sourceHosts.length} pushed=${delivered}; offline streams use heartbeat delivery`);
+        return queued;
       })),
   });
 

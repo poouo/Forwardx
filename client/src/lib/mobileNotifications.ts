@@ -1,7 +1,9 @@
+import { t as translateText } from "@/i18n";
 import { App } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { mobileAuth } from "@/lib/mobileAuth";
+import { compareMobileVersions, latestMobilePackage } from "./mobileAppUpdate";
 
 const SETTINGS_KEY = "forwardx.mobile.notificationSettings";
 const RELEASES_URL = "https://github.com/poouo/Forwardx/releases";
@@ -28,8 +30,8 @@ export type MobileAppUpdateResult = {
   currentVersion: string;
   latestVersion: string;
   releaseUrl: string;
-  platform: "android";
-  packageLabel: "APK";
+  platform: "android" | "ios";
+  packageLabel: "APK" | "IPA（需自行签名）";
   hasPackage: boolean;
   hasApk: boolean;
 };
@@ -121,7 +123,7 @@ export async function scheduleMobileReminders(settings: MobileNotificationSettin
     if (remainingPercent <= normalized.trafficThresholdPercent) {
       notifications.push({
         id: 40101,
-        title: "ForwardX 流量提醒",
+        title: translateText("ForwardX 流量提醒"),
         body: `套餐流量剩余约 ${remainingPercent}%，请及时关注。`,
         schedule: { at: nextReminderDate(normalized.reminderTime) },
       });
@@ -136,7 +138,7 @@ export async function scheduleMobileReminders(settings: MobileNotificationSettin
       if (notifyAt <= expiresAt) {
         notifications.push({
           id: 40102,
-          title: "ForwardX 套餐到期提醒",
+          title: translateText("ForwardX 套餐到期提醒"),
           body: `套餐将在 ${normalized.expiryDaysBefore} 天内到期，请及时续费或联系管理员。`,
           schedule: { at: new Date(notifyAt) },
         });
@@ -147,22 +149,6 @@ export async function scheduleMobileReminders(settings: MobileNotificationSettin
   if (notifications.length) await LocalNotifications.schedule({ notifications });
 }
 
-function compareVersions(a: string, b: string) {
-  const pa = a.replace(/^v/i, "").split(".").map((n) => Number(n) || 0);
-  const pb = b.replace(/^v/i, "").split(".").map((n) => Number(n) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-function extractMobilePackageVersion(assetName: string) {
-  const pattern = /^forwardx-android-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.apk$/i;
-  const match = assetName.match(pattern);
-  return match?.[1] || null;
-}
-
 export async function openMobileReleasePage(url = RELEASES_URL) {
   const targetUrl = url || RELEASES_URL;
   if (mobileAuth.isNative) await Browser.open({ url: targetUrl });
@@ -171,35 +157,27 @@ export async function openMobileReleasePage(url = RELEASES_URL) {
 
 export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): Promise<MobileAppUpdateResult | null> {
   if (!mobileAuth.isNative) return null;
-  if (mobileAuth.platform !== "android") return null;
+  const platform = mobileAuth.platform;
+  if (platform !== "android" && platform !== "ios") return null;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
     const [appInfo, response] = await Promise.all([
       App.getInfo(),
       fetch(RELEASES_API_URL, {
         headers: { Accept: "application/vnd.github+json" },
+        signal: controller.signal,
       }),
     ]);
     if (!response.ok) throw new Error(`GitHub ${response.status}`);
 
     const releases = await response.json();
     const current = String(appInfo.version || "").replace(/^v/i, "");
-    const packageCandidates = (Array.isArray(releases) ? releases : [])
-      .flatMap((release: any) => (Array.isArray(release?.assets) ? release.assets : []).map((asset: any) => {
-        const name = String(asset?.name || "");
-        const version = extractMobilePackageVersion(name);
-        if (!version) return null;
-        return {
-          version,
-          releaseUrl: release?.html_url || `${RELEASES_URL}/tag/${release?.tag_name || ""}`,
-        };
-      }))
-      .filter(Boolean)
-      .sort((a: any, b: any) => compareVersions(b.version, a.version));
-    const latestPackage = packageCandidates[0] as { version: string; releaseUrl: string } | undefined;
+    const latestPackage = latestMobilePackage(releases, platform);
     const latest = latestPackage?.version || current;
-    const hasPackage = packageCandidates.length > 0;
-    const hasUpdate = hasPackage && !!latest && !!current && compareVersions(latest, current) > 0;
+    const hasPackage = !!latestPackage;
+    const hasUpdate = hasPackage && !!latest && !!current && compareMobileVersions(latest, current) > 0;
     const releaseUrl = latestPackage?.releaseUrl || LATEST_RELEASE_URL;
 
     return {
@@ -207,13 +185,15 @@ export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): 
       currentVersion: current,
       latestVersion: latest,
       releaseUrl,
-      platform: "android",
-      packageLabel: "APK",
+      platform,
+      packageLabel: platform === "ios" ? "IPA（需自行签名）" : "APK",
       hasPackage,
-      hasApk: hasPackage,
+      hasApk: platform === "android" && hasPackage,
     };
   } catch (error) {
     if (!options.silent) throw error;
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }

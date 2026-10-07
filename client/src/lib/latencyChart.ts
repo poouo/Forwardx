@@ -1,3 +1,6 @@
+import { t as translateText } from "@/i18n";
+import type { ProbeStatistics } from "@shared/probeStatistics";
+
 export const MAX_LATENCY_CHART_MS = 500;
 
 export type LatencyStabilitySample = {
@@ -43,7 +46,9 @@ export type NormalizedLatencyProbeCounts = {
  */
 export function normalizeLatencyProbeCounts(sample: Pick<LatencyStabilitySample, "isTimeout" | "probeCount" | "probeSuccesses"> | null | undefined): NormalizedLatencyProbeCounts {
   const rawCount = Number(sample?.probeCount);
-  const probeCount = Number.isInteger(rawCount) && rawCount >= 1 ? Math.min(rawCount, 1024) : 1;
+  // The wire limits a single batch to 1024, but chart rows may be compacted
+  // server-side and contain many batches. Do not truncate their denominator.
+  const probeCount = Number.isSafeInteger(rawCount) && rawCount >= 1 && rawCount <= 1_000_000_000 ? rawCount : 1;
   const rawSuccesses = Number(sample?.probeSuccesses);
   const hasSuccesses = sample?.probeSuccesses !== undefined
     && sample?.probeSuccesses !== null
@@ -183,22 +188,29 @@ function processPeakCutValues(values: number[], alpha: number) {
   return ewma;
 }
 
-export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): LatencyStabilityStats {
+export function getLatencyStabilityStats(samples: LatencyStabilitySample[], actual?: ProbeStatistics | null): LatencyStabilityStats {
   const weightedSamples = samples.map((sample) => {
     const counts = normalizeLatencyProbeCounts(sample);
     return { sample, ...counts };
   });
-  const total = weightedSamples.reduce((sum, item) => sum + item.probeCount, 0);
-  const timeout = weightedSamples.reduce((sum, item) => sum + item.probeCount - item.probeSuccesses, 0);
+  const cumulative = actual !== undefined;
+  const hasCounters = !!actual?.available && Number.isSafeInteger(actual.total) && actual.total > 0
+    && Number.isSafeInteger(actual.successes) && actual.successes >= 0 && actual.successes <= actual.total;
+  const total = cumulative ? (hasCounters ? actual!.total : 0) : weightedSamples.reduce((sum, item) => sum + item.probeCount, 0);
+  const timeout = cumulative ? (hasCounters ? actual!.total - actual!.successes : 0)
+    : weightedSamples.reduce((sum, item) => sum + item.probeCount - item.probeSuccesses, 0);
   const lossRate = total > 0 ? (timeout / total) * 100 : 0;
   const weightedValues = weightedSamples
     .filter(({ sample, probeSuccesses }) => probeSuccesses > 0 && Number.isFinite(sample.latency) && sample.latency > 0)
     .map(({ sample, probeSuccesses }) => ({ value: sample.latency, weight: probeSuccesses }))
     .sort((a, b) => a.value - b.value);
-  const valid = weightedValues.reduce((sum, item) => sum + item.weight, 0);
-  const maxLossRun = getMaxLossRun(samples);
+  const latencyValid = weightedValues.reduce((sum, item) => sum + item.weight, 0);
+  const valid = cumulative ? (hasCounters ? actual!.successes : 0) : latencyValid;
+  // Historical health rows reuse cached hops and suppress steady successes.
+  // Their run length is NOT a sequence of independent attempts.
+  const maxLossRun = cumulative ? 0 : getMaxLossRun(samples);
 
-  if (total === 0) {
+  if (total === 0 && latencyValid === 0) {
     return {
       total,
       timeout,
@@ -217,8 +229,8 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
     };
   }
 
-  if (valid === 0) {
-    const score = applyStabilityCaps(0, lossRate, null, maxLossRun);
+  if (latencyValid === 0) {
+    const score = cumulative && (!hasCounters || valid > 0) ? null : applyStabilityCaps(0, lossRate, null, maxLossRun);
     return {
       total,
       timeout,
@@ -247,7 +259,7 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
   const spikeThreshold = p50 + Math.max(50, jitter * 4);
   const spikeRate = weightedValues
     .filter((item) => item.value > spikeThreshold)
-    .reduce((sum, item) => sum + item.weight, 0) / Math.max(valid, 1);
+    .reduce((sum, item) => sum + item.weight, 0) / Math.max(latencyValid, 1);
 
   const lossScore = interpolateScore(lossRate, [
     [0, 100],
@@ -320,7 +332,7 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
     + spikeScore * 0.18
     + latencyScore * 0.17
     + continuityScore * 0.05;
-  const score = applyStabilityCaps(Math.round(rawScore), lossRate, p50, maxLossRun);
+  const score = cumulative && !hasCounters ? null : applyStabilityCaps(Math.round(rawScore), lossRate, p50, maxLossRun);
 
   return {
     total,
@@ -329,7 +341,7 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
     lossRate,
     max: weightedValues[weightedValues.length - 1].value,
     min: weightedValues[0].value,
-    avg: Math.round(sum / valid),
+    avg: Math.round(sum / latencyValid),
     p50: Math.round(p50),
     p95: Math.round(p95),
     jitter: Math.round(jitter),
@@ -341,13 +353,13 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): Lat
 }
 
 export function getLatencyStabilityRating(score: number | null): LatencyStabilityRating {
-  if (score === null) return { label: "暂无", className: "text-muted-foreground" };
-  if (score >= 90) return { label: "优秀", className: "text-emerald-600 dark:text-emerald-400" };
-  if (score >= 80) return { label: "良好", className: "text-lime-600 dark:text-lime-400" };
-  if (score >= 65) return { label: "一般", className: "text-yellow-600 dark:text-yellow-400" };
-  if (score >= 45) return { label: "较差", className: "text-orange-600 dark:text-orange-400" };
-  if (score >= 25) return { label: "不稳定", className: "text-rose-600 dark:text-rose-400" };
-  return { label: "严重不可用", className: "text-destructive" };
+  if (score === null) return { label: translateText("暂无"), className: "text-muted-foreground" };
+  if (score >= 90) return { label: translateText("优秀"), className: "text-emerald-600 dark:text-emerald-400" };
+  if (score >= 80) return { label: translateText("良好"), className: "text-lime-600 dark:text-lime-400" };
+  if (score >= 65) return { label: translateText("一般"), className: "text-yellow-600 dark:text-yellow-400" };
+  if (score >= 45) return { label: translateText("较差"), className: "text-orange-600 dark:text-orange-400" };
+  if (score >= 25) return { label: translateText("不稳定"), className: "text-rose-600 dark:text-rose-400" };
+  return { label: translateText("探测严重异常"), className: "text-destructive" };
 }
 
 function weightedPercentile(

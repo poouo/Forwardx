@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -13,43 +15,43 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, CreditCard, Gift, Package, ReceiptText, RefreshCw, WalletCards } from "lucide-react";
 import { useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type PaymentType = "alipay" | "wxpay" | "stripe" | "usdt";
 
 function money(cents?: number | null, currency = "CNY") {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((Number(cents) || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
 }
 
 function dateText(value?: string | Date | null) {
   if (!value) return "-";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN");
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString(getFormatLocale());
 }
 
 function orderTypeText(type?: string | null) {
-  if (type === "plan") return "套餐";
-  if (type === "test") return "测试";
-  return "余额";
+  if (type === "plan") return translateText("套餐");
+  if (type === "test") return translateText("测试");
+  return translateText("余额");
 }
 
 function paymentMethodText(type?: string | null) {
-  if (type === "alipay") return "支付宝";
-  if (type === "wxpay") return "微信支付";
+  if (type === "alipay") return translateText("支付宝");
+  if (type === "wxpay") return translateText("微信支付");
   if (type === "stripe") return "Stripe";
   if (type === "usdt" || type === "gmpay") return "USDT";
   return type || "-";
 }
 
 function balanceTypeText(type?: string | null) {
-  if (type === "admin_recharge") return "管理员充值";
-  if (type === "admin_adjust") return "管理员修改";
-  if (type === "payment") return "在线充值入账";
-  if (type === "purchase") return "余额消费";
-  if (type === "redeem") return "兑换入账";
-  if (type === "traffic_billing") return "流量计费";
-  if (type === "traffic_addon_purchase") return "购买附加流量";
-  return type || "余额变动";
+  if (type === "admin_recharge") return translateText("管理员充值");
+  if (type === "admin_adjust") return translateText("管理员修改");
+  if (type === "payment") return translateText("在线充值入账");
+  if (type === "purchase") return translateText("余额消费");
+  if (type === "redeem") return translateText("兑换入账");
+  if (type === "traffic_billing") return translateText("流量计费");
+  if (type === "traffic_addon_purchase") return translateText("购买附加流量");
+  return type || translateText("余额变动");
 }
 
 function ledgerTone(item: any) {
@@ -80,24 +82,24 @@ export default function Wallet() {
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
-      toast.success("充值订单已创建");
+      toast.success(translateText("充值订单已创建"));
       setRechargeOpen(false);
       utils.payment.myOrders.invalidate();
       utils.billing.ledger.invalidate();
       if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
     },
-    onError: (error) => toast.error(error.message || "创建订单失败"),
+    onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
 
   const redeem = trpc.billing.redeem.useMutation({
     onSuccess: () => {
-      toast.success("兑换成功");
+      toast.success(translateText("兑换成功"));
       setRedeemCode("");
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.plans.mySubscriptions.invalidate();
     },
-    onError: (error) => toast.error(error.message || "兑换失败"),
+    onError: (error) => toast.error(error.message || translateText("兑换失败")),
   });
 
   const openRecharge = () => {
@@ -111,19 +113,17 @@ export default function Wallet() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">账单中心</h1>
-            <p className="text-sm text-muted-foreground">余额、充值和订单记录。</p>
+            <h1 className="text-2xl font-semibold tracking-tight">{translateText("账单中心")}</h1>
+            <p className="text-sm text-muted-foreground">{translateText("余额、充值和订单记录。")}</p>
           </div>
           <Button onClick={openRecharge}>
-            <CreditCard className="mr-2 h-4 w-4" />
-            自助充值
-          </Button>
+            <CreditCard className="mr-2 h-4 w-4" />{translateText("自助充值")}</Button>
         </div>
 
         <div className={`grid gap-4 ${billingFeatures?.redemptionEnabled ? "md:grid-cols-2" : ""}`}>
           <Card>
             <CardHeader>
-              <CardDescription>当前余额</CardDescription>
+              <CardDescription>{translateText("当前余额")}</CardDescription>
               <AnimatedStatValue
                 as={CardTitle}
                 value={money(wallet?.balanceCents)}
@@ -139,21 +139,17 @@ export default function Wallet() {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Gift className="h-5 w-5" />
-                  兑换码
-                </CardTitle>
-                <CardDescription>输入兑换码即可使用。</CardDescription>
+                  <Gift className="h-5 w-5" />{translateText("兑换码")}</CardTitle>
+                <CardDescription>{translateText("输入兑换码即可使用。")}</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3 sm:flex-row">
                 <Input
                   value={redeemCode}
                   onChange={(event) => setRedeemCode(event.target.value.toUpperCase())}
-                  placeholder="输入兑换码"
+                  placeholder={translateText("输入兑换码")}
                 />
                 <Button onClick={() => redeem.mutate({ code: redeemCode.trim() })} disabled={!redeemCode.trim() || redeem.isPending}>
-                  {redeem.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                  兑换
-                </Button>
+                  {redeem.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}{translateText("兑换")}</Button>
               </CardContent>
             </Card>
           )}
@@ -162,24 +158,22 @@ export default function Wallet() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <ReceiptText className="h-5 w-5" />
-              账单流水
-            </CardTitle>
-            <CardDescription>按时间查看全部记录。</CardDescription>
+              <ReceiptText className="h-5 w-5" />{translateText("账单流水")}</CardTitle>
+            <CardDescription>{translateText("按时间查看全部记录。")}</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {ledgerLoading ? (
-              <DataSectionLoading label="正在加载账单流水" />
+              <DataSectionLoading label={translateText("正在加载账单流水")} />
             ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>项目</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>金额</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>关联信息</TableHead>
-                  <TableHead>时间</TableHead>
+                  <TableHead>{translateText("项目")}</TableHead>
+                  <TableHead>{translateText("类型")}</TableHead>
+                  <TableHead>{translateText("金额")}</TableHead>
+                  <TableHead>{translateText("状态")}</TableHead>
+                  <TableHead>{translateText("关联信息")}</TableHead>
+                  <TableHead>{translateText("时间")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -216,9 +210,7 @@ export default function Wallet() {
                 })}
                 {ledger.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                      暂无账单流水
-                    </TableCell>
+                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{translateText("暂无账单流水")}</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -230,22 +222,20 @@ export default function Wallet() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <WalletCards className="h-5 w-5" />
-              余额流水
-            </CardTitle>
+              <WalletCards className="h-5 w-5" />{translateText("余额流水")}</CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {walletLoading ? (
-              <DataSectionLoading label="正在加载余额流水" />
+              <DataSectionLoading label={translateText("正在加载余额流水")} />
             ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>类型</TableHead>
-                  <TableHead>金额</TableHead>
-                  <TableHead>余额</TableHead>
-                  <TableHead>说明</TableHead>
-                  <TableHead>时间</TableHead>
+                  <TableHead>{translateText("类型")}</TableHead>
+                  <TableHead>{translateText("金额")}</TableHead>
+                  <TableHead>{translateText("余额")}</TableHead>
+                  <TableHead>{translateText("说明")}</TableHead>
+                  <TableHead>{translateText("时间")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -264,9 +254,7 @@ export default function Wallet() {
                 ))}
                 {(!wallet?.transactions || wallet.transactions.length === 0) && (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                      暂无余额流水
-                    </TableCell>
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">{translateText("暂无余额流水")}</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -278,23 +266,21 @@ export default function Wallet() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <CreditCard className="h-5 w-5" />
-              支付流水
-            </CardTitle>
+              <CreditCard className="h-5 w-5" />{translateText("支付流水")}</CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {paymentOrdersLoading ? (
-              <DataSectionLoading label="正在加载支付流水" />
+              <DataSectionLoading label={translateText("正在加载支付流水")} />
             ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>订单号</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>支付方式</TableHead>
-                  <TableHead>金额</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>时间</TableHead>
+                  <TableHead>{translateText("订单号")}</TableHead>
+                  <TableHead>{translateText("类型")}</TableHead>
+                  <TableHead>{translateText("支付方式")}</TableHead>
+                  <TableHead>{translateText("金额")}</TableHead>
+                  <TableHead>{translateText("状态")}</TableHead>
+                  <TableHead>{translateText("时间")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -316,9 +302,7 @@ export default function Wallet() {
                 ))}
                 {paymentOrders.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                      暂无支付流水
-                    </TableCell>
+                    <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{translateText("暂无支付流水")}</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -330,19 +314,19 @@ export default function Wallet() {
         <Dialog open={rechargeOpen} onOpenChange={setRechargeOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>自助充值</DialogTitle>
-              <DialogDescription>充值成功后自动入账。</DialogDescription>
+              <DialogTitle>{translateText("自助充值")}</DialogTitle>
+              <DialogDescription>{translateText("充值成功后自动入账。")}</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>充值金额</Label>
+                <Label>{translateText("充值金额")}</Label>
                 <Input type="number" min={0.01} step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label>支付方式</Label>
+                <Label>{translateText("支付方式")}</Label>
                 <Select value={paymentType} onValueChange={(value: PaymentType) => setPaymentType(value)}>
                   <SelectTrigger>
-                    <SelectValue placeholder="选择支付方式" />
+                    <SelectValue placeholder={translateText("选择支付方式")} />
                   </SelectTrigger>
                   <SelectContent>
                     {paymentMethods.map((method: any) => (
@@ -355,16 +339,12 @@ export default function Wallet() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setRechargeOpen(false)}>
-                取消
-              </Button>
+              <Button variant="outline" onClick={() => setRechargeOpen(false)}>{translateText("取消")}</Button>
               <Button
                 onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, returnPath: "/wallet" })}
                 disabled={!amount || paymentMethods.length === 0 || createOrder.isPending}
               >
-                {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}
-                去支付
-              </Button>
+                {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}{translateText("去支付")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -2,14 +2,14 @@ import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
 import { quoteIdentifier } from "../dbCompat";
-import { selfTestSweepActivity } from "../selfTestTiming";
+import { selfTestSweepActivity, SELF_TEST_MAX_LIFETIME_SECONDS, selfTestTimeoutSeconds } from "../selfTestTiming";
 
 // ==================== Forward Tests ====================
 
 export async function createForwardTest(data: InsertForwardTest) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const id = await insertAndGetId("forward_tests", data as any);
+  const id = await insertAndGetId("forward_tests", { ...data, requestMessage: data.requestMessage ?? data.message } as any);
   selfTestSweepActivity.markActive();
   return id;
 }
@@ -29,17 +29,26 @@ export async function hasActiveForwardTests() {
 
 const FORWARD_TEST_LEASE_SECONDS = 8;
 
+function dispatchTimeoutSeconds(row: any) {
+  try { return selfTestTimeoutSeconds(JSON.parse(row.requestMessage ?? row.message ?? "null")); }
+  catch { return selfTestTimeoutSeconds(null); }
+}
+
 export async function getPendingForwardTestsByHost(hostId: number, leaseSeconds = FORWARD_TEST_LEASE_SECONDS) {
   const cutoff = Math.floor((Date.now() - Math.max(1, leaseSeconds) * 1000) / 1000);
-  return queryRaw<any>(
+  const rows = await queryRaw<any>(
     `SELECT *
        FROM ${quoteIdentifier("forward_tests")}
       WHERE ${quoteIdentifier("hostId")} = ?
+        AND ${quoteIdentifier("createdAt")} >= ?
         AND (${quoteIdentifier("status")} = 'pending'
           OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?))
       ORDER BY ${quoteIdentifier("createdAt")} ASC, ${quoteIdentifier("id")} ASC`,
-    [hostId, cutoff],
+    [hostId, Math.floor(Date.now() / 1000) - SELF_TEST_MAX_LIFETIME_SECONDS, cutoff],
   );
+  const now = Math.floor(Date.now() / 1000);
+  return rows.filter(row => row.status !== "running"
+    || Number(row.firstDispatchedAt ?? row.updatedAt) >= now - dispatchTimeoutSeconds(row));
 }
 
 export async function markForwardTestRunning(id: number, leaseSeconds = FORWARD_TEST_LEASE_SECONDS) {
@@ -47,14 +56,20 @@ export async function markForwardTestRunning(id: number, leaseSeconds = FORWARD_
   if (!db) return false;
   const q = quoteIdentifier;
   const cutoff = Math.floor((Date.now() - Math.max(1, leaseSeconds) * 1000) / 1000);
+  const [row] = await queryRaw<any>(`SELECT * FROM ${q("forward_tests")} WHERE ${q("id")} = ?`, [id]);
+  if (!row) return false;
+  const runningCutoff = Math.floor(Date.now() / 1000) - dispatchTimeoutSeconds(row);
   const result = await executeRaw(
     `UPDATE ${q("forward_tests")}
-     SET ${q("status")} = 'running',
+     SET ${q("firstDispatchedAt")} = COALESCE(${q("firstDispatchedAt")}, CASE WHEN ${q("status")} = 'running' THEN ${q("updatedAt")} ELSE ? END),
+         ${q("status")} = 'running',
          ${q("updatedAt")} = ?
      WHERE ${q("id")} = ?
+       AND ${q("createdAt")} >= ?
        AND (${q("status")} = 'pending'
-         OR (${q("status")} = 'running' AND ${q("updatedAt")} < ?))`,
-    [nowDate(), id, cutoff],
+         OR (${q("status")} = 'running' AND ${q("updatedAt")} < ?
+           AND COALESCE(${q("firstDispatchedAt")}, ${q("updatedAt")}) >= ?))`,
+    [nowDate(), nowDate(), id, Math.floor(Date.now() / 1000) - SELF_TEST_MAX_LIFETIME_SECONDS, cutoff, runningCutoff],
   );
   const claimed = rawAffectedRows(result) > 0;
   if (claimed) selfTestSweepActivity.markActive();

@@ -7,6 +7,7 @@ import { adminProcedure, protectedProcedure, publicProcedure, router } from "../
 import { ENV } from "../env";
 import { TRPCError } from "@trpc/server";
 import * as db from "../db";
+import { notificationChannel } from "../notificationSettings";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
 import { createTelegramMobilePollToken, verifyTelegramMobilePollToken } from "../telegramMobilePollToken";
@@ -48,7 +49,7 @@ async function getTelegramRuntimeSettings() {
   const envToken = ENV.telegramBotToken.trim();
   const dbToken = String(settings.telegramBotToken || "").trim();
   const token = envToken || dbToken;
-  const enabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
+  const enabled = notificationChannel(settings) === "telegram" && (settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false"));
   return {
     token,
     enabled,
@@ -179,7 +180,7 @@ function verifyTelegramWidgetLogin(payload: z.infer<typeof telegramWidgetLoginSc
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
+export async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
   if (user?.accountEnabled === false) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
@@ -326,6 +327,7 @@ export const telegramRouter = router({
     .input(z.object({ code: z.string().min(8).max(64), pollToken: z.string().min(16).max(128) }))
     .mutation(async ({ input, ctx }) => {
       const code = input.code.trim().toUpperCase();
+      if (!(await getTelegramRuntimeSettings()).enabled) throw new Error("Telegram 通知渠道未启用");
       if (!isMobileLoginCode(code) || !verifyTelegramMobilePollToken(code, input.pollToken)) {
         return { status: "pending" as const };
       }

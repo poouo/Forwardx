@@ -21,6 +21,7 @@ const migrationRequests = new Map<string, {
   dataScope: PanelMigrationScope;
   targetDatabaseType?: DatabaseKind;
   directSqliteRequested: boolean;
+  seamless: boolean;
 }>();
 const MIGRATION_CODE_TTL_MS = 5 * 60 * 1000;
 const TAKEOVER_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -110,6 +111,7 @@ export function getCurrentMigrationCode() {
           dataScope: pendingRequest.dataScope,
           targetDatabaseType: pendingRequest.targetDatabaseType,
           directSqliteRequested: pendingRequest.directSqliteRequested,
+          seamless: pendingRequest.seamless,
         }
       : null,
   };
@@ -122,6 +124,7 @@ export function createMigrationRequest(
     dataScope?: PanelMigrationScope;
     targetDatabaseType?: DatabaseKind;
     directSqliteRequested?: boolean;
+    seamless?: boolean;
   } = {},
 ) {
   cleanupMigrationCodes();
@@ -140,6 +143,7 @@ export function createMigrationRequest(
       && request.dataScope === dataScope
       && request.targetDatabaseType === targetDatabaseType
       && request.directSqliteRequested === directSqliteRequested
+      && request.seamless === (options.seamless === true)
       && request.status !== "used")
     .sort((a, b) => b.createdAt - a.createdAt)[0];
   if (existing) return existing;
@@ -154,6 +158,7 @@ export function createMigrationRequest(
     dataScope,
     targetDatabaseType,
     directSqliteRequested,
+    seamless: options.seamless === true,
   };
   migrationRequests.set(request.id, request);
   return request;
@@ -209,6 +214,7 @@ export function consumeApprovedMigrationRequest(requestId: string, code: string,
     dataScope: request.dataScope,
     targetDatabaseType: request.targetDatabaseType,
     directSqliteRequested: request.directSqliteRequested,
+    seamless: request.seamless,
   };
 }
 

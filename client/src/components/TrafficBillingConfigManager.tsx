@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -18,10 +20,10 @@ import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { Coins, Gauge, LayoutGrid, List, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 function money(cents?: number | null) {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
 }
 
 const MILLI_CENTS_PER_CENT = 1000;
@@ -36,7 +38,7 @@ function pricePerGbMilliCents(config: any) {
 
 function formatPricePerGb(config: any) {
   const yuan = pricePerGbMilliCents(config) / MILLI_CENTS_PER_YUAN;
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat(getFormatLocale(), {
     style: "currency",
     currency: "CNY",
     minimumFractionDigits: yuan > 0 && yuan < 0.01 ? 3 : 2,
@@ -124,12 +126,12 @@ type BillingResourceCategory = "port" | "tunnel" | "chain" | "group" | "legacy_h
 type BillingConfigViewMode = "card" | "table";
 const BILLING_CONFIG_VIEW_MODE_STORAGE_KEY = "forwardx.trafficBilling.configs.viewMode";
 const BILLING_RESOURCE_CATEGORY_ITEMS: Array<{ value: Exclude<BillingResourceCategory, "legacy_host">; label: string; description: string }> = [
-  { value: "port", label: "端口转发", description: "链路管理中的端口转发资源" },
-  { value: "tunnel", label: "隧道转发", description: "已创建的隧道资源" },
-  { value: "chain", label: "转发链", description: "固定多跳链路资源" },
-  { value: "group", label: "转发组", description: "转发组资源" },
+  { value: "port", label: translateText("端口转发"), description: translateText("链路管理中的端口转发资源") },
+  { value: "tunnel", label: translateText("隧道转发"), description: translateText("已创建的隧道资源") },
+  { value: "chain", label: translateText("转发链"), description: translateText("固定多跳链路资源") },
+  { value: "group", label: translateText("转发组"), description: translateText("转发组资源") },
 ];
-const LEGACY_HOST_RESOURCE_CATEGORY_ITEM = { value: "legacy_host" as const, label: "历史主机", description: "旧版本主机计费资源" };
+const LEGACY_HOST_RESOURCE_CATEGORY_ITEM = { value: "legacy_host" as const, label: translateText("历史主机"), description: translateText("旧版本主机计费资源") };
 
 function getStoredBillingConfigViewMode(): BillingConfigViewMode {
   if (typeof window === "undefined") return "card";
@@ -180,12 +182,12 @@ function forwardGroupMode(group: any) {
 
 function forwardGroupTypeText(group: any) {
   const mode = forwardGroupMode(group);
-  if (mode === "port") return "端口转发";
-  if (mode === "chain") return "转发链";
-  if (mode === "entry") return "入口组";
-  if (mode === "exit") return "出口组";
-  if (group?.groupType === "tunnel") return "隧道转发组";
-  return "转发组";
+  if (mode === "port") return translateText("端口转发");
+  if (mode === "chain") return translateText("转发链");
+  if (mode === "entry") return translateText("入口组");
+  if (mode === "exit") return translateText("出口组");
+  if (group?.groupType === "tunnel") return translateText("隧道转发组");
+  return translateText("转发组");
 }
 
 function resourceCategoryForConfig(config: any, forwardGroups: any[]): BillingResourceCategory {
@@ -206,8 +208,8 @@ function resourceTypeForCategory(category: BillingResourceCategory): BillingReso
 
 function getResourceDisplayName(category: BillingResourceCategory, item: any) {
   if (!item) return "";
-  if (category === "tunnel") return item.name || `隧道 #${item.id}`;
-  if (category === "legacy_host") return item.name || `主机 #${item.id}`;
+  if (category === "tunnel") return item.name || translateText("隧道 #{0}", [item.id]);
+  if (category === "legacy_host") return item.name || translateText("主机 #{0}", [item.id]);
   return item.name || `${forwardGroupTypeText(item)} #${item.id}`;
 }
 
@@ -322,15 +324,15 @@ function BillingConfigCard({
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-        <MobileInfoRow label="类型">{config.resourceKind || (config.resourceType === "host" ? "历史主机" : config.resourceType === "tunnel" ? "隧道转发" : "转发资源")} #{config.resourceId}</MobileInfoRow>
-        <MobileInfoRow label="单价">{formatPricePerGb(config)} / GB</MobileInfoRow>
-        <MobileInfoRow label="倍率">{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</MobileInfoRow>
-        <MobileInfoRow label="权限">
+        <MobileInfoRow label={translateText("类型")}>{config.resourceKind || (config.resourceType === "host" ? translateText("历史主机") : config.resourceType === "tunnel" ? translateText("隧道转发") : translateText("转发资源"))} #{config.resourceId}</MobileInfoRow>
+        <MobileInfoRow label={translateText("单价")}>{formatPricePerGb(config)} / GB</MobileInfoRow>
+        <MobileInfoRow label={translateText("倍率")}>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</MobileInfoRow>
+        <MobileInfoRow label={translateText("权限")}>
           <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
-            {config.requiresPermission ? "需要授权" : "公开可用"}
+            {config.requiresPermission ? translateText("需要授权") : translateText("公开可用")}
           </Badge>
         </MobileInfoRow>
-        <MobileInfoRow label="状态"><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></MobileInfoRow>
+        <MobileInfoRow label={translateText("状态")}><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? translateText("启用") : translateText("停用")}</Badge></MobileInfoRow>
       </div>
     </div>
   );
@@ -397,25 +399,25 @@ export default function TrafficBillingConfigManager({
   const setEnabledMutation = trpc.trafficBilling.setEnabled.useMutation({
     onSuccess: async (_data, variables) => {
       await invalidateBilling();
-      toast.success(variables.enabled ? "按量计费已开启" : "按量计费已关闭");
+      toast.success(variables.enabled ? translateText("按量计费已开启") : translateText("按量计费已关闭"));
     },
-    onError: (error) => toast.error(error.message || "更新失败"),
+    onError: (error) => toast.error(error.message || translateText("更新失败")),
   });
   const saveConfig = trpc.trafficBilling.saveConfig.useMutation({
     onSuccess: () => {
       invalidateBilling();
-      toast.success("计费配置已保存");
+      toast.success(translateText("计费配置已保存"));
       setDialogOpen(false);
       setConfigForm(defaultBillingConfigForm());
     },
-    onError: (error) => toast.error(error.message || "保存失败"),
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
   });
   const deleteConfig = trpc.trafficBilling.deleteConfig.useMutation({
     onSuccess: () => {
       invalidateBilling();
-      toast.success("计费配置已删除");
+      toast.success(translateText("计费配置已删除"));
     },
-    onError: (error) => toast.error(error.message || "删除失败"),
+    onError: (error) => toast.error(error.message || translateText("删除失败")),
   });
 
   const openCreate = () => {
@@ -452,8 +454,8 @@ export default function TrafficBillingConfigManager({
   const handleSave = () => {
     const id = Number(configForm.resourceId);
     const pricePerGbMilliCents = Math.round(Number(configForm.price || 0) * MILLI_CENTS_PER_YUAN);
-    if (!id) return toast.error("请选择资源");
-    if (pricePerGbMilliCents < MIN_PRICE_PER_GB_MILLI_CENTS) return toast.error("单价最低 0.001/GB");
+    if (!id) return toast.error(translateText("请选择资源"));
+    if (pricePerGbMilliCents < MIN_PRICE_PER_GB_MILLI_CENTS) return toast.error(translateText("单价最低 0.001/GB"));
     const resourceType = resourceTypeForCategory(configForm.resourceCategory);
     saveConfig.mutate({
       id: configForm.id,
@@ -471,12 +473,12 @@ export default function TrafficBillingConfigManager({
       {showHeader && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">流量计费管理</h1>
-            <p className="text-sm text-muted-foreground">按资源设置流量单价。</p>
+            <h1 className="text-2xl font-semibold tracking-tight">{translateText("流量计费管理")}</h1>
+            <p className="text-sm text-muted-foreground">{translateText("按资源设置流量单价。")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
-              <span className="text-sm text-muted-foreground">功能开关</span>
+              <span className="text-sm text-muted-foreground">{translateText("功能开关")}</span>
               {configsLoading ? (
                 <Skeleton className="h-6 w-11 rounded-full" />
               ) : (
@@ -485,8 +487,7 @@ export default function TrafficBillingConfigManager({
             </div>
             {!hideCreateButton && (
               <Button onClick={openCreate}>
-                <Plus className="mr-2 h-4 w-4" /> 新增计费资源
-              </Button>
+                <Plus className="mr-2 h-4 w-4" />{translateText(" 新增计费资源")}</Button>
             )}
           </div>
         </div>
@@ -495,11 +496,11 @@ export default function TrafficBillingConfigManager({
       {!showHeader && showEmbeddedHeader && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-semibold tracking-tight">按量计费资源</h2>
-            <p className="text-sm text-muted-foreground">公开资源会在商店中展示，用户有余额即可直接使用。</p>
+            <h2 className="text-xl font-semibold tracking-tight">{translateText("按量计费资源")}</h2>
+            <p className="text-sm text-muted-foreground">{translateText("公开资源会在商店中展示，用户有余额即可直接使用。")}</p>
           </div>
           <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
-            <span className="text-sm text-muted-foreground">功能开关</span>
+            <span className="text-sm text-muted-foreground">{translateText("功能开关")}</span>
             {configsLoading ? (
               <Skeleton className="h-6 w-11 rounded-full" />
             ) : (
@@ -512,9 +513,9 @@ export default function TrafficBillingConfigManager({
       {showSummary && (
         <div className="grid gap-4 md:grid-cols-3">
           <TrafficBillingStatCard
-            title="累计扣费"
+            title={translateText("累计扣费")}
             value={money(totalCharged)}
-            subtitle="历史扣费合计"
+            subtitle={translateText("历史扣费合计")}
             icon={Coins}
             tone="bg-gradient-to-br from-teal-500 to-teal-600"
             loading={summaryLoading}
@@ -522,9 +523,9 @@ export default function TrafficBillingConfigManager({
             fallbackValue={money(0)}
           />
           <TrafficBillingStatCard
-            title="已计费流量"
+            title={translateText("已计费流量")}
             value={`${totalGb} GB`}
-            subtitle="扣费记录累计"
+            subtitle={translateText("扣费记录累计")}
             icon={Gauge}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
             loading={summaryLoading}
@@ -532,9 +533,9 @@ export default function TrafficBillingConfigManager({
             fallbackValue="0 GB"
           />
           <TrafficBillingStatCard
-            title="计费资源"
+            title={translateText("计费资源")}
             value={data?.configs?.length || 0}
-            subtitle="已配置资源"
+            subtitle={translateText("已配置资源")}
             icon={ReceiptText}
             tone="bg-gradient-to-br from-orange-500 to-orange-600"
             loading={configsLoading}
@@ -547,15 +548,15 @@ export default function TrafficBillingConfigManager({
       <Card>
         <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <CardTitle>计费配置</CardTitle>
-            <CardDescription>按 GB 计费，可单独要求授权。</CardDescription>
+            <CardTitle>{translateText("计费配置")}</CardTitle>
+            <CardDescription>{translateText("按 GB 计费，可单独要求授权。")}</CardDescription>
           </div>
           <div className="flex items-center overflow-hidden rounded-md border border-border/40">
             <Button
               variant={configViewMode === "card" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              title="卡片视图"
+              title={translateText("卡片视图")}
               onClick={() => handleConfigViewModeChange("card")}
             >
               <LayoutGrid className="h-4 w-4" />
@@ -564,7 +565,7 @@ export default function TrafficBillingConfigManager({
               variant={configViewMode === "table" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              title="列表视图"
+              title={translateText("列表视图")}
               onClick={() => handleConfigViewModeChange("table")}
             >
               <List className="h-4 w-4" />
@@ -573,7 +574,7 @@ export default function TrafficBillingConfigManager({
         </CardHeader>
         <CardContent>
           {configsLoading ? (
-            <DataSectionLoading label="正在加载计费配置" />
+            <DataSectionLoading label={translateText("正在加载计费配置")} />
           ) : (
             <AutoAnimateContainer duration={220}>
               {configViewMode === "card" ? (
@@ -587,13 +588,13 @@ export default function TrafficBillingConfigManager({
                     />
                   ))}
                   {(data?.configs || []).length === 0 && (
-                    <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无计费配置</div>
+                    <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无计费配置")}</div>
                   )}
                 </AutoAnimateContainer>
               ) : (
                 <div key="billing-config-table-view" className="overflow-x-auto">
                   <Table>
-                    <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>权限</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead>{translateText("资源")}</TableHead><TableHead>{translateText("单价")}</TableHead><TableHead>{translateText("倍率")}</TableHead><TableHead>{translateText("权限")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
                     <AutoAnimateContainer as={TableBody} duration={220}>
                       {(data?.configs || []).map((config: any) => (
                         <TableRow key={config.id}>
@@ -601,17 +602,17 @@ export default function TrafficBillingConfigManager({
                             <div className="flex items-center gap-2">
                               {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
                               <span>{config.resourceName}</span>
-                              <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || "转发资源"}</Badge>
+                              <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || translateText("转发资源")}</Badge>
                             </div>
                           </TableCell>
                           <TableCell>{formatPricePerGb(config)} / GB</TableCell>
                           <TableCell>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</TableCell>
                           <TableCell>
                             <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
-                              {config.requiresPermission ? "需要授权" : "公开可用"}
+                              {config.requiresPermission ? translateText("需要授权") : translateText("公开可用")}
                             </Badge>
                           </TableCell>
-                          <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></TableCell>
+                          <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? translateText("启用") : translateText("停用")}</Badge></TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
                               <Button variant="ghost" size="icon" onClick={() => openEdit(config)}><Pencil className="h-4 w-4" /></Button>
@@ -622,7 +623,7 @@ export default function TrafficBillingConfigManager({
                       ))}
                       {(data?.configs || []).length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">暂无计费配置</TableCell>
+                          <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{translateText("暂无计费配置")}</TableCell>
                         </TableRow>
                       )}
                     </AutoAnimateContainer>
@@ -637,13 +638,13 @@ export default function TrafficBillingConfigManager({
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl sm:max-h-[90svh]">
           <DialogHeader>
-            <DialogTitle>{configForm.id ? "编辑计费资源" : "新增计费资源"}</DialogTitle>
-            <DialogDescription>选择资源并设置每 GB 单价；倍率继承资源配置。</DialogDescription>
+            <DialogTitle>{configForm.id ? translateText("编辑计费资源") : translateText("新增计费资源")}</DialogTitle>
+            <DialogDescription>{translateText("选择资源并设置每 GB 单价；倍率继承资源配置。")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-3 sm:col-span-2 sm:grid-cols-[11rem_minmax(0,1fr)]">
               <div className="space-y-2">
-                <Label>资源类型</Label>
+                <Label>{translateText("资源类型")}</Label>
                 <Select
                   value={configForm.resourceCategory}
                   onValueChange={(value) => {
@@ -658,7 +659,7 @@ export default function TrafficBillingConfigManager({
                   }}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="资源类型" />
+                    <SelectValue placeholder={translateText("资源类型")} />
                   </SelectTrigger>
                   <SelectContent>
                     {configForm.resourceCategory === "legacy_host" ? (
@@ -675,7 +676,7 @@ export default function TrafficBillingConfigManager({
                 </Select>
               </div>
               <div className="min-w-0 space-y-2">
-                <Label>资源</Label>
+                <Label>{translateText("资源")}</Label>
               {configForm.resourceCategory === "legacy_host" ? (
                 <div className="flex h-10 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-3">
                   <BillingResourceOption
@@ -700,11 +701,11 @@ export default function TrafficBillingConfigManager({
                   disabled={resources.length === 0}
                 >
                   <SelectTrigger className="min-w-0">
-                    <SelectValue placeholder={resources.length > 0 ? "选择资源" : "暂无可选择资源"} />
+                    <SelectValue placeholder={resources.length > 0 ? translateText("选择资源") : translateText("暂无可选择资源")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-72">
                     {resources.length === 0 ? (
-                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">暂无可选择资源</div>
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">{translateText("暂无可选择资源")}</div>
                     ) : resources.map((item: any) => (
                       <SelectItem
                         key={item.id}
@@ -720,45 +721,45 @@ export default function TrafficBillingConfigManager({
               </div>
             </div>
             <div className="space-y-2">
-              <Label>单价 / GB</Label>
-              <Input type="number" min={0.001} step="0.001" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder="例如 0.001" />
+              <Label>{translateText("单价 / GB")}</Label>
+              <Input type="number" min={0.001} step="0.001" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder={translateText("例如 0.001")} />
             </div>
             <div className="space-y-2">
-              <Label>链路倍率</Label>
+              <Label>{translateText("链路倍率")}</Label>
               <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/20 px-3 text-sm">
                 {selectedResource && configForm.resourceCategory !== "legacy_host"
                   ? formatTrafficMultiplier(selectedResource.trafficMultiplier ?? 100)
                   : configForm.resourceCategory === "legacy_host"
-                  ? "沿用旧配置"
-                  : "选择资源后显示"}
+                  ? translateText("沿用旧配置")
+                  : translateText("选择资源后显示")}
               </div>
             </div>
             <div className="space-y-2 sm:col-span-2">
-              <Label>说明</Label>
+              <Label>{translateText("说明")}</Label>
               <Textarea
                 value={configForm.description}
                 onChange={(e) => setConfigForm((current) => ({ ...current, description: e.target.value }))}
-                placeholder="留空时商店展示系统默认说明"
+                placeholder={translateText("留空时商店展示系统默认说明")}
               />
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
               <div className="min-w-0">
-                <Label className="text-sm">启用计费资源</Label>
-                <p className="mt-1 text-xs text-muted-foreground">停用后该资源不再作为流量计费资源使用。</p>
+                <Label className="text-sm">{translateText("启用计费资源")}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("停用后该资源不再作为流量计费资源使用。")}</p>
               </div>
               <Switch className="shrink-0" checked={configForm.enabled} onCheckedChange={(enabled) => setConfigForm((current) => ({ ...current, enabled }))} />
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
               <div className="min-w-0">
-                <Label className="text-sm">需要额外计费权限</Label>
-                <p className="mt-1 text-xs text-muted-foreground">关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。</p>
+                <Label className="text-sm">{translateText("需要额外计费权限")}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。")}</p>
               </div>
               <Switch className="shrink-0" checked={configForm.requiresPermission} onCheckedChange={(requiresPermission) => setConfigForm((current) => ({ ...current, requiresPermission }))} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saveConfig.isPending}>取消</Button>
-            <Button onClick={handleSave} disabled={saveConfig.isPending}>{saveConfig.isPending ? "保存中..." : "保存"}</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saveConfig.isPending}>{translateText("取消")}</Button>
+            <Button onClick={handleSave} disabled={saveConfig.isPending}>{saveConfig.isPending ? translateText("保存中...") : translateText("保存")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

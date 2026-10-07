@@ -176,6 +176,16 @@ export function recordHopTestResult(
   if (!completed) return null;
 
   const rawDetails = values.filter((value): value is HopTestResult => value !== null);
+  batches.delete(batchId);
+  return aggregateHopTestResults(batch.ownerId, rawDetails, options);
+}
+
+/** Pure aggregation also used by durable batches after a panel restart. */
+export function aggregateHopTestResults(
+  ownerId: number,
+  rawDetails: HopTestResult[],
+  options: Parameters<typeof recordHopTestResult>[2],
+): HopTestAggregate {
   const multiSourceRemainingPath = options.latencyMode === "multi-source-remaining-path";
   const effectiveSuccessMode = multiSourceRemainingPath ? "multi-source" : options.successMode;
   const rawSuccessfulDetails = rawDetails.filter((value) => value.success);
@@ -221,10 +231,8 @@ export function recordHopTestResult(
     ? `${options.successPrefix}，${totalLabel} ${totalLatency}ms（${availability}）`
     : `${options.failurePrefix}：${detailLines.join("；")}`;
 
-  batches.delete(batchId);
-
   return {
-    ownerId: batch.ownerId,
+    ownerId,
     success: verifiedAggregateSuccess,
     latencyMs: totalLatency,
     message,

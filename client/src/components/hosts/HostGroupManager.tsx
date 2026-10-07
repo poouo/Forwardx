@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
@@ -14,7 +15,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { FolderKanban, Loader2, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 export type HostGroupView = {
   id: number;
@@ -120,11 +121,11 @@ function HostGroupEnabledSwitch({
     <OptimisticSwitch
       checked={enabled}
       onCheckedChangeAsync={(checked) => onToggle(group, checked)}
-      onToggleSuccess={(checked) => toast.success(checked ? "主机分组已开启" : "主机分组已关闭")}
-      onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换主机分组状态失败")}
+      onToggleSuccess={(checked) => toast.success(checked ? translateText("主机分组已开启") : translateText("主机分组已关闭"))}
+      onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换主机分组状态失败"))}
       className="scale-75"
-      title={`${enabled ? "停用" : "启用"}主机分组 ${group.name || ""}`}
-      aria-label={`${enabled ? "停用" : "启用"}分组 ${group.name || ""}`}
+      title={translateText("{0}主机分组 {1}", [enabled ? "停用" : "启用", group.name || ""])}
+      aria-label={translateText("{0}分组 {1}", [enabled ? "停用" : "启用", group.name || ""])}
     />
   );
 }
@@ -132,7 +133,7 @@ function HostGroupEnabledSwitch({
 function HostGroupHostPreview({
   hostIds,
   hostsById,
-  emptyText = "暂未添加主机",
+  emptyText = translateText("暂未添加主机"),
 }: {
   hostIds: number[];
   hostsById: Map<number, any>;
@@ -231,9 +232,9 @@ export default function HostGroupManager({
       void refreshHostGroupQueries();
       setDialogOpen(false);
       setForm(defaultForm);
-      toast.success("分组已添加");
+      toast.success(translateText("分组已添加"));
     },
-    onError: (err) => toast.error(err.message || "添加分组失败"),
+    onError: (err) => toast.error(err.message || translateText("添加分组失败")),
   });
   const updateMutation = trpc.hosts.updateHostGroup.useMutation({
     onSuccess: () => {
@@ -241,9 +242,9 @@ export default function HostGroupManager({
       setDialogOpen(false);
       setEditingId(null);
       setForm(defaultForm);
-      toast.success("分组已更新");
+      toast.success(translateText("分组已更新"));
     },
-    onError: (err) => toast.error(err.message || "更新分组失败"),
+    onError: (err) => toast.error(err.message || translateText("更新分组失败")),
   });
   const toggleMutation = trpc.hosts.updateHostGroup.useMutation({
     onSuccess: async () => {
@@ -253,13 +254,13 @@ export default function HostGroupManager({
   const deleteMutation = trpc.hosts.deleteHostGroup.useMutation({
     onSuccess: () => {
       void refreshHostGroupQueries();
-      toast.success("分组已删除");
+      toast.success(translateText("分组已删除"));
     },
-    onError: (err) => toast.error(err.message || "删除分组失败"),
+    onError: (err) => toast.error(err.message || translateText("删除分组失败")),
   });
   const reorderGroupsMutation = trpc.hosts.reorderHostGroups.useMutation({
-    onSuccess: () => toast.success("分组顺序已更新"),
-    onError: (err) => toast.error(err.message || "更新分组顺序失败"),
+    onSuccess: () => toast.success(translateText("分组顺序已更新")),
+    onError: (err) => toast.error(err.message || translateText("更新分组顺序失败")),
   });
   const groupReorderPending = reorderGroupsMutation.isPending;
   const groupSortable = useSortableReorder({
@@ -308,14 +309,14 @@ export default function HostGroupManager({
 
   const toggleGroupEnabled = async (group: HostGroupView, checked: boolean) => {
     const id = Number(group?.id || 0);
-    if (!id) throw new Error("主机分组不存在");
+    if (!id) throw new Error(translateText("主机分组不存在"));
     await toggleMutation.mutateAsync(buildGroupUpdatePayload(group, checked));
   };
 
   const submit = () => {
     const name = form.name.trim();
     if (!name) {
-      toast.error("请输入分组名");
+      toast.error(translateText("请输入分组名"));
       return;
     }
     const payload = { name, hostIds: uniqueHostIds(form.hostIds), isEnabled: form.isEnabled };
@@ -325,9 +326,9 @@ export default function HostGroupManager({
 
   const confirmDelete = async (group: HostGroupView) => {
     if (await confirmDialog({
-      title: "删除分组",
-      description: `确定要删除“${group.name || "此分组"}”吗？删除后不会影响主机本身。`,
-      confirmText: "删除",
+      title: translateText("删除分组"),
+      description: translateText("确定要删除“{0}”吗？删除后不会影响主机本身。", [group.name || "此分组"]),
+      confirmText: translateText("删除"),
       tone: "destructive",
     })) {
       deleteMutation.mutate({ id: Number(group.id) });
@@ -337,10 +338,10 @@ export default function HostGroupManager({
   const pending = createMutation.isPending || updateMutation.isPending;
   const groupActionButtons = (group: HostGroupView) => (
     <div className="flex justify-end gap-1">
-      <Button variant="ghost" size="icon" className="h-8 w-8" title="编辑分组" onClick={() => openEdit(group)}>
+      <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("编辑分组")} onClick={() => openEdit(group)}>
         <Pencil className="h-3.5 w-3.5" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title="删除分组" onClick={() => confirmDelete(group)}>
+      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title={translateText("删除分组")} onClick={() => confirmDelete(group)}>
         <Trash2 className="h-3.5 w-3.5" />
       </Button>
     </div>
@@ -352,11 +353,11 @@ export default function HostGroupManager({
         <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
           <FolderKanban className="h-5 w-5" />
         </span>
-        <p className="mt-3 text-sm font-semibold">{isTextFiltered && sortedGroups.length > 0 ? "未找到匹配分组" : "暂无自定义分组"}</p>
+        <p className="mt-3 text-sm font-semibold">{isTextFiltered && sortedGroups.length > 0 ? translateText("未找到匹配分组") : translateText("暂无自定义分组")}</p>
         <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
           {isTextFiltered && sortedGroups.length > 0
-            ? "调整筛选内容或清空搜索"
-            : "未创建分组时，主机管理默认展示全部主机；需要按业务、地区或用途筛选时再添加分组。"}
+            ? translateText("调整筛选内容或清空搜索")
+            : translateText("未创建分组时，主机管理默认展示全部主机；需要按业务、地区或用途筛选时再添加分组。")}
         </p>
       </CardContent>
     </Card>
@@ -375,7 +376,7 @@ export default function HostGroupManager({
                 </span>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold" title={group.name}>{group.name}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{groupHostCount(group, hostsById)} 台主机</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{groupHostCount(group, hostsById)}{translateText(" 台主机")}</p>
                 </div>
               </div>
             </div>
@@ -397,12 +398,10 @@ export default function HostGroupManager({
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-muted-foreground sm:text-sm">
-        按业务、地区或用途整理主机，分组顺序可直接拖动调整。
-      </p>
+      <p className="text-xs text-muted-foreground sm:text-sm">{translateText("按业务、地区或用途整理主机，分组顺序可直接拖动调整。")}</p>
 
       {isLoading ? (
-        <DataSectionLoading label="正在加载主机分组" minHeight="min-h-[220px]" />
+        <DataSectionLoading label={translateText("正在加载主机分组")} minHeight="min-h-[220px]" />
       ) : viewMode === "table" ? (
         <div key="host-group-table-view" className="card-mode-transition">
           {displayedGroups.length === 0 ? (
@@ -432,11 +431,11 @@ export default function HostGroupManager({
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[44px]" />
-                      <TableHead className="w-[220px]">分组</TableHead>
-                      <TableHead className="w-[96px]">状态</TableHead>
-                      <TableHead className="w-[96px]">主机数</TableHead>
-                      <TableHead>主机</TableHead>
-                      <TableHead className="w-[110px] text-right">操作</TableHead>
+                      <TableHead className="w-[220px]">{translateText("分组")}</TableHead>
+                      <TableHead className="w-[96px]">{translateText("状态")}</TableHead>
+                      <TableHead className="w-[96px]">{translateText("主机数")}</TableHead>
+                      <TableHead>{translateText("主机")}</TableHead>
+                      <TableHead className="w-[110px] text-right">{translateText("操作")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -517,36 +516,34 @@ export default function HostGroupManager({
       <Dialog open={dialogOpen} onOpenChange={(open) => !pending && setDialogOpen(open)}>
         <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingId ? "编辑分组" : "添加分组"}</DialogTitle>
-            <DialogDescription>选择需要归入此分组的主机。</DialogDescription>
+            <DialogTitle>{editingId ? translateText("编辑分组") : translateText("添加分组")}</DialogTitle>
+            <DialogDescription>{translateText("选择需要归入此分组的主机。")}</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
               <div className="space-y-1.5">
-                <Label>分组名</Label>
-                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：香港入口组" />
+                <Label>{translateText("分组名")}</Label>
+                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={translateText("例如：香港入口组")} />
               </div>
               <label className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5 sm:self-end">
                 <span className="inline-flex items-center gap-2 text-sm font-medium">
-                  <Power className="h-3.5 w-3.5 text-muted-foreground" />
-                  启用
-                </span>
+                  <Power className="h-3.5 w-3.5 text-muted-foreground" />{translateText("启用")}</span>
                 <Switch checked={form.isEnabled} onCheckedChange={(checked) => setForm({ ...form, isEnabled: checked })} />
               </label>
             </div>
 
             <div className="space-y-3 rounded-md border border-border/50 p-3">
               <div className="flex items-center justify-between gap-3">
-                <Label className="text-sm">添加主机</Label>
-                {form.hostIds.length > 0 && <span className="text-xs text-muted-foreground">{form.hostIds.length} 台</span>}
+                <Label className="text-sm">{translateText("添加主机")}</Label>
+                {form.hostIds.length > 0 && <span className="text-xs text-muted-foreground">{form.hostIds.length}{translateText(" 台")}</span>}
               </div>
               <Select value="" onValueChange={addHost} disabled={availableHosts.length === 0}>
                 <SelectTrigger className="h-9">
-                  <SelectValue placeholder={availableHosts.length === 0 ? "已全部添加" : "选择要加入分组的主机..."} />
+                  <SelectValue placeholder={availableHosts.length === 0 ? translateText("已全部添加") : translateText("选择要加入分组的主机...")} />
                 </SelectTrigger>
                 <SelectContent>
                   {availableHosts.length === 0 ? (
-                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("已全部添加")}</div>
                   ) : availableHosts.map((host: any) => (
                     <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
                       <HostStatusLabel host={host} label={host.name} />
@@ -556,9 +553,7 @@ export default function HostGroupManager({
               </Select>
 
               {selectedHosts.length === 0 ? (
-                <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
-                  从上方选择主机
-                </div>
+                <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">{translateText("从上方选择主机")}</div>
               ) : (
                 <div className="flex flex-wrap gap-2 rounded-md border border-border bg-card p-2">
                   {selectedHosts.map((host: any) => (
@@ -568,7 +563,7 @@ export default function HostGroupManager({
                       title={host.name}
                     >
                       <HostStatusLabel host={host} label={host.name} className="min-w-0 max-w-[180px] font-medium" labelClassName="truncate" />
-                      <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive" title="从分组移除" onClick={() => removeHost(Number(host.id))}>
+                      <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive" title={translateText("从分组移除")} onClick={() => removeHost(Number(host.id))}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </span>
@@ -578,10 +573,10 @@ export default function HostGroupManager({
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={pending}>取消</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={pending}>{translateText("取消")}</Button>
             <Button onClick={submit} disabled={pending}>
               {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-              {pending ? "处理中..." : "保存"}
+              {pending ? translateText("处理中...") : translateText("保存")}
             </Button>
           </DialogFooter>
         </DialogContent>

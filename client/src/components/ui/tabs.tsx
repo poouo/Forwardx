@@ -5,12 +5,12 @@ import { cn } from "@/lib/utils"
 const Tabs = TabsPrimitive.Root
 
 const TabsList = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.List>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(({ className, ...props }, ref) => (
-  <TabsPrimitive.List ref={ref} className={cn("inline-flex h-10 items-center justify-center gap-1 rounded-md bg-muted p-1 text-muted-foreground", className)} {...props} />
+  <TabsPrimitive.List ref={ref} className={cn("inline-flex min-h-10 flex-wrap items-center justify-center gap-1 rounded-md bg-muted p-1 text-muted-foreground", className)} {...props} />
 ))
 TabsList.displayName = TabsPrimitive.List.displayName
 
 const TabsTrigger = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>>(({ className, ...props }, ref) => (
-  <TabsPrimitive.Trigger ref={ref} className={cn("inline-flex items-center justify-center whitespace-nowrap rounded-sm border border-transparent px-3 py-1.5 text-sm font-medium ring-1 ring-transparent ring-offset-background transition-all hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:border-primary data-[state=active]:bg-primary/15 data-[state=active]:font-semibold data-[state=active]:text-primary data-[state=active]:ring-primary/35 data-[state=active]:shadow-md data-[state=active]:shadow-primary/15", className)} {...props} />
+  <TabsPrimitive.Trigger ref={ref} className={cn("inline-flex min-w-0 items-center justify-center whitespace-normal text-center [overflow-wrap:anywhere] [&>svg]:shrink-0 rounded-sm border border-transparent px-3 py-1.5 text-sm font-medium ring-1 ring-transparent ring-offset-background transition-all hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:border-primary data-[state=active]:bg-primary/15 data-[state=active]:font-semibold data-[state=active]:text-primary data-[state=active]:ring-primary/35 data-[state=active]:shadow-md data-[state=active]:shadow-primary/15", className)} {...props} />
 ))
 TabsTrigger.displayName = TabsPrimitive.Trigger.displayName
 

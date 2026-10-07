@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
@@ -24,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, LayoutGrid, List, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type PlanForm = {
   id?: number;
@@ -66,8 +68,8 @@ type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 type PlanResourcePart = { label: string; count: number };
 const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
 const PLAN_MANAGE_TAB_ITEMS = [
-  { value: "plans", label: "订阅套餐", icon: Package },
-  { value: "billing", label: "按量计费资源", icon: Coins },
+  { value: "plans", label: translateText("订阅套餐"), icon: Package },
+  { value: "billing", label: translateText("按量计费资源"), icon: Coins },
 ] as const satisfies readonly SlidingTabItem<PlanManageTab>[];
 const PLAN_MANAGE_TAB_STORAGE_KEY = "forwardx.plans.tab";
 const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
@@ -114,12 +116,12 @@ function storePlanListViewMode(viewMode: PlanListViewMode) {
 }
 
 function money(cents?: number, currency = "CNY") {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((cents || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((cents || 0) / 100);
 }
 
 function bytes(size?: number | null) {
   const value = Number(size || 0);
-  if (!value) return "不限";
+  if (!value) return translateText("不限");
   const units = ["B", "KB", "MB", "GB", "TB"];
   let n = value;
   let idx = 0;
@@ -132,27 +134,27 @@ function bytes(size?: number | null) {
 
 function speed(value?: number | null) {
   const num = Number(value || 0);
-  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : "不限";
+  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : translateText("不限");
 }
 
 const durationOptions = [
-  { value: "30", label: "一个月" },
-  { value: "90", label: "三个月" },
-  { value: "180", label: "半年" },
-  { value: "365", label: "一年" },
-  { value: "730", label: "两年" },
+  { value: "30", label: translateText("一个月") },
+  { value: "90", label: translateText("三个月") },
+  { value: "180", label: translateText("半年") },
+  { value: "365", label: translateText("一年") },
+  { value: "730", label: translateText("两年") },
 ];
 
 const assignMonthlyDurationOptions = [
-  { value: "30", label: "一个月" },
-  { value: "90", label: "三个月" },
-  { value: "180", label: "半年" },
-  { value: "0", label: "永久" },
+  { value: "30", label: translateText("一个月") },
+  { value: "90", label: translateText("三个月") },
+  { value: "180", label: translateText("半年") },
+  { value: "0", label: translateText("永久") },
 ];
 
 function durationLabel(days?: number | null) {
-  if (Number(days) === 0) return "永久";
-  return durationOptions.find((item) => Number(item.value) === Number(days))?.label || `${days || 30} 天`;
+  if (Number(days) === 0) return translateText("永久");
+  return durationOptions.find((item) => Number(item.value) === Number(days))?.label || translateText("{0} 天", [days || 30]);
 }
 
 function MobileInfoRow({
@@ -198,7 +200,7 @@ function PlanStatusQuickToggle({
             : "border-border/60 bg-background/70 text-muted-foreground hover:border-primary/45 hover:text-foreground",
         )}
       >
-        {plan.isActive ? "启用" : "停用"}
+        {plan.isActive ? translateText("启用") : translateText("停用")}
       </button>
       <button
         type="button"
@@ -211,7 +213,7 @@ function PlanStatusQuickToggle({
             : "border-border/60 bg-background/70 text-muted-foreground hover:border-emerald-500/35 hover:text-foreground",
         )}
       >
-        {plan.isActive && plan.isStoreVisible ? "商店展示" : "后台分配"}
+        {plan.isActive && plan.isStoreVisible ? translateText("商店展示") : translateText("后台分配")}
       </button>
     </div>
   );
@@ -239,30 +241,30 @@ function PlanCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="break-words text-sm font-medium">{plan.name}</p>
-          <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || "无描述"}</p>
+          <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || translateText("无描述")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={onEdit}>编辑</Button>
+          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={onEdit}>{translateText("编辑")}</Button>
           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}>
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-        <MobileInfoRow label="价格">{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
-        <MobileInfoRow label="资源">
+        <MobileInfoRow label={translateText("价格")}>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
+        <MobileInfoRow label={translateText("资源")}>
           <div className="flex flex-wrap justify-end gap-1">
             {resourceParts.map((item) => (
               <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
             ))}
           </div>
         </MobileInfoRow>
-        <MobileInfoRow label="端口">{plan.portCount} 个端口</MobileInfoRow>
-        <MobileInfoRow label="规则/流量">规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</MobileInfoRow>
-        <MobileInfoRow label="连接/IP">连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"}</MobileInfoRow>
-        <MobileInfoRow label="限速">{speed(plan.rateLimitMbps)}</MobileInfoRow>
-        <MobileInfoRow label="附加流量">{plan.trafficAddons?.length || 0} 档</MobileInfoRow>
-        <MobileInfoRow label="状态">
+        <MobileInfoRow label={translateText("端口")}>{plan.portCount}{translateText(" 个端口")}</MobileInfoRow>
+        <MobileInfoRow label={translateText("规则/流量")}>{translateText("规则 ")}{plan.maxRules || translateText("不限")}{translateText(" · 流量 ")}{bytes(plan.trafficLimit)}</MobileInfoRow>
+        <MobileInfoRow label={translateText("连接/IP")}>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}</MobileInfoRow>
+        <MobileInfoRow label={translateText("限速")}>{speed(plan.rateLimitMbps)}</MobileInfoRow>
+        <MobileInfoRow label={translateText("附加流量")}>{plan.trafficAddons?.length || 0}{translateText(" 档")}</MobileInfoRow>
+        <MobileInfoRow label={translateText("状态")}>
           <PlanStatusQuickToggle
             plan={plan}
             disabled={toggling}
@@ -277,7 +279,7 @@ function PlanCard({
 }
 
 function hostTitle(host: any) {
-  return host?.name || host?.ip || host?.ipv4 || host?.ipv6 || `主机 #${host?.id || "-"}`;
+  return host?.name || host?.ip || host?.ipv4 || host?.ipv6 || translateText("主机 #{0}", [host?.id || "-"]);
 }
 
 function hostMeta(host: any) {
@@ -305,12 +307,12 @@ function isStandardForwardGroup(group: any) {
 
 function forwardGroupTypeText(group: any) {
   const mode = forwardGroupMode(group);
-  if (mode === "port") return "端口转发";
-  if (mode === "chain") return "转发链";
-  if (mode === "entry") return "入口组";
-  if (mode === "exit") return "出口组";
-  if (group?.groupType === "tunnel") return "隧道转发组";
-  return "转发组";
+  if (mode === "port") return translateText("端口转发");
+  if (mode === "chain") return translateText("转发链");
+  if (mode === "entry") return translateText("入口组");
+  if (mode === "exit") return translateText("出口组");
+  if (group?.groupType === "tunnel") return translateText("隧道转发组");
+  return translateText("转发组");
 }
 
 function planResourcePartsForDisplay(plan: any, forwardGroupMap: Map<number, any>): PlanResourcePart[] {
@@ -341,12 +343,12 @@ function planResourcePartsForDisplay(plan: any, forwardGroupMap: Map<number, any
   }
 
   return [
-    { label: "端口转发", count: counts.ports },
-    { label: "隧道", count: counts.tunnels },
-    { label: "转发链", count: counts.chains },
-    { label: "转发组", count: counts.groups },
-    { label: "历史主机", count: counts.legacyHosts },
-    { label: "转发资源", count: counts.otherForwardResources },
+    { label: translateText("端口转发"), count: counts.ports },
+    { label: translateText("隧道"), count: counts.tunnels },
+    { label: translateText("转发链"), count: counts.chains },
+    { label: translateText("转发组"), count: counts.groups },
+    { label: translateText("历史主机"), count: counts.legacyHosts },
+    { label: translateText("转发资源"), count: counts.otherForwardResources },
   ].filter((item) => item.count > 0);
 }
 
@@ -358,7 +360,7 @@ function selectedResourceItems(ids: number[], items: any[], fallbackType: string
 }
 
 function missingResourceHint(item: any) {
-  return item?.missing ? "资源不存在或已删除，可删除清理" : "";
+  return item?.missing ? translateText("资源不存在或已删除，可删除清理") : "";
 }
 
 function planResourceStatusTone(type: "host" | "tunnel" | "forward_group", item: any) {
@@ -472,7 +474,7 @@ function PlanResourcePicker({
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 shrink-0 text-destructive"
-                    title="删除"
+                    title={translateText("删除")}
                     onClick={() => onRemove(getId(item))}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -540,7 +542,7 @@ function PlanSelectedResourceList({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 shrink-0 text-destructive"
-                title="删除"
+                title={translateText("删除")}
                 onClick={() => onRemove(getId(item))}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -692,7 +694,7 @@ export default function Plans() {
 
   const createPlan = trpc.plans.create.useMutation({
     onSuccess: () => {
-      toast.success("套餐已创建");
+      toast.success(translateText("套餐已创建"));
       setEditing(false);
       setForm(emptyForm);
       utils.plans.list.invalidate();
@@ -700,12 +702,12 @@ export default function Plans() {
       utils.plans.summary.invalidate();
       utils.plans.options.invalidate();
     },
-    onError: (error) => toast.error(error.message || "创建失败"),
+    onError: (error) => toast.error(error.message || translateText("创建失败")),
   });
 
   const updatePlan = trpc.plans.update.useMutation({
     onSuccess: () => {
-      toast.success("套餐已保存");
+      toast.success(translateText("套餐已保存"));
       setEditing(false);
       setForm(emptyForm);
       utils.plans.list.invalidate();
@@ -714,7 +716,7 @@ export default function Plans() {
       utils.plans.options.invalidate();
       utils.plans.storeList.invalidate();
     },
-    onError: (error) => toast.error(error.message || "保存失败"),
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
   });
 
   const updatePlanStatus = trpc.plans.updateStatus.useMutation({
@@ -733,12 +735,12 @@ export default function Plans() {
       return { previous };
     },
     onSuccess: (_result, variables) => {
-      toast.success(variables.isActive ? "套餐状态已更新" : "套餐已停用");
+      toast.success(variables.isActive ? translateText("套餐状态已更新") : translateText("套餐已停用"));
       utils.plans.storeList.invalidate();
     },
     onError: (error, _variables, context) => {
       if (context?.previous) utils.plans.list.setData(undefined, context.previous as any);
-      toast.error(error.message || "状态更新失败");
+      toast.error(error.message || translateText("状态更新失败"));
     },
     onSettled: () => {
       setStatusUpdatingPlanId(null);
@@ -752,13 +754,13 @@ export default function Plans() {
 
   const deletePlan = trpc.plans.delete.useMutation({
     onSuccess: () => {
-      toast.success("套餐已删除");
+      toast.success(translateText("套餐已删除"));
       utils.plans.list.invalidate();
       utils.plans.listPage.invalidate();
       utils.plans.summary.invalidate();
       utils.plans.options.invalidate();
     },
-    onError: (error) => toast.error(error.message || "删除失败"),
+    onError: (error) => toast.error(error.message || translateText("删除失败")),
   });
 
   const setStoreEnabled = trpc.plans.setStoreEnabled.useMutation({
@@ -771,11 +773,11 @@ export default function Plans() {
     onSuccess: (_result, { enabled }) => {
       utils.plans.storeStatus.setData(undefined, { enabled });
       utils.plans.storeList.invalidate();
-      toast.success(enabled ? "套餐商店已开启" : "套餐商店已关闭");
+      toast.success(enabled ? translateText("套餐商店已开启") : translateText("套餐商店已关闭"));
     },
     onError: (error, _variables, context) => {
       if (context?.previous) utils.plans.storeStatus.setData(undefined, context.previous);
-      toast.error(error.message || "更新失败");
+      toast.error(error.message || translateText("更新失败"));
     },
     onSettled: async () => {
       await utils.plans.storeStatus.invalidate();
@@ -793,11 +795,11 @@ export default function Plans() {
       const current = utils.trafficBilling.configs.getData();
       utils.trafficBilling.configs.setData(undefined, { ...(current || { configs: [] }), enabled });
       utils.trafficBilling.storeResources.invalidate();
-      toast.success(enabled ? "按量计费已开启" : "按量计费已关闭");
+      toast.success(enabled ? translateText("按量计费已开启") : translateText("按量计费已关闭"));
     },
     onError: (error, _variables, context) => {
       if (context?.previous) utils.trafficBilling.configs.setData(undefined, context.previous);
-      toast.error(error.message || "更新失败");
+      toast.error(error.message || translateText("更新失败"));
     },
     onSettled: async () => {
       await utils.trafficBilling.configs.invalidate();
@@ -806,7 +808,7 @@ export default function Plans() {
 
   const assignPlan = trpc.plans.assign.useMutation({
     onSuccess: (result) => {
-      toast.success(`套餐已分配，端口段 ${result.portRangeStart}-${result.portRangeEnd}`);
+      toast.success(translateText("套餐已分配，端口段 {0}-{1}", [result.portRangeStart, result.portRangeEnd]));
       setAssignOpen(false);
       setAssignUserId("");
       setAssignPlanId("");
@@ -817,7 +819,7 @@ export default function Plans() {
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
     },
-    onError: (error) => toast.error(error.message || "分配失败"),
+    onError: (error) => toast.error(error.message || translateText("分配失败")),
   });
 
   const activePlans = Number(planSummary?.activeItems ?? planPageQuery.data?.activeItems ?? 0);
@@ -856,8 +858,8 @@ export default function Plans() {
   const portForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isPortForwardGroup(group)), [forwardGroups]);
   const chainForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isChainForwardGroup(group)), [forwardGroups]);
   const standardForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isStandardForwardGroup(group)), [forwardGroups]);
-  const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, "主机"), [form.hostIds, hosts]);
-  const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, "隧道"), [form.tunnelIds, tunnels]);
+  const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, translateText("主机")), [form.hostIds, hosts]);
+  const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, translateText("隧道")), [form.tunnelIds, tunnels]);
   const selectedAssignPlan = useMemo(
     () => planOptions.find((plan: any) => Number(plan.id) === Number(assignPlanId)) || null,
     [assignPlanId, planOptions],
@@ -887,19 +889,19 @@ export default function Plans() {
     [form.forwardGroupIds, forwardGroupMap],
   );
   const selectedPortForwards = useMemo(
-    () => selectedResourceItems(selectedPortForwardIds, portForwardGroups, "端口转发"),
+    () => selectedResourceItems(selectedPortForwardIds, portForwardGroups, translateText("端口转发")),
     [portForwardGroups, selectedPortForwardIds],
   );
   const selectedChains = useMemo(
-    () => selectedResourceItems(selectedChainForwardIds, chainForwardGroups, "转发链"),
+    () => selectedResourceItems(selectedChainForwardIds, chainForwardGroups, translateText("转发链")),
     [chainForwardGroups, selectedChainForwardIds],
   );
   const selectedManagedForwardGroups = useMemo(
-    () => selectedResourceItems(selectedStandardForwardGroupIds, standardForwardGroups, "转发组"),
+    () => selectedResourceItems(selectedStandardForwardGroupIds, standardForwardGroups, translateText("转发组")),
     [selectedStandardForwardGroupIds, standardForwardGroups],
   );
   const selectedOtherForwardResources = useMemo(
-    () => selectedResourceItems(selectedOtherForwardResourceIds, forwardGroups, "转发资源"),
+    () => selectedResourceItems(selectedOtherForwardResourceIds, forwardGroups, translateText("转发资源")),
     [forwardGroups, selectedOtherForwardResourceIds],
   );
   const availableTunnels = useMemo(() => tunnels.filter((tunnel: any) => !selectedTunnelIds.has(Number(tunnel.id))), [tunnels, selectedTunnelIds]);
@@ -943,11 +945,11 @@ export default function Plans() {
   const save = () => {
     if (!form.name.trim()) {
       setPlanDialogTab("settings");
-      return toast.error("请填写套餐名称");
+      return toast.error(translateText("请填写套餐名称"));
     }
     if (form.hostIds.length === 0 && form.tunnelIds.length === 0 && form.forwardGroupIds.length === 0) {
       setPlanDialogTab("resources");
-      toast.error("至少选择一个端口转发、隧道、转发链或转发组");
+      toast.error(translateText("至少选择一个端口转发、隧道、转发链或转发组"));
       return;
     }
     const data = payload(form);
@@ -964,7 +966,7 @@ export default function Plans() {
   };
   const togglePlanStoreVisible = (plan: any) => {
     if (!plan.isActive) {
-      toast.info("套餐启用后才能开启商店展示");
+      toast.info(translateText("套餐启用后才能开启商店展示"));
       return;
     }
     updatePlanStatus.mutate({
@@ -1023,15 +1025,14 @@ export default function Plans() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">套餐管理</h1>
-            <p className="text-sm text-muted-foreground">配置套餐、资源和端口。</p>
+            <h1 className="text-2xl font-semibold tracking-tight">{translateText("套餐管理")}</h1>
+            <p className="text-sm text-muted-foreground">{translateText("配置套餐、资源和端口。")}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => setAssignOpen(true)}>
-              <Settings2 className="mr-2 h-4 w-4" /> 手动分配
-            </Button>
+              <Settings2 className="mr-2 h-4 w-4" />{translateText(" 手动分配")}</Button>
             <Button onClick={openCreate}>
-              <Plus className="mr-2 h-4 w-4" /> {activeTab === "billing" ? "新增计费资源" : "新增套餐"}
+              <Plus className="mr-2 h-4 w-4" /> {activeTab === "billing" ? translateText("新增计费资源") : translateText("新增套餐")}
             </Button>
           </div>
         </div>
@@ -1039,9 +1040,9 @@ export default function Plans() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>按量计费</CardDescription>
+              <CardDescription>{translateText("按量计费")}</CardDescription>
               <CardTitle className="flex items-center justify-between gap-3">
-                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
+                <span>{trafficBillingEnabled ? translateText("已开启") : translateText("已关闭")}</span>
                 {trafficBillingLoading ? (
                   <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
                 ) : (
@@ -1052,13 +1053,13 @@ export default function Plans() {
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">{translateText("公开资源可在余额充足时直接使用。")}</CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>商店状态</CardDescription>
+              <CardDescription>{translateText("商店状态")}</CardDescription>
               <CardTitle className="flex items-center justify-between">
-                <span>{storeEnabled ? "已开启" : "已关闭"}</span>
+                <span>{storeEnabled ? translateText("已开启") : translateText("已关闭")}</span>
                 <OptimisticSwitch
                   checked={storeEnabled}
                   disabled={storeStatusLoading}
@@ -1066,27 +1067,27 @@ export default function Plans() {
                 />
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">开启后用户可自助购买。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">{translateText("开启后用户可自助购买。")}</CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>套餐数量</CardDescription>
+              <CardDescription>{translateText("套餐数量")}</CardDescription>
               <CardTitle>
                 <AnimatedStatValue value={Number(planSummary?.totalItems || 0)} loading={isLoading} cacheKey="plans.count" fallbackValue={0} />
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
               <AnimatedStatValue
-                value={`${activePlans} 个已启用`}
+                value={translateText("{0} 个已启用", [activePlans])}
                 loading={isLoading}
                 cacheKey="plans.activeCount"
-                fallbackValue="0 个已启用"
+                fallbackValue={translateText("0 个已启用")}
               />
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>套餐资源</CardDescription>
+              <CardDescription>{translateText("套餐资源")}</CardDescription>
               <CardTitle>
                 <AnimatedStatValue
                   value={planResourceTotal}
@@ -1097,14 +1098,13 @@ export default function Plans() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              {planResourceSummary.ports} 个端口转发 · {planResourceSummary.tunnels} 条隧道 · {planResourceSummary.chains} 条转发链 · {planResourceSummary.groups} 个转发组
-              {planResourceSummary.legacyHosts > 0 ? ` · ${planResourceSummary.legacyHosts} 个历史主机` : ""}
-              {planResourceSummary.otherForwardResources > 0 ? ` · ${planResourceSummary.otherForwardResources} 个兼容资源` : ""}
+              {planResourceSummary.ports}{translateText(" 个端口转发 · ")}{planResourceSummary.tunnels}{translateText(" 条隧道 · ")}{planResourceSummary.chains}{translateText(" 条转发链 · ")}{planResourceSummary.groups}{translateText(" 个转发组")}{planResourceSummary.legacyHosts > 0 ? translateText(" · {0} 个历史主机", [planResourceSummary.legacyHosts]) : ""}
+              {planResourceSummary.otherForwardResources > 0 ? translateText(" · {0} 个兼容资源", [planResourceSummary.otherForwardResources]) : ""}
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>累计扣费</CardDescription>
+              <CardDescription>{translateText("累计扣费")}</CardDescription>
               <CardTitle>
                 <AnimatedStatValue
                   value={money(trafficBillingCharged)}
@@ -1114,11 +1114,11 @@ export default function Plans() {
                 />
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">历史扣费合计。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">{translateText("历史扣费合计。")}</CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>已计费流量</CardDescription>
+              <CardDescription>{translateText("已计费流量")}</CardDescription>
               <CardTitle>
                 <AnimatedStatValue
                   value={`${trafficBillingGb} GB`}
@@ -1128,11 +1128,11 @@ export default function Plans() {
                 />
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">扣费记录累计。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">{translateText("扣费记录累计。")}</CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>计费资源</CardDescription>
+              <CardDescription>{translateText("计费资源")}</CardDescription>
               <CardTitle>
                 <AnimatedStatValue
                   value={trafficBillingConfigs.length}
@@ -1142,26 +1142,26 @@ export default function Plans() {
                 />
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">已配置资源。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">{translateText("已配置资源。")}</CardContent>
           </Card>
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PlanManageTab)} className="space-y-4">
-          <SlidingTabsList items={PLAN_MANAGE_TAB_ITEMS} activeValue={activeTab} ariaLabel="套餐管理" minItemWidthRem={9.5} />
+          <SlidingTabsList items={PLAN_MANAGE_TAB_ITEMS} activeValue={activeTab} ariaLabel={translateText("套餐管理")} minItemWidthRem={9.5} />
 
           <TabsContent value="plans" className="mt-0 space-y-6">
             <Card>
               <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 套餐列表</CardTitle>
-                  <CardDescription>订阅后分配连续端口段。</CardDescription>
+                  <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(" 套餐列表")}</CardTitle>
+                  <CardDescription>{translateText("订阅后分配连续端口段。")}</CardDescription>
                 </div>
                 <div className="flex items-center overflow-hidden rounded-md border border-border/40">
                   <Button
                     variant={planViewMode === "card" ? "secondary" : "ghost"}
                     size="icon"
                     className="h-8 w-8 rounded-none"
-                    title="卡片视图"
+                    title={translateText("卡片视图")}
                     onClick={() => handlePlanViewModeChange("card")}
                   >
                     <LayoutGrid className="h-4 w-4" />
@@ -1170,7 +1170,7 @@ export default function Plans() {
                     variant={planViewMode === "table" ? "secondary" : "ghost"}
                     size="icon"
                     className="h-8 w-8 rounded-none"
-                    title="列表视图"
+                    title={translateText("列表视图")}
                     onClick={() => handlePlanViewModeChange("table")}
                   >
                     <List className="h-4 w-4" />
@@ -1179,7 +1179,7 @@ export default function Plans() {
               </CardHeader>
               <CardContent>
                 {isLoading ? (
-                  <DataSectionLoading label="正在加载套餐数据" />
+                  <DataSectionLoading label={translateText("正在加载套餐数据")} />
                 ) : (
                   <AutoAnimateContainer duration={220}>
                     {planViewMode === "card" ? (
@@ -1197,7 +1197,7 @@ export default function Plans() {
                           />
                         ))}
                         {plans.length === 0 && (
-                          <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">还没有套餐</div>
+                          <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("还没有套餐")}</div>
                         )}
                       </AutoAnimateContainer>
                     ) : (
@@ -1205,12 +1205,12 @@ export default function Plans() {
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>套餐</TableHead>
-                              <TableHead>价格</TableHead>
-                              <TableHead>资源</TableHead>
-                              <TableHead>限制</TableHead>
-                              <TableHead>状态</TableHead>
-                              <TableHead className="text-right">操作</TableHead>
+                              <TableHead>{translateText("套餐")}</TableHead>
+                              <TableHead>{translateText("价格")}</TableHead>
+                              <TableHead>{translateText("资源")}</TableHead>
+                              <TableHead>{translateText("限制")}</TableHead>
+                              <TableHead>{translateText("状态")}</TableHead>
+                              <TableHead className="text-right">{translateText("操作")}</TableHead>
                             </TableRow>
                           </TableHeader>
                           <AutoAnimateContainer as={TableBody} duration={220}>
@@ -1218,7 +1218,7 @@ export default function Plans() {
                               <TableRow key={plan.id}>
                                 <TableCell>
                                   <div className="font-medium">{plan.name}</div>
-                                  <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || "无描述"}</div>
+                                  <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || translateText("无描述")}</div>
                                 </TableCell>
                                 <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
                                 <TableCell>
@@ -1229,10 +1229,10 @@ export default function Plans() {
                                   </div>
                                 </TableCell>
                                 <TableCell className="text-sm text-muted-foreground">
-                                  <div>{plan.portCount} 个端口</div>
-                                  <div>规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</div>
-                                  <div>附加流量 {plan.trafficAddons?.length || 0} 档</div>
-                                  <div>连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"} · 限速 {speed(plan.rateLimitMbps)}</div>
+                                  <div>{plan.portCount}{translateText(" 个端口")}</div>
+                                  <div>{translateText("规则 ")}{plan.maxRules || translateText("不限")}{translateText(" · 流量 ")}{bytes(plan.trafficLimit)}</div>
+                                  <div>{translateText("附加流量 ")}{plan.trafficAddons?.length || 0}{translateText(" 档")}</div>
+                                  <div>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}{translateText(" · 限速 ")}{speed(plan.rateLimitMbps)}</div>
                                 </TableCell>
                                 <TableCell>
                                   <PlanStatusQuickToggle
@@ -1243,7 +1243,7 @@ export default function Plans() {
                                   />
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  <Button variant="ghost" size="sm" onClick={() => openPlanEdit(plan)}>编辑</Button>
+                                  <Button variant="ghost" size="sm" onClick={() => openPlanEdit(plan)}>{translateText("编辑")}</Button>
                                   <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
@@ -1251,7 +1251,7 @@ export default function Plans() {
                               </TableRow>
                             ))}
                             {plans.length === 0 && (
-                              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">还没有套餐</TableCell></TableRow>
+                              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{translateText("还没有套餐")}</TableCell></TableRow>
                             )}
                           </AutoAnimateContainer>
                         </Table>
@@ -1261,7 +1261,7 @@ export default function Plans() {
                 )}
               </CardContent>
             </Card>
-            <PersistentPagination pagination={planPagination} itemName="个套餐" />
+            <PersistentPagination pagination={planPagination} itemName={translateText("个套餐")} />
           </TabsContent>
 
           <TabsContent value="billing" className="mt-0">
@@ -1279,29 +1279,29 @@ export default function Plans() {
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
           <DialogHeader className="px-4 pt-4 sm:px-5 sm:pt-5">
-            <DialogTitle>{form.id ? "编辑套餐" : "新增套餐"}</DialogTitle>
-            <DialogDescription>配置套餐限制，并绑定订阅后可用资源。</DialogDescription>
+            <DialogTitle>{form.id ? translateText("编辑套餐") : translateText("新增套餐")}</DialogTitle>
+            <DialogDescription>{translateText("配置套餐限制，并绑定订阅后可用资源。")}</DialogDescription>
           </DialogHeader>
 
           <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="flex min-h-0 flex-1 flex-col px-4 sm:px-5">
             <TabsList className="grid h-auto w-full grid-cols-2">
-              <TabsTrigger value="settings">套餐设置</TabsTrigger>
-              <TabsTrigger value="resources">资源绑定</TabsTrigger>
+              <TabsTrigger value="settings">{translateText("套餐设置")}</TabsTrigger>
+              <TabsTrigger value="resources">{translateText("资源绑定")}</TabsTrigger>
             </TabsList>
 
             <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
               <TabsContent value="settings" className="mt-4 space-y-4">
                 <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
-              <Label>套餐名称</Label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：基础套餐" />
+              <Label>{translateText("套餐名称")}</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如：基础套餐")} />
             </div>
             <div className="space-y-2">
-              <Label>价格</Label>
+              <Label>{translateText("价格")}</Label>
               <Input type="number" min={0} step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>有效期</Label>
+              <Label>{translateText("有效期")}</Label>
               <Select value={form.durationDays} onValueChange={(durationDays) => setForm({ ...form, durationDays })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1310,36 +1310,36 @@ export default function Plans() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">超过一个月按月重置流量。</p>
+              <p className="text-xs text-muted-foreground">{translateText("超过一个月按月重置流量。")}</p>
             </div>
             <div className="space-y-2">
-              <Label>连续端口数</Label>
+              <Label>{translateText("连续端口数")}</Label>
               <Input type="number" min={1} max={1024} value={form.portCount} onChange={(e) => setForm({ ...form, portCount: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>总流量（GB，0 为不限）</Label>
+              <Label>{translateText("总流量（GB，0 为不限）")}</Label>
               <Input type="number" min={0} value={form.trafficGB} onChange={(e) => setForm({ ...form, trafficGB: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>限速（Mbps，0 为不限）</Label>
+              <Label>{translateText("限速（Mbps，0 为不限）")}</Label>
               <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps} onChange={(e) => setForm({ ...form, rateLimitMbps: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>最大规则数（0 为不限）</Label>
+              <Label>{translateText("最大规则数（0 为不限）")}</Label>
               <Input type="number" min={0} value={form.maxRules} onChange={(e) => setForm({ ...form, maxRules: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>最大连接数</Label>
+              <Label>{translateText("最大连接数")}</Label>
               <Input type="number" min={0} value={form.maxConnections} onChange={(e) => setForm({ ...form, maxConnections: e.target.value })} />
-              <p className="text-xs text-muted-foreground">按主机或隧道聚合。</p>
+              <p className="text-xs text-muted-foreground">{translateText("按主机或隧道聚合。")}</p>
             </div>
             <div className="space-y-2">
-              <Label>单 IP 接入限制</Label>
+              <Label>{translateText("单 IP 接入限制")}</Label>
               <Input type="number" min={0} value={form.maxIPs} onChange={(e) => setForm({ ...form, maxIPs: e.target.value })} />
-              <p className="text-xs text-muted-foreground">同组规则共享限制。</p>
+              <p className="text-xs text-muted-foreground">{translateText("同组规则共享限制。")}</p>
             </div>
             <div className="space-y-2">
-              <Label>排序</Label>
+              <Label>{translateText("排序")}</Label>
               <Input type="number" min={0} value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
             </div>
                 </div>
@@ -1347,8 +1347,8 @@ export default function Plans() {
                 <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
                   <div className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">套餐状态</p>
-                      <p className="text-xs text-muted-foreground">关闭后该套餐不可购买或分配。</p>
+                      <p className="text-sm font-medium">{translateText("套餐状态")}</p>
+                      <p className="text-xs text-muted-foreground">{translateText("关闭后该套餐不可购买或分配。")}</p>
                     </div>
                     <Switch
                       className="shrink-0"
@@ -1362,8 +1362,8 @@ export default function Plans() {
                   </div>
                   <div className={`flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2 ${form.isActive ? "" : "opacity-60"}`}>
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">购买入口</p>
-                      <p className="text-xs text-muted-foreground">开启后普通用户可在商店自助购买。</p>
+                      <p className="text-sm font-medium">{translateText("购买入口")}</p>
+                      <p className="text-xs text-muted-foreground">{translateText("开启后普通用户可在商店自助购买。")}</p>
                     </div>
                     <Switch
                       className="shrink-0"
@@ -1375,22 +1375,22 @@ export default function Plans() {
                   {form.id && (
                     <div className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2 sm:col-span-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium">同步已购买用户</p>
-                        <p className="text-xs text-muted-foreground">开启后保存套餐会同步已购买用户的生效权益；关闭后仅影响后续新购或新分配。</p>
+                        <p className="text-sm font-medium">{translateText("同步已购买用户")}</p>
+                        <p className="text-xs text-muted-foreground">{translateText("开启后保存套餐会同步已购买用户的生效权益；关闭后仅影响后续新购或新分配。")}</p>
                       </div>
                       <Switch
                         className="shrink-0"
                         checked={form.syncExistingSubscribers}
                         onCheckedChange={(syncExistingSubscribers) => setForm({ ...form, syncExistingSubscribers })}
-                        title={form.syncExistingSubscribers ? "保存后同步已购买该套餐用户的生效权益" : "保存后仅影响后续新购或新分配，已购买用户保持当前权益"}
+                        title={form.syncExistingSubscribers ? translateText("保存后同步已购买该套餐用户的生效权益") : translateText("保存后仅影响后续新购或新分配，已购买用户保持当前权益")}
                       />
                     </div>
                   )}
                 </div>
 
                 <div className="space-y-2">
-                  <Label>说明</Label>
-                  <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="展示给用户看的套餐说明" />
+                  <Label>{translateText("说明")}</Label>
+                  <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={translateText("展示给用户看的套餐说明")} />
                 </div>
               </TabsContent>
 
@@ -1400,11 +1400,11 @@ export default function Plans() {
                     <>
                       {selectedHosts.length > 0 ? (
                         <PlanSelectedResourceList
-                          title="历史主机绑定（兼容）"
-                          countText={`${selectedHosts.length} 台`}
+                          title={translateText("历史主机绑定（兼容）")}
+                          countText={translateText("{0} 台", [selectedHosts.length])}
                           selectedItems={selectedHosts}
-                          emptyText="当前没有历史主机绑定。"
-                          note="仅用于兼容旧套餐，已不再支持新增主机绑定。"
+                          emptyText={translateText("当前没有历史主机绑定。")}
+                          note={translateText("仅用于兼容旧套餐，已不再支持新增主机绑定。")}
                           onRemove={(id) => removePlanResource("hostIds", id)}
                           getId={(host) => Number(host.id)}
                           renderSelected={(host) => (
@@ -1413,7 +1413,7 @@ export default function Plans() {
                               item={host}
                               hosts={hosts}
                               title={hostTitle(host)}
-                              kind="历史主机"
+                              kind={translateText("历史主机")}
                               meta={hostMeta(host)}
                               showMultiplier={false}
                             />
@@ -1421,15 +1421,15 @@ export default function Plans() {
                         />
                       ) : null}
                       <PlanResourcePicker
-                        title="端口转发"
-                        countText={`${selectedPortForwards.length} 个`}
+                        title={translateText("端口转发")}
+                        countText={translateText("{0} 个", [selectedPortForwards.length])}
                         loading={forwardGroupsLoading}
-                        loadingLabel="正在加载端口转发资源"
+                        loadingLabel={translateText("正在加载端口转发资源")}
                         selectedItems={selectedPortForwards}
                         availableItems={availablePortForwards}
-                        addPlaceholder="选择要添加的端口转发"
-                        emptyText="暂未添加端口转发，可从下方选择添加。"
-                        allAddedText={portForwardGroups.length > 0 ? "端口转发已全部添加" : "暂无可添加端口转发"}
+                        addPlaceholder={translateText("选择要添加的端口转发")}
+                        emptyText={translateText("暂未添加端口转发，可从下方选择添加。")}
+                        allAddedText={portForwardGroups.length > 0 ? translateText("端口转发已全部添加") : translateText("暂无可添加端口转发")}
                         onAdd={(id) => addPlanResource("forwardGroupIds", id)}
                         onRemove={(id) => removePlanResource("forwardGroupIds", id)}
                         getId={(group) => Number(group.id)}
@@ -1438,9 +1438,9 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `端口转发 #${group.id}`}
+                            title={group.name || translateText("端口转发 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 成员` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                         renderSelected={(group) => (
@@ -1448,22 +1448,22 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `端口转发 #${group.id}`}
+                            title={group.name || translateText("端口转发 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 成员` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                       />
                       <PlanResourcePicker
-                        title="隧道转发"
-                        countText={`${form.tunnelIds.length} 条`}
+                        title={translateText("隧道转发")}
+                        countText={translateText("{0} 条", [form.tunnelIds.length])}
                         loading={tunnelsLoading}
-                        loadingLabel="正在加载隧道资源"
+                        loadingLabel={translateText("正在加载隧道资源")}
                         selectedItems={selectedTunnels}
                         availableItems={availableTunnels}
-                        addPlaceholder="选择要添加的隧道"
-                        emptyText="暂未添加隧道，可从下方选择添加。"
-                        allAddedText={tunnels.length > 0 ? "隧道已全部添加" : "暂无可添加隧道"}
+                        addPlaceholder={translateText("选择要添加的隧道")}
+                        emptyText={translateText("暂未添加隧道，可从下方选择添加。")}
+                        allAddedText={tunnels.length > 0 ? translateText("隧道已全部添加") : translateText("暂无可添加隧道")}
                         onAdd={(id) => addPlanResource("tunnelIds", id)}
                         onRemove={(id) => removePlanResource("tunnelIds", id)}
                         getId={(tunnel) => Number(tunnel.id)}
@@ -1472,8 +1472,8 @@ export default function Plans() {
                             type="tunnel"
                             item={tunnel}
                             hosts={hosts}
-                            title={tunnel.name || `隧道 #${tunnel.id}`}
-                            kind={String(tunnel.mode || "").toUpperCase() || "隧道"}
+                            title={tunnel.name || translateText("隧道 #{0}", [tunnel.id])}
+                            kind={String(tunnel.mode || "").toUpperCase() || translateText("隧道")}
                             meta={getTunnelRouteText(tunnel, hosts)}
                           />
                         )}
@@ -1482,22 +1482,22 @@ export default function Plans() {
                             type="tunnel"
                             item={tunnel}
                             hosts={hosts}
-                            title={tunnel.name || `隧道 #${tunnel.id}`}
-                            kind={String(tunnel.mode || "").toUpperCase() || "隧道"}
+                            title={tunnel.name || translateText("隧道 #{0}", [tunnel.id])}
+                            kind={String(tunnel.mode || "").toUpperCase() || translateText("隧道")}
                             meta={getTunnelRouteText(tunnel, hosts)}
                           />
                         )}
                       />
                       <PlanResourcePicker
-                        title="转发链"
-                        countText={`${selectedChains.length} 条`}
+                        title={translateText("转发链")}
+                        countText={translateText("{0} 条", [selectedChains.length])}
                         loading={forwardGroupsLoading}
-                        loadingLabel="正在加载转发链资源"
+                        loadingLabel={translateText("正在加载转发链资源")}
                         selectedItems={selectedChains}
                         availableItems={availableChains}
-                        addPlaceholder="选择要添加的转发链"
-                        emptyText="暂未添加转发链，可从下方选择添加。"
-                        allAddedText={chainForwardGroups.length > 0 ? "转发链已全部添加" : "暂无可添加转发链"}
+                        addPlaceholder={translateText("选择要添加的转发链")}
+                        emptyText={translateText("暂未添加转发链，可从下方选择添加。")}
+                        allAddedText={chainForwardGroups.length > 0 ? translateText("转发链已全部添加") : translateText("暂无可添加转发链")}
                         onAdd={(id) => addPlanResource("forwardGroupIds", id)}
                         onRemove={(id) => removePlanResource("forwardGroupIds", id)}
                         getId={(group) => Number(group.id)}
@@ -1506,9 +1506,9 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `转发链 #${group.id}`}
+                            title={group.name || translateText("转发链 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 节点` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 节点", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                         renderSelected={(group) => (
@@ -1516,22 +1516,22 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `转发链 #${group.id}`}
+                            title={group.name || translateText("转发链 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 节点` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 节点", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                       />
                       <PlanResourcePicker
-                        title="转发组"
-                        countText={`${selectedManagedForwardGroups.length} 个`}
+                        title={translateText("转发组")}
+                        countText={translateText("{0} 个", [selectedManagedForwardGroups.length])}
                         loading={forwardGroupsLoading}
-                        loadingLabel="正在加载转发组资源"
+                        loadingLabel={translateText("正在加载转发组资源")}
                         selectedItems={selectedManagedForwardGroups}
                         availableItems={availableManagedForwardGroups}
-                        addPlaceholder="选择要添加的转发组"
-                        emptyText="暂未添加转发组，可从下方选择添加。"
-                        allAddedText={standardForwardGroups.length > 0 ? "转发组已全部添加" : "暂无可添加转发组"}
+                        addPlaceholder={translateText("选择要添加的转发组")}
+                        emptyText={translateText("暂未添加转发组，可从下方选择添加。")}
+                        allAddedText={standardForwardGroups.length > 0 ? translateText("转发组已全部添加") : translateText("暂无可添加转发组")}
                         onAdd={(id) => addPlanResource("forwardGroupIds", id)}
                         onRemove={(id) => removePlanResource("forwardGroupIds", id)}
                         getId={(group) => Number(group.id)}
@@ -1540,9 +1540,9 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `转发组 #${group.id}`}
+                            title={group.name || translateText("转发组 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 成员` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                         renderSelected={(group) => (
@@ -1550,19 +1550,19 @@ export default function Plans() {
                             type="forward_group"
                             item={group}
                             hosts={hosts}
-                            title={group.name || `转发组 #${group.id}`}
+                            title={group.name || translateText("转发组 #{0}", [group.id])}
                             kind={forwardGroupTypeText(group)}
-                            meta={(group.members || []).length ? `${group.members.length} 成员` : forwardGroupTypeText(group)}
+                            meta={(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : forwardGroupTypeText(group)}
                           />
                         )}
                       />
                       {selectedOtherForwardResources.length > 0 ? (
                         <PlanSelectedResourceList
-                          title="其他转发资源（兼容）"
-                          countText={`${selectedOtherForwardResources.length} 个`}
+                          title={translateText("其他转发资源（兼容）")}
+                          countText={translateText("{0} 个", [selectedOtherForwardResources.length])}
                           selectedItems={selectedOtherForwardResources}
-                          emptyText="当前没有兼容转发资源。"
-                          note="旧数据会继续保留，但这里不再支持新增入口组或出口组。"
+                          emptyText={translateText("当前没有兼容转发资源。")}
+                          note={translateText("旧数据会继续保留，但这里不再支持新增入口组或出口组。")}
                           onRemove={(id) => removePlanResource("forwardGroupIds", id)}
                           getId={(group) => Number(group.id)}
                           renderSelected={(group) => (
@@ -1570,9 +1570,9 @@ export default function Plans() {
                               type="forward_group"
                               item={group}
                               hosts={hosts}
-                              title={group.name || `转发资源 #${group.id}`}
+                              title={group.name || translateText("转发资源 #{0}", [group.id])}
                               kind={forwardGroupTypeText(group)}
-                              meta={(group.members || []).length ? `${group.members.length} 成员` : forwardGroupTypeText(group)}
+                              meta={(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : forwardGroupTypeText(group)}
                             />
                           )}
                         />
@@ -1586,27 +1586,24 @@ export default function Plans() {
           <div className="space-y-3 rounded-lg border border-border/60 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <Label className="text-sm font-medium">附加流量包</Label>
-                <p className="mt-1 text-xs text-muted-foreground">用户在“我的订阅”内余额购买，仅当前流量周期有效。</p>
+                <Label className="text-sm font-medium">{translateText("附加流量包")}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("用户在“我的订阅”内余额购买，仅当前流量周期有效。")}</p>
               </div>
               <Button type="button" variant="outline" size="sm" onClick={addTrafficAddon}>
-                <Plus className="mr-2 h-4 w-4" /> 添加档位
-              </Button>
+                <Plus className="mr-2 h-4 w-4" />{translateText(" 添加档位")}</Button>
             </div>
             <div className="space-y-2">
               {form.trafficAddons.map((addon, index) => (
                 <div key={index} className="grid gap-2 rounded-md border border-border/50 p-3 sm:grid-cols-[1fr_1fr_110px_auto] sm:items-end">
                   <div className="space-y-1.5">
-                    <Label className="text-xs">流量（GB）</Label>
+                    <Label className="text-xs">{translateText("流量（GB）")}</Label>
                     <Input type="number" min={0} step="0.01" value={addon.trafficGB} onChange={(e) => updateTrafficAddon(index, { trafficGB: e.target.value })} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">价格（元）</Label>
+                    <Label className="text-xs">{translateText("价格（元）")}</Label>
                     <Input type="number" min={0} step="0.01" value={addon.price} onChange={(e) => updateTrafficAddon(index, { price: e.target.value })} />
                   </div>
-                  <label className="flex h-10 items-center justify-between gap-2 rounded-md border px-3 text-sm">
-                    启用
-                    <Switch checked={addon.isActive} onCheckedChange={(isActive) => updateTrafficAddon(index, { isActive })} />
+                  <label className="flex h-10 items-center justify-between gap-2 rounded-md border px-3 text-sm">{translateText("启用")}<Switch checked={addon.isActive} onCheckedChange={(isActive) => updateTrafficAddon(index, { isActive })} />
                   </label>
                   <Button type="button" variant="ghost" size="icon" className="text-destructive" onClick={() => removeTrafficAddon(index)}>
                     <Trash2 className="h-4 w-4" />
@@ -1614,7 +1611,7 @@ export default function Plans() {
                 </div>
               ))}
               {form.trafficAddons.length === 0 && (
-                <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">未配置时用户不能自助购买附加流量。</div>
+                <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">{translateText("未配置时用户不能自助购买附加流量。")}</div>
               )}
             </div>
           </div>
@@ -1624,11 +1621,9 @@ export default function Plans() {
           </Tabs>
 
           <DialogFooter className="border-t border-border/60 px-4 py-3 sm:px-5">
-            <Button variant="outline" onClick={() => setEditing(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setEditing(false)}>{translateText("取消")}</Button>
             <Button onClick={save} disabled={createPlan.isPending || updatePlan.isPending}>
-              {(createPlan.isPending || updatePlan.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-              保存
-            </Button>
+              {(createPlan.isPending || updatePlan.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}{translateText("保存")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1639,26 +1634,26 @@ export default function Plans() {
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>手动分配套餐</DialogTitle>
-            <DialogDescription>手动给用户分配套餐。</DialogDescription>
+            <DialogTitle>{translateText("手动分配套餐")}</DialogTitle>
+            <DialogDescription>{translateText("手动给用户分配套餐。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>用户</Label>
+              <Label>{translateText("用户")}</Label>
               <Select value={assignUserId} onValueChange={setAssignUserId}>
-                <SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={translateText("选择用户")} /></SelectTrigger>
                 <SelectContent>
                   {users.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.name || user.username}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>套餐</Label>
+              <Label>{translateText("套餐")}</Label>
               <Select value={assignPlanId} onValueChange={(value) => {
                 setAssignPlanId(value);
                 setAssignDurationDays("30");
               }}>
-                <SelectTrigger><SelectValue placeholder="选择套餐" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={translateText("选择套餐")} /></SelectTrigger>
                 <SelectContent>
                   {planOptions.map((plan: any) => <SelectItem key={plan.id} value={String(plan.id)}>{plan.name}</SelectItem>)}
                 </SelectContent>
@@ -1667,7 +1662,7 @@ export default function Plans() {
             {selectedAssignPlan && (
               assignPlanIsMonthly ? (
                 <div className="space-y-2">
-                  <Label>分配周期</Label>
+                  <Label>{translateText("分配周期")}</Label>
                   <Select value={assignDurationDays} onValueChange={setAssignDurationDays}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1676,23 +1671,20 @@ export default function Plans() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">选择永久时不会设置到期时间。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("选择永久时不会设置到期时间。")}</p>
                 </div>
               ) : (
-                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                  当前套餐有效期为 {durationLabel(selectedAssignPlanDurationDays)}，将按套餐自身周期分配；如需其他周期，请先编辑套餐。
-                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">{translateText("当前套餐有效期为 ")}{durationLabel(selectedAssignPlanDurationDays)}{translateText("，将按套餐自身周期分配；如需其他周期，请先编辑套餐。")}</div>
               )
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAssignOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setAssignOpen(false)}>{translateText("取消")}</Button>
             <Button
               onClick={submitAssignPlan}
               disabled={!assignUserId || !assignPlanId || assignPlan.isPending}
             >
-              <ShoppingBag className="mr-2 h-4 w-4" /> 分配
-            </Button>
+              <ShoppingBag className="mr-2 h-4 w-4" />{translateText(" 分配")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

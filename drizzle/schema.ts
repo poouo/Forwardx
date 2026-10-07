@@ -133,6 +133,9 @@ export const users = table("users", {
   id: serial("id"),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
+  googleSubject: varchar("googleSubject", { length: 255 }).unique(),
+  googleEmail: varchar("googleEmail", { length: 254 }),
+  googleLinkedAt: epoch("googleLinkedAt"),
   name: text("name"),
   email: text("email"),
   emailVerified: boolean("emailVerified").notNull().default(false),
@@ -179,6 +182,15 @@ export const users = table("users", {
   // cannot suppress the scheduled reset for the same month.
   lastAutoTrafficReset: epoch("lastAutoTrafficReset"),
   telegramId: text("telegramId").unique(),
+  discordId: varchar("discordId", { length: 32 }).unique(),
+  discordUsername: text("discordUsername"),
+  discordLinkedAt: epoch("discordLinkedAt"),
+  discordLastSeenAt: epoch("discordLastSeenAt"),
+  discordAnnouncementSubscribed: boolean("discordAnnouncementSubscribed").notNull().default(false),
+  discordBindCode: varchar("discordBindCode", { length: 64 }).unique(),
+  discordBindCodeExpiresAt: epoch("discordBindCodeExpiresAt"),
+  discordLoginCode: varchar("discordLoginCode", { length: 64 }).unique(),
+  discordLoginCodeExpiresAt: epoch("discordLoginCodeExpiresAt"),
   telegramUsername: text("telegramUsername"),
   telegramFirstName: text("telegramFirstName"),
   telegramLastName: text("telegramLastName"),
@@ -331,6 +343,15 @@ export const hostGroupMembers = table("host_group_members", {
 export type HostGroupMember = typeof hostGroupMembers.$inferSelect;
 export type InsertHostGroupMember = typeof hostGroupMembers.$inferInsert;
 
+export const aiBotWorkflows = table("ai_bot_workflows", {
+  id: varchar("id", { length: 96 }).notNull().unique(),
+  scopeKey: varchar("scopeKey", { length: 64 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull(),
+  payload: longtext("payload").notNull(),
+  result: longtext("result"),
+  updatedAt: bigint("updatedAt", { mode: "number" }).notNull(),
+});
+
 export const forwardRules = table("forward_rules", {
   id: serial("id"),
   hostId: int("hostId").notNull(),
@@ -349,6 +370,16 @@ export const forwardRules = table("forward_rules", {
   sourcePort: int("sourcePort").notNull(),
   targetIp: text("targetIp").notNull(),
   targetPort: int("targetPort").notNull(),
+  rateLimitMbps: int("rateLimitMbps").notNull().default(0),
+  trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),
+  trafficMode: varchar("trafficMode", { length: 16 }).notNull().default("both"),
+  expiresAt: epoch("expiresAt"),
+  ruleLimitReason: varchar("ruleLimitReason", { length: 32 }),
+  adminManaged: boolean("adminManaged").notNull().default(false),
+  // Null until a quota is first configured. Logical-rule counters survive
+  // managed-child replacement and are separate from graph/history resets.
+  quotaUsedIn: bigint("quotaUsedIn", { mode: "number" }),
+  quotaUsedOut: bigint("quotaUsedOut", { mode: "number" }),
   telegramErrorNotifyEnabled: boolean("telegramErrorNotifyEnabled").notNull().default(false),
   blockHttp: boolean("blockHttp").notNull().default(false),
   blockSocks: boolean("blockSocks").notNull().default(false),
@@ -517,7 +548,7 @@ export const tunnels = table("tunnels", {
   isRunning: boolean("isRunning").notNull().default(false),
   lastLatencyMs: int("lastLatencyMs"),
   lastTestStatus: text("lastTestStatus"),
-  lastTestMessage: text("lastTestMessage"),
+  lastTestMessage: longtext("lastTestMessage"),
   lastTestAt: epoch("lastTestAt"),
   sortOrder: int("sortOrder").notNull().default(0),
   userId: int("userId").notNull(),
@@ -668,6 +699,21 @@ export const agentTrafficReports = table("agent_traffic_reports", {
 export type AgentTrafficReport = typeof agentTrafficReports.$inferSelect;
 export type InsertAgentTrafficReport = typeof agentTrafficReports.$inferInsert;
 
+// Counter snapshots are deliberately separate from cached path-health rows.
+export const probeCounterSnapshots = table("probe_counter_snapshots", {
+  id: serial("id"),
+  kind: varchar("kind", { length: 16 }).notNull(),
+  refId: int("refId").notNull(),
+  hostId: int("hostId").notNull(),
+  probeKey: varchar("probeKey", { length: 64 }).notNull(),
+  epoch: varchar("epoch", { length: 64 }).notNull(),
+  totalCount: int("totalCount").notNull(),
+  totalSuccesses: int("totalSuccesses").notNull(),
+  batchCount: int("batchCount").notNull(),
+  batchSuccesses: int("batchSuccesses").notNull(),
+  recordedAt: epoch("recordedAt").notNull().default(nowDefault()),
+});
+
 export const tunnelLatencyStats = table("tunnel_latency_stats", {
   id: serial("id"),
   tunnelId: int("tunnelId").notNull(),
@@ -769,7 +815,11 @@ export const forwardTests = table("forward_tests", {
   targetReachable: boolean("targetReachable").notNull().default(false),
   forwardOk: boolean("forwardOk").notNull().default(false),
   latencyMs: int("latencyMs"),
-  message: text("message"),
+  message: longtext("message"),
+  requestMessage: text("requestMessage"),
+  batchId: varchar("batchId", { length: 96 }),
+  batchSettled: boolean("batchSettled").notNull().default(false),
+  firstDispatchedAt: epoch("firstDispatchedAt"),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
 });

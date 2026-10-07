@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import * as db from "./db";
+import { getSeamlessMigrationState } from "./seamlessMigrationState";
 
 function firstHeaderValue(value: unknown) {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -84,9 +85,13 @@ export function resolveRequestPanelUrl(req: Request, configuredPanelUrl = ""): s
 }
 
 export async function resolvePanelUrl(req: Request): Promise<string> {
+  const migration = getSeamlessMigrationState();
+  if (migration?.role === "target" && (req.path.startsWith("/api/agent/") || req.path === "/api/sync")) return migration.sourceUrl;
   return resolveRequestPanelUrl(req, await getConfiguredPanelUrl());
 }
 
 export async function resolveAgentAdvertisedPanelUrl(): Promise<string> {
+  const migration = getSeamlessMigrationState();
+  if (migration?.role === "target") return migration.sourceUrl;
   return getConfiguredPanelUrl();
 }

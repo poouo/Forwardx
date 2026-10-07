@@ -96,9 +96,14 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
 export async function pushTunnelEndpointRefresh(
   tunnel: any,
   reason: string,
-  options?: { urgent?: boolean; forceTcping?: boolean },
+  options?: { urgent?: boolean; forceTcping?: boolean; refreshMode?: "runtime" | "probe" },
 ) {
-  if (tunnel?.id) clearTunnelRuntimeStatus(Number(tunnel.id));
+  // A measurement request must not invalidate a healthy runtime and schedule
+  // redundant applies ahead of the very probe it is waiting for. Configuration
+  // refreshes retain the existing invalidation path by default.
+  const probeOnly = options?.refreshMode === "probe";
+  const forceTcping = probeOnly || options?.forceTcping === true;
+  if (tunnel?.id && !probeOnly) clearTunnelRuntimeStatus(Number(tunnel.id));
   const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
   const extraExitRows = tunnel?.id ? await db.getTunnelExitNodes(Number(tunnel.id)) : [];
   const hopHostIds = Array.isArray(hopRows)
@@ -126,10 +131,10 @@ export async function pushTunnelEndpointRefresh(
     ...extraExitHostIds,
   ];
   const uniqueHostIds = Array.from(new Set(hostIds));
-  const tcpingHostIds = options?.forceTcping === true
+  const tcpingHostIds = forceTcping
     ? tunnelLatencyProbeSourceHostIds(entryHostIds, hopRows)
     : [];
-  if (options?.forceTcping === true) {
+  if (forceTcping) {
     clearTunnelAutoHopLatencyState(Number(tunnel?.id));
     clearTunnelMultiEntryLatencyState(Number(tunnel?.id));
   }
@@ -142,7 +147,7 @@ export async function pushTunnelEndpointRefresh(
   const allPushed = pushed.every((item) => item.pushed);
   appendPanelLog(
     allPushed ? "info" : "warn",
-    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} urgent=${options?.urgent === true} forceTcping=${options?.forceTcping === true} tcpingHosts=${tcpingHostIds.join(",") || "-"} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
+    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} refreshMode=${probeOnly ? "probe" : "runtime"} urgent=${options?.urgent === true} forceTcping=${forceTcping} tcpingHosts=${tcpingHostIds.join(",") || "-"} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
   const entryHostIdSet = new Set(entryHostIds);
   return {

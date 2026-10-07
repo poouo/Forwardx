@@ -3,9 +3,36 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { handoffManualTestResult, hasQuerySnapshotAfter } from "@/lib/manualTestCache";
-import { getLinkTestDetailEndpointIds, LinkTestProbeView, parseLinkTestMessage } from "./LinkTestLatencySummary";
+import { getLinkTestDetailEndpointIds, getLinkTestTotalLatency, LinkTestProbeView, parseLinkTestMessage } from "./LinkTestLatencySummary";
 
 const plannedSegments = [{ from: "入口节点", to: "出口节点" }];
+
+test("alternative paths render independent edges and honor the path-aware server total", () => {
+  const parsed = parseLinkTestMessage(JSON.stringify({ kind: "tunnel-hop-summary", totalLatencyMs: 30, details: [
+    { routeLabel: "A -> relay1", success: true, latencyMs: 10 },
+    { routeLabel: "B -> relay1", success: true, latencyMs: 10 },
+    { routeLabel: "A -> relay2", success: true, latencyMs: 20 },
+    { routeLabel: "relay1 -> exit", success: true, latencyMs: 10 },
+    { routeLabel: "relay2 -> exit", success: true, latencyMs: 10 },
+  ] }));
+  assert.equal(getLinkTestTotalLatency({ parsed, isSuccess: true }), 30);
+  const html = renderToStaticMarkup(<LinkTestProbeView parsed={parsed} isSuccess isTesting={false} />);
+  assert.match(html, /分段探测/);
+  assert.doesNotMatch(html, /desktop-row-wrap/);
+});
+
+test("completed segments remain visible while another segment is pending", () => {
+  const html = renderToStaticMarkup(<LinkTestProbeView
+    parsed={parseLinkTestMessage(JSON.stringify({ kind: "tunnel-hop-pending", details: [
+      { fromHostId: 1, toHostId: 2, hopIndex: 0, hopCount: 2, success: true, latencyMs: 37 },
+      { fromHostId: 2, toHostId: 3, hopIndex: 1, hopCount: 2, success: false, latencyMs: null, pending: true },
+    ] }))} isSuccess={false} isTesting plannedSegments={[
+      { from: "A", to: "B", fromHostId: 1, toHostId: 2, hopIndex: 0, hopCount: 2 },
+      { from: "B", to: "C", fromHostId: 2, toHostId: 3, hopIndex: 1, hopCount: 2 },
+    ]} />);
+  assert.match(html, /37 ms/);
+  assert.match(html, /探测中/);
+});
 
 test("an unopened link test waits instead of claiming that a probe is running", () => {
   const html = renderToStaticMarkup(

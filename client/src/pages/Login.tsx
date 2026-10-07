@@ -1,4 +1,8 @@
+import { t as translateText } from "@/i18n";
 import { useState, useCallback, useEffect, useRef } from "react";
+import LanguageSelector from "@/components/LanguageSelector";
+import GoogleLoginButton from "@/components/GoogleLoginButton";
+import { googleAuthMessage } from "@shared/googleAuth";
 import "@cap.js/widget";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -7,9 +11,9 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon, Server, ShieldCheck, Zap } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { useTheme } from "@/contexts/ThemeContext";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
@@ -95,11 +99,11 @@ function CapVerificationField(props: {
     const panelBase = mobileAuth.isNative ? mobileAuth.normalizePanelUrl(mobileAuth.getPanelUrl()) : "";
     widget.setAttribute("data-cap-api-endpoint", `${panelBase}/api/auth/cap/${props.purpose}/`);
     widget.setAttribute("data-cap-worker-count", "2");
-    widget.setAttribute("data-cap-i18n-initial-state", "点击验证");
-    widget.setAttribute("data-cap-i18n-verifying-label", "验证中...");
-    widget.setAttribute("data-cap-i18n-solved-label", "验证通过");
-    widget.setAttribute("data-cap-i18n-error-label", "验证失败，请重试");
-    widget.setAttribute("data-cap-i18n-verify-aria-label", "点击验证你是真人");
+    widget.setAttribute("data-cap-i18n-initial-state", translateText("点击验证"));
+    widget.setAttribute("data-cap-i18n-verifying-label", translateText("验证中..."));
+    widget.setAttribute("data-cap-i18n-solved-label", translateText("验证通过"));
+    widget.setAttribute("data-cap-i18n-error-label", translateText("验证失败，请重试"));
+    widget.setAttribute("data-cap-i18n-verify-aria-label", translateText("点击验证你是真人"));
     if (props.disabled) {
       widget.setAttribute("aria-disabled", "true");
       widget.style.pointerEvents = "none";
@@ -128,7 +132,7 @@ function CapVerificationField(props: {
 
   return (
     <div className="space-y-2">
-      <Label>人机验证</Label>
+      <Label>{translateText("人机验证")}</Label>
       <div ref={containerRef} className="min-h-14" aria-live="polite" />
     </div>
   );
@@ -211,13 +215,13 @@ const DISPLAY_NAME_MAX_LENGTH = 24;
 const TELEGRAM_WEBAPP_INIT_WAIT_MS = 6000;
 const TELEGRAM_WEBAPP_INIT_POLL_MS = 250;
 const authHighlights = [
-  { title: "多主机管理", text: "集中查看主机、规则和链路状态", icon: Server },
-  { title: "权限控制", text: "按用户分配转发资源和使用额度", icon: ShieldCheck },
-  { title: "故障转移", text: "按健康状态切换入口和出口", icon: Zap },
+  { title: translateText("多主机管理"), text: translateText("集中查看主机、规则和链路状态"), icon: Server },
+  { title: translateText("权限控制"), text: translateText("按用户分配转发资源和使用额度"), icon: ShieldCheck },
+  { title: translateText("故障转移"), text: translateText("按健康状态切换入口和出口"), icon: Zap },
 ];
 
 function getWelcomeName(user: any) {
-  return String(user?.name || user?.username || "用户").trim() || "用户";
+  return String(user?.name || user?.username || "用户").trim() || translateText("用户");
 }
 
 function rememberLoginWelcome(user: any) {
@@ -227,6 +231,7 @@ function rememberLoginWelcome(user: any) {
 
 export default function Login() {
   const [location] = useLocation();
+  const search = useSearch();
   const initialMode = new URLSearchParams(location.split("?")[1] || "").get("mode") === "register" ? "register" : "login";
   const [mode, setMode] = useState<Mode>(initialMode);
   const [username, setUsername] = useState(() => mobileAuth.getUsername());
@@ -271,6 +276,24 @@ export default function Login() {
   }, [location]);
 
   const utils = trpc.useUtils();
+  const googleResultHandled = useRef(false);
+  const finishGoogle = trpc.google.finishTwoFactor.useMutation({
+    onSuccess: data => {
+      setTwoFactorChallenge({ challengeId: data.challengeId, username: data.username, expiresAt: Date.now() + data.expiresInSeconds * 1000 });
+      setTwoFactorCode("");
+      toast.info(translateText("请输入双重验证验证码"));
+    },
+    onError: error => toast.error(error.message),
+  });
+  useEffect(() => {
+    const result = new URLSearchParams(search).get("google");
+    if (!result || googleResultHandled.current) return;
+    googleResultHandled.current = true;
+    if (result === "two_factor") finishGoogle.mutate();
+    else toast.error(translateText(googleAuthMessage(result)));
+    const url = new URL(window.location.href); url.searchParams.delete("google");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+  }, [search, finishGoogle.mutate]);
   const { data: emailConfig } = trpc.auth.emailConfig.useQuery(undefined, {
     enabled: hasMobilePanelUrl && mode === "register",
     retry: false,
@@ -330,14 +353,14 @@ export default function Login() {
         const retryAfter = captchaRetryAfterSeconds(error.message || "");
         if (retryAfter > 0) {
           setCaptchaCooldownUntil(Date.now() + retryAfter * 1000);
-          toast.error(`验证码刷新过于频繁，请 ${retryAfter} 秒后重试`);
+          toast.error(translateText("验证码刷新过于频繁，请 {0} 秒后重试", [retryAfter]));
           return;
         }
         if (mobileAuth.isNative && isMobileNetworkError(error.message || "")) {
-          toast.error("无法连接面板，请检查右上角面板地址");
+          toast.error(translateText("无法连接面板，请检查右上角面板地址"));
           return;
         }
-        toast.error(error.message || "验证码加载失败");
+        toast.error(error.message || translateText("验证码加载失败"));
       },
     });
   }, [captchaCooldownUntil, createCaptchaMutation, hasMobilePanelUrl]);
@@ -368,7 +391,7 @@ export default function Login() {
           expiresAt: Date.now() + data.expiresInSeconds * 1000,
         });
         setTwoFactorCode("");
-        toast.info("请输入双重验证验证码");
+        toast.info(translateText("请输入双重验证验证码"));
         return;
       }
       if (mobileAuth.isNative) {
@@ -382,7 +405,7 @@ export default function Login() {
     onError: (error, variables) => {
       const msg = error.message || "";
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
-        toast.error("无法连接面板，请检查右上角面板地址");
+        toast.error(translateText("无法连接面板，请检查右上角面板地址"));
         setShowPanelSettings(true);
         return;
       }
@@ -391,17 +414,17 @@ export default function Login() {
         setCaptchaAnswer("");
         setCaptchaResetKey((value) => value + 1);
         if (msg === "CAPTCHA_REQUIRED_AFTER_FAIL") {
-          toast.error("用户名或密码错误，请输入验证码后重试");
+          toast.error(translateText("用户名或密码错误，请输入验证码后重试"));
         } else {
-          toast.error("请输入验证码");
+          toast.error(translateText("请输入验证码"));
         }
       } else if (msg === "CAPTCHA_INVALID") {
         setLoginCaptchaRequiredFor(variables.username.trim().toLowerCase());
-        toast.error("验证码错误或已过期，请重新输入");
+        toast.error(translateText("验证码错误或已过期，请重新输入"));
         setCaptchaAnswer("");
         setCaptchaResetKey((value) => value + 1);
       } else {
-        toast.error(msg || "登录失败");
+        toast.error(msg || translateText("登录失败"));
         if (msg === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) {
           mobileAuth.clear();
         }
@@ -426,9 +449,26 @@ export default function Login() {
     },
     onError: (error) => {
       if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
-      toast.error(error.message || "Telegram 登录失败");
+      toast.error(error.message || translateText("Telegram 登录失败"));
     },
   });
+  const { data: discordLoginStatus } = trpc.discord.loginStatus.useQuery();
+  const discordLoginTried = useRef("");
+  const discordLoginMutation = trpc.discord.login.useMutation({
+    onSuccess: (data) => {
+      if (mobileAuth.isNative) mobileAuth.setToken(data.mobileToken);
+      rememberLoginWelcome(data);
+      void utils.auth.me.invalidate();
+      window.location.href = "/";
+    },
+    onError: (error) => toast.error(error.message || translateText("Discord 登录失败")),
+  });
+  useEffect(() => {
+    const code = new URLSearchParams(search).get("discord");
+    if (!code || discordLoginTried.current === code) return;
+    discordLoginTried.current = code;
+    discordLoginMutation.mutate({ code, mobile: mobileAuth.isNative });
+  }, [search, discordLoginMutation.mutate]);
 
   const telegramWebAppLoginMutation = trpc.telegram.loginWithWebApp.useMutation({
     onSuccess: (data) => {
@@ -443,11 +483,11 @@ export default function Login() {
       if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       const msg = error.message || "";
       if (msg === "TELEGRAM_NOT_BOUND") {
-        toast.info("当前 Telegram 未绑定面板账号，请先使用账号密码登录并在面板完成绑定。");
+        toast.info(translateText("当前 Telegram 未绑定面板账号，请先使用账号密码登录并在面板完成绑定。"));
         return;
       }
       if (msg === "TELEGRAM_WEBAPP_REPLAYED") {
-        toast.info("自动登录请求已失效，请返回机器人重新打开 WebApp。");
+        toast.info(translateText("自动登录请求已失效，请返回机器人重新打开 WebApp。"));
         return;
       }
       if (msg === "TELEGRAM_WEBAPP_CHALLENGE_INVALID") {
@@ -461,18 +501,18 @@ export default function Login() {
           });
           return;
         }
-        toast.info("登录入口已失效，请返回机器人重新点击“打开面板”。");
+        toast.info(translateText("登录入口已失效，请返回机器人重新点击“打开面板”。"));
         return;
       }
       if (msg === "TELEGRAM_WEBAPP_VERIFY_FAILED") {
-        toast.error("Telegram 自动登录校验失败，请在机器人中重新打开 WebApp。");
+        toast.error(translateText("Telegram 自动登录校验失败，请在机器人中重新打开 WebApp。"));
         return;
       }
       if (msg === "TELEGRAM_LOGIN_DISABLED") {
-        toast.error("Telegram 登录未启用，请改用账号密码登录。");
+        toast.error(translateText("Telegram 登录未启用，请改用账号密码登录。"));
         return;
       }
-      toast.error(msg || "Telegram 自动登录失败，请使用账号密码登录。");
+      toast.error(msg || translateText("Telegram 自动登录失败，请使用账号密码登录。"));
     },
   });
 
@@ -492,7 +532,7 @@ export default function Login() {
     onError: (error) => {
       setMobileTelegramLogin(null);
       if (error.message === ACCOUNT_DISABLED_ERR_MSG) mobileAuth.clear();
-      toast.error(error.message || "Telegram 登录失败");
+      toast.error(error.message || translateText("Telegram 登录失败"));
     },
     onSettled: () => {
       mobileTelegramStatusPendingRef.current = false;
@@ -511,7 +551,7 @@ export default function Login() {
     },
     onError: (error) => {
       if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
-      toast.error(error.message || "双重验证失败");
+      toast.error(error.message || translateText("双重验证失败"));
     },
   });
   const mobileTelegramStatusPendingRef = useRef(false);
@@ -539,23 +579,23 @@ export default function Login() {
       } else {
         window.open(data.telegramUrl, "_blank", "noopener,noreferrer");
       }
-      toast.success("已打开 Telegram");
+      toast.success(translateText("已打开 Telegram"));
     },
     onError: (error) => {
       const msg = error.message || "";
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
-        toast.error("无法连接面板，请检查右上角面板地址");
+        toast.error(translateText("无法连接面板，请检查右上角面板地址"));
         setShowPanelSettings(true);
         return;
       }
-      toast.error(msg || "无法发起 Telegram 登录");
+      toast.error(msg || translateText("无法发起 Telegram 登录"));
     },
   });
 
   // 注册 mutation
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: (data) => {
-      toast.success(data.message || "注册成功");
+      toast.success(data.message || translateText("注册成功"));
       setMode("login");
       setConfirmPassword("");
       setName("");
@@ -565,26 +605,26 @@ export default function Login() {
     onError: (error) => {
       const msg = error.message || "";
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
-        toast.error("无法连接面板，请检查右上角面板地址");
+        toast.error(translateText("无法连接面板，请检查右上角面板地址"));
         setShowPanelSettings(true);
         return;
       }
-      toast.error(msg === "CAPTCHA_INVALID" ? "验证码错误或已过期，请重新输入" : msg || "注册失败");
+      toast.error(msg === "CAPTCHA_INVALID" ? translateText("验证码错误或已过期，请重新输入") : msg || translateText("注册失败"));
       setCaptchaAnswer("");
       setCaptchaResetKey((value) => value + 1);
     },
   });
 
   const sendEmailCodeMutation = trpc.auth.sendEmailCode.useMutation({
-    onSuccess: () => toast.success("验证码已发送，5 分钟内有效"),
+    onSuccess: () => toast.success(translateText("验证码已发送，5 分钟内有效")),
     onError: (error) => {
       const msg = error.message || "";
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
-        toast.error("无法连接面板，请检查右上角面板地址");
+        toast.error(translateText("无法连接面板，请检查右上角面板地址"));
         setShowPanelSettings(true);
         return;
       }
-      toast.error(msg || "发送验证码失败");
+      toast.error(msg || translateText("发送验证码失败"));
     },
   });
 
@@ -627,7 +667,7 @@ export default function Login() {
       timeoutId = window.setTimeout(() => {
         if (cancelled || telegramWebAppAutoLoginTriedRef.current) return;
         if (intervalId) window.clearInterval(intervalId);
-        toast.info("未获取到 Telegram 登录凭证，请返回机器人重新点击“打开面板”。");
+        toast.info(translateText("未获取到 Telegram 登录凭证，请返回机器人重新点击“打开面板”。"));
       }, TELEGRAM_WEBAPP_INIT_WAIT_MS);
     }
 
@@ -640,11 +680,11 @@ export default function Login() {
 
   useEffect(() => {
     if (getTelegramWebAppInitData()) return;
-    const code = new URLSearchParams(location.split("?")[1] || "").get("tg");
+    const code = new URLSearchParams(search).get("tg");
     if (!code || telegramLoginCode === code || telegramLoginMutation.isPending) return;
     setTelegramLoginCode(code);
     telegramLoginMutation.mutate({ code, mobile: mobileAuth.isNative });
-  }, [location, telegramLoginCode, telegramLoginMutation]);
+  }, [search, telegramLoginCode, telegramLoginMutation]);
 
   useEffect(() => {
     if (!mobileTelegramLogin) return;
@@ -653,7 +693,7 @@ export default function Login() {
       if (cancelled) return;
       if (Date.now() >= mobileTelegramLogin.expiresAt) {
         setMobileTelegramLogin(null);
-        toast.error("Telegram 登录已超时，请重新尝试");
+        toast.error(translateText("Telegram 登录已超时，请重新尝试"));
         return;
       }
       if (!mobileTelegramStatusPendingRef.current) {
@@ -684,7 +724,7 @@ export default function Login() {
     e?.preventDefault();
     if (!twoFactorChallenge) return;
     if (!twoFactorCode.trim()) {
-      toast.error("请输入双重验证验证码");
+      toast.error(translateText("请输入双重验证验证码"));
       return;
     }
     verifyTwoFactorLoginMutation.mutate({
@@ -698,17 +738,17 @@ export default function Login() {
     e.preventDefault();
     if (mobileAuth.isNative) {
       if (!mobileAuth.hasPanelUrl()) {
-        toast.error("请先点击右上角设置按钮添加服务器地址");
+        toast.error(translateText("请先点击右上角设置按钮添加服务器地址"));
         return;
       }
     }
     if (!username.trim() || !password.trim()) {
-      toast.error("请输入用户名和密码");
+      toast.error(translateText("请输入用户名和密码"));
       return;
     }
     if (loginCaptchaRequired) {
       if (!captchaAnswer.trim()) {
-        toast.error("请先完成人机验证");
+        toast.error(translateText("请先完成人机验证"));
         return;
       }
       loginMutation.mutate({
@@ -729,7 +769,7 @@ export default function Login() {
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
     if (mobileAuth.isNative && !mobileAuth.hasPanelUrl()) {
-      toast.error("请先点击右上角设置按钮添加服务器地址");
+      toast.error(translateText("请先点击右上角设置按钮添加服务器地址"));
       return;
     }
     if (!registrationEnabled) {
@@ -738,37 +778,37 @@ export default function Login() {
       return;
     }
     if (!username.trim() || !password.trim()) {
-      toast.error("请输入用户名和密码");
+      toast.error(translateText("请输入用户名和密码"));
       return;
     }
     if (password !== confirmPassword) {
-      toast.error("两次输入的密码不一致");
+      toast.error(translateText("两次输入的密码不一致"));
       return;
     }
     if (password.length < 6) {
-      toast.error("密码至少6个字符");
+      toast.error(translateText("密码至少6个字符"));
       return;
     }
     if (!isEmail(username)) {
-      toast.error("注册用户名必须是邮箱格式");
+      toast.error(translateText("注册用户名必须是邮箱格式"));
       return;
     }
     if (emailConfig?.verifyRegistration) {
       if (!email.trim()) {
-        toast.error("请填写邮箱地址");
+        toast.error(translateText("请填写邮箱地址"));
         return;
       }
       if (!emailCode.trim()) {
-        toast.error("请输入邮箱验证码");
+        toast.error(translateText("请输入邮箱验证码"));
         return;
       }
     }
     if (!captchaAnswer.trim()) {
-      toast.error("请先完成人机验证");
+      toast.error(translateText("请先完成人机验证"));
       return;
     }
     if (name.trim().length > DISPLAY_NAME_MAX_LENGTH) {
-      toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
+      toast.error(translateText("显示名称最多 {0} 个字符", [DISPLAY_NAME_MAX_LENGTH]));
       return;
     }
     registerMutation.mutate({
@@ -788,7 +828,7 @@ export default function Login() {
   const savePanelUrl = () => {
     const normalized = mobileAuth.normalizePanelUrl(panelUrlDraft);
     if (!mobileAuth.isValidPanelUrl(normalized)) {
-      toast.error("请输入完整面板地址，例如 https://panel.example.com");
+      toast.error(translateText("请输入完整面板地址，例如 https://panel.example.com"));
       return;
     }
     mobileAuth.setPanelUrl(normalized);
@@ -796,12 +836,12 @@ export default function Login() {
     setShowPanelSettings(false);
     setCaptchaAnswer("");
     void utils.invalidate();
-    toast.success("面板地址已保存");
+    toast.success(translateText("面板地址已保存"));
   };
 
   const handleMobileTelegramLogin = () => {
     if (mobileAuth.isNative && !mobileAuth.hasPanelUrl()) {
-      toast.error("请先点击右上角设置按钮添加服务器地址");
+      toast.error(translateText("请先点击右上角设置按钮添加服务器地址"));
       setShowPanelSettings(true);
       return;
     }
@@ -814,7 +854,7 @@ export default function Login() {
     setPassword("");
   };
 
-  const isPending = loginMutation.isPending || registerMutation.isPending || telegramWebAppLoginMutation.isPending;
+  const isPending = loginMutation.isPending || registerMutation.isPending || telegramWebAppLoginMutation.isPending || discordLoginMutation.isPending;
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
   const isTelegramPending = telegramLoginMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
@@ -822,13 +862,14 @@ export default function Login() {
   const captchaCooldownSeconds = Math.max(0, Math.ceil((captchaCooldownUntil - Date.now()) / 1000));
   const activeCaptchaImage = captchaChallenge?.purpose === captchaPurpose ? captchaChallenge.imageDataUrl : undefined;
   const captchaRefreshTitle = captchaCooldownSeconds > 0
-    ? `${captchaCooldownSeconds} 秒后可刷新`
-    : "刷新验证码";
+    ? translateText("{0} 秒后可刷新", [captchaCooldownSeconds])
+    : translateText("刷新验证码");
 
   return (
     <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
       <div className="auth-grid-overlay pointer-events-none absolute inset-0 opacity-[0.14]" />
       <div className="absolute right-4 top-4 z-20 flex items-center gap-2">
+        <LanguageSelector compact />
         {mobileAuth.isNative && (
           <button
             onClick={() => {
@@ -836,8 +877,8 @@ export default function Login() {
               setShowPanelSettings(true);
             }}
             className="flex h-9 w-9 items-center justify-center rounded-lg bg-background/80 text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="设置面板地址"
-            title="设置面板地址"
+            aria-label={translateText("设置面板地址")}
+            title={translateText("设置面板地址")}
           >
             <SettingsIcon className={mobileAuth.hasPanelUrl() ? "h-5 w-5 text-muted-foreground" : "h-5 w-5 text-amber-500"} />
           </button>
@@ -845,8 +886,8 @@ export default function Login() {
         <button
           onClick={toggleTheme}
           className="flex h-9 w-9 items-center justify-center rounded-lg bg-background/80 text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="切换主题"
-          title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
+          aria-label={translateText("切换主题")}
+          title={resolvedTheme === "dark" ? translateText("切换到白天模式") : translateText("切换到黑夜模式")}
         >
           {resolvedTheme === "dark" ? (
             <Sun className="h-5 w-5 text-muted-foreground" />
@@ -864,13 +905,11 @@ export default function Login() {
                 <img src={logoSrc} alt={siteTitle} className="h-11 w-11 object-contain" />
                 <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
               </div>
-              <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">
-                管理多主机转发、隧道和流量。
-              </p>
+              <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">{translateText("管理多主机转发、隧道和流量。")}</p>
               <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
                 {["转发", "隧道", "流量"].map((label) => (
                   <div key={label} className="rounded-lg border border-border/45 bg-background/35 px-3 py-2 text-center text-sm font-medium text-foreground/85 shadow-sm backdrop-blur">
-                    {label}
+                    {translateText(label)}
                   </div>
                 ))}
               </div>
@@ -912,10 +951,10 @@ export default function Login() {
                 <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
               </div>
               <CardTitle className="text-2xl font-bold tracking-tight">
-                {mode === "login" ? "欢迎回来" : "创建账号"}
+                {mode === "login" ? translateText("欢迎回来") : translateText("创建账号")}
               </CardTitle>
               <CardDescription className="mt-1 text-sm text-muted-foreground">
-                {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "登录账号以继续" : "使用邮箱注册 ForwardX 账户"}
+                {isTelegramPending ? translateText("正在通过 Telegram 登录") : mode === "login" ? translateText("登录账号以继续") : translateText("使用邮箱注册 ForwardX 账户")}
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
@@ -931,7 +970,7 @@ export default function Login() {
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <span>{telegramWebAppLoginMutation.isPending ? "正在验证 Telegram 登录..." : "正在验证一次性登录码..."}</span>
+              <span>{telegramWebAppLoginMutation.isPending ? translateText("正在验证 Telegram 登录...") : translateText("正在验证一次性登录码...")}</span>
             </div>
           ) : mode === "login" ? (
             <form onSubmit={handleLogin} className="space-y-4">
@@ -940,16 +979,14 @@ export default function Login() {
                   type="button"
                   onClick={() => setShowPanelSettings(true)}
                   className="w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-sm text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
-                >
-                  未添加服务器地址，请点击右上角设置按钮添加
-                </button>
+                >{translateText("未添加服务器地址，请点击右上角设置按钮添加")}</button>
               )}
               <div className="space-y-2">
-                <Label htmlFor="username">用户名或邮箱</Label>
+                <Label htmlFor="username">{translateText("用户名或邮箱")}</Label>
                 <Input
                   id="username"
                   type="text"
-                  placeholder="请输入用户名或邮箱"
+                  placeholder={translateText("请输入用户名或邮箱")}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
@@ -961,12 +998,12 @@ export default function Login() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">密码</Label>
+                <Label htmlFor="password">{translateText("密码")}</Label>
                 <div className="relative">
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
-                    placeholder="请输入密码"
+                    placeholder={translateText("请输入密码")}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     autoComplete="current-password"
@@ -1006,28 +1043,26 @@ export default function Login() {
               >
                 {loginMutation.isPending ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    登录中...
-                  </>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("登录中...")}</>
                 ) : (
                   <>
-                    <LogIn className="mr-2 h-4 w-4" />
-                    登录
-                  </>
+                    <LogIn className="mr-2 h-4 w-4" />{translateText("登录")}</>
                 )}
               </Button>
 
-              {showTelegramLoginSlot && (
+              <GoogleLoginButton disabled={isPending} />
+              {mode === "login" && discordLoginStatus?.enabled && discordLoginStatus.botId && (
+                <div className="space-y-2 rounded-lg border p-3 text-center"><p className="text-sm">{translateText("Discord 快捷登录")}</p><p className="text-xs text-muted-foreground">{translateText("在已绑定的机器人私聊中发送 /login，打开一次性登录链接。")}</p><Button variant="outline" asChild><a href={`https://discord.com/users/${discordLoginStatus.botId}`} target="_blank" rel="noopener noreferrer">{translateText("打开 Discord")}</a></Button></div>
+              )}
+              {showTelegramLoginSlot && !discordLoginStatus?.enabled && (
                 <div className="auth-telegram-slot space-y-3">
                   <div className="relative flex items-center justify-center">
                     <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
-                    <span className="relative bg-card px-3 text-xs text-muted-foreground">或</span>
+                    <span className="relative bg-card px-3 text-xs text-muted-foreground">{translateText("或")}</span>
                   </div>
                   <div className="min-h-[132px] rounded-lg border border-border/50 bg-muted/20 p-3 transition-colors">
                     <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
-                      <Send className="h-4 w-4 text-primary" />
-                      Telegram 快捷登录
-                    </div>
+                      <Send className="h-4 w-4 text-primary" />{translateText("Telegram 快捷登录")}</div>
                     <div className="space-y-2">
                       <Button
                         type="button"
@@ -1038,35 +1073,25 @@ export default function Login() {
                       >
                         {isMobileTelegramWaiting ? (
                           <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            等待 Telegram 确认
-                          </>
+                            <Loader2 className="h-4 w-4 animate-spin" />{translateText("等待 Telegram 确认")}</>
                         ) : (
                           <>
-                            <Send className="h-4 w-4" />
-                            打开 Telegram 登录
-                          </>
+                            <Send className="h-4 w-4" />{translateText("打开 Telegram 登录")}</>
                         )}
                       </Button>
                       {mobileTelegramLogin ? (
                         <div className="space-y-2">
-                          <p className="text-center text-xs leading-5 text-muted-foreground">
-                            请在 Telegram 中确认登录。
-                          </p>
+                          <p className="text-center text-xs leading-5 text-muted-foreground">{translateText("请在 Telegram 中确认登录。")}</p>
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
                             className="w-full text-xs"
                             onClick={() => setMobileTelegramLogin(null)}
-                          >
-                            取消本次登录
-                          </Button>
+                          >{translateText("取消本次登录")}</Button>
                         </div>
                       ) : (
-                        <p className="text-center text-xs leading-5 text-muted-foreground">
-                          已绑定账户可用，点击后再连接后端校验。
-                        </p>
+                        <p className="text-center text-xs leading-5 text-muted-foreground">{translateText("已绑定账户可用，点击后再连接后端校验。")}</p>
                       )}
                     </div>
                   </div>
@@ -1085,28 +1110,25 @@ export default function Login() {
                     setCaptchaAnswer("");
                   }}
                   className="text-sm text-muted-foreground hover:text-primary transition-colors"
-                >
-                  没有账号？点击注册
-                </button>
+                >{translateText("没有账号？点击注册")}</button>
               </div>
             </form>
           ) : (
             <form onSubmit={handleRegister} className="space-y-4">
+              <GoogleLoginButton disabled={isPending} />
               {mobileAuth.isNative && !hasMobilePanelUrl && (
                 <button
                   type="button"
                   onClick={() => setShowPanelSettings(true)}
                   className="w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-sm text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
-                >
-                  未添加服务器地址，请点击右上角设置按钮添加
-                </button>
+                >{translateText("未添加服务器地址，请点击右上角设置按钮添加")}</button>
               )}
               <div className="space-y-2">
-                <Label htmlFor="reg-username">用户名</Label>
+                <Label htmlFor="reg-username">{translateText("用户名")}</Label>
                 <Input
                   id="reg-username"
                   type="text"
-                  placeholder="请输入邮箱作为用户名"
+                  placeholder={translateText("请输入邮箱作为用户名")}
                   value={username}
                   onChange={(e) => {
                     setUsername(e.target.value);
@@ -1118,11 +1140,11 @@ export default function Login() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="reg-name">昵称（选填）</Label>
+                <Label htmlFor="reg-name">{translateText("昵称（选填）")}</Label>
                 <Input
                   id="reg-name"
                   type="text"
-                  placeholder="显示名称"
+                  placeholder={translateText("显示名称")}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   maxLength={DISPLAY_NAME_MAX_LENGTH}
@@ -1131,12 +1153,12 @@ export default function Login() {
               </div>
               {emailConfig?.verifyRegistration && (
                 <div className="space-y-2">
-                  <Label htmlFor="reg-email">邮箱</Label>
+                  <Label htmlFor="reg-email">{translateText("邮箱")}</Label>
                   <div className="flex gap-2">
                     <Input
                       id="reg-email"
                       type="email"
-                      placeholder="用于接收验证码"
+                      placeholder={translateText("用于接收验证码")}
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       disabled={isPending}
@@ -1147,13 +1169,13 @@ export default function Login() {
                       disabled={!hasMobilePanelUrl || !email.trim() || sendEmailCodeMutation.isPending}
                       onClick={() => sendEmailCodeMutation.mutate({ email: email.trim() })}
                     >
-                      {sendEmailCodeMutation.isPending ? "发送中" : "发送验证码"}
+                      {sendEmailCodeMutation.isPending ? translateText("发送中") : translateText("发送验证码")}
                     </Button>
                   </div>
                   <Input
                     type="text"
                     inputMode="numeric"
-                    placeholder="请输入邮箱验证码"
+                    placeholder={translateText("请输入邮箱验证码")}
                     value={emailCode}
                     onChange={(e) => setEmailCode(e.target.value)}
                     disabled={isPending}
@@ -1161,12 +1183,12 @@ export default function Login() {
                 </div>
               )}
               <div className="space-y-2">
-                <Label htmlFor="reg-password">密码</Label>
+                <Label htmlFor="reg-password">{translateText("密码")}</Label>
                 <div className="relative">
                   <Input
                     id="reg-password"
                     type={showPassword ? "text" : "password"}
-                    placeholder="至少6个字符"
+                    placeholder={translateText("至少6个字符")}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     autoComplete="new-password"
@@ -1184,11 +1206,11 @@ export default function Login() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="reg-confirm">确认密码</Label>
+                <Label htmlFor="reg-confirm">{translateText("确认密码")}</Label>
                 <Input
                   id="reg-confirm"
                   type="password"
-                  placeholder="再次输入密码"
+                  placeholder={translateText("再次输入密码")}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   autoComplete="new-password"
@@ -1217,14 +1239,10 @@ export default function Login() {
               >
                 {registerMutation.isPending ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    注册中...
-                  </>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("注册中...")}</>
                 ) : (
                   <>
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    注册
-                  </>
+                    <UserPlus className="mr-2 h-4 w-4" />{translateText("注册")}</>
                 )}
               </Button>
 
@@ -1233,14 +1251,10 @@ export default function Login() {
                   type="button"
                   onClick={() => { setMode("login"); setCaptchaAnswer(""); }}
                   className="text-sm text-muted-foreground hover:text-primary transition-colors"
-                >
-                  已有账号？返回登录
-                </button>
+                >{translateText("已有账号？返回登录")}</button>
               </div>
 
-              <p className="text-xs text-muted-foreground text-center">
-                注册后需要管理员授权才能使用转发功能
-              </p>
+              <p className="text-xs text-muted-foreground text-center">{translateText("注册后需要管理员授权才能使用转发功能")}</p>
             </form>
           )}
           </motion.div>
@@ -1253,10 +1267,10 @@ export default function Login() {
       {mobileAuth.isNative && (
         <Dialog open={showPanelSettings} onOpenChange={setShowPanelSettings}>
           <DialogContent className="w-[calc(100vw-2rem)] max-w-sm">
-            <DialogTitle>面板地址</DialogTitle>
-            <DialogDescription>APP 将连接这个面板地址。</DialogDescription>
+            <DialogTitle>{translateText("面板地址")}</DialogTitle>
+            <DialogDescription>{translateText("APP 将连接这个面板地址。")}</DialogDescription>
             <div className="space-y-2">
-              <Label htmlFor="mobile-panel-url">服务器地址</Label>
+              <Label htmlFor="mobile-panel-url">{translateText("服务器地址")}</Label>
               <Input
                 id="mobile-panel-url"
                 type="url"
@@ -1268,12 +1282,8 @@ export default function Login() {
               />
             </div>
             <DialogFooter className="gap-2">
-              <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowPanelSettings(false)}>
-                取消
-              </Button>
-              <Button className="w-full sm:w-auto" onClick={savePanelUrl}>
-                保存
-              </Button>
+              <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowPanelSettings(false)}>{translateText("取消")}</Button>
+              <Button className="w-full sm:w-auto" onClick={savePanelUrl}>{translateText("保存")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1286,23 +1296,21 @@ export default function Login() {
         }}
       >
         <DialogContent className="w-[calc(100vw-2rem)] max-w-sm">
-          <DialogTitle>双重验证</DialogTitle>
-          <DialogDescription>
-            请输入 2FA 软件中当前显示的动态验证码。
-          </DialogDescription>
+          <DialogTitle>{translateText("双重验证")}</DialogTitle>
+          <DialogDescription>{translateText("请输入 2FA 软件中当前显示的动态验证码。")}</DialogDescription>
           <form onSubmit={handleVerifyTwoFactorLogin} className="space-y-4">
             <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-sm">
               <p className="font-medium">{twoFactorChallenge?.username}</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="two-factor-code">动态验证码</Label>
+              <Label htmlFor="two-factor-code">{translateText("动态验证码")}</Label>
               <Input
                 id="two-factor-code"
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
                 maxLength={6}
-                placeholder="请输入 6 位验证码"
+                placeholder={translateText("请输入 6 位验证码")}
                 value={twoFactorCode}
                 onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
                 autoComplete="one-time-code"
@@ -1311,20 +1319,14 @@ export default function Login() {
               />
             </div>
             <DialogFooter className="gap-2">
-              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={cancelTwoFactorLogin} disabled={isTwoFactorPending}>
-                返回
-              </Button>
+              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={cancelTwoFactorLogin} disabled={isTwoFactorPending}>{translateText("返回")}</Button>
               <Button type="submit" className="w-full sm:w-auto" disabled={isTwoFactorPending || twoFactorCode.length < 6}>
                 {isTwoFactorPending ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    验证中...
-                  </>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("验证中...")}</>
                 ) : (
                   <>
-                    <LogIn className="mr-2 h-4 w-4" />
-                    验证并登录
-                  </>
+                    <LogIn className="mr-2 h-4 w-4" />{translateText("验证并登录")}</>
                 )}
               </Button>
             </DialogFooter>

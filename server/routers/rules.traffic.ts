@@ -5,6 +5,8 @@ import { lookupAddressGeo } from "../hostGeo";
 import { requireRuleAccess } from "./helpers";
 import { appendPanelLog } from "../_core/panelLogger";
 import { ruleTrafficQueryCache as trafficQueryCache } from "../ruleLatencyQueryCache";
+import { getRuleLimitPolicies, reconcileRuleLimits, resetRuleQuotaCounters } from "../ruleLimits";
+import { assertRuleWritable, isAdminManagedRule } from "../../shared/ruleLimits";
 
 const TRAFFIC_RETENTION_HOURS = 24 * 3;
 
@@ -42,6 +44,7 @@ export const trafficRulesRouter = router({
         }
         const visibleRules = await db.getForwardRules(ctx.user.role === "admin" ? input.userId : ctx.user.id);
         const visibleRuleIds = new Set<number>((visibleRules || [])
+          .filter((rule: any) => ctx.user.role === "admin" || requestedRuleIds.length > 0 || !isAdminManagedRule(rule))
           .map((rule: any) => Number(rule.id || 0))
           .filter((id: number): id is number => Number.isInteger(id) && id > 0));
         targetRuleIds = requestedRuleIds.length > 0
@@ -50,13 +53,24 @@ export const trafficRulesRouter = router({
       }
       targetRuleIds = Array.from(new Set(targetRuleIds)).sort((a, b) => a - b);
       if (targetRuleIds.length === 0) throw new Error("没有可重置的规则流量");
+      if (ctx.user.role !== "admin") {
+        const targetRules = await Promise.all(targetRuleIds.map(id => db.getForwardRuleById(id)));
+        const policies = await getRuleLimitPolicies(targetRules.filter(Boolean).map(rule => Number(rule!.forwardGroupRuleId || rule!.id)));
+        for (const rule of [...targetRules.filter(Boolean), ...policies]) assertRuleWritable(ctx.user, rule);
+        if (policies.some((rule: any) => Number(rule.trafficLimit) > 0)) throw new Error("有单条规则流量额度时，仅管理员可重置流量");
+      }
       const rules = await Promise.all(targetRuleIds.slice(0, 20).map((ruleId) => db.getForwardRuleById(ruleId).catch(() => null)));
       const omitted = Math.max(0, targetRuleIds.length - rules.filter(Boolean).length);
       appendPanelLog(
         "info",
         `[RuleTraffic] reset scope=${input.scope} count=${targetRuleIds.length} rules=${rules.filter(Boolean).map(ruleResetLogItem).join(" | ") || "-"}${omitted > 0 ? ` omitted=${omitted}` : ""}`,
       );
-      const result = await db.resetRuleTrafficStats(targetRuleIds);
+      const result = await db.withDatabaseTransaction(async () => {
+        const reset = await db.resetRuleTrafficStats(targetRuleIds);
+        if (ctx.user.role === "admin") await resetRuleQuotaCounters(targetRuleIds);
+        return reset;
+      });
+      await reconcileRuleLimits(targetRuleIds, true);
       trafficQueryCache.clear();
       return result;
     }),

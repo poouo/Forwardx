@@ -152,6 +152,8 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       );
 
       const app = express();
+      await runtime.executeRaw('UPDATE "forward_rules" SET "trafficLimit" = 100000 WHERE "id" = 100');
+      await runtime.executeRaw('UPDATE "forward_rules" SET "trafficLimit" = 90 WHERE "id" = 700');
       app.use(express.json());
       app.use((req, _res, next) => {
         const authorization = String(req.headers.authorization || "");
@@ -176,6 +178,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       assert.deepEqual(await trafficRows(100), [
         { hostId: 1, bytesIn: 100, bytesOut: 200, connections: 1 },
       ]);
+      assert.deepEqual(await runtime.queryRaw('SELECT "quotaUsedIn", "quotaUsedOut" FROM "forward_rules" WHERE "id" = 100'), [{ quotaUsedIn: 100, quotaUsedOut: 200 }]);
 
       let injectedFailures = 0;
       runtime.requireSqlite().function("agent_traffic_fail_once", () => {
@@ -212,6 +215,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
         (await runtime.queryRaw('SELECT COUNT(*) AS "count" FROM "traffic_stats" WHERE "ruleId" = ? AND "bytesIn" = ? AND "bytesOut" = ?', [100, 2, 3]))[0].count,
         1,
       );
+      assert.deepEqual(await runtime.queryRaw('SELECT "quotaUsedIn", "quotaUsedOut" FROM "forward_rules" WHERE "id" = 100'), [{ quotaUsedIn: 107, quotaUsedOut: 210 }]);
 
       await runtime.executeRaw('ALTER TABLE "tunnel_exit_nodes" RENAME TO "tunnel_exit_nodes_unavailable"');
       const topologyFailure = await postTraffic(baseUrl, 21, "topology-rollback", 300, 11, 13);
@@ -231,6 +235,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       assert.equal(ordinaryFirst.body.success, true);
       assert.equal(ordinarySecond.status, 200);
       assert.equal(ordinarySecond.body.success, true);
+      assert.deepEqual(await runtime.queryRaw('SELECT "quotaUsedIn", "quotaUsedOut", "ruleLimitReason" FROM "forward_rules" WHERE "id" = 700'), [{ quotaUsedIn: 42, quotaUsedOut: 50, ruleLimitReason: "traffic_limit" }]);
 
       for (const request of [
         [10, "forwardx-primary", 200],

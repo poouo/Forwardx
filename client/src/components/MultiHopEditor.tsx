@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -58,8 +59,8 @@ interface MultiHopEditorProps {
   onRelayModeChange?: (mode: TunnelRelayMode) => void;
 }
 
-const missingTunnelEntryIpTip = "请先配置内网IP";
-const missingIpv6Tip = "该主机暂无IPv6";
+const missingTunnelEntryIpTip = translateText("请先配置内网IP");
+const missingIpv6Tip = translateText("该主机暂无IPv6");
 const ROLE_COLORS: Record<HopRole, string> = {
   entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
   mid: "border-amber-500/40 bg-amber-500/10 text-amber-600",
@@ -274,20 +275,20 @@ export default function MultiHopEditor({
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-sm font-medium">{headerLabel}</span>
           {hops.length > 0 && (
-            <span className="text-xs text-muted-foreground">{hops.length} / {maxHops} 台主机</span>
+            <span className="text-xs text-muted-foreground">{hops.length} / {maxHops}{translateText(" 台主机")}</span>
           )}
         </div>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <Select value="" onValueChange={addHop} disabled={reachedMaxHops}>
           <SelectTrigger className="h-8 min-w-0 flex-1 text-sm sm:max-w-sm">
-            <SelectValue placeholder={reachedMaxHops ? `最多 ${maxHops} 级` : "添加主机到链路..."} />
+            <SelectValue placeholder={reachedMaxHops ? translateText("最多 {0} 级", [maxHops]) : translateText("添加主机到链路...")} />
           </SelectTrigger>
           <SelectContent>
             {reachedMaxHops ? (
-              <div className="px-2 py-4 text-center text-xs text-muted-foreground">最多支持 {maxHops} 级隧道</div>
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("最多支持 ")}{maxHops}{translateText(" 级隧道")}</div>
             ) : availableHosts.length === 0 && (
-              <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("已全部添加")}</div>
             )}
             {availableHosts.map((host) => (
               <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
@@ -297,52 +298,46 @@ export default function MultiHopEditor({
           </SelectContent>
         </Select>
         {!headerLabel && hops.length > 0 && (
-          <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{hops.length} / {maxHops} 台主机</span>
+          <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{hops.length} / {maxHops}{translateText(" 台主机")}</span>
         )}
         {showRelayMode && (
           <div className="flex min-w-0 items-center gap-2 sm:ml-auto">
-            <span className="shrink-0 text-xs text-muted-foreground">中转模式</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{translateText("中转模式")}</span>
             <div className={`${segmentedControlClassName} grid min-w-0 flex-1 grid-cols-2 gap-1 sm:w-52 sm:flex-none`}>
               <button
                 type="button"
                 aria-pressed={relayMode === "chain"}
                 className={segmentedOptionClassName(relayMode === "chain", false, "h-7 px-2 text-xs")}
                 onClick={() => onRelayModeChange?.("chain")}
-              >
-                链路中转
-              </button>
+              >{translateText("链路中转")}</button>
               <button
                 type="button"
                 aria-pressed={relayMode === "failover"}
                 className={segmentedOptionClassName(relayMode === "failover", false, "h-7 px-2 text-xs")}
                 onClick={() => onRelayModeChange?.("failover")}
-              >
-                故障转移
-              </button>
+              >{translateText("故障转移")}</button>
             </div>
           </div>
         )}
       </div>
 
       {hops.length === 0 ? (
-        <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
-          从上方选择主机来创建链路
-        </div>
+        <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">{translateText("从上方选择主机来创建链路")}</div>
       ) : (
         <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-            <span className="font-medium text-foreground/70">开关说明</span>
-            <span>内网：使用该主机内网 IP</span>
-            <span>IPv6：使用该主机 IPv6</span>
-            <span>两者互斥，未配置时不可开启</span>
+            <span className="font-medium text-foreground/70">{translateText("开关说明")}</span>
+            <span>{translateText("内网：使用该主机内网 IP")}</span>
+            <span>{translateText("IPv6：使用该主机 IPv6")}</span>
+            <span>{translateText("两者互斥，未配置时不可开启")}</span>
           </div>
           <div className="hidden grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_84px] items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid">
-            <span className="col-span-2">{relayMode === "failover" ? "优先级" : "顺序"}</span>
-            <span>主机</span>
-            <span className="text-center">内网</span>
+            <span className="col-span-2">{relayMode === "failover" ? translateText("优先级") : translateText("顺序")}</span>
+            <span>{translateText("主机")}</span>
+            <span className="text-center">{translateText("内网")}</span>
             <span className="text-center">IPv6</span>
-            <span className="text-center">角色</span>
-            <span className="text-right">操作</span>
+            <span className="text-center">{translateText("角色")}</span>
+            <span className="text-right">{translateText("操作")}</span>
           </div>
           <SortableReorderContext sortable={hopSortable} strategy="vertical" restrictToList>
           {hops.map((hop, idx) => {
@@ -358,13 +353,13 @@ export default function MultiHopEditor({
             const isFixedExit = fixedExitIds.has(hop.hostId);
             const showTunnelEntryIpSwitch = !isFirst && !isFixedExit;
             const showIpv6Switch = !isFirst && !isFixedExit;
-            const tunnelEntryTip = hasTunnelEntryIp ? "使用内网IP / IX地址" : missingTunnelEntryIpTip;
+            const tunnelEntryTip = hasTunnelEntryIp ? translateText("使用内网IP / IX地址") : missingTunnelEntryIpTip;
             const tunnelEntrySwitch = (
               <Switch
                 checked={useTunnelEntryIp}
                 disabled={!hasTunnelEntryIp}
                 onCheckedChange={(checked) => updateUseTunnelEntryIp(idx, !!checked)}
-                aria-label={`为${hop.hostName}使用内网IP`}
+                aria-label={translateText("为{0}使用内网IP", [hop.hostName])}
               />
             );
             const ipv6Switch = (
@@ -372,7 +367,7 @@ export default function MultiHopEditor({
                 checked={useIpv6}
                 disabled={!hasIpv6}
                 onCheckedChange={(checked) => updateUseIpv6(idx, !!checked)}
-                aria-label={`为${hop.hostName}使用IPv6转发`}
+                aria-label={translateText("为{0}使用IPv6转发", [hop.hostName])}
               />
             );
             return (
@@ -389,7 +384,7 @@ export default function MultiHopEditor({
                 {isFixedExit || hopSortable.disabled ? (
                   <span
                     className="inline-flex h-6 w-6 shrink-0 cursor-not-allowed items-center justify-center text-muted-foreground/40"
-                    title={isFixedExit ? "固定出口不可排序" : "至少需要两台可排序主机"}
+                    title={isFixedExit ? translateText("固定出口不可排序") : translateText("至少需要两台可排序主机")}
                   >
                     <GripVertical className="h-4 w-4" />
                   </span>
@@ -433,7 +428,7 @@ export default function MultiHopEditor({
                             {ipv6Switch}
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>{hasIpv6 ? "使用IPv6转发" : missingIpv6Tip}</TooltipContent>
+                        <TooltipContent>{hasIpv6 ? translateText("使用IPv6转发") : missingIpv6Tip}</TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
                   ) : (
@@ -442,7 +437,7 @@ export default function MultiHopEditor({
                 </div>
 
                 <Badge variant="outline" className={`flex h-6 min-w-[44px] shrink-0 justify-center whitespace-nowrap px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
-                  {ROLE_LABELS[role]}
+                  {translateText(ROLE_LABELS[role])}
                 </Badge>
 
                 <div className="flex h-7 w-[84px] shrink-0 items-center justify-end gap-0.5">
@@ -452,7 +447,7 @@ export default function MultiHopEditor({
                   className="h-6 w-6 shrink-0"
                   disabled={idx === 0 || isFixedExit}
                   onClick={() => moveHop(idx, idx - 1)}
-                  title="上移"
+                  title={translateText("上移")}
                 >
                   <ArrowDown className="h-3 w-3 rotate-180" />
                 </Button>
@@ -462,7 +457,7 @@ export default function MultiHopEditor({
                   className="h-6 w-6 shrink-0"
                   disabled={idx === hops.length - 1 || isFixedExit}
                   onClick={() => moveHop(idx, idx + 1)}
-                  title="下移"
+                  title={translateText("下移")}
                 >
                   <ArrowDown className="h-3 w-3" />
                 </Button>
@@ -472,7 +467,7 @@ export default function MultiHopEditor({
                   className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
                   disabled={isFixedExit}
                   onClick={() => removeHop(idx)}
-                  title="移除"
+                  title={translateText("移除")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

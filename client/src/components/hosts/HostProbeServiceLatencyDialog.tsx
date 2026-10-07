@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
@@ -115,11 +116,11 @@ function ChartTooltip({ active, payload, label, services, allServices }: any) {
               </span>
               <span className="text-right">
                 <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
-                  {raw?.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+                  {raw?.isTimeout ? translateText("超时") : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
                 </span>
                 {Number(raw?.probeCount) > 1 && Number(raw?.probeSuccesses) < Number(raw?.probeCount) ? (
                   <span className="block text-[10px] font-normal text-muted-foreground">
-                    丢包 {Number(raw.probeCount) - Number(raw.probeSuccesses)}/{Number(raw.probeCount)}
+                    {service.method === "ping" ? translateText("Ping 丢包") : translateText("连接失败")} {Number(raw.probeCount) - Number(raw.probeSuccesses)}/{Number(raw.probeCount)}
                   </span>
                 ) : null}
               </span>
@@ -306,8 +307,8 @@ export default function HostProbeServiceLatencyDialog({
         <DialogHeader>
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle>服务延迟图表</DialogTitle>
-              <DialogDescription>{host?.name ? `${host.name} 最近 ${latencyTimeRangeLabel(timeRangeHours)} 服务探测延迟` : `最近 ${latencyTimeRangeLabel(timeRangeHours)} 服务探测延迟`}</DialogDescription>
+              <DialogTitle>{translateText("服务延迟图表")}</DialogTitle>
+              <DialogDescription>{host?.name ? translateText("{0} 最近 {1} 服务探测延迟", [host.name, latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 服务探测延迟", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
               <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
@@ -349,16 +350,14 @@ export default function HostProbeServiceLatencyDialog({
               onClick={() => setSelectedServiceIds(new Set())}
               disabled={selectedServiceIds.size === 0}
             >
-              <X className="h-3.5 w-3.5" />
-              清除
-            </Button>
+              <X className="h-3.5 w-3.5" />{translateText("清除")}</Button>
           </div>
         )}
         <div className="h-[44svh] min-h-[220px] w-full sm:h-80">
           {isLoading ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在加载图表</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载图表")}</div>
           ) : chart.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无服务延迟数据</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无服务延迟数据")}</div>
           ) : (
             <ResponsiveContainer key={chartAnimationKey} width="100%" height="100%">
               <LineChart data={chart} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
@@ -398,10 +397,13 @@ export default function HostProbeServiceLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <LatencyStabilityStats stats={stats} sampleLabel="探测次数" />
+        <LatencyStabilityStats stats={stats} sampleLabel={translateText("探测次数")}
+          failureLabel={visibleServices.length > 0 && visibleServices.every((service) => service.method === "ping")
+            ? translateText("Ping 丢包率") : visibleServices.length > 0 && visibleServices.every((service) => service.method !== "ping")
+              ? translateText("TCP 连接失败率") : translateText("探测失败率")} />
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{translateText("关闭")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

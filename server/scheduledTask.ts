@@ -1,3 +1,5 @@
+import { seamlessActivity, seamlessBackgroundPaused } from "./seamlessMigrationState";
+
 type ScheduledTaskLogger = Pick<typeof console, "warn" | "error">;
 
 export function createNonOverlappingScheduledTask(
@@ -19,7 +21,7 @@ export function createNonOverlappingScheduledTask(
   let lastSkipLogAt = Number.NEGATIVE_INFINITY;
 
   return async () => {
-    if (options.shouldRun && !options.shouldRun()) return false;
+    if (seamlessBackgroundPaused() || (options.shouldRun && !options.shouldRun())) return false;
     if (running) {
       const skippedAt = now();
       if (skippedAt - lastSkipLogAt >= skipLogIntervalMs) {
@@ -32,7 +34,7 @@ export function createNonOverlappingScheduledTask(
     running = true;
     const startedAt = now();
     try {
-      await task();
+      await seamlessActivity(task);
     } catch (error) {
       logger.error(`[Scheduler] ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import {
   closestCenter,
   DndContext,
@@ -386,8 +387,8 @@ export function SortableDragHandle({
     <button
       ref={ref as Ref<HTMLButtonElement>}
       type="button"
-      aria-label="拖动排序"
-      title={busy ? "正在保存排序" : disabled ? "至少需要两个项目才能排序" : "拖动排序"}
+      aria-label={translateText("拖动排序")}
+      title={busy ? translateText("正在保存排序") : disabled ? translateText("至少需要两个项目才能排序") : translateText("拖动排序")}
       disabled={disabled}
       {...props}
       className={cn(

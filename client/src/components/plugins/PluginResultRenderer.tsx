@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@/lib/utils";
 import type { PluginResultFieldDefinition, PluginResultSchemaDefinition } from "@shared/pluginTypes";
 import { Clipboard, ExternalLink, Eye, EyeOff } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 function valueAtPath(value: unknown, path?: string) {
   if (!path) return value;
@@ -22,9 +24,9 @@ function displayValue(value: unknown, field: PluginResultFieldDefinition) {
   if (value === undefined || value === null || value === "") return "-";
   if (field.type === "datetime") {
     const date = new Date(value as any);
-    if (!Number.isNaN(date.getTime())) return date.toLocaleString();
+    if (!Number.isNaN(date.getTime())) return date.toLocaleString(getFormatLocale());
   }
-  if (typeof value === "boolean") return value ? field.trueLabel || "是" : field.falseLabel || "否";
+  if (typeof value === "boolean") return value ? field.trueLabel || translateText("是") : field.falseLabel || translateText("否");
   if (typeof value === "object") {
     try {
       return JSON.stringify(value);
@@ -69,7 +71,7 @@ export function PluginResultRenderer({
 
   const copy = async (value: unknown, field: PluginResultFieldDefinition) => {
     await navigator.clipboard.writeText(displayValue(value, field));
-    toast.success("已复制");
+    toast.success(translateText("已复制"));
   };
 
   const renderValue = (value: unknown, field: PluginResultFieldDefinition, revealKey: string) => {
@@ -92,19 +94,19 @@ export function PluginResultRenderer({
             variant="ghost"
             size="sm"
             className="h-7 w-7 shrink-0 p-0"
-            title={isRevealed ? "隐藏" : "显示"}
+            title={isRevealed ? translateText("隐藏") : translateText("显示")}
             onClick={() => setRevealed((items) => isRevealed ? items.filter((item) => item !== revealKey) : [...items, revealKey])}
           >
             {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
           </Button>
         )}
         {field.copyable && (!secret || isRevealed) && (
-          <Button type="button" variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title="复制" onClick={() => copy(value, field)}>
+          <Button type="button" variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title={translateText("复制")} onClick={() => copy(value, field)}>
             <Clipboard className="h-3.5 w-3.5" />
           </Button>
         )}
         {url && (!secret || isRevealed) && (
-          <Button asChild variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title="打开">
+          <Button asChild variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title={translateText("打开")}>
             <a href={url} target="_blank" rel="noreferrer"><ExternalLink className="h-3.5 w-3.5" /></a>
           </Button>
         )}
@@ -131,7 +133,7 @@ export function PluginResultRenderer({
                 ))}
               </TableRow>
             ))}
-            {!rows.length && <TableRow><TableCell colSpan={schema.fields.length} className="h-20 text-center text-muted-foreground">{schema.emptyText || "暂无数据"}</TableCell></TableRow>}
+            {!rows.length && <TableRow><TableCell colSpan={schema.fields.length} className="h-20 text-center text-muted-foreground">{schema.emptyText || translateText("暂无数据")}</TableCell></TableRow>}
           </TableBody>
         </Table>
       </div>

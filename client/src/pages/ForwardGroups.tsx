@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
@@ -72,7 +73,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import {
   Area,
   AreaChart,
@@ -195,11 +196,11 @@ function normalizeGroupMode(mode: unknown): GroupMode {
 
 function groupModeDisplayLabel(mode: unknown) {
   const normalized = normalizeGroupMode(mode);
-  if (normalized === "port") return "端口转发";
-  if (normalized === "chain") return "转发链";
-  if (normalized === "entry") return "入口组";
-  if (normalized === "exit") return "出口组";
-  return "转发组";
+  if (normalized === "port") return translateText("端口转发");
+  if (normalized === "chain") return translateText("转发链");
+  if (normalized === "entry") return translateText("入口组");
+  if (normalized === "exit") return translateText("出口组");
+  return translateText("转发组");
 }
 
 function isCollectionMode(mode: GroupMode) {
@@ -282,7 +283,7 @@ function forwardGroupRecordValueForHost(host: any, recordType: GroupForm["record
 
 function forwardGroupRecordRequirement(recordType: GroupForm["recordType"]) {
   if (recordType === "AAAA") return "IPv6";
-  if (recordType === "CNAME") return "入口域名或 DDNS 域名";
+  if (recordType === "CNAME") return translateText("入口域名或 DDNS 域名");
   return "IPv4";
 }
 
@@ -408,17 +409,17 @@ function normalizeChainConnectHostsForHosts(
 }
 
 function chainRoleLabel(index: number, total: number, hasExternalEntry = false) {
-  if (hasExternalEntry) return index === total - 1 ? "出口" : "中转";
-  if (index === 0) return "入口";
-  if (index === total - 1) return "出口";
-  return "中转";
+  if (hasExternalEntry) return index === total - 1 ? translateText("出口") : translateText("中转");
+  if (index === 0) return translateText("入口");
+  if (index === total - 1) return translateText("出口");
+  return translateText("中转");
 }
 
 function entryGroupDisplayText(group: any, groupsByMode: Record<GroupMode, any[]>) {
   const entryGroupId = Number(group?.entryGroupId || 0);
   if (!entryGroupId) return "";
   const entryGroup = groupsByMode.entry.find((item: any) => Number(item.id) === entryGroupId);
-  if (!entryGroup) return `入口组 #${entryGroupId}`;
+  if (!entryGroup) return translateText("入口组 #{0}", [entryGroupId]);
   return String(entryGroup.domain || entryGroup.name || `入口组 #${entryGroupId}`).trim();
 }
 
@@ -564,6 +565,10 @@ function ForwardGroupLatencyDialog({
     { groupId, hours: 24 },
     { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
   );
+  const { data: counterStatistics } = trpc.forwardGroups.probeStatistics.useQuery(
+    { groupId, hours: timeRangeHours },
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+  );
   const cachedData = groupLatencySeriesCache.get(groupId);
   const rawSeriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
@@ -601,8 +606,8 @@ function ForwardGroupLatencyDialog({
     ]) as GroupLatencyPoint[];
   }, [peakCutEnabled, rawChartData]);
   const stats = useMemo(() => {
-    return getLatencyStabilityStats(chartData);
-  }, [chartData]);
+    return getLatencyStabilityStats(rawChartData, counterStatistics ?? null);
+  }, [rawChartData, counterStatistics]);
   const yMax = useMemo(() => getLatencyYAxisMax(Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.chartLatency), 0), 120), [chartData]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
   const shouldAnimateChart = open && chartData.length > 0 && !groupLatencyAnimatedKeys.has(groupId);
@@ -616,8 +621,8 @@ function ForwardGroupLatencyDialog({
         <DialogHeader>
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle>{"\u8f6c\u53d1\u94fe\u5ef6\u8fdf - "}{groupName}</DialogTitle>
-              <DialogDescription>{`最近 ${latencyTimeRangeLabel(timeRangeHours)} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。`}</DialogDescription>
+              <DialogTitle>{translateText("转发链延迟 - ")}{groupName}</DialogTitle>
+              <DialogDescription>{translateText("最近 {0} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
               <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
@@ -629,10 +634,9 @@ function ForwardGroupLatencyDialog({
         <div className="h-[42svh] min-h-[220px] rounded-lg border border-border/60 bg-muted/20 p-2 sm:h-[260px] sm:p-3">
           {(isLoading || waitForFreshSeries) && !seriesData ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在加载延迟数据
-            </div>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText(" 正在加载延迟数据")}</div>
           ) : chartData.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无延迟数据</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无延迟数据")}</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
@@ -653,12 +657,10 @@ function ForwardGroupLatencyDialog({
                       <div className="rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md">
                         <p className="font-medium">{item.fullLabel}</p>
                         <p className={item.isTimeout ? "text-destructive" : "text-foreground"}>
-                          {item.isTimeout ? "\u8d85\u65f6/\u4e0d\u53ef\u8fbe" : `${item.latency}ms`}
+                          {item.isTimeout ? translateText("超时/不可达") : `${item.latency}ms`}
                         </p>
                         {Number(item.probeCount) > 1 && Number(item.probeSuccesses) < Number(item.probeCount) ? (
-                          <p className="text-muted-foreground">
-                            丢包 {Number(item.probeCount) - Number(item.probeSuccesses)}/{Number(item.probeCount)}（{(((Number(item.probeCount) - Number(item.probeSuccesses)) / Number(item.probeCount)) * 100).toFixed(0)}%）
-                          </p>
+                          <p className="text-muted-foreground">{translateText("路径健康样本失败 ")}{Number(item.probeCount) - Number(item.probeSuccesses)}/{Number(item.probeCount)}{translateText("（非独立探测次数）")}</p>
                         ) : null}
                       </div>
                     );
@@ -669,10 +671,11 @@ function ForwardGroupLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <LatencyStabilityStats stats={stats} />
+        <LatencyStabilityStats stats={stats} sampleLabel={translateText("逐跳探测次数")} failureLabel={translateText("逐跳探测失败率")} counterStatistics={counterStatistics ?? null}
+          description={translateText("统计各跳实际 TCP/Ping 探测，包含已上报的备用路径，不等于端到端业务丢包；旧 Agent 或未上报的探测不计入。延迟为路径健康样本，稳定性仅供参考。")} />
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{translateText("关闭")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -712,7 +715,7 @@ function ForwardGroupSelfTestDialog({
     onError: (e) => {
       setOptimisticTesting(false);
       manualTestRef.current = false;
-      toast.error(e.message || "测试失败");
+      toast.error(e.message || translateText("测试失败"));
     },
   });
   const status = latest?.status as string | undefined;
@@ -822,7 +825,7 @@ function ForwardGroupSelfTestDialog({
     if (lastFailureToastKey.current !== key) {
       lastFailureToastKey.current = key;
       manualTestRef.current = false;
-      toast.error("\u8f6c\u53d1\u94fe\u81ea\u6d4b\u5931\u8d25", { description: message, duration: 12000 });
+      toast.error(translateText("转发链自测失败"), { description: message, duration: 12000 });
     }
   }, [groupId, hasFreshResult, isFailed, isTesting, latest?.updatedAt, open, parsedMessage.message, status]);
 
@@ -838,9 +841,7 @@ function ForwardGroupSelfTestDialog({
       <DialogContent className={`${probeDialogSizeClass} min-w-0`}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Activity className="h-5 w-5" />
-            延迟探测
-          </DialogTitle>
+            <Activity className="h-5 w-5" />{translateText("延迟探测")}</DialogTitle>
           <DialogDescription>{groupName}</DialogDescription>
         </DialogHeader>
 
@@ -867,7 +868,7 @@ function ForwardGroupSelfTestDialog({
             className="w-full min-w-0 gap-2 sm:w-auto sm:min-w-[112px]"
           >
             {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            {isTesting ? "探测中..." : "链路测试"}
+            {isTesting ? translateText("探测中...") : translateText("链路测试")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -954,7 +955,8 @@ export function ForwardGroupsContent({
   const groups = (fullGroupQuery.data || [...pageGroups, ...relatedPageGroups]) as any[];
   const isLoading = groupPageQuery.isLoading;
   const telegramSettingsLoaded = settings !== undefined;
-  const telegramReady = telegramSettingsLoaded && !!settings?.telegram?.enabled && !!settings?.telegram?.configured;
+  const notificationConfig = settings?.notificationChannel === "discord" ? settings.discord : settings?.telegram;
+  const telegramReady = telegramSettingsLoaded && !!notificationConfig?.enabled && !!notificationConfig?.configured;
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(settings?.forwardProtocols),
     [settings?.forwardProtocols]
@@ -1028,7 +1030,7 @@ export function ForwardGroupsContent({
   const getGroupConfigState = (group: any) => groupConfigStateById.get(Number(group?.id || 0)) || {
     status: "unavailable" as const,
     available: false,
-    message: "转发组配置不可用。",
+    message: translateText("转发组配置不可用。"),
     source: "config" as const,
     usableHostIds: new Set<number>(),
     usableMemberIds: new Set<number>(),
@@ -1205,9 +1207,9 @@ export function ForwardGroupsContent({
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
-      toast.success(`${currentModeMeta.title}已创建`);
+      toast.success(translateText("{0}已创建", [currentModeMeta.title]));
     },
-    onError: (e) => toast.error(e.message || "创建失败"),
+    onError: (e) => toast.error(e.message || translateText("创建失败")),
   });
 
   const updateMutation = trpc.forwardGroups.update.useMutation({
@@ -1223,7 +1225,7 @@ export function ForwardGroupsContent({
         );
       }
       closeDialog();
-      toast.success(`${currentModeMeta.title}已更新`);
+      toast.success(translateText("{0}已更新", [currentModeMeta.title]));
       await Promise.all([
         utils.forwardGroups.options.invalidate(),
         utils.forwardGroups.listPage.invalidate(),
@@ -1240,7 +1242,7 @@ export function ForwardGroupsContent({
         utils.trafficBilling.storeResources.invalidate(),
       ]);
     },
-    onError: (e) => toast.error(e.message || "更新失败"),
+    onError: (e) => toast.error(e.message || translateText("更新失败")),
   });
 
   const toggleMutation = trpc.forwardGroups.toggle.useMutation({
@@ -1266,9 +1268,9 @@ export function ForwardGroupsContent({
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
       setDeleteGroup(null);
-      toast.success("已删除，引用规则将同步清理");
+      toast.success(translateText("已删除，引用规则将同步清理"));
     },
-    onError: (e) => toast.error(e.message || "删除失败"),
+    onError: (e) => toast.error(e.message || translateText("删除失败")),
   });
 
   const syncMutation = trpc.forwardGroups.sync.useMutation({
@@ -1276,22 +1278,22 @@ export function ForwardGroupsContent({
       utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
-      toast.success("已同步链路成员规则");
+      toast.success(translateText("已同步链路成员规则"));
     },
-    onError: (e) => toast.error(e.message || "同步失败"),
+    onError: (e) => toast.error(e.message || translateText("同步失败")),
   });
 
   const runFailoverMutation = trpc.forwardGroups.runFailover.useMutation({
     onSuccess: () => {
       utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
-      toast.success("已执行一次故障转移检查");
+      toast.success(translateText("已执行一次故障转移检查"));
     },
-    onError: (e) => toast.error(e.message || "执行失败"),
+    onError: (e) => toast.error(e.message || translateText("执行失败")),
   });
 
   const reorderGroupsMutation = trpc.forwardGroups.reorderGroups.useMutation({
-    onError: (e) => toast.error(e.message || "排序保存失败"),
+    onError: (e) => toast.error(e.message || translateText("排序保存失败")),
   });
   const groupReorderPending = reorderGroupsMutation.isPending;
   const groupSortable = useSortableReorder({
@@ -1330,19 +1332,19 @@ export function ForwardGroupsContent({
   const addMember = (id: number) => {
     if (!id) return;
     if (form.groupMode === "port" && form.members.length >= 1) {
-      toast.error("端口转发只能选择 1 台所属主机");
+      toast.error(translateText("端口转发只能选择 1 台所属主机"));
       return;
     }
     if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= MAX_FORWARD_GROUP_MEMBERS) {
       toast.error(form.groupMode === "chain"
-        ? `转发链最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`
-        : `入口组/出口组最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+        ? translateText("转发链最多支持 {0} 台主机", [MAX_FORWARD_GROUP_MEMBERS])
+        : translateText("入口组/出口组最多支持 {0} 台主机", [MAX_FORWARD_GROUP_MEMBERS]));
       return;
     }
     const effectiveType = effectiveGroupType;
     const key = memberKey(effectiveType, id);
     if (form.members.some((m) => m.key === key)) {
-      toast.error("成员已存在");
+      toast.error(translateText("成员已存在"));
       return;
     }
     setForm({
@@ -1388,7 +1390,7 @@ export function ForwardGroupsContent({
         const host = hostById.get(Number(member.hostId || 0));
         const privateAddr = hostPrivateAddress(host);
         if (checked && !privateAddr) {
-          toast.error("该主机未配置隧道内网 IP");
+          toast.error(translateText("该主机未配置隧道内网 IP"));
           return member;
         }
         return { ...member, connectHost: checked ? privateAddr : null };
@@ -1404,7 +1406,7 @@ export function ForwardGroupsContent({
         const host = hostById.get(Number(member.hostId || 0));
         const ipv6Addr = hostIpv6Address(host);
         if (checked && !ipv6Addr) {
-          toast.error("该主机暂无IPv6");
+          toast.error(translateText("该主机暂无IPv6"));
           return member;
         }
         return { ...member, connectHost: checked ? ipv6Addr : null };
@@ -1489,27 +1491,27 @@ export function ForwardGroupsContent({
     const isExitGroup = form.groupMode === "exit";
     const supportsChinaHealth = isFailoverMode || isEntryGroup;
     const supportsSwitchNotify = isFailoverMode || isEntryGroup;
-    if (!form.name.trim()) return toast.error(isPortMode ? "请填写端口转发名称" : isChainGroup ? "请填写转发链名称" : "请填写组名称");
+    if (!form.name.trim()) return toast.error(isPortMode ? translateText("请填写端口转发名称") : isChainGroup ? translateText("请填写转发链名称") : translateText("请填写组名称"));
     if (isPortMode) {
-      if (form.members.length !== 1) return toast.error("端口转发需要选择 1 台所属主机");
+      if (form.members.length !== 1) return toast.error(translateText("端口转发需要选择 1 台所属主机"));
     } else if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
       if (form.members.length < minChainMembers || form.members.length > MAX_FORWARD_GROUP_MEMBERS) {
         return toast.error(form.entryGroupId
-          ? `转发链需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
-          : `转发链需要配置 2-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+          ? translateText("转发链需要配置 1-{0} 台主机", [MAX_FORWARD_GROUP_MEMBERS])
+          : translateText("转发链需要配置 2-{0} 台主机", [MAX_FORWARD_GROUP_MEMBERS]));
       }
     } else if (isEntryGroup || isExitGroup) {
       if (form.members.length < 1 || form.members.length > MAX_FORWARD_GROUP_MEMBERS) {
         return toast.error(isEntryGroup
-          ? `入口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`
-          : `出口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+          ? translateText("入口组需要配置 1-{0} 台主机", [MAX_FORWARD_GROUP_MEMBERS])
+          : translateText("出口组需要配置 1-{0} 台主机", [MAX_FORWARD_GROUP_MEMBERS]));
       }
     } else if (form.members.length === 0) {
-      return toast.error("请至少添加一个成员");
+      return toast.error(translateText("请至少添加一个成员"));
     }
     if ((isFailoverMode || isEntryGroup) && !form.domain.trim()) {
-      return toast.error(isEntryGroup ? "入口组需要指定入口域名" : "请填写 DDNS 域名");
+      return toast.error(isEntryGroup ? translateText("入口组需要指定入口域名") : translateText("请填写 DDNS 域名"));
     }
     if (isFailoverMode || isEntryGroup) {
       const missingRecordMembers = form.members
@@ -1525,34 +1527,34 @@ export function ForwardGroupsContent({
         })
         .map((member) => memberLabel(member));
       if (missingRecordMembers.length > 0) {
-        return toast.error(`${form.recordType} 记录需要成员配置${forwardGroupRecordRequirement(form.recordType)}：${missingRecordMembers.slice(0, 5).join("、")}`);
+        return toast.error(translateText("{0} 记录需要成员配置{1}：{2}", [form.recordType, forwardGroupRecordRequirement(form.recordType), missingRecordMembers.slice(0, 5).join("、")]));
       }
     }
     const failoverSeconds = Number(form.failoverSeconds);
     const recoverSeconds = Number(form.recoverSeconds);
     if (!Number.isInteger(failoverSeconds) || failoverSeconds < 10 || failoverSeconds > 3600) {
-      return toast.error("故障转移时间需为 10-3600 秒的整数");
+      return toast.error(translateText("故障转移时间需为 10-3600 秒的整数"));
     }
     if (!Number.isInteger(recoverSeconds) || recoverSeconds < 10 || recoverSeconds > 3600) {
-      return toast.error("恢复观察时间需为 10-3600 秒的整数");
+      return toast.error(translateText("恢复观察时间需为 10-3600 秒的整数"));
     }
     const trafficMultiplierValue = Number(form.trafficMultiplier);
     if ((isPortMode || isChainGroup || isFailoverMode) && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
-      return toast.error("流量倍率必须在 0.01 - 50 之间");
+      return toast.error(translateText("流量倍率必须在 0.01 - 50 之间"));
     }
     const rateLimitMbps = Number(form.rateLimitMbps);
     if ((isPortMode || isChainGroup || isFailoverMode) && (!Number.isInteger(rateLimitMbps) || rateLimitMbps < 0 || rateLimitMbps > 1_000_000)) {
-      return toast.error("限速必须为 0 - 1000000 之间的整数 Mbps");
+      return toast.error(translateText("限速必须为 0 - 1000000 之间的整数 Mbps"));
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     const runtimeConfigSupported = isPortMode || isChainGroup || isFailoverMode;
     const runtimeTcpOptionsSupported = runtimeConfigSupported && form.protocol !== "udp";
     const chinaHealthTarget = normalizeChinaHealthTargetInput(form.chinaHealthCheckTarget);
     if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
-      return toast.error("入口健康度检测目标格式不正确");
+      return toast.error(translateText("入口健康度检测目标格式不正确"));
     }
     if (supportsSwitchNotify && form.telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
-      return toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+      return toast.error(translateText("请先在系统设置中配置并启用所选通知渠道"));
     }
     const payload = {
       ...form,
@@ -1607,10 +1609,10 @@ export function ForwardGroupsContent({
         checked={enabled}
         disabled={!groupId}
         onCheckedChangeAsync={(checked) => toggleMutation.mutateAsync({ id: groupId, isEnabled: checked })}
-        onToggleSuccess={(checked) => toast.success(`${resourceLabel}已${checked ? "开启" : "关闭"}`)}
-        onToggleError={(error) => toast.error(error instanceof Error ? error.message : `切换${resourceLabel}状态失败`)}
+        onToggleSuccess={(checked) => toast.success(translateText("{0}已{1}", [resourceLabel, checked ? "开启" : "关闭"]))}
+        onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换{0}状态失败", [resourceLabel]))}
         className="scale-75"
-        title={enabled ? "关闭后该资源及关联规则将停止下发和转发" : "开启后将恢复此前由该资源受控关闭的规则"}
+        title={enabled ? translateText("关闭后该资源及关联规则将停止下发和转发") : translateText("开启后将恢复此前由该资源受控关闭的规则")}
         aria-label={`${enabled ? "停用" : "启用"}${group?.name || "链路资源"}`}
       />
     );
@@ -1618,17 +1620,17 @@ export function ForwardGroupsContent({
 
   const groupStatusBadge = (group: any) => {
     const configState = getGroupConfigState(group);
-    if (configState.status === "disabled") return <Badge variant="outline">停用</Badge>;
-    if (configState.status === "available") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">可用</Badge>;
-    if (configState.status === "degraded") return <Badge className="border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300">部分可用</Badge>;
-    if (configState.status === "pending") return <Badge variant="secondary">等待检测</Badge>;
-    return <Badge variant="destructive">不可用</Badge>;
+    if (configState.status === "disabled") return <Badge variant="outline">{translateText("停用")}</Badge>;
+    if (configState.status === "available") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">{translateText("可用")}</Badge>;
+    if (configState.status === "degraded") return <Badge className="border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300">{translateText("部分可用")}</Badge>;
+    if (configState.status === "pending") return <Badge variant="secondary">{translateText("等待检测")}</Badge>;
+    return <Badge variant="destructive">{translateText("不可用")}</Badge>;
   };
 
   const memberLabel = (member: any) => {
-    if (member.memberType === "host") return hostById.get(Number(member.hostId))?.name || `主机 #${member.hostId}`;
+    if (member.memberType === "host") return hostById.get(Number(member.hostId))?.name || translateText("主机 #{0}", [member.hostId]);
     const tunnel = tunnelById.get(Number(member.tunnelId));
-    return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : `隧道 #${member.tunnelId}`;
+    return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : translateText("隧道 #{0}", [member.tunnelId]);
   };
 
   const memberHealthTitle = (group: any, member: any) => {
@@ -1660,25 +1662,25 @@ export function ForwardGroupsContent({
     return (
       <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{FORWARD_TYPE_LABELS[group.forwardType as ForwardType] || group.forwardType || "iptables"}</Badge>
-        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">倍率 {formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
+        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{translateText("倍率 ")}{formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
       </div>
     );
   };
 
   const groupMemberTitle = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
-    if (mode === "port") return "所属主机";
-    if (mode === "chain") return "链路顺序";
-    if (mode === "entry") return "入口主机";
-    if (mode === "exit") return "出口主机";
-    return "成员优先级";
+    if (mode === "port") return translateText("所属主机");
+    if (mode === "chain") return translateText("链路顺序");
+    if (mode === "entry") return translateText("入口主机");
+    if (mode === "exit") return translateText("出口主机");
+    return translateText("成员优先级");
   };
 
   const groupStatusMessage = (group: any) => {
     const templateRuleCount = Number(group.templateRuleCount || 0);
     const availabilityMessage = getGroupConfigState(group).message;
     return templateRuleCount > 0
-      ? `${availabilityMessage}；已被 ${templateRuleCount} 条转发规则引用`
+      ? translateText("{0}；已被 {1} 条转发规则引用", [availabilityMessage, templateRuleCount])
       : availabilityMessage;
   };
 
@@ -1690,23 +1692,23 @@ export function ForwardGroupsContent({
 
   const groupDdnsText = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
-    if (mode === "port" || mode === "chain" || mode === "exit") return "不使用";
-    return group.domain || "未配置";
+    if (mode === "port" || mode === "chain" || mode === "exit") return translateText("不使用");
+    return group.domain || translateText("未配置");
   };
 
   const chainEntryText = (group: any) => {
     const entryGroupText = entryGroupDisplayText(group, groupsByMode);
     if (entryGroupText) return entryGroupText;
-    return group.members?.[0]?.entryAddress || "第一台主机";
+    return group.members?.[0]?.entryAddress || translateText("第一台主机");
   };
 
   const memberConnectLabel = (member: any) => {
     const connectHost = String(member.connectHost || "").trim();
     if (!connectHost || member.memberType !== "host") return "";
     const host = hostById.get(Number(member.hostId || 0));
-    if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return "内网";
+    if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return translateText("内网");
     if (hostIpv6Address(host) && sameAddress(connectHost, hostIpv6Address(host))) return "IPv6";
-    return "指定地址";
+    return translateText("指定地址");
   };
 
   const memberDecoratedLabel = (group: any, member: any, index: number) => {
@@ -1720,7 +1722,7 @@ export function ForwardGroupsContent({
 
   const renderTableMembersSummary = (group: any) => {
     const members = Array.isArray(group.members) ? group.members : [];
-    if (members.length === 0) return <span className="text-xs text-muted-foreground">暂无成员</span>;
+    if (members.length === 0) return <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>;
     const visibleMembers = members.slice(0, 2);
     const hiddenCount = Math.max(0, members.length - visibleMembers.length);
     return (
@@ -1762,7 +1764,7 @@ export function ForwardGroupsContent({
         variant="ghost"
         size="icon"
         className="h-8 w-8"
-        title="查看延迟"
+        title={translateText("查看延迟")}
         onClick={() => setLatencyGroup({ id: Number(group.id), name: group.name })}
       >
         <Activity className="h-3.5 w-3.5" />
@@ -1771,7 +1773,7 @@ export function ForwardGroupsContent({
         variant="ghost"
         size="icon"
         className="h-8 w-8"
-        title="链路自测"
+        title={translateText("链路自测")}
         onClick={() => setTestGroup({ id: Number(group.id), name: group.name })}
       >
         <Stethoscope className="h-3.5 w-3.5" />
@@ -1807,49 +1809,49 @@ export function ForwardGroupsContent({
     paginationItemName: string;
   }> = {
     port: {
-      title: "端口转发",
-      description: "管理可复用的单主机端口转发。",
-      addButtonText: "添加端口转发",
-      loadingLabel: "正在加载端口转发",
-      emptyTitle: "暂无端口转发",
-      emptyDescription: "创建后可在转发规则中直接选择使用",
-      paginationItemName: "条端口转发",
+      title: translateText("端口转发"),
+      description: translateText("管理可复用的单主机端口转发。"),
+      addButtonText: translateText("添加端口转发"),
+      loadingLabel: translateText("正在加载端口转发"),
+      emptyTitle: translateText("暂无端口转发"),
+      emptyDescription: translateText("创建后可在转发规则中直接选择使用"),
+      paginationItemName: translateText("条端口转发"),
     },
     failover: {
-      title: "转发组",
-      description: "管理多入口故障转移与负载分配。",
-      addButtonText: "添加转发组",
-      loadingLabel: "正在加载转发组",
-      emptyTitle: "暂无转发组",
-      emptyDescription: "创建后可在转发规则中使用",
-      paginationItemName: "个转发组",
+      title: translateText("转发组"),
+      description: translateText("管理多入口故障转移与负载分配。"),
+      addButtonText: translateText("添加转发组"),
+      loadingLabel: translateText("正在加载转发组"),
+      emptyTitle: translateText("暂无转发组"),
+      emptyDescription: translateText("创建后可在转发规则中使用"),
+      paginationItemName: translateText("个转发组"),
     },
     chain: {
-      title: "转发链",
-      description: "按顺序连接入口、中转和出口主机。",
-      addButtonText: "添加转发链",
-      loadingLabel: "正在加载转发链",
-      emptyTitle: "暂无转发链",
-      emptyDescription: "创建后可在转发规则中使用",
-      paginationItemName: "条转发链",
+      title: translateText("转发链"),
+      description: translateText("按顺序连接入口、中转和出口主机。"),
+      addButtonText: translateText("添加转发链"),
+      loadingLabel: translateText("正在加载转发链"),
+      emptyTitle: translateText("暂无转发链"),
+      emptyDescription: translateText("创建后可在转发规则中使用"),
+      paginationItemName: translateText("条转发链"),
     },
     entry: {
-      title: "入口组",
-      description: "管理共享入口域名的多台主机。",
-      addButtonText: "添加入口组",
-      loadingLabel: "正在加载入口组",
-      emptyTitle: "暂无入口组",
-      emptyDescription: "创建后可供隧道和转发链复用",
-      paginationItemName: "个入口组",
+      title: translateText("入口组"),
+      description: translateText("管理共享入口域名的多台主机。"),
+      addButtonText: translateText("添加入口组"),
+      loadingLabel: translateText("正在加载入口组"),
+      emptyTitle: translateText("暂无入口组"),
+      emptyDescription: translateText("创建后可供隧道和转发链复用"),
+      paginationItemName: translateText("个入口组"),
     },
     exit: {
-      title: "出口组",
-      description: "管理隧道可复用的出口主机。",
-      addButtonText: "添加出口组",
-      loadingLabel: "正在加载出口组",
-      emptyTitle: "暂无出口组",
-      emptyDescription: "创建后可作为隧道出口使用",
-      paginationItemName: "个出口组",
+      title: translateText("出口组"),
+      description: translateText("管理隧道可复用的出口主机。"),
+      addButtonText: translateText("添加出口组"),
+      loadingLabel: translateText("正在加载出口组"),
+      emptyTitle: translateText("暂无出口组"),
+      emptyDescription: translateText("创建后可作为隧道出口使用"),
+      paginationItemName: translateText("个出口组"),
     },
   };
   const currentModeMeta = modeMeta[activeGroupMode];
@@ -1860,7 +1862,7 @@ export function ForwardGroupsContent({
   const emptyTitle = currentModeMeta.emptyTitle;
   const emptyDescription = currentModeMeta.emptyDescription;
   const paginationItemName = currentModeMeta.paginationItemName;
-  const dialogTitle = editingId ? `编辑${currentModeMeta.title}` : `添加${currentModeMeta.title}`;
+  const dialogTitle = editingId ? translateText("编辑{0}", [currentModeMeta.title]) : translateText("添加{0}", [currentModeMeta.title]);
   const contentTransitionKey = `${activeGroupMode}-${normalizedSearchQuery || "all"}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
@@ -1876,7 +1878,7 @@ export function ForwardGroupsContent({
             {pageDescription}
           </p>
         </div>
-        {!hideHeaderActions && <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
+        {!hideHeaderActions && <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-current" />
             <AnimatedStatValue
@@ -1888,7 +1890,7 @@ export function ForwardGroupsContent({
           </Badge>
           {canManualCheck && <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
             {runFailoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {activeGroupMode === "entry" ? "同步" : "检查"}
+            {activeGroupMode === "entry" ? translateText("同步") : translateText("检查")}
           </Button>}
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
@@ -1976,19 +1978,19 @@ export function ForwardGroupsContent({
                           </span>
                         </span>
                       )) : (
-                        <span className="text-xs text-muted-foreground">暂无成员</span>
+                        <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>
                       )}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "所属主机" : normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
-                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</div>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -2074,19 +2076,19 @@ export function ForwardGroupsContent({
                           </span>
                         </span>
                       )) : (
-                        <span className="text-xs text-muted-foreground">暂无成员</span>
+                        <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>
                       )}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "所属主机" : normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
-                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</div>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -2121,13 +2123,13 @@ export function ForwardGroupsContent({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[44px] px-2" aria-label="排序" />
-                    <TableHead>状态</TableHead>
-                    <TableHead>名称</TableHead>
-                    <TableHead>成员/链路</TableHead>
-                    <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? "所属主机" : activeGroupMode === "exit" ? "出口" : activeGroupMode === "entry" ? "DDNS" : "入口"}</TableHead>
-                    <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : isCollectionMode(activeGroupMode) ? "用途" : "引用规则"}</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead className="w-[44px] px-2" aria-label={translateText("排序")} />
+                    <TableHead>{translateText("状态")}</TableHead>
+                    <TableHead>{translateText("名称")}</TableHead>
+                    <TableHead>{translateText("成员/链路")}</TableHead>
+                    <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? translateText("所属主机") : activeGroupMode === "exit" ? translateText("出口") : activeGroupMode === "entry" ? "DDNS" : translateText("入口")}</TableHead>
+                    <TableHead className="hidden md:table-cell">{isChainMode ? translateText("链路延迟") : isCollectionMode(activeGroupMode) ? translateText("用途") : translateText("引用规则")}</TableHead>
+                    <TableHead className="text-right">{translateText("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <SortableReorderContext sortable={groupSortable} ids={pagedGroups.map((group: any) => Number(group.id))} strategy="vertical" restrictToList>
@@ -2166,10 +2168,10 @@ export function ForwardGroupsContent({
                         {renderTableMembersSummary(group)}
                       </TableCell>
                       <TableCell className="hidden max-w-[16rem] py-3 md:table-cell">
-                        <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
-                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "转发规则中直接选择" : normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
+                        <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台出口主机", [(group.members || []).length]) : group.domain || translateText("未配置域名")}</div>
+                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("转发规则中直接选择") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("规则使用时监听入口端口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("隧道出口组") : group.lastDdnsValue || translateText("未切换")}</div>
                       </TableCell>
-                      <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
+                      <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
@@ -2230,23 +2232,23 @@ export function ForwardGroupsContent({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             <div className={"grid gap-3 " + (isPortMode ? "sm:grid-cols-2" : isChainMode ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
               <div className="space-y-2">
-                <Label>{isPortMode ? "端口转发名称" : isChainMode ? "转发链名称" : "组名称"}</Label>
+                <Label>{isPortMode ? translateText("端口转发名称") : isChainMode ? translateText("转发链名称") : translateText("组名称")}</Label>
                 <Input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder={isPortMode ? "例如: 洛杉矶-备用入口" : isChainMode ? "例如: 华东-香港转发链" : activeGroupMode === "exit" ? "例如: Web 高可用出口" : "例如: Web 高可用入口"}
+                  placeholder={isPortMode ? translateText("例如: 洛杉矶-备用入口") : isChainMode ? translateText("例如: 华东-香港转发链") : activeGroupMode === "exit" ? translateText("例如: Web 高可用出口") : translateText("例如: Web 高可用入口")}
                 />
               </div>
 
               {isPortMode && (
                 <div className="space-y-2">
-                  <Label>所属主机</Label>
+                  <Label>{translateText("所属主机")}</Label>
                   <Select
                     value={form.members[0]?.hostId ? String(form.members[0].hostId) : ""}
                     onValueChange={(value) => setPortHost(Number(value))}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="选择所属主机">
+                      <SelectValue placeholder={translateText("选择所属主机")}>
                         {form.members[0]?.hostId ? (
                           <HostStatusLabel
                             host={hostById.get(Number(form.members[0].hostId))}
@@ -2264,7 +2266,7 @@ export function ForwardGroupsContent({
                         </SelectItem>
                       ))}
                       {availableMemberOptions.length === 0 && (
-                        <SelectItem value="__empty" disabled>没有可选主机</SelectItem>
+                        <SelectItem value="__empty" disabled>{translateText("没有可选主机")}</SelectItem>
                       )}
                     </SelectContent>
                   </Select>
@@ -2273,7 +2275,7 @@ export function ForwardGroupsContent({
 
               {false && form.groupMode === "failover" && (
                 <div className="space-y-2">
-                  <Label>组类型</Label>
+                  <Label>{translateText("组类型")}</Label>
                   <Select
                     value={form.groupType}
                     onValueChange={(v) => {
@@ -2285,8 +2287,8 @@ export function ForwardGroupsContent({
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="host">主机端口转发组</SelectItem>
-                      <SelectItem value="tunnel">隧道转发组</SelectItem>
+                      <SelectItem value="host">{translateText("主机端口转发组")}</SelectItem>
+                      <SelectItem value="tunnel">{translateText("隧道转发组")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -2294,7 +2296,7 @@ export function ForwardGroupsContent({
 
               {isCollectionMode(form.groupMode) && (
                 <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
-                  <span className="text-sm">启用</span>
+                  <span className="text-sm">{translateText("启用")}</span>
                   <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
                 </label>
               )}
@@ -2302,7 +2304,7 @@ export function ForwardGroupsContent({
 
             {form.groupMode === "exit" && (
               <div className="grid gap-2 rounded-md border border-border/60 bg-muted/15 p-3 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
-                <Label>出口策略</Label>
+                <Label>{translateText("出口策略")}</Label>
                 <div className="space-y-1.5">
                   <Select
                     value={form.exitStrategy}
@@ -2317,10 +2319,10 @@ export function ForwardGroupsContent({
                   </Select>
                   <p className="text-xs text-muted-foreground">
                     {form.exitStrategy === "none"
-                      ? "仅使用顺序第一台已启用主机。"
+                      ? translateText("仅使用顺序第一台已启用主机。")
                       : form.exitStrategy === "fallback"
-                        ? "按顺序优先使用主出口，故障时切换到下一台。"
-                        : "按当前策略为新连接选择已启用的出口主机。"}
+                        ? translateText("按顺序优先使用主出口，故障时切换到下一台。")
+                        : translateText("按当前策略为新连接选择已启用的出口主机。")}
                   </p>
                 </div>
               </div>
@@ -2330,11 +2332,11 @@ export function ForwardGroupsContent({
               <>
                 <div className={"grid gap-3 " + (form.groupMode === "entry" ? "sm:grid-cols-[minmax(0,1fr)_120px_140px]" : "sm:grid-cols-[minmax(0,1fr)_120px]")}>
                   <div className="space-y-2">
-                    <Label>{form.groupMode === "entry" ? "入口域名" : "DDNS 域名"}</Label>
-                    <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="例如 app.example.com" />
+                    <Label>{form.groupMode === "entry" ? translateText("入口域名") : translateText("DDNS 域名")}</Label>
+                    <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder={translateText("例如 app.example.com")} />
                   </div>
                   <div className="space-y-2">
-                    <Label>记录类型</Label>
+                    <Label>{translateText("记录类型")}</Label>
                     <Select value={form.recordType} onValueChange={(v) => setForm({ ...form, recordType: v as GroupForm["recordType"] })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -2346,7 +2348,7 @@ export function ForwardGroupsContent({
                   </div>
                   {form.groupMode === "entry" && (
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
-                      <span className="text-sm">自动解析</span>
+                      <span className="text-sm">{translateText("自动解析")}</span>
                       <Switch checked={form.ddnsAutoResolveEnabled} onCheckedChange={(ddnsAutoResolveEnabled) => setForm({ ...form, ddnsAutoResolveEnabled })} />
                     </label>
                   )}
@@ -2354,23 +2356,23 @@ export function ForwardGroupsContent({
 
                 {false && form.groupMode === "failover" && (
                   <div className="space-y-2">
-                    <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
+                    <p className="text-xs text-muted-foreground">{translateText("单位：秒，范围 10-3600。")}</p>
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,130px)_minmax(0,130px)_minmax(0,1fr)]">
                       <div className="space-y-2">
-                        <Label>故障转移时间</Label>
+                        <Label>{translateText("故障转移时间")}</Label>
                         <Input type="number" min={10} max={3600} value={form.failoverSeconds} onChange={(e) => setForm({ ...form, failoverSeconds: e.target.value })} placeholder="60" />
                       </div>
                       <div className="space-y-2">
-                        <Label>恢复观察时间</Label>
+                        <Label>{translateText("恢复观察时间")}</Label>
                         <Input type="number" min={10} max={3600} value={form.recoverSeconds} onChange={(e) => setForm({ ...form, recoverSeconds: e.target.value })} placeholder="120" />
                       </div>
                       <div className="flex items-end gap-2">
                         <label className="flex h-10 min-w-[128px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                          <span className="whitespace-nowrap text-sm">恢复后切回</span>
+                          <span className="whitespace-nowrap text-sm">{translateText("恢复后切回")}</span>
                           <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
                         </label>
                         <label className="flex h-10 min-w-[92px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                          <span className="whitespace-nowrap text-sm">启用</span>
+                          <span className="whitespace-nowrap text-sm">{translateText("启用")}</span>
                           <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
                         </label>
                       </div>
@@ -2382,27 +2384,27 @@ export function ForwardGroupsContent({
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)]">
                   <div className="space-y-1.5">
                     <Input
-                      aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
+                      aria-label={translateText("入口健康度 TCPing 目标，留空默认 www.189.cn:80")}
                       disabled={!form.chinaHealthCheckEnabled}
                       value={form.chinaHealthCheckTarget}
                       onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                      placeholder="留空默认 www.189.cn:80，IPv6 用 [地址]:端口"
+                      placeholder={translateText("留空默认 www.189.cn:80，IPv6 用 [地址]:端口")}
                     />
-                    <p className="text-xs text-muted-foreground">使用 TCPing 检查成员。IPv6 格式：[地址]:端口。</p>
+                    <p className="text-xs text-muted-foreground">{translateText("使用 TCPing 检查成员。IPv6 格式：[地址]:端口。")}</p>
                   </div>
                   <div className="space-y-2">
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                      <span className="text-sm">入口健康度检测</span>
+                      <span className="text-sm">{translateText("入口健康度检测")}</span>
                       <Switch checked={form.chinaHealthCheckEnabled} onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })} />
                     </label>
                     <label
                       className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
-                      title={telegramReady ? "仅在自动切换时发送 Telegram 告警。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                      title={telegramReady ? translateText("仅在自动切换时通过所选通知渠道发送告警。") : telegramSettingsLoaded ? translateText("请先在系统设置中配置并启用所选通知渠道。") : translateText("正在确认通知渠道配置。")}
                     >
                       <span className="min-w-0">
-                        <span className="block text-sm">切换告警</span>
+                        <span className="block text-sm">{translateText("切换告警")}</span>
                         <span className="block truncate text-[11px] text-muted-foreground">
-                          {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
+                          {telegramReady ? translateText("仅自动切换提醒") : telegramSettingsLoaded ? translateText("需先配置通知渠道") : translateText("正在确认配置")}
                         </span>
                       </span>
                       <Switch
@@ -2410,7 +2412,7 @@ export function ForwardGroupsContent({
                         disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
                         onCheckedChange={(telegramSwitchNotifyEnabled) => {
                           if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
-                            toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+                            toast.error(translateText("请先在系统设置中配置并启用所选通知渠道"));
                             return;
                           }
                           setForm({ ...form, telegramSwitchNotifyEnabled });
@@ -2425,18 +2427,18 @@ export function ForwardGroupsContent({
 
             {form.groupMode === "chain" && (
               <div className="space-y-2">
-                <Label>入口组</Label>
+                <Label>{translateText("入口组")}</Label>
                 <Select
                   value={form.entryGroupId ? String(form.entryGroupId) : "none"}
                   onValueChange={(value) => setForm((prev) => applyEntryGroupToChainForm(prev, value === "none" ? null : Number(value)))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="选择已保存入口组" />
+                    <SelectValue placeholder={translateText("选择已保存入口组")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">不使用入口组</SelectItem>
+                    <SelectItem value="none">{translateText("不使用入口组")}</SelectItem>
                     {usableEntryGroups.length === 0 ? (
-                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用入口组")}</div>
                     ) : usableEntryGroups.map((group: any) => (
                       <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                         <span className="inline-flex min-w-0 flex-col">
@@ -2453,12 +2455,12 @@ export function ForwardGroupsContent({
             {runtimeConfigMode && (
               <div className="space-y-2.5 border-t border-border/60 pt-3">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium">运行配置</p>
-                  <p id="forward-group-rate-limit-help" className="text-xs text-muted-foreground">0 表示不限速</p>
+                  <p className="text-sm font-medium">{translateText("运行配置")}</p>
+                  <p id="forward-group-rate-limit-help" className="text-xs text-muted-foreground">{translateText("0 表示不限速")}</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(132px,160px)_112px] sm:items-end">
                   <div className="space-y-2">
-                    <Label>转发工具</Label>
+                    <Label>{translateText("转发工具")}</Label>
                     <Select
                       value={form.forwardType}
                       disabled={availableForwardTypes.length === 0}
@@ -2476,7 +2478,7 @@ export function ForwardGroupsContent({
                       }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="选择转发工具" />
+                        <SelectValue placeholder={translateText("选择转发工具")} />
                       </SelectTrigger>
                       <SelectContent>
                         {availableForwardTypes.map((type) => (
@@ -2486,7 +2488,7 @@ export function ForwardGroupsContent({
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="forward-group-rate-limit">资源限速</Label>
+                    <Label htmlFor="forward-group-rate-limit">{translateText("资源限速")}</Label>
                     <div className="flex h-10 min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:border-ring focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
                       <Input
                         id="forward-group-rate-limit"
@@ -2505,7 +2507,7 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>流量倍率</Label>
+                    <Label>{translateText("流量倍率")}</Label>
                     <Input
                       className="tabular-nums"
                       type="number"
@@ -2529,12 +2531,12 @@ export function ForwardGroupsContent({
                   onClick={() => setAdvancedSettingsOpen((open) => !open)}
                 >
                   <div className="min-w-0">
-                    <div className="text-sm font-medium">高级设置</div>
+                    <div className="text-sm font-medium">{translateText("高级设置")}</div>
                     <div className="text-xs text-muted-foreground">PROXY Protocol</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge variant={advancedSettingsConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
-                      {advancedSettingsConfigured ? "已配置" : "可选"}
+                      {advancedSettingsConfigured ? translateText("已配置") : translateText("可选")}
                     </Badge>
                     <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${advancedSettingsOpen ? "rotate-90" : ""}`} />
                   </div>
@@ -2558,15 +2560,15 @@ export function ForwardGroupsContent({
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
                         <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                          <span className="text-sm">接收 PROXY</span>
+                          <span className="text-sm">{translateText("接收 PROXY")}</span>
                           <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolReceive} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })} />
                         </label>
                         <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                          <span className="text-sm">发送 PROXY</span>
+                          <span className="text-sm">{translateText("发送 PROXY")}</span>
                           <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolSend} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked })} />
                         </label>
                       </div>
-                      {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。</p>}
+                      {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">{translateText("PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。")}</p>}
                     </div>
 
                   </div>
@@ -2576,7 +2578,7 @@ export function ForwardGroupsContent({
 
             {!isPortMode && (
               <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
-                <Label>{form.groupMode === "chain" ? "链路主机顺序" : form.groupMode === "entry" ? "入口主机" : form.groupMode === "exit" ? "出口主机" : "成员优先级"}</Label>
+                <Label>{form.groupMode === "chain" ? translateText("链路主机顺序") : form.groupMode === "entry" ? translateText("入口主机") : form.groupMode === "exit" ? translateText("出口主机") : translateText("成员优先级")}</Label>
                 {form.groupMode === "chain" ? (
                   <MultiHopEditor
                     hosts={hosts || []}
@@ -2593,7 +2595,7 @@ export function ForwardGroupsContent({
                     <div className="flex justify-end">
                       <Select onValueChange={(v) => addMember(Number(v))}>
                         <SelectTrigger className="w-full sm:w-64">
-                          <SelectValue placeholder={effectiveGroupType === "host" ? "添加主机成员" : "添加隧道成员"} />
+                          <SelectValue placeholder={effectiveGroupType === "host" ? translateText("添加主机成员") : translateText("添加隧道成员")} />
                         </SelectTrigger>
                         <SelectContent>
                           {availableMemberOptions.map((item: any) => (
@@ -2612,27 +2614,27 @@ export function ForwardGroupsContent({
                       {form.members.length > 0 && (
                         <>
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-                            <span className="font-medium text-foreground/70">开关说明</span>
+                            <span className="font-medium text-foreground/70">{translateText("开关说明")}</span>
                             {showExitAddressColumns && (
                               <>
-                                <span>内网：使用该主机内网 IP</span>
-                                <span>IPv6：使用该主机 IPv6</span>
-                                <span>两者互斥，未配置时不可开启</span>
+                                <span>{translateText("内网：使用该主机内网 IP")}</span>
+                                <span>{translateText("IPv6：使用该主机 IPv6")}</span>
+                                <span>{translateText("两者互斥，未配置时不可开启")}</span>
                               </>
                             )}
-                            <span>启用：关闭后该成员不参与当前组</span>
+                            <span>{translateText("启用：关闭后该成员不参与当前组")}</span>
                           </div>
                           <div className={"hidden items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid " + (showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]")}>
-                            <span className="col-span-2">顺序</span>
-                            <span>{effectiveGroupType === "host" ? "主机" : "隧道"}</span>
+                            <span className="col-span-2">{translateText("顺序")}</span>
+                            <span>{effectiveGroupType === "host" ? translateText("主机") : translateText("隧道")}</span>
                             {showExitAddressColumns && (
                               <>
-                                <span className="text-center">内网</span>
+                                <span className="text-center">{translateText("内网")}</span>
                                 <span className="text-center">IPv6</span>
                               </>
                             )}
-                            <span className="text-center">启用</span>
-                            <span className="text-right">操作</span>
+                            <span className="text-center">{translateText("启用")}</span>
+                            <span className="text-right">{translateText("操作")}</span>
                           </div>
                         </>
                       )}
@@ -2672,7 +2674,7 @@ export function ForwardGroupsContent({
                                   checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostPrivateAddress(hostById.get(Number(member.hostId || 0))))}
                                   disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
                                   onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
-                                  aria-label={"为" + memberLabel(member) + "使用内网IP"}
+                                  aria-label={translateText("为") + memberLabel(member) + translateText("使用内网IP")}
                                 />
                               </div>
                               <div className="flex h-7 w-[56px] items-center justify-center">
@@ -2680,7 +2682,7 @@ export function ForwardGroupsContent({
                                   checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostIpv6Address(hostById.get(Number(member.hostId || 0))))}
                                   disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
                                   onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
-                                  aria-label={"为" + memberLabel(member) + "使用IPv6转发"}
+                                  aria-label={translateText("为") + memberLabel(member) + translateText("使用IPv6转发")}
                                 />
                               </div>
                             </>
@@ -2688,7 +2690,7 @@ export function ForwardGroupsContent({
                           <div className="flex h-7 w-[52px] items-center justify-center">
                             <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
                               setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                            }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
+                            }} title={member.isEnabled ? translateText("关闭后该成员不参与转发组切换") : translateText("开启后该成员可参与转发组切换")} />
                           </div>
                           <div className="flex h-7 w-9 items-center justify-end">
                             <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
@@ -2698,7 +2700,7 @@ export function ForwardGroupsContent({
                         </div>
                       ))}
                       {form.members.length === 0 && (
-                        <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">还没有成员</div>
+                        <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">{translateText("还没有成员")}</div>
                       )}
                     </div>
                   </>
@@ -2709,23 +2711,23 @@ export function ForwardGroupsContent({
             {form.groupMode === "failover" && (
               <div className="space-y-3">
                 <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("单位：秒，范围 10-3600。")}</p>
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,130px)_minmax(0,130px)_minmax(0,1fr)]">
                     <div className="space-y-2">
-                      <Label>故障转移时间</Label>
+                      <Label>{translateText("故障转移时间")}</Label>
                       <Input type="number" min={10} max={3600} value={form.failoverSeconds} onChange={(e) => setForm({ ...form, failoverSeconds: e.target.value })} placeholder="60" />
                     </div>
                     <div className="space-y-2">
-                      <Label>恢复观察时间</Label>
+                      <Label>{translateText("恢复观察时间")}</Label>
                       <Input type="number" min={10} max={3600} value={form.recoverSeconds} onChange={(e) => setForm({ ...form, recoverSeconds: e.target.value })} placeholder="120" />
                     </div>
                     <div className="flex items-end gap-2">
                       <label className="flex h-10 min-w-[128px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                        <span className="whitespace-nowrap text-sm">恢复后切回</span>
+                        <span className="whitespace-nowrap text-sm">{translateText("恢复后切回")}</span>
                         <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
                       </label>
                       <label className="flex h-10 min-w-[92px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                        <span className="whitespace-nowrap text-sm">启用</span>
+                        <span className="whitespace-nowrap text-sm">{translateText("启用")}</span>
                         <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
                       </label>
                     </div>
@@ -2735,27 +2737,27 @@ export function ForwardGroupsContent({
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)]">
                   <div className="space-y-1.5">
                     <Input
-                      aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
+                      aria-label={translateText("入口健康度 TCPing 目标，留空默认 www.189.cn:80")}
                       disabled={!form.chinaHealthCheckEnabled}
                       value={form.chinaHealthCheckTarget}
                       onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                      placeholder="留空默认 www.189.cn:80，IPv6 请写 [地址]:端口"
+                      placeholder={translateText("留空默认 www.189.cn:80，IPv6 请写 [地址]:端口")}
                     />
-                    <p className="text-xs text-muted-foreground">使用 TCPing 检查成员。IPv6 格式：[地址]:端口。</p>
+                    <p className="text-xs text-muted-foreground">{translateText("使用 TCPing 检查成员。IPv6 格式：[地址]:端口。")}</p>
                   </div>
                   <div className="space-y-2">
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                      <span className="text-sm">入口健康度检测</span>
+                      <span className="text-sm">{translateText("入口健康度检测")}</span>
                       <Switch checked={form.chinaHealthCheckEnabled} onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })} />
                     </label>
                     <label
                       className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
-                      title={telegramReady ? "仅在自动切换时发送 Telegram 告警。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                      title={telegramReady ? translateText("仅在自动切换时通过所选通知渠道发送告警。") : telegramSettingsLoaded ? translateText("请先在系统设置中配置并启用所选通知渠道。") : translateText("正在确认通知渠道配置。")}
                     >
                       <span className="min-w-0">
-                        <span className="block text-sm">切换告警</span>
+                        <span className="block text-sm">{translateText("切换告警")}</span>
                         <span className="block truncate text-[11px] text-muted-foreground">
-                          {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
+                          {telegramReady ? translateText("仅自动切换提醒") : telegramSettingsLoaded ? translateText("需先配置通知渠道") : translateText("正在确认配置")}
                         </span>
                       </span>
                       <Switch
@@ -2763,7 +2765,7 @@ export function ForwardGroupsContent({
                         disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
                         onCheckedChange={(telegramSwitchNotifyEnabled) => {
                           if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
-                            toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+                            toast.error(translateText("请先在系统设置中配置并启用所选通知渠道"));
                             return;
                           }
                           setForm({ ...form, telegramSwitchNotifyEnabled });
@@ -2776,8 +2778,8 @@ export function ForwardGroupsContent({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={closeDialog}>取消</Button>
-            <Button onClick={handleSubmit} disabled={isPending}>{isPending ? "保存中..." : editingId ? "保存" : "创建"}</Button>
+            <Button variant="outline" onClick={closeDialog}>{translateText("取消")}</Button>
+            <Button onClick={handleSubmit} disabled={isPending}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2803,24 +2805,16 @@ export function ForwardGroupsContent({
       <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "删除端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
-            <DialogDescription>
-              确认删除 "{deleteGroup?.name}"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。
-            </DialogDescription>
+            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? translateText("删除端口转发") : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? translateText("删除转发链") : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? translateText("删除入口组") : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? translateText("删除出口组") : translateText("删除转发组")}</DialogTitle>
+            <DialogDescription>{translateText("确认删除 \"")}{deleteGroup?.name}{translateText("\"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {deleteImpactQuery.isLoading ? (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                正在检查关联转发规则...
-              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("正在检查关联转发规则...")}</div>
             ) : deleteImpactQuery.data?.forwardRuleCount ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
-                <p className="font-medium text-destructive">
-                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  包含 {deleteImpactQuery.data.templateRuleCount || 0} 条用户规则和 {deleteImpactQuery.data.childRuleCount || 0} 条成员运行规则。
-                </p>
+                <p className="font-medium text-destructive">{translateText("当前")}{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? translateText("端口转发") : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? translateText("转发链") : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? translateText("入口组") : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? translateText("出口组") : translateText("转发组")}{translateText("仍关联 ")}{deleteImpactQuery.data.forwardRuleCount}{translateText(" 条转发规则")}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("包含 ")}{deleteImpactQuery.data.templateRuleCount || 0}{translateText(" 条用户规则和 ")}{deleteImpactQuery.data.childRuleCount || 0}{translateText(" 条成员运行规则。")}</p>
                 <div className="mt-2 max-h-44 space-y-1 overflow-auto text-xs text-muted-foreground">
                   {(deleteImpactQuery.data.forwardRules || []).map((rule: any) => (
                     <div key={rule.id} className="rounded border border-border/40 bg-background/60 px-2 py-1">
@@ -2829,24 +2823,22 @@ export function ForwardGroupsContent({
                     </div>
                   ))}
                   {deleteImpactQuery.data.forwardRuleCount > (deleteImpactQuery.data.forwardRules || []).length && (
-                    <p>还有 {deleteImpactQuery.data.forwardRuleCount - (deleteImpactQuery.data.forwardRules || []).length} 条未显示。</p>
+                    <p>{translateText("还有 ")}{deleteImpactQuery.data.forwardRuleCount - (deleteImpactQuery.data.forwardRules || []).length}{translateText(" 条未显示。")}</p>
                   )}
                 </div>
               </div>
             ) : (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                未发现关联转发规则。
-              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("未发现关联转发规则。")}</div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteGroup(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setDeleteGroup(null)}>{translateText("取消")}</Button>
             <Button
               variant="destructive"
               disabled={!deleteGroup || deleteMutation.isPending || deleteImpactQuery.isLoading}
               onClick={() => deleteGroup && deleteMutation.mutate({ id: deleteGroup.id, confirmRules: true })}
             >
-              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteMutation.isPending ? translateText("删除中...") : translateText("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,6 +1,11 @@
 package main
 
 import (
+	"container/list"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,7 +17,15 @@ const (
 	tcpingSteadyReportEvery = 5 * time.Minute
 	tcpingHealthReportEvery = time.Minute
 	tcpingReportStateTTL    = 30 * time.Minute
+	tcpingCounterCapacity   = 32768
+	tcpingCounterMax        = 1000000000
 )
+
+type tcpingProbeCounter struct {
+	key, epoch       string
+	count, successes int
+	seenAt           time.Time
+}
 
 type tcpingReportGateState struct {
 	signature  string
@@ -21,8 +34,10 @@ type tcpingReportGateState struct {
 }
 
 type tcpingReportGate struct {
-	mu     sync.Mutex
-	states map[string]tcpingReportGateState
+	mu           sync.Mutex
+	states       map[string]tcpingReportGateState
+	counters     map[string]*list.Element
+	counterOrder *list.List
 }
 
 type tcpingReportGatePlan struct {
@@ -36,7 +51,81 @@ type tcpingReportGatePlan struct {
 var agentTCPingReportGate = newTCPingReportGate()
 
 func newTCPingReportGate() *tcpingReportGate {
-	return &tcpingReportGate{states: map[string]tcpingReportGateState{}}
+	return &tcpingReportGate{states: map[string]tcpingReportGateState{}, counters: map[string]*list.Element{}, counterOrder: list.New()}
+}
+
+// Called once per completed collection, not once per HTTP retry. Counters
+// survive unacknowledged reports; the panel deduplicates cumulative snapshots.
+// LRU/TTL eviction rotates epochs, so resetting a counter cannot subtract
+// previously recorded attempts or merge two unrelated generations.
+func (gate *tcpingReportGate) countReports(kind string, reports []map[string]any, now time.Time) []map[string]any {
+	output := make([]map[string]any, 0, len(reports))
+	for _, report := range reports {
+		if tcpingReportText(report, "method") == "self" {
+			// A synthetic local hop is health bookkeeping, not a network probe.
+			output = append(output, report)
+			continue
+		}
+		identity, _ := json.Marshal([]string{kind, tcpingReportText(report, "ruleId"), tcpingReportText(report, "tunnelId"),
+			tcpingReportText(report, "groupId"), tcpingReportText(report, "memberId"), tcpingProbeStateKey(kind, report),
+			tcpingReportText(report, "topologyKey"), tcpingReportText(report, "targetIp"), tcpingReportText(report, "targetPort"),
+			tcpingReportText(report, "sourcePort"), tcpingReportText(report, "method"), tcpingReportText(report, "hopIndex"),
+			tcpingReportText(report, "hopCount"), tcpingReportText(report, "seriesKey"), tcpingReportText(report, "probeType")})
+		digest := sha256.Sum256(identity)
+		key := hex.EncodeToString(digest[:])
+		count := tcpingReportInt(report, "probeCount")
+		if count < 1 || count > 1024 {
+			count = 1
+		}
+		successes := count
+		if tcpingReportStatus(report) {
+			successes = 0
+		}
+		if _, ok := report["probeSuccesses"]; ok {
+			successes = tcpingReportInt(report, "probeSuccesses")
+		}
+		if successes < 0 {
+			successes = 0
+		}
+		if successes > count {
+			successes = count
+		}
+		element := gate.counters[key]
+		if element != nil && element.Value.(*tcpingProbeCounter).count > tcpingCounterMax-count {
+			gate.counterOrder.Remove(element)
+			delete(gate.counters, key)
+			element = nil
+		}
+		if element == nil {
+			var random [16]byte
+			if _, err := rand.Read(random[:]); err != nil {
+				// Entropy failure must not prevent forwarding or health reports.
+				output = append(output, report)
+				continue
+			}
+			element = gate.counterOrder.PushBack(&tcpingProbeCounter{key: key, epoch: hex.EncodeToString(random[:])})
+			gate.counters[key] = element
+		}
+		counter := element.Value.(*tcpingProbeCounter)
+		counter.count += count
+		counter.successes += successes
+		counter.seenAt = now
+		gate.counterOrder.MoveToBack(element)
+		clone := make(map[string]any, len(report)+3)
+		for field, value := range report {
+			clone[field] = value
+		}
+		clone["probeCounterEpoch"] = counter.epoch
+		clone["probeTotalCount"] = counter.count
+		clone["probeTotalSuccesses"] = counter.successes
+		output = append(output, clone)
+		for gate.counterOrder.Len() > tcpingCounterCapacity {
+			oldest := gate.counterOrder.Front()
+			delete(gate.counters, oldest.Value.(*tcpingProbeCounter).key)
+			gate.counterOrder.Remove(oldest)
+		}
+	}
+	return output
 }
 
 func tcpingReportText(payload map[string]any, key string) string {
@@ -171,6 +260,16 @@ func (gate *tcpingReportGate) plan(
 	updates := make(map[string]tcpingReportGateState, len(signatures))
 
 	gate.mu.Lock()
+	for oldest := gate.counterOrder.Front(); oldest != nil; oldest = gate.counterOrder.Front() {
+		if now.Sub(oldest.Value.(*tcpingProbeCounter).seenAt) <= tcpingReportStateTTL {
+			break
+		}
+		delete(gate.counters, oldest.Value.(*tcpingProbeCounter).key)
+		gate.counterOrder.Remove(oldest)
+	}
+	results = gate.countReports("rule", results, now)
+	tunnels = gate.countReports("tunnel", tunnels, now)
+	forwardGroups = gate.countReports("forwardGroup", forwardGroups, now)
 	for key, state := range gate.states {
 		if now.Sub(state.lastSeenAt) > tcpingReportStateTTL {
 			delete(gate.states, key)

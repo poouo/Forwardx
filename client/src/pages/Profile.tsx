@@ -1,6 +1,10 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import DashboardLayout from "@/components/DashboardLayout";
+import DiscordAccountCard from "@/components/DiscordAccountCard";
+import GoogleAccountCard from "@/components/GoogleAccountCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,14 +34,14 @@ import {
 } from "lucide-react";
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
 async function copyText(text: string) {
   const copied = await copyTextToClipboard(text);
-  if (copied) toast.success("已复制到剪贴板");
-  else toast.error("复制失败，请长按或手动选中复制");
+  if (copied) toast.success(translateText("已复制到剪贴板"));
+  else toast.error(translateText("复制失败，请长按或手动选中复制"));
 }
 
 function ProfileContent() {
@@ -60,6 +64,7 @@ function ProfileContent() {
   const [mobileUpdateInfo, setMobileUpdateInfo] = useState<MobileAppUpdateResult | null>(null);
 
   const isAdmin = user?.role === "admin";
+  const { data: discordStatus } = trpc.discord.status.useQuery(undefined, { enabled: !!user, refetchOnWindowFocus: true });
 
   const { data: avatarQuota } = trpc.users.avatarQuota.useQuery(undefined, {
     enabled: !!user,
@@ -94,9 +99,9 @@ function ProfileContent() {
     onSuccess: () => {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
-      toast.success("显示名称已更新");
+      toast.success(translateText("显示名称已更新"));
     },
-    onError: (error) => toast.error(error.message || "显示名称更新失败"),
+    onError: (error) => toast.error(error.message || translateText("显示名称更新失败")),
   });
 
   const updateTelegramAnnouncementSubscriptionMutation = trpc.auth.updateProfile.useMutation({
@@ -105,9 +110,9 @@ function ProfileContent() {
         utils.auth.me.invalidate(),
         utils.telegram.status.invalidate(),
       ]);
-      toast.success(variables.telegramAnnouncementSubscribed ? "已开启公告 TG 推送" : "已关闭公告 TG 推送");
+      toast.success(variables.telegramAnnouncementSubscribed ? translateText("已开启公告 TG 推送") : translateText("已关闭公告 TG 推送"));
     },
-    onError: (error) => toast.error(error.message || "公告 TG 推送设置失败"),
+    onError: (error) => toast.error(error.message || translateText("公告 TG 推送设置失败")),
   });
 
   const updateAvatarMutation = trpc.users.updateAvatar.useMutation({
@@ -115,9 +120,9 @@ function ProfileContent() {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
       utils.users.avatarQuota.invalidate();
-      toast.success(data.quota?.unlimited ? "头像已更新" : `头像已更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
+      toast.success(data.quota?.unlimited ? translateText("头像已更新") : translateText("头像已更新，今日剩余 {0} 次", [data.quota?.remaining ?? 0]));
     },
-    onError: (error) => toast.error(error.message || "头像更新失败"),
+    onError: (error) => toast.error(error.message || translateText("头像更新失败")),
   });
 
   const randomAvatarMutation = trpc.users.randomAvatar.useMutation({
@@ -126,19 +131,19 @@ function ProfileContent() {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
       utils.users.avatarQuota.invalidate();
-      toast.success(data.quota?.unlimited ? "头像已随机更新" : `头像已随机更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
+      toast.success(data.quota?.unlimited ? translateText("头像已随机更新") : translateText("头像已随机更新，今日剩余 {0} 次", [data.quota?.remaining ?? 0]));
     },
-    onError: (error) => toast.error(error.message || "随机头像失败"),
+    onError: (error) => toast.error(error.message || translateText("随机头像失败")),
   });
 
   const changePasswordMutation = trpc.auth.changePassword.useMutation({
     onSuccess: () => {
-      toast.success("密码修改成功");
+      toast.success(translateText("密码修改成功"));
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
     },
-    onError: (error) => toast.error(error.message || "密码修改失败"),
+    onError: (error) => toast.error(error.message || translateText("密码修改失败")),
   });
 
   const createTelegramBindMutation = trpc.telegram.createBindCode.useMutation({
@@ -146,9 +151,9 @@ function ProfileContent() {
       setTelegramBind(data);
       setTelegramBindTick(Date.now());
       utils.telegram.status.invalidate();
-      toast.success("Telegram 绑定码已生成");
+      toast.success(translateText("Telegram 绑定码已生成"));
     },
-    onError: (error) => toast.error(error.message || "生成 Telegram 绑定码失败"),
+    onError: (error) => toast.error(error.message || translateText("生成 Telegram 绑定码失败")),
   });
 
   const unbindTelegramMutation = trpc.telegram.unbind.useMutation({
@@ -156,9 +161,9 @@ function ProfileContent() {
       setTelegramBind(null);
       setShowTelegramUnbindConfirm(false);
       utils.telegram.status.invalidate();
-      toast.success("Telegram 已解绑");
+      toast.success(translateText("Telegram 已解绑"));
     },
-    onError: (error) => toast.error(error.message || "解绑 Telegram 失败"),
+    onError: (error) => toast.error(error.message || translateText("解绑 Telegram 失败")),
   });
 
   const beginTwoFactorSetupMutation = trpc.auth.beginTwoFactorSetup.useMutation({
@@ -168,14 +173,14 @@ function ProfileContent() {
       setTwoFactorSetupTick(Date.now());
       setTwoFactorPassword("");
       setTwoFactorCode("");
-      toast.success("双重验证二维码已生成");
+      toast.success(translateText("双重验证二维码已生成"));
     },
-    onError: (error) => toast.error(error.message || "生成双重验证二维码失败"),
+    onError: (error) => toast.error(error.message || translateText("生成双重验证二维码失败")),
   });
 
   const enableTwoFactorMutation = trpc.auth.enableTwoFactor.useMutation({
     onSuccess: () => {
-      toast.success("双重验证已启用");
+      toast.success(translateText("双重验证已启用"));
       setTwoFactorSetup(null);
       setTwoFactorQrCode("");
       setTwoFactorPassword("");
@@ -183,18 +188,18 @@ function ProfileContent() {
       utils.auth.twoFactorStatus.invalidate();
       utils.auth.me.invalidate();
     },
-    onError: (error) => toast.error(error.message || "启用双重验证失败"),
+    onError: (error) => toast.error(error.message || translateText("启用双重验证失败")),
   });
 
   const disableTwoFactorMutation = trpc.auth.disableTwoFactor.useMutation({
     onSuccess: () => {
-      toast.success("双重验证已关闭");
+      toast.success(translateText("双重验证已关闭"));
       setTwoFactorPassword("");
       setTwoFactorCode("");
       utils.auth.twoFactorStatus.invalidate();
       utils.auth.me.invalidate();
     },
-    onError: (error) => toast.error(error.message || "关闭双重验证失败"),
+    onError: (error) => toast.error(error.message || translateText("关闭双重验证失败")),
   });
 
   useEffect(() => {
@@ -213,7 +218,7 @@ function ProfileContent() {
         if (!cancelled) setTwoFactorQrCode(url);
       })
       .catch(() => {
-        if (!cancelled) toast.error("二维码生成失败，请使用备用密钥添加");
+        if (!cancelled) toast.error(translateText("二维码生成失败，请使用备用密钥添加"));
       });
     return () => {
       cancelled = true;
@@ -264,11 +269,11 @@ function ProfileContent() {
 
   const handleSaveAvatar = () => {
     if (!avatarDraft) {
-      toast.error("请选择头像");
+      toast.error(translateText("请选择头像"));
       return;
     }
     if (avatarQuotaExhausted) {
-      toast.error("今日头像修改次数已用完");
+      toast.error(translateText("今日头像修改次数已用完"));
       return;
     }
     updateAvatarMutation.mutate({ avatar: avatarDraft });
@@ -277,15 +282,15 @@ function ProfileContent() {
   const handleSaveDisplayName = () => {
     const nextName = displayNameDraft.trim();
     if (!nextName) {
-      toast.error("显示名称不能为空");
+      toast.error(translateText("显示名称不能为空"));
       return;
     }
     if (nextName.length > DISPLAY_NAME_MAX_LENGTH) {
-      toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
+      toast.error(translateText("显示名称最多 {0} 个字符", [DISPLAY_NAME_MAX_LENGTH]));
       return;
     }
     if (nextName === String(user?.name || user?.username || "")) {
-      toast.info("显示名称没有变化");
+      toast.info(translateText("显示名称没有变化"));
       return;
     }
     updateProfileMutation.mutate({ name: nextName });
@@ -293,15 +298,15 @@ function ProfileContent() {
 
   const handleChangePassword = () => {
     if (!oldPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (newPassword.length < 6) {
-      toast.error("新密码至少6个字符");
+      toast.error(translateText("新密码至少6个字符"));
       return;
     }
     if (newPassword !== confirmPassword) {
-      toast.error("两次输入的新密码不一致");
+      toast.error(translateText("两次输入的新密码不一致"));
       return;
     }
     changePasswordMutation.mutate({ oldPassword, newPassword });
@@ -313,15 +318,15 @@ function ProfileContent() {
       return;
     }
     if (twoFactorSetupExpired) {
-      toast.error("二维码已过期，请重新生成");
+      toast.error(translateText("二维码已过期，请重新生成"));
       return;
     }
     if (!twoFactorPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (twoFactorCode.length < 6) {
-      toast.error("请输入 6 位动态验证码");
+      toast.error(translateText("请输入 6 位动态验证码"));
       return;
     }
     enableTwoFactorMutation.mutate({
@@ -333,11 +338,11 @@ function ProfileContent() {
 
   const handleDisableTwoFactor = () => {
     if (!twoFactorPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (twoFactorCode.length < 6) {
-      toast.error("请输入 6 位动态验证码");
+      toast.error(translateText("请输入 6 位动态验证码"));
       return;
     }
     disableTwoFactorMutation.mutate({ password: twoFactorPassword, code: twoFactorCode });
@@ -345,7 +350,7 @@ function ProfileContent() {
 
   const handleTelegramBind = () => {
     if (telegramStatus?.configured === false) {
-      toast.error("Telegram 机器人尚未配置");
+      toast.error(translateText("Telegram 机器人尚未配置"));
       return;
     }
     createTelegramBindMutation.mutate();
@@ -361,10 +366,10 @@ function ProfileContent() {
       setCheckingMobileUpdate(true);
       const result = await checkMobileAppUpdate({ silent: false });
       setMobileUpdateInfo(result);
-      if (result?.hasUpdate) toast.success(`发现 APP 新版本 v${result.latestVersion.replace(/^v/i, "")}`);
-      else if (result) toast.success(result.hasPackage ? "当前 APP 已是最新版本" : `当前版本暂无 ${result.packageLabel} 更新`);
+      if (result?.hasUpdate) toast.success(translateText("发现 APP 新版本 v{0}", [result.latestVersion.replace(/^v/i, "")]));
+      else if (result) toast.success(result.hasPackage ? translateText("当前 APP 已是最新版本") : translateText("当前版本暂无 {0} 更新", [result.packageLabel]));
     } catch (error: any) {
-      toast.error(error?.message || "APP 更新检查失败");
+      toast.error(error?.message || translateText("APP 更新检查失败"));
     } finally {
       setCheckingMobileUpdate(false);
     }
@@ -374,12 +379,12 @@ function ProfileContent() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">个人资料</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理账号安全、头像和 Telegram。</p>
+          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("个人资料")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{translateText("管理账号安全、头像和 Telegram。")}</p>
         </div>
         <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
           <UserRound className="h-3.5 w-3.5" />
-          {isAdmin ? "管理员" : "用户"}
+          {isAdmin ? translateText("管理员") : translateText("用户")}
         </Badge>
       </div>
 
@@ -388,27 +393,25 @@ function ProfileContent() {
           <CardHeader>
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                <UserRound className="h-4 w-4 text-primary" />
-                头像与账号
-              </CardTitle>
-              <CardDescription>低于 50K 的头像会直接上传，较大的图片会自动压缩。</CardDescription>
+                <UserRound className="h-4 w-4 text-primary" />{translateText("头像与账号")}</CardTitle>
+              <CardDescription>{translateText("低于 50K 的头像会直接上传，较大的图片会自动压缩。")}</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.15fr)_minmax(112px,0.45fr)]"}`}>
               <div className="flex min-w-0 flex-col justify-center">
-                <p className="text-xs text-muted-foreground">账号</p>
+                <p className="text-xs text-muted-foreground">{translateText("账号")}</p>
                 <p className="mt-2 truncate text-base font-medium">{user?.username || "-"}</p>
               </div>
               <div className="min-w-0 space-y-2">
-                <Label htmlFor="profile-display-name" className="text-xs text-muted-foreground">显示名称</Label>
+                <Label htmlFor="profile-display-name" className="text-xs text-muted-foreground">{translateText("显示名称")}</Label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Input
                     id="profile-display-name"
                     value={displayNameDraft}
                     onChange={(e) => setDisplayNameDraft(e.target.value)}
                     maxLength={DISPLAY_NAME_MAX_LENGTH}
-                    placeholder={user?.username || "请输入显示名称"}
+                    placeholder={user?.username || translateText("请输入显示名称")}
                     className="h-9 min-w-0"
                   />
                   <Button
@@ -417,14 +420,14 @@ function ProfileContent() {
                     onClick={handleSaveDisplayName}
                     disabled={updateProfileMutation.isPending}
                   >
-                    {updateProfileMutation.isPending ? "保存中..." : "保存"}
+                    {updateProfileMutation.isPending ? translateText("保存中...") : translateText("保存")}
                   </Button>
                 </div>
               </div>
               {!avatarQuotaUnlimited && (
                 <div className="flex min-w-0 flex-col justify-center">
-                  <p className="text-xs text-muted-foreground">今日剩余</p>
-                  <p className="mt-2 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
+                  <p className="text-xs text-muted-foreground">{translateText("今日剩余")}</p>
+                  <p className="mt-2 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3}{translateText(" 次")}</p>
                 </div>
               )}
             </div>
@@ -449,15 +452,13 @@ function ProfileContent() {
                     onClick={handleSaveAvatar}
                     disabled={avatarBusy || avatarQuotaExhausted}
                   >
-                    {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
+                    {updateAvatarMutation.isPending ? translateText("保存中...") : translateText("保存头像")}
                   </Button>
                 )}
               />
             </div>
             {avatarQuotaExhausted && (
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
-                今日头像修改次数已用完，明天可继续修改。
-              </div>
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">{translateText("今日头像修改次数已用完，明天可继续修改。")}</div>
             )}
           </CardContent>
         </Card>
@@ -465,52 +466,48 @@ function ProfileContent() {
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <KeyRound className="h-4 w-4 text-primary" />
-              登录密码
-            </CardTitle>
-            <CardDescription>修改当前账号的登录密码。</CardDescription>
+              <KeyRound className="h-4 w-4 text-primary" />{translateText("登录密码")}</CardTitle>
+            <CardDescription>{translateText("修改当前账号的登录密码。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="profile-old-password">当前密码</Label>
-              <Input id="profile-old-password" type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="请输入当前密码" />
+              <Label htmlFor="profile-old-password">{translateText("当前密码")}</Label>
+              <Input id="profile-old-password" type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder={translateText("请输入当前密码")} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="profile-new-password">新密码</Label>
-              <Input id="profile-new-password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="至少 6 个字符" />
+              <Label htmlFor="profile-new-password">{translateText("新密码")}</Label>
+              <Input id="profile-new-password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={translateText("至少 6 个字符")} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="profile-confirm-password">确认新密码</Label>
-              <Input id="profile-confirm-password" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="再次输入新密码" />
+              <Label htmlFor="profile-confirm-password">{translateText("确认新密码")}</Label>
+              <Input id="profile-confirm-password" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder={translateText("再次输入新密码")} />
             </div>
             <Button className="w-full" onClick={handleChangePassword} disabled={changePasswordMutation.isPending}>
-              {changePasswordMutation.isPending ? "修改中..." : "修改密码"}
+              {changePasswordMutation.isPending ? translateText("修改中...") : translateText("修改密码")}
             </Button>
           </CardContent>
         </Card>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
+        <GoogleAccountCard />
+        {discordStatus?.selected ? <DiscordAccountCard /> : (
         <Card className="border-border/50 bg-card/70">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                <Send className="h-4 w-4 text-primary" />
-                Telegram 绑定
-              </CardTitle>
-              <CardDescription>绑定后可接收提醒，并支持 Telegram 登录。</CardDescription>
+                <Send className="h-4 w-4 text-primary" />{translateText("Telegram 绑定")}</CardTitle>
+              <CardDescription>{translateText("绑定后可接收提醒，并支持 Telegram 登录。")}</CardDescription>
             </div>
             <Badge variant={telegramStatus?.bound ? "default" : "outline"} className="w-fit">
-              {telegramStatus?.bound ? "已绑定" : "未绑定"}
+              {telegramStatus?.bound ? translateText("已绑定") : translateText("未绑定")}
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
-                <p className="text-sm font-medium">公告 Telegram 推送</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  默认关闭。开启后，新公告仅在管理员选择 TG 推送时发送到已绑定的 Telegram。
-                </p>
+                <p className="text-sm font-medium">{translateText("公告 Telegram 推送")}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("默认关闭。开启后，新公告仅在管理员选择 TG 推送时发送到已绑定的 Telegram。")}</p>
               </div>
               <OptimisticSwitch
                 checked={!!telegramStatus?.announcementSubscribed}
@@ -519,7 +516,7 @@ function ProfileContent() {
               />
             </div>
             {!telegramStatus?.bound && telegramStatus?.configured !== false && (
-              <p className="text-xs text-muted-foreground">绑定 Telegram 后可开启公告推送订阅。</p>
+              <p className="text-xs text-muted-foreground">{translateText("绑定 Telegram 后可开启公告推送订阅。")}</p>
             )}
             {telegramStatus?.bound ? (
               <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:flex-row sm:items-center">
@@ -531,21 +528,21 @@ function ProfileContent() {
                     </p>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">绑定时间</p>
+                    <p className="text-xs text-muted-foreground">{translateText("绑定时间")}</p>
                     <p className="mt-1 truncate font-medium">
-                      {telegramStatus.account?.linkedAt ? new Date(telegramStatus.account.linkedAt).toLocaleString() : "-"}
+                      {telegramStatus.account?.linkedAt ? new Date(telegramStatus.account.linkedAt).toLocaleString(getFormatLocale()) : "-"}
                     </p>
                   </div>
                 </div>
                 <Button variant="destructive" size="sm" className="w-full gap-2 sm:w-auto sm:shrink-0" onClick={() => setShowTelegramUnbindConfirm(true)} disabled={unbindTelegramMutation.isPending}>
                   <Link2Off className="h-4 w-4" />
-                  {unbindTelegramMutation.isPending ? "解绑中..." : "解绑 Telegram"}
+                  {unbindTelegramMutation.isPending ? translateText("解绑中...") : translateText("解绑 Telegram")}
                 </Button>
               </div>
             ) : telegramStatus?.configured === false ? (
               <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>管理员尚未配置 Telegram 机器人。</span>
+                <span>{translateText("管理员尚未配置 Telegram 机器人。")}</span>
               </div>
             ) : telegramBind ? (
               <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_180px]">
@@ -553,9 +550,7 @@ function ProfileContent() {
                   {telegramBotUrl && (
                     <Button variant="outline" asChild className="w-full justify-center gap-2 sm:w-auto">
                       <a href={telegramBotUrl} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="h-4 w-4" />
-                        打开 Telegram 机器人
-                      </a>
+                        <ExternalLink className="h-4 w-4" />{translateText("打开 Telegram 机器人")}</a>
                     </Button>
                   )}
                   <div className="flex flex-col gap-2 rounded-lg border border-border/40 bg-muted/20 p-3 sm:flex-row sm:items-center">
@@ -565,138 +560,133 @@ function ProfileContent() {
                           {telegramBind.code}
                         </code>
                         <Badge variant={telegramBindExpired ? "destructive" : "outline"} className="shrink-0">
-                          {telegramBindExpired ? "已过期" : `${telegramBindRemainingLabel} 后过期`}
+                          {telegramBindExpired ? translateText("已过期") : translateText("{0} 后过期", [telegramBindRemainingLabel])}
                         </Badge>
                       </div>
                       <p className="mt-2 text-xs text-muted-foreground">
-                        {telegramBindExpired ? "绑定码已过期，请重新生成。" : "5 分钟内有效，可复制备用，也可以直接打开 Telegram 完成绑定。"}
+                        {telegramBindExpired ? translateText("绑定码已过期，请重新生成。") : translateText("5 分钟内有效，可复制备用，也可以直接打开 Telegram 完成绑定。")}
                       </p>
                     </div>
-                    <Button variant="outline" size="icon" onClick={() => copyText(telegramBind.code)} title="复制绑定码" disabled={telegramBindExpired}>
+                    <Button variant="outline" size="icon" onClick={() => copyText(telegramBind.code)} title={translateText("复制绑定码")} disabled={telegramBindExpired}>
                       <Copy className="h-4 w-4" />
                     </Button>
                   </div>
                   {telegramBindUrl && !telegramBindExpired && (
                     <Button asChild className="w-full gap-2 sm:w-auto">
                       <a href={telegramBindUrl} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="h-4 w-4" />
-                        打开 Telegram 完成绑定
-                      </a>
+                        <ExternalLink className="h-4 w-4" />{translateText("打开 Telegram 完成绑定")}</a>
                     </Button>
                   )}
                 </div>
                 <Button variant="outline" className="w-full self-end" onClick={handleTelegramBind} disabled={createTelegramBindMutation.isPending}>
-                  {createTelegramBindMutation.isPending ? "生成中..." : telegramBindExpired ? "重新生成绑定码" : "重新生成"}
+                  {createTelegramBindMutation.isPending ? translateText("生成中...") : telegramBindExpired ? translateText("重新生成绑定码") : translateText("重新生成")}
                 </Button>
               </div>
             ) : (
               <Button className="w-full gap-2 sm:w-auto" onClick={handleTelegramBind} disabled={createTelegramBindMutation.isPending}>
                 <Send className="h-4 w-4" />
-                {createTelegramBindMutation.isPending ? "生成中..." : "生成绑定码"}
+                {createTelegramBindMutation.isPending ? translateText("生成中...") : translateText("生成绑定码")}
               </Button>
             )}
           </CardContent>
         </Card>
 
+        )}
         <Card className="border-border/50 bg-card/70">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                <Shield className="h-4 w-4 text-primary" />
-                双因素认证 (2FA)
-              </CardTitle>
-              <CardDescription>使用 2FA 软件生成动态验证码。</CardDescription>
+                <Shield className="h-4 w-4 text-primary" />{translateText("双因素认证 (2FA)")}</CardTitle>
+              <CardDescription>{translateText("使用 2FA 软件生成动态验证码。")}</CardDescription>
             </div>
             <Badge variant={twoFactorStatus?.enabled ? "default" : "outline"} className="w-fit">
-              {twoFactorStatus?.enabled ? "已启用" : "未启用"}
+              {twoFactorStatus?.enabled ? translateText("已启用") : translateText("未启用")}
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
             {!twoFactorStatus?.globalEnabled ? (
               <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>管理员尚未启用双重验证功能。</span>
+                <span>{translateText("管理员尚未启用双重验证功能。")}</span>
               </div>
             ) : twoFactorStatus?.enabled ? (
               <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_220px]">
                 <div className="space-y-3">
                   <div className="flex items-start gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
                     <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                    <span>当前账号已启用双因素认证。</span>
+                    <span>{translateText("当前账号已启用双因素认证。")}</span>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="profile-2fa-disable-password">当前密码</Label>
-                      <Input id="profile-2fa-disable-password" type="password" value={twoFactorPassword} onChange={(e) => setTwoFactorPassword(e.target.value)} placeholder="请输入当前密码" />
+                      <Label htmlFor="profile-2fa-disable-password">{translateText("当前密码")}</Label>
+                      <Input id="profile-2fa-disable-password" type="password" value={twoFactorPassword} onChange={(e) => setTwoFactorPassword(e.target.value)} placeholder={translateText("请输入当前密码")} />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="profile-2fa-disable-code">动态验证码</Label>
-                      <Input id="profile-2fa-disable-code" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位验证码" />
+                      <Label htmlFor="profile-2fa-disable-code">{translateText("动态验证码")}</Label>
+                      <Input id="profile-2fa-disable-code" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder={translateText("6 位验证码")} />
                     </div>
                   </div>
                 </div>
                 <div className="flex items-end">
                   <Button variant="destructive" className="w-full" onClick={handleDisableTwoFactor} disabled={disableTwoFactorMutation.isPending}>
-                    {disableTwoFactorMutation.isPending ? "关闭中..." : "关闭双重验证"}
+                    {disableTwoFactorMutation.isPending ? translateText("关闭中...") : translateText("关闭双重验证")}
                   </Button>
                 </div>
               </div>
             ) : !twoFactorSetup ? (
               <Button className="w-full sm:w-auto" onClick={() => beginTwoFactorSetupMutation.mutate()} disabled={beginTwoFactorSetupMutation.isPending}>
-                {beginTwoFactorSetupMutation.isPending ? "生成中..." : "生成绑定二维码"}
+                {beginTwoFactorSetupMutation.isPending ? translateText("生成中...") : translateText("生成绑定二维码")}
               </Button>
             ) : (
               <div className="grid gap-4 2xl:grid-cols-[220px_minmax(0,1fr)]">
                 <div className="flex flex-col items-center gap-3">
                   <div className={`flex h-48 w-48 items-center justify-center rounded-lg border bg-white p-3 ${twoFactorSetupExpired ? "opacity-45" : ""}`}>
                     {twoFactorQrCode ? (
-                      <img src={twoFactorQrCode} alt="2FA 绑定二维码" className="h-full w-full" />
+                      <img src={twoFactorQrCode} alt={translateText("2FA 绑定二维码")} className="h-full w-full" />
                     ) : (
                       <Loader2 className="h-6 w-6 animate-spin text-slate-500" />
                     )}
                   </div>
                   <div className={`text-xs ${twoFactorSetupExpired ? "text-destructive" : "text-muted-foreground"}`}>
-                    {twoFactorSetupExpired ? "二维码已过期" : `剩余 ${twoFactorSetupRemainingLabel}`}
+                    {twoFactorSetupExpired ? translateText("二维码已过期") : translateText("剩余 {0}", [twoFactorSetupRemainingLabel])}
                   </div>
                 </div>
                 <div className="space-y-3">
                   {twoFactorSetup.otpauthUrl && (
                     <Button variant="outline" asChild className="w-full gap-2">
                       <a href={twoFactorSetup.otpauthUrl}>
-                        <ExternalLink className="h-4 w-4" />
-                        打开 2FA 软件添加
-                      </a>
+                        <ExternalLink className="h-4 w-4" />{translateText("打开 2FA 软件添加")}</a>
                     </Button>
                   )}
                   <div className="space-y-2">
-                    <Label>备用密钥</Label>
+                    <Label>{translateText("备用密钥")}</Label>
                     <div className="flex items-center gap-2">
                       <code className="min-w-0 flex-1 break-all rounded-md border bg-background px-3 py-2 font-mono text-sm">
                         {twoFactorSetup.secret}
                       </code>
-                      <Button variant="outline" size="icon" onClick={() => copyText(twoFactorSetup.secret)} disabled={twoFactorSetupExpired} title="复制备用密钥">
+                      <Button variant="outline" size="icon" onClick={() => copyText(twoFactorSetup.secret)} disabled={twoFactorSetupExpired} title={translateText("复制备用密钥")}>
                         <Copy className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="profile-2fa-enable-password">当前密码</Label>
-                      <Input id="profile-2fa-enable-password" type="password" value={twoFactorPassword} onChange={(e) => setTwoFactorPassword(e.target.value)} placeholder="请输入当前密码" />
+                      <Label htmlFor="profile-2fa-enable-password">{translateText("当前密码")}</Label>
+                      <Input id="profile-2fa-enable-password" type="password" value={twoFactorPassword} onChange={(e) => setTwoFactorPassword(e.target.value)} placeholder={translateText("请输入当前密码")} />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="profile-2fa-enable-code">动态验证码</Label>
-                      <Input id="profile-2fa-enable-code" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位验证码" />
+                      <Label htmlFor="profile-2fa-enable-code">{translateText("动态验证码")}</Label>
+                      <Input id="profile-2fa-enable-code" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder={translateText("6 位验证码")} />
                     </div>
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
                     {twoFactorSetupExpired && (
                       <Button variant="outline" onClick={() => beginTwoFactorSetupMutation.mutate()} disabled={beginTwoFactorSetupMutation.isPending}>
-                        {beginTwoFactorSetupMutation.isPending ? "生成中..." : "重新生成二维码"}
+                        {beginTwoFactorSetupMutation.isPending ? translateText("生成中...") : translateText("重新生成二维码")}
                       </Button>
                     )}
                     <Button onClick={handleEnableTwoFactor} disabled={enableTwoFactorMutation.isPending || twoFactorSetupExpired}>
-                      {enableTwoFactorMutation.isPending ? "启用中..." : "启用双重验证"}
+                      {enableTwoFactorMutation.isPending ? translateText("启用中...") : translateText("启用双重验证")}
                     </Button>
                   </div>
                 </div>
@@ -710,20 +700,19 @@ function ProfileContent() {
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <Download className="h-4 w-4 text-primary" />
-              软件更新
-            </CardTitle>
-            <CardDescription>检查当前 APP 是否有新版本。</CardDescription>
+              <Download className="h-4 w-4 text-primary" />{translateText("软件更新")}</CardTitle>
+            <CardDescription>{translateText("检查当前 APP 是否有新版本。")}{mobileAuth.platform === "ios" && "iOS 提供未签名 IPA，需要自行签名后安装。"}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {mobileUpdateInfo && (
               <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
                 <div>
-                  <p className="text-xs text-muted-foreground">当前版本</p>
+                  <p className="text-xs text-muted-foreground">{translateText("当前版本")}</p>
                   <p className="mt-1 font-mono">{mobileUpdateInfo.currentVersion ? `v${mobileUpdateInfo.currentVersion.replace(/^v/i, "")}` : "-"}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">最新版本</p>
+                  <p className="text-xs text-muted-foreground">{translateText("最新版本")}</p>
                   <p className="mt-1 font-mono text-primary">{mobileUpdateInfo.latestVersion ? `v${mobileUpdateInfo.latestVersion.replace(/^v/i, "")}` : "-"}</p>
                 </div>
               </div>
@@ -731,13 +720,11 @@ function ProfileContent() {
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               {mobileUpdateInfo?.hasUpdate && (
                 <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={() => openMobileReleasePage(mobileUpdateInfo.releaseUrl)}>
-                  <ExternalLink className="h-4 w-4" />
-                  前往下载
-                </Button>
+                  <ExternalLink className="h-4 w-4" />{translateText("前往下载")}</Button>
               )}
               <Button className="w-full gap-2 sm:w-auto" onClick={handleMobileUpdateCheck} disabled={checkingMobileUpdate}>
                 {checkingMobileUpdate ? <RefreshCw className="forwardx-icon-spin h-4 w-4" /> : <Download className="h-4 w-4" />}
-                {checkingMobileUpdate ? "检查中..." : "检查 APP 更新"}
+                {checkingMobileUpdate ? translateText("检查中...") : translateText("检查 APP 更新")}
               </Button>
             </div>
           </CardContent>
@@ -748,16 +735,12 @@ function ProfileContent() {
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <LogOut className="h-4 w-4 text-primary" />
-              退出登录
-            </CardTitle>
-            <CardDescription>结束当前浏览器或 APP 的登录会话。</CardDescription>
+              <LogOut className="h-4 w-4 text-primary" />{translateText("退出登录")}</CardTitle>
+            <CardDescription>{translateText("结束当前浏览器或 APP 的登录会话。")}</CardDescription>
           </CardHeader>
           <CardContent>
             <Button className="w-full gap-2 sm:w-auto" onClick={logout}>
-              <LogOut className="h-4 w-4" />
-              退出登录
-            </Button>
+              <LogOut className="h-4 w-4" />{translateText("退出登录")}</Button>
           </CardContent>
         </Card>
       </div>
@@ -765,20 +748,14 @@ function ProfileContent() {
       <Dialog open={showTelegramUnbindConfirm} onOpenChange={setShowTelegramUnbindConfirm}>
         <DialogContent className="w-[calc(100vw-2rem)] max-w-md">
           <DialogTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-destructive" />
-            解绑 Telegram
-          </DialogTitle>
-          <DialogDescription>
-            解绑后将无法继续通过 Telegram 接收提醒或登录。确认要解绑当前 Telegram 账号吗？
-          </DialogDescription>
+            <AlertTriangle className="h-5 w-5 text-destructive" />{translateText("解绑 Telegram")}</DialogTitle>
+          <DialogDescription>{translateText("解绑后将无法继续通过 Telegram 接收提醒或登录。确认要解绑当前 Telegram 账号吗？")}</DialogDescription>
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
               onClick={() => setShowTelegramUnbindConfirm(false)}
               disabled={unbindTelegramMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               variant="destructive"
               className="gap-2"
@@ -786,7 +763,7 @@ function ProfileContent() {
               disabled={unbindTelegramMutation.isPending}
             >
               <Link2Off className="h-4 w-4" />
-              {unbindTelegramMutation.isPending ? "解绑中..." : "确认解绑"}
+              {unbindTelegramMutation.isPending ? translateText("解绑中...") : translateText("确认解绑")}
             </Button>
           </DialogFooter>
         </DialogContent>

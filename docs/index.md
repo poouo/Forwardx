@@ -12,10 +12,13 @@ hero:
     - theme: alt
       text: 部署面板
       link: /guide/deploy-panel
+    - theme: alt
+      text: 文档目录
+      link: /guide/
 
 features:
   - title: 快速部署
-    details: 支持 Docker 和本地 systemd 部署，首次启动后按向导初始化数据库和管理员。
+    details: 按 Docker 或本地部署专题安装，核对数据库并完成管理员初始化。
   - title: 多主机管理
     details: 通过 Agent 查看 Linux 主机在线状态、系统资源、入口地址和版本。
   - title: 转发规则
@@ -25,5 +28,5 @@ features:
   - title: 流量与延迟
     details: 查看规则流量、累计流量、延迟趋势和多跳自测结果。
   - title: 通知与维护
-    details: 配置 Telegram、到期提醒、更新检查和数据备份。
+    details: 配置邮件、Telegram / Discord、Google 登录、AI 助手、备份与面板迁移。
 ---

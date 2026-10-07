@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -8,7 +9,7 @@ type DataSectionLoadingProps = {
 };
 
 export default function DataSectionLoading({
-  label = "数据加载中",
+  label = translateText("数据加载中"),
   className,
   minHeight = "min-h-[180px]",
 }: DataSectionLoadingProps) {

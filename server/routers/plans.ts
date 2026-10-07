@@ -3,6 +3,7 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
+import { withKeyedTaskLock } from "../keyedTaskLock";
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
@@ -35,6 +36,19 @@ const planInput = z.object({
     sortOrder: z.number().int().min(0).max(9999).default(0),
   })).max(20).default([]),
 });
+
+async function updatePlan(input: z.infer<typeof planInput> & { id: number; syncExistingSubscribers: boolean }, actorId: number) {
+  const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, ...data } = input;
+  if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
+  if (!syncExistingSubscribers) await db.freezePlanSubscriberSnapshots(id);
+  const result = await db.updateSubscriptionPlan(id, { ...data, description: data.description || null, currency: data.currency.toUpperCase() } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
+  if (syncExistingSubscribers) {
+    const userIds = await db.syncPlanSubscribers(id);
+    for (const userId of userIds) await refreshUserForwardEndpoints(userId, "plan-updated");
+    appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=true users=${userIds.length} operator=${actorId}`);
+  } else appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=false operator=${actorId}`);
+  return result;
+}
 
 export const plansRouter = router({
   storeStatus: protectedProcedure.query(async () => {
@@ -86,48 +100,34 @@ export const plansRouter = router({
       id: z.number().int().positive(),
       syncExistingSubscribers: z.boolean().default(true),
     }))
-    .mutation(async ({ input, ctx }) => {
-      const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, ...data } = input;
-      if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) {
-        throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
-      }
-      if (!syncExistingSubscribers) {
-        await db.freezePlanSubscriberSnapshots(id);
-      }
-      const result = await db.updateSubscriptionPlan(id, {
-        ...data,
-        description: data.description || null,
-        currency: data.currency.toUpperCase(),
-      } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
-      if (syncExistingSubscribers) {
-        const userIds = await db.syncPlanSubscribers(id);
-        for (const userId of userIds) {
-          await refreshUserForwardEndpoints(userId, "plan-updated");
-        }
-        appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=true users=${userIds.length} operator=${ctx.user.id}`);
-      } else {
-        appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=false operator=${ctx.user.id}`);
-      }
-      return result;
-    }),
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`subscription-plan:${input.id}`, () => updatePlan(input, ctx.user.id))),
+  updateFields: adminProcedure
+    .input(planInput.partial().extend({ id: z.number().int().positive(), syncExistingSubscribers: z.boolean() }).strict())
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`subscription-plan:${input.id}`, async () => {
+      const existing = await db.getSubscriptionPlanById(input.id) as any;
+      if (!existing) throw new Error("套餐不存在");
+      const current = Object.fromEntries(Object.keys(planInput.shape).filter(key => existing[key] !== undefined && existing[key] !== null).map(key => [key, existing[key]]));
+      const merged = planInput.parse({ ...current, ...input });
+      return updatePlan({ ...merged, id: input.id, syncExistingSubscribers: input.syncExistingSubscribers }, ctx.user.id);
+    })),
   updateStatus: adminProcedure
     .input(z.object({
       id: z.number().int().positive(),
       isActive: z.boolean(),
       isStoreVisible: z.boolean(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`subscription-plan:${input.id}`, async () => {
       return db.updateSubscriptionPlan(input.id, {
         isActive: input.isActive,
         isStoreVisible: input.isActive && input.isStoreVisible,
       } as any);
-    }),
+    })),
   delete: adminProcedure
     .input(z.object({ id: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input }) => withKeyedTaskLock(`subscription-plan:${input.id}`, async () => {
       await db.deleteSubscriptionPlan(input.id);
       return { success: true };
-    }),
+    })),
   subscriptions: adminProcedure
     .input(z.object({ userId: z.number().optional() }).optional())
     .query(async ({ input }) => {

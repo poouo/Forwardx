@@ -1,4 +1,8 @@
 import * as db from "./db";
+import { botTransportContext, isDiscordBotContext } from "./botTransportContext";
+import { botAccounts } from "./botAccounts";
+import { getNotificationSettings, notificationChannel } from "./notificationSettings";
+import { seamlessActivity, seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { createDirectForwardRuleForActor, deleteForwardRuleForActor, toggleForwardRuleForActor } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
@@ -13,6 +17,15 @@ import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
 import { checkPanelUpdateTask, startPanelUpgradeTask } from "./_core/systemRouter";
 import { forwardxAiClient } from "./ai/client";
+import { planBotOperation, type ContextTool, type BotPlan } from "./ai/planner";
+import { randomBytes } from "node:crypto";
+import { ruleCreatePrompt, ruleCreateTextPatch, simpleRuleCreateRequest, type BotChoicePrompt, type RuleRouteChoice } from "./ai/ruleCreateWizard";
+import { resolveRuleOperationOwner } from "./ruleOperationOwner";
+import { PANEL_SETTINGS, panelToolNameSchema, panelInputSchema, preparePanelCall, executePanelCall, queryPanelCall, formatPanelToolResult, PanelPreflightError, type PanelToolName, type PreparedPanelCall } from "./ai/panelTools";
+import { ZodError } from "zod";
+import { createBotAction, readBotAction, claimBotAction, finishBotAction, readBotDraft, saveBotDraft, clearBotDraft, pruneBotWorkflowHistory } from "./ai/workflowStore";
+import { withDatabaseTransaction } from "./dbRuntime";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 import { appendAiAudit } from "./ai/audit";
 import { SlidingWindowRateLimiter } from "./ai/rateLimiter";
 import { getForwardxAiSettings as getDeepSeekSettings } from "./ai/settings";
@@ -23,9 +36,7 @@ import {
   type ManagePresetField,
 } from "./ai/managePresets";
 import {
-  buildForwardxManageIntentPrompt,
   buildForwardxQueryIntentPrompt,
-  forwardxManageIntentResponseSchema,
   forwardxQueryIntentResponseSchema,
 } from "./ai/skills/forwardxCore";
 import { KeyedTaskDispatcher } from "./keyedTaskDispatcher";
@@ -42,7 +53,7 @@ import {
 } from "./services/userCommandService";
 
 type TelegramUser = {
-  id: number;
+  id: number | string;
   is_bot?: boolean;
   first_name?: string;
   last_name?: string;
@@ -50,9 +61,9 @@ type TelegramUser = {
 };
 
 type TelegramMessage = {
-  message_id: number;
+  message_id: number | string;
   text?: string;
-  chat: { id: number; type?: string };
+  chat: { id: number | string; type?: string };
   from?: TelegramUser;
 };
 
@@ -75,13 +86,15 @@ type TelegramUpdate = {
 };
 
 type AiQueryIntent = {
-  intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "rule_rank" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
+  intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "rule_rank" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported" | "panel_query";
   id?: number;
   keyword?: string;
   ruleStatus?: AiRuleStatusFilter;
   rankMetric?: AiRuleRankMetric;
   rankOrder?: AiRuleRankOrder;
   limit?: number;
+  tool?: PanelToolName;
+  input?: Record<string, unknown>;
 };
 
 type AiRuleStatusFilter = "running" | "pending" | "disabled" | "abnormal";
@@ -107,13 +120,16 @@ type ManageActionKind =
   | "redeem_code_generate_balance"
   | "discount_code_generate_percent"
   | "registration_enable"
-  | "registration_disable";
+  | "registration_disable"
+  | "panel_operation";
 
 type ManageDurationUnit = "day" | "month" | "year";
 type ManageForwardMode = "host" | "tunnel";
 
 type ManageActionIntent = {
   action: ManageActionKind;
+  tool?: PanelToolName;
+  input?: Record<string, unknown>;
   target?: string;
   amountYuan?: number;
   durationValue?: number;
@@ -134,6 +150,7 @@ type PendingManageAction = {
   actorUserId: number;
   actorRole: "admin" | "user";
   action: Exclude<ManageActionKind, "none">;
+  panelCall?: PreparedPanelCall;
   targetUserId?: number;
   amountCents?: number;
   durationValue?: number;
@@ -168,6 +185,7 @@ type ManageClarifyPrompt = {
   missingFields: ManageClarifyField[];
   text: string;
   keyboard?: InlineKeyboardMarkup;
+  choices?: BotChoicePrompt;
 };
 
 type ManageActionPrepareResult = {
@@ -176,17 +194,25 @@ type ManageActionPrepareResult = {
   error?: string;
 };
 
-type ManageClarifyField = "target" | "forwardMode" | "tunnel" | "host" | "ruleId" | ManagePresetField;
+type ManageClarifyField = "target" | "forwardMode" | "tunnel" | "host" | "ruleId" | "panelInput" | ManagePresetField;
 
 type PendingManageClarifySession = {
   actorUserId: number;
   actorRole: "admin" | "user";
-  action: Exclude<ManageActionKind, "none">;
+  action: ManageActionKind;
   intent: ManageActionIntent;
   sourceText: string;
   missingFields: ManageClarifyField[];
   createdAt: number;
   expiresAt: number;
+  goal?: string;
+  remainingIntents?: ManageActionIntent[];
+  completedActions?: string[];
+  stage?: "collecting" | "confirming" | "uncertain";
+  confirmationKey?: string;
+  plannerOnly?: boolean;
+  question?: string;
+  selection?: BotChoicePrompt & { key: string };
 };
 
 type UpdateCommandKind = "panel" | "agent";
@@ -207,8 +233,6 @@ let updateOffset = 0;
 let activeTokenKey = "";
 const pendingBindChats = new Map<string, number>();
 const pendingRedeemChats = new Map<string, number>();
-const pendingManageActions = new Map<string, PendingManageAction>();
-const pendingManageClarifySessions = new Map<string, PendingManageClarifySession>();
 const pendingUpdateActions = new Map<string, PendingUpdateAction>();
 const updateCommandRateLimit = new Map<string, number>();
 
@@ -230,7 +254,6 @@ const aiInteractionRateLimiter = new SlidingWindowRateLimiter({
 });
 const telegramUpdateDispatcher = new KeyedTaskDispatcher(TELEGRAM_UPDATE_CONCURRENCY);
 const MANAGE_ACTION_CONFIRM_TTL_MS = 10 * 60 * 1000;
-const MANAGE_CLARIFY_TTL_MS = 60 * 1000;
 const MANAGE_BALANCE_MAX_CENTS = 100_000_000;
 const MANAGE_CODE_MAX_COUNT = 500;
 const MANAGE_CODE_DISPLAY_LIMIT = 60;
@@ -238,7 +261,7 @@ const UPDATE_ACTION_CONFIRM_TTL_MS = 5 * 60 * 1000;
 const UPDATE_COMMAND_COOLDOWN_MS = 60 * 1000;
 const UPDATE_AGENT_PREVIEW_LIMIT = 15;
 const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪个|哪一个|哪条|哪一条|谁|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|连接|连接数|延迟|速度|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|排行|排名|最多|最少|最高|最低|最大|最小|最快|最慢|最卡|第一|top|前|的|吗)+$/;
-const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
+export const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
   { command: "menu", description: "打开功能菜单" },
   { command: "usage", description: "查询流量和额度" },
@@ -248,7 +271,7 @@ const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "bind", description: "使用绑定码绑定后台账号" },
   { command: "login", description: "生成网页登录链接" },
   { command: "webapp", description: "在 Telegram 内打开面板" },
-  { command: "unbind", description: "解除 Telegram 绑定" },
+  { command: "unbind", description: "解除机器人绑定" },
   { command: "users", description: "管理员用户管理" },
   { command: "reset", description: "管理员重置用户流量" },
   { command: "renew", description: "管理员续期用户套餐" },
@@ -394,96 +417,86 @@ function pickManageRuleForwardType(actor: any, mode: ManageForwardMode) {
   return selected;
 }
 
-function cleanupExpiredPendingManageActions() {
-  const now = Date.now();
-  for (const [key, item] of pendingManageActions.entries()) {
-    if (!item.expiresAt || item.expiresAt <= now) pendingManageActions.delete(key);
-  }
+function manageScope(chatId: number | string, actorUserId: number | string) {
+  return { provider: isDiscordBotContext() ? "discord" as const : "telegram" as const, chatId, actorUserId: Number(actorUserId) };
 }
 
-function createPendingManageAction(action: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt">) {
-  cleanupExpiredPendingManageActions();
+async function createPendingManageAction(action: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt">, chatId: number | string) {
   const now = Date.now();
-  const key = randomCode(18).toLowerCase();
   const pending: PendingManageAction = {
     ...action,
-    key,
+    key: "",
     createdAt: now,
     expiresAt: now + MANAGE_ACTION_CONFIRM_TTL_MS,
   };
-  pendingManageActions.set(key, pending);
+  const scope = manageScope(chatId, action.actorUserId);
+  await withDatabaseTransaction(async () => {
+    const draft = await getPendingManageClarifySession(chatId, action.actorUserId);
+    if (draft?.confirmationKey) {
+      const previous = await readBotAction(scope, draft.confirmationKey);
+      if (previous?.status === "executing" || previous?.status === "uncertain") throw new Error("上次操作结果尚未确认，不能覆盖待办。");
+      if (previous?.status === "pending" && !(await finishBotAction(scope, draft.confirmationKey, "cancelled", "确认已更新"))) throw new Error("操作状态已变化，请发送“继续”查看。");
+    }
+    pending.key = await createBotAction(scope, pending);
+    if (draft) await saveBotDraft(scope, { ...draft, stage: "confirming", confirmationKey: pending.key });
+  });
   return pending;
 }
 
-function getPendingManageAction(actionKey: string) {
-  cleanupExpiredPendingManageActions();
+async function getPendingManageAction(actionKey: string, chatId: number | string, actorUserId: number) {
   const key = String(actionKey || "").trim().toLowerCase();
   if (!key) return null;
-  const pending = pendingManageActions.get(key);
-  if (!pending) return null;
-  if (!pending.expiresAt || pending.expiresAt <= Date.now()) {
-    pendingManageActions.delete(key);
-    return null;
-  }
-  return pending;
+  const stored = await readBotAction<PendingManageAction>(manageScope(chatId, actorUserId), key);
+  const draft = await getPendingManageClarifySession(chatId, actorUserId);
+  if (draft?.confirmationKey !== key) return null;
+  if (!stored || stored.status !== "pending" || stored.payload.expiresAt <= Date.now()) return null;
+  return { ...stored.payload, key };
 }
 
-function consumePendingManageAction(actionKey: string) {
-  const pending = getPendingManageAction(actionKey);
-  if (!pending) return null;
-  pendingManageActions.delete(pending.key);
-  return pending;
-}
-
-function getManageClarifySessionKey(chatId: number | string, actorUserId: number | string) {
-  return `${chatId}:${actorUserId}`;
-}
-
-function cleanupExpiredPendingManageClarifySessions() {
-  const now = Date.now();
-  for (const [key, item] of pendingManageClarifySessions.entries()) {
-    if (!item.expiresAt || item.expiresAt <= now) pendingManageClarifySessions.delete(key);
-  }
-}
-
-function createPendingManageClarifySession(
+async function createPendingManageClarifySession(
   chatId: number | string,
   actor: any,
   sourceText: string,
   intent: ManageActionIntent,
   missingFields: ManageClarifyField[],
+  choices?: BotChoicePrompt,
 ) {
-  cleanupExpiredPendingManageClarifySessions();
   const now = Date.now();
-  const key = getManageClarifySessionKey(chatId, Number(actor?.id || 0));
+  const scope = manageScope(chatId, Number(actor?.id || 0));
+  const previous = await readBotDraft<PendingManageClarifySession>(scope);
   const session: PendingManageClarifySession = {
+    ...previous,
     actorUserId: Number(actor?.id || 0),
     actorRole: String(actor?.role) === "admin" ? "admin" : "user",
     action: intent.action as Exclude<ManageActionKind, "none">,
     intent,
-    sourceText: sourceText.slice(0, 500),
+    sourceText: sourceText.slice(-6000),
     missingFields,
-    createdAt: now,
-    expiresAt: now + MANAGE_CLARIFY_TTL_MS,
+    createdAt: previous?.createdAt || now,
+    expiresAt: 0,
+    stage: "collecting",
+    plannerOnly: false,
+    confirmationKey: undefined,
+    selection: choices ? { ...choices, key: randomBytes(9).toString("hex") } : undefined,
   };
-  pendingManageClarifySessions.set(key, session);
+  await saveBotDraft(scope, session);
   return session;
 }
 
-function getPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
-  cleanupExpiredPendingManageClarifySessions();
-  const key = getManageClarifySessionKey(chatId, actorUserId);
-  const session = pendingManageClarifySessions.get(key);
-  if (!session) return null;
-  if (!session.expiresAt || session.expiresAt <= Date.now()) {
-    pendingManageClarifySessions.delete(key);
-    return null;
+async function getPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
+  return readBotDraft<PendingManageClarifySession>(manageScope(chatId, actorUserId));
+}
+
+async function clearPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
+  const scope = manageScope(chatId, actorUserId);
+  const draft = await readBotDraft<PendingManageClarifySession>(scope);
+  if (draft?.confirmationKey) {
+    const action = await readBotAction(scope, draft.confirmationKey);
+    // Cancelling a workflow abandons remaining steps, not a submitted write.
+    // Keep executing/uncertain action evidence; never pretend to roll it back.
+    if (action?.status === "pending") await finishBotAction(scope, draft.confirmationKey, "cancelled", "用户取消");
   }
-  return session;
-}
-
-function clearPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
-  pendingManageClarifySessions.delete(getManageClarifySessionKey(chatId, actorUserId));
+  await clearBotDraft(scope);
 }
 
 function getUpdateRateLimitKey(actorUserId: number | string, kind: UpdateCommandKind) {
@@ -550,7 +563,7 @@ function consumePendingUpdateAction(actionKey: string) {
 }
 
 function getBindSessionKey(chatId: number | string, telegramId: string | number) {
-  return `${chatId}:${telegramId}`;
+  return `${isDiscordBotContext() ? "discord" : "telegram"}:${chatId}:${telegramId}`;
 }
 
 function startBindSession(chatId: number | string, telegramId: string | number) {
@@ -572,7 +585,7 @@ function clearBindSession(chatId: number | string, telegramId: string | number) 
 }
 
 function getRedeemSessionKey(chatId: number | string, telegramId: string | number) {
-  return `${chatId}:${telegramId}`;
+  return `${isDiscordBotContext() ? "discord" : "telegram"}:${chatId}:${telegramId}`;
 }
 
 function startRedeemSession(chatId: number | string, telegramId: string | number) {
@@ -599,11 +612,15 @@ function getTokenKey(token: string) {
 }
 
 async function getTelegramSettings() {
+  if (isDiscordBotContext()) {
+    const settings = await getNotificationSettings("discord");
+    return { ...settings, enabled: settings.active };
+  }
   const settings = await db.getAllSettings();
   const envToken = ENV.telegramBotToken.trim();
   const dbToken = String(settings.telegramBotToken || "").trim();
   const token = envToken || dbToken;
-  const enabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
+  const enabled = notificationChannel(settings) === "telegram" && (settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false"));
   return {
     token,
     enabled,
@@ -613,8 +630,11 @@ async function getTelegramSettings() {
 }
 
 async function telegramApi<T = any>(method: string, body?: Record<string, unknown>): Promise<T> {
+  const transport = botTransportContext.getStore();
+  if (transport) return transport.api(method, body);
   const settings = await getTelegramSettings();
   if (!settings.token) throw new Error("Telegram Bot Token is not configured");
+  if (!settings.enabled && method !== "getMe" && method !== "setMyCommands") throw new Error("Telegram notification channel is inactive");
   return withTelegramApiTimeout(method, async (signal) => {
     const resp = await fetch(`https://api.telegram.org/bot${settings.token}/${method}`, {
       method: "POST",
@@ -642,7 +662,8 @@ type InlineKeyboardMarkup = {
 };
 
 type TelegramSentMessage = {
-  message_id: number;
+  message_id: number | string;
+  message_ids?: string[];
 };
 
 async function sendMessage(chatId: number | string, text: string, replyMarkup?: InlineKeyboardMarkup) {
@@ -669,7 +690,7 @@ export async function syncTelegramBotCommands() {
   return true;
 }
 
-async function editMessage(chatId: number | string, messageId: number, text: string, replyMarkup?: InlineKeyboardMarkup) {
+async function editMessage(chatId: number | string, messageId: number | string, text: string, replyMarkup?: InlineKeyboardMarkup) {
   await telegramApi("editMessageText", {
     chat_id: chatId,
     message_id: messageId,
@@ -680,7 +701,7 @@ async function editMessage(chatId: number | string, messageId: number, text: str
   });
 }
 
-async function deleteMessage(chatId: number | string, messageId: number) {
+async function deleteMessage(chatId: number | string, messageId: number | string) {
   await telegramApi("deleteMessage", {
     chat_id: chatId,
     message_id: messageId,
@@ -694,7 +715,7 @@ async function sendChatAction(chatId: number | string, action: "typing" = "typin
   });
 }
 
-function deleteMessageLater(chatId: number | string, messageId: number, delayMs: number) {
+function deleteMessageLater(chatId: number | string, messageId: number | string, delayMs: number) {
   const timer = setTimeout(() => {
     deleteMessage(chatId, messageId).catch(() => undefined);
   }, delayMs);
@@ -749,9 +770,9 @@ async function answerCallback(callbackId: string, text?: string) {
 async function ensureTelegramUser(from?: TelegramUser) {
   if (!from?.id || from.is_bot) return null;
   const telegramId = String(from.id);
-  const user = await db.getUserByTelegramId(telegramId);
+  const user = await botAccounts.getUserById(telegramId);
   if (user) {
-    await db.updateTelegramLastSeen(telegramId, {
+    await botAccounts.updateLastSeen(telegramId, {
       username: from.username || null,
       firstName: from.first_name || null,
       lastName: from.last_name || null,
@@ -766,20 +787,20 @@ async function ensureTelegramIdentity(message: TelegramMessage) {
 
 function helpText(bound: boolean, isAdmin = false) {
   const base = [
-    "ForwardX Telegram Bot",
+    "ForwardX 通知机器人",
     "",
     bound
       ? "可用命令："
-      : "请先在面板个人菜单点击 Telegram 绑定按钮生成绑定码，然后在这里完成绑定。",
+      : "请先在面板个人菜单点击通知机器人绑定按钮生成绑定码，然后在这里完成绑定。",
     "/usage - 查询我的用量",
     "/rules - 查看我的转发规则",
     "/ask 问题 - 用自然语言查询面板信息",
     "/redeem 兑换码 - 兑换余额或套餐",
     "/login - 生成网页一次性登录链接",
-    "/webapp - 在 Telegram 内打开面板",
+    isDiscordBotContext() ? "/webapp - 获取一次性网页登录链接" : "/webapp - 在 Telegram 内打开面板",
     "/enable 规则ID - 启用规则",
     "/disable 规则ID - 停用规则",
-    "/unbind - 解除当前 Telegram 绑定（需要确认）",
+    "/unbind - 解除当前通知机器人 绑定（需要确认）",
   ];
   if (isAdmin) {
     base.push(
@@ -798,7 +819,7 @@ function helpText(bound: boolean, isAdmin = false) {
 function bindPromptKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "🔗 绑定 Telegram", callback_data: "fx:bind:start" }],
+      [{ text: "🔗 绑定通知机器人", callback_data: "fx:bind:start" }],
     ],
   };
 }
@@ -846,10 +867,10 @@ async function sendBindPrompt(chatId: number | string) {
   await sendMessage(
     chatId,
     [
-      "<b>绑定 Telegram</b>",
+      "<b>绑定通知机器人</b>",
       "",
-      "当前 Telegram 尚未绑定 ForwardX 账户。",
-      "请先在网页面板的个人菜单里点击 Telegram 绑定生成绑定码，然后点击下面按钮并发送绑定码。",
+      "当前通知机器人 尚未绑定 ForwardX 账户。",
+      "请先在网页面板的个人菜单里点击通知机器人绑定生成绑定码，然后点击下面按钮并发送绑定码。",
     ].join("\n"),
     bindPromptKeyboard(),
   );
@@ -862,14 +883,14 @@ async function sendBindCodePrompt(chatId: number | string, telegramId: string | 
     [
       "<b>请输入绑定码</b>",
       "",
-      `请在 ${Math.round(BIND_SESSION_TTL_MS / 60000)} 分钟内直接发送网页面板生成的 Telegram 绑定码。`,
+      `请在 ${Math.round(BIND_SESSION_TTL_MS / 60000)} 分钟内直接发送网页面板生成的 通知机器人绑定码。`,
       "绑定码通常是一串大写字母和数字。",
     ].join("\n"),
     bindCancelKeyboard(),
   );
 }
 
-async function editBindCodePrompt(chatId: number | string, messageId: number, telegramId: string | number) {
+async function editBindCodePrompt(chatId: number | string, messageId: number | string, telegramId: string | number) {
   startBindSession(chatId, telegramId);
   await editMessage(
     chatId,
@@ -877,7 +898,7 @@ async function editBindCodePrompt(chatId: number | string, messageId: number, te
     [
       "<b>请输入绑定码</b>",
       "",
-      `请在 ${Math.round(BIND_SESSION_TTL_MS / 60000)} 分钟内直接发送网页面板生成的 Telegram 绑定码。`,
+      `请在 ${Math.round(BIND_SESSION_TTL_MS / 60000)} 分钟内直接发送网页面板生成的 通知机器人绑定码。`,
       "绑定码通常是一串大写字母和数字。",
     ].join("\n"),
     bindCancelKeyboard(),
@@ -898,7 +919,7 @@ async function sendRedeemCodePrompt(chatId: number | string, telegramId: string 
   );
 }
 
-async function editRedeemCodePrompt(chatId: number | string, messageId: number, telegramId: string | number) {
+async function editRedeemCodePrompt(chatId: number | string, messageId: number | string, telegramId: string | number) {
   startRedeemSession(chatId, telegramId);
   await editMessage(
     chatId,
@@ -920,6 +941,7 @@ function parseCommand(text: string) {
 }
 
 function buildTelegramWebAppUrl(panelPublicUrl: string, challenge?: string) {
+  if (isDiscordBotContext()) return panelPublicUrl;
   const base = String(panelPublicUrl || "").trim().replace(/\/+$/, "");
   if (!base) return "";
   const params = new URLSearchParams({ tgWebApp: "1" });
@@ -1008,6 +1030,17 @@ function manageClarifyCancelKeyboard(): InlineKeyboardMarkup {
       [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
+}
+
+function manageChoiceKeyboard(selection: NonNullable<PendingManageClarifySession["selection"]>): InlineKeyboardMarkup {
+  const prefix = `fx:op:choose:${selection.key}:`;
+  const rows: InlineKeyboardButton[][] = selection.choices.map((choice, index) => [{ text: choice.label, callback_data: `${prefix}${index}` }]);
+  const navigation: InlineKeyboardButton[] = [];
+  if (selection.page > 0) navigation.push({ text: "⬅️ 上一页", callback_data: `${prefix}page:${selection.page - 1}` });
+  if (selection.page + 1 < selection.pages) navigation.push({ text: "下一页 ➡️", callback_data: `${prefix}page:${selection.page + 1}` });
+  if (navigation.length) rows.push(navigation);
+  rows.push([{ text: "❌ 取消本次操作", callback_data: `${prefix}cancel` }]);
+  return { inline_keyboard: rows };
 }
 
 function manageClarifyModeKeyboard(): InlineKeyboardMarkup {
@@ -1279,7 +1312,9 @@ async function adminUserText(userId: number) {
     limit > 0 ? `使用率：${percent}%` : "",
     `到期时间：${escapeHtml(formatDate(target.expiresAt))}`,
     `规则/端口：${ruleCount}${target.maxRules ? `/${target.maxRules}` : ""} 条，${portCount}${target.maxPorts ? `/${target.maxPorts}` : ""} 个端口`,
-    `TG：${target.telegramId ? (target.telegramUsername ? `@${escapeHtml(target.telegramUsername)}` : target.telegramId) : "未绑定"}`,
+    isDiscordBotContext()
+      ? `Discord：${target.discordId ? escapeHtml(target.discordUsername || target.discordId) : "未绑定"}`
+      : `TG：${target.telegramId ? (target.telegramUsername ? `@${escapeHtml(target.telegramUsername)}` : target.telegramId) : "未绑定"}`,
   ].filter(Boolean).join("\n");
   return { target, text };
 }
@@ -1330,8 +1365,8 @@ async function loginText(user: any) {
   const settings = await getTelegramSettings();
   const code = randomCode(32);
   const expiresAt = new Date(Date.now() + LOGIN_CODE_TTL_MS);
-  await db.createTelegramLoginCode(user.id, code, expiresAt);
-  const path = `/login?tg=${encodeURIComponent(code)}`;
+  await botAccounts.createLoginCode(user.id, code, expiresAt);
+  const path = `/login?${isDiscordBotContext() ? "discord" : "tg"}=${encodeURIComponent(code)}`;
   const url = settings.panelPublicUrl ? `${settings.panelPublicUrl}${path}` : path;
   return [
     "<b>网页登录</b>",
@@ -1348,18 +1383,18 @@ async function sendMainMenu(chatId: number | string, user: any) {
   const webAppUrl = settings.panelPublicUrl
     ? buildTelegramWebAppUrl(
       settings.panelPublicUrl,
-      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
+      isDiscordBotContext() ? undefined : createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
     )
     : "";
   await sendMessage(chatId, menuText(user), mainMenuKeyboard(user, webAppUrl || undefined));
 }
 
-async function editMainMenu(chatId: number | string, messageId: number, user: any) {
+async function editMainMenu(chatId: number | string, messageId: number | string, user: any) {
   const settings = await getTelegramSettings();
   const webAppUrl = settings.panelPublicUrl
     ? buildTelegramWebAppUrl(
       settings.panelPublicUrl,
-      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
+      isDiscordBotContext() ? undefined : createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
     )
     : "";
   await editMessage(chatId, messageId, menuText(user), mainMenuKeyboard(user, webAppUrl || undefined));
@@ -1369,7 +1404,7 @@ async function handleBind(message: TelegramMessage, code: string) {
   const from = message.from;
   if (!from?.id || from.is_bot) return;
   const normalized = code.trim().toUpperCase();
-  const user = await db.getUserByTelegramBindCode(normalized);
+  const user = await botAccounts.getUserByBindCode(normalized);
   if (!user) {
     if (from?.id) startBindSession(message.chat.id, from.id);
     await sendMessage(message.chat.id, "绑定码无效。请在面板中重新生成或检查后再次发送。", bindCancelKeyboard());
@@ -1377,17 +1412,17 @@ async function handleBind(message: TelegramMessage, code: string) {
   }
   const expiresAt = user.telegramBindCodeExpiresAt ? new Date(user.telegramBindCodeExpiresAt).getTime() : 0;
   if (!expiresAt || expiresAt <= Date.now()) {
-    await db.clearTelegramBindCode(user.id);
+    await botAccounts.clearBindCode(user.id);
     if (from?.id) startBindSession(message.chat.id, from.id);
     await sendMessage(message.chat.id, "绑定码已过期。请在面板中重新生成绑定码后再次发送。", bindCancelKeyboard());
     return;
   }
-  await db.bindTelegramAccount(user.id, {
+  await botAccounts.bind(user.id, {
     id: String(from.id),
     username: from.username || null,
     firstName: from.first_name || null,
     lastName: from.last_name || null,
-  });
+  }, normalized);
   await sendMessage(
     message.chat.id,
     `已绑定到 ForwardX 账户：<b>${escapeHtml(user.name || user.username)}</b>\n之后可以使用 /usage、/rules 和功能菜单。`,
@@ -1403,7 +1438,7 @@ async function handleMobileLoginStart(message: TelegramMessage, code: string, us
     return;
   }
   if (!user) {
-    await sendMessage(message.chat.id, "当前 Telegram 未绑定任何 ForwardX 账户，请先使用账号密码登录后绑定 Telegram。", bindPromptKeyboard());
+    await sendMessage(message.chat.id, "当前通知机器人 未绑定任何 ForwardX 账户，请先使用账号密码登录后绑定通知机器人。", bindPromptKeyboard());
     return;
   }
   if ((user as any).accountEnabled === false) {
@@ -1422,7 +1457,7 @@ async function handleMobileLoginStart(message: TelegramMessage, code: string, us
   );
 }
 
-async function confirmMobileLogin(chatId: number | string, messageId: number, code: string, user: any) {
+async function confirmMobileLogin(chatId: number | string, messageId: number | string, code: string, user: any) {
   const normalized = code.trim().toUpperCase();
   if (!hasMobileTelegramLoginChallenge(normalized)) {
     await editMessage(chatId, messageId, "登录请求已过期，请回到 ForwardX 重新发起。");
@@ -1446,18 +1481,18 @@ async function getTelegramAiAutoRecallConfig() {
   };
 }
 
-async function scheduleAiMessageAutoRecall(chatId: number | string, sourceMessageId?: number, botMessage?: { message_id?: number } | number | null) {
+async function scheduleAiMessageAutoRecall(chatId: number | string, sourceMessageId?: number | string, botMessage?: { message_id?: number | string; message_ids?: string[] } | number | string | null) {
   const config = await getTelegramAiAutoRecallConfig().catch(() => ({ enabled: false, delayMs: 60_000 }));
   if (!config.enabled) return;
-  const sourceId = Number(sourceMessageId);
-  if (Number.isFinite(sourceId) && sourceId > 0) {
-    deleteMessageLater(chatId, sourceId, config.delayMs);
+  if (sourceMessageId && /^\d+$/.test(String(sourceMessageId))) {
+    deleteMessageLater(chatId, sourceMessageId, config.delayMs);
   }
-  const botMessageId = typeof botMessage === "number"
-    ? Number(botMessage)
-    : Number(botMessage?.message_id || 0);
-  if (Number.isFinite(botMessageId) && botMessageId > 0) {
-    deleteMessageLater(chatId, botMessageId, config.delayMs);
+  const botMessageId = typeof botMessage === "number" || typeof botMessage === "string"
+    ? botMessage
+    : botMessage?.message_id;
+  const botMessageIds = typeof botMessage === "object" && botMessage?.message_ids?.length ? botMessage.message_ids : [botMessageId];
+  for (const id of botMessageIds) {
+    if (id && /^\d+$/.test(String(id))) deleteMessageLater(chatId, id, config.delayMs);
   }
 }
 
@@ -1650,6 +1685,7 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
     "account",
     "help",
     "unsupported",
+    "panel_query",
   ]);
   const modelIntent = allowed.has(value?.intent) ? value.intent : undefined;
   let intent = modelIntent || fallback.intent;
@@ -1672,6 +1708,7 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
   const limit = normalizeAiRuleRankLimit(value?.limit) || normalizeAiRuleRankLimit(fallback.limit);
   return {
     intent,
+    ...(intent === "panel_query" && panelToolNameSchema.safeParse(value?.tool).success ? { tool: value.tool, input: panelInputSchema.parse(value.input || {}) } : {}),
     ...(id ? { id } : {}),
     ...(keyword ? { keyword } : {}),
     ...(ruleStatus ? { ruleStatus } : {}),
@@ -1823,7 +1860,7 @@ function managePresetClarifyUi(
   return {
     field: group.field,
     customPrompt: group.customPrompt,
-    text: `${group.prompt}\n${nextHint}\n\n${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+    text: `${group.prompt}\n${nextHint}\n\n待办会保留至完成或取消。`,
     keyboard: { inline_keyboard: rows } as InlineKeyboardMarkup,
     choices: group.choices,
   };
@@ -2161,6 +2198,7 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     "discount_code_generate_percent",
     "registration_enable",
     "registration_disable",
+    "panel_operation",
   ]);
   const action = allowed.has(value?.action as ManageActionKind)
     ? (value.action as ManageActionKind)
@@ -2210,6 +2248,7 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
   const discountPercent = discountPercentModel || discountPercentFallback;
   return {
     action,
+    ...(action === "panel_operation" && panelToolNameSchema.safeParse(value?.tool || fallback.tool).success ? { tool: value?.tool || fallback.tool, input: panelInputSchema.parse(value?.input || fallback.input || {}) } : {}),
     ...(target ? { target } : {}),
     ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
     ...(durationValue ? { durationValue } : {}),
@@ -2298,7 +2337,9 @@ function extractManageIntentPatchFromText(text: string, missingFields: ManageCla
 }
 
 function mergeManageActionIntent(base: ManageActionIntent, patch: Partial<ManageActionIntent>) {
-  return normalizeManageActionIntent({ ...base, ...patch, action: base.action }, base);
+  return normalizeManageActionIntent({ ...base, ...patch, action: base.action,
+    ...(base.action === "panel_operation" ? { input: { ...base.input, ...patch.input } } : {}),
+  }, base);
 }
 
 function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
@@ -2408,36 +2449,12 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
   };
 }
 
-async function parseManageActionIntent(text: string): Promise<{ intent: ManageActionIntent; writeLike: boolean }> {
-  const fallback = localManageActionIntent(text);
-  if (!fallback.writeLike) return fallback;
-  const settings = await getDeepSeekSettings().catch(() => null);
-  if (!settings?.enabled || !settings.apiKey) return fallback;
-  try {
-    const parsed = await forwardxAiClient.requestStructuredJson({
-      operation: "telegram.manage-intent",
-      settings,
-      systemPrompt: buildForwardxManageIntentPrompt(),
-      userText: text,
-      schema: forwardxManageIntentResponseSchema,
-    });
-    const intent = normalizeManageActionIntent(parsed, fallback.intent);
-    const modelWriteLike = parsed.writeLike === true || parsed.writeLike === "true";
-    return {
-      intent,
-      writeLike: modelWriteLike || fallback.writeLike || intent.action !== "none",
-    };
-  } catch (error) {
-    console.warn("[TelegramBot] AI manage intent fallback:", error);
-    appendAiAudit({ phase: "intent", result: "fallback", action: fallback.intent.action, detail: error instanceof Error ? error.message : String(error) });
-    return fallback;
-  }
-}
 
 function isManageActionAllowedForRole(role: unknown, action: ManageActionKind) {
   if (action === "none") return false;
   if (String(role) === "admin") return true;
   return action === "forward_enable"
+    || action === "panel_operation"
     || action === "forward_disable"
     || action === "rule_create"
     || action === "rule_delete"
@@ -2471,6 +2488,7 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
     discount_code_generate_percent: "生成折扣码",
     registration_enable: "开启开放注册",
     registration_disable: "关闭开放注册",
+    panel_operation: "面板配置操作",
   };
   return mapping[action];
 }
@@ -2584,13 +2602,98 @@ async function resolveManageHost(actor: any, rawKeyword: string) {
   return { host: matched[0] };
 }
 
-async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent): Promise<ManageActionPrepareResult> {
+function normalizeRuleCreateIntent(intent: ManageActionIntent, sourceText: string): ManageActionIntent {
+  if (intent.action !== "rule_create" && !(intent.action === "panel_operation" && intent.tool === "rules.create")) return intent;
+  const endpoint = intent.action === "rule_create" ? extractManageTargetEndpoint(sourceText) : {};
+  const input = { ...intent.input };
+  if (input.targetIp === undefined && (intent.targetIp || endpoint.targetIp)) input.targetIp = intent.targetIp || endpoint.targetIp;
+  if (input.targetPort === undefined && (intent.targetPort || endpoint.targetPort)) input.targetPort = intent.targetPort || endpoint.targetPort;
+  const sourcePort = intent.sourcePort ?? (intent.action === "rule_create" ? extractManageSourcePort(sourceText) : undefined);
+  if (input.sourcePort === undefined && sourcePort !== undefined) input.sourcePort = sourcePort;
+  return { ...intent, action: "panel_operation", tool: "rules.create", input };
+}
+
+async function prepareRuleCreateChoices(actor: any, sourceText: string, intent: ManageActionIntent, page: number) {
+  const next = normalizeRuleCreateIntent(intent, sourceText);
+  const input = { ...next.input };
+  const requestedUserId = input.userId === undefined ? undefined : Number(input.userId);
+  if (requestedUserId !== undefined && (!Number.isSafeInteger(requestedUserId) || requestedUserId <= 0)) throw new Error("所选用户无效");
+  const owner = await resolveRuleOperationOwner(actor, requestedUserId);
+  // Reuse the actual web selection endpoints, including root-resource ACLs,
+  // billing/subscription access and group-only underlying-resource isolation.
+  const { appRouter } = await import("./routers");
+  const caller = appRouter.createCaller({ user: owner, req: { headers: {} }, res: {} } as any);
+  const [tunnels, groups] = await Promise.all([caller.tunnels.options(), caller.forwardGroups.options()]);
+  let routes: RuleRouteChoice[] = [
+    ...(tunnels as any[]).filter(row => row.isEnabled !== false).map(row => ({ id: Number(row.id), name: String(row.name || "-"), type: "tunnel" as const })),
+    ...(groups as any[]).filter(row => row.isEnabled !== false && ["port", "chain", "failover"].includes(row.groupMode))
+      .map(row => ({ id: Number(row.id), name: String(row.name || "-"), type: "group" as const, groupMode: row.groupMode })),
+  ].sort((a, b) => a.type.localeCompare(b.type) || a.id - b.id);
+  if (input.tunnelId && input.forwardGroupId) throw new Error("请只选择一个隧道或端口转发链");
+  let selectedType = input.tunnelId ? "tunnel" : input.forwardGroupId ? "group" : null;
+  let routeWarning = "";
+  if (selectedType && !routes.some(route => route.type === selectedType && route.id === Number(input.tunnelId || input.forwardGroupId))) {
+    routeWarning = "所选链路不存在、已停用或当前用户无权使用，请重新选择。\n";
+    delete input.tunnelId;
+    delete input.forwardGroupId;
+    selectedType = null;
+  }
+  if (!selectedType) {
+    if (next.forwardMode) routes = routes.filter(route => next.forwardMode === "tunnel" ? route.type === "tunnel" : route.type === "group");
+    if (next.tunnel) {
+      const keyword = normalizeManageTunnelKeyword(next.tunnel).toLowerCase();
+      routes = routes.filter(route => route.type === "tunnel" && (String(route.id) === keyword || route.name.toLowerCase().includes(keyword)));
+      if (routes.length === 1) input.tunnelId = routes[0].id;
+    }
+  }
+  const choices = ruleCreatePrompt(input, routes, page);
+  if (choices && routeWarning) choices.question = routeWarning + choices.question;
+  // The web API requires the tunnel adapter explicitly; its generic default
+  // is iptables, which must never be used for a tunnel-backed rule.
+  if (input.tunnelId && input.forwardType === undefined) input.forwardType = "gost";
+  if (input.forwardGroupId && input.forwardType === undefined) {
+    const group = (groups as any[]).find(row => Number(row.id) === Number(input.forwardGroupId));
+    if (group) input.forwardType = group.groupMode !== "chain" && group.groupType === "tunnel" ? "gost" : group.forwardType || "iptables";
+  }
+  if (input.name === undefined && input.targetIp && input.targetPort) input.name = `${input.targetIp}:${input.targetPort}`.slice(0, 128);
+  return { intent: { ...next, input }, choices };
+}
+
+async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent, choicePage = 0): Promise<ManageActionPrepareResult> {
   if (!intent || intent.action === "none") return { error: "未识别到可执行的管理操作。" };
   const action = intent.action as Exclude<ManageActionKind, "none">;
-  const actor = (await db.getUserById(Number(user?.id || 0)).catch(() => null)) || user;
+  const actor = await db.getUserById(Number(user?.id || 0));
+  if (!actor || actor.accountEnabled === false) return { error: "当前账户不存在或已停用，请重新登录。" };
   const isAdmin = String(actor?.role) === "admin";
   if (!isManageActionAllowedForRole(actor?.role, action)) {
     return { error: `你没有执行「${manageActionLabel(action)}」的权限。\n${manageActionPermissionHint(isAdmin)}` };
+  }
+
+  if (action === "panel_operation") {
+    try {
+      if (intent.tool === "rules.create") {
+        const guided = await prepareRuleCreateChoices(actor, sourceText, intent, choicePage);
+        intent = guided.intent;
+        if (guided.choices) return { clarify: { actor, intent, missingFields: ["panelInput"], choices: guided.choices,
+          text: `已记录目标：<code>${escapeHtml(String(intent.input?.targetIp || "待补充"))}:${escapeHtml(String(intent.input?.targetPort || "待补充"))}</code>\n${escapeHtml(guided.choices.question)}${guided.choices.pages > 1 ? `\n第 ${guided.choices.page + 1}/${guided.choices.pages} 页` : ""}\n待办已保存；选择后仍需确认才会创建。` } };
+      }
+      if (intent.tool === "settings.set" && isAdmin && intent.input?.value === undefined) {
+        const setting = PANEL_SETTINGS[String(intent.input?.key)];
+        if (setting?.schema.safeParse(true).success && setting.schema.safeParse(false).success) {
+          const choices: BotChoicePrompt = { question: `请选择「${setting.label}」的状态。`, field: "value", page: 0, pages: 1,
+            choices: [{ label: "✅ 开启", input: { value: true } }, { label: "⛔ 关闭", input: { value: false } }] };
+          return { clarify: { actor, intent, choices, missingFields: ["panelInput"], text: `${escapeHtml(choices.question)}\n选择后会显示确认预览，不会直接修改。` } };
+        }
+      }
+      const panelCall = await preparePanelCall(Number(actor.id), intent.tool, intent.input);
+      return { prepared: { actor, pending: { actorUserId: Number(actor.id), actorRole: actor.role as "admin" | "user", action, panelCall, sourceText: sourceText.slice(0, 500) } } };
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const issues = error.issues.slice(0, 6).map(i => `${i.path.join(".") || "操作参数"}：${i.message}`).join("\n");
+        return { clarify: { actor, intent, missingFields: ["panelInput"], text: `请补充或修正操作参数：\n${escapeHtml(issues)}` } };
+      }
+      return { error: escapeHtml(error instanceof Error ? error.message : String(error)) };
+    }
   }
 
   if (action === "registration_enable" || action === "registration_disable") {
@@ -2636,13 +2739,13 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
           ...(codeCount ? { codeCount } : {}),
         };
         const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
-        let text = `请补充余额兑换码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        let text = `请补充余额兑换码信息（待办已保存）。`;
         if (missingFields.includes("amountYuan") && missingFields.includes("codeCount")) {
-          text = `请补充兑换码面额和数量，例如“50 元 20 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+          text = `请补充兑换码面额和数量，例如“50 元 20 个”（待办已保存）。`;
         } else if (missingFields.includes("amountYuan")) {
-          text = `请补充每个兑换码金额（单位：元），例如“50”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+          text = `请补充每个兑换码金额（单位：元），例如“50”（待办已保存）。`;
         } else if (missingFields.includes("codeCount")) {
-          text = `请补充要生成的兑换码数量，例如“20 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+          text = `请补充要生成的兑换码数量，例如“20 个”（待办已保存）。`;
         }
         return {
           clarify: {
@@ -2692,13 +2795,13 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
         ...(codeCount ? { codeCount } : {}),
       };
       const presetUi = managePresetClarifyUi(action, sourceText, missingFields);
-      let text = `请补充折扣码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+      let text = `请补充折扣码信息（待办已保存）。`;
       if (missingFields.includes("discountPercent") && missingFields.includes("codeCount")) {
-        text = `请补充折扣力度和数量，例如“8 折 10 个”或“减 20% 10 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        text = `请补充折扣力度和数量，例如“8 折 10 个”或“减 20% 10 个”（待办已保存）。`;
       } else if (missingFields.includes("discountPercent")) {
-        text = `请补充折扣力度，例如“8 折”或“减 20%”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        text = `请补充折扣力度，例如“8 折”或“减 20%”（待办已保存）。`;
       } else if (missingFields.includes("codeCount")) {
-        text = `请补充要生成的折扣码数量，例如“10 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        text = `请补充要生成的折扣码数量，例如“10 个”（待办已保存）。`;
       }
       return {
         clarify: {
@@ -2824,7 +2927,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
             actor,
             intent: nextIntent,
             missingFields: ["ruleId"],
-            text: `匹配到 ${matchedRules.length} 条规则，请选择要删除的规则（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+            text: `匹配到 ${matchedRules.length} 条规则，请选择要删除的规则（待办已保存）。`,
             keyboard: manageClarifyRuleKeyboard(matchedRules),
           },
         };
@@ -2869,6 +2972,9 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
       if (!Number.isFinite(sourcePort as number)) sourcePort = 0;
 
       const forwardMode = normalizeManageForwardMode(intent.forwardMode || extractManageForwardMode(sourceText));
+      if (forwardMode === "host") {
+        return { error: "普通端口转发需要指定转发组或转发链，目前请在网页中新增；机器人可新增隧道转发规则。" };
+      }
       if (!forwardMode) {
         const nextIntent: ManageActionIntent = {
           ...intent,
@@ -2882,7 +2988,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
             actor,
             intent: nextIntent,
             missingFields: ["forwardMode"],
-            text: `请先选择要新增为哪种转发方式（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+            text: `请先选择要新增为哪种转发方式（待办已保存）。`,
             keyboard: manageClarifyModeKeyboard(),
           },
         };
@@ -2915,7 +3021,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
                 actor,
                 intent: nextIntent,
                 missingFields: ["tunnel"],
-                text: `请选择要添加到哪个隧道（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+                text: `请选择要添加到哪个隧道（待办已保存）。`,
                 keyboard: manageClarifyTunnelKeyboard(tunnels as any[]),
               },
             };
@@ -2924,37 +3030,6 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
         const hostIdFromTunnel = Number((tunnel as any)?.entryHostId || 0);
         if (!hostIdFromTunnel) return { error: "所选隧道入口主机无效，无法创建规则。" };
         host = await db.getHostById(hostIdFromTunnel).catch(() => null);
-      } else {
-        const hostKeyword = normalizeManageHostKeyword(intent.host || extractManageHostKeyword(sourceText));
-        if (hostKeyword) {
-          const resolvedHost = await resolveManageHost(actor, hostKeyword);
-          if (!resolvedHost.host) return { error: resolvedHost.error || "主机不存在或无权操作。" };
-          host = resolvedHost.host;
-        } else {
-          const hosts = await visibleHostsForTelegramUser(actor);
-          if ((hosts as any[]).length === 0) return { error: "当前没有可用主机，无法新增端口转发规则。" };
-          if ((hosts as any[]).length === 1) {
-            host = (hosts as any[])[0];
-          } else {
-            const nextIntent: ManageActionIntent = {
-              ...intent,
-              action,
-              forwardMode: "host",
-              targetIp,
-              targetPort,
-              sourcePort,
-            };
-            return {
-              clarify: {
-                actor,
-                intent: nextIntent,
-                missingFields: ["host"],
-                text: `请选择要添加到哪个主机（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
-                keyboard: manageClarifyHostKeyboard(hosts as any[]),
-              },
-            };
-          }
-        }
       }
       if (!host) return { error: "没有可用的入口主机，无法新增规则。" };
       const hostId = Number((host as any).id || 0);
@@ -3008,7 +3083,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
         actor,
         intent: { ...intent, action },
         missingFields: ["target"],
-        text: `请补充要操作的目标用户（用户ID/用户名/邮箱），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+        text: `请补充要操作的目标用户（用户ID/用户名/邮箱），待办会保留至完成或取消。`,
         keyboard: manageClarifyCancelKeyboard(),
       },
     };
@@ -3046,8 +3121,8 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
           intent: { ...intent, action, target: targetKeyword || intent.target },
           missingFields,
           text: presetUi?.text || (action === "balance_set"
-            ? `请补充要设置的余额金额（单位：元），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`
-            : `请补充要调整的金额（单位：元，可正可负），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`),
+            ? `请补充要设置的余额金额（单位：元），待办会保留至完成或取消。`
+            : `请补充要调整的金额（单位：元，可正可负），待办会保留至完成或取消。`),
           keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
         },
       };
@@ -3079,7 +3154,7 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
           actor,
           intent: { ...intent, action, target: targetKeyword || intent.target },
           missingFields,
-          text: presetUi?.text || `请补充续期时长，例如“1个月”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+          text: presetUi?.text || `请补充续期时长，例如“1个月”（待办已保存）。`,
           keyboard: presetUi?.keyboard || manageClarifyCancelKeyboard(),
         },
       };
@@ -3110,7 +3185,9 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
     ...(target ? [`目标用户：${formatUserLabel(target)}`] : []),
     `操作类型：<b>${escapeHtml(manageActionLabel(action))}</b>`,
   ];
-  if (action === "balance_set") {
+  if (action === "panel_operation") {
+    lines.push(...(pending.panelCall?.preview || []).map(line => escapeHtml(line)));
+  } else if (action === "balance_set") {
     lines.push(`当前余额：${formatMoneyCny(target?.balanceCents)}`);
     lines.push(`设置为：<b>${formatMoneyCny(pending.amountCents)}</b>`);
   } else if (action === "balance_adjust") {
@@ -3198,7 +3275,8 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
 }
 
 async function executePendingManageActionUnchecked(pending: PendingManageAction, callbackUser: any) {
-  const actor = (await db.getUserById(Number(callbackUser?.id || 0)).catch(() => null)) || callbackUser;
+  const actor = await db.getUserById(Number(callbackUser?.id || 0));
+  if (!actor || actor.accountEnabled === false) throw new Error("当前账户不存在或已停用，请重新登录。");
   if (Number(actor?.id || 0) !== Number(pending.actorUserId || 0)) {
     throw new Error("只有原发起人可以确认该操作。");
   }
@@ -3210,6 +3288,12 @@ async function executePendingManageActionUnchecked(pending: PendingManageAction,
     throw new Error("当前账户已无该操作权限。");
   }
   const sourceText = shortText(pending.sourceText || "", 180);
+
+  if (pending.action === "panel_operation") {
+    if (!pending.panelCall) throw new Error("操作参数不存在，请重新发起");
+    const result = await executePanelCall(Number(actor.id), pending.panelCall);
+    return `<b>执行成功：${escapeHtml(result.label)}</b>\n<pre>${escapeHtml(formatPanelToolResult(result.result))}</pre>`;
+  }
 
   if (pending.action === "registration_enable" || pending.action === "registration_disable") {
     if (String(actor?.role) !== "admin") throw new Error("只有管理员可以调整开放注册。");
@@ -3257,7 +3341,7 @@ async function executePendingManageActionUnchecked(pending: PendingManageAction,
         throw new Error("源端口无效，请输入 1-65535，或省略源端口使用随机端口。");
       }
       const forwardType = pickManageRuleForwardType(actor, mode);
-      const ruleName = `TG-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${sourcePort}`;
+      const ruleName = `${isDiscordBotContext() ? "DC" : "TG"}-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${sourcePort}`;
       const created = await createDirectForwardRuleForActor(actor, {
         hostId,
         name: shortText(ruleName, 64),
@@ -3448,7 +3532,7 @@ async function executePendingManageActionUnchecked(pending: PendingManageAction,
         actor,
         targetUserId: Number(target.id),
         balanceCents: amountCents,
-        description: `Telegram 余额设置：${sourceText}`,
+        description: `机器人余额设置：${sourceText}`,
         reasonPrefix: "telegram-balance-set",
       });
       return [
@@ -3465,7 +3549,7 @@ async function executePendingManageActionUnchecked(pending: PendingManageAction,
         actor,
         targetUserId: Number(target.id),
         amountCents,
-        description: `Telegram 余额调整：${sourceText}`,
+        description: `机器人余额调整：${sourceText}`,
         reasonPrefix: "telegram-balance-adjust",
       });
       return [
@@ -3542,7 +3626,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       result: "success",
       actorUserId: Number(callbackUser?.id || pending.actorUserId || 0) || null,
       actorRole: String(callbackUser?.role || pending.actorRole || ""),
-      action: pending.action,
+      action: pending.panelCall?.tool || pending.action,
       ruleId: pending.ruleId,
       tunnelId: pending.tunnelId,
       hostId: pending.hostId,
@@ -3557,7 +3641,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
       result: /(权限|无权|只有|禁止|不允许)/.test(detail) ? "denied" : "failed",
       actorUserId: Number(callbackUser?.id || pending.actorUserId || 0) || null,
       actorRole: String(callbackUser?.role || pending.actorRole || ""),
-      action: pending.action,
+      action: pending.panelCall?.tool || pending.action,
       ruleId: pending.ruleId,
       tunnelId: pending.tunnelId,
       hostId: pending.hostId,
@@ -3569,127 +3653,207 @@ async function executePendingManageAction(pending: PendingManageAction, callback
   }
 }
 
+async function readBotPlannerContext(user: any, tool: ContextTool, keyword?: string, call?: { tool?: PanelToolName; input?: Record<string, unknown> }) {
+  user = await db.getUserById(Number(user.id));
+  if (!user || user.accountEnabled === false) return { error: "账户不存在或已停用" };
+  // Only intentionally selected metadata leaves the panel. No tokens, passwords,
+  // tunnel keys, full user rows, command output or arbitrary database access.
+  const resources = (kind: "rules" | "hosts") => kind === "rules" ? visibleRulesForTelegramUser(user) : visibleHostsForTelegramUser(user);
+  const queryTool = tool === "settings" ? "settings.read" : tool === "plans" ? "plans.list" : tool === "subscriptions" ? "subscriptions.list" : tool === "announcements" ? "announcements.list" : null;
+  if (queryTool || tool === "panel") {
+    try { return await queryPanelCall(Number(user.id), queryTool || call?.tool, queryTool ? { keyword, limit: 15 } : call?.input, resources); }
+    catch (error) { return { error: error instanceof Error ? error.message : "查询失败" }; }
+  }
+  const fields: Partial<Record<ContextTool, string[]>> = {
+    rules: ["id", "name", "userId", "hostId", "tunnelId", "sourcePort", "targetIp", "targetPort", "forwardType", "isEnabled", "isRunning"],
+    hosts: ["id", "name", "isOnline", "portRangeStart", "portRangeEnd"],
+    tunnels: ["id", "name", "entryHostId", "exitHostId", "mode", "isEnabled", "isRunning"],
+    users: ["id", "name", "username", "role", "accountEnabled"],
+    account: ["id", "username", "role", "canAddRules", "expiresAt", "trafficLimit", "trafficUsed", "balanceCents"],
+    forward_groups: ["id", "name", "groupMode", "groupType", "forwardType", "isEnabled", "userId"],
+  };
+  const rows = tool === "rules" ? await visibleRulesForTelegramUser(user)
+    : tool === "hosts" ? await visibleHostsForTelegramUser(user)
+    : tool === "tunnels" ? await visibleTunnelsForTelegramUser(user)
+    : tool === "users" ? user.role === "admin" ? await db.getUserOptions() : []
+    : tool === "forward_groups" ? await visibleForwardGroupsForTelegramUser(user)
+    : [await db.getUserById(Number(user.id))];
+  const selectedFields = fields[tool] || [];
+  const selected = rows.filter((row: any) => row && (!keyword || searchMatches(keyword,
+    [...selectedFields.map((field) => row[field]), ...(tool === "users" ? [row.email] : [])])));
+  return { total: selected.length, truncated: selected.length > 30, items: selected.slice(0, 30).map((row: any) => Object.fromEntries(selectedFields.map((field) => [field, row[field]]))) };
+}
+
+function botWorkflowProgress(session: PendingManageClarifySession) {
+  const done = session.completedActions?.length || 0;
+  const total = done + 1 + (session.remainingIntents?.length || 0);
+  return `<b>目标：</b>${escapeHtml(session.goal || String(session.sourceText || "待确认操作").slice(0, 180))}\n步骤 ${done + 1}/${total}（已完成 ${done}）\n`;
+}
+
+async function presentBotOperation(message: TelegramMessage, user: any, session: PendingManageClarifySession, options: { editMessageId?: number | string; page?: number } = {}) {
+  const intent = normalizeRuleCreateIntent(session.intent, session.sourceText);
+  session = { ...session, intent, action: intent.action };
+  await saveBotDraft(manageScope(message.chat.id, user.id), session);
+  const respond = async (text: string, keyboard?: InlineKeyboardMarkup) => {
+    if (options.editMessageId !== undefined) {
+      await editMessage(message.chat.id, options.editMessageId, text, keyboard);
+      return options.editMessageId;
+    }
+    return sendMessage(message.chat.id, text, keyboard);
+  };
+  const prepared = await prepareManageAction(user, session.sourceText, session.intent, options.page);
+  if (prepared.clarify) {
+    const collecting = await createPendingManageClarifySession(message.chat.id, user, session.sourceText, prepared.clarify.intent, prepared.clarify.missingFields, prepared.clarify.choices);
+    const sent = await respond(botWorkflowProgress(session) + prepared.clarify.text, collecting.selection ? manageChoiceKeyboard(collecting.selection) : prepared.clarify.keyboard || manageClarifyCancelKeyboard());
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return;
+  }
+  if (!prepared.prepared) {
+    const sent = await respond(botWorkflowProgress(session) + (prepared.error || "信息不足，请补充。") + "\n待办已保存，可继续补充或发送“取消”。", manageClarifyCancelKeyboard());
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return;
+  }
+  const pending = await createPendingManageAction(prepared.prepared.pending, message.chat.id);
+  appendAiAudit({ phase: "preview", result: "success", actorUserId: Number(user.id), actorRole: String(user.role), action: pending.panelCall?.tool || pending.action });
+  const sent = await respond(botWorkflowProgress(session) + manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target), manageActionConfirmKeyboard(pending.key));
+  await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+}
+
 async function tryHandleManageAction(message: TelegramMessage, user: any, rawText: string) {
   const query = rawText.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!query) return false;
-  const deepseekSettings = await getDeepSeekSettings().catch(() => null);
-  const userManageDisabled = String(user?.role) !== "admin" && deepseekSettings?.telegramUserManageEnabled === false;
-  const activeClarify = getPendingManageClarifySession(message.chat.id, user.id);
-  if (activeClarify) {
-    if (/^(取消|放弃|算了|退出|cancel)$/i.test(query)) {
-      clearPendingManageClarifySession(message.chat.id, user.id);
-      const sent = await sendMessage(message.chat.id, "已取消本次操作。", backMenuKeyboard());
-      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+  const scope = manageScope(message.chat.id, user.id);
+  await pruneBotWorkflowHistory();
+  let session = await getPendingManageClarifySession(message.chat.id, user.id);
+  if (session?.action === "rule_create" && !session.confirmationKey) {
+    const intent = normalizeRuleCreateIntent(session.intent, session.sourceText);
+    session = { ...session, intent, action: intent.action };
+  }
+  if (!session && /^(继续|恢复|查看待办|操作进度|resume|status)$/i.test(query)) {
+    await sendMessage(message.chat.id, "当前没有未完成的 AI 操作，可以直接发送新的请求。", backMenuKeyboard());
+    return true;
+  }
+  if (/^(取消|放弃|算了|退出|cancel)$/i.test(query)) {
+    await clearPendingManageClarifySession(message.chat.id, user.id);
+    await sendMessage(message.chat.id, "已结束本次待办。已提交或已完成的操作不会停止或撤销，请核实实际结果。", backMenuKeyboard());
+    return true;
+  }
+  if (session?.confirmationKey) {
+    const action = await readBotAction<PendingManageAction>(scope, session.confirmationKey);
+    if (action?.status === "executing" || action?.status === "uncertain") {
+      await sendMessage(message.chat.id, botWorkflowProgress(session) + "上次操作已开始执行，但结果尚未确认。为避免重复充值、创建或续期，不会自动重试。请先在面板核实结果，再取消此待办或发起新操作。");
       return true;
     }
-    if (userManageDisabled) {
-      const sent = await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
-      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    if (action?.status === "pending" && action.payload.expiresAt > Date.now()) {
+      if (/^(继续|恢复|查看待办|操作进度|确认|resume|status|confirm|yes)$/i.test(query)) {
+        const pending = { ...action.payload, key: action.id };
+        const sent = await sendMessage(message.chat.id, botWorkflowProgress(session) + manageActionConfirmText(pending, user), manageActionConfirmKeyboard(pending.key));
+        await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+        return true;
+      }
+    }
+    // An expired confirmation does not erase the goal/parameters. Revalidate
+    // and issue a NEW token only on an explicit resume, never auto-execute.
+    if (action?.status === "pending" && !(await finishBotAction(scope, action.id, "cancelled", "确认已过期"))) throw new Error("操作状态已变化，请发送“继续”查看。");
+    session = { ...session, stage: "collecting", confirmationKey: undefined };
+    await saveBotDraft(scope, session);
+  }
+  const settings = await getDeepSeekSettings();
+  if (session?.intent.tool === "rules.create" && session.selection) {
+    const patch = ruleCreateTextPatch(query, session.selection.field);
+    if (patch) {
+      session = { ...session, intent: { ...session.intent, input: { ...session.intent.input, ...patch } } };
+      await presentBotOperation(message, user, session);
       return true;
     }
-    const extractedPatch = extractManageIntentPatchFromText(query, activeClarify.missingFields || []);
-    const contextualPatch = normalizeManagePresetCustomPatch({
-      action: activeClarify.action,
-      sourceText: activeClarify.sourceText,
-      missingFields: activeClarify.missingFields,
-    }, extractedPatch);
-    const mergedIntent = mergeManageActionIntent(activeClarify.intent, contextualPatch);
-    const mergedSourceText = `${activeClarify.sourceText}\n补充：${query}`.slice(0, 500);
-    const prepared = await prepareManageAction(user, mergedSourceText, mergedIntent);
-    if (prepared.clarify) {
-      createPendingManageClarifySession(
-        message.chat.id,
-        prepared.clarify.actor || user,
-        mergedSourceText,
-        prepared.clarify.intent,
-        prepared.clarify.missingFields,
-      );
-      const sent = await sendMessage(
-        message.chat.id,
-        prepared.clarify.text,
-        prepared.clarify.keyboard || manageClarifyCancelKeyboard(),
-      );
-      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
-      return true;
+  }
+  let plan: BotPlan | null = null;
+  const simpleCreate = !session ? simpleRuleCreateRequest(query) : null;
+  if (simpleCreate) {
+    plan = { kind: "manage", goal: query.slice(0, 500), confidence: 1, actions: [{ action: "panel_operation", tool: "rules.create", input: simpleCreate }] };
+  } else if (settings.enabled && settings.apiKey && !/^(继续|恢复|查看待办|操作进度|resume|status)$/i.test(query)) {
+    try {
+      plan = await planBotOperation({
+        text: query, settings, actorRole: user.role,
+        workflow: session ? { goal: session.goal, intent: session.intent, missingFields: session.missingFields, sourceText: session.sourceText, completedActions: session.completedActions } : undefined,
+        readContext: (tool, keyword, call) => readBotPlannerContext(user, tool, keyword, call),
+      });
+    } catch (error) {
+      appendAiAudit({ phase: "intent", result: "fallback", actorUserId: user.id, detail: error instanceof Error ? error.message : String(error) });
+      // Do not turn a failed model response into a guessed write. Existing
+      // guided fields can still be filled by the local parser below.
+      if (!session) {
+        await sendMessage(message.chat.id, "AI 服务暂时不可用，本次未执行任何修改，请稍后重试。");
+        return true;
+      }
     }
-    if (!prepared.prepared) {
-      const sent = await sendMessage(
-        message.chat.id,
-        `${prepared.error || "信息仍不完整，请继续补充。"}\n\n可继续补充信息，或发送“取消”结束本次操作。`,
-        manageClarifyCancelKeyboard(),
-      );
-      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
-      return true;
-    }
-    clearPendingManageClarifySession(message.chat.id, user.id);
-    const pending = createPendingManageAction(prepared.prepared.pending);
-    appendAiAudit({
-      phase: "preview",
-      result: "success",
-      actorUserId: Number(user.id),
-      actorRole: String(user.role || ""),
-      action: pending.action,
-      ruleId: pending.ruleId,
-      tunnelId: pending.tunnelId,
-      hostId: pending.hostId,
-      targetUserId: pending.targetUserId,
-    });
-    const sent = await sendMessage(
-      message.chat.id,
-      manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
-      manageActionConfirmKeyboard(pending.key),
-    );
+  }
+  if (plan?.kind === "query") {
+    const parsed = normalizeAiQueryIntent(plan.query, { intent: "help" });
+    const sent = await sendMessage(message.chat.id, await aiQueryText(user, query, parsed));
     await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
     return true;
   }
-
-  const { intent, writeLike } = await parseManageActionIntent(query);
-  if (!writeLike || intent.action === "none") return false;
-  if (userManageDisabled) {
-    const sent = await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
+  if (plan?.kind === "unsupported") {
+    await sendMessage(message.chat.id, escapeHtml(plan.question) + (session ? "\n原待办仍保留，发送“继续”可恢复。" : ""));
+    return true;
+  }
+  if (plan?.kind === "clarify") {
+    if (!session) {
+      session = { actorUserId: user.id, actorRole: user.role, action: "none", intent: { action: "none" }, sourceText: query.slice(0, 6000), missingFields: [], createdAt: Date.now(), expiresAt: 0, plannerOnly: true };
+    }
+    session = { ...session, goal: plan.goal, question: plan.question,
+      sourceText: session.sourceText === query ? session.sourceText : `${session.sourceText}\n补充：${query}`.slice(-6000) };
+    await saveBotDraft(scope, session);
+    const sent = await sendMessage(message.chat.id, escapeHtml(plan.question) + "\n待办已保存，补充信息或发送“取消”即可。", manageClarifyCancelKeyboard());
     await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
     return true;
   }
-  const prepared = await prepareManageAction(user, query, intent);
-  if (prepared.clarify) {
-    createPendingManageClarifySession(
-      message.chat.id,
-      prepared.clarify.actor || user,
-      query,
-      prepared.clarify.intent,
-      prepared.clarify.missingFields,
-    );
-    const sent = await sendMessage(
-      message.chat.id,
-      prepared.clarify.text,
-      prepared.clarify.keyboard || manageClarifyCancelKeyboard(),
-    );
-    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+  if (session?.plannerOnly && plan?.kind !== "manage") {
+    await sendMessage(message.chat.id, escapeHtml(session.question || "请补充具体希望进行的操作。"), manageClarifyCancelKeyboard());
     return true;
   }
-  if (!prepared.prepared) {
-    const sent = await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
-    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
-    return true;
+  if (plan?.kind === "manage") {
+    if (user.role !== "admin" && settings.telegramUserManageEnabled === false) {
+      await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
+      return true;
+    }
+    const actions = plan.actions.map((action) => normalizeRuleCreateIntent(normalizeManageActionIntent(action, { action: "none" }), query));
+    if (session && !session.plannerOnly) {
+      actions[0] = normalizeManagePresetCustomPatch({ action: session.action, sourceText: session.sourceText, missingFields: session.missingFields }, actions[0]);
+    }
+    if (session && !session.plannerOnly && actions[0].action !== session.action) {
+      await sendMessage(message.chat.id, "当前还有未完成操作。请先发送“取消”结束原待办，再发起新的操作；原步骤不会被静默替换。", manageClarifyCancelKeyboard());
+      return true;
+    }
+    if (session?.intent.tool && actions[0].tool && session.intent.tool !== actions[0].tool) {
+      await sendMessage(message.chat.id, "当前待办的工具不能被静默替换，请先取消原操作。", manageClarifyCancelKeyboard());
+      return true;
+    }
+    session = {
+      ...(session || { actorUserId: user.id, actorRole: user.role, createdAt: Date.now(), expiresAt: 0, missingFields: [], sourceText: query }),
+      goal: session?.goal || plan.goal, action: actions[0].action,
+      intent: session && !session.plannerOnly ? mergeManageActionIntent(session.intent, actions[0]) : actions[0],
+      remainingIntents: session && !session.plannerOnly ? session.remainingIntents : actions.slice(1),
+      plannerOnly: false, stage: "collecting", confirmationKey: undefined,
+      sourceText: session ? `${session.sourceText}\n补充：${query}`.slice(-6000) : query.slice(0, 6000),
+    };
+  } else if (session) {
+    if (!/^(继续|恢复|查看待办|操作进度|resume|status)$/i.test(query)) {
+      const patch = normalizeManagePresetCustomPatch({ action: session.action, sourceText: session.sourceText, missingFields: session.missingFields }, extractManageIntentPatchFromText(query, session.missingFields));
+      session = { ...session, intent: mergeManageActionIntent(session.intent, patch), sourceText: `${session.sourceText}\n补充：${query}`.slice(-6000) };
+    }
+  } else {
+    // When AI is disabled, retain the deterministic guided command capability.
+    const local = localManageActionIntent(query);
+    if (!local.writeLike || local.intent.action === "none") return false;
+    if (user.role !== "admin" && settings.telegramUserManageEnabled === false) {
+      await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
+      return true;
+    }
+    session = { actorUserId: user.id, actorRole: user.role, action: local.intent.action, intent: local.intent, goal: query.slice(0, 500), sourceText: query.slice(0, 6000), missingFields: [], createdAt: Date.now(), expiresAt: 0, stage: "collecting" };
   }
-  const pending = createPendingManageAction(prepared.prepared.pending);
-  appendAiAudit({
-    phase: "preview",
-    result: "success",
-    actorUserId: Number(user.id),
-    actorRole: String(user.role || ""),
-    action: pending.action,
-    ruleId: pending.ruleId,
-    tunnelId: pending.tunnelId,
-    hostId: pending.hostId,
-    targetUserId: pending.targetUserId,
-  });
-  const sent = await sendMessage(
-    message.chat.id,
-    manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
-    manageActionConfirmKeyboard(pending.key),
-  );
-  await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+  await presentBotOperation(message, user, session);
   return true;
 }
 
@@ -4370,6 +4534,11 @@ function aiQueryHelpText() {
     `${aiCode("规则 #12 详情")}`,
     `${aiCode("第9条规则用了多少流量")}`,
     `${aiCode("哪个规则流量最多")}`,
+    `${aiCode("哪些规则所属用户7天内到期")}`,
+    `${aiCode("哪些主机快到期了")}`,
+    `${aiCode("查看插件功能是否开启")}`,
+    `${aiCode("查看我的订阅")}`,
+    `${aiCode("查看可用套餐")}`,
     `${aiCode("规则延迟最高的前 5 条")}`,
     `${aiCode("9号规则用了多少流量")}`,
     `${aiCode("用户1的使用详情")}`,
@@ -4397,22 +4566,32 @@ function aiQueryHelpText() {
     `${aiCode("删除转发到 10.10.0.1:5151 的规则")}`,
     `${aiCode("删除第 12 条规则")}`,
     `${aiCode("重置用户 1 流量")}`,
+    `${aiCode("关闭插件功能，开启多设备登录")}`,
+    `${aiCode("把主机3的续费提醒改成提前3天")}`,
+    `${aiCode("把规则12的目标改成 example.com:443")}`,
+    `${aiCode("关闭转发组2")}`,
+    `${aiCode("给用户2新增主机3的使用权限")}`,
     "",
     "<b>普通用户可用操作（仅限自己）</b>",
     `${aiCode("关闭我的转发")}`,
     `${aiCode("启用我的转发")}`,
     "",
-    "<i>新增转发时，若未说明“端口转发/隧道转发”会先弹出选择；未提供源端口时默认随机分配。</i>",
+    "<i>新增规则需指定隧道或端口转发链；新工具缺少源端口时会追问，明确选择随机时使用0。敏感凭据、数据库迁移和升级等请在网页操作。</i>",
     "",
     "<i>所有写操作都会先生成确认卡片，点击“确认执行”后才会生效。</i>",
+    "<i>多步骤请求会逐项确认；待办和已完成步骤保存在面板数据库中。发送“继续”恢复，“取消”结束剩余操作（不会撤销已完成步骤）。</i>",
   ].join("\n");
 }
 
-async function aiQueryText(user: any, rawText: string) {
+async function aiQueryText(user: any, rawText: string, planned?: AiQueryIntent) {
   const query = rawText.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!query) return aiQueryHelpText();
-  const parsed = await parseAiQueryIntent(query);
+  const parsed = planned || await parseAiQueryIntent(query);
   switch (parsed.intent) {
+    case "panel_query": {
+      const result = await queryPanelCall(Number(user.id), parsed.tool, parsed.input, (kind, actor) => kind === "rules" ? visibleRulesForTelegramUser(actor) : visibleHostsForTelegramUser(actor));
+      return `<b>${escapeHtml(result.label)}</b>\n<pre>${escapeHtml(formatPanelToolResult(result))}</pre>`;
+    }
     case "usage":
       return usageText(user);
     case "account":
@@ -4625,7 +4804,7 @@ async function handleWebApp(message: TelegramMessage, user?: any | null) {
   const webAppUrl = settings.panelPublicUrl
     ? buildTelegramWebAppUrl(
       settings.panelPublicUrl,
-      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || message.from?.id || null }),
+      isDiscordBotContext() ? undefined : createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || message.from?.id || null }),
     )
     : "";
   if (!webAppUrl) {
@@ -4881,7 +5060,7 @@ async function handleMessage(message: TelegramMessage) {
   const waitingForRedeemCode = hasValidRedeemSession(message.chat.id, identity.telegramId);
 
   if (command === "/start" && args[0]) {
-    if (isMobileLoginCode(args[0])) {
+    if (!isDiscordBotContext() && isMobileLoginCode(args[0])) {
       await handleMobileLoginStart(message, args[0], identity.user);
       return;
     }
@@ -4951,7 +5130,7 @@ async function handleMessage(message: TelegramMessage) {
   if (command === "/enable") return handleRuleToggle(message, user, args[0], true);
   if (command === "/disable") return handleRuleToggle(message, user, args[0], false);
   if (command === "/unbind") {
-    await sendMessage(message.chat.id, "确认解除当前 Telegram 绑定吗？解除后需要重新绑定才能使用机器人。", unbindConfirmKeyboard());
+    await sendMessage(message.chat.id, "确认解除当前通知机器人 绑定吗？解除后需要重新绑定才能使用机器人。", unbindConfirmKeyboard());
     return;
   }
 
@@ -4977,6 +5156,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
   const chatId = query.message.chat.id;
   const messageId = query.message.message_id;
   const data = query.data || "";
+  if (isDiscordBotContext() && data.startsWith("fx:app-login")) return;
   if (data === "fx:bind:start") {
     if (user) {
       if ((user as any).accountEnabled === false) {
@@ -4995,7 +5175,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
     return;
   }
   if (!user) {
-    await editMessage(chatId, messageId, "当前 Telegram 尚未绑定 ForwardX 账户。请先完成绑定。", bindPromptKeyboard());
+    await editMessage(chatId, messageId, "当前通知机器人 尚未绑定 ForwardX 账户。请先完成绑定。", bindPromptKeyboard());
     return;
   }
   if ((user as any).accountEnabled === false) {
@@ -5186,18 +5366,51 @@ async function handleCallback(query: TelegramCallbackQuery) {
     return;
   }
 
+  if (data.startsWith("fx:op:choose:")) {
+    const session = await getPendingManageClarifySession(chatId, user.id);
+    const match = data.match(/^fx:op:choose:([a-f0-9]{18}):(\d+|cancel|page:\d+)$/);
+    if (!match || !session?.selection || session.selection.key !== match[1] || session.stage !== "collecting" || session.intent.action !== "panel_operation" || !["rules.create", "settings.set"].includes(session.intent.tool || "")) {
+      // A delayed duplicate click must not overwrite the newly displayed menu.
+      await sendMessage(chatId, "该选项已失效，请使用最新选项，或发送“继续”查看当前待办。", backMenuKeyboard());
+      return;
+    }
+    const selection = match[2];
+    if (selection === "cancel") {
+      await clearPendingManageClarifySession(chatId, user.id);
+      await editMessage(chatId, messageId, "已取消本次操作，没有创建规则。", backMenuKeyboard());
+      return;
+    }
+    let page = 0;
+    if (selection.startsWith("page:")) {
+      page = Number(selection.slice(5));
+      if (!Number.isSafeInteger(page) || page < 0 || page >= session.selection.pages || Math.abs(page - session.selection.page) !== 1) return;
+    } else {
+      const choice = session.selection.choices[Number(selection)];
+      if (!choice) return;
+      session.intent = { ...session.intent, input: { ...session.intent.input, ...choice.input } };
+    }
+    // Every step reloads the user's usable resources. A button is never an
+    // execution token, and removed permissions cannot be bypassed by old menus.
+    await presentBotOperation(query.message!, user, session, { editMessageId: messageId, page });
+    return;
+  }
+
   if (data.startsWith("fx:op:clarify:")) {
-    const session = getPendingManageClarifySession(chatId, user.id);
+    const session = await getPendingManageClarifySession(chatId, user.id);
     if (!session) {
-      await editMessage(chatId, messageId, "补充信息会话已超时，请重新发送操作指令。", backMenuKeyboard());
+      await editMessage(chatId, messageId, "当前没有待补充的操作，请重新发送指令。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     const action = data.slice("fx:op:clarify:".length);
     if (action === "cancel") {
-      clearPendingManageClarifySession(chatId, user.id);
-      await editMessage(chatId, messageId, "已取消本次操作。", backMenuKeyboard());
+      await clearPendingManageClarifySession(chatId, user.id);
+      await editMessage(chatId, messageId, "已结束本次待办。已提交或已完成的操作不会停止或撤销，请核实实际结果。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+    if (session.stage === "confirming" || session.plannerOnly) {
+      await editMessage(chatId, messageId, "该补充选项已经变化，请发送“继续”查看当前待办。", backMenuKeyboard());
       return;
     }
 
@@ -5209,7 +5422,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
         await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
         return;
       }
-      createPendingManageClarifySession(
+      await createPendingManageClarifySession(
         chatId,
         user,
         session.sourceText,
@@ -5219,7 +5432,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       await editMessage(
         chatId,
         messageId,
-        `${presetUi.customPrompt}\n\n发送“取消”可结束本次操作，${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+        `${presetUi.customPrompt}\n\n发送“取消”可结束本次操作，待办会保留至完成或取消。`,
         manageClarifyCancelKeyboard(),
       );
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
@@ -5242,6 +5455,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       }
       Object.assign(nextIntent, patch);
     } else if (action.startsWith("mode:")) {
+      if (!session.missingFields.includes("forwardMode")) return;
       const modeRaw = action.slice("mode:".length);
       if (modeRaw !== "host" && modeRaw !== "tunnel") {
         await editMessage(chatId, messageId, "转发模式选项无效，请重新选择。", manageClarifyModeKeyboard());
@@ -5252,6 +5466,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       if (modeRaw === "host") delete nextIntent.tunnel;
       if (modeRaw === "tunnel") delete nextIntent.host;
     } else if (action.startsWith("tunnel:")) {
+      if (!session.missingFields.includes("tunnel")) return;
       const tunnelId = Number(action.slice("tunnel:".length));
       if (!Number.isFinite(tunnelId) || tunnelId <= 0) {
         await editMessage(chatId, messageId, "隧道选项无效，请重新选择。", manageClarifyCancelKeyboard());
@@ -5262,6 +5477,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       nextIntent.tunnel = String(tunnelId);
       delete nextIntent.host;
     } else if (action.startsWith("host:")) {
+      if (!session.missingFields.includes("host")) return;
       const hostId = Number(action.slice("host:".length));
       if (!Number.isFinite(hostId) || hostId <= 0) {
         await editMessage(chatId, messageId, "主机选项无效，请重新选择。", manageClarifyCancelKeyboard());
@@ -5272,6 +5488,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
       nextIntent.host = String(hostId);
       delete nextIntent.tunnel;
     } else if (action.startsWith("rule:")) {
+      if (!session.missingFields.includes("ruleId")) return;
       const ruleId = Number(action.slice("rule:".length));
       if (!Number.isFinite(ruleId) || ruleId <= 0) {
         await editMessage(chatId, messageId, "规则选项无效，请重新选择。", manageClarifyCancelKeyboard());
@@ -5287,7 +5504,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
 
     const prepared = await prepareManageAction(user, session.sourceText, nextIntent);
     if (prepared.clarify) {
-      createPendingManageClarifySession(
+      await createPendingManageClarifySession(
         chatId,
         prepared.clarify.actor || user,
         session.sourceText,
@@ -5299,13 +5516,13 @@ async function handleCallback(query: TelegramCallbackQuery) {
       return;
     }
 
-    clearPendingManageClarifySession(chatId, user.id);
     if (!prepared.prepared) {
       await editMessage(chatId, messageId, prepared.error || "未识别到可执行的管理操作。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
-    const actionPending = createPendingManageAction(prepared.prepared.pending);
+    await createPendingManageClarifySession(chatId, user, session.sourceText, nextIntent, []);
+    const actionPending = await createPendingManageAction(prepared.prepared.pending, chatId);
     await editMessage(
       chatId,
       messageId,
@@ -5318,9 +5535,9 @@ async function handleCallback(query: TelegramCallbackQuery) {
 
   if (data.startsWith("fx:op:confirm:")) {
     const actionKey = data.slice("fx:op:confirm:".length).trim().toLowerCase();
-    const pending = getPendingManageAction(actionKey);
+    const pending = await getPendingManageAction(actionKey, chatId, Number(user.id));
     if (!pending) {
-      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await editMessage(chatId, messageId, "确认已失效或已被处理。待办如未结束，可发送“继续”恢复并重新校验。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
@@ -5329,22 +5546,48 @@ async function handleCallback(query: TelegramCallbackQuery) {
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
-    const consumed = consumePendingManageAction(actionKey);
+    const scope = manageScope(chatId, user.id);
+    const consumed = await claimBotAction<PendingManageAction>(scope, actionKey);
     if (!consumed) {
-      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await editMessage(chatId, messageId, "确认已失效或已被处理。待办如未结束，可发送“继续”恢复并重新校验。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
-    const result = await executePendingManageAction(consumed, user);
+    let result: string;
+    let nextSession: PendingManageClarifySession | null = null;
+    try {
+      result = await executePendingManageAction({ ...consumed, key: actionKey }, user);
+    } catch (error) {
+      if (error instanceof PanelPreflightError) {
+        await finishBotAction(scope, actionKey, "rejected", error.message);
+        await editMessage(chatId, messageId, `本次未执行：${escapeHtml(error.message)}。待办仍保留，发送“继续”重新预览。`, backMenuKeyboard());
+        return;
+      }
+      await finishBotAction(scope, actionKey, "uncertain", error instanceof Error ? error.message : String(error));
+      throw new Error(`操作未确认完成：${error instanceof Error ? error.message : String(error)}。待办仍保留，请先核实面板中的实际结果；不会自动重复执行。`);
+    }
+    await withDatabaseTransaction(async () => {
+      await finishBotAction(scope, actionKey, "succeeded", result);
+      const draft = await readBotDraft<PendingManageClarifySession>(scope);
+      if (!draft || draft.confirmationKey !== actionKey) return;
+      const [next, ...remaining] = draft.remainingIntents || [];
+      if (next) {
+        nextSession = { ...draft, action: next.action, intent: next, remainingIntents: remaining,
+          completedActions: [...(draft.completedActions || []), consumed.panelCall?.tool || consumed.action], missingFields: [],
+          confirmationKey: undefined, stage: "collecting", plannerOnly: false };
+        await saveBotDraft(scope, nextSession);
+      } else await clearBotDraft(scope);
+    });
     await editMessage(chatId, messageId, result, backMenuKeyboard());
     await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+    if (nextSession) await presentBotOperation(query.message!, user, nextSession);
     return;
   }
   if (data.startsWith("fx:op:cancel:")) {
     const actionKey = data.slice("fx:op:cancel:".length).trim().toLowerCase();
-    const pending = getPendingManageAction(actionKey);
+    const pending = await getPendingManageAction(actionKey, chatId, Number(user.id));
     if (!pending) {
-      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await editMessage(chatId, messageId, "确认已失效或已被处理。待办如未结束，可发送“继续”恢复并重新校验。", backMenuKeyboard());
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
@@ -5353,14 +5596,14 @@ async function handleCallback(query: TelegramCallbackQuery) {
       await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
-    consumePendingManageAction(actionKey);
-    await editMessage(chatId, messageId, "已取消本次操作。", backMenuKeyboard());
+    await clearPendingManageClarifySession(chatId, user.id);
+    await editMessage(chatId, messageId, "已结束本次待办。已提交或已完成的操作不会停止或撤销，请核实实际结果。", backMenuKeyboard());
     await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
     return;
   }
   switch (data) {
     case "fx:menu":
-      clearPendingManageClarifySession(chatId, user.id);
+      // Navigation must not erase an unfinished workflow.
       await editMainMenu(chatId, messageId, user);
       return;
     case "fx:user":
@@ -5393,11 +5636,11 @@ async function handleCallback(query: TelegramCallbackQuery) {
       }
       return;
     case "fx:unbind":
-      await editMessage(chatId, messageId, "确认解除当前 Telegram 绑定吗？解除后需要重新绑定才能使用机器人。", unbindConfirmKeyboard());
+      await editMessage(chatId, messageId, "确认解除当前通知机器人 绑定吗？解除后需要重新绑定才能使用机器人。", unbindConfirmKeyboard());
       return;
     case "fx:unbind:confirm":
-      await db.unbindTelegramAccount(user.id);
-      await editMessage(chatId, messageId, "已解除当前 Telegram 绑定。", bindPromptKeyboard());
+      await botAccounts.unbind(user.id);
+      await editMessage(chatId, messageId, "已解除当前通知机器人 绑定。", bindPromptKeyboard());
       return;
     default:
       await editMainMenu(chatId, messageId, user);
@@ -5410,17 +5653,40 @@ function telegramUpdateQueueKey(update: TelegramUpdate) {
 }
 
 async function processTelegramUpdate(update: TelegramUpdate) {
+  if (!isDiscordBotContext() && !(await getTelegramSettings()).enabled) return;
   try {
-    if (update.message) await handleMessage(update.message);
-    if (update.callback_query) await handleCallback(update.callback_query);
+    const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id || update.update_id;
+    await withKeyedTaskLock(`bot-conversation:${isDiscordBotContext() ? "discord" : "telegram"}:${chatId}`, async () => {
+      if (update.message) await handleMessage(update.message);
+      if (update.callback_query) await handleCallback(update.callback_query);
+    });
   } catch (error) {
-    console.error("[Telegram] Failed to handle message:", error);
+    console.error(`[${isDiscordBotContext() ? "Discord" : "Telegram"}] Failed to handle message:`, error);
     const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id;
     if (chatId) await sendMessage(chatId, `操作失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`).catch(() => undefined);
   }
 }
 
+// Discord Gateway events use the same permission checks, confirmation flows,
+// query and AI handlers, with transport and account identity isolated per task.
+export async function processDiscordBotUpdate(update: TelegramUpdate, api: (method: string, body?: Record<string, unknown>) => Promise<any>) {
+  return botTransportContext.run({ provider: "discord", api }, async () => {
+    if (seamlessBackgroundPaused() || !(await getNotificationSettings("discord")).active) return;
+    const command = update.message?.text?.trim().split(/\s+/)[0];
+    if (command === "/webapp") update = { ...update, message: { ...update.message!, text: "/login" } };
+    return seamlessActivity(() => processTelegramUpdate(update));
+  });
+}
+
 async function pollOnce() {
+  if (seamlessBackgroundPaused()) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    return;
+  }
+  return seamlessActivity(pollOnceAdmitted);
+}
+
+async function pollOnceAdmitted() {
   const settings = await getTelegramSettings();
   if (!settings.enabled || !settings.token) {
     await new Promise((resolve) => setTimeout(resolve, 30000));
@@ -5439,7 +5705,7 @@ async function pollOnce() {
   for (const update of updates) {
     updateOffset = Math.max(updateOffset, update.update_id + 1);
     void telegramUpdateDispatcher
-      .enqueue(telegramUpdateQueueKey(update), () => processTelegramUpdate(update))
+      .enqueue(telegramUpdateQueueKey(update), () => seamlessBackgroundPaused() ? Promise.resolve() : seamlessActivity(() => processTelegramUpdate(update)))
       .catch((error) => console.error("[Telegram] Update dispatcher failed:", error));
   }
 }

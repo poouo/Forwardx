@@ -55,7 +55,9 @@ jobs:
       - name: Check release versions and tag
         env:
           FORWARDX_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: pnpm check:versions
+        run: |
+          pnpm check:versions
+          pnpm test:release-notes
 
       - name: Type check
         run: pnpm exec tsc --noEmit

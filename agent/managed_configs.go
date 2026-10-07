@@ -26,6 +26,9 @@ type managedConfigBackup struct {
 	hadPrevious  bool
 	previousMode os.FileMode
 	generation   uint64
+	// Incremental runtimes restore only the listeners added by this transaction,
+	// rather than restarting every listener in the shared process on failure.
+	restoreRuntime func() bool
 }
 
 type managedConfigTransaction struct {
@@ -214,7 +217,9 @@ func (tx *managedConfigTransaction) rollbackLocked() bool {
 		}
 		delete(managedConfigCurrentGeneration, backup.spec.Path)
 		_ = os.Remove(backup.spec.Path + ".sha256")
-		if service := strings.TrimSpace(backup.spec.ServiceName); service != "" {
+		if backup.restoreRuntime != nil {
+			ok = backup.restoreRuntime() && ok
+		} else if service := strings.TrimSpace(backup.spec.ServiceName); service != "" {
 			services[service] = services[service] || backup.hadPrevious
 		}
 	}
@@ -228,6 +233,20 @@ func (tx *managedConfigTransaction) rollbackLocked() bool {
 	tx.finished = true
 	tx.rollbackOK = ok
 	return ok
+}
+
+func (tx *managedConfigTransaction) setRuntimeRestore(path string, restore func() bool) {
+	if tx == nil {
+		return
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	for i := range tx.backups {
+		if tx.backups[i].spec.Path == path {
+			tx.backups[i].restoreRuntime = restore
+			return
+		}
+	}
 }
 
 func (tx *managedConfigTransaction) commit() {

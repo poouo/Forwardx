@@ -16,6 +16,14 @@ const MAX_ADDRESS_GEO_CACHE_ENTRIES = 4096;
 const refreshingHostIds = new Set<number>();
 const addressGeoCache = new Map<string, AddressGeoCacheEntry>();
 const addressGeoInflight = new Map<string, Promise<AddressGeoLookupResult | null>>();
+// Locale detection only reuses an existing cache entry. It must never initiate
+// a geo lookup, access the database, or send a visitor's IP to a third party.
+export function cachedAddressCountry(address: string): string | null {
+  const key = address.replace(/^::ffff:/i, "").toLowerCase();
+  if (!net.isIP(key)) return null;
+  const cached = addressGeoCache.get(key);
+  return cached && cached.expiresAt > Date.now() ? cached.value?.geoCountryCode ?? null : null;
+}
 let geoRateLimitedUntil = 0;
 
 type AddressGeoCacheEntry = {

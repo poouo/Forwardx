@@ -3,6 +3,7 @@ import { AGENT_VERSION } from "./_core/systemRouter";
 import { encryptPayload } from "./agentCrypto";
 import { invalidateAgentStableHeartbeatPlan } from "./agentHeartbeatGate";
 import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
+import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 
@@ -283,7 +284,14 @@ export function unregisterAgentEventClient(hostId: number, res: Response) {
   }
 }
 
+export function closeAgentControlStreams() {
+  // Only management SSE is closed. No listener/runtime/forwarding process is
+  // stopped; Agents reconnect to the same URL, now served by the relay.
+  for (const client of [...agentEventClients.values()]) closeAgentEventClient(client);
+}
+
 function sendAgentEvent(hostId: number, event: string, data: any) {
+  if (seamlessBackgroundPaused()) return false;
   const client = agentEventClients.get(hostId);
   if (!client) {
     const important = event === "agent-upgrade"

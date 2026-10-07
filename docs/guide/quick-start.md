@@ -1,83 +1,63 @@
 # 快速开始
 
-本页适合第一次部署 ForwardX 的用户。按顺序完成后，你将获得一个可用的面板，并让第一台服务器上线。
+按顺序部署面板、接入第一台主机并创建一条规则。正式环境请先准备 HTTPS 和备份方案。
 
 ## 1. 部署面板
 
-推荐使用 Docker 一键安装：
+使用 root 执行 Docker 一键安装；非 root 将管道后的 bash 替换为 sudo bash：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- install
-```
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- install --language zh-CN
+~~~
 
-安装完成后访问面板：
+安装时按提示选择端口和数据库。默认访问 http://服务器IP:9810；不使用 Docker 时参考 [本地部署](./deploy-local.md)。
 
-```text
-http://服务器IP:9810
-```
+## 2. 初始化数据库与管理员
 
-不使用 Docker 的情况，参考 [部署面板](./deploy-panel.md) 中的 systemd 本地部署方式。
+打开网页，核对安装脚本可能已预填的数据库配置，测试连接并完成初始化，再创建第一个管理员。使用已有数据库时直接使用原管理员登录。
 
-## 2. 初始化面板
+SQLite 无需另装数据库；Docker 中的 MySQL/PostgreSQL 地址必须从容器内可达，不能将 127.0.0.1 当作宿主机。详见 [数据库配置](./database.md)。
 
-首次打开面板后按向导操作：
+## 3. 配置公开地址
 
-1. 选择数据库（不确定时选 SQLite）。
-2. 测试数据库连接。
-3. 创建第一个管理员账号。
-4. 登录面板。
-5. 在「系统设置」中填写面板公开地址。
+在「系统设置 → 系统配置」填写 Agent 实际能访问的面板地址，例如 https://panel.example.com。域名和反代见 [HTTPS 配置](./reverse-proxy.md)。
 
-> **注意**：使用 Docker 并选择 MySQL/PostgreSQL 时，数据库地址须填写容器内部可访问的地址。日志出现 `getaddrinfo ENOTFOUND` 时，通常是数据库主机名在容器内无法解析。
+## 4. 接入主机
 
-## 3. 创建 Agent Token
+进入「主机管理 → Token 管理」，为每台主机分别创建 Token，复制对应的安装命令，在被管理 Linux 主机上以 root 执行。
 
-进入面板：
-
-```text
-主机管理 -> Token 管理
-```
-
-点击「添加」，为即将接入的服务器创建一个 Token。Token 用于让服务器注册到当前面板。
-
-## 4. 安装 Agent
-
-在 Token 管理列表中，点击对应 Token 的「安装命令」，复制面板生成的命令，在需要被管理的 Linux 服务器上执行。命令格式如下：
-
-```bash
-# HTTP（未配置域名时）
-curl -fsSL http://你的面板IP:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
-
-# HTTPS（已配置域名时）
+~~~bash
 curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
-```
+~~~
 
-安装完成后进入「主机管理」，看到绿色在线状态即表示 Agent 注册成功。
+使用面板实际生成的地址与 Token。确认主机在线及环境检测正常；独立 Token 不影响多个主机加入同一个组。详见 [Agent 安装](./agent.md)。
 
-## 5. 创建第一条转发规则
+## 5. 先创建链路资源
 
-进入面板：
+进入「链路管理 → 端口转发」，选择刚接入的主机及其支持的转发工具并保存。也可以创建 [隧道](./tunnels.md) 或 [转发链](./port-chains.md)，但第一次建议先验证单机转发。
 
-```text
-转发规则 -> 添加规则
-```
+NAT 主机先在主机配置中限制可用端口范围；业务入口和隧道监听端口必须同时位于供应商实际映射的范围内。
 
-填写规则信息，例如：
+## 6. 创建第一条规则
 
-| 配置项   | 示例值    |
-| -------- | --------- |
-| 规则名称 | 测试规则  |
-| 协议     | TCP       |
-| 入口端口 | `15201`   |
-| 目标地址 | `1.2.3.4` |
-| 目标端口 | `5201`    |
+进入「转发规则 → 添加规则」，选择上一步保存的端口转发资源。
 
-保存后，访问 `入口服务器IP:15201` 的流量将被转发到 `1.2.3.4:5201`。
+| 配置项 | 示例 |
+| --- | --- |
+| 规则名称 | 第一条规则 |
+| 资源 | 上一步创建的端口转发 |
+| 协议 | TCP（按真实服务选择） |
+| 入口端口 | 15201（确保可用且已放行） |
+| 目标地址 | 你实际服务的 IP 或域名 |
+| 目标端口 | 服务真实监听端口 |
+| 所属用户 | 默认自己的账户 |
 
-## 6. 链路测试
+目标服务必须能从该主机访问。放行安全组和系统防火墙中的入口端口；不要使用不属于你的示例 IP 作为有效测试目标。
 
-规则创建后，点击规则列表中的「链路测试」或「自测」按钮，确认转发链路正常后再交付使用。
+## 7. 验证后交付
 
-::: tip 建议
-面板部署完成后，请先在「系统设置」中配置面板公开地址。若后续将 IP 改为域名，务必同步更新该设置，否则 Agent 可能继续使用旧地址导致连接异常。
-:::
+等待规则运行确认，执行自测，并用真实客户端访问「入口IP:入口端口」。TCP 可连接只证明对应探测成功，不等于 UDP 或应用协议必然正常。
+
+失败时保留时间、资源 ID 与相关日志，按 [故障排查](./troubleshooting.md) 逐跳检查，日志位置见 [目录与日志](./paths-logs.md)。
+
+后续可配置 [通知](./notifications.md)、[Google 登录](./google-login.md) 和 [备份](./upgrade-backup.md)。

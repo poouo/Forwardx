@@ -12,6 +12,7 @@ import {
   userTunnelPermissions,
 } from "../drizzle/schema";
 import { getDb } from "./dbRuntime";
+import { applyRuleLimitsForRuntime } from "./ruleLimits";
 import { createQueryCache } from "./queryCache";
 import { getActiveUserSubscriptions } from "./repositories/billingRepository";
 import {
@@ -353,6 +354,7 @@ export function canUseForwardRuleResource(rule: any, scope: LinkAccessScope | nu
  * listener without hiding or mutating the user's saved rule.
  */
 export async function gateForwardRulesForRuntime<T extends Record<string, any>>(rules: T[]): Promise<T[]> {
+  rules = await applyRuleLimitsForRuntime(rules);
   const userIds = Array.from(new Set(rules
     .map((rule) => positiveId(rule?.userId))
     .filter((id) => id > 0)));

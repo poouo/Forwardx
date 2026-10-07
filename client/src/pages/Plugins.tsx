@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -40,7 +42,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type PluginRow = any;
 type PluginSettingField = {
@@ -88,15 +90,15 @@ const defaultPluginUsage: PluginUsageDraft = {
 };
 
 const PLUGIN_SECTIONS: SlidingTabItem<PluginSection>[] = [
-  { value: "usage", label: "插件使用", icon: Puzzle },
-  { value: "manage", label: "插件管理", icon: Boxes },
-  { value: "store", label: "插件商店", icon: PackagePlus },
+  { value: "usage", label: translateText("插件使用"), icon: Puzzle },
+  { value: "manage", label: translateText("插件管理"), icon: Boxes },
+  { value: "store", label: translateText("插件商店"), icon: PackagePlus },
 ];
 
 function pluginStatusLabel(status?: string) {
-  if (status === "enabled") return "已启用";
-  if (status === "error") return "异常";
-  return "未启用";
+  if (status === "enabled") return translateText("已启用");
+  if (status === "error") return translateText("异常");
+  return translateText("未启用");
 }
 
 function pluginStatusClass(status?: string) {
@@ -107,8 +109,8 @@ function pluginStatusClass(status?: string) {
 }
 
 function pluginSourceLabel(sourceType?: string) {
-  if (sourceType === "upload") return "上传";
-  if (sourceType === "local") return "本地";
+  if (sourceType === "upload") return translateText("上传");
+  if (sourceType === "local") return translateText("本地");
   return "GitHub";
 }
 
@@ -126,7 +128,7 @@ function formatBytes(bytes: number) {
 function formatTime(value?: string | Date | number | null) {
   if (!value) return "-";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString(getFormatLocale());
 }
 
 function formatDateText(value?: string | Date | number | null) {
@@ -134,7 +136,7 @@ function formatDateText(value?: string | Date | number | null) {
   const text = String(value).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? text : date.toLocaleDateString();
+  return Number.isNaN(date.getTime()) ? text : date.toLocaleDateString(getFormatLocale());
 }
 
 function toggleNumberItem(values: number[], value: number) {
@@ -214,18 +216,18 @@ function actionResultTitle(result: any) {
   }
   if (payload?.type === "agent.request") {
     const body = payload?.body;
-    return `Agent 操作 ${Number(body?.completed || 0)}/${Number(body?.total || 0)}`;
+    return translateText("Agent 操作 {0}/{1}", [Number(body?.completed || 0), Number(body?.total || 0)]);
   }
-  return result?.message || "动作结果";
+  return result?.message || translateText("动作结果");
 }
 
 function agentTaskStatusLabel(status?: string) {
-  if (status === "success") return "成功";
-  if (status === "partial") return "部分成功";
-  if (status === "error") return "失败";
-  if (status === "timeout") return "超时";
-  if (status === "running") return "执行中";
-  return "等待中";
+  if (status === "success") return translateText("成功");
+  if (status === "partial") return translateText("部分成功");
+  if (status === "error") return translateText("失败");
+  if (status === "timeout") return translateText("超时");
+  if (status === "running") return translateText("执行中");
+  return translateText("等待中");
 }
 
 function agentTaskStatusClass(status?: string) {
@@ -258,7 +260,7 @@ function AgentActionResultPanel({
           <p className="text-sm font-medium">{actionResultTitle(result)}</p>
           <Badge variant="outline" className={agentTaskStatusClass(body.status)}>{agentTaskStatusLabel(body.status)}</Badge>
         </div>
-        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={onClear}>清除</Button>
+        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={onClear}>{translateText("清除")}</Button>
       </div>
       {message && (
         <p className={cn("mb-3 text-xs", body.status === "error" || body.status === "timeout" ? "text-destructive" : "text-muted-foreground")}>{message}</p>
@@ -272,7 +274,7 @@ function AgentActionResultPanel({
                   "h-2.5 w-2.5 shrink-0 rounded-full",
                   row.status === "success" ? "bg-emerald-500" : row.status === "error" || row.status === "timeout" ? "bg-destructive" : row.status === "running" ? "bg-sky-500" : "bg-muted-foreground/40",
                 )} />
-                <p className="truncate text-sm font-medium">{row.hostName || `主机 ${row.hostId}`}</p>
+                <p className="truncate text-sm font-medium">{row.hostName || translateText("主机 {0}", [row.hostId])}</p>
               </div>
               <Badge variant="outline" className={agentTaskStatusClass(row.status)}>{agentTaskStatusLabel(row.status)}</Badge>
             </div>
@@ -290,12 +292,12 @@ function AgentActionResultPanel({
               <p className="mt-2 whitespace-pre-wrap text-xs text-destructive">{row.error || row.stderr}</p>
             )}
             {(row.status === "queued" || row.status === "running") && (
-              <p className="mt-2 text-xs text-muted-foreground">{row.output || "等待 Agent 返回结果..."}</p>
+              <p className="mt-2 text-xs text-muted-foreground">{row.output || translateText("等待 Agent 返回结果...")}</p>
             )}
           </div>
         ))}
         {rows.length === 0 && !message && (
-          <p className="text-xs text-muted-foreground">暂无主机返回结果。</p>
+          <p className="text-xs text-muted-foreground">{translateText("暂无主机返回结果。")}</p>
         )}
       </div>
     </div>
@@ -332,7 +334,7 @@ function buildStoreDetailMarkdown(item: any) {
     lines.push(`更新说明：${changelog}`);
   }
 
-  return lines.join("\n") || "这个插件暂未提供详细介绍。";
+  return lines.join("\n") || translateText("这个插件暂未提供详细介绍。");
 }
 
 function PluginLogo({ logo, name, className }: { logo?: string; name?: string; className?: string }) {
@@ -382,7 +384,7 @@ function PluginSettingInput({
         <Label>{field.label}</Label>
         <Select value={String(value || "")} onValueChange={onChange} disabled={disabled}>
           <SelectTrigger>
-            <SelectValue placeholder={field.placeholder || "请选择"} />
+            <SelectValue placeholder={field.placeholder || translateText("请选择")} />
           </SelectTrigger>
           <SelectContent>
             {(field.options || []).map((option) => (
@@ -406,7 +408,7 @@ function PluginSettingInput({
             <Label>{field.label}</Label>
             {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
           </div>
-          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">已选 {selected.length}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{translateText("已选 ")}{selected.length}</span>
         </div>
         <div className="grid max-h-56 gap-2 overflow-auto rounded-lg border border-border/40 bg-background/60 p-2 sm:grid-cols-2">
           {(field.options || []).map((option) => {
@@ -508,7 +510,7 @@ function PluginUsageFieldInput({
         <Label>{field.label}</Label>
         <Select value={String(value || "")} onValueChange={onChange} disabled={disabled}>
           <SelectTrigger>
-            <SelectValue placeholder={field.placeholder || "请选择"} />
+            <SelectValue placeholder={field.placeholder || translateText("请选择")} />
           </SelectTrigger>
           <SelectContent>
             {(field.options || []).map((option) => (
@@ -532,7 +534,7 @@ function PluginUsageFieldInput({
             <Label>{field.label}</Label>
             {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
           </div>
-          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">已选 {selected.length}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{translateText("已选 ")}{selected.length}</span>
         </div>
         <div className="grid max-h-56 gap-2 overflow-auto rounded-lg border border-border/40 bg-background/60 p-2 sm:grid-cols-2">
           {(field.options || []).map((option) => {
@@ -626,7 +628,7 @@ function ChinaWhitelistRegionSelector({
           {field.description && <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>}
         </div>
         <Badge variant="outline" className="shrink-0">
-          {provinceMode ? `已选 ${selectedProvinces.length} 个省份` : "全国"}
+          {provinceMode ? translateText("已选 {0} 个省份", [selectedProvinces.length]) : translateText("全国")}
         </Badge>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -643,8 +645,8 @@ function ChinaWhitelistRegionSelector({
           )}
         >
           <span>
-            <span className="block font-medium">全国</span>
-            <span className="mt-0.5 block text-xs text-muted-foreground">允许中国大陆 IPv4 地址</span>
+            <span className="block font-medium">{translateText("全国")}</span>
+            <span className="mt-0.5 block text-xs text-muted-foreground">{translateText("允许中国大陆 IPv4 地址")}</span>
           </span>
           {!provinceMode && <CheckCircle2 className="h-4 w-4 shrink-0" />}
         </button>
@@ -661,8 +663,8 @@ function ChinaWhitelistRegionSelector({
           )}
         >
           <span>
-            <span className="block font-medium">按省份</span>
-            <span className="mt-0.5 block text-xs text-muted-foreground">仅允许下方已选择的省份</span>
+            <span className="block font-medium">{translateText("按省份")}</span>
+            <span className="mt-0.5 block text-xs text-muted-foreground">{translateText("仅允许下方已选择的省份")}</span>
           </span>
           {provinceMode && <CheckCircle2 className="h-4 w-4 shrink-0" />}
         </button>
@@ -692,7 +694,7 @@ function ChinaWhitelistRegionSelector({
         </div>
       )}
       {provinceMode && selectedProvinces.length === 0 && (
-        <p className="text-xs text-destructive">请至少选择一个省份，或切换回全国模式。</p>
+        <p className="text-xs text-destructive">{translateText("请至少选择一个省份，或切换回全国模式。")}</p>
       )}
     </div>
   );
@@ -719,11 +721,11 @@ function ChinaWhitelistHostStatusSummary({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-          <p className="text-sm font-medium">Agent 规则状态</p>
+          <p className="text-sm font-medium">{translateText("Agent 规则状态")}</p>
         </div>
-        <p className="text-xs text-muted-foreground">已读取 {statusByHostId.size}/{selectedHosts.length} 台</p>
+        <p className="text-xs text-muted-foreground">{translateText("已读取 ")}{statusByHostId.size}/{selectedHosts.length}{translateText(" 台")}</p>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">已配置 {configuredCount} 台，规则已挂载 {appliedCount} 台。</p>
+      <p className="mt-1 text-xs text-muted-foreground">{translateText("已配置 ")}{configuredCount}{translateText(" 台，规则已挂载 ")}{appliedCount}{translateText(" 台。")}</p>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         {selectedHosts.map((host) => {
           const result = statusByHostId.get(Number(host.id));
@@ -733,18 +735,18 @@ function ChinaWhitelistHostStatusSummary({
             : "";
           const failed = result && result.status !== "success";
           const stateLabel = data?.applied
-            ? "规则已挂载"
+            ? translateText("规则已挂载")
             : data?.configured
-              ? "已同步配置"
+              ? translateText("已同步配置")
               : failed
-                ? "读取失败"
-                : "尚未读取";
+                ? translateText("读取失败")
+                : translateText("尚未读取");
           return (
             <div key={host.id} className="min-w-0 rounded-md border border-border/40 bg-background/60 px-3 py-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", host.isOnline ? "bg-emerald-500" : "bg-muted-foreground/40")} />
-                  <p className="truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</p>
+                  <p className="truncate text-sm font-medium">{host.name || translateText("主机 {0}", [host.id])}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   {failed && <ShieldAlert className="h-3.5 w-3.5 text-destructive" />}
@@ -757,15 +759,15 @@ function ChinaWhitelistHostStatusSummary({
                 </div>
               </div>
               {data ? (
-                <p className="mt-1.5 truncate text-xs text-muted-foreground" title={regions || "未配置区域"}>
-                  {data.backend === "none" ? "未检测到防火墙规则" : `${data.backend || "-"} · ${Number(data.ruleCount || 0)} 条 CIDR`}
+                <p className="mt-1.5 truncate text-xs text-muted-foreground" title={regions || translateText("未配置区域")}>
+                  {data.backend === "none" ? translateText("未检测到防火墙规则") : translateText("{0} · {1} 条 CIDR", [data.backend || "-", Number(data.ruleCount || 0)])}
                   {regions ? ` · ${regions}` : ""}
-                  {(data.serviceEnabled ?? data.serviceActive) ? " · 已持久化" : ""}
+                  {(data.serviceEnabled ?? data.serviceActive) ? translateText(" · 已持久化") : ""}
                 </p>
               ) : failed ? (
-                <p className="mt-1.5 line-clamp-2 text-xs text-destructive">{result.error || result.stderr || result.output || "Agent 未返回状态"}</p>
+                <p className="mt-1.5 line-clamp-2 text-xs text-destructive">{result.error || result.stderr || result.output || translateText("Agent 未返回状态")}</p>
               ) : (
-                <p className="mt-1.5 text-xs text-muted-foreground">点击下方“读取主机状态”获取实际规则状态。</p>
+                <p className="mt-1.5 text-xs text-muted-foreground">{translateText("点击下方“读取主机状态”获取实际规则状态。")}</p>
               )}
             </div>
           );
@@ -879,7 +881,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   );
   const selectedPluginStoreItem = selectedPlugin ? storeItemByPluginId.get(selectedPlugin.pluginId) as any : null;
   const selectedPluginSourceLabel = selectedPluginStoreItem?.official
-    ? "官方插件商店"
+    ? translateText("官方插件商店")
     : selectedPluginStoreItem?.storeSourceName || pluginSourceLabel(selectedPlugin?.sourceType);
   const selectedPluginHasUpdate = selectedPlugin?.hasUpdate === true;
   const selectedPluginUpdating = !!selectedPlugin && updatingPluginId === selectedPlugin.pluginId;
@@ -943,55 +945,55 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
 
   const installFromStore = trpc.plugins.installFromStore.useMutation({
     onSuccess: async (plugin) => {
-      toast.success("插件已安装");
+      toast.success(translateText("插件已安装"));
       setSelectedPluginId((plugin as any)?.pluginId || "");
       setStoreDetailItem(null);
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "安装失败"),
+    onError: (error) => toast.error(error.message || translateText("安装失败")),
   });
 
   const addStoreSourcesMutation = trpc.plugins.addStoreSources.useMutation({
     onSuccess: async (results) => {
       const failed = results.filter((item: any) => item.status === "failed");
       const synced = results.length - failed.length;
-      if (synced > 0) toast.success(`已同步 ${synced} 个第三方商店来源`);
-      if (failed.length > 0) toast.error(`${failed.length} 个商店来源同步失败，可在来源列表查看原因`);
+      if (synced > 0) toast.success(translateText("已同步 {0} 个第三方商店来源", [synced]));
+      if (failed.length > 0) toast.error(translateText("{0} 个商店来源同步失败，可在来源列表查看原因", [failed.length]));
       setStoreRepositoryList("");
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "添加商店来源失败"),
+    onError: (error) => toast.error(error.message || translateText("添加商店来源失败")),
   });
 
   const refreshStoreMutation = trpc.plugins.refreshStore.useMutation({
     onSuccess: async (result) => {
       const failed = result.sources.filter((item: any) => !item.ok).length + (result.official.ok ? 0 : 1);
-      if (failed > 0) toast.error(`商店刷新完成，${failed} 个来源同步失败`);
-      else toast.success("官方和第三方插件商店已同步");
+      if (failed > 0) toast.error(translateText("商店刷新完成，{0} 个来源同步失败", [failed]));
+      else toast.success(translateText("官方和第三方插件商店已同步"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "刷新插件商店失败"),
+    onError: (error) => toast.error(error.message || translateText("刷新插件商店失败")),
   });
 
   const refreshStoreSourceMutation = trpc.plugins.refreshStoreSource.useMutation({
     onSuccess: async () => {
-      toast.success("第三方商店来源已同步");
+      toast.success(translateText("第三方商店来源已同步"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "同步商店来源失败"),
+    onError: (error) => toast.error(error.message || translateText("同步商店来源失败")),
   });
 
   const deleteStoreSourceMutation = trpc.plugins.deleteStoreSource.useMutation({
     onSuccess: async () => {
-      toast.success("第三方商店来源已删除");
+      toast.success(translateText("第三方商店来源已删除"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "删除商店来源失败"),
+    onError: (error) => toast.error(error.message || translateText("删除商店来源失败")),
   });
 
   const installFromUpload = trpc.plugins.installFromUpload.useMutation({
     onSuccess: async (plugin) => {
-      toast.success("插件已安装");
+      toast.success(translateText("插件已安装"));
       setSelectedPluginId((plugin as any)?.pluginId || "");
       setUploadContent("");
       setUploadFileName("");
@@ -999,56 +1001,56 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       setCustomInstallOpen(false);
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "上传失败"),
+    onError: (error) => toast.error(error.message || translateText("上传失败")),
   });
 
   const setEnabledMutation = trpc.plugins.setEnabled.useMutation({
     onSuccess: async (plugin) => {
-      toast.success((plugin as any)?.status === "enabled" ? "插件已启用" : "插件已停用");
+      toast.success((plugin as any)?.status === "enabled" ? translateText("插件已启用") : translateText("插件已停用"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "操作失败"),
+    onError: (error) => toast.error(error.message || translateText("操作失败")),
   });
 
   const setSidebarEnabledMutation = trpc.plugins.setSidebarEnabled.useMutation({
     onSuccess: async (plugin) => {
-      toast.success((plugin as any)?.sidebarEnabled ? "已显示菜单入口" : "已隐藏菜单入口");
+      toast.success((plugin as any)?.sidebarEnabled ? translateText("已显示菜单入口") : translateText("已隐藏菜单入口"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "菜单入口设置失败"),
+    onError: (error) => toast.error(error.message || translateText("菜单入口设置失败")),
   });
 
   const setTrustedMutation = trpc.plugins.setTrusted.useMutation({
     onSuccess: async (plugin) => {
-      toast.success((plugin as any)?.trusted ? "插件信任已开启" : "插件信任已关闭");
+      toast.success((plugin as any)?.trusted ? translateText("插件信任已开启") : translateText("插件信任已关闭"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "修改插件信任失败"),
+    onError: (error) => toast.error(error.message || translateText("修改插件信任失败")),
   });
 
   const uninstallMutation = trpc.plugins.uninstall.useMutation({
     onSuccess: async () => {
-      toast.success("插件已卸载");
+      toast.success(translateText("插件已卸载"));
       setSelectedPluginId("");
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "卸载失败"),
+    onError: (error) => toast.error(error.message || translateText("卸载失败")),
   });
 
   const checkAllUpdatesMutation = trpc.plugins.checkUpdates.useMutation({
     onSuccess: async (result) => {
       if (result.updates > 0) {
-        toast.info(`发现 ${result.updates} 个插件新版本`);
+        toast.info(translateText("发现 {0} 个插件新版本", [result.updates]));
       } else if (manualUpdateCheckRef.current) {
-        toast.success("所有插件均为最新版本");
+        toast.success(translateText("所有插件均为最新版本"));
       }
       if (result.failed > 0 && manualUpdateCheckRef.current) {
-        toast.error(`${result.failed} 个插件检查失败，请查看插件详情`);
+        toast.error(translateText("{0} 个插件检查失败，请查看插件详情", [result.failed]));
       }
       await invalidatePluginQueries();
     },
     onError: (error) => {
-      if (manualUpdateCheckRef.current) toast.error(error.message || "检查插件更新失败");
+      if (manualUpdateCheckRef.current) toast.error(error.message || translateText("检查插件更新失败"));
     },
     onSettled: () => {
       manualUpdateCheckRef.current = false;
@@ -1057,19 +1059,19 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
 
   const checkUpdateMutation = trpc.plugins.checkUpdate.useMutation({
     onSuccess: async (result) => {
-      toast.success(result.hasUpdate ? `发现新版本 ${result.latestVersion}` : "当前已是最新");
+      toast.success(result.hasUpdate ? translateText("发现新版本 {0}", [result.latestVersion]) : translateText("当前已是最新"));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "检查更新失败"),
+    onError: (error) => toast.error(error.message || translateText("检查更新失败")),
     onSettled: () => setCheckingPluginId(""),
   });
 
   const updateFromGithubMutation = trpc.plugins.updateFromGithub.useMutation({
     onSuccess: async (plugin) => {
-      toast.success(`插件已更新到 v${(plugin as any)?.version || "最新版本"}`);
+      toast.success(translateText("插件已更新到 v{0}", [(plugin as any)?.version || "最新版本"]));
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "更新失败"),
+    onError: (error) => toast.error(error.message || translateText("更新失败")),
     onSettled: () => {
       const remaining = Math.max(0, 1200 - (Date.now() - updateStartedAtRef.current));
       setTimeout(() => setUpdatingPluginId(""), remaining);
@@ -1077,17 +1079,17 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   });
 
   const saveSettingMutation = trpc.plugins.saveSettings.useMutation({
-    onError: (error) => toast.error(error.message || "保存失败"),
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
   });
 
   const saveUsageMutation = trpc.plugins.saveUsage.useMutation({
     onSuccess: async () => {
-      toast.success("使用配置已保存");
+      toast.success(translateText("使用配置已保存"));
       setActionResult(null);
       setAgentActionGroupId("");
       await invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "保存失败"),
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
   });
 
   const runActionMutation = trpc.plugins.runAction.useMutation({
@@ -1096,15 +1098,15 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       const groupId = String(result?.result?.groupId || "");
       setAgentActionGroupId(groupId);
       if (result?.ok === false) {
-        toast.error(result?.message || "动作执行未成功");
+        toast.error(result?.message || translateText("动作执行未成功"));
       } else if (groupId) {
-        toast.success(result?.message || "任务已下发");
+        toast.success(result?.message || translateText("任务已下发"));
       } else {
-        toast.success(result?.message || "动作已执行");
+        toast.success(result?.message || translateText("动作已执行"));
       }
       invalidatePluginQueries();
     },
-    onError: (error) => toast.error(error.message || "执行失败"),
+    onError: (error) => toast.error(error.message || translateText("执行失败")),
   });
 
   useEffect(() => {
@@ -1167,7 +1169,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       if (agentActionGroupId && agentActionStatusQuery.isFetched) {
         setActionResult({
           ok: false,
-          message: "插件任务状态已失效，请重新执行",
+          message: translateText("插件任务状态已失效，请重新执行"),
           result: {
             type: "agent.request",
             body: {
@@ -1176,7 +1178,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               total: 0,
               completed: 0,
               results: [],
-              error: "面板重启或任务结果超过保留时间，请重新读取主机状态。",
+              error: translateText("面板重启或任务结果超过保留时间，请重新读取主机状态。"),
             },
           },
         });
@@ -1186,7 +1188,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     }
     setActionResult({
       ok: agentActionStatus.status === "success" || agentActionStatus.status === "partial",
-      message: agentActionStatus.done ? "Agent 操作已完成" : "Agent 操作执行中",
+      message: agentActionStatus.done ? translateText("Agent 操作已完成") : translateText("Agent 操作执行中"),
       result: {
         type: "agent.request",
         actionId: agentActionStatus.actionId,
@@ -1276,7 +1278,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       .map((item) => item.trim())
       .filter(Boolean)));
     if (!repositories.length) {
-      toast.error("请填写至少一个 GitHub 商店仓库地址");
+      toast.error(translateText("请填写至少一个 GitHub 商店仓库地址"));
       return;
     }
     addStoreSourcesMutation.mutate({ repositories });
@@ -1285,7 +1287,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   const handleUploadInstall = () => {
     const content = uploadContent.trim();
     if (!content) {
-      toast.error("请选择插件压缩包");
+      toast.error(translateText("请选择插件压缩包"));
       return;
     }
     installFromUpload.mutate({
@@ -1301,7 +1303,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       const result = String(reader.result || "");
       resolve(result.includes(",") ? result.split(",").pop() || "" : result);
     };
-    reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+    reader.onerror = () => reject(reader.error || new Error(translateText("读取文件失败")));
     reader.readAsDataURL(file);
   });
 
@@ -1310,14 +1312,14 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     const lowerName = file.name.toLowerCase();
     const isArchive = lowerName.endsWith(".zip") || lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz");
     if (!isArchive) {
-      toast.error("请上传 .zip、.tar.gz 或 .tgz 插件包");
+      toast.error(translateText("请上传 .zip、.tar.gz 或 .tgz 插件包"));
       setUploadFileName("");
       setUploadContent("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      toast.error("插件压缩包不能超过 5MB");
+      toast.error(translateText("插件压缩包不能超过 5MB"));
       setUploadFileName("");
       setUploadContent("");
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1325,7 +1327,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     }
     setUploadFileName(file.name);
     setUploadContent(await fileToBase64(file));
-    toast.success("插件压缩包已读取");
+    toast.success(translateText("插件压缩包已读取"));
   };
 
   const handleSaveSettings = async () => {
@@ -1339,7 +1341,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           : settingDraft[field.key];
       }
       await saveSettingMutation.mutateAsync({ pluginId: selectedPlugin.pluginId, values });
-      toast.success("插件设置已保存");
+      toast.success(translateText("插件设置已保存"));
       await invalidatePluginQueries();
     } catch {
       // 单项错误由 mutation onError 展示。
@@ -1349,15 +1351,15 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   const handleSaveUsage = () => {
     if (!selectedPlugin || !hostAssetSyncUsageView) return;
     if (usageDraft.enabled && !usageUsesAllHosts && usageDraft.hostIds.length === 0) {
-      toast.error("请选择至少一台生效主机");
+      toast.error(translateText("请选择至少一台生效主机"));
       return;
     }
     if (usageDraft.enabled && !usageUsesAllAssets && usageDraft.assetPaths.length === 0) {
-      toast.error("请选择至少一个白名单文件");
+      toast.error(translateText("请选择至少一个白名单文件"));
       return;
     }
     if (usageDraft.enabled && !usageUsesAllAssets && selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes) {
-      toast.error(`同步文件总大小不能超过 ${formatBytes(pluginHostAssetSyncMaxBytes)}`);
+      toast.error(translateText("同步文件总大小不能超过 {0}", [formatBytes(pluginHostAssetSyncMaxBytes)]));
       return;
     }
     if (usageDraft.enabled) {
@@ -1366,7 +1368,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         const value = usageDraft.fieldValues[field.key];
         const empty = Array.isArray(value) ? value.length === 0 : String(value ?? "").trim() === "";
         if (empty) {
-          toast.error(`请填写 ${field.label}`);
+          toast.error(translateText("请填写 {0}", [field.label]));
           return;
         }
       }
@@ -1384,7 +1386,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   };
 
   const handleAllHostsUsageToggle = async (enabled: boolean) => {
-    if (!selectedPlugin || !hostAssetSyncUsageView || !usageUsesAllHosts) throw new Error("插件使用配置不可用");
+    if (!selectedPlugin || !hostAssetSyncUsageView || !usageUsesAllHosts) throw new Error(translateText("插件使用配置不可用"));
     const previousEnabled = usageDraft.enabled;
     setUsageDraft((current) => ({ ...current, enabled }));
     try {
@@ -1406,9 +1408,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
 
   const handleUninstall = async (plugin: PluginRow) => {
     const confirmed = await confirmDialog({
-      title: "卸载插件",
-      description: `确定卸载 ${plugin.name || plugin.pluginId}？`,
-      confirmText: "卸载",
+      title: translateText("卸载插件"),
+      description: translateText("确定卸载 {0}？", [plugin.name || plugin.pluginId]),
+      confirmText: translateText("卸载"),
       tone: "destructive",
     });
     if (confirmed) uninstallMutation.mutate({ pluginId: plugin.pluginId });
@@ -1417,21 +1419,21 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   const handlePluginTrustChange = async (plugin: PluginRow, trusted: boolean) => {
     if (trusted) {
       const confirmed = await confirmDialog({
-        title: "信任此插件",
-        description: `${plugin.name || plugin.pluginId} 将可按清单声明调用用户、规则、主机、隧道及消息推送等高权限面板 API。仅对你确认可信的插件开启。`,
-        confirmText: "确认信任",
+        title: translateText("信任此插件"),
+        description: translateText("{0} 将可按清单声明调用用户、规则、主机、隧道及消息推送等高权限面板 API。仅对你确认可信的插件开启。", [plugin.name || plugin.pluginId]),
+        confirmText: translateText("确认信任"),
         tone: "destructive",
       });
-      if (!confirmed) throw new Error("插件信任操作已取消");
+      if (!confirmed) throw new Error(translateText("插件信任操作已取消"));
     }
     await setTrustedMutation.mutateAsync({ pluginId: plugin.pluginId, trusted });
   };
 
   const handleDeleteStoreSource = async (source: any) => {
     const confirmed = await confirmDialog({
-      title: "删除第三方商店来源",
-      description: `确定删除 ${source.name || source.repository}？已安装插件不会被卸载。`,
-      confirmText: "删除来源",
+      title: translateText("删除第三方商店来源"),
+      description: translateText("确定删除 {0}？已安装插件不会被卸载。", [source.name || source.repository]),
+      confirmText: translateText("删除来源"),
       tone: "destructive",
     });
     if (confirmed) deleteStoreSourceMutation.mutate({ id: Number(source.id) });
@@ -1441,9 +1443,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
     if (!selectedPlugin) return false;
     if (action.confirmRequired) {
       const confirmed = await confirmDialog({
-        title: action.label || "执行动作",
-        description: action.description || "确定执行该插件动作？",
-        confirmText: "执行",
+        title: action.label || translateText("执行动作"),
+        description: action.description || translateText("确定执行该插件动作？"),
+        confirmText: translateText("执行"),
       });
       if (!confirmed) return false;
     }
@@ -1475,7 +1477,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       if (!field.required) continue;
       const value = actionInputDraft[field.key];
       if (String(value ?? "").trim() === "") {
-        toast.error(`请填写${field.label}`);
+        toast.error(translateText("请填写{0}", [field.label]));
         return;
       }
     }
@@ -1506,9 +1508,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
   const renderUsagePanel = () => {
     if (!selectedPlugin) {
       return (
-        <div className="rounded-xl border border-dashed border-border/60 p-8 text-center text-sm text-muted-foreground">
-          先从左侧选择一个插件。
-        </div>
+        <div className="rounded-xl border border-dashed border-border/60 p-8 text-center text-sm text-muted-foreground">{translateText("先从左侧选择一个插件。")}</div>
       );
     }
     if (!hasUsageView) {
@@ -1518,12 +1518,12 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <PluginLogo logo={selectedManifest.logo} name={selectedPlugin.name} />
           </div>
           <p className="font-medium">{selectedPlugin.name || selectedPlugin.pluginId}</p>
-          <p className="mt-2 text-sm text-muted-foreground">这个插件暂未提供独立使用界面，可到“插件管理”查看说明、设置或动作。</p>
+          <p className="mt-2 text-sm text-muted-foreground">{translateText("这个插件暂未提供独立使用界面，可到“插件管理”查看说明、设置或动作。")}</p>
         </div>
       );
     }
     if (pluginUsageLoading) {
-      return <DataSectionLoading label="正在加载使用配置" minHeight="min-h-[220px]" />;
+      return <DataSectionLoading label={translateText("正在加载使用配置")} minHeight="min-h-[220px]" />;
     }
     if (usageUsesAllHosts) {
       return (
@@ -1535,11 +1535,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-medium">{hostAssetSyncUsageView?.title || "主机资源管理"}</p>
-                  <Badge variant="outline" className="font-normal">{usageHosts.length} 台主机</Badge>
+                  <p className="font-medium">{hostAssetSyncUsageView?.title || translateText("主机资源管理")}</p>
+                  <Badge variant="outline" className="font-normal">{usageHosts.length}{translateText(" 台主机")}</Badge>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {hostAssetSyncUsageView?.description || "按主机管理插件资源。"}
+                  {hostAssetSyncUsageView?.description || translateText("按主机管理插件资源。")}
                 </p>
               </div>
             </div>
@@ -1547,8 +1547,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               <OptimisticSwitch
                 checked={usageDraft.enabled}
                 onCheckedChangeAsync={handleAllHostsUsageToggle}
-                title={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
-                aria-label={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
+                title={usageDraft.enabled ? translateText("停用插件使用配置") : translateText("启用插件使用配置")}
+                aria-label={usageDraft.enabled ? translateText("停用插件使用配置") : translateText("启用插件使用配置")}
               />
             </div>
           </div>
@@ -1556,8 +1556,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           {selectedPlugin.status !== "enabled" && (
             <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
-              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "启用插件后才能同步到 Agent。"}</AlertDescription>
+              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || translateText("插件未启用")}</AlertTitle>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || translateText("启用插件后才能同步到 Agent。")}</AlertDescription>
             </Alert>
           )}
 
@@ -1580,7 +1580,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             </div>
           ) : (
             <div className="rounded-md border border-dashed border-border/60 px-4 py-12 text-center text-sm text-muted-foreground">
-              {saveUsageMutation.isPending ? "正在更新插件状态..." : "启用后可按主机管理插件资源"}
+              {saveUsageMutation.isPending ? translateText("正在更新插件状态...") : translateText("启用后可按主机管理插件资源")}
             </div>
           )}
         </div>
@@ -1591,10 +1591,10 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-base font-medium">{hostAssetSyncUsageView?.title || "主机使用配置"}</p>
+              <p className="text-base font-medium">{hostAssetSyncUsageView?.title || translateText("主机使用配置")}</p>
               {(hostAssetSyncUsageView?.description || hostAssetSyncUsageView?.targetDirectory) && (
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {hostAssetSyncUsageView?.description || `选中的文件会同步到目标主机的 ${hostAssetSyncUsageView?.targetDirectory}。`}
+                  {hostAssetSyncUsageView?.description || translateText("选中的文件会同步到目标主机的 {0}。", [hostAssetSyncUsageView?.targetDirectory])}
                 </p>
               )}
             </div>
@@ -1602,15 +1602,15 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               className="shrink-0"
               checked={usageDraft.enabled}
               onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
-              title={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
-              aria-label={usageDraft.enabled ? "停用插件使用配置" : "启用插件使用配置"}
+              title={usageDraft.enabled ? translateText("停用插件使用配置") : translateText("启用插件使用配置")}
+              aria-label={usageDraft.enabled ? translateText("停用插件使用配置") : translateText("启用插件使用配置")}
             />
           </div>
           {selectedPlugin.status !== "enabled" && (
             <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
-              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "配置可先保存，启用插件后再同步到 Agent。"}</AlertDescription>
+              <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || translateText("插件未启用")}</AlertTitle>
+              <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || translateText("配置可先保存，启用插件后再同步到 Agent。")}</AlertDescription>
             </Alert>
           )}
         </div>
@@ -1619,13 +1619,13 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
             {usageOperationOptions.length > 0 && (
               <div className="mb-4 space-y-2">
-                <Label>{hostAssetSyncUsageView?.operationSelector?.label || "执行方式"}</Label>
+                <Label>{hostAssetSyncUsageView?.operationSelector?.label || translateText("执行方式")}</Label>
                 <Select
                   value={usageDraft.operation || usageOperationOptions[0]?.value || ""}
                   onValueChange={(operation) => setUsageDraft((current) => ({ ...current, operation }))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="请选择" />
+                    <SelectValue placeholder={translateText("请选择")} />
                   </SelectTrigger>
                   <SelectContent>
                     {usageOperationOptions.map((option: any) => (
@@ -1678,10 +1678,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="font-medium">{hostAssetSyncUsageView?.hostSelector?.title || "生效主机"}</p>
+                <p className="font-medium">{hostAssetSyncUsageView?.hostSelector?.title || translateText("生效主机")}</p>
                 <p className="text-xs text-muted-foreground">
-                  {hostAssetSyncUsageView?.hostSelector?.selectedLabel || "已选"} {usageDraft.hostIds.length} 台
-                </p>
+                  {hostAssetSyncUsageView?.hostSelector?.selectedLabel || translateText("已选")} {usageDraft.hostIds.length}{translateText(" 台")}</p>
                 {hostAssetSyncUsageView?.hostSelector?.description && (
                   <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.hostSelector.description}</p>
                 )}
@@ -1696,7 +1695,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     hostIds: usageHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
                   }))}
                 >
-                  {hostAssetSyncUsageView?.hostSelector?.selectAllLabel || "全选"}
+                  {hostAssetSyncUsageView?.hostSelector?.selectAllLabel || translateText("全选")}
                 </Button>
                 <Button
                   type="button"
@@ -1704,7 +1703,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   size="sm"
                   onClick={() => setUsageDraft((current) => ({ ...current, hostIds: [] }))}
                 >
-                  {hostAssetSyncUsageView?.hostSelector?.clearLabel || "清空"}
+                  {hostAssetSyncUsageView?.hostSelector?.clearLabel || translateText("清空")}
                 </Button>
               </div>
             </div>
@@ -1736,7 +1735,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", host.isOnline ? "bg-emerald-500" : "bg-muted-foreground/40")} />
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</p>
+                        <p className="truncate text-sm font-medium">{host.name || translateText("主机 {0}", [host.id])}</p>
                         <p className="truncate text-xs text-muted-foreground">{host.ip || "-"}</p>
                       </div>
                     </div>
@@ -1745,7 +1744,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 );
               }) : (
                 <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                  {hostAssetSyncUsageView?.hostSelector?.emptyText || "暂无可选主机"}
+                  {hostAssetSyncUsageView?.hostSelector?.emptyText || translateText("暂无可选主机")}
                 </div>
               )}
             </div>
@@ -1754,10 +1753,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           {!usageAssetSelectorHidden && <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="font-medium">{hostAssetSyncUsageView?.assetSelector?.title || "同步内容"}</p>
+                <p className="font-medium">{hostAssetSyncUsageView?.assetSelector?.title || translateText("同步内容")}</p>
                 <p className="text-xs text-muted-foreground">
-                  {hostAssetSyncUsageView?.assetSelector?.selectedLabel || "已选"} {usageDraft.assetPaths.length} 个文件，
-                  <span className={cn(usageSizeExceeded && "text-destructive")}>
+                  {hostAssetSyncUsageView?.assetSelector?.selectedLabel || translateText("已选")} {usageDraft.assetPaths.length}{translateText(" 个文件，")}<span className={cn(usageSizeExceeded && "text-destructive")}>
                     {formatBytes(selectedUsageAssetsSize)}
                   </span>
                   / {formatBytes(pluginHostAssetSyncMaxBytes)}
@@ -1772,7 +1770,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 size="sm"
                 onClick={() => setUsageDraft((current) => ({ ...current, assetPaths: [] }))}
               >
-                {hostAssetSyncUsageView?.assetSelector?.clearLabel || "清空"}
+                {hostAssetSyncUsageView?.assetSelector?.clearLabel || translateText("清空")}
               </Button>
             </div>
             <div className="max-h-72 space-y-2 overflow-auto pr-1">
@@ -1802,24 +1800,22 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 );
               }) : (
                 <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                  {hostAssetSyncUsageView?.assetSelector?.emptyText || "还没有可同步文件，请先到“动作”里刷新插件资产"}
+                  {hostAssetSyncUsageView?.assetSelector?.emptyText || translateText("还没有可同步文件，请先到“动作”里刷新插件资产")}
                 </div>
               )}
             </div>
             {usageSizeExceeded && (
-              <p className="text-xs text-destructive">
-                当前选择超过 Agent 单次同步限制，请减少文件数量后保存。
-              </p>
+              <p className="text-xs text-destructive">{translateText("当前选择超过 Agent 单次同步限制，请减少文件数量后保存。")}</p>
             )}
           </div>}
         </div>
 
         <div className="space-y-2">
-          <Label>{hostAssetSyncUsageView?.noteField?.label || "备注"}</Label>
+          <Label>{hostAssetSyncUsageView?.noteField?.label || translateText("备注")}</Label>
           <Textarea
             value={usageDraft.note}
             onChange={(event) => setUsageDraft((current) => ({ ...current, note: event.target.value }))}
-            placeholder={hostAssetSyncUsageView?.noteField?.placeholder || "例如：说明这个配置会用在哪些主机或脚本里"}
+            placeholder={hostAssetSyncUsageView?.noteField?.placeholder || translateText("例如：说明这个配置会用在哪些主机或脚本里")}
             className="min-h-20"
           />
         </div>
@@ -1828,8 +1824,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="font-medium">主机操作</p>
-                <p className="text-xs text-muted-foreground">从已保存的生效主机读取或执行插件声明的 Agent 操作。</p>
+                <p className="font-medium">{translateText("主机操作")}</p>
+                <p className="text-xs text-muted-foreground">{translateText("从已保存的生效主机读取或执行插件声明的 Agent 操作。")}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {usageAgentActions.map((action: any) => (
@@ -1844,7 +1840,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     {runActionMutation.isPending || agentActionGroupId
                       ? <Loader2 className="h-4 w-4 animate-spin" />
                       : <RefreshCw className="h-4 w-4" />}
-                    {action.label || "执行"}
+                    {action.label || translateText("执行")}
                   </Button>
                 ))}
               </div>
@@ -1867,8 +1863,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <div className="space-y-4 border-t border-border/40 pt-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="font-medium">Agent 节点管理</p>
-                <p className="text-xs text-muted-foreground">管理当前插件在已选主机上的资源和实时状态。</p>
+                <p className="font-medium">{translateText("Agent 节点管理")}</p>
+                <p className="text-xs text-muted-foreground">{translateText("管理当前插件在已选主机上的资源和实时状态。")}</p>
               </div>
               {pluginResourceViews.length > 1 && (
                 <Tabs value={activeResourceView.id} onValueChange={setActiveResourceViewId}>
@@ -1889,8 +1885,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
 
         <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-background/60 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-muted-foreground">
-            <p>{hostAssetSyncUsageView?.footer?.title || "当前方式：同步文件到主机本地目录。"}</p>
-            <p className="mt-1">{hostAssetSyncUsageView?.footer?.description || "保存后，目标主机下次 Agent 心跳会收到更新。"}</p>
+            <p>{hostAssetSyncUsageView?.footer?.title || translateText("当前方式：同步文件到主机本地目录。")}</p>
+            <p className="mt-1">{hostAssetSyncUsageView?.footer?.description || translateText("保存后，目标主机下次 Agent 心跳会收到更新。")}</p>
           </div>
           <Button
             className="gap-2"
@@ -1898,7 +1894,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             disabled={saveUsageMutation.isPending || usageSizeExceeded}
           >
             {saveUsageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
-            {hostAssetSyncUsageView?.footer?.submitLabel || "保存使用配置"}
+            {hostAssetSyncUsageView?.footer?.submitLabel || translateText("保存使用配置")}
           </Button>
         </div>
       </>
@@ -1911,10 +1907,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Puzzle className="h-5 w-5" />
-              插件功能未开启
-            </CardTitle>
-            <CardDescription>请先在系统设置的管理菜单开关中开启“插件”。</CardDescription>
+              <Puzzle className="h-5 w-5" />{translateText("插件功能未开启")}</CardTitle>
+            <CardDescription>{translateText("请先在系统设置的管理菜单开关中开启“插件”。")}</CardDescription>
           </CardHeader>
         </Card>
       </DashboardLayout>
@@ -1929,7 +1923,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             {selectedPlugin && <PluginLogo logo={selectedManifest.sidebar?.icon || selectedManifest.logo} name={selectedPlugin.name} />}
             <div className="min-w-0">
               <h1 className="truncate text-xl font-bold tracking-tight sm:text-2xl">
-                {selectedManifest.sidebar?.label || selectedPlugin?.name || "插件页面"}
+                {selectedManifest.sidebar?.label || selectedPlugin?.name || translateText("插件页面")}
               </h1>
               {selectedPlugin?.description && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{selectedPlugin.description}</p>}
             </div>
@@ -1937,12 +1931,12 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardContent className="p-4 sm:p-6">
               {pluginListLoading ? (
-                <DataSectionLoading label="正在加载插件页面" minHeight="min-h-[260px]" />
+                <DataSectionLoading label={translateText("正在加载插件页面")} minHeight="min-h-[260px]" />
               ) : !sidebarEntryAllowed ? (
                 <div className="grid min-h-[260px] place-items-center rounded-md border border-dashed border-border/60 bg-muted/15 px-6 text-center">
                   <div>
                     <Puzzle className="mx-auto h-8 w-8 text-muted-foreground" />
-                    <p className="mt-3 font-medium">插件入口不存在或尚未启用</p>
+                    <p className="mt-3 font-medium">{translateText("插件入口不存在或尚未启用")}</p>
                   </div>
                 </div>
               ) : sidebarTarget === "usage" ? (
@@ -1962,13 +1956,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   </div>
                   <div className="flex justify-end">
                     <Button className="gap-2" onClick={handleSaveSettings} disabled={saveSettingMutation.isPending}>
-                      {saveSettingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
-                      保存设置
-                    </Button>
+                      {saveSettingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}{translateText("保存设置")}</Button>
                   </div>
                 </div>
               ) : assetsLoading ? (
-                <DataSectionLoading label="正在加载插件页面" minHeight="min-h-[260px]" />
+                <DataSectionLoading label={translateText("正在加载插件页面")} minHeight="min-h-[260px]" />
               ) : (
                 <div className="space-y-3">
                   <div>
@@ -1988,17 +1980,15 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">插件</h1>
-            <p className="mt-1 text-sm text-muted-foreground">安装、更新和调试插件能力。</p>
+            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("插件")}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">{translateText("安装、更新和调试插件能力。")}</p>
           </div>
           <Button className="w-full gap-2 sm:w-auto" onClick={() => setCustomInstallOpen(true)}>
-            <PackagePlus className="h-4 w-4" />
-            插件来源
-          </Button>
+            <PackagePlus className="h-4 w-4" />{translateText("插件来源")}</Button>
         </div>
 
         <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as PluginSection)} className="space-y-4">
-          <SlidingTabsList items={PLUGIN_SECTIONS} activeValue={activeSection} ariaLabel="插件管理" minItemWidthRem={7.5} />
+          <SlidingTabsList items={PLUGIN_SECTIONS} activeValue={activeSection} ariaLabel={translateText("插件管理")} minItemWidthRem={7.5} />
         </Tabs>
 
         {activeSection === "usage" && (
@@ -2006,14 +1996,12 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <Card className="border-border/40 bg-card/60 backdrop-blur-md">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Puzzle className="h-4 w-4 text-primary" />
-                  插件列表
-                </CardTitle>
-                <CardDescription>选择插件后查看和使用其功能。</CardDescription>
+                  <Puzzle className="h-4 w-4 text-primary" />{translateText("插件列表")}</CardTitle>
+                <CardDescription>{translateText("选择插件后查看和使用其功能。")}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {pluginListLoading ? (
-                  <DataSectionLoading label="正在加载插件" minHeight="min-h-[160px]" />
+                  <DataSectionLoading label={translateText("正在加载插件")} minHeight="min-h-[160px]" />
                 ) : plugins.length ? (
                   plugins.map((plugin: PluginRow) => {
                     const active = selectedPlugin?.pluginId === plugin.pluginId;
@@ -2035,7 +2023,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
-                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">{translateText("已信任")}</Badge>}
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                         </div>
@@ -2043,9 +2031,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     );
                   })
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                    还没有安装插件
-                  </div>
+                  <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("还没有安装插件")}</div>
                 )}
               </CardContent>
             </Card>
@@ -2056,9 +2042,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   {selectedPlugin && <PluginLogo logo={selectedManifest.logo} name={selectedPlugin.name} />}
                   <div className="min-w-0">
                     <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-                      {selectedPlugin?.name || "插件使用"}
+                      {selectedPlugin?.name || translateText("插件使用")}
                     </CardTitle>
-                    <CardDescription>{selectedPlugin?.description || "安装插件后可在这里使用插件功能。"}</CardDescription>
+                    <CardDescription>{selectedPlugin?.description || translateText("安装插件后可在这里使用插件功能。")}</CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -2075,17 +2061,15 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <CardHeader className="flex-row items-start justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <PackagePlus className="h-4 w-4 text-primary" />
-                  插件商店
-                </CardTitle>
-                <CardDescription className="mt-1">查看详情或安装插件。</CardDescription>
+                  <PackagePlus className="h-4 w-4 text-primary" />{translateText("插件商店")}</CardTitle>
+                <CardDescription className="mt-1">{translateText("查看详情或安装插件。")}</CardDescription>
               </div>
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                title="刷新全部插件商店"
-                aria-label="刷新全部插件商店"
+                title={translateText("刷新全部插件商店")}
+                aria-label={translateText("刷新全部插件商店")}
                 disabled={refreshStoreMutation.isPending}
                 onClick={() => refreshStoreMutation.mutate()}
               >
@@ -2094,7 +2078,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             </CardHeader>
             <CardContent className="space-y-3">
               {pluginStoreLoading ? (
-                <DataSectionLoading label="正在加载商店" minHeight="min-h-[120px]" />
+                <DataSectionLoading label={translateText("正在加载商店")} minHeight="min-h-[120px]" />
               ) : storeItems.length ? (
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {storeItems.map((item: any) => {
@@ -2116,9 +2100,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                         <div className="flex items-start justify-between gap-3">
                           <PluginLogo logo={item.logo} name={item.name} />
                           <div className="flex flex-wrap justify-end gap-1.5">
-                            {item.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                            {item.official && <Badge className="bg-primary text-primary-foreground">{translateText("官方")}</Badge>}
                             {!item.official && item.storeSourceName && <Badge variant="outline" className="max-w-40 truncate" title={item.storeSourceName}>{item.storeSourceName}</Badge>}
-                            {installed && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
+                            {installed && <Badge className="bg-emerald-500 text-white">{translateText("已安装")}</Badge>}
                           </div>
                         </div>
                         <div className="mt-4 min-w-0 flex-1">
@@ -2141,7 +2125,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           )}
                         </div>
                         <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/40 pt-3">
-                          <span className="text-xs text-muted-foreground">点击查看详情</span>
+                          <span className="text-xs text-muted-foreground">{translateText("点击查看详情")}</span>
                           <Button
                             size="sm"
                             className="gap-2"
@@ -2153,7 +2137,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             disabled={installFromStore.isPending}
                           >
                             {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                            {installed ? "重装" : "安装"}
+                            {installed ? translateText("重装") : translateText("安装")}
                           </Button>
                         </div>
                       </div>
@@ -2161,9 +2145,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   })}
                 </div>
               ) : (
-                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                  暂无商店插件
-                </div>
+                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("暂无商店插件")}</div>
               )}
             </CardContent>
           </Card>
@@ -2174,35 +2156,31 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <Upload className="h-5 w-5" />
-                插件来源
-              </DialogTitle>
-              <DialogDescription>添加第三方商店或上传插件包。</DialogDescription>
+                <Upload className="h-5 w-5" />{translateText("插件来源")}</DialogTitle>
+              <DialogDescription>{translateText("添加第三方商店或上传插件包。")}</DialogDescription>
             </DialogHeader>
             <Tabs defaultValue="store" className="space-y-4">
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="store">第三方商店</TabsTrigger>
-                <TabsTrigger value="upload">上传</TabsTrigger>
+                <TabsTrigger value="store">{translateText("第三方商店")}</TabsTrigger>
+                <TabsTrigger value="upload">{translateText("上传")}</TabsTrigger>
               </TabsList>
               <TabsContent value="store" className="space-y-4">
                 <div className="space-y-2">
-                  <Label>GitHub 商店仓库</Label>
+                  <Label>{translateText("GitHub 商店仓库")}</Label>
                   <Textarea
                     value={storeRepositoryList}
                     onChange={(event) => setStoreRepositoryList(event.target.value)}
                     placeholder={"https://github.com/owner/store-one\nhttps://github.com/owner/store-two"}
                     className="min-h-28 font-mono text-sm"
                   />
-                  <p className="text-xs text-muted-foreground">每行一个仓库，默认读取 main 分支根目录的 forwardx-store.json。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("每行一个仓库，默认读取 main 分支根目录的 forwardx-store.json。")}</p>
                 </div>
                 <Button className="w-full gap-2" onClick={handleAddStoreSources} disabled={addStoreSourcesMutation.isPending}>
-                  {addStoreSourcesMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
-                  添加并同步商店来源
-                </Button>
+                  {addStoreSourcesMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}{translateText("添加并同步商店来源")}</Button>
                 <div className="space-y-2 border-t border-border/40 pt-4">
                   <div className="flex items-center justify-between gap-2">
-                    <Label>已添加来源</Label>
-                    <span className="text-xs text-muted-foreground">{storeSources.length} 个</span>
+                    <Label>{translateText("已添加来源")}</Label>
+                    <span className="text-xs text-muted-foreground">{storeSources.length}{translateText(" 个")}</span>
                   </div>
                   {storeSources.length > 0 ? (
                     <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
@@ -2212,8 +2190,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-sm font-medium">{source.name || source.repository}</p>
-                              <Badge variant="outline">{source.pluginCount || 0} 个插件</Badge>
-                              {source.lastError && <Badge variant="destructive">同步失败</Badge>}
+                              <Badge variant="outline">{source.pluginCount || 0}{translateText(" 个插件")}</Badge>
+                              {source.lastError && <Badge variant="destructive">{translateText("同步失败")}</Badge>}
                             </div>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground" title={source.repository}>{source.repository}</p>
                             {source.lastError && <p className="mt-1 line-clamp-2 text-xs text-destructive" title={source.lastError}>{source.lastError}</p>}
@@ -2222,8 +2200,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             type="button"
                             variant="ghost"
                             size="icon"
-                            title="同步此来源"
-                            aria-label="同步此来源"
+                            title={translateText("同步此来源")}
+                            aria-label={translateText("同步此来源")}
                             disabled={refreshStoreSourceMutation.isPending || deleteStoreSourceMutation.isPending}
                             onClick={() => refreshStoreSourceMutation.mutate({ id: Number(source.id) })}
                           >
@@ -2233,8 +2211,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             type="button"
                             variant="ghost"
                             size="icon"
-                            title="删除此来源"
-                            aria-label="删除此来源"
+                            title={translateText("删除此来源")}
+                            aria-label={translateText("删除此来源")}
                             className="text-destructive hover:text-destructive"
                             disabled={refreshStoreSourceMutation.isPending || deleteStoreSourceMutation.isPending}
                             onClick={() => handleDeleteStoreSource(source)}
@@ -2245,9 +2223,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                       ))}
                     </div>
                   ) : (
-                    <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-sm text-muted-foreground">
-                      尚未添加第三方商店来源
-                    </div>
+                    <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-sm text-muted-foreground">{translateText("尚未添加第三方商店来源")}</div>
                   )}
                 </div>
               </TabsContent>
@@ -2262,30 +2238,23 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 p-5">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">上传插件压缩包</p>
-                      <p className="mt-1 text-xs text-muted-foreground">支持 .zip、.tar.gz、.tgz，包内需包含 forwardx-plugin.json。</p>
+                      <p className="text-sm font-medium">{translateText("上传插件压缩包")}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{translateText("支持 .zip、.tar.gz、.tgz，包内需包含 forwardx-plugin.json。")}</p>
                     </div>
                     <Button variant="outline" className="shrink-0 gap-2" onClick={() => fileInputRef.current?.click()}>
-                      <Upload className="h-4 w-4" />
-                      选择插件包
-                    </Button>
+                      <Upload className="h-4 w-4" />{translateText("选择插件包")}</Button>
                   </div>
                   {uploadFileName && (
-                    <div className="mt-4 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-sm text-muted-foreground">
-                      已选择：{uploadFileName}
+                    <div className="mt-4 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-sm text-muted-foreground">{translateText("已选择：")}{uploadFileName}
                     </div>
                   )}
                 </div>
                 <Button className="w-full gap-2" onClick={handleUploadInstall} disabled={installFromUpload.isPending || !uploadContent.trim()}>
-                  {installFromUpload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                  上传安装
-                </Button>
+                  {installFromUpload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}{translateText("上传安装")}</Button>
               </TabsContent>
             </Tabs>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setCustomInstallOpen(false)} disabled={addStoreSourcesMutation.isPending || installFromUpload.isPending}>
-                关闭
-              </Button>
+              <Button variant="outline" onClick={() => setCustomInstallOpen(false)} disabled={addStoreSourcesMutation.isPending || installFromUpload.isPending}>{translateText("关闭")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -2300,12 +2269,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     <div className="min-w-0">
                       <DialogTitle className="flex flex-wrap items-center gap-2">
                         {storeDetailItem.name}
-                        {storeDetailItem.official && <Badge className="bg-primary text-primary-foreground">官方</Badge>}
+                        {storeDetailItem.official && <Badge className="bg-primary text-primary-foreground">{translateText("官方")}</Badge>}
                         {!storeDetailItem.official && storeDetailItem.storeSourceName && <Badge variant="outline">{storeDetailItem.storeSourceName}</Badge>}
-                        {installedIds.has(storeDetailItem.id) && <Badge className="bg-emerald-500 text-white">已安装</Badge>}
+                        {installedIds.has(storeDetailItem.id) && <Badge className="bg-emerald-500 text-white">{translateText("已安装")}</Badge>}
                       </DialogTitle>
-                      <DialogDescription className="mt-1">
-                        开发者：{storeDetailItem.author || "ForwardX"} · v{storeDetailItem.version || "0.0.0"} · 更新：{formatDateText(storeDetailItem.updatedAt)}
+                      <DialogDescription className="mt-1">{translateText("开发者：")}{storeDetailItem.author || "ForwardX"} · v{storeDetailItem.version || "0.0.0"}{translateText(" · 更新：")}{formatDateText(storeDetailItem.updatedAt)}
                       </DialogDescription>
                     </div>
                   </div>
@@ -2339,16 +2307,14 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   )}
                 </div>
                 <DialogFooter className="gap-2">
-                  <Button variant="outline" onClick={() => setStoreDetailItem(null)}>
-                    关闭
-                  </Button>
+                  <Button variant="outline" onClick={() => setStoreDetailItem(null)}>{translateText("关闭")}</Button>
                   <Button
                     className="gap-2"
                     onClick={() => installFromStore.mutate({ id: storeDetailItem.id, storeSourceId: storeDetailItem.storeSourceId || undefined })}
                     disabled={installFromStore.isPending}
                   >
                     {installFromStore.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {installedIds.has(storeDetailItem.id) ? "重新安装" : "安装插件"}
+                    {installedIds.has(storeDetailItem.id) ? translateText("重新安装") : translateText("安装插件")}
                   </Button>
                 </DialogFooter>
               </>
@@ -2362,11 +2328,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
             <CardHeader className="flex-row items-start justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Puzzle className="h-4 w-4 text-primary" />
-                  已安装插件
-                </CardTitle>
+                  <Puzzle className="h-4 w-4 text-primary" />{translateText("已安装插件")}</CardTitle>
                 <CardDescription className="mt-1">
-                  {plugins.length} 个插件{availablePluginUpdates.length > 0 ? ` · ${availablePluginUpdates.length} 个可更新` : ""}
+                  {plugins.length}{translateText(" 个插件")}{availablePluginUpdates.length > 0 ? translateText(" · {0} 个可更新", [availablePluginUpdates.length]) : ""}
                 </CardDescription>
               </div>
               <Button
@@ -2374,18 +2338,18 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 variant="outline"
                 size="sm"
                 className="shrink-0 gap-2"
-                title="检查所有插件更新"
-                aria-label="检查所有插件更新"
+                title={translateText("检查所有插件更新")}
+                aria-label={translateText("检查所有插件更新")}
                 disabled={checkAllUpdatesMutation.isPending || updateFromGithubMutation.isPending}
                 onClick={handleCheckAllUpdates}
               >
                 <RefreshCw className={cn("h-4 w-4", checkAllUpdatesMutation.isPending && "animate-spin")} />
-                <span className="hidden sm:inline">{checkAllUpdatesMutation.isPending ? "检查中" : "检查更新"}</span>
+                <span className="hidden sm:inline">{checkAllUpdatesMutation.isPending ? translateText("检查中") : translateText("检查更新")}</span>
               </Button>
             </CardHeader>
             <CardContent className="space-y-3">
               {pluginListLoading ? (
-                <DataSectionLoading label="正在加载插件" minHeight="min-h-[160px]" />
+                <DataSectionLoading label={translateText("正在加载插件")} minHeight="min-h-[160px]" />
               ) : plugins.length ? (
                 plugins.map((plugin: PluginRow) => {
                   const active = selectedPlugin?.pluginId === plugin.pluginId;
@@ -2414,23 +2378,21 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             <Badge variant="outline" className={pluginStatusClass(plugin.status)}>
                               {pluginStatusLabel(plugin.status)}
                             </Badge>
-                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                            {plugin.trustRequired && plugin.trusted && <Badge className="bg-amber-500 text-white">{translateText("已信任")}</Badge>}
                             {updating ? (
                               <Badge className="gap-1.5 bg-primary text-primary-foreground">
-                                <Loader2 className="h-3 w-3 animate-spin" />更新中
-                              </Badge>
+                                <Loader2 className="h-3 w-3 animate-spin" />{translateText("更新中")}</Badge>
                             ) : hasUpdate ? (
-                              <Badge className="bg-primary text-primary-foreground">有更新 v{plugin.latestVersion}</Badge>
+                              <Badge className="bg-primary text-primary-foreground">{translateText("有更新 v")}{plugin.latestVersion}</Badge>
                             ) : checking ? (
                               <Badge variant="outline" className="gap-1.5">
-                                <Loader2 className="h-3 w-3 animate-spin" />检查中
-                              </Badge>
+                                <Loader2 className="h-3 w-3 animate-spin" />{translateText("检查中")}</Badge>
                             ) : null}
                           </div>
                           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{plugin.description || plugin.pluginId}</p>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                             <span>v{plugin.version}{hasUpdate ? ` → v${plugin.latestVersion}` : ""}</span>
-                            <span>{storeItem?.official ? "官方" : storeItem?.storeSourceName || pluginSourceLabel(plugin.sourceType)}</span>
+                            <span>{storeItem?.official ? translateText("官方") : storeItem?.storeSourceName || pluginSourceLabel(plugin.sourceType)}</span>
                             <span>{formatTime(plugin.updatedAt)}</span>
                           </div>
                         </div>
@@ -2440,9 +2402,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                   );
                 })
               ) : (
-                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                  还没有安装插件
-                </div>
+                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("还没有安装插件")}</div>
               )}
             </CardContent>
           </Card>
@@ -2460,18 +2420,16 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                         <Badge variant="outline" className={pluginStatusClass(selectedPlugin.status)}>
                           {pluginStatusLabel(selectedPlugin.status)}
                         </Badge>
-                        {selectedPluginRequiresTrust && selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">已信任</Badge>}
+                        {selectedPluginRequiresTrust && selectedPlugin.trusted && <Badge className="bg-amber-500 text-white">{translateText("已信任")}</Badge>}
                         {selectedPluginUpdating ? (
                           <Badge className="gap-1.5 bg-primary text-primary-foreground">
-                            <Loader2 className="h-3 w-3 animate-spin" />更新中
-                          </Badge>
+                            <Loader2 className="h-3 w-3 animate-spin" />{translateText("更新中")}</Badge>
                         ) : selectedPluginHasUpdate ? (
-                          <Badge className="bg-primary text-primary-foreground">有更新 v{selectedPlugin.latestVersion}</Badge>
+                          <Badge className="bg-primary text-primary-foreground">{translateText("有更新 v")}{selectedPlugin.latestVersion}</Badge>
                         ) : null}
                       </CardTitle>
                       <CardDescription>{selectedPlugin.description || selectedPlugin.pluginId}</CardDescription>
-                      <p className="text-xs text-muted-foreground">
-                        开发者：{selectedManifest.author || selectedPlugin.author || "未知"} · {selectedPluginSourceLabel}
+                      <p className="text-xs text-muted-foreground">{translateText("开发者：")}{selectedManifest.author || selectedPlugin.author || translateText("未知")} · {selectedPluginSourceLabel}
                       </p>
                     </div>
                   </div>
@@ -2482,7 +2440,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                         selectedPlugin.sidebarEnabled ? "border-primary/35 bg-primary/10" : "border-border/50 bg-muted/20",
                       )}>
                         <PanelLeft className={cn("h-4 w-4", selectedPlugin.sidebarEnabled ? "text-primary" : "text-muted-foreground")} />
-                        <Label htmlFor="plugin-sidebar-enabled" className="cursor-pointer text-xs">菜单入口</Label>
+                        <Label htmlFor="plugin-sidebar-enabled" className="cursor-pointer text-xs">{translateText("菜单入口")}</Label>
                         <OptimisticSwitch
                           id="plugin-sidebar-enabled"
                           checked={!!selectedPlugin.sidebarEnabled}
@@ -2502,7 +2460,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                         {selectedPlugin.trusted
                           ? <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
                           : <ShieldAlert className="h-4 w-4 text-muted-foreground" />}
-                        <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">插件信任</Label>
+                        <Label htmlFor="plugin-trusted" className="cursor-pointer text-xs">{translateText("插件信任")}</Label>
                         <OptimisticSwitch
                           id="plugin-trusted"
                           checked={!!selectedPlugin.trusted}
@@ -2516,7 +2474,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                       selectedPlugin.status === "enabled" ? "border-emerald-500/35 bg-emerald-500/10" : "border-border/50 bg-muted/20",
                     )}>
                       <Power className={cn("h-4 w-4", selectedPlugin.status === "enabled" ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground")} />
-                      <Label htmlFor="plugin-enabled" className="cursor-pointer text-xs">启用</Label>
+                      <Label htmlFor="plugin-enabled" className="cursor-pointer text-xs">{translateText("启用")}</Label>
                       <OptimisticSwitch
                         id="plugin-enabled"
                         checked={selectedPlugin.status === "enabled"}
@@ -2537,22 +2495,20 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           onClick={() => handleCheckPluginUpdate(selectedPlugin)}
                         >
                           <RefreshCw className={cn("h-4 w-4", selectedPluginChecking && "animate-spin")} />
-                          {selectedPluginChecking ? "检查中" : "检查更新"}
+                          {selectedPluginChecking ? translateText("检查中") : translateText("检查更新")}
                         </Button>
                         {(selectedPluginHasUpdate || selectedPluginUpdating) && (
                           <Button size="sm" className="gap-2" disabled={isBusy || selectedPluginUpdating} onClick={() => handleUpdatePlugin(selectedPlugin)}>
                             {selectedPluginUpdating
                               ? <Loader2 className="h-4 w-4 animate-spin" />
                               : <Download className="h-4 w-4" />}
-                            {selectedPluginUpdating ? "更新中" : `更新到 v${selectedPlugin.latestVersion}`}
+                            {selectedPluginUpdating ? translateText("更新中") : translateText("更新到 v{0}", [selectedPlugin.latestVersion])}
                           </Button>
                         )}
                       </>
                     )}
                     <Button variant="ghost" size="sm" className="gap-2 text-destructive hover:text-destructive" disabled={isBusy} onClick={() => handleUninstall(selectedPlugin)}>
-                      <Trash2 className="h-4 w-4" />
-                      卸载
-                    </Button>
+                      <Trash2 className="h-4 w-4" />{translateText("卸载")}</Button>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -2561,10 +2517,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                       <div className="flex items-center gap-3">
                         <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" />
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium">正在更新 {selectedPlugin.name}</p>
-                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                            下载并校验 v{selectedPlugin.latestVersion || "最新版本"} 插件包
-                          </p>
+                          <p className="text-sm font-medium">{translateText("正在更新 ")}{selectedPlugin.name}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">{translateText("下载并校验 v")}{selectedPlugin.latestVersion || translateText("最新版本")}{translateText(" 插件包")}</p>
                           <div className="mt-2 h-1 overflow-hidden rounded-full bg-primary/15">
                             <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
                           </div>
@@ -2573,55 +2527,55 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                     </div>
                   )}
                   <Tabs defaultValue="overview" className="space-y-4">
-                    <TabsList className="grid w-full grid-cols-5">
-                      <TabsTrigger value="overview">概览</TabsTrigger>
-                      <TabsTrigger value="settings">设置</TabsTrigger>
-                      <TabsTrigger value="pages">页面</TabsTrigger>
-                      <TabsTrigger value="assets">资产</TabsTrigger>
-                      <TabsTrigger value="actions">动作</TabsTrigger>
+                    <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5">
+                      <TabsTrigger value="overview">{translateText("概览")}</TabsTrigger>
+                      <TabsTrigger value="settings">{translateText("设置")}</TabsTrigger>
+                      <TabsTrigger value="pages">{translateText("页面")}</TabsTrigger>
+                      <TabsTrigger value="assets">{translateText("资产")}</TabsTrigger>
+                      <TabsTrigger value="actions">{translateText("动作")}</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="overview" className="space-y-4">
                       {selectedPluginRequiresTrust && (
                         <Alert className={selectedPlugin.trusted ? "border-amber-500/30 bg-amber-500/10" : "border-border/50 bg-muted/20"}>
                           {selectedPlugin.trusted ? <ShieldCheck className="h-4 w-4 text-amber-600" /> : <ShieldAlert className="h-4 w-4" />}
-                          <AlertTitle>{selectedPlugin.trusted ? "高权限 API 已授权" : "高权限 API 待授权"}</AlertTitle>
+                          <AlertTitle>{selectedPlugin.trusted ? translateText("高权限 API 已授权") : translateText("高权限 API 待授权")}</AlertTitle>
                           <AlertDescription>
                             {selectedPlugin.trusted
-                              ? "插件可按已声明权限调用受控的用户、规则、主机、隧道、转发组和消息推送 API。"
-                              : "此插件声明了高权限面板操作，需要管理员确认信任后才能执行。"}
+                              ? translateText("插件可按已声明权限调用受控的用户、规则、主机、隧道、转发组和消息推送 API。")
+                              : translateText("此插件声明了高权限面板操作，需要管理员确认信任后才能执行。")}
                           </AlertDescription>
                         </Alert>
                       )}
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">插件 ID</p>
+                          <p className="text-xs text-muted-foreground">{translateText("插件 ID")}</p>
                           <p className="mt-1 truncate font-mono text-sm">{selectedPlugin.pluginId}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">版本</p>
+                          <p className="text-xs text-muted-foreground">{translateText("版本")}</p>
                           <p className="mt-1 font-mono text-sm">v{selectedPlugin.version}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">来源</p>
+                          <p className="text-xs text-muted-foreground">{translateText("来源")}</p>
                           <p className="mt-1 text-sm">{selectedPluginSourceLabel}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">发布日期</p>
+                          <p className="text-xs text-muted-foreground">{translateText("发布日期")}</p>
                           <p className="mt-1 text-sm">{formatDateText(selectedManifest.releaseDate)}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">更新日期</p>
+                          <p className="text-xs text-muted-foreground">{translateText("更新日期")}</p>
                           <p className="mt-1 text-sm">{formatDateText(selectedManifest.updatedAt || selectedPlugin.updatedAt)}</p>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-xs text-muted-foreground">许可</p>
+                          <p className="text-xs text-muted-foreground">{translateText("许可")}</p>
                           <p className="mt-1 text-sm">{selectedManifest.license || "-"}</p>
                         </div>
                       </div>
                       {Array.isArray(selectedManifest.features) && selectedManifest.features.length > 0 && (
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-sm font-medium">功能介绍</p>
+                          <p className="text-sm font-medium">{translateText("功能介绍")}</p>
                           <div className="mt-3 grid gap-2 sm:grid-cols-2">
                             {selectedManifest.features.map((feature: any) => (
                               <div key={feature.title} className="rounded-lg border border-border/40 bg-background/60 p-3">
@@ -2643,34 +2597,32 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                       )}
                       {selectedManifest.changelog && (
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-sm font-medium">更新说明</p>
+                          <p className="text-sm font-medium">{translateText("更新说明")}</p>
                           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{selectedManifest.changelog}</p>
                         </div>
                       )}
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-sm font-medium">权限</p>
+                          <p className="text-sm font-medium">{translateText("权限")}</p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             {(selectedPlugin.permissions || []).length
                               ? selectedPlugin.permissions.map((item: string) => <Badge key={item} variant="outline">{item}</Badge>)
-                              : <span className="text-xs text-muted-foreground">无</span>}
+                              : <span className="text-xs text-muted-foreground">{translateText("无")}</span>}
                           </div>
                         </div>
                         <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                          <p className="text-sm font-medium">扩展点</p>
+                          <p className="text-sm font-medium">{translateText("扩展点")}</p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             {(selectedPlugin.extensionPoints || []).length
                               ? selectedPlugin.extensionPoints.map((item: string) => <Badge key={item} variant="outline">{item}</Badge>)
-                              : <span className="text-xs text-muted-foreground">无</span>}
+                              : <span className="text-xs text-muted-foreground">{translateText("无")}</span>}
                           </div>
                         </div>
                       </div>
                       {selectedPlugin.repository && (
                         <Button variant="outline" asChild className="gap-2">
                           <a href={selectedPlugin.repository} target="_blank" rel="noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                            打开仓库
-                          </a>
+                            <ExternalLink className="h-4 w-4" />{translateText("打开仓库")}</a>
                         </Button>
                       )}
                     </TabsContent>
@@ -2691,15 +2643,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           </div>
                           <div className="flex justify-end">
                             <Button className="gap-2" onClick={handleSaveSettings} disabled={saveSettingMutation.isPending}>
-                              {saveSettingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
-                              保存设置
-                            </Button>
+                              {saveSettingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}{translateText("保存设置")}</Button>
                           </div>
                         </>
                       ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                          这个插件没有设置项
-                        </div>
+                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("这个插件没有设置项")}</div>
                       )}
                     </TabsContent>
 
@@ -2730,15 +2678,13 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           </div>
                         </>
                       ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                          这个插件没有页面
-                        </div>
+                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("这个插件没有页面")}</div>
                       )}
                     </TabsContent>
 
                     <TabsContent value="assets" className="space-y-4">
                       {assetsLoading ? (
-                        <DataSectionLoading label="正在加载资产" minHeight="min-h-[160px]" />
+                        <DataSectionLoading label={translateText("正在加载资产")} minHeight="min-h-[160px]" />
                       ) : assets.length ? (
                         <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
                           <div className="space-y-2">
@@ -2765,9 +2711,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                               <div className="flex shrink-0 items-center gap-2">
                                 <Badge variant="outline">{formatBytes(selectedAsset?.size || 0)}</Badge>
                                 <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => handleDownloadAsset(selectedAsset)}>
-                                  <Download className="h-3.5 w-3.5" />
-                                  下载
-                                </Button>
+                                  <Download className="h-3.5 w-3.5" />{translateText("下载")}</Button>
                               </div>
                             </div>
                             <pre className="max-h-96 overflow-auto rounded-md bg-background/80 p-3 text-xs leading-5">
@@ -2776,9 +2720,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                           </div>
                         </div>
                       ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                          这个插件没有资产
-                        </div>
+                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("这个插件没有资产")}</div>
                       )}
                     </TabsContent>
 
@@ -2792,10 +2734,10 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                 <Badge variant="outline" className="font-mono text-[10px]">{action.type}</Badge>
                                 {(action.type === "panel.request" || action.type === "agent.request") && !selectedPlugin.trusted && (
-                                  <Badge variant="destructive" className="text-[10px]">需要插件信任</Badge>
+                                  <Badge variant="destructive" className="text-[10px]">{translateText("需要插件信任")}</Badge>
                                 )}
                                 {Array.isArray(action.inputSchema) && action.inputSchema.length > 0 && (
-                                  <Badge variant="outline" className="text-[10px]">需要输入 {action.inputSchema.length} 项</Badge>
+                                  <Badge variant="outline" className="text-[10px]">{translateText("需要输入 ")}{action.inputSchema.length}{translateText(" 项")}</Badge>
                                 )}
                               </div>
                             </div>
@@ -2805,15 +2747,11 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                               disabled={selectedPlugin.status !== "enabled" || runActionMutation.isPending || ((action.type === "panel.request" || action.type === "agent.request") && !selectedPlugin.trusted)}
                               onClick={() => handleRunAction(action)}
                             >
-                              {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                              执行
-                            </Button>
+                              {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{translateText("执行")}</Button>
                           </div>
                         ))
                       ) : (
-                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                          这个插件没有动作
-                        </div>
+                        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">{translateText("这个插件没有动作")}</div>
                       )}
                       {actionResult && (
                         <div className="rounded-lg border border-border/40 bg-background/80 p-3">
@@ -2827,27 +2765,25 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             <Button type="button" variant="ghost" size="sm" className="h-8 self-start sm:self-auto" onClick={() => {
                               setActionResult(null);
                               setAgentActionGroupId("");
-                            }}>
-                              清除
-                            </Button>
+                            }}>{translateText("清除")}</Button>
                           </div>
                           {actionResult?.result?.parseError && (
-                            <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">JSON 解析失败：{actionResult.result.parseError}</p>
+                            <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">{translateText("JSON 解析失败：")}{actionResult.result.parseError}</p>
                           )}
                           {actionResultDisplayBody(actionResult) ? (
                             <pre className="max-h-80 overflow-auto rounded-md bg-muted/40 p-3 text-xs leading-5">
                               {actionResultDisplayBody(actionResult)}
                             </pre>
                           ) : (
-                            <p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">没有响应内容</p>
+                            <p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">{translateText("没有响应内容")}</p>
                           )}
                         </div>
                       )}
                       {selectedPlugin.status !== "enabled" && managementPluginActions.length > 0 && (
                         <Alert className="border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                           <AlertTriangle className="h-4 w-4" />
-                          <AlertTitle>插件未启用</AlertTitle>
-                          <AlertDescription>启用插件后可执行动作。</AlertDescription>
+                          <AlertTitle>{translateText("插件未启用")}</AlertTitle>
+                          <AlertDescription>{translateText("启用插件后可执行动作。")}</AlertDescription>
                         </Alert>
                       )}
                     </TabsContent>
@@ -2856,8 +2792,8 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               </>
             ) : (
               <CardHeader>
-                <CardTitle>选择插件</CardTitle>
-                <CardDescription>选择插件以查看详情。</CardDescription>
+                <CardTitle>{translateText("选择插件")}</CardTitle>
+                <CardDescription>{translateText("选择插件以查看详情。")}</CardDescription>
               </CardHeader>
             )}
           </Card>
@@ -2877,7 +2813,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
       >
         <DialogContent className="flex max-h-[calc(100svh-1.5rem)] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
           <DialogHeader className="px-4 pt-4 sm:px-6 sm:pt-6">
-            <DialogTitle>{actionInputDialog?.label || "执行插件动作"}</DialogTitle>
+            <DialogTitle>{actionInputDialog?.label || translateText("执行插件动作")}</DialogTitle>
             {actionInputDialog?.description && (
               <DialogDescription>{actionInputDialog.description}</DialogDescription>
             )}
@@ -2903,13 +2839,9 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                 setActionInputDialog(null);
                 setActionInputDraft({});
               }}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button type="button" className="gap-2" disabled={runActionMutation.isPending} onClick={handleSubmitActionInput}>
-              {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              执行
-            </Button>
+              {runActionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{translateText("执行")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

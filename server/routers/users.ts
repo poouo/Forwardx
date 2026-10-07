@@ -218,6 +218,25 @@ export const usersRouter = router({
         console.info(`[Users] Updated forward group permissions userId=${input.userId} count=${input.forwardGroupIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
+    /** Atomic add/remove used by controlled automation; never replace unrelated manual grants. */
+    changeResourcePermissions: adminProcedure
+      .input(z.object({ userId: z.number().int().positive(), resource: z.enum(["host", "tunnel", "group"]), operation: z.enum(["add", "remove"]), resourceIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ input, ctx }) => withKeyedTaskLock(`user-resource-permissions:${input.userId}`, async () => {
+        if (!(await db.getUserById(input.userId))) throw new Error("用户不存在");
+        for (const id of input.operation === "add" ? input.resourceIds : []) {
+          const resource = input.resource === "host" ? await db.getHostById(id) : input.resource === "tunnel" ? await db.getTunnelById(id) : await db.getForwardGroupById(id);
+          if (!resource) throw new Error(`资源不存在：${input.resource} #${id}`);
+        }
+        const previous = input.resource === "host" ? await db.getUserAllowedHostIds(input.userId) : input.resource === "tunnel" ? await db.getUserAllowedTunnelIds(input.userId) : await db.getUserManualAllowedForwardGroupIds(input.userId);
+        const next = input.operation === "add" ? Array.from(new Set([...previous, ...input.resourceIds])) : previous.filter(id => !input.resourceIds.includes(id));
+        if (input.resource === "host") await db.setUserHostPermissions(input.userId, next);
+        else if (input.resource === "tunnel") await db.setUserTunnelPermissions(input.userId, next);
+        else await db.setUserForwardGroupPermissions(input.userId, next);
+        clearLinkAccessScopeCache();
+        await reconcileUserRuleResourceAuthorization(input.userId);
+        console.info(`[Users] Changed resource permissions userId=${input.userId} resource=${input.resource} operation=${input.operation} count=${input.resourceIds.length} ${actorLabel(ctx)}`);
+        return { success: true, userId: input.userId, count: next.length };
+      })),
     /** 获取所有用户的主机权限映射 */
     allHostPermissions: adminProcedure.query(async () => {
       return db.getAllUserHostPermissions();

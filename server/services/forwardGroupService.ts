@@ -1,8 +1,9 @@
 import * as db from "../db";
+import { notificationSettings } from "../notificationSettings";
 import { getDdnsSettings } from "../ddns";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
-import { createHopTestBatch, registerHopTest } from "../hopTestState";
+import { randomUUID } from "node:crypto";
 import { ENV } from "../env";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import { normalizeForwardRuleProtocol, type ForwardRuleProtocol } from "../../shared/forwardTypes";
@@ -145,11 +146,8 @@ async function assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled: 
 async function assertTelegramSwitchNotifyReady(enabled: boolean) {
   if (!enabled) return;
   const settings = await db.getAllSettings();
-  const envToken = ENV.telegramBotToken.trim();
-  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
-  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
-  if (!botEnabled || !botConfigured) {
-    throw new Error("请先在系统设置中配置并启用 Telegram 机器人，再开启切换告警");
+  if (!notificationSettings(settings).active) {
+    throw new Error("请先在系统设置中配置并启用所选通知渠道，再开启切换告警");
   }
 }
 
@@ -365,38 +363,40 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
   const probes = await db.getForwardGroupChainProbes(groupId, { includeFinalTarget: false, method: "ping" });
   if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
 
-  const batchId = createHopTestBatch("fg", groupId);
+  const batchId = `fc-${randomUUID()}`;
   const testHostIds = new Set<number>();
   let queued = 0;
-  for (const probe of probes) {
-    const message = JSON.stringify({
-      kind: "forward-chain",
-      groupId,
-      entryIp: probe.targetIp,
-      entrySourcePort: probe.targetPort,
-      targetIp: probe.targetIp,
-      targetPort: probe.targetPort,
-      method: probe.method,
-      hopLabel: probe.hopLabel,
-      routeLabel: probe.routeLabel,
-      batchId,
-      runtimeDependent: probe.runtimeDependent,
-    });
-    const testId = await db.createForwardTest({
-      ruleId: 0,
-      hostId: probe.fromHostId,
-      userId: Number(group.userId),
-      status: "pending",
-      listenOk: false,
-      targetReachable: false,
-      forwardOk: false,
-      message,
-    } as any);
-    registerHopTest(batchId, Number(testId));
-    testHostIds.add(probe.fromHostId);
-    queued += 1;
-    appendPanelLog("info", `[SelfTest] forward-chain=${groupId} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}${probe.targetPort ? `:${probe.targetPort}` : ""}`);
-  }
+  await db.withDatabaseTransaction(async () => {
+    for (const probe of probes) {
+      const message = JSON.stringify({
+        kind: "forward-chain",
+        groupId,
+        entryIp: probe.targetIp,
+        entrySourcePort: probe.targetPort,
+        targetIp: probe.targetIp,
+        targetPort: probe.targetPort,
+        method: probe.method,
+        hopLabel: probe.hopLabel,
+        routeLabel: probe.routeLabel,
+        batchId,
+        runtimeDependent: probe.runtimeDependent,
+      });
+      await db.createForwardTest({
+        ruleId: 0,
+        hostId: probe.fromHostId,
+        userId: Number(group.userId),
+        status: "pending",
+        listenOk: false,
+        targetReachable: false,
+        forwardOk: false,
+        message,
+        batchId,
+      } as any);
+      testHostIds.add(probe.fromHostId);
+      queued += 1;
+    }
+  });
+  appendPanelLog("info", `[SelfTest] forward-chain=${groupId} batch=${batchId} queued segments=${queued} sourceHosts=${testHostIds.size}`);
   for (const hostId of testHostIds) {
     pushAgentRefresh(hostId, "forward-chain-selftest", { urgent: true });
   }

@@ -90,6 +90,11 @@ export async function authenticateUser(username: string, password: string) {
     verifyPasswordAgainstDummy(password);
     return null;
   }
+  if (user.password === "!google-only") {
+    // Preserve the password login failure work factor for Google-only accounts.
+    verifyPasswordAgainstDummy(password);
+    return null;
+  }
   if (!verifyPassword(password, user.password)) return null;
   const db = await getDb();
   if (db && (user as any).accountEnabled !== false) {
@@ -893,6 +898,7 @@ export async function getUserTrafficSummaries() {
     maxIPs: users.maxIPs,
     balanceCents: users.balanceCents,
     telegramId: users.telegramId,
+    discordId: users.discordId,
     telegramUsername: users.telegramUsername,
     telegramFirstName: users.telegramFirstName,
     telegramLastName: users.telegramLastName,

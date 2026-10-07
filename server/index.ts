@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { registerGoogleAuthRoutes } from "./googleAuthRoutes";
 import cookieParser from "cookie-parser";
 import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
@@ -16,12 +17,15 @@ import { initDatabase } from "./db";
 import { installPanelLogger } from "./_core/panelLogger";
 import { loadPanelSslRuntimeConfig } from "./panelSsl";
 import { startBackgroundServices } from "./backgroundServices";
+import { seamlessAgentProxy } from "./seamlessMigrationProxy";
+import { seamlessAdmissionMiddleware } from "./seamlessMigrationState";
 import { initializePanelClock } from "./panelClock";
 import { ENV } from "./env";
 import { resolveTrustProxySetting } from "./trustProxy";
 import { authCapRouter } from "./authCaptcha";
 import { registerDatabaseHealthRoutes, databaseUnavailableApiGuard, databaseRequestErrorHandler } from "./databaseHealthRoutes";
 import { startDatabaseHealthMonitor } from "./databaseHealthMonitor";
+import { registerLocaleHintRoute } from "./localeHint";
 
 installPanelLogger();
 
@@ -128,6 +132,9 @@ async function startServer() {
   installSecurityHeaders(app);
   installMobileCors(app);
   registerDatabaseHealthRoutes(app);
+  registerLocaleHintRoute(app);
+  app.use(seamlessAgentProxy);
+  app.use(seamlessAdmissionMiddleware);
   app.use(databaseUnavailableApiGuard);
 
   // Payment webhooks need the original request body for signature verification.
@@ -136,6 +143,7 @@ async function startServer() {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
   app.use(cookieParser());
+  registerGoogleAuthRoutes(app);
   app.use(authCapRouter);
   app.use(agentRouter);
   app.use(migrationRouter);

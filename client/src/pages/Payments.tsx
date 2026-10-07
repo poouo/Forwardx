@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -40,7 +42,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import QRCode from "qrcode";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type PaymentConfigForm = {
   enabled: boolean;
@@ -102,13 +104,13 @@ type PaymentConfigForm = {
 type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "gmpay" | "test";
 const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "gmpay", "test"] as const;
 const PAYMENT_TAB_ITEMS = [
-  { value: "basic", label: "基础设置" },
-  { value: "easypay", label: "易支付" },
-  { value: "alipay", label: "支付宝官方" },
-  { value: "wxpay", label: "微信官方" },
+  { value: "basic", label: translateText("基础设置") },
+  { value: "easypay", label: translateText("易支付") },
+  { value: "alipay", label: translateText("支付宝官方") },
+  { value: "wxpay", label: translateText("微信官方") },
   { value: "stripe", label: "Stripe" },
   { value: "gmpay", label: "USDT" },
-  { value: "test", label: "测试下单" },
+  { value: "test", label: translateText("测试下单") },
 ] as const satisfies readonly SlidingTabItem<PaymentTab>[];
 const PAYMENT_TAB_STORAGE_KEY = "forwardx.payments.tab";
 
@@ -178,21 +180,21 @@ function formatDate(value: unknown) {
   if (!value) return "-";
   const date = value instanceof Date ? value : new Date(value as any);
   if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
+  return date.toLocaleString(getFormatLocale());
 }
 
 function paymentTypeLabel(value: string) {
-  if (value === "alipay") return "支付宝";
-  if (value === "wxpay") return "微信";
+  if (value === "alipay") return translateText("支付宝");
+  if (value === "wxpay") return translateText("微信");
   if (value === "stripe") return "Stripe";
   if (value === "usdt") return "USDT";
   return value;
 }
 
 function providerLabel(value: string) {
-  if (value === "easypay") return "易支付";
-  if (value === "alipay") return "支付宝官方";
-  if (value === "wxpay") return "微信官方";
+  if (value === "easypay") return translateText("易支付");
+  if (value === "alipay") return translateText("支付宝官方");
+  if (value === "wxpay") return translateText("微信官方");
   if (value === "stripe") return "Stripe";
   if (value === "gmpay") return "GM Pay";
   return value;
@@ -267,7 +269,7 @@ function Field({ label, children, hint }: { label: string; children: React.React
 function CallbackItem({ label, value }: { label: string; value: string }) {
   const copy = async () => {
     await navigator.clipboard.writeText(value);
-    toast.success("已复制");
+    toast.success(translateText("已复制"));
   };
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border bg-background/70 px-3 py-2">
@@ -333,12 +335,12 @@ export default function Payments() {
         const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: testQrOrder.outTradeNo });
         if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
           setTestQrOrder(null);
-          toast.success("支付成功！");
+          toast.success(translateText("支付成功！"));
           utils.payment.listOrders.invalidate();
           utils.payment.stats.invalidate();
         } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
           setTestQrOrder(null);
-          toast.error("订单已失效");
+          toast.error(translateText("订单已失效"));
           utils.payment.listOrders.invalidate();
         }
       } catch { /* 轮询失败静默忽略 */ }
@@ -421,26 +423,26 @@ export default function Payments() {
 
   const updateConfig = trpc.payment.updateConfig.useMutation({
     onSuccess: () => {
-      toast.success("支付配置已保存");
+      toast.success(translateText("支付配置已保存"));
       utils.payment.getConfig.invalidate();
     },
-    onError: (error) => toast.error(error.message || "保存失败"),
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
   });
 
   const testGmPayGateway = trpc.payment.testGmPayGateway.useMutation({
     onSuccess: (result) => {
       if (result.supportsUsdt) {
-        toast.success(`GM Pay 连接正常${result.version ? `（${result.version}）` : ""}`);
+        toast.success(translateText("GM Pay 连接正常{0}", [result.version ? `（${result.version}）` : ""]));
       } else {
-        toast.error(`${result.networkLabel} 当前未启用 USDT`);
+        toast.error(translateText("{0} 当前未启用 USDT", [result.networkLabel]));
       }
     },
-    onError: (error) => toast.error(error.message || "GM Pay 网关检测失败"),
+    onError: (error) => toast.error(error.message || translateText("GM Pay 网关检测失败")),
   });
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
-      toast.success("测试订单已创建");
+      toast.success(translateText("测试订单已创建"));
       utils.payment.listOrders.invalidate();
       utils.payment.stats.invalidate();
       if (order?.qrCode) {
@@ -450,12 +452,12 @@ export default function Payments() {
         setCreatedPayUrl(order?.payUrl || null);
       }
     },
-    onError: (error) => toast.error(error.message || "创建订单失败"),
+    onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
 
   const save = () => {
     if (form.maxAmount > 0 && form.maxAmount < form.minAmount) {
-      toast.error("最高金额不能小于最低金额");
+      toast.error(translateText("最高金额不能小于最低金额"));
       return;
     }
     updateConfig.mutate({
@@ -472,27 +474,25 @@ export default function Payments() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">支付对接</h1>
-            <p className="text-sm text-muted-foreground">配置支付方式和订单。</p>
+            <h1 className="text-2xl font-semibold tracking-tight">{translateText("支付对接")}</h1>
+            <p className="text-sm text-muted-foreground">{translateText("配置支付方式和订单。")}</p>
           </div>
           <Button onClick={save} disabled={updateConfig.isPending || isLoading}>
-            {updateConfig.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-            保存配置
-          </Button>
+            {updateConfig.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}{translateText("保存配置")}</Button>
         </div>
 
         <div className="grid gap-4 md:grid-cols-4">
           <PaymentStatCard
-            label="支付状态"
-            value={form.enabled ? "已启用" : "未启用"}
+            label={translateText("支付状态")}
+            value={form.enabled ? translateText("已启用") : translateText("未启用")}
             icon={ShieldCheck}
             tone={form.enabled ? "text-emerald-600" : "text-muted-foreground"}
             loading={isLoading}
             cacheKey="payments.enabled"
-            fallbackValue="未启用"
+            fallbackValue={translateText("未启用")}
           />
           <PaymentStatCard
-            label="已支付金额"
+            label={translateText("已支付金额")}
             value={formatMoney(stats?.paidAmountCents)}
             icon={WalletCards}
             tone="text-primary"
@@ -501,7 +501,7 @@ export default function Payments() {
             fallbackValue={formatMoney(0)}
           />
           <PaymentStatCard
-            label="已支付订单"
+            label={translateText("已支付订单")}
             value={stats?.paidOrders || 0}
             icon={CheckCircle2}
             tone="text-emerald-600"
@@ -510,7 +510,7 @@ export default function Payments() {
             fallbackValue={0}
           />
           <PaymentStatCard
-            label="待支付订单"
+            label={translateText("待支付订单")}
             value={stats?.pendingOrders || 0}
             icon={RefreshCw}
             tone="text-amber-600"
@@ -522,62 +522,61 @@ export default function Payments() {
 
         <Alert className="border-primary/15 bg-primary/5 text-foreground">
           <ShieldCheck className="h-4 w-4" />
-          <AlertTitle>回调地址</AlertTitle>
-          <AlertDescription>
-            当前使用 {panelUrl || "未配置"}。
+          <AlertTitle>{translateText("回调地址")}</AlertTitle>
+          <AlertDescription>{translateText("当前使用 ")}{panelUrl || translateText("未配置")}。
           </AlertDescription>
         </Alert>
 
         {isLoading ? (
-          <DataSectionLoading label="正在加载支付配置" minHeight="min-h-[260px]" />
+          <DataSectionLoading label={translateText("正在加载支付配置")} minHeight="min-h-[260px]" />
         ) : (
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PaymentTab)}>
-          <SlidingTabsList items={PAYMENT_TAB_ITEMS} activeValue={activeTab} ariaLabel="支付对接" minItemWidthRem={6.75} />
+          <SlidingTabsList items={PAYMENT_TAB_ITEMS} activeValue={activeTab} ariaLabel={translateText("支付对接")} minItemWidthRem={6.75} />
 
           <TabsContent value="basic" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle>基础设置</CardTitle>
-                <CardDescription>用于商店套餐购买。</CardDescription>
+                <CardTitle>{translateText("基础设置")}</CardTitle>
+                <CardDescription>{translateText("用于商店套餐购买。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3">
                   <div>
-                    <div className="font-medium">启用支付功能</div>
-                    <div className="text-sm text-muted-foreground">关闭后无法下单</div>
+                    <div className="font-medium">{translateText("启用支付功能")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("关闭后无法下单")}</div>
                   </div>
                   <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, enabled }))} />
                 </div>
-                <Field label="商品名称">
+                <Field label={translateText("商品名称")}>
                   <Input value={form.productName} onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))} />
                 </Field>
-                <Field label="最低金额">
+                <Field label={translateText("最低金额")}>
                   <Input type="number" min={0} step="0.01" value={form.minAmount} onChange={(e) => setForm((prev) => ({ ...prev, minAmount: Number(e.target.value) }))} />
                 </Field>
-                <Field label="最高金额" hint="0 表示不限制">
+                <Field label={translateText("最高金额")} hint={translateText("0 表示不限制")}>
                   <Input type="number" min={0} step="0.01" value={form.maxAmount} onChange={(e) => setForm((prev) => ({ ...prev, maxAmount: Number(e.target.value) }))} />
                 </Field>
-                <Field label="订单过期时间（分钟）">
+                <Field label={translateText("订单过期时间（分钟）")}>
                   <Input type="number" min={1} max={1440} value={form.orderTimeoutMinutes} onChange={(e) => setForm((prev) => ({ ...prev, orderTimeoutMinutes: Number(e.target.value) }))} />
                 </Field>
-                <Field label="最大待支付订单" hint="0 表示不限制">
+                <Field label={translateText("最大待支付订单")} hint={translateText("0 表示不限制")}>
                   <Input type="number" min={0} max={100} value={form.maxPendingOrders} onChange={(e) => setForm((prev) => ({ ...prev, maxPendingOrders: Number(e.target.value) }))} />
                 </Field>
-                <Field label="支付宝按钮来源" hint="用户侧仍显示为支付宝，后台决定使用哪条支付通道">
+                <Field label={translateText("支付宝按钮来源")} hint={translateText("用户侧仍显示为支付宝，后台决定使用哪条支付通道")}>
                   <Select value={form.routes.alipay} onValueChange={(alipay: "easypay" | "alipay") => setForm((prev) => ({ ...prev, routes: { ...prev.routes, alipay } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="easypay">易支付</SelectItem>
-                      <SelectItem value="alipay">支付宝官方</SelectItem>
+                      <SelectItem value="easypay">{translateText("易支付")}</SelectItem>
+                      <SelectItem value="alipay">{translateText("支付宝官方")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="微信按钮来源" hint="用户侧仍显示为微信，后台决定使用哪条支付通道">
+                <Field label={translateText("微信按钮来源")} hint={translateText("用户侧仍显示为微信，后台决定使用哪条支付通道")}>
                   <Select value={form.routes.wxpay} onValueChange={(wxpay: "easypay" | "wxpay") => setForm((prev) => ({ ...prev, routes: { ...prev.routes, wxpay } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="easypay">易支付</SelectItem>
-                      <SelectItem value="wxpay">微信官方</SelectItem>
+                      <SelectItem value="easypay">{translateText("易支付")}</SelectItem>
+                      <SelectItem value="wxpay">{translateText("微信官方")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -588,44 +587,44 @@ export default function Payments() {
           <TabsContent value="easypay" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" /> 易支付</CardTitle>
-                <CardDescription>兼容易支付接口。</CardDescription>
+                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" />{translateText(" 易支付")}</CardTitle>
+                <CardDescription>{translateText("兼容易支付接口。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
                   <div>
-                    <div className="font-medium">启用易支付</div>
-                    <div className="text-sm text-muted-foreground">支付宝、微信通道</div>
+                    <div className="font-medium">{translateText("启用易支付")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("支付宝、微信通道")}</div>
                   </div>
                   <Switch checked={form.easypay.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, enabled } }))} />
                 </div>
-                <Field label="接口地址">
+                <Field label={translateText("接口地址")}>
                   <Input placeholder="https://pay.example.com" value={form.easypay.apiBase} onChange={(e) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, apiBase: e.target.value } }))} />
                 </Field>
-                <Field label="商户 PID">
+                <Field label={translateText("商户 PID")}>
                   <Input value={form.easypay.pid} onChange={(e) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, pid: e.target.value } }))} />
                 </Field>
-                <Field label="商户密钥" hint={config?.easypay?.hasPkey ? "已保存密钥，留空表示不修改" : "尚未保存密钥"}>
+                <Field label={translateText("商户密钥")} hint={config?.easypay?.hasPkey ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
                   <Input type="password" value={form.easypay.pkey} onChange={(e) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, pkey: e.target.value } }))} />
                 </Field>
-                <Field label="下单方式">
+                <Field label={translateText("下单方式")}>
                   <Select value={form.easypay.mode} onValueChange={(mode: "redirect" | "api") => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, mode } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="redirect">跳转支付</SelectItem>
-                      <SelectItem value="api">API 下单</SelectItem>
+                      <SelectItem value="redirect">{translateText("跳转支付")}</SelectItem>
+                      <SelectItem value="api">{translateText("API 下单")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="支付宝通道 CID" hint="可选">
+                <Field label={translateText("支付宝通道 CID")} hint={translateText("可选")}>
                   <Input value={form.easypay.cidAlipay} onChange={(e) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, cidAlipay: e.target.value } }))} />
                 </Field>
-                <Field label="微信通道 CID" hint="可选">
+                <Field label={translateText("微信通道 CID")} hint={translateText("可选")}>
                   <Input value={form.easypay.cidWxpay} onChange={(e) => setForm((prev) => ({ ...prev, easypay: { ...prev.easypay, cidWxpay: e.target.value } }))} />
                 </Field>
                 <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
-                  <CallbackItem label="异步通知地址" value={`${panelUrl}/api/payment/webhook/easypay`} />
-                  <CallbackItem label="同步返回地址" value={`${panelUrl}/api/payment/return/easypay`} />
+                  <CallbackItem label={translateText("异步通知地址")} value={`${panelUrl}/api/payment/webhook/easypay`} />
+                  <CallbackItem label={translateText("同步返回地址")} value={`${panelUrl}/api/payment/return/easypay`} />
                 </div>
               </CardContent>
             </Card>
@@ -634,43 +633,43 @@ export default function Payments() {
           <TabsContent value="alipay" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" /> 支付宝官方</CardTitle>
-                <CardDescription>支付宝官方接口。</CardDescription>
+                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" />{translateText(" 支付宝官方")}</CardTitle>
+                <CardDescription>{translateText("支付宝官方接口。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
                   <div>
-                    <div className="font-medium">启用支付宝官方</div>
-                    <div className="text-sm text-muted-foreground">需在基础设置中选择</div>
+                    <div className="font-medium">{translateText("启用支付宝官方")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("需在基础设置中选择")}</div>
                   </div>
                   <Switch checked={form.alipay.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, enabled } }))} />
                 </div>
                 <Field label="AppID">
                   <Input value={form.alipay.appId} onChange={(e) => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, appId: e.target.value } }))} />
                 </Field>
-                <Field label="网关地址">
+                <Field label={translateText("网关地址")}>
                   <Input value={form.alipay.gateway} onChange={(e) => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, gateway: e.target.value } }))} />
                 </Field>
-                <Field label="支付模式">
+                <Field label={translateText("支付模式")}>
                   <Select value={form.alipay.mode} onValueChange={(mode: "precreate" | "page" | "wap") => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, mode } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="precreate">扫码预下单</SelectItem>
-                      <SelectItem value="page">电脑网站支付</SelectItem>
-                      <SelectItem value="wap">手机网站支付</SelectItem>
+                      <SelectItem value="precreate">{translateText("扫码预下单")}</SelectItem>
+                      <SelectItem value="page">{translateText("电脑网站支付")}</SelectItem>
+                      <SelectItem value="wap">{translateText("手机网站支付")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
                 <div className="hidden md:block" />
-                <Field label="应用私钥" hint={config?.alipay?.hasPrivateKey ? "已保存私钥，留空表示不修改" : "尚未保存私钥"}>
+                <Field label={translateText("应用私钥")} hint={config?.alipay?.hasPrivateKey ? translateText("已保存私钥，留空表示不修改") : translateText("尚未保存私钥")}>
                   <Textarea className="min-h-32 font-mono text-xs" value={form.alipay.privateKey} onChange={(e) => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, privateKey: e.target.value } }))} />
                 </Field>
-                <Field label="支付宝公钥" hint={config?.alipay?.hasPublicKey ? "已保存公钥，留空表示不修改" : "尚未保存公钥"}>
+                <Field label={translateText("支付宝公钥")} hint={config?.alipay?.hasPublicKey ? translateText("已保存公钥，留空表示不修改") : translateText("尚未保存公钥")}>
                   <Textarea className="min-h-32 font-mono text-xs" value={form.alipay.publicKey} onChange={(e) => setForm((prev) => ({ ...prev, alipay: { ...prev.alipay, publicKey: e.target.value } }))} />
                 </Field>
                 <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
-                  <CallbackItem label="异步通知地址" value={`${panelUrl}/api/payment/webhook/alipay`} />
-                  <CallbackItem label="同步返回地址" value={`${panelUrl}/api/payment/return/alipay`} />
+                  <CallbackItem label={translateText("异步通知地址")} value={`${panelUrl}/api/payment/webhook/alipay`} />
+                  <CallbackItem label={translateText("同步返回地址")} value={`${panelUrl}/api/payment/return/alipay`} />
                 </div>
               </CardContent>
             </Card>
@@ -679,57 +678,57 @@ export default function Payments() {
           <TabsContent value="wxpay" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" /> 微信官方</CardTitle>
-                <CardDescription>微信支付 APIv3。</CardDescription>
+                <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" />{translateText(" 微信官方")}</CardTitle>
+                <CardDescription>{translateText("微信支付 APIv3。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
                   <div>
-                    <div className="font-medium">启用微信官方</div>
-                    <div className="text-sm text-muted-foreground">需在基础设置中选择</div>
+                    <div className="font-medium">{translateText("启用微信官方")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("需在基础设置中选择")}</div>
                   </div>
                   <Switch checked={form.wxpay.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, enabled } }))} />
                 </div>
                 <Field label="AppID">
                   <Input value={form.wxpay.appId} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, appId: e.target.value } }))} />
                 </Field>
-                <Field label="商户号 MchID">
+                <Field label={translateText("商户号 MchID")}>
                   <Input value={form.wxpay.mchId} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, mchId: e.target.value } }))} />
                 </Field>
-                <Field label="商户证书序列号">
+                <Field label={translateText("商户证书序列号")}>
                   <Input value={form.wxpay.certSerial} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, certSerial: e.target.value } }))} />
                 </Field>
-                <Field label="微信支付公钥 ID">
+                <Field label={translateText("微信支付公钥 ID")}>
                   <Input value={form.wxpay.publicKeyId} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, publicKeyId: e.target.value } }))} />
                 </Field>
-                <Field label="APIv3 密钥" hint={config?.wxpay?.hasApiV3Key ? "已保存密钥，留空表示不修改" : "尚未保存密钥"}>
+                <Field label={translateText("APIv3 密钥")} hint={config?.wxpay?.hasApiV3Key ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
                   <Input type="password" value={form.wxpay.apiV3Key} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, apiV3Key: e.target.value } }))} />
                 </Field>
-                <Field label="支付模式" hint="JSAPI 需要用户 OpenID，当前版本暂未开放前台 OAuth 流程">
+                <Field label={translateText("支付模式")} hint={translateText("JSAPI 需要用户 OpenID，当前版本暂未开放前台 OAuth 流程")}>
                   <Select value={form.wxpay.mode} onValueChange={(mode: "native" | "h5" | "jsapi") => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, mode } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="native">Native 扫码</SelectItem>
-                      <SelectItem value="h5">H5 支付</SelectItem>
+                      <SelectItem value="native">{translateText("Native 扫码")}</SelectItem>
+                      <SelectItem value="h5">{translateText("H5 支付")}</SelectItem>
                       <SelectItem value="jsapi">JSAPI</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="H5 应用名称" hint="H5 支付可选">
+                <Field label={translateText("H5 应用名称")} hint={translateText("H5 支付可选")}>
                   <Input value={form.wxpay.h5AppName} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, h5AppName: e.target.value } }))} />
                 </Field>
-                <Field label="H5 应用 URL" hint="H5 支付可选">
+                <Field label={translateText("H5 应用 URL")} hint={translateText("H5 支付可选")}>
                   <Input value={form.wxpay.h5AppUrl} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, h5AppUrl: e.target.value } }))} />
                 </Field>
-                <Field label="商户 API 私钥" hint={config?.wxpay?.hasPrivateKey ? "已保存私钥，留空表示不修改" : "尚未保存私钥"}>
+                <Field label={translateText("商户 API 私钥")} hint={config?.wxpay?.hasPrivateKey ? translateText("已保存私钥，留空表示不修改") : translateText("尚未保存私钥")}>
                   <Textarea className="min-h-32 font-mono text-xs" value={form.wxpay.privateKey} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, privateKey: e.target.value } }))} />
                 </Field>
-                <Field label="微信支付公钥" hint={config?.wxpay?.hasPublicKey ? "已保存公钥，留空表示不修改" : "尚未保存公钥"}>
+                <Field label={translateText("微信支付公钥")} hint={config?.wxpay?.hasPublicKey ? translateText("已保存公钥，留空表示不修改") : translateText("尚未保存公钥")}>
                   <Textarea className="min-h-32 font-mono text-xs" value={form.wxpay.publicKey} onChange={(e) => setForm((prev) => ({ ...prev, wxpay: { ...prev.wxpay, publicKey: e.target.value } }))} />
                 </Field>
                 <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
-                  <CallbackItem label="异步通知地址" value={`${panelUrl}/api/payment/webhook/wxpay`} />
-                  <CallbackItem label="同步返回地址" value={`${panelUrl}/api/payment/return/wxpay`} />
+                  <CallbackItem label={translateText("异步通知地址")} value={`${panelUrl}/api/payment/webhook/wxpay`} />
+                  <CallbackItem label={translateText("同步返回地址")} value={`${panelUrl}/api/payment/return/wxpay`} />
                 </div>
               </CardContent>
             </Card>
@@ -744,25 +743,25 @@ export default function Payments() {
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
                   <div>
-                    <div className="font-medium">启用 Stripe</div>
-                    <div className="text-sm text-muted-foreground">银行卡和钱包支付</div>
+                    <div className="font-medium">{translateText("启用 Stripe")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("银行卡和钱包支付")}</div>
                   </div>
                   <Switch checked={form.stripe.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, stripe: { ...prev.stripe, enabled } }))} />
                 </div>
-                <Field label="Secret Key" hint={config?.stripe?.hasSecretKey ? "已保存密钥，留空表示不修改" : "尚未保存密钥"}>
+                <Field label="Secret Key" hint={config?.stripe?.hasSecretKey ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
                   <Input type="password" placeholder="sk_live_..." value={form.stripe.secretKey} onChange={(e) => setForm((prev) => ({ ...prev, stripe: { ...prev.stripe, secretKey: e.target.value } }))} />
                 </Field>
-                <Field label="Publishable Key" hint="可选，用于前端展示或后续扩展">
+                <Field label="Publishable Key" hint={translateText("可选，用于前端展示或后续扩展")}>
                   <Input placeholder="pk_live_..." value={form.stripe.publishableKey} onChange={(e) => setForm((prev) => ({ ...prev, stripe: { ...prev.stripe, publishableKey: e.target.value } }))} />
                 </Field>
-                <Field label="Webhook Secret" hint={config?.stripe?.hasWebhookSecret ? "已保存签名密钥，留空表示不修改" : "尚未保存签名密钥"}>
+                <Field label="Webhook Secret" hint={config?.stripe?.hasWebhookSecret ? translateText("已保存签名密钥，留空表示不修改") : translateText("尚未保存签名密钥")}>
                   <Input type="password" placeholder="whsec_..." value={form.stripe.webhookSecret} onChange={(e) => setForm((prev) => ({ ...prev, stripe: { ...prev.stripe, webhookSecret: e.target.value } }))} />
                 </Field>
-                <Field label="币种">
+                <Field label={translateText("币种")}>
                   <Input value={form.stripe.currency} onChange={(e) => setForm((prev) => ({ ...prev, stripe: { ...prev.stripe, currency: e.target.value.toLowerCase() } }))} />
                 </Field>
                 <div className="md:col-span-2">
-                  <CallbackItem label="Stripe Webhook 地址" value={`${panelUrl}/api/payment/webhook/stripe`} />
+                  <CallbackItem label={translateText("Stripe Webhook 地址")} value={`${panelUrl}/api/payment/webhook/stripe`} />
                 </div>
               </CardContent>
             </Card>
@@ -772,26 +771,26 @@ export default function Payments() {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2"><CircleDollarSign className="h-5 w-5" /> USDT</CardTitle>
-                <CardDescription>GM Pay / Epusdt 托管收银台。</CardDescription>
+                <CardDescription>{translateText("GM Pay / Epusdt 托管收银台。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
                   <div>
-                    <div className="font-medium">启用 USDT 支付</div>
-                    <div className="text-sm text-muted-foreground">通过独立部署的 GM Pay 网关收款</div>
+                    <div className="font-medium">{translateText("启用 USDT 支付")}</div>
+                    <div className="text-sm text-muted-foreground">{translateText("通过独立部署的 GM Pay 网关收款")}</div>
                   </div>
                   <Switch checked={form.gmpay.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, enabled } }))} />
                 </div>
-                <Field label="网关地址">
+                <Field label={translateText("网关地址")}>
                   <Input placeholder="https://pay.example.com" value={form.gmpay.apiBase} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, apiBase: e.target.value } }))} />
                 </Field>
-                <Field label="商户 PID">
+                <Field label={translateText("商户 PID")}>
                   <Input value={form.gmpay.pid} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, pid: e.target.value } }))} />
                 </Field>
-                <Field label="商户密钥" hint={config?.gmpay?.hasSecretKey ? "已保存密钥，留空表示不修改" : "尚未保存密钥"}>
+                <Field label={translateText("商户密钥")} hint={config?.gmpay?.hasSecretKey ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
                   <Input type="password" value={form.gmpay.secretKey} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, secretKey: e.target.value } }))} />
                 </Field>
-                <Field label="USDT 网络">
+                <Field label={translateText("USDT 网络")}>
                   <Select value={form.gmpay.network} onValueChange={(network: PaymentConfigForm["gmpay"]["network"]) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, network } }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -810,14 +809,14 @@ export default function Payments() {
                     {testGmPayGateway.data ? (
                       <>
                         <Badge variant="outline" className={testGmPayGateway.data.supportsUsdt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-destructive/30 bg-destructive/5 text-destructive"}>
-                          {testGmPayGateway.data.supportsUsdt ? "USDT 可用" : "USDT 不可用"}
+                          {testGmPayGateway.data.supportsUsdt ? translateText("USDT 可用") : translateText("USDT 不可用")}
                         </Badge>
                         <span className="truncate text-muted-foreground">
                           {testGmPayGateway.data.networkLabel}{testGmPayGateway.data.version ? ` · ${testGmPayGateway.data.version}` : ""}
                         </span>
                       </>
                     ) : (
-                      <span className="text-muted-foreground">尚未检测网关</span>
+                      <span className="text-muted-foreground">{translateText("尚未检测网关")}</span>
                     )}
                   </div>
                   <Button
@@ -826,13 +825,11 @@ export default function Payments() {
                     onClick={() => testGmPayGateway.mutate({ apiBase: form.gmpay.apiBase, network: form.gmpay.network })}
                     disabled={!form.gmpay.apiBase.trim() || testGmPayGateway.isPending}
                   >
-                    <RefreshCw className={`mr-2 h-4 w-4 ${testGmPayGateway.isPending ? "animate-spin" : ""}`} />
-                    检测网关
-                  </Button>
+                    <RefreshCw className={`mr-2 h-4 w-4 ${testGmPayGateway.isPending ? "animate-spin" : ""}`} />{translateText("检测网关")}</Button>
                 </div>
                 <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 md:col-span-2 md:grid-cols-2">
-                  <CallbackItem label="异步通知地址" value={`${panelUrl}/api/payment/webhook/gmpay`} />
-                  <CallbackItem label="同步返回地址" value={`${panelUrl}/api/payment/return/gmpay`} />
+                  <CallbackItem label={translateText("异步通知地址")} value={`${panelUrl}/api/payment/webhook/gmpay`} />
+                  <CallbackItem label={translateText("同步返回地址")} value={`${panelUrl}/api/payment/return/gmpay`} />
                 </div>
               </CardContent>
             </Card>
@@ -841,19 +838,19 @@ export default function Payments() {
           <TabsContent value="test" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle>测试下单</CardTitle>
-                <CardDescription>创建测试订单。</CardDescription>
+                <CardTitle>{translateText("测试下单")}</CardTitle>
+                <CardDescription>{translateText("创建测试订单。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
-                <Field label="金额">
+                <Field label={translateText("金额")}>
                   <Input type="number" min={0.01} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
                 </Field>
-                <Field label="支付方式">
+                <Field label={translateText("支付方式")}>
                   <Select value={paymentType} onValueChange={(value: "alipay" | "wxpay" | "stripe" | "usdt") => setPaymentType(value)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="alipay">支付宝</SelectItem>
-                      <SelectItem value="wxpay">微信</SelectItem>
+                      <SelectItem value="alipay">{translateText("支付宝")}</SelectItem>
+                      <SelectItem value="wxpay">{translateText("微信")}</SelectItem>
                       <SelectItem value="stripe">Stripe</SelectItem>
                       <SelectItem value="usdt">USDT</SelectItem>
                     </SelectContent>
@@ -861,25 +858,23 @@ export default function Payments() {
                 </Field>
                 <div className="flex items-end">
                   <Button className="w-full" onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, orderType: "test", returnPath: "/payments" })} disabled={createOrder.isPending}>
-                    {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-                    创建订单
-                  </Button>
+                    {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{translateText("创建订单")}</Button>
                 </div>
                 {createdPayUrl && (
                   <div className="rounded-lg border bg-background/70 p-3 md:col-span-3">
-                    <div className="mb-2 text-sm text-muted-foreground">支付链接</div>
+                    <div className="mb-2 text-sm text-muted-foreground">{translateText("支付链接")}</div>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <code className="min-w-0 flex-1 truncate text-xs">{createdPayUrl}</code>
-                      <Button variant="outline" onClick={() => window.open(createdPayUrl, "_blank")}>打开支付页</Button>
+                      <Button variant="outline" onClick={() => window.open(createdPayUrl, "_blank")}>{translateText("打开支付页")}</Button>
                     </div>
                   </div>
                 )}
                 {testQrOrder && (
                   <div className="flex flex-col items-center gap-3 rounded-lg border bg-background/70 p-4 md:col-span-3">
-                    <div className="text-sm font-medium">扫描二维码完成支付</div>
+                    <div className="text-sm font-medium">{translateText("扫描二维码完成支付")}</div>
                     {testQrDataUrl ? (
                       <div className="rounded-lg border border-border/40 bg-white p-2">
-                        <img src={testQrDataUrl} alt="支付二维码" width={180} height={180} />
+                        <img src={testQrDataUrl} alt={translateText("支付二维码")} width={180} height={180} />
                       </div>
                     ) : (
                       <div className="flex h-[180px] w-[180px] items-center justify-center rounded-lg border">
@@ -887,10 +882,8 @@ export default function Payments() {
                       </div>
                     )}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <RefreshCw className="h-3 w-3 animate-spin" />
-                      正在等待支付结果……
-                    </div>
-                    <Button size="sm" variant="outline" onClick={() => setTestQrOrder(null)}>取消</Button>
+                      <RefreshCw className="h-3 w-3 animate-spin" />{translateText("正在等待支付结果……")}</div>
+                    <Button size="sm" variant="outline" onClick={() => setTestQrOrder(null)}>{translateText("取消")}</Button>
                   </div>
                 )}
               </CardContent>
@@ -901,12 +894,12 @@ export default function Payments() {
 
         <Card>
           <CardHeader>
-            <CardTitle>订单记录</CardTitle>
-            <CardDescription>套餐订单和测试订单。</CardDescription>
+            <CardTitle>{translateText("订单记录")}</CardTitle>
+            <CardDescription>{translateText("套餐订单和测试订单。")}</CardDescription>
           </CardHeader>
           <CardContent>
             {ordersLoading ? (
-              <DataSectionLoading label="正在加载支付订单" />
+              <DataSectionLoading label={translateText("正在加载支付订单")} />
             ) : (
               <>
             <div className="grid gap-3 md:hidden">
@@ -922,39 +915,37 @@ export default function Payments() {
                     </div>
                   </div>
                   <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                    <MobileOrderInfoRow label="通道">
+                    <MobileOrderInfoRow label={translateText("通道")}>
                       <div className="flex flex-wrap justify-end gap-1">
                         <Badge variant="secondary">{providerLabel(order.provider)}</Badge>
                         <Badge variant="outline">{paymentTypeLabel(order.paymentType)}</Badge>
                       </div>
                     </MobileOrderInfoRow>
-                    <MobileOrderInfoRow label="状态">{statusBadge(order.status)}</MobileOrderInfoRow>
-                    <MobileOrderInfoRow label="网关流水" valueClassName="font-mono text-xs text-muted-foreground">
+                    <MobileOrderInfoRow label={translateText("状态")}>{statusBadge(order.status)}</MobileOrderInfoRow>
+                    <MobileOrderInfoRow label={translateText("网关流水")} valueClassName="font-mono text-xs text-muted-foreground">
                       {order.tradeNo || "-"}
                     </MobileOrderInfoRow>
-                    <MobileOrderInfoRow label="创建时间">{formatDate(order.createdAt)}</MobileOrderInfoRow>
-                    <MobileOrderInfoRow label="支付时间">{formatDate(order.paidAt)}</MobileOrderInfoRow>
+                    <MobileOrderInfoRow label={translateText("创建时间")}>{formatDate(order.createdAt)}</MobileOrderInfoRow>
+                    <MobileOrderInfoRow label={translateText("支付时间")}>{formatDate(order.paidAt)}</MobileOrderInfoRow>
                   </div>
                 </div>
               ))}
               {(orders || []).length === 0 && (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                  暂无支付订单
-                </div>
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无支付订单")}</div>
               )}
             </div>
             <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>订单号</TableHead>
-                    <TableHead>用户</TableHead>
-                    <TableHead>通道</TableHead>
-                    <TableHead>金额</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>网关流水</TableHead>
-                    <TableHead>创建时间</TableHead>
-                    <TableHead>支付时间</TableHead>
+                    <TableHead>{translateText("订单号")}</TableHead>
+                    <TableHead>{translateText("用户")}</TableHead>
+                    <TableHead>{translateText("通道")}</TableHead>
+                    <TableHead>{translateText("金额")}</TableHead>
+                    <TableHead>{translateText("状态")}</TableHead>
+                    <TableHead>{translateText("网关流水")}</TableHead>
+                    <TableHead>{translateText("创建时间")}</TableHead>
+                    <TableHead>{translateText("支付时间")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -977,9 +968,7 @@ export default function Payments() {
                   ))}
                   {(orders || []).length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
-                        暂无支付订单
-                      </TableCell>
+                      <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">{translateText("暂无支付订单")}</TableCell>
                     </TableRow>
                   )}
                 </TableBody>

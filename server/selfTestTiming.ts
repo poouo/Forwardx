@@ -1,5 +1,7 @@
 export const SELF_TEST_TIMEOUT_SECONDS = 8;
 export const RUNTIME_SELF_TEST_TIMEOUT_SECONDS = 45;
+// Delivery retries may renew their lease, never the lifetime of the test.
+export const SELF_TEST_MAX_LIFETIME_SECONDS = 90;
 // A multi-hop tunnel needs one heartbeat/probe round on every participating
 // Agent.  Runtime reconciliation can take close to 20 seconds, so leave a
 // little headroom for the reports to make it back to the panel before the
@@ -7,7 +9,7 @@ export const RUNTIME_SELF_TEST_TIMEOUT_SECONDS = 45;
 export const FORWARD_TUNNEL_LATENCY_WAIT_MS = 18_000;
 export const SELF_TEST_SWEEP_INTERVAL_MS = 2_000;
 export const SELF_TEST_SWEEP_ACTIVE_WINDOW_MS =
-  RUNTIME_SELF_TEST_TIMEOUT_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2;
+  SELF_TEST_MAX_LIFETIME_SECONDS * 1000 + SELF_TEST_SWEEP_INTERVAL_MS * 2;
 
 const RUNTIME_SELF_TEST_KINDS = new Set([
   "tunnel",

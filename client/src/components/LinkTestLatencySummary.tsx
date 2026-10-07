@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { LatencyRating } from "@/components/LatencyRating";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { countryCodeToEmoji, type LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
@@ -564,7 +565,7 @@ function buildProbeSegments(input: {
           )
         );
       const pending = segment.pending === true || detail?.pending === true
-        || input.isTesting;
+        || (input.isTesting && !hasExplicitState);
       const success = pending
         ? true
         : idle
@@ -645,6 +646,8 @@ function getInitialConvergedEntryView(segments: ProbeSegment[]) {
   }
   const uniqueSources = uniqueLabels(entrySegments.map((segment) => segment.from));
   if (entrySegments.length < 2 || uniqueSources.length < 2) return null;
+  const restSegments = segments.slice(entrySegments.length);
+  if (restSegments.some((segment, index) => segment.from !== (index === 0 ? firstTarget : restSegments[index - 1].to))) return null;
   return {
     entrySegments,
     restSegments: segments.slice(entrySegments.length),
@@ -658,9 +661,11 @@ export function getLinkTestTotalLatency(input: {
   fallbackLatencyMs?: number | null;
   isSuccess: boolean;
 }) {
+  // Explicit totals already account for alternative paths. Summing every
+  // detail (including standby relays/exits) would count paths more than once.
+  if (hasUsableLatencyValue(input.parsed.totalLatencyMs)) return Number(input.parsed.totalLatencyMs);
   const adjustedMultiSourceTotal = getMultiSourceAdjustedDetailsTotalLatency(input.parsed.details || []);
   if (hasUsableLatencyValue(adjustedMultiSourceTotal)) return Number(adjustedMultiSourceTotal);
-  if (hasUsableLatencyValue(input.parsed.totalLatencyMs)) return Number(input.parsed.totalLatencyMs);
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   if (visibleDetails.length > 0) {
     const successfulLatencyDetails = visibleDetails.filter((detail) => detail.success && hasLatencyValue(detail));
@@ -715,7 +720,7 @@ export function LinkTestProbeView({
         ...segment,
         success: parsed.tunnelProbeTimedOut ? false : undefined,
         latencyMs: null,
-        message: parsed.tunnelProbeTimedOut ? "探测超时" : null,
+        message: parsed.tunnelProbeTimedOut ? translateText("探测超时") : null,
         pending: false,
       });
   }, [ignorePlannedResultsWhenDetailsPresent, parsed, plannedSegments]);
@@ -748,10 +753,14 @@ export function LinkTestProbeView({
   const effectiveTesting = isTesting || segments.some((segment) => segment.pending);
   const branchKey = segments.length > 1 ? segments[0]?.groupKey || null : null;
   const branchSegments = branchKey && segments.every((segment) => segment.groupKey === branchKey) ? segments : [];
-  const branchLabel = branchSegments[0]?.groupLabel || "同级出口";
+  const branchLabel = branchSegments[0]?.groupLabel || translateText("同级出口");
   const isBranchView = branchSegments.length > 1;
   const convergedEntryView = !isBranchView ? getInitialConvergedEntryView(segments) : null;
   const isConvergedEntryView = !!convergedEntryView;
+  // Separate alternatives must not look like one long chain. In particular,
+  // never imply that exit A forwards to entry B between two independent probes.
+  const isIndependentEdgeView = !isBranchView && !isConvergedEntryView
+    && segments.some((segment, index) => index > 0 && segment.from !== segments[index - 1].to);
   const branchLatencyValues = branchSegments
     .filter((segment) => segment.success && hasUsableLatencyValue(segment.latencyMs))
     .map((segment) => Number(segment.latencyMs));
@@ -770,7 +779,7 @@ export function LinkTestProbeView({
     ? Array.from({ length: Math.ceil(segments.length / segmentsPerDesktopRow) }, (_, index) => segments.slice(index * segmentsPerDesktopRow, (index + 1) * segmentsPerDesktopRow))
     : [segments];
   const getSegmentState = (segment: ProbeSegment) => {
-    const testing = effectiveTesting && (isTesting || segment.pending);
+    const testing = effectiveTesting && !!segment.pending;
     const idle = !testing && !!segment.idle;
     const ok = testing || segment.success;
     const timedOut = !testing && !idle && !ok && /(?:超时|timeout)/i.test(String(segment.message || ""));
@@ -793,7 +802,7 @@ export function LinkTestProbeView({
       testing,
       idle,
       ok,
-      label,
+      label: translateText(label),
       lineClass: testing ? "bg-primary/70" : idle ? "bg-border" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
       textClass: testing ? "text-primary" : idle ? "text-muted-foreground" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
       badgeClass: testing
@@ -939,7 +948,7 @@ export function LinkTestProbeView({
               mobile ? badgeClass : textClass,
             )}
           >
-            {label || (ok ? "--" : "失败")}
+            {label || (ok ? "--" : translateText("失败"))}
           </span>
         </div>
         {mobile ? renderMobileNode(segment.to, segment.toMeta) : renderNode(segment.to, segment.toMeta)}
@@ -991,7 +1000,7 @@ export function LinkTestProbeView({
               badgeClass,
             )}
           >
-            {label || (ok ? "--" : "失败")}
+            {label || (ok ? "--" : translateText("失败"))}
           </span>
         ) : null}
       </div>
@@ -1038,7 +1047,7 @@ export function LinkTestProbeView({
                 <span className="flex h-3.5 w-5 shrink-0 items-center justify-center">{renderFlag(segment.fromMeta)}</span>
                 <span className="min-w-0 truncate">{entryLabel}</span>
               </span>
-              <span className="shrink-0 text-xs font-semibold tabular-nums">{label || (ok ? "--" : "失败")}</span>
+              <span className="shrink-0 text-xs font-semibold tabular-nums">{label || (ok ? "--" : translateText("失败"))}</span>
             </div>
           );
         })}
@@ -1104,10 +1113,10 @@ export function LinkTestProbeView({
       {mobileStacked ? (
         isConvergedEntryView ? (
           renderConvergedEntryView(true)
-        ) : isBranchView ? (
+        ) : isBranchView || isIndependentEdgeView ? (
           <div className="space-y-3 py-2 sm:hidden">
-            <div className="text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
-            {branchSegments.map((segment, index) => renderBranchLine(segment, index, true))}
+            <div className="text-center text-xs font-medium text-muted-foreground">{isIndependentEdgeView ? translateText("分段探测") : branchLabel}</div>
+            {(isIndependentEdgeView ? segments : branchSegments).map((segment, index) => renderBranchLine(segment, index, true))}
           </div>
         ) : (
           <div className="space-y-0 py-2 sm:hidden">
@@ -1131,7 +1140,7 @@ export function LinkTestProbeView({
                         badgeClass,
                       )}
                     >
-                      {label || (ok ? "--" : "失败")}
+                      {label || (ok ? "--" : translateText("失败"))}
                     </span>
                   </div>
                   {renderMobileNode(segment.to, segment.toMeta)}
@@ -1144,12 +1153,12 @@ export function LinkTestProbeView({
 
       {isConvergedEntryView ? (
         renderConvergedEntryView(false)
-      ) : isBranchView ? (
+      ) : isBranchView || isIndependentEdgeView ? (
         <div className={cn("min-w-0 max-w-full overflow-x-auto overscroll-x-contain pb-1", mobileStacked ? "hidden sm:block" : "")}>
           <div className="mx-auto w-full max-w-[36rem] py-3">
-            <div className="mb-1 text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
+            <div className="mb-1 text-center text-xs font-medium text-muted-foreground">{isIndependentEdgeView ? translateText("分段探测") : branchLabel}</div>
             <div className="space-y-0">
-              {branchSegments.map((segment, index) => renderBranchLine(segment, index))}
+              {(isIndependentEdgeView ? segments : branchSegments).map((segment, index) => renderBranchLine(segment, index))}
             </div>
           </div>
         </div>
@@ -1234,23 +1243,21 @@ export function LinkTestProbeView({
       )}
 
       {!hasSegments && !hasResult ? (
-        <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">
-          尚未运行探测
-        </div>
+        <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">{translateText("尚未运行探测")}</div>
       ) : null}
 
       <div className="flex items-center justify-between border-t border-border/70 pt-3 text-sm">
-        <span className="text-muted-foreground">{isBranchView ? "最大延迟" : "合计"}</span>
+        <span className="text-muted-foreground">{isBranchView ? translateText("最大延迟") : translateText("合计")}</span>
         <span className={cn(
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
         )}>
           {effectiveTesting
-            ? "探测中"
+            ? translateText("探测中")
             : !hasResult
-              ? "等待探测"
+              ? translateText("等待探测")
               : parsed.tunnelProbeTimedOut && totalLatency === null
-                ? "超时"
+                ? translateText("超时")
                 : formatLatencyMs(totalLatency)}
         </span>
       </div>
@@ -1272,7 +1279,7 @@ export function LinkTestLatencySummary({
   isSuccess: boolean;
   isTesting: boolean;
 }) {
-  if (isTesting || hasPendingLinkTestDetails(parsed)) return <span className="text-sm font-semibold tabular-nums">正在测试中</span>;
+  if (isTesting || hasPendingLinkTestDetails(parsed)) return <span className="text-sm font-semibold tabular-nums">{translateText("正在测试中")}</span>;
 
   const details = parsed.details || [];
   const visibleDetails = details.filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
@@ -1280,7 +1287,7 @@ export function LinkTestLatencySummary({
 
   if (visibleDetails.length > 0) {
     const totalLatency = getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
-    const totalLabel = parsed.kind === "tunnel-load-balance-summary" ? "最大延迟" : "总延迟";
+    const totalLabel = parsed.kind === "tunnel-load-balance-summary" ? translateText("最大延迟") : translateText("总延迟");
 
     if (visibleDetails.length === 1 && successfulLatencyDetails.length === 1) {
       return <span className="text-sm font-semibold">{renderLatencyValue(visibleDetails[0].latencyMs)}</span>;
@@ -1298,12 +1305,12 @@ export function LinkTestLatencySummary({
             >
               <span className="min-w-0 break-words">{formatLinkTestRoute(detail)}</span>
               {detail.pending ? (
-                <span className="font-normal text-primary">探测中</span>
+                <span className="font-normal text-primary">{translateText("探测中")}</span>
               ) : detail.success && hasLatencyValue(detail) ? (
                 renderLatencyValue(detail.latencyMs)
               ) : (
                 <>
-                  <span>失败</span>
+                  <span>{translateText("失败")}</span>
                   {detail.message ? <span className="font-normal">: {detail.message}</span> : null}
                 </>
               )}

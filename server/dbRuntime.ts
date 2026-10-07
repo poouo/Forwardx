@@ -11,6 +11,7 @@ import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
 import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
 import { databaseHealth } from "./databaseHealthState";
+import { seamlessDatabaseOperation } from "./seamlessMigrationState";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -54,12 +55,15 @@ function reportingDatabaseClient<T extends object>(client: T): T {
       if (typeof value !== "function") return value;
       if (key === "query" || key === "execute") {
         return (...args: any[]) => {
-          try {
-            const result = Reflect.apply(value, target, args);
-            return result && typeof result.catch === "function"
-              ? result.catch((error: unknown) => { databaseHealth.unavailable(error); throw error; })
-              : result;
-          } catch (error) { databaseHealth.unavailable(error); throw error; }
+          const sql = typeof args[0] === "string" ? args[0] : String(args[0]?.sql || args[0]?.text || "");
+          return seamlessDatabaseOperation(sql, () => {
+            try {
+              const result = Reflect.apply(value, target, args);
+              return result && typeof result.catch === "function"
+                ? result.catch((error: unknown) => { databaseHealth.unavailable(error); throw error; })
+                : result;
+            } catch (error) { databaseHealth.unavailable(error); throw error; }
+          });
         };
       }
       return value.bind(target);
@@ -164,12 +168,12 @@ async function withSqliteConnectionLock<T>(
 
 function createSqliteDrizzleDatabase(sqlite: Database.Database): Db {
   const callback: any = (sqlText: string, params: any[], method: "run" | "all" | "get" | "values") => (
-    reportDatabaseErrors(() => withSqliteConnectionLock(sqlite, () => {
+    seamlessDatabaseOperation(sqlText, () => reportDatabaseErrors(() => withSqliteConnectionLock(sqlite, () => {
       const statement = sqlite.prepare(sqlText);
       if (method === "run") return { rows: [], ...statement.run(...params) };
       if (method === "get") return { rows: statement.raw().get(...params) };
       return { rows: statement.raw().all(...params) };
-    }, `drizzle-${method}`))
+    }, `drizzle-${method}`)))
   );
   return drizzleSqliteProxy(callback) as Db;
 }
@@ -730,7 +734,7 @@ async function runAfterSettledCallbacks(callbacks: Array<() => Promise<void> | v
 }
 
 export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
-  return reportDatabaseErrors(() => runDatabaseTransaction(work));
+  return seamlessDatabaseOperation("BEGIN", () => reportDatabaseErrors(() => runDatabaseTransaction(work)));
 }
 
 async function runDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
@@ -818,7 +822,7 @@ export async function withSqliteExclusive<T>(work: (sqlite: Database.Database) =
   if (!_db || !_kind) await connectDatabase();
   if (_kind !== "sqlite" || !_sqlite) throw new Error("SQLite direct migration requires an active SQLite database");
   const sqlite = _sqlite;
-  return withSqliteConnectionLock(sqlite, () => work(sqlite), "exclusive");
+  return seamlessDatabaseOperation("EXCLUSIVE", () => withSqliteConnectionLock(sqlite, () => work(sqlite), "exclusive"));
 }
 
 export function getDatabaseKind() {
@@ -874,7 +878,7 @@ function postgresSql(sqlText: string, params: any[] = []) {
 }
 
 export async function executeRaw(sqlText: string, params: any[] = []) {
-  return reportDatabaseErrors(() => executeRawImpl(sqlText, params));
+  return seamlessDatabaseOperation(sqlText, () => reportDatabaseErrors(() => executeRawImpl(sqlText, params)));
 }
 
 async function executeRawImpl(sqlText: string, params: any[] = []) {
@@ -901,7 +905,7 @@ async function executeRawImpl(sqlText: string, params: any[] = []) {
 }
 
 export async function queryRaw<T = Record<string, any>>(sqlText: string, params: any[] = []): Promise<T[]> {
-  return reportDatabaseErrors(() => queryRawImpl<T>(sqlText, params));
+  return seamlessDatabaseOperation(sqlText, () => reportDatabaseErrors(() => queryRawImpl<T>(sqlText, params)));
 }
 
 async function queryRawImpl<T>(sqlText: string, params: any[]): Promise<T[]> {

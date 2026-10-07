@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import {
   FORWARD_TYPES,
   type ForwardRuleProtocol,
@@ -98,27 +99,27 @@ function issueMessage(issue: z.ZodIssue) {
 
 export function parseRuleTransferFile(raw: unknown): RuleTransferParseResult {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { ok: false, error: "文件内容不是有效的规则对象" };
+    return { ok: false, error: translateText("文件内容不是有效的规则对象") };
   }
   const source = raw as Record<string, unknown>;
   if (source.kind !== RULE_TRANSFER_FILE_KIND) {
-    return { ok: false, error: "文件不是 ForwardX 转发规则导出文件" };
+    return { ok: false, error: translateText("文件不是 ForwardX 转发规则导出文件") };
   }
   if (source.version !== RULE_TRANSFER_FILE_VERSION) {
-    return { ok: false, error: `不支持该规则文件版本（当前支持 v${RULE_TRANSFER_FILE_VERSION}）` };
+    return { ok: false, error: translateText("不支持该规则文件版本（当前支持 v{0}）", [RULE_TRANSFER_FILE_VERSION]) };
   }
   if (!Array.isArray(source.rules) || source.rules.length === 0) {
-    return { ok: false, error: "文件中没有可导入的规则" };
+    return { ok: false, error: translateText("文件中没有可导入的规则") };
   }
   if (source.rules.length > RULE_TRANSFER_MAX_IMPORT_COUNT) {
-    return { ok: false, error: `单次最多导入 ${RULE_TRANSFER_MAX_IMPORT_COUNT} 条规则` };
+    return { ok: false, error: translateText("单次最多导入 {0} 条规则", [RULE_TRANSFER_MAX_IMPORT_COUNT]) };
   }
 
   const rules: RuleTransferFileRule[] = [];
   for (let index = 0; index < source.rules.length; index += 1) {
     const parsed = ruleTransferRuleSchema.safeParse(source.rules[index]);
     if (!parsed.success) {
-      return { ok: false, error: `第 ${index + 1} 条规则${issueMessage(parsed.error.issues[0])}` };
+      return { ok: false, error: translateText("第 {0} 条规则{1}", [index + 1, issueMessage(parsed.error.issues[0])]) };
     }
     rules.push(parsed.data);
   }

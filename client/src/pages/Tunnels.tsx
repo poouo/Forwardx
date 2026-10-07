@@ -1,3 +1,5 @@
+import { t as translateText } from "@/i18n";
+import { manualProbeDeadline } from "@/lib/manualProbe";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
@@ -89,7 +91,7 @@ import {
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import {
   FORWARD_PROTOCOL_LABELS,
   FORWARD_TYPE_LABELS,
@@ -107,6 +109,7 @@ import {
 } from "@shared/trafficMultiplier";
 import {
   normalizeTunnelRelayMode,
+  isTunnelRelayFailover,
   tunnelRelayFailoverSupported,
   type TunnelRelayMode,
 } from "@shared/tunnelRelay";
@@ -296,8 +299,8 @@ function normalizeTunnelLatencySeriesKey(value: unknown) {
 function tunnelLatencySeriesDisplayName(key: string, label?: string | null) {
   const cleanLabel = String(label || "").trim();
   if (cleanLabel) return cleanLabel;
-  if (key === "total") return "总延迟";
-  if (key === "primary") return "主出口";
+  if (key === "total") return translateText("总延迟");
+  if (key === "primary") return translateText("主出口");
   return key.replace(/^exit-/, "出口 ");
 }
 const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
@@ -523,9 +526,9 @@ function escapeTooltipHtml(value: unknown) {
 }
 
 function formatGlobeLatency(value: unknown, timeout?: unknown) {
-  if (timeout) return "超时";
+  if (timeout) return translateText("超时");
   const latency = Number(value);
-  return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
+  return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : translateText("未测试");
 }
 
 function hasLatestTunnelLatency(tunnel: any) {
@@ -583,14 +586,14 @@ function tunnelDisplayLatencyList(tunnel: any) {
   if (entries.length === 0) {
     const value = tunnelDisplayLatencyMs(tunnel);
     return typeof value === "number" && Number.isFinite(value)
-      ? [{ label: "总延迟", latencyMs: value, isTimeout: false, key: "total" }]
+      ? [{ label: translateText("总延迟"), latencyMs: value, isTimeout: false, key: "total" }]
       : tunnelLatencyIsTimeout(tunnel)
-        ? [{ label: "总延迟", latencyMs: null, isTimeout: true, key: "total" }]
+        ? [{ label: translateText("总延迟"), latencyMs: null, isTimeout: true, key: "total" }]
         : [];
   }
   const total = tunnel?.latestLatencyMs;
   const totalEntry = typeof total === "number" && Number.isFinite(total)
-    ? [{ label: "总延迟", latencyMs: Number(total), isTimeout: !!tunnel?.latestLatencyIsTimeout, key: "total" }]
+    ? [{ label: translateText("总延迟"), latencyMs: Number(total), isTimeout: !!tunnel?.latestLatencyIsTimeout, key: "total" }]
     : [];
   return [...totalEntry, ...entries];
 }
@@ -659,11 +662,11 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
 function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
   const routeNodes = link.routeHosts.map((host, index) => `${index + 1}. ${host.name}`).join(" -> ");
   const rows = [
-    { label: "类型", value: link.kind === "tunnel" ? "隧道链路" : "转发链" },
-    { label: "状态", value: link.statusText },
-    { label: "延迟", value: link.latencyText },
-    { label: "链路", value: link.routeText },
-    { label: "节点", value: routeNodes },
+    { label: translateText("类型"), value: link.kind === "tunnel" ? "隧道链路" : "转发链" },
+    { label: translateText("状态"), value: link.statusText },
+    { label: translateText("延迟"), value: link.latencyText },
+    { label: translateText("链路"), value: link.routeText },
+    { label: translateText("节点"), value: routeNodes },
   ];
   return `
     <div style="min-width:280px;max-width:360px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
@@ -753,7 +756,7 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 const nginxTunnelModes: TunnelForm["mode"][] = ["nginx_stream"];
-const unsupportedProtocolTitle = "该隧道协议已被管理员停用";
+const unsupportedProtocolTitle = translateText("该隧道协议已被管理员停用");
 
 function isNginxTunnelModeValue(mode: unknown) {
   return String(mode || "").toLowerCase() === "nginx_stream";
@@ -789,12 +792,12 @@ type TunnelGroupMode = "port" | "failover" | "entry" | "exit";
 
 const TUNNEL_SECTIONS = ["tunnels", "ports", "chains", "groups", "entries", "exits"] as const;
 const TUNNEL_SECTION_ITEMS = [
-  { value: "tunnels", label: "隧道链路", icon: Network },
-  { value: "ports", label: "端口转发", icon: ArrowRightLeft },
-  { value: "chains", label: "转发链", icon: Route },
-  { value: "groups", label: "转发组", icon: ShieldCheck },
-  { value: "entries", label: "入口组", icon: LogIn },
-  { value: "exits", label: "出口组", icon: LogOut },
+  { value: "tunnels", label: translateText("隧道链路"), icon: Network },
+  { value: "ports", label: translateText("端口转发"), icon: ArrowRightLeft },
+  { value: "chains", label: translateText("转发链"), icon: Route },
+  { value: "groups", label: translateText("转发组"), icon: ShieldCheck },
+  { value: "entries", label: translateText("入口组"), icon: LogIn },
+  { value: "exits", label: translateText("出口组"), icon: LogOut },
 ] as const satisfies readonly SlidingTabItem<TunnelSection>[];
 
 const TUNNEL_SECTION_STORAGE_KEY = "forwardx.tunnels.section";
@@ -899,15 +902,15 @@ function TunnelWorldGlobe({
 
   const globeAvailabilityStyle = (state: LinkAvailabilityResult | undefined, enabled: boolean) => {
     if (!enabled || state?.status === "disabled") {
-      return { statusText: "已停用", color: "#94a3b8", trackColor: "#475569", glowColor: "rgba(148,163,184,.6)" };
+      return { statusText: translateText("已停用"), color: "#94a3b8", trackColor: "#475569", glowColor: "rgba(148,163,184,.6)" };
     }
     if (state?.status === "available") {
-      return { statusText: "可用", color: "#4ade80", trackColor: "#15803d", glowColor: "rgba(74,222,128,.85)" };
+      return { statusText: translateText("可用"), color: "#4ade80", trackColor: "#15803d", glowColor: "rgba(74,222,128,.85)" };
     }
     if (state?.status === "degraded" || state?.status === "pending") {
-      return { statusText: state.status === "degraded" ? "部分可用" : "检测中", color: "#fbbf24", trackColor: "#92400e", glowColor: "rgba(251,191,36,.78)" };
+      return { statusText: state.status === "degraded" ? translateText("部分可用") : translateText("检测中"), color: "#fbbf24", trackColor: "#92400e", glowColor: "rgba(251,191,36,.78)" };
     }
-    return { statusText: "不可用", color: "#fb7185", trackColor: "#9f1239", glowColor: "rgba(251,113,133,.76)" };
+    return { statusText: translateText("不可用"), color: "#fb7185", trackColor: "#9f1239", glowColor: "rgba(251,113,133,.76)" };
   };
 
   const globeData = useMemo(() => {
@@ -941,7 +944,7 @@ function TunnelWorldGlobe({
         name: String(tunnel.name || `隧道 #${tunnel.id}`),
         routeText: getTunnelRouteText(tunnel, hosts),
         routeHosts,
-        statusText: !supported ? "协议未启用" : style.statusText,
+        statusText: !supported ? translateText("协议未启用") : style.statusText,
         latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
         color: style.color,
         trackColor: style.trackColor,
@@ -1047,7 +1050,7 @@ function TunnelWorldGlobe({
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
           routeText: getTunnelRouteText(tunnel, hosts),
-          statusText: !supported ? "协议未启用" : style.statusText,
+          statusText: !supported ? translateText("协议未启用") : style.statusText,
           latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
           color: style.color,
           trackColor: style.trackColor,
@@ -1155,9 +1158,7 @@ function TunnelWorldGlobe({
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                正在加载链路地球
-              </div>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载链路地球")}</div>
             }
           >
             <ReactGlobe
@@ -1220,37 +1221,27 @@ function TunnelWorldGlobe({
             />
           </Suspense>
           <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-            <div className="font-medium">全球链路地球</div>
-            <div className="mt-1 text-white/70">
-              隧道 {tunnels.length} 条 · 转发链 {chainGroups.length} 条 · 已定位 {globeData.links.length} 条
-            </div>
+            <div className="font-medium">{translateText("全球链路地球")}</div>
+            <div className="mt-1 text-white/70">{translateText("隧道 ")}{tunnels.length}{translateText(" 条 · 转发链 ")}{chainGroups.length}{translateText(" 条 · 已定位 ")}{globeData.links.length}{translateText(" 条")}</div>
             {globeData.skipped > 0 && (
-              <div className="mt-1 text-amber-200/85">待定位 {globeData.skipped} 条</div>
+              <div className="mt-1 text-amber-200/85">{translateText("待定位 ")}{globeData.skipped}{translateText(" 条")}</div>
             )}
           </div>
           <div className="pointer-events-none absolute right-4 top-4 flex flex-col gap-2 text-xs text-white">
             <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
-              <span className="h-2 w-6 rounded-full bg-[#4ade80]" />
-              运行中隧道
-            </div>
+              <span className="h-2 w-6 rounded-full bg-[#4ade80]" />{translateText("运行中隧道")}</div>
             <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
-              <span className="h-2 w-6 rounded-full bg-[#14b8a6]" />
-              转发链
-            </div>
+              <span className="h-2 w-6 rounded-full bg-[#14b8a6]" />{translateText("转发链")}</div>
           </div>
           {globeData.links.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
-              <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">
-                暂无可定位链路
-              </div>
+              <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">{translateText("暂无可定位链路")}</div>
             </div>
           )}
         </div>
       </div>
       <Card className="border-border/40 bg-card/60 md:hidden">
-        <CardContent className="p-6 text-center text-sm text-muted-foreground">
-          3D 地球视图仅支持桌面端。
-        </CardContent>
+        <CardContent className="p-6 text-center text-sm text-muted-foreground">{translateText("3D 地球视图仅支持桌面端。")}</CardContent>
       </Card>
     </>
   );
@@ -1272,6 +1263,10 @@ function TunnelLatencyDialog({
   const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
     { tunnelId, hours: 24 },
     { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
+  );
+  const { data: counterStatistics } = trpc.tunnels.probeStatistics.useQuery(
+    { tunnelId, hours: timeRangeHours },
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
   );
   const cachedData = tunnelLatencySeriesCache.get(tunnelId);
   const rawSeriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
@@ -1347,9 +1342,9 @@ function TunnelLatencyDialog({
     ) as TunnelLatencyPoint[];
   }, [peakCutEnabled, rawChartData, seriesMeta]);
   const statsSeries = useMemo(() => {
-    if (seriesMeta.length === 0 || chartData.length === 0) return [];
+    if (seriesMeta.length === 0 || rawChartData.length === 0) return [];
     const meta = seriesMeta.find((item) => item.key === "total") || seriesMeta[0];
-    return chartData
+    return rawChartData
       .filter((point) => point[meta.rawKey] !== undefined || point[meta.timeoutKey] !== undefined)
       .map((point) => ({
         latency: Number(point[meta.rawKey] || 0),
@@ -1357,11 +1352,11 @@ function TunnelLatencyDialog({
         probeCount: Number(point[`${meta.key}ProbeCount`] || 1),
         probeSuccesses: Number(point[`${meta.key}ProbeSuccesses`]),
       }));
-  }, [chartData, seriesMeta]);
+  }, [rawChartData, seriesMeta]);
 
   const stats = useMemo(() => {
-    return getLatencyStabilityStats(statsSeries);
-  }, [statsSeries]);
+    return getLatencyStabilityStats(statsSeries, counterStatistics ?? null);
+  }, [statsSeries, counterStatistics]);
   const yMax = useMemo(() => {
     if (chartData.length === 0 || seriesMeta.length === 0) return 120;
     const values = chartData.flatMap((point) => seriesMeta.map((meta) => Number(point[meta.dataKey] || 0))).filter((value) => value > 0);
@@ -1385,8 +1380,8 @@ function TunnelLatencyDialog({
         <DialogHeader>
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
-              <DialogDescription>{`最近 ${latencyTimeRangeLabel(timeRangeHours)} 延迟和丢包。`}</DialogDescription>
+              <DialogTitle className="text-base sm:text-lg">{translateText("隧道链路延迟 - ")}{tunnelName}</DialogTitle>
+              <DialogDescription>{translateText("最近 {0} 路径延迟与逐跳连接探测统计。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
               <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
@@ -1399,7 +1394,7 @@ function TunnelLatencyDialog({
           {showInitialLoading ? (
             <Skeleton className="h-full w-full" />
           ) : chartData.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道链路延迟数据</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无隧道链路延迟数据")}</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
@@ -1429,12 +1424,10 @@ function TunnelLatencyDialog({
                                 </span>
                                 <span className="text-right">
                                   <span className={timeout ? "font-semibold text-destructive" : "font-semibold tabular-nums"}>
-                                    {timeout ? "超时" : `${Number(item[meta.rawKey] || 0)}ms`}
+                                    {timeout ? translateText("超时") : `${Number(item[meta.rawKey] || 0)}ms`}
                                   </span>
                                   {Number(item[`${meta.key}ProbeCount`]) > 1 && Number(item[`${meta.key}ProbeSuccesses`]) < Number(item[`${meta.key}ProbeCount`]) ? (
-                                    <span className="block text-[10px] font-normal text-muted-foreground">
-                                      丢包 {Number(item[`${meta.key}ProbeCount`]) - Number(item[`${meta.key}ProbeSuccesses`])}/{Number(item[`${meta.key}ProbeCount`])}
-                                    </span>
+                                    <span className="block text-[10px] font-normal text-muted-foreground">{translateText("路径健康样本失败 ")}{Number(item[`${meta.key}ProbeCount`]) - Number(item[`${meta.key}ProbeSuccesses`])}/{Number(item[`${meta.key}ProbeCount`])}{translateText("（非独立探测次数）")}</span>
                                   ) : null}
                                 </span>
                               </div>
@@ -1479,10 +1472,11 @@ function TunnelLatencyDialog({
             ))}
           </div>
         ) : null}
-        <LatencyStabilityStats stats={stats} />
+        <LatencyStabilityStats stats={stats} sampleLabel={translateText("逐跳探测次数")} failureLabel={translateText("逐跳连接失败率")} counterStatistics={counterStatistics ?? null}
+          description={translateText("统计各跳实际连接探测，包含已上报的备用入口/出口，不等于可用路径的业务丢包；旧 Agent 或未上报的探测不计入。延迟为路径健康样本，稳定性仅供参考。")} />
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{translateText("关闭")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1510,6 +1504,14 @@ function TunnelSelfTestDialog({
     refetchOnWindowFocus: false,
   });
   const { data: tunnel } = tunnelQuery;
+  const [probeStartedAt, setProbeStartedAt] = useState(0);
+  const [probeClock, setProbeClock] = useState(Date.now());
+  const [probeRequestError, setProbeRequestError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    const timer = setInterval(() => setProbeClock(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [open]);
   const [optimisticTesting, setOptimisticTesting] = useState(false);
   const [startedLastTestAt, setStartedLastTestAt] = useState<string | null>(null);
   const [sawServerTesting, setSawServerTesting] = useState(false);
@@ -1533,6 +1535,7 @@ function TunnelSelfTestDialog({
       ]).catch(() => undefined);
     },
     onError: (e) => {
+      setProbeRequestError(translateText("探测请求失败，请检查面板连接后重试。"));
       setOptimisticTesting(false);
       setStartedLastTestAt(null);
       setSawServerTesting(false);
@@ -1540,7 +1543,7 @@ function TunnelSelfTestDialog({
       manualTestRef.current = false;
       manualTestBaselineAtRef.current = "";
       manualTestResultObservedRef.current = false;
-      toast.error(e.message || "测试失败");
+      toast.error(e.message || translateText("测试失败"));
     },
   });
 
@@ -1551,18 +1554,27 @@ function TunnelSelfTestDialog({
   const isSuccess = status === "success";
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
-  const displayingPreviousResult = isServerTesting && !manualTestRef.current;
+  const displayingPreviousResult = isServerTesting && !manualTestRef.current
+    && !String(tunnel?.lastTestMessage || "").includes('"batchId":"tp-');
   const waitingForManualResult = manualTestRef.current && !manualTestResultObservedRef.current;
   const displaySuccess = displayingPreviousResult
     ? typeof latencyMs === "number" && Number.isFinite(latencyMs)
     : isSuccess;
   const lastFailureToastKey = useRef("");
-  const parsedMessage = useMemo(
+  const rawParsedMessage = useMemo(
     () => parseLinkTestMessage(displayingPreviousResult || waitingForManualResult ? null : tunnel?.lastTestMessage),
     [displayingPreviousResult, tunnel?.lastTestMessage, waitingForManualResult],
   );
-  const hasPendingDetails = hasPendingLinkTestDetails(parsedMessage);
-  const displayTesting = isTesting || hasPendingDetails;
+  const hasPendingDetails = hasPendingLinkTestDetails(rawParsedMessage);
+  const deadline = manualProbeDeadline(tunnel?.lastTestMessage, probeStartedAt);
+  const probeExpired = (isTesting || hasPendingDetails) && deadline > 0 && probeClock >= deadline;
+  const parsedMessage = useMemo(() => probeExpired ? {
+    ...rawParsedMessage, tunnelProbeTimedOut: true, totalLatencyMs: null,
+    message: translateText("未在截止时间内取得完整探测结果，请检查 Agent 在线状态及面板连接后重试。"),
+    details: rawParsedMessage.details.map(detail => detail.pending
+      ? { ...detail, pending: false, success: false, latencyMs: null, message: translateText("探测超时") } : detail),
+  } : rawParsedMessage, [probeExpired, rawParsedMessage]);
+  const displayTesting = !probeExpired && (isTesting || hasPendingDetails);
   const linkTestNodeData = useMemo(() => {
     const meta: Record<string, any> = {};
     const nodeTooltips: Record<string, ReactNode> = {};
@@ -1593,7 +1605,7 @@ function TunnelSelfTestDialog({
       return hostDisplayName(host)
         || String(member?.name || member?.remark || "").trim()
         || tunnelHopHostName(tunnel, hostId, hosts)
-        || `主机 #${hostId}`;
+        || translateText("主机 #{0}", [hostId]);
     };
     const exitDisplayAddressFor = (hostId: number, connectHost?: string | null) => {
       const configured = String(connectHost || "").trim();
@@ -1713,16 +1725,16 @@ function TunnelSelfTestDialog({
     }
     const extraExits = Array.isArray(tunnel?.loadBalanceExits)
       ? tunnel.loadBalanceExits
-        .filter((exit: any) => Number(exit?.hostId || 0) > 0)
+        .filter((exit: any) => Number(exit?.hostId || 0) > 0 && (exit.isEnabled == null || exit.isEnabled === true || Number(exit.isEnabled) === 1))
         .sort((a: any, b: any) => Number(a?.seq || 0) - Number(b?.seq || 0))
       : [];
     const primaryExitLabel = lastHostId ? labelForHostId(lastHostId) : "";
     if (primaryExitLabel && extraExits.length > 0) {
       const entryReferenceLabel = entryHostIds.length > 1
-        ? "入口组"
+        ? translateText("入口组")
         : firstHostId
           ? labelForHostId(firstHostId)
-          : "入口";
+          : translateText("入口");
       const exitRows = [
         {
           hostId: lastHostId,
@@ -1782,8 +1794,8 @@ function TunnelSelfTestDialog({
       const tooltip = (
         <div className="min-w-[240px] space-y-2">
           <div>
-            <div className="text-sm font-semibold">出口组</div>
-            <div className="text-[11px] text-muted-foreground">主图仅展示主出口，备用出口在此查看。相对入口：{entryReferenceLabel}</div>
+            <div className="text-sm font-semibold">{translateText("出口组")}</div>
+            <div className="text-[11px] text-muted-foreground">{translateText("主图仅展示主出口，备用出口在此查看。相对入口：")}{entryReferenceLabel}</div>
           </div>
           <div className="space-y-1.5">
             {exitRows.map((row, index) => {
@@ -1792,7 +1804,7 @@ function TunnelSelfTestDialog({
               const latest = latestForExitRow(index);
               const latestLatency = typeof latest?.latencyMs === "number" && Number.isFinite(latest.latencyMs) ? Number(latest.latencyMs) : null;
               const latestTimeout = latest?.isTimeout === true;
-              const pending = detail?.pending === true || displayTesting;
+              const pending = detail?.pending === true || (!detail && displayTesting);
               const failed = !pending && (detail ? detail.success === false : latestTimeout);
               const success = pending || !failed;
               const latency = typeof detail?.latencyMs === "number" && Number.isFinite(detail.latencyMs)
@@ -1807,7 +1819,7 @@ function TunnelSelfTestDialog({
                         ? "失败"
                         : "--";
               const displayAddress = exitDisplayAddressFor(row.hostId, row.connectHost);
-              const addressText = [displayAddress, row.listenPort ? `:${row.listenPort}` : ""].filter(Boolean).join("") || "默认连接地址";
+              const addressText = [displayAddress, row.listenPort ? `:${row.listenPort}` : ""].filter(Boolean).join("") || translateText("默认连接地址");
               return (
                 <div key={`${row.role}-${row.hostId}`} className="rounded border border-border/60 bg-background/70 px-2 py-1.5">
                   <div className="flex min-w-0 items-center justify-between gap-3">
@@ -1848,7 +1860,7 @@ function TunnelSelfTestDialog({
         fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
         toMeta: meta[hostDisplayName(primaryExitHost)] || meta[String(lastHostId)] || undefined,
         groupKey: branchGroupKey,
-        groupLabel: "多出口负载",
+        groupLabel: translateText("多出口负载"),
       }];
       for (const exit of extraExits) {
         const exitHostId = Number(exit?.hostId || 0);
@@ -1864,10 +1876,22 @@ function TunnelSelfTestDialog({
           fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
           toMeta: meta[hostDisplayName(exitHost)] || meta[String(exitHostId)] || undefined,
           groupKey: branchGroupKey,
-          groupLabel: "多出口负载",
+          groupLabel: translateText("多出口负载"),
         });
       }
       plannedSegments = branchSegments.slice(0, 1).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
+    }
+    if (isTunnelRelayFailover(tunnel, hopIds)) {
+      plannedSegments = hopIds.slice(1, -1).flatMap((relayId: number) => [
+        ...entryHostIds.map(entryId => ({
+          from: labelForHostId(entryId), to: labelForHostId(relayId),
+          fromHostId: entryId, toHostId: relayId, hopIndex: 0, hopCount: 2,
+          fromMeta: nodeMetaFor(hostForId(entryId), entryId), toMeta: nodeMetaFor(hostForId(relayId), relayId),
+        })),
+        { from: labelForHostId(relayId), to: labelForHostId(lastHostId),
+          fromHostId: relayId, toHostId: lastHostId, hopIndex: 1, hopCount: 2,
+          fromMeta: nodeMetaFor(hostForId(relayId), relayId), toMeta: nodeMetaFor(hostForId(lastHostId), lastHostId) },
+      ]);
     }
     return {
       nodeMeta: meta,
@@ -1879,6 +1903,8 @@ function TunnelSelfTestDialog({
   }, [displayTesting, entryGroups, hosts, parsedMessage.details, tunnel, tunnelName]);
 
   useEffect(() => {
+    setProbeStartedAt(0);
+    setProbeRequestError("");
     setOptimisticTesting(false);
     setStartedLastTestAt(null);
     setSawServerTesting(false);
@@ -1939,7 +1965,7 @@ function TunnelSelfTestDialog({
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;
         manualTestRef.current = false;
-        toast.error("隧道链路自测失败", {
+        toast.error(translateText("隧道链路自测失败"), {
           description: message,
           duration: 12000,
         });
@@ -1958,16 +1984,21 @@ function TunnelSelfTestDialog({
       <DialogContent className={`${probeDialogSizeClass} min-w-0`}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Activity className="h-5 w-5" />
-            延迟探测
-          </DialogTitle>
+            <Activity className="h-5 w-5" />{translateText("延迟探测")}</DialogTitle>
           <DialogDescription>{tunnelName}</DialogDescription>
         </DialogHeader>
 
+        <p className="text-xs text-muted-foreground">{translateText("TCP 探测仅验证端口连接，不验证隧道认证或业务协议握手。")}</p>
+        {(probeExpired || probeRequestError || tunnelQuery.isError) && (
+          <p role="alert" className="break-words text-sm text-destructive">
+            {probeExpired ? parsedMessage.message : probeRequestError || translateText("探测结果刷新失败，正在重试；请检查面板连接。")}
+          </p>
+        )}
+
         <LinkTestProbeView
           parsed={parsedMessage}
-          fallbackLatencyMs={latencyMs}
-          isSuccess={displaySuccess}
+          fallbackLatencyMs={probeExpired ? null : latencyMs}
+          isSuccess={displaySuccess && !probeExpired}
           isTesting={displayTesting}
           sourceLabel={linkTestNodeData.sourceLabel}
           targetLabel={linkTestNodeData.targetLabel}
@@ -1979,6 +2010,9 @@ function TunnelSelfTestDialog({
         <DialogFooter className="gap-2">
           <Button
             onClick={() => {
+              setProbeStartedAt(Date.now());
+              setProbeClock(Date.now());
+              setProbeRequestError("");
               lastFailureToastKey.current = "";
               manualTestRef.current = true;
               manualTestBaselineAtRef.current = lastTestAt || "";
@@ -1993,7 +2027,7 @@ function TunnelSelfTestDialog({
             className="w-full min-w-0 gap-2 sm:w-auto sm:min-w-[112px]"
           >
             {displayTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            {displayTesting ? "探测中..." : "链路测试"}
+            {displayTesting ? translateText("探测中...") : translateText("链路测试")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -2014,7 +2048,7 @@ function enabledHostGroupMembers(group: any) {
 
 function groupMemberHostName(member: any, hosts: any[] | undefined) {
   const hostId = Number(member?.hostId || 0);
-  return (hosts || []).find((host: any) => Number(host.id) === hostId)?.name || `主机 #${hostId}`;
+  return (hosts || []).find((host: any) => Number(host.id) === hostId)?.name || translateText("主机 #{0}", [hostId]);
 }
 
 function groupMemberConnectLabel(member: any, hosts: any[] | undefined) {
@@ -2022,14 +2056,14 @@ function groupMemberConnectLabel(member: any, hosts: any[] | undefined) {
   if (!connectHost) return "";
   const hostId = Number(member?.hostId || 0);
   const host = (hosts || []).find((item: any) => Number(item.id) === hostId);
-  if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return "内网";
+  if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return translateText("内网");
   if (hostIpv6Address(host) && sameAddress(connectHost, hostIpv6Address(host))) return "IPv6";
-  return "指定地址";
+  return translateText("指定地址");
 }
 
 function groupHostSummary(group: any, hosts: any[] | undefined) {
   const members = enabledHostGroupMembers(group);
-  if (members.length === 0) return "无可用主机";
+  if (members.length === 0) return translateText("无可用主机");
   return members.map((member: any) => {
     const connectLabel = groupMemberConnectLabel(member, hosts);
     return `${groupMemberHostName(member, hosts)}${connectLabel ? `(${connectLabel})` : ""}`;
@@ -2406,7 +2440,7 @@ function TunnelsContent() {
     [forwardProtocolSettings.nginx_stream]
   );
   const tunnelProtocolLabel = (protocolKey: ForwardProtocolKey | null | undefined) => {
-    const genericLabel = "\u8be5\u534f\u8bae";
+    const genericLabel = translateText("该协议");
     if (!protocolKey) return genericLabel;
     if (!nginxTunnelEnabled && protocolKey === "nginx_stream") return genericLabel;
     return FORWARD_PROTOCOL_LABELS[protocolKey] || genericLabel;
@@ -2639,12 +2673,12 @@ function TunnelsContent() {
     [editingId, tunnels]
   );
   const renderTunnelStatusDot = (tunnel: any, supported = true) => {
-    if (!supported) return <span title="当前转发协议未启用" className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
+    if (!supported) return <span title={translateText("当前转发协议未启用")} className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
     const state = tunnelAvailabilityById.get(Number(tunnel?.id || 0));
     if (state?.status === "available") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
     if (state?.status === "degraded" || state?.status === "pending") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
     if (state?.status === "unavailable") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
-    return <span title={state?.message || "隧道已停用"} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+    return <span title={state?.message || translateText("隧道已停用")} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
@@ -2658,7 +2692,7 @@ function TunnelsContent() {
     const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
     const exitNames = extraExitNames.length > 0 ? getTunnelExitNames(tunnel, hosts) : [];
     const routeTitle = [
-      entryGroupLabel ? `入口组：${entryGroupLabel}` : "",
+      entryGroupLabel ? translateText("入口组：{0}", [entryGroupLabel]) : "",
       getTunnelRouteText(tunnel, hosts),
     ].filter(Boolean).join("；");
     return (
@@ -2668,7 +2702,7 @@ function TunnelsContent() {
       >
         {entryGroupLabel && (
           <span className="flex min-w-0 items-center gap-1 rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 text-primary">
-            <span className="shrink-0">入口组</span>
+            <span className="shrink-0">{translateText("入口组")}</span>
             <span className={compact ? "max-w-[10rem] truncate" : "min-w-0 truncate"}>{entryGroupLabel}</span>
           </span>
         )}
@@ -2682,7 +2716,7 @@ function TunnelsContent() {
         ))}
         {exitNames.length > 0 && (
           <span className="flex min-w-0 items-center gap-1 rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 text-muted-foreground">
-            <span className="shrink-0">出口</span>
+            <span className="shrink-0">{translateText("出口")}</span>
             <span className="min-w-0 truncate">{exitNames.join(" / ")}</span>
           </span>
         )}
@@ -2809,12 +2843,12 @@ function TunnelsContent() {
     try {
       const fullTunnel = await utils.tunnels.getById.fetch({ id: tunnelId });
       if (!fullTunnel) {
-        toast.error("隧道不存在或当前账号无权访问");
+        toast.error(translateText("隧道不存在或当前账号无权访问"));
         return;
       }
       openEdit(fullTunnel);
     } catch (error: any) {
-      toast.error(error?.message || "获取隧道详情失败");
+      toast.error(error?.message || translateText("获取隧道详情失败"));
     } finally {
       openingMapTunnelIds.current.delete(tunnelId);
     }
@@ -2830,9 +2864,9 @@ function TunnelsContent() {
       setShowCreateTypeDialog(false);
       setActiveSection("tunnels");
       resetForm();
-      toast.success("隧道已创建");
+      toast.success(translateText("隧道已创建"));
     },
-    onError: (e) => toast.error(e.message || "创建失败"),
+    onError: (e) => toast.error(e.message || translateText("创建失败")),
   });
 
   useEffect(() => {
@@ -2848,9 +2882,9 @@ function TunnelsContent() {
       setShowCreateTypeDialog(false);
       setActiveSection("chains");
       resetChainCreateForm();
-      toast.success("转发链已创建");
+      toast.success(translateText("转发链已创建"));
     },
-    onError: (e) => toast.error(e.message || "创建失败"),
+    onError: (e) => toast.error(e.message || translateText("创建失败")),
   });
 
   const updateMutation = trpc.tunnels.update.useMutation({
@@ -2868,7 +2902,7 @@ function TunnelsContent() {
       setShowDialog(false);
       resetForm();
       const syncedRuleCount = Number(result?.syncedRuleCount || 0);
-      toast.success(syncedRuleCount > 0 ? `隧道已更新，已同步 ${syncedRuleCount} 条引用规则` : "隧道已更新");
+      toast.success(syncedRuleCount > 0 ? translateText("隧道已更新，已同步 {0} 条引用规则", [syncedRuleCount]) : translateText("隧道已更新"));
       await Promise.all([
         utils.tunnels.list.invalidate(),
         utils.tunnels.options.invalidate(),
@@ -2885,7 +2919,7 @@ function TunnelsContent() {
         utils.trafficBilling.storeResources.invalidate(),
       ]);
     },
-    onError: (e) => toast.error(e.message || "更新失败"),
+    onError: (e) => toast.error(e.message || translateText("更新失败")),
   });
 
   const toggleTunnelMutation = trpc.tunnels.update.useMutation({
@@ -2914,11 +2948,11 @@ function TunnelsContent() {
       <OptimisticSwitch
         checked={enabled}
         onCheckedChangeAsync={(checked) => toggleTunnelMutation.mutateAsync({ id: tunnel.id, isEnabled: checked })}
-        onToggleSuccess={(checked) => toast.success(checked ? "隧道已开启" : "隧道已关闭")}
-        onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换隧道状态失败")}
+        onToggleSuccess={(checked) => toast.success(checked ? translateText("隧道已开启") : translateText("隧道已关闭"))}
+        onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换隧道状态失败"))}
         className="scale-75"
-        title={enabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
-        aria-label={`${enabled ? "停用" : "启用"}隧道 ${tunnel?.name || ""}`}
+        title={enabled ? translateText("关闭后该隧道将停止下发和转发") : translateText("开启后该隧道将重新下发并恢复转发")}
+        aria-label={translateText("{0}隧道 {1}", [enabled ? translateText("停用") : translateText("启用"), tunnel?.name || ""])}
       />
     );
   };
@@ -2931,13 +2965,13 @@ function TunnelsContent() {
       utils.tunnels.mapItems.invalidate();
       utils.rules.list.invalidate();
       setDeleteTunnel(null);
-      toast.success("隧道已删除");
+      toast.success(translateText("隧道已删除"));
     },
-    onError: (e) => toast.error(e.message || "删除失败"),
+    onError: (e) => toast.error(e.message || translateText("删除失败")),
   });
 
   const reorderTunnelsMutation = trpc.tunnels.reorder.useMutation({
-    onError: (e) => toast.error(e.message || "排序保存失败"),
+    onError: (e) => toast.error(e.message || translateText("排序保存失败")),
   });
   const tunnelReorderPending = reorderTunnelsMutation.isPending;
   const tunnelSortable = useSortableReorder({
@@ -2968,21 +3002,21 @@ function TunnelsContent() {
     const selectedExitMembers = form.exitGroupId ? exitMembersForGroup(form.exitGroupId) : [];
     const selectedEntryMembers = form.entryGroupId ? entryMembersForGroup(form.entryGroupId) : [];
     if (form.entryGroupId && selectedEntryMembers.length === 0) {
-      toast.error("请选择可用的入口组");
+      toast.error(translateText("请选择可用的入口组"));
       return;
     }
     if (form.exitGroupId && selectedExitMembers.length === 0) {
-      toast.error("请选择可用的出口组");
+      toast.error(translateText("请选择可用的出口组"));
       return;
     }
     const submitForm = form.exitGroupId ? applyExitGroupToForm(form, form.exitGroupId) : form;
     const actualRoute = buildActualTunnelRoute(submitForm);
     if (!submitForm.name || actualRoute.hopHostIds.length < 2) {
-      toast.error("请填写隧道名称并至少选择入口主机和出口组");
+      toast.error(translateText("请填写隧道名称并至少选择入口主机和出口组"));
       return;
     }
     if (actualRoute.hopHostIds.length > MAX_TUNNEL_HOPS) {
-      toast.error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
+      toast.error(translateText("多级隧道最多支持 {0} 级", [MAX_TUNNEL_HOPS]));
       return;
     }
     const orderedHopHostIds = [...actualRoute.hopHostIds];
@@ -2990,36 +3024,36 @@ function TunnelsContent() {
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
-      toast.error("请确保入口与出口主机有效且不同");
+      toast.error(translateText("请确保入口与出口主机有效且不同"));
       return;
     }
     if (new Set(orderedHopHostIds).size !== orderedHopHostIds.length) {
-      toast.error("主机链路中的主机不能重复");
+      toast.error(translateText("主机链路中的主机不能重复"));
       return;
     }
     if (!isValidPort(submitForm.listenPort, true)) {
-      toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
+      toast.error(translateText("出口监听端口必须为 0 或 1-65535，0 表示自动分配"));
       return;
     }
     const certDomain = String(submitForm.certDomain || "").trim();
     const certPem = normalizePemText(submitForm.certPem);
     const certKeyPem = normalizePemText(submitForm.certKeyPem);
     if (isNginxTunnelModeValue(submitForm.mode) && certDomain && !isValidConnectHost(certDomain)) {
-      toast.error("证书域名格式无效");
+      toast.error(translateText("证书域名格式无效"));
       return;
     }
     if (isNginxTunnelModeValue(submitForm.mode) && ((certPem && !certKeyPem) || (!certPem && certKeyPem))) {
-      toast.error("Nginx 自定义证书和私钥需要同时填写");
+      toast.error(translateText("Nginx 自定义证书和私钥需要同时填写"));
       return;
     }
     const rateLimitMbps = Number(submitForm.rateLimitMbps) || 0;
     if (!Number.isInteger(rateLimitMbps) || rateLimitMbps < 0 || rateLimitMbps > 1_000_000) {
-      toast.error("隧道限速必须为 0 或正整数 Mbps，0 表示不限速");
+      toast.error(translateText("隧道限速必须为 0 或正整数 Mbps，0 表示不限速"));
       return;
     }
     const trafficMultiplierValue = Number(submitForm.trafficMultiplier);
     if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
-      toast.error("流量倍率必须在 0.01 - 50 之间");
+      toast.error(translateText("流量倍率必须在 0.01 - 50 之间"));
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
@@ -3032,7 +3066,7 @@ function TunnelsContent() {
     for (let i = 1; i < orderedHopConnectHosts.length; i++) {
       const value = String(orderedHopConnectHosts[i] || "").trim();
       if (value && !isValidConnectHost(value)) {
-        toast.error(`第 ${i + 1} 跳指定地址格式无效`);
+        toast.error(translateText("第 {0} 跳指定地址格式无效", [i + 1]));
         return;
       }
       if (!value) continue;
@@ -3047,7 +3081,7 @@ function TunnelsContent() {
       if (ipv6Addr && sameAddress(value, ipv6Addr)) continue;
       const publicAddr = hostPublicAddress(hopHost);
       if (publicAddr && sameAddress(value, publicAddr)) continue;
-      toast.error(`第 ${i + 1} 跳只能使用入口地址、内网IP或IPv6地址`);
+      toast.error(translateText("第 {0} 跳只能使用入口地址、内网IP或IPv6地址", [i + 1]));
       return;
     }
     const isMultiHopTunnel = orderedHopHostIds.length >= 3;
@@ -3067,27 +3101,27 @@ function TunnelsContent() {
     const loadBalanceEnabled = !!submitForm.loadBalanceEnabled && loadBalanceExits.length > 0;
     if (loadBalanceEnabled) {
       if (loadBalanceExits.length > MAX_EXTRA_TUNNEL_EXITS) {
-        toast.error(`最多额外添加 ${MAX_EXTRA_TUNNEL_EXITS} 个出口`);
+        toast.error(translateText("最多额外添加 {0} 个出口", [MAX_EXTRA_TUNNEL_EXITS]));
         return;
       }
       const usedExitIds = new Set<number>(orderedHopHostIds.map((id) => Number(id)).filter((id) => id > 0));
       for (const exit of loadBalanceExits) {
         if (!exit.hostId) {
-          toast.error("出口组包含无效出口 Agent");
+          toast.error(translateText("出口组包含无效出口 Agent"));
           return;
         }
         if (usedExitIds.has(exit.hostId)) {
-          toast.error("出口组成员不能与主机链路中的主机重复");
+          toast.error(translateText("出口组成员不能与主机链路中的主机重复"));
           return;
         }
         usedExitIds.add(exit.hostId);
         const exitHost = hosts?.find((h: any) => Number(h.id) === exit.hostId);
         if (exit.connectHost && !normalizeConnectHostForHost(exit.connectHost, exitHost, null)) {
-          toast.error("出口组连接地址只能使用内网IP或IPv6地址");
+          toast.error(translateText("出口组连接地址只能使用内网IP或IPv6地址"));
           return;
         }
         if (exit.connectHost && !isValidConnectHost(exit.connectHost)) {
-          toast.error("出口组连接地址格式无效");
+          toast.error(translateText("出口组连接地址格式无效"));
           return;
         }
       }
@@ -3152,11 +3186,11 @@ function TunnelsContent() {
     const name = chainCreateForm.name.trim();
     const minChainHops = chainCreateForm.entryGroupId ? 1 : 2;
     if (!name || chainCreateForm.hopHostIds.length < minChainHops) {
-      toast.error(chainCreateForm.entryGroupId ? "请填写转发链名称并至少选择一台主机" : "请填写转发链名称并至少选择两台主机");
+      toast.error(chainCreateForm.entryGroupId ? translateText("请填写转发链名称并至少选择一台主机") : translateText("请填写转发链名称并至少选择两台主机"));
       return;
     }
     if (chainCreateForm.hopHostIds.length > MAX_FORWARD_GROUP_MEMBERS) {
-      toast.error(`转发链最多支持 ${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
+      toast.error(translateText("转发链最多支持 {0} 台主机", [MAX_FORWARD_GROUP_MEMBERS]));
       return;
     }
     const normalizedConnectHosts = normalizeChainConnectHostsForHosts(
@@ -3167,12 +3201,12 @@ function TunnelsContent() {
     );
     const trafficMultiplierValue = Number(chainCreateForm.trafficMultiplier);
     if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
-      toast.error("流量倍率必须在 0.01 - 50 之间");
+      toast.error(translateText("流量倍率必须在 0.01 - 50 之间"));
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     if (!availableChainForwardTypes.includes(chainCreateForm.forwardType)) {
-      toast.error("请选择可用的转发工具");
+      toast.error(translateText("请选择可用的转发工具"));
       return;
     }
     const chainProxyProtocolSupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
@@ -3244,9 +3278,9 @@ function TunnelsContent() {
     if (files.length === 0) return;
     const requestId = ++nginxCertImportRequestRef.current;
     try {
-      if (files.length > MAX_NGINX_PEM_FILES) throw new Error("一次最多选择一个证书链文件和一个私钥文件");
+      if (files.length > MAX_NGINX_PEM_FILES) throw new Error(translateText("一次最多选择一个证书链文件和一个私钥文件"));
       const totalBytes = files.reduce((total, file) => total + file.size, 0);
-      if (totalBytes > MAX_NGINX_PEM_UPLOAD_BYTES) throw new Error("所选文件总大小不能超过 128KB");
+      if (totalBytes > MAX_NGINX_PEM_UPLOAD_BYTES) throw new Error(translateText("所选文件总大小不能超过 128KB"));
       const parsed = parseNginxPemFiles(await Promise.all(files.map(async (file) => ({
         name: file.name,
         content: await file.text(),
@@ -3258,15 +3292,15 @@ function TunnelsContent() {
         certKeyPem: parsed.certKeyPem ?? current.certKeyPem,
       }));
       if (parsed.certPem && parsed.certKeyPem) {
-        toast.success(parsed.certificateCount > 1 ? `已读取 ${parsed.certificateCount} 张证书和私钥` : "已读取证书和私钥");
+        toast.success(parsed.certificateCount > 1 ? translateText("已读取 {0} 张证书和私钥", [parsed.certificateCount]) : translateText("已读取证书和私钥"));
       } else if (parsed.certPem) {
-        toast.success(parsed.certificateCount > 1 ? `已读取 ${parsed.certificateCount} 张证书` : "已读取证书");
+        toast.success(parsed.certificateCount > 1 ? translateText("已读取 {0} 张证书", [parsed.certificateCount]) : translateText("已读取证书"));
       } else {
-        toast.success("已读取私钥");
+        toast.success(translateText("已读取私钥"));
       }
     } catch (error: any) {
       if (requestId !== nginxCertImportRequestRef.current) return;
-      toast.error(error?.message || "读取证书文件失败");
+      toast.error(error?.message || translateText("读取证书文件失败"));
     }
   };
   const nginxCertDragHasFiles = (event: DragEvent<HTMLDivElement>) => (
@@ -3315,7 +3349,7 @@ function TunnelsContent() {
       onDrop={handleNginxCertDrop}
     >
       <div className="space-y-2">
-        <Label>证书域名 / SNI</Label>
+        <Label>{translateText("证书域名 / SNI")}</Label>
         <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
       </div>
       <input
@@ -3342,13 +3376,13 @@ function TunnelsContent() {
           <Upload className="h-4 w-4" />
         </span>
         <span className="min-w-0">
-          <span className="block text-sm font-medium">{nginxCertDragActive ? "松开以读取证书文件" : "拖放或选择证书文件"}</span>
-          <span className="mt-0.5 block text-xs text-muted-foreground">支持 PEM 编码的 .pem、.crt、.cer、.key；证书链与私钥可同时选择</span>
+          <span className="block text-sm font-medium">{nginxCertDragActive ? translateText("松开以读取证书文件") : translateText("拖放或选择证书文件")}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{translateText("支持 PEM 编码的 .pem、.crt、.cer、.key；证书链与私钥可同时选择")}</span>
         </span>
       </button>
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="space-y-2">
-          <Label>自定义证书 PEM</Label>
+          <Label>{translateText("自定义证书 PEM")}</Label>
           <Textarea
             value={form.certPem}
             onChange={(e) => setForm({ ...form, certPem: e.target.value })}
@@ -3357,7 +3391,7 @@ function TunnelsContent() {
           />
         </div>
         <div className="space-y-2">
-          <Label>私钥 PEM</Label>
+          <Label>{translateText("私钥 PEM")}</Label>
           <Textarea
             value={form.certKeyPem}
             onChange={(e) => setForm({ ...form, certKeyPem: e.target.value })}
@@ -3366,9 +3400,7 @@ function TunnelsContent() {
           />
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        证书和私钥必须同时填写。填写后 TCP 使用 TLS，UDP 仍使用 Stream 转发。
-      </p>
+      <p className="text-xs text-muted-foreground">{translateText("证书和私钥必须同时填写。填写后 TCP 使用 TLS，UDP 仍使用 Stream 转发。")}</p>
     </div>
   );
   const renderChainRuntimeOptions = () => {
@@ -3383,12 +3415,12 @@ function TunnelsContent() {
           onClick={() => setChainAdvancedOpen((open) => !open)}
         >
           <div className="min-w-0">
-            <div className="text-sm font-medium">高级设置</div>
+            <div className="text-sm font-medium">{translateText("高级设置")}</div>
             <div className="text-xs text-muted-foreground">PROXY Protocol</div>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
-              {advancedConfigured ? "已配置" : "可选"}
+              {advancedConfigured ? translateText("已配置") : translateText("可选")}
             </Badge>
             <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${chainAdvancedOpen ? "rotate-90" : ""}`} />
           </div>
@@ -3411,16 +3443,16 @@ function TunnelsContent() {
                 </Select>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
-                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
-                  <span className="min-w-0 truncate text-sm">接收 PROXY</span>
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? translateText("仅 GOST 和 Realm 支持") : undefined}>
+                  <span className="min-w-0 truncate text-sm">{translateText("接收 PROXY")}</span>
                   <Switch
                     checked={proxySupported && chainCreateForm.proxyProtocolReceive}
                     disabled={!proxySupported}
                     onCheckedChange={(proxyProtocolReceive) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolReceive }))}
                   />
                 </label>
-                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
-                  <span className="min-w-0 truncate text-sm">发送 PROXY</span>
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? translateText("仅 GOST 和 Realm 支持") : undefined}>
+                  <span className="min-w-0 truncate text-sm">{translateText("发送 PROXY")}</span>
                   <Switch
                     checked={proxySupported && chainCreateForm.proxyProtocolSend}
                     disabled={!proxySupported}
@@ -3439,7 +3471,7 @@ function TunnelsContent() {
     return (
       <>
         <div className="space-y-2">
-          <Label>隧道版本</Label>
+          <Label>{translateText("隧道版本")}</Label>
           <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
             <button
               type="button"
@@ -3458,9 +3490,7 @@ function TunnelsContent() {
               <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1", "mt-0.5")} />
               <span className="min-w-0">
                 <span className="block text-sm font-medium">V1 AES-GCM</span>
-                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
-                  FXP 认证加密传输，兼容现有链路
-                </span>
+                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("FXP 认证加密传输，兼容现有链路")}</span>
               </span>
             </button>
             <button
@@ -3479,23 +3509,21 @@ function TunnelsContent() {
               <Network className={segmentedIconClassName(form.forwardxVersion === "v2", "mt-0.5")} />
               <span className="min-w-0">
                 <span className="block text-sm font-medium">V2 WireGuard</span>
-                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">
-                  内置 UDP 通道（无需安装系统 WireGuard）
-                </span>
+                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("内置 UDP 通道（无需安装系统 WireGuard）")}</span>
               </span>
             </button>
           </div>
         </div>
         {form.forwardxVersion === "v2" && (
           <div className="space-y-2">
-            <Label>WireGuard UDP 端口</Label>
+            <Label>{translateText("WireGuard UDP 端口")}</Label>
             <Input
               type="number"
               min={1}
               max={65535}
               inputMode="numeric"
               value={form.mimicPort > 0 ? form.mimicPort : ""}
-              placeholder="自动分配"
+              placeholder={translateText("自动分配")}
               onChange={(event) => {
                 const value = event.target.value;
                 setForm((prev) => ({ ...prev, mimicPort: value === "" ? 0 : Number.parseInt(value, 10) || 0 }));
@@ -3528,7 +3556,7 @@ function TunnelsContent() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <Label className="text-sm">PROXY Protocol</Label>
             <span className={`rounded-full border px-2 py-0.5 text-[11px] leading-none ${proxyAnyEnabled ? "border-primary/25 bg-primary/10 text-primary" : "border-border/50 bg-background/60 text-muted-foreground"}`}>
-              {proxyAnyEnabled ? `已配置 V${form.proxyProtocolVersion}` : tunnelProxyPanelOpen ? "待配置" : "关闭"}
+              {proxyAnyEnabled ? translateText("已配置 V{0}", [form.proxyProtocolVersion]) : tunnelProxyPanelOpen ? translateText("待配置") : translateText("关闭")}
             </span>
           </div>
           <Switch
@@ -3551,7 +3579,7 @@ function TunnelsContent() {
         {tunnelProxyPanelOpen && (
           <div className="space-y-2 border-t border-border/45 pt-2">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
+              <span className="text-xs text-muted-foreground">{translateText("入口和出口独立配置")}</span>
               <div className={segmentedControlClassName}>
                 <div className="grid grid-cols-2 gap-1">
                   {([1, 2] as const).map((version) => (
@@ -3561,7 +3589,7 @@ function TunnelsContent() {
                       className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
                       disabled={!proxyAnyEnabled}
                       onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
-                      title={!proxyAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
+                      title={!proxyAnyEnabled ? translateText("开启任一 PROXY Protocol 开关后可选择版本") : undefined}
                     >
                       V{version}
                     </button>
@@ -3570,10 +3598,10 @@ function TunnelsContent() {
               </div>
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
-              {renderProxySwitch("入口接收上游", "proxyProtocolReceive")}
-              {renderProxySwitch("入口发送到出口", "proxyProtocolSend")}
-              {renderProxySwitch("出口接收入口", "proxyProtocolExitReceive")}
-              {renderProxySwitch("出口发送到目标", "proxyProtocolExitSend")}
+              {renderProxySwitch(translateText("入口接收上游"), "proxyProtocolReceive")}
+              {renderProxySwitch(translateText("入口发送到出口"), "proxyProtocolSend")}
+              {renderProxySwitch(translateText("出口接收入口"), "proxyProtocolExitReceive")}
+              {renderProxySwitch(translateText("出口发送到目标"), "proxyProtocolExitSend")}
             </div>
           </div>
         )}
@@ -3618,27 +3646,27 @@ function TunnelsContent() {
     };
     const transportOptions = transportTuningSupported ? (
       <div className="space-y-2 border-t border-border/45 pt-2 first:border-t-0 first:pt-0">
-        <Label className="text-sm">传输优化</Label>
+        <Label className="text-sm">{translateText("传输优化")}</Label>
         <div className="grid gap-2 sm:grid-cols-2">
           {renderTransportSwitch(
             "TCP Fast Open",
-            "降低 TCP 建连等待",
+            translateText("降低 TCP 建连等待"),
             form.tcpFastOpen,
             (tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen })),
           )}
           {renderTransportSwitch(
-            "mimic UDP 混淆",
-            "ForwardX UDP 外观混淆",
+            translateText("mimic UDP 混淆"),
+            translateText("ForwardX UDP 外观混淆"),
             form.udpOverTcp,
             (udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp })),
-            "需要安装 mimic/mimic-dkms。UDP 丢包时可将业务 MTU 调整为 1200-1300。",
+            translateText("需要安装 mimic/mimic-dkms。UDP 丢包时可将业务 MTU 调整为 1200-1300。"),
           )}
         </div>
         {form.udpOverTcp && form.forwardxVersion === "v1" && (
           <label className="flex min-h-12 items-center justify-between gap-3 rounded-md border border-primary/25 bg-primary/5 px-3 py-2">
             <span className="min-w-0">
-              <span className="block text-sm font-medium">mimic UDP 线路端口</span>
-              <span className="block truncate text-xs text-muted-foreground">留空后由系统随机分配</span>
+              <span className="block text-sm font-medium">{translateText("mimic UDP 线路端口")}</span>
+              <span className="block truncate text-xs text-muted-foreground">{translateText("留空后由系统随机分配")}</span>
             </span>
             <Input
               type="number"
@@ -3647,8 +3675,8 @@ function TunnelsContent() {
               inputMode="numeric"
               className="h-9 w-32 shrink-0 text-right tabular-nums"
               value={form.mimicPort > 0 ? form.mimicPort : ""}
-              placeholder="自动"
-              aria-label="mimic UDP 线路端口"
+              placeholder={translateText("自动")}
+              aria-label={translateText("mimic UDP 线路端口")}
               onChange={(event) => {
                 const rawValue = event.target.value;
                 const mimicPort = rawValue === "" ? 0 : Number.parseInt(rawValue, 10) || 0;
@@ -3675,12 +3703,12 @@ function TunnelsContent() {
           onClick={() => setTunnelAdvancedOpen((open) => !open)}
         >
           <div className="min-w-0">
-            <div className="text-sm font-medium">高级设置</div>
-            <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
+            <div className="text-sm font-medium">{translateText("高级设置")}</div>
+            <div className="text-xs text-muted-foreground">{translateText("PROXY Protocol、传输优化")}</div>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
-              {advancedConfigured ? "已配置" : "可选"}
+              {advancedConfigured ? translateText("已配置") : translateText("可选")}
             </Badge>
             <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${tunnelAdvancedOpen ? "rotate-90" : ""}`} />
           </div>
@@ -3725,15 +3753,15 @@ function TunnelsContent() {
           ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
           : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
-    ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${isChainGlobeView ? "可用" : "已启用"}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: isChainGlobeView ? "0 / 0 可用" : "0 / 0 已启用", iconClass: "text-primary" }
+    ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText(isChainGlobeView ? "可用" : "已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: `0 / 0 ${translateText(isChainGlobeView ? "可用" : "已启用")}`, iconClass: "text-primary" }
     : activeSection === "ports"
-      ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.portsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
+      ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText("已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.portsActive", fallback: `0 / 0 ${translateText("已启用")}`, iconClass: "text-primary" }
       : activeSection === "groups"
-        ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
+        ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText("已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.forwardGroupsActive", fallback: `0 / 0 ${translateText("已启用")}`, iconClass: "text-primary" }
         : activeSection === "entries"
-          ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-emerald-500" }
+          ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText("已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.entryGroupsActive", fallback: `0 / 0 ${translateText("已启用")}`, iconClass: "text-emerald-500" }
           : activeSection === "exits"
-            ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} 已启用`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 已启用", iconClass: "text-primary" }
+            ? { value: `${Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText("已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.exitGroupsActive", fallback: `0 / 0 ${translateText("已启用")}`, iconClass: "text-primary" }
             : {
                 value: `${isTunnelGlobeView
                   ? Number(tunnelMapQuery.data?.pages[0]?.availableItems || 0)
@@ -3741,26 +3769,26 @@ function TunnelsContent() {
                     ? activeCount
                     : Number(tunnelPageQuery.data?.availableItems || 0)} / ${isTunnelGlobeView
                   ? Number(tunnelMapQuery.data?.pages[0]?.totalItems || 0)
-                  : tunnelPageQuery.data?.totalItems ?? tunnels?.length ?? 0} 可用`,
+                  : tunnelPageQuery.data?.totalItems ?? tunnels?.length ?? 0} ${translateText("可用")}`,
                 loading: isLoading || !tunnels,
                 cacheKey: "tunnels.header.active",
-                fallback: "0 / 0 可用",
+                fallback: `0 / 0 ${translateText("可用")}`,
                 iconClass: "text-chart-2",
               };
   const linkSearchStats = activeSection === "ports"
-    ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "条" }
+    ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: translateText("条") }
     : activeSection === "chains"
-      ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "条" }
+      ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: translateText("条") }
       : activeSection === "groups"
-        ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
+        ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: translateText("个") }
         : activeSection === "entries"
-          ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
+          ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: translateText("个") }
           : activeSection === "exits"
-            ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: "个" }
+            ? { filtered: Number(forwardGroupSummaryQuery.data?.totalItems || 0), total: Number(forwardGroupSummaryQuery.data?.scopeTotalItems || 0), unit: translateText("个") }
             : {
                 filtered: Number(tunnelPageQuery.data?.totalItems ?? tunnelItems.length),
                 total: Number(tunnelPageQuery.data?.scopeTotalItems ?? rawTunnelItems.length),
-                unit: "条",
+                unit: translateText("条"),
               };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
@@ -3786,15 +3814,15 @@ function TunnelsContent() {
           ? canCreateGroup
           : false;
   const createDisabledTitle = hostsQueryFailed
-    ? "主机列表加载失败，请重试后再创建"
+    ? translateText("主机列表加载失败，请重试后再创建")
     : hostsQueryLoading
-      ? "正在加载主机列表"
+      ? translateText("正在加载主机列表")
       : !canCreateActive
-        ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "当前页签缺少可用主机或转发协议")
+        ? (activeSection === "ports" ? (!hosts?.length ? translateText("至少需要 1 台主机") : translateText("暂无可用端口转发协议")) : activeSectionCreatesGroup ? translateText("至少需要 1 台主机") : translateText("当前页签缺少可用主机或转发协议"))
     : !canCreateTunnel && activeSection === "tunnels"
-      ? "暂无可用隧道协议"
+      ? translateText("暂无可用隧道协议")
       : !canCreateChain && activeSection === "chains"
-        ? (availableChainForwardTypes.length === 0 ? "暂无可用转发工具" : "当前主机或转发工具不支持转发链")
+        ? (availableChainForwardTypes.length === 0 ? translateText("暂无可用转发工具") : translateText("当前主机或转发工具不支持转发链"))
         : undefined;
 
   const openCreateTypeDialog = () => {
@@ -3837,15 +3865,15 @@ function TunnelsContent() {
       return <LatencyRating latencyMs={latency} className={compact ? "text-xs" : undefined} />;
     }
     if (tunnelLatencyIsTimeout(tunnel)) {
-      return <LatencyRating isTimeout timeoutText="超时" className={compact ? "text-xs" : undefined} />;
+      return <LatencyRating isTimeout timeoutText={translateText("超时")} className={compact ? "text-xs" : undefined} />;
     }
-    return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
+    return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>{translateText("未测试")}</span>;
   };
 
   const renderTunnelLatencyBreakdown = (tunnel: any, compact = false, maxItems?: number) => {
     const items = tunnelDisplayLatencyList(tunnel);
     if (items.length === 0) {
-      return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
+      return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>{translateText("未测试")}</span>;
     }
     const visibleItems = maxItems ? items.slice(0, maxItems) : items;
     const hiddenCount = maxItems ? Math.max(0, items.length - maxItems) : 0;
@@ -3858,13 +3886,13 @@ function TunnelsContent() {
               latencyMs={item.latencyMs}
               isTimeout={item.isTimeout}
               icon="none"
-              timeoutText="超时"
+              timeoutText={translateText("超时")}
               className={compact ? "shrink-0 text-[10px]" : "shrink-0"}
             />
           </div>
         ))}
         {hiddenCount > 0 && (
-          <div className="text-[10px] leading-none text-muted-foreground">还有 {hiddenCount} 条延迟明细</div>
+          <div className="text-[10px] leading-none text-muted-foreground">{translateText("还有 ")}{hiddenCount}{translateText(" 条延迟明细")}</div>
         )}
       </div>
     );
@@ -3880,12 +3908,10 @@ function TunnelsContent() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">链路管理</h1>
-          <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            管理隧道、端口转发、转发链及入口/出口组
-          </p>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("链路管理")}</h1>
+          <p className="mt-1 text-xs sm:text-sm text-muted-foreground">{translateText("管理隧道、端口转发、转发链及入口/出口组")}</p>
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
+        <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-current" />
             <AnimatedStatValue
@@ -3916,7 +3942,7 @@ function TunnelsContent() {
               variant={activeViewMode === "globe" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              title="3D 地球视图"
+              title={translateText("3D 地球视图")}
               onClick={() => handleActiveViewModeChange("globe")}
             >
               <Globe className="h-4 w-4" />
@@ -3928,29 +3954,27 @@ function TunnelsContent() {
             title={createDisabledTitle}
             onClick={openCreateTypeDialog}
           >
-            <Plus className="h-4 w-4" />
-            新增
-          </Button>
+            <Plus className="h-4 w-4" />{translateText("新增")}</Button>
         </div>
       </div>
 
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground">筛选：</span>
+          <span className="text-sm text-muted-foreground">{translateText("筛选：")}</span>
         </div>
         <div className="relative w-full sm:w-[260px] lg:w-[320px]">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={linkSearchQuery}
             onChange={(event) => setLinkSearchQuery(event.target.value)}
-            placeholder="搜索链路、主机、IP、工具或端口"
+            placeholder={translateText("搜索链路、主机、IP、工具或端口")}
             className="h-8 w-full pl-8 pr-8 text-xs"
           />
           {linkSearchQuery ? (
             <button
               type="button"
-              aria-label="清空搜索"
+              aria-label={translateText("清空搜索")}
               className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               onClick={() => setLinkSearchQuery("")}
             >
@@ -3964,19 +3988,17 @@ function TunnelsContent() {
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
-        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} ariaLabel="链路管理" minItemWidthRem={7.75} />
+        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} ariaLabel={translateText("链路管理")} minItemWidthRem={7.75} />
 
         <TabsContent value="tunnels" className="space-y-4">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold tracking-tight sm:text-xl">隧道链路</h2>
-            <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-              管理 GOST、ForwardX 和 Nginx 隧道。
-            </p>
+            <h2 className="text-lg font-semibold tracking-tight sm:text-xl">{translateText("隧道链路")}</h2>
+            <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{translateText("管理 GOST、ForwardX 和 Nginx 隧道。")}</p>
           </div>
           <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
       {viewMode === "globe" ? (
         (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
-          <DataSectionLoading label="正在加载全球链路地图" />
+          <DataSectionLoading label={translateText("正在加载全球链路地图")} />
         ) : (
           <TunnelWorldGlobe
             tunnels={tunnelItems}
@@ -3990,7 +4012,7 @@ function TunnelsContent() {
           />
         )
       ) : isLoading ? (
-        <DataSectionLoading label="正在加载隧道数据" />
+        <DataSectionLoading label={translateText("正在加载隧道数据")} />
       ) : tunnels && tunnelItems.length > 0 ? (
         <>
         {viewMode === "card" ? (
@@ -4022,8 +4044,7 @@ function TunnelsContent() {
                           <p className="truncate font-medium">{tunnel.name}</p>
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
-                              {tunnelProtocolLabel(protocolKey)} 当前不支持
-                            </p>
+                              {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</p>
                           )}
                         </div>
                       </div>
@@ -4052,17 +4073,17 @@ function TunnelsContent() {
                     </div>
 
                     <div className="space-y-1 text-xs">
-                      <span className="text-muted-foreground">延迟</span>
+                      <span className="text-muted-foreground">{translateText("延迟")}</span>
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="查看延迟" onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="测试延迟" onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("测试延迟")} onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Stethoscope className="h-3.5 w-3.5" />
                           </Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(tunnel)}>
@@ -4118,8 +4139,7 @@ function TunnelsContent() {
                           <p className="truncate font-medium">{tunnel.name}</p>
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
-                              {tunnelProtocolLabel(protocolKey)} 当前不支持
-                            </p>
+                              {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</p>
                           )}
                         </div>
                       </div>
@@ -4148,17 +4168,17 @@ function TunnelsContent() {
                     </div>
 
                     <div className="space-y-1 text-xs">
-                      <span className="text-muted-foreground">延迟</span>
+                      <span className="text-muted-foreground">{translateText("延迟")}</span>
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="查看延迟" onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="测试延迟" onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("测试延迟")} onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Stethoscope className="h-3.5 w-3.5" />
                           </Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(tunnel)}>
@@ -4190,14 +4210,14 @@ function TunnelsContent() {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-[44px] px-2" aria-label="排序" />
-                    <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
-                    <TableHead>隧道名称</TableHead>
-                    <TableHead>链路</TableHead>
-                    <TableHead className="hidden md:table-cell">模式</TableHead>
-                    <TableHead className="hidden md:table-cell">延迟</TableHead>
-                    <TableHead>开关</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead className="w-[44px] px-2" aria-label={translateText("排序")} />
+                    <TableHead className="w-[72px] whitespace-nowrap text-center">{translateText("状态")}</TableHead>
+                    <TableHead>{translateText("隧道名称")}</TableHead>
+                    <TableHead>{translateText("链路")}</TableHead>
+                    <TableHead className="hidden md:table-cell">{translateText("模式")}</TableHead>
+                    <TableHead className="hidden md:table-cell">{translateText("延迟")}</TableHead>
+                    <TableHead>{translateText("开关")}</TableHead>
+                    <TableHead className="text-right">{translateText("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <SortableReorderContext sortable={tunnelSortable} ids={pagedTunnels.map((tunnel: any) => Number(tunnel.id))} strategy="vertical" restrictToList>
@@ -4235,8 +4255,7 @@ function TunnelsContent() {
                         <span className="line-clamp-2 font-medium leading-snug">{tunnel.name}</span>
                         {!supported && (
                           <span className="mt-1 block text-[11px] text-destructive">
-                            {tunnelProtocolLabel(protocolKey)} 当前不支持
-                          </span>
+                            {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</span>
                         )}
                       </TableCell>
                       <TableCell className="py-3">
@@ -4269,7 +4288,7 @@ function TunnelsContent() {
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8"
-                                title="查看入口到出口延迟"
+                                title={translateText("查看入口到出口延迟")}
                                 onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}
                               >
                                 <Activity className="h-3.5 w-3.5" />
@@ -4278,7 +4297,7 @@ function TunnelsContent() {
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8"
-                                title="测试入口到出口延迟"
+                                title={translateText("测试入口到出口延迟")}
                                 onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}
                               >
                                 <Stethoscope className="h-3.5 w-3.5" />
@@ -4312,7 +4331,7 @@ function TunnelsContent() {
         </Card>
           </>
         )}
-          <PersistentPagination pagination={tunnelPagination} itemName="条隧道" />
+          <PersistentPagination pagination={tunnelPagination} itemName={translateText("条隧道")} />
         </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -4321,8 +4340,8 @@ function TunnelsContent() {
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/30">
                 <Network className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">暂无隧道</p>
-              <p className="mt-1 text-sm text-muted-foreground/60">选择两台 Agent 创建第一条隧道</p>
+              <p className="text-lg font-medium">{translateText("暂无隧道")}</p>
+              <p className="mt-1 text-sm text-muted-foreground/60">{translateText("选择两台 Agent 创建第一条隧道")}</p>
             </div>
           </CardContent>
         </Card>
@@ -4348,7 +4367,7 @@ function TunnelsContent() {
           {chainViewMode === "globe" ? (
             <>
               {(isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
-                <DataSectionLoading label="正在加载全球链路地图" />
+                <DataSectionLoading label={translateText("正在加载全球链路地图")} />
               ) : (
                 <TunnelWorldGlobe
                   tunnels={tunnelItems}
@@ -4453,21 +4472,15 @@ function TunnelsContent() {
       <Dialog open={!!deleteTunnel} onOpenChange={(open) => !open && setDeleteTunnel(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>删除链路</DialogTitle>
-            <DialogDescription>
-              确认删除 "{deleteTunnel?.name}"？此操作会解除关联转发规则的隧道绑定，并停止这些规则的运行状态。
-            </DialogDescription>
+            <DialogTitle>{translateText("删除链路")}</DialogTitle>
+            <DialogDescription>{translateText("确认删除 \"")}{deleteTunnel?.name}{translateText("\"？此操作会解除关联转发规则的隧道绑定，并停止这些规则的运行状态。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {deleteImpactQuery.isLoading ? (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                正在检查关联转发规则...
-              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("正在检查关联转发规则...")}</div>
             ) : deleteImpactQuery.data?.forwardRuleCount ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
-                <p className="font-medium text-destructive">
-                  当前链路仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
-                </p>
+                <p className="font-medium text-destructive">{translateText("当前链路仍关联 ")}{deleteImpactQuery.data.forwardRuleCount}{translateText(" 条转发规则")}</p>
                 <div className="mt-2 max-h-44 space-y-1 overflow-auto text-xs text-muted-foreground">
                   {(deleteImpactQuery.data.forwardRules || []).map((rule: any) => (
                     <div key={rule.id} className="rounded border border-border/40 bg-background/60 px-2 py-1">
@@ -4476,24 +4489,22 @@ function TunnelsContent() {
                     </div>
                   ))}
                   {deleteImpactQuery.data.forwardRuleCount > (deleteImpactQuery.data.forwardRules || []).length && (
-                    <p>还有 {deleteImpactQuery.data.forwardRuleCount - (deleteImpactQuery.data.forwardRules || []).length} 条未显示。</p>
+                    <p>{translateText("还有 ")}{deleteImpactQuery.data.forwardRuleCount - (deleteImpactQuery.data.forwardRules || []).length}{translateText(" 条未显示。")}</p>
                   )}
                 </div>
               </div>
             ) : (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                未发现关联转发规则。
-              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("未发现关联转发规则。")}</div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTunnel(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setDeleteTunnel(null)}>{translateText("取消")}</Button>
             <Button
               variant="destructive"
               disabled={!deleteTunnel || deleteMutation.isPending || deleteImpactQuery.isLoading}
               onClick={() => deleteTunnel && deleteMutation.mutate({ id: deleteTunnel.id, confirmRules: true })}
             >
-              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteMutation.isPending ? translateText("删除中...") : translateText("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4502,28 +4513,28 @@ function TunnelsContent() {
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
         <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
-            <DialogTitle>新增链路</DialogTitle>
+            <DialogTitle>{translateText("新增链路")}</DialogTitle>
           </DialogHeader>
           <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
-                      <Label>隧道名称</Label>
-                      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
+                      <Label>{translateText("隧道名称")}</Label>
+                      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 华东-香港隧道")} />
                     </div>
                     <div className="space-y-2">
-                      <Label>入口组</Label>
+                      <Label>{translateText("入口组")}</Label>
                       <Select
                         value={form.entryGroupId ? String(form.entryGroupId) : "none"}
                         onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="选择已保存入口组" />
+                          <SelectValue placeholder={translateText("选择已保存入口组")} />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">不使用入口组</SelectItem>
+                          <SelectItem value="none">{translateText("不使用入口组")}</SelectItem>
                           {usableEntryGroups.length === 0 ? (
-                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用入口组")}</div>
                           ) : usableEntryGroups.map((group: any) => (
                             <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                               <span className="inline-flex min-w-0 flex-col">
@@ -4535,13 +4546,13 @@ function TunnelsContent() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">
-                        {form.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+                        {form.entryGroupId ? translateText("入口组提供入口，下方主机从中转或出口开始配置。") : translateText("未使用入口组时，下方第一台主机作为入口。")}
                       </p>
                     </div>
                     <div className="space-y-2">
                       <MultiHopEditor
                         hosts={hosts || []}
-                        headerLabel="主机链路"
+                        headerLabel={translateText("主机链路")}
                         initialHopIds={form.hopHostIds}
                         initialHopConnectHosts={form.hopConnectHosts}
                         maxHops={MAX_TUNNEL_HOPS}
@@ -4587,18 +4598,18 @@ function TunnelsContent() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>出口组</Label>
+                      <Label>{translateText("出口组")}</Label>
                       <Select
                         value={form.exitGroupId ? String(form.exitGroupId) : "none"}
                         onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="选择已保存出口组" />
+                          <SelectValue placeholder={translateText("选择已保存出口组")} />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">不使用出口组</SelectItem>
+                          <SelectItem value="none">{translateText("不使用出口组")}</SelectItem>
                           {usableExitGroups.length === 0 ? (
-                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用出口组</div>
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用出口组")}</div>
                           ) : usableExitGroups.map((group: any) => (
                             <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                               <span className="inline-flex min-w-0 flex-col">
@@ -4610,15 +4621,14 @@ function TunnelsContent() {
                         </SelectContent>
                       </Select>
                       {form.exitGroupId ? (
-                        <p className="text-xs text-muted-foreground">
-                          出口组固定为隧道出口；策略：{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
+                        <p className="text-xs text-muted-foreground">{translateText("出口组固定为隧道出口；策略：")}{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
                         </p>
                       ) : (
-                        <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
+                        <p className="text-xs text-muted-foreground">{translateText("按出口组顺序使用成员，首个成员为主出口。")}</p>
                       )}
                     </div>
                     <div className="space-y-2">
-                      <Label>隧道类型</Label>
+                      <Label>{translateText("隧道类型")}</Label>
                       <div className={`${segmentedControlClassName} grid ${nginxTunnelEnabled ? "grid-cols-3" : "grid-cols-2"} gap-1`}>
                         <button
                           type="button"
@@ -4663,7 +4673,7 @@ function TunnelsContent() {
                     )}
                     {gostTunnelModes.includes(form.mode) && (
                       <div className="space-y-2">
-                        <Label>GOST 协议</Label>
+                        <Label>{translateText("GOST 协议")}</Label>
                         <Select value={form.mode} onValueChange={(v) => setTunnelMode(v as TunnelForm["mode"])}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -4679,15 +4689,15 @@ function TunnelsContent() {
                     {renderForwardXVersionOptions()}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
-                        <Label>出口监听端口</Label>
-                        <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder="自动分配" />
+                        <Label>{translateText("出口监听端口")}</Label>
+                        <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />
                       </div>
                       <div className="space-y-2">
-                        <Label>隧道限速 (Mbps)</Label>
-                        <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
+                        <Label>{translateText("隧道限速 (Mbps)")}</Label>
+                        <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder={translateText("不限速")} />
                       </div>
                       <div className="space-y-2">
-                        <Label>流量倍率</Label>
+                        <Label>{translateText("流量倍率")}</Label>
                         <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
                       </div>
                     </div>
@@ -4695,22 +4705,22 @@ function TunnelsContent() {
                 ) : (
                   <>
                     <div className="space-y-2">
-                      <Label>转发链名称</Label>
+                      <Label>{translateText("转发链名称")}</Label>
                       <Input
                         value={chainCreateForm.name}
                         onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
-                        placeholder="例如: 华东-香港转发链"
+                        placeholder={translateText("例如: 华东-香港转发链")}
                       />
                     </div>
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_110px]">
                       <div className="space-y-2">
-                        <Label>转发工具</Label>
+                        <Label>{translateText("转发工具")}</Label>
                         <Select
                           value={chainCreateForm.forwardType}
                           disabled={availableChainForwardTypes.length === 0}
                           onValueChange={(value) => setChainForwardType(value as ForwardType)}
                         >
-                          <SelectTrigger><SelectValue placeholder="选择转发工具" /></SelectTrigger>
+                          <SelectTrigger><SelectValue placeholder={translateText("选择转发工具")} /></SelectTrigger>
                           <SelectContent>
                             {availableChainForwardTypes.map((type) => (
                               <SelectItem key={type} value={type}>{FORWARD_TYPE_LABELS[type]}</SelectItem>
@@ -4719,12 +4729,12 @@ function TunnelsContent() {
                         </Select>
                       </div>
                       <div className="space-y-2">
-                        <Label>流量倍率</Label>
+                        <Label>{translateText("流量倍率")}</Label>
                         <Input type="number" min={0.01} max={50} step={0.01} value={chainCreateForm.trafficMultiplier || ""} onChange={(e) => setChainCreateForm({ ...chainCreateForm, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
                       </div>
                       <div className="flex items-end">
                         <label className="flex h-10 w-full items-center justify-between rounded-md border border-border/60 px-3">
-                          <span className="text-sm">启用</span>
+                          <span className="text-sm">{translateText("启用")}</span>
                           <Switch
                             checked={chainCreateForm.isEnabled}
                             onCheckedChange={(isEnabled) => setChainCreateForm({ ...chainCreateForm, isEnabled })}
@@ -4734,18 +4744,18 @@ function TunnelsContent() {
                     </div>
                     {renderChainRuntimeOptions()}
                     <div className="space-y-2">
-                      <Label>入口组</Label>
+                      <Label>{translateText("入口组")}</Label>
                       <Select
                         value={chainCreateForm.entryGroupId ? String(chainCreateForm.entryGroupId) : "none"}
                         onValueChange={(value) => setChainCreateForm((prev) => applyEntryGroupToChainCreateForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="选择已保存入口组" />
+                          <SelectValue placeholder={translateText("选择已保存入口组")} />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">不使用入口组</SelectItem>
+                          <SelectItem value="none">{translateText("不使用入口组")}</SelectItem>
                           {usableEntryGroups.length === 0 ? (
-                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用入口组")}</div>
                           ) : usableEntryGroups.map((group: any) => (
                             <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                               <span className="inline-flex min-w-0 flex-col">
@@ -4757,11 +4767,11 @@ function TunnelsContent() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">
-                        {chainCreateForm.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+                        {chainCreateForm.entryGroupId ? translateText("入口组提供入口，下方主机从中转或出口开始配置。") : translateText("未使用入口组时，下方第一台主机作为入口。")}
                       </p>
                     </div>
                     <div className="space-y-2">
-                      <Label>链路主机顺序</Label>
+                      <Label>{translateText("链路主机顺序")}</Label>
                       <MultiHopEditor
                         hosts={hosts || []}
                         initialHopIds={chainCreateForm.hopHostIds}
@@ -4798,12 +4808,12 @@ function TunnelsContent() {
                 )}
           </div>
           <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 px-3.5 py-3 sm:px-4">
-            <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>{translateText("取消")}</Button>
             <Button
               disabled={selectedCreateDisabled || isCreateTypePending || (selectedCreateType === "tunnel" && !isTunnelSupported(form))}
               onClick={selectedCreateType === "chain" ? handleChainCreateSubmit : handleSubmit}
             >
-              {isCreateTypePending ? "保存中..." : "创建"}
+              {isCreateTypePending ? translateText("保存中...") : translateText("创建")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4812,26 +4822,26 @@ function TunnelsContent() {
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
-            <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
+            <DialogTitle>{editingId ? translateText("编辑隧道") : translateText("添加链路")}</DialogTitle>
           </DialogHeader>
           <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
             <div className="space-y-2">
-              <Label>隧道名称</Label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
+              <Label>{translateText("隧道名称")}</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 华东-香港隧道")} />
             </div>
             <div className="space-y-2">
-              <Label>入口组</Label>
+              <Label>{translateText("入口组")}</Label>
               <Select
                 value={form.entryGroupId ? String(form.entryGroupId) : "none"}
                 onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择已保存入口组" />
+                  <SelectValue placeholder={translateText("选择已保存入口组")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">不使用入口组</SelectItem>
+                  <SelectItem value="none">{translateText("不使用入口组")}</SelectItem>
                   {usableEntryGroups.length === 0 ? (
-                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用入口组")}</div>
                   ) : usableEntryGroups.map((group: any) => (
                     <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                       <span className="inline-flex min-w-0 flex-col">
@@ -4843,13 +4853,13 @@ function TunnelsContent() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                {form.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+                {form.entryGroupId ? translateText("入口组提供入口，下方主机从中转或出口开始配置。") : translateText("未使用入口组时，下方第一台主机作为入口。")}
               </p>
             </div>
             <div className="space-y-2">
               <MultiHopEditor
                 hosts={hosts || []}
-                headerLabel="主机链路"
+                headerLabel={translateText("主机链路")}
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
                 maxHops={MAX_TUNNEL_HOPS}
@@ -4895,18 +4905,18 @@ function TunnelsContent() {
               />
             </div>
             <div className="space-y-2">
-              <Label>出口组</Label>
+              <Label>{translateText("出口组")}</Label>
               <Select
                 value={form.exitGroupId ? String(form.exitGroupId) : "none"}
                 onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择已保存出口组" />
+                  <SelectValue placeholder={translateText("选择已保存出口组")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">不使用出口组</SelectItem>
+                  <SelectItem value="none">{translateText("不使用出口组")}</SelectItem>
                   {usableExitGroups.length === 0 ? (
-                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用出口组</div>
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("暂无可用出口组")}</div>
                   ) : usableExitGroups.map((group: any) => (
                     <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
                       <span className="inline-flex min-w-0 flex-col">
@@ -4918,15 +4928,14 @@ function TunnelsContent() {
                 </SelectContent>
               </Select>
               {form.exitGroupId ? (
-                <p className="text-xs text-muted-foreground">
-                  出口组固定为隧道出口；策略：{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
+                <p className="text-xs text-muted-foreground">{translateText("出口组固定为隧道出口；策略：")}{EXIT_GROUP_STRATEGY_LABELS[normalizeExitGroupStrategy(exitGroupById.get(Number(form.exitGroupId))?.exitStrategy)]}。
                 </p>
               ) : (
-                <p className="text-xs text-muted-foreground">按出口组顺序使用成员，首个成员为主出口。</p>
+                <p className="text-xs text-muted-foreground">{translateText("按出口组顺序使用成员，首个成员为主出口。")}</p>
               )}
             </div>
             <div className="space-y-2">
-              <Label>隧道类型</Label>
+              <Label>{translateText("隧道类型")}</Label>
               <div className={`${segmentedControlClassName} grid ${nginxTunnelEnabled ? "grid-cols-3" : "grid-cols-2"} gap-1`}>
                 <button
                   type="button"
@@ -4971,7 +4980,7 @@ function TunnelsContent() {
             )}
             {gostTunnelModes.includes(form.mode) && (
               <div className="space-y-2">
-                <Label>GOST 协议</Label>
+                <Label>{translateText("GOST 协议")}</Label>
                 <Select value={form.mode} onValueChange={(v) => setTunnelMode(v as TunnelForm["mode"])}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -4987,22 +4996,22 @@ function TunnelsContent() {
             {renderForwardXVersionOptions()}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
-                <Label>出口监听端口</Label>
-                <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder="自动分配" />
+                <Label>{translateText("出口监听端口")}</Label>
+                <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />
               </div>
               <div className="space-y-2">
-                <Label>隧道限速 (Mbps)</Label>
-                <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
+                <Label>{translateText("隧道限速 (Mbps)")}</Label>
+                <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder={translateText("不限速")} />
               </div>
               <div className="space-y-2">
-                <Label>流量倍率</Label>
+                <Label>{translateText("流量倍率")}</Label>
                 <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
               </div>
             </div>
           </div>
           <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 px-3.5 py-3 sm:px-4">
-            <Button variant="outline" onClick={() => setShowDialog(false)}>取消</Button>
-            <Button onClick={handleSubmit} disabled={isPending || !isTunnelSupported(form)}>{isPending ? "保存中..." : editingId ? "保存" : "创建"}</Button>
+            <Button variant="outline" onClick={() => setShowDialog(false)}>{translateText("取消")}</Button>
+            <Button onClick={handleSubmit} disabled={isPending || !isTunnelSupported(form)}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

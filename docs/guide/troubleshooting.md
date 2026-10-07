@@ -1,6 +1,6 @@
 # 常见问题排查
 
-> 当前版本：面板 2.3.281 / Agent 2.2.194 / Android APP 2.3.98
+> 先核对面板与 Agent 实际运行版本。部署方式与配置位置见 [部署总览](./deploy-panel.md)、[目录与日志](./paths-logs.md)；数据库错误见 [数据库连接排查](./database.md)。
 
 ---
 
@@ -85,7 +85,7 @@ tcpdump -ni any 'tcp port 入口端口 or udp port 入口端口'
 |------|------|----------|
 | 面板网页日志 | 系统设置 → 面板日志（最近 24 小时） | 可按等级筛选或导出 |
 | 面板持久日志（Docker） | 容器内 `/data/logs/panel.jsonl` | `docker exec forwardx-panel tail -n 300 /data/logs/panel.jsonl` |
-| 面板持久日志（非 Docker） | `<面板工作目录>/data/logs/panel.jsonl` | `tail -n 300 data/logs/panel.jsonl` |
+| 面板持久日志（非 Docker） | 通常为 `<面板工作目录>/data/logs/panel.jsonl`；宿主机已有 `/data` 时可能为 `/data/logs/panel.jsonl` | `tail -n 300 data/logs/panel.jsonl` |
 | 面板自定义日志目录 | `$FORWARDX_LOG_DIR/panel.jsonl` | `tail -n 300 "$FORWARDX_LOG_DIR/panel.jsonl"` |
 | 面板（Docker） | 容器标准输出 | `docker logs --since 30m --timestamps forwardx-panel` |
 | 面板（systemd） | journald | `journalctl -u forwardx-panel -b -n 300 --no-pager` |
@@ -99,7 +99,7 @@ tcpdump -ni any 'tcp port 入口端口 or udp port 入口端口'
 | mimic 网卡服务 | `mimic@<网卡>.service` | `journalctl -u 'mimic@ens3.service' -b -n 300 --no-pager` |
 | OpenRC/SysV 托管运行时 | `/var/log/forwardx-agent/<服务名>.log` | `tail -n 300 /var/log/forwardx-agent/<服务名>.log` |
 
-面板的 `panel.jsonl` 默认位于 `/data/logs`（容器）或工作目录下的 `data/logs`，也可通过 `FORWARDX_LOG_DIR` 修改。Docker 启动/数据库连接错误通常先出现在 `docker logs`，业务运行记录则可在网页日志或 `panel.jsonl` 中查看。
+面板的日志目录先使用 `FORWARDX_LOG_DIR`，否则非 Windows 且存在 `/data` 时用 `/data/logs`，其他情况用工作目录下的 `data/logs`，详见 [目录与日志](./paths-logs.md)。Docker 启动/数据库连接错误通常先出现在 `docker logs`，业务运行记录则可在网页日志或 `panel.jsonl` 中查看。
 
 ### 相关配置和状态位置
 

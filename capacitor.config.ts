@@ -11,6 +11,10 @@ const config: CapacitorConfig = {
   android: {
     backgroundColor: '#f7f9fc',
   },
+  ios: {
+    backgroundColor: '#f7f9fc',
+    contentInset: 'never',
+  },
   plugins: {
     LocalNotifications: {
       smallIcon: 'ic_stat_forwardx',

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
-import { sendTelegramMessage } from "../telegramBot";
+import { sendUserNotification, getNotificationAnnouncementSubscribers } from "../notifications";
 import { sanitizeHtml } from "../../shared/htmlSanitizer";
 import { APP_VERSION } from "../../shared/versions";
 
@@ -57,24 +57,24 @@ function announcementTelegramText(title: string, content: string) {
     "",
     escapeTelegramHtml(body || "请登录面板查看公告详情。"),
     "",
-    "可在个人资料中关闭公告 Telegram 推送。",
+    "可在个人资料中关闭公告通知。",
   ].join("\n");
 }
 
 async function pushAnnouncementToTelegram(title: string, content: string) {
-  const subscribers = await db.getTelegramAnnouncementSubscribers();
+  const subscribers = await getNotificationAnnouncementSubscribers();
   if (subscribers.length === 0) return { requested: true, sent: 0, failed: 0, total: 0 };
   const text = announcementTelegramText(title, content);
   let sent = 0;
   let failed = 0;
   for (const user of subscribers as any[]) {
-    if (!user.telegramId) continue;
+    if (!user.notificationId) continue;
     try {
-      await sendTelegramMessage(user.telegramId, text);
+      await sendUserNotification(user, text);
       sent += 1;
     } catch (error) {
       failed += 1;
-      console.warn(`[Announcement] Telegram push failed user=${user.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[Announcement] Notification push failed user=${user.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return { requested: true, sent, failed, total: subscribers.length };

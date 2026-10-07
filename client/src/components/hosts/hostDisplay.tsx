@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
 
@@ -51,9 +52,9 @@ export function formatUptime(seconds: number | null | undefined): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}小时`;
-  if (h > 0) return `${h}小时 ${m}分`;
-  return `${m}分钟`;
+  if (d > 0) return translateText("{0}天 {1}小时", [d, h]);
+  if (h > 0) return translateText("{0}小时 {1}分", [h, m]);
+  return translateText("{0}分钟", [m]);
 }
 
 function normalizeVersion(version: string | null | undefined) {
@@ -157,7 +158,7 @@ export function HostRegionBadge({ host, compact = false }: { host: any; compact?
           <span className="hidden shrink-0 font-mono leading-none">{fallbackCode}</span>
         </>
       )}
-      <span className="min-w-0 truncate">{regionText || "地区获取中"}</span>
+      <span className="min-w-0 truncate">{regionText || translateText("地区获取中")}</span>
     </span>
   );
 }

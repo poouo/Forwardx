@@ -35,6 +35,7 @@ export * from "./repositories/hostRepository";
 export * from "./repositories/forwardRuleRepository";
 export * from "./repositories/tunnelRepository";
 export * from "./repositories/metricsRepository";
+export * from "./repositories/probeCounterRepository";
 export * from "./repositories/tokenRepository";
 export * from "./forwardGroupRuleIntegrity";
 export * from "./repositories/dashboardRepository";
@@ -362,6 +363,12 @@ export async function initDatabase() {
       return { configured: false, ready: false, hasAdmin: false } as const;
     }
 
+    const { seamlessBackgroundPaused } = await import("./seamlessMigrationState");
+    if (seamlessBackgroundPaused()) {
+      await queryRaw("SELECT 1 AS healthy");
+      databaseHealth.healthy();
+      return { configured: true, ready: true, hasAdmin: true } as const;
+    }
     await runInitializationStep("schema", () => ensureDatabaseSchema());
     await runInitializationStep("clear-legacy-traffic-padding", () => clearLegacyTrafficPaddingOnce().then((count) => {
       if (count > 0) console.log(`[Database] Cleared legacy traffic padding settings count=${count}`);
