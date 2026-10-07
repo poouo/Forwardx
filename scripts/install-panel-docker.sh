@@ -11,6 +11,7 @@ REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
 ENABLE_ADMIN_ACCOUNT="false"
+SETUP_LANGUAGE="${FORWARDX_SETUP_LANGUAGE:-}"
 EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
 DATA_VOLUME_REUSE_NOTIFIED="false"
 RESOLVED_IMAGE=""
@@ -24,14 +25,16 @@ fi
 
 usage() {
   cat <<EOF
-Usage: $0 install|upgrade|uninstall|reset-admin|reset-password [--github-accelerator URL] [--enable-account]
+Usage: $0 install|upgrade|uninstall|reset-admin|reset-password [--language zh-CN|en|auto] [--github-accelerator URL] [--enable-account]
 
 Options:
+  --language zh-CN|en|auto    Initial setup UI language; manual browser selection takes priority.
   --github-accelerator URL   Prefix GitHub API/raw/release URLs with this HTTP(S) accelerator.
                              Docker image pulls still use FORWARDX_IMAGE/FORWARDX_IMAGE_REPO.
   --enable-account           With reset-admin, enable the selected administrator account.
 
 Environment:
+  FORWARDX_SETUP_LANGUAGE          Same as --language; saved for the initial setup wizard.
   FORWARDX_GITHUB_ACCELERATOR_URL   Same as --github-accelerator; an explicit empty value disables it.
 EOF
 }
@@ -76,6 +79,22 @@ parse_args() {
         ENABLE_ADMIN_ACCOUNT="true"
         shift
         ;;
+      --language)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "[ERROR] --language requires zh-CN, en or auto" >&2
+          exit 1
+        fi
+        SETUP_LANGUAGE="$2"
+        shift 2
+        ;;
+      --language=*)
+        SETUP_LANGUAGE="${1#*=}"
+        if [ -z "$SETUP_LANGUAGE" ]; then
+          echo "[ERROR] --language requires zh-CN, en or auto" >&2
+          exit 1
+        fi
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -90,6 +109,25 @@ parse_args() {
 }
 
 parse_args "$@"
+
+validate_setup_language() {
+  case "$SETUP_LANGUAGE" in
+    ""|zh-CN|en|auto) ;;
+    *)
+      echo "[ERROR] Invalid setup language: use zh-CN, en or auto" >&2
+      exit 1
+      ;;
+  esac
+}
+
+resolve_setup_language() {
+  if [ -z "$SETUP_LANGUAGE" ]; then
+    SETUP_LANGUAGE="$(get_env_value FORWARDX_SETUP_LANGUAGE || true)"
+  fi
+  validate_setup_language
+}
+
+validate_setup_language
 
 if [ "$ENABLE_ADMIN_ACCOUNT" = "true" ] && [ "$ACTION" != "reset-admin" ] && [ "$ACTION" != "reset-password" ]; then
   echo "[ERROR] --enable-account is only valid with reset-admin" >&2
@@ -487,6 +525,7 @@ ensure_data_volume() {
 }
 
 load_existing_env() {
+  resolve_setup_language
   local value public_value compose_port container_port port_source
   value="$(get_env_value COMPOSE_PROJECT_NAME || true)"
   if [ -n "$value" ]; then PROJECT_NAME="$value"; fi
@@ -648,6 +687,7 @@ services:
       PORT: 3000
       FORWARDX_PUBLIC_PORT: ${PORT:-9810}
       FORWARDX_PORT_MANAGEMENT: docker
+      FORWARDX_SETUP_LANGUAGE: ${FORWARDX_SETUP_LANGUAGE:-}
       DATABASE_CONFIG_PATH: /data/database.json
       SQLITE_PATH: /data/forwardx.db
       MYSQL_CONFIG_PATH: /data/mysql.json
@@ -694,6 +734,7 @@ COMPOSE_PROJECT_NAME=$PROJECT_NAME
 FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
 FORWARDX_IMAGE=$image
 FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
+FORWARDX_SETUP_LANGUAGE=$SETUP_LANGUAGE
 EOF
 }
 

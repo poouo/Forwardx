@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -168,8 +169,7 @@ export function PersistentPagination<T>({
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-card/60 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-      <div className="text-xs text-muted-foreground">
-        第 {pagination.currentPage} / {pagination.totalPages} 页，显示 {pagination.startItem}-{pagination.endItem}，共 {pagination.totalItems} {itemName}
+      <div className="text-xs text-muted-foreground">{translateText("第 ")}{pagination.currentPage} / {pagination.totalPages}{translateText(" 页，显示 ")}{pagination.startItem}-{pagination.endItem}{translateText("，共 ")}{pagination.totalItems} {itemName}
       </div>
       <div className="flex items-center justify-between gap-1 sm:justify-end">
         <Button
@@ -179,9 +179,7 @@ export function PersistentPagination<T>({
           disabled={pagination.currentPage <= 1}
           onClick={pagination.previousPage}
         >
-          <ChevronLeft className="h-4 w-4" />
-          上一页
-        </Button>
+          <ChevronLeft className="h-4 w-4" />{translateText("上一页")}</Button>
         <div className="hidden items-center gap-1 sm:flex">
           {pages.map((page, index) => {
             const previous = pages[index - 1];
@@ -207,9 +205,7 @@ export function PersistentPagination<T>({
           className="h-8 gap-1"
           disabled={pagination.currentPage >= pagination.totalPages}
           onClick={pagination.nextPage}
-        >
-          下一页
-          <ChevronRight className="h-4 w-4" />
+        >{translateText("下一页")}<ChevronRight className="h-4 w-4" />
         </Button>
       </div>
     </div>

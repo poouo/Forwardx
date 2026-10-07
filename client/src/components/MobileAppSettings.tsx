@@ -1,6 +1,7 @@
+import { t as translateText } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Bell, Smartphone } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -49,9 +50,9 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
     saveMobileNotificationSettings(next);
     try {
       await scheduleMobileReminders(next, normalizedSnapshot);
-      toast.success("安卓通知设置已保存");
+      toast.success(translateText("安卓通知设置已保存"));
     } catch (error: any) {
-      toast.error(error?.message || "通知设置保存失败");
+      toast.error(error?.message || translateText("通知设置保存失败"));
     }
   };
 
@@ -75,24 +76,20 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
     <Card className="border-border/40 bg-card/60 backdrop-blur-md">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Smartphone className="h-4 w-4" />
-          APP 设置
-        </CardTitle>
+          <Smartphone className="h-4 w-4" />{translateText("APP 设置")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 p-3">
             <span className="min-w-0">
               <span className="flex items-center gap-2 text-sm font-medium">
-                <Bell className="h-4 w-4" />
-                流量提醒
-              </span>
-              <span className="mt-1 block text-xs text-muted-foreground">低于阈值时提醒。</span>
+                <Bell className="h-4 w-4" />{translateText("流量提醒")}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{translateText("低于阈值时提醒。")}</span>
             </span>
             <Switch checked={settings.trafficEnabled} onCheckedChange={(trafficEnabled) => save({ ...settings, trafficEnabled })} />
           </label>
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
-            <Label>剩余流量阈值 (%)</Label>
+            <Label>{translateText("剩余流量阈值 (%)")}</Label>
             <Input
               type="number"
               min={1}
@@ -112,15 +109,13 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
           <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 p-3">
             <span className="min-w-0">
               <span className="flex items-center gap-2 text-sm font-medium">
-                <Bell className="h-4 w-4" />
-                到期提醒
-              </span>
-              <span className="mt-1 block text-xs text-muted-foreground">到期前提醒。</span>
+                <Bell className="h-4 w-4" />{translateText("到期提醒")}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{translateText("到期前提醒。")}</span>
             </span>
             <Switch checked={settings.expiryEnabled} onCheckedChange={(expiryEnabled) => save({ ...settings, expiryEnabled })} />
           </label>
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
-            <Label>提前提醒天数</Label>
+            <Label>{translateText("提前提醒天数")}</Label>
             <Input
               type="number"
               min={1}
@@ -138,7 +133,7 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
-            <Label>提醒时间</Label>
+            <Label>{translateText("提醒时间")}</Label>
             <Input
               type="time"
               value={settings.reminderTime}

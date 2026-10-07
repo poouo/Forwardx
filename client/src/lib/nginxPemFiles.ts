@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 export const MAX_NGINX_PEM_BYTES = 64 * 1024;
 export const MAX_NGINX_PEM_UPLOAD_BYTES = MAX_NGINX_PEM_BYTES * 2;
 export const MAX_NGINX_PEM_FILES = 2;
@@ -58,11 +59,11 @@ function uniquePemBlocks(blocks: string[]) {
 }
 
 export function parseNginxPemFiles(files: readonly NginxPemFileContent[]): ParsedNginxPemFiles {
-  if (files.length === 0) throw new Error("请选择证书或私钥文件");
-  if (files.length > MAX_NGINX_PEM_FILES) throw new Error("一次最多选择一个证书链文件和一个私钥文件");
+  if (files.length === 0) throw new Error(translateText("请选择证书或私钥文件"));
+  if (files.length > MAX_NGINX_PEM_FILES) throw new Error(translateText("一次最多选择一个证书链文件和一个私钥文件"));
 
   const totalBytes = files.reduce((total, file) => total + utf8ByteLength(file.content), 0);
-  if (totalBytes > MAX_NGINX_PEM_UPLOAD_BYTES) throw new Error("所选文件总大小不能超过 128KB");
+  if (totalBytes > MAX_NGINX_PEM_UPLOAD_BYTES) throw new Error(translateText("所选文件总大小不能超过 128KB"));
 
   const certificateBlocks: string[] = [];
   const privateKeyBlocks: string[] = [];
@@ -78,17 +79,17 @@ export function parseNginxPemFiles(files: readonly NginxPemFileContent[]): Parse
     if (unsupportedPrivateKey) {
       const keyLabel = unsupportedPrivateKey[1];
       if (keyLabel === "ENCRYPTED PRIVATE KEY") {
-        throw new Error(`${name} 是加密私钥，Nginx 隧道不支持交互输入密码`);
+        throw new Error(translateText("{0} 是加密私钥，Nginx 隧道不支持交互输入密码", [name]));
       }
-      throw new Error(`${name} 使用不受支持的 ${keyLabel} 格式`);
+      throw new Error(translateText("{0} 使用不受支持的 {1} 格式", [name, keyLabel]));
     }
     if (privateKeyMatches.some((match) => /Proc-Type:\s*4,ENCRYPTED/i.test(match[0]))) {
-      throw new Error(`${name} 是加密私钥，Nginx 隧道不支持交互输入密码`);
+      throw new Error(translateText("{0} 是加密私钥，Nginx 隧道不支持交互输入密码", [name]));
     }
     const privateKeys = privateKeyMatches.map((match) => match[0]).filter(pemPayloadIsDer);
 
     if (certificates.length === 0 && privateKeys.length === 0) {
-      throw new Error(`${name} 中未找到有效内容，仅支持 PEM 编码的证书或未加密私钥`);
+      throw new Error(translateText("{0} 中未找到有效内容，仅支持 PEM 编码的证书或未加密私钥", [name]));
     }
 
     if (certificates.length > 0) certificateFileCount += 1;
@@ -97,22 +98,22 @@ export function parseNginxPemFiles(files: readonly NginxPemFileContent[]): Parse
   }
 
   if (certificateFileCount > 1) {
-    throw new Error("证书链请按服务器证书在前的顺序合并到一个 PEM 文件后上传");
+    throw new Error(translateText("证书链请按服务器证书在前的顺序合并到一个 PEM 文件后上传"));
   }
 
   const uniqueCertificates = uniquePemBlocks(certificateBlocks);
   const uniquePrivateKeys = uniquePemBlocks(privateKeyBlocks);
   if (uniquePrivateKeys.length > 1) {
-    throw new Error("检测到多个不同的私钥，请仅选择当前证书对应的私钥");
+    throw new Error(translateText("检测到多个不同的私钥，请仅选择当前证书对应的私钥"));
   }
 
   const certPem = uniqueCertificates.length > 0 ? uniqueCertificates.join("\n") : undefined;
   const certKeyPem = uniquePrivateKeys[0];
   if (certPem && utf8ByteLength(certPem) > MAX_NGINX_PEM_BYTES) {
-    throw new Error("证书内容不能超过 64KB");
+    throw new Error(translateText("证书内容不能超过 64KB"));
   }
   if (certKeyPem && utf8ByteLength(certKeyPem) > MAX_NGINX_PEM_BYTES) {
-    throw new Error("私钥内容不能超过 64KB");
+    throw new Error(translateText("私钥内容不能超过 64KB"));
   }
 
   return {

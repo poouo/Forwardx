@@ -1,7 +1,6 @@
-import { ENV } from "./env";
-import { sendTelegramMessage } from "./telegramBot";
+import { sendUserNotification, getNotificationAdminRecipients } from "./notifications";
+import { notificationSettings } from "./notificationSettings";
 import { getAllSettings } from "./repositories/settingsRepository";
-import { getTelegramAdminRecipients } from "./repositories/userRepository";
 
 type ForwardGroupSwitchNotifyPayload = {
   groupId: number;
@@ -35,10 +34,7 @@ function valueOrDash(value: unknown) {
 
 async function telegramForwardGroupSwitchEnabled() {
   const settings = await getAllSettings();
-  const envToken = ENV.telegramBotToken.trim();
-  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
-  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
-  return botEnabled && botConfigured;
+  return notificationSettings(settings).active;
 }
 
 function forwardGroupSwitchMessage(payload: ForwardGroupSwitchNotifyPayload) {
@@ -63,22 +59,22 @@ function forwardGroupSwitchMessage(payload: ForwardGroupSwitchNotifyPayload) {
 
 export async function notifyForwardGroupSwitch(payload: ForwardGroupSwitchNotifyPayload) {
   if (!(await telegramForwardGroupSwitchEnabled())) return;
-  const recipients = await getTelegramAdminRecipients();
+  const recipients = await getNotificationAdminRecipients();
   if (recipients.length === 0) return;
   const text = forwardGroupSwitchMessage(payload);
   let sent = 0;
   let failed = 0;
   for (const user of recipients as any[]) {
-    if (!user.telegramId) continue;
+    if (!user.notificationId) continue;
     try {
-      await sendTelegramMessage(user.telegramId, text);
+      await sendUserNotification(user, text);
       sent += 1;
     } catch (error) {
       failed += 1;
-      console.warn(`[Telegram] Forward group switch notify failed user=${user.id} group=${payload.groupId}: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[Notification] Forward group switch notify failed user=${user.id} group=${payload.groupId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   if (sent > 0 || failed > 0) {
-    console.info(`[Telegram] Forward group switch notify group=${payload.groupId} sent=${sent} failed=${failed}`);
+    console.info(`[Notification] Forward group switch notify group=${payload.groupId} sent=${sent} failed=${failed}`);
   }
 }

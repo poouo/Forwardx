@@ -46,13 +46,23 @@ jobs:
       - name: Verify panel
         run: |
           pnpm check:versions
+          pnpm test:release-notes
+          pnpm test:ios
+          pnpm test:i18n
+          pnpm test:google-auth
           pnpm exec tsc --noEmit
           pnpm build
           node --import tsx --test server/agentCrypto.test.ts
           pnpm test:server
+          pnpm test:ai
+          pnpm test:selftest-dispatch
           pnpm docs:build
 
       - name: Verify Agent and FXP
         run: |
+          gost_test_dir=$(mktemp -d)
+          curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz -o "$gost_test_dir/gost.tgz"
+          tar -xzf "$gost_test_dir/gost.tgz" -C "$gost_test_dir"
+          export FORWARDX_TEST_GOST_BINARY="$gost_test_dir/gost"
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)

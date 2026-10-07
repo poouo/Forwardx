@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -44,10 +45,10 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
     pendingRef.current?.resolve(false);
     return new Promise<boolean>((resolve) => {
       const next: PendingConfirm = {
-        title: options.title || DEFAULT_CONFIRM_TITLE,
+        title: options.title || translateText(DEFAULT_CONFIRM_TITLE),
         description: options.description,
-        confirmText: options.confirmText || "确认",
-        cancelText: options.cancelText || "取消",
+        confirmText: options.confirmText || translateText("确认"),
+        cancelText: options.cancelText || translateText("取消"),
         tone: options.tone || "default",
         resolve,
       };
@@ -72,19 +73,19 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
               <AlertTriangle className="h-5 w-5" />
             </div>
             <div className="space-y-1.5 text-left">
-              <DialogTitle>{pending?.title || DEFAULT_CONFIRM_TITLE}</DialogTitle>
+              <DialogTitle>{pending?.title || translateText(DEFAULT_CONFIRM_TITLE)}</DialogTitle>
               <DialogDescription asChild>
                 <div className="text-sm leading-6 text-muted-foreground">{pending?.description}</div>
               </DialogDescription>
             </div>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => close(false)}>{pending?.cancelText || "取消"}</Button>
+            <Button variant="outline" onClick={() => close(false)}>{pending?.cancelText || translateText("取消")}</Button>
             <Button
               variant={pending?.tone === "destructive" ? "destructive" : "default"}
               onClick={() => close(true)}
             >
-              {pending?.confirmText || "确认"}
+              {pending?.confirmText || translateText("确认")}
             </Button>
           </DialogFooter>
         </DialogContent>

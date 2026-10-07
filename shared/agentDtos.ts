@@ -9,7 +9,23 @@ export type AgentHostTrafficStat = {
   bytesIn?: number;
   bytesOut?: number;
 };
-export type AgentTcpingResult = {
+/** Monotonic real-probe counters; independent of the current health sample. */
+export type AgentProbeCounter = {
+  probeCounterEpoch?: string;
+  probeTotalCount?: number;
+  probeTotalSuccesses?: number;
+};
+
+export function hasAgentProbeCounter(value: AgentProbeCounter | null | undefined): boolean {
+  return !!value && typeof value.probeCounterEpoch === "string"
+    && /^[a-zA-Z0-9_-]{1,64}$/.test(value.probeCounterEpoch)
+    && Number.isSafeInteger(value.probeTotalCount) && Number(value.probeTotalCount) >= 1
+    && Number(value.probeTotalCount) <= 1_000_000_000
+    && Number.isSafeInteger(value.probeTotalSuccesses) && Number(value.probeTotalSuccesses) >= 0
+    && Number(value.probeTotalSuccesses) <= Number(value.probeTotalCount);
+}
+
+export type AgentTcpingResult = AgentProbeCounter & {
   ruleId: number;
   tunnelId?: number;
   sourcePort?: number;
@@ -28,7 +44,7 @@ export type AgentTcpingResult = {
   healthPending?: boolean;
 };
 
-export type AgentTunnelTcpingResult = {
+export type AgentTunnelTcpingResult = AgentProbeCounter & {
   tunnelId: number;
   targetIp?: string;
   targetPort?: number;
@@ -57,7 +73,7 @@ export type AgentHostProbeServiceResult = {
   probeSuccesses?: number;
   method?: "tcping" | "ping" | string;
 };
-export type AgentForwardGroupLatencyResult = {
+export type AgentForwardGroupLatencyResult = AgentProbeCounter & {
   groupId: number;
   memberId?: number;
   probeType?: "chain" | "china" | string;
@@ -244,6 +260,13 @@ function validAgentProbeResult(item: any, idKey: string) {
   if (item.method !== undefined && !validShortString(item.method, 32)) return false;
   if (item.probeKey !== undefined && !validShortString(item.probeKey, 1024)) return false;
   if (item.topologyKey !== undefined && !validShortString(item.topologyKey, 2048)) return false;
+  if ((item.probeCounterEpoch !== undefined || item.probeTotalCount !== undefined || item.probeTotalSuccesses !== undefined)
+    && !hasAgentProbeCounter(item)) return false;
+  if (hasAgentProbeCounter(item)) {
+    const counts = normalizeAgentProbeCounts(item, { legacyZeroAsSuccess: false });
+    if (item.probeTotalCount < counts.probeCount || item.probeTotalSuccesses < counts.probeSuccesses
+      || item.probeTotalCount - item.probeTotalSuccesses < counts.probeCount - counts.probeSuccesses) return false;
+  }
   return true;
 }
 

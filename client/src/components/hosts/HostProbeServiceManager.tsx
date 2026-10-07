@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, LayoutGrid, List, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
@@ -16,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type ServiceForm = {
   name: string;
@@ -71,9 +72,9 @@ function serviceTarget(service: any) {
 
 function scopeText(service: any, hostsById: Map<number, any>) {
   const names = (ids: number[]) => ids.map((id) => hostsById.get(id)?.name || `#${id}`).join("、");
-  if (service.hostScope === "specific") return service.hostIds?.length ? `特定主机：${names(service.hostIds)}` : "特定主机";
-  if (service.hostScope === "exclude") return service.excludeHostIds?.length ? `所有主机，排除：${names(service.excludeHostIds)}` : "所有主机";
-  return "所有主机";
+  if (service.hostScope === "specific") return service.hostIds?.length ? translateText("特定主机：{0}", [names(service.hostIds)]) : translateText("特定主机");
+  if (service.hostScope === "exclude") return service.excludeHostIds?.length ? translateText("所有主机，排除：{0}", [names(service.excludeHostIds)]) : translateText("所有主机");
+  return translateText("所有主机");
 }
 
 function serviceMatchesSearchQuery(service: any, query: string, hostsById: Map<number, any>) {
@@ -114,10 +115,10 @@ function ServiceActionButtons({
 }) {
   return (
     <div className="flex justify-end gap-1">
-      <Button variant="ghost" size="icon" className="h-8 w-8" title="编辑服务" onClick={() => onEdit(service)}>
+      <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("编辑服务")} onClick={() => onEdit(service)}>
         <Pencil className="h-3.5 w-3.5" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title="删除服务" onClick={() => onDelete(service)}>
+      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title={translateText("删除服务")} onClick={() => onDelete(service)}>
         <Trash2 className="h-3.5 w-3.5" />
       </Button>
     </div>
@@ -152,11 +153,11 @@ function ServiceEnabledSwitch({
     <OptimisticSwitch
       checked={enabled}
       onCheckedChangeAsync={(checked) => onToggle(service, checked)}
-      onToggleSuccess={(checked) => toast.success(checked ? "探测服务已开启" : "探测服务已关闭")}
-      onToggleError={(error) => toast.error(error instanceof Error ? error.message : "切换探测服务状态失败")}
+      onToggleSuccess={(checked) => toast.success(checked ? translateText("探测服务已开启") : translateText("探测服务已关闭"))}
+      onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换探测服务状态失败"))}
       className="scale-75"
-      title={`${enabled ? "停用" : "启用"}探测服务 ${service.name || ""}`}
-      aria-label={`${enabled ? "停用" : "启用"}服务 ${service.name || ""}`}
+      title={translateText("{0}探测服务 {1}", [enabled ? "停用" : "启用", service.name || ""])}
+      aria-label={translateText("{0}服务 {1}", [enabled ? "停用" : "启用", service.name || ""])}
     />
   );
 }
@@ -203,17 +204,17 @@ function ServiceCard({
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="min-w-0 rounded-md bg-muted/25 p-3">
-            <p className="mb-1 text-xs text-muted-foreground">目标</p>
+            <p className="mb-1 text-xs text-muted-foreground">{translateText("目标")}</p>
             <p className="truncate font-mono text-xs" title={target}>{target}</p>
           </div>
           <div className="min-w-0 rounded-md bg-muted/25 p-3">
-            <p className="mb-1 text-xs text-muted-foreground">运行时间</p>
+            <p className="mb-1 text-xs text-muted-foreground">{translateText("运行时间")}</p>
             <p className="text-sm tabular-nums">{service.intervalSeconds || 30}S</p>
           </div>
         </div>
 
         <div className="min-w-0 rounded-md bg-muted/25 p-3">
-          <p className="mb-1 text-xs text-muted-foreground">主机范围</p>
+          <p className="mb-1 text-xs text-muted-foreground">{translateText("主机范围")}</p>
           <p className="truncate text-sm" title={scope}>{scope}</p>
         </div>
 
@@ -289,12 +290,12 @@ export default function HostProbeServiceManager({
   );
 
   const createMutation = trpc.hosts.createProbeService.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success("服务已添加"); },
-    onError: (err) => toast.error(err.message || "添加服务失败"),
+    onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success(translateText("服务已添加")); },
+    onError: (err) => toast.error(err.message || translateText("添加服务失败")),
   });
   const updateMutation = trpc.hosts.updateProbeService.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setEditingId(null); setForm(defaultForm); toast.success("服务已更新"); },
-    onError: (err) => toast.error(err.message || "更新服务失败"),
+    onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setEditingId(null); setForm(defaultForm); toast.success(translateText("服务已更新")); },
+    onError: (err) => toast.error(err.message || translateText("更新服务失败")),
   });
   const toggleMutation = trpc.hosts.updateProbeService.useMutation({
     onSuccess: async () => {
@@ -302,12 +303,12 @@ export default function HostProbeServiceManager({
     },
   });
   const deleteMutation = trpc.hosts.deleteProbeService.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success("服务已删除"); },
-    onError: (err) => toast.error(err.message || "删除服务失败"),
+    onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success(translateText("服务已删除")); },
+    onError: (err) => toast.error(err.message || translateText("删除服务失败")),
   });
   const reorderServicesMutation = trpc.hosts.reorderProbeServices.useMutation({
-    onSuccess: () => toast.success("服务顺序已更新"),
-    onError: (err) => toast.error(err.message || "更新服务顺序失败"),
+    onSuccess: () => toast.success(translateText("服务顺序已更新")),
+    onError: (err) => toast.error(err.message || translateText("更新服务顺序失败")),
   });
   const serviceReorderPending = reorderServicesMutation.isPending;
   const serviceSortable = useSortableReorder({
@@ -334,7 +335,7 @@ export default function HostProbeServiceManager({
 
   const toggleServiceEnabled = async (service: any, checked: boolean) => {
     const id = Number(service?.id || 0);
-    if (!id) throw new Error("探测服务不存在");
+    if (!id) throw new Error(translateText("探测服务不存在"));
     await toggleMutation.mutateAsync(buildServiceUpdatePayload(service, checked));
   };
 
@@ -350,10 +351,10 @@ export default function HostProbeServiceManager({
     const name = form.name.trim();
     const targetIp = form.targetIp.trim();
     const targetPort = Number(form.targetPort);
-    if (!name) { toast.error("请输入服务名称"); return; }
-    if (!targetIp) { toast.error("请输入 IP 地址"); return; }
-    if (form.method === "tcping" && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) { toast.error("目标端口必须在 1-65535 之间"); return; }
-    if (form.hostScope === "specific" && form.hostIds.length === 0) { toast.error("请选择需要运行服务的主机"); return; }
+    if (!name) { toast.error(translateText("请输入服务名称")); return; }
+    if (!targetIp) { toast.error(translateText("请输入 IP 地址")); return; }
+    if (form.method === "tcping" && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) { toast.error(translateText("目标端口必须在 1-65535 之间")); return; }
+    if (form.hostScope === "specific" && form.hostIds.length === 0) { toast.error(translateText("请选择需要运行服务的主机")); return; }
     const payload = { ...form, name, targetIp, targetPort: form.method === "tcping" ? targetPort : null, intervalSeconds: Math.max(5, Number(form.intervalSeconds) || 30) };
     if (editingId) updateMutation.mutate({ ...payload, id: editingId });
     else createMutation.mutate(payload);
@@ -405,9 +406,9 @@ export default function HostProbeServiceManager({
 
   const confirmDelete = async (service: any) => {
     if (await confirmDialog({
-      title: "删除探测服务",
-      description: `确定要删除“${service.name || "此服务"}”吗？删除后主机将不再执行该服务探测。`,
-      confirmText: "删除",
+      title: translateText("删除探测服务"),
+      description: translateText("确定要删除“{0}”吗？删除后主机将不再执行该服务探测。", [service.name || "此服务"]),
+      confirmText: translateText("删除"),
       tone: "destructive",
     })) deleteMutation.mutate({ id: service.id });
   };
@@ -421,7 +422,7 @@ export default function HostProbeServiceManager({
             variant={viewMode === "card" ? "secondary" : "ghost"}
             size="icon"
             className="h-8 w-8 rounded-none"
-            title="卡片视图"
+            title={translateText("卡片视图")}
             onClick={() => handleViewModeChange("card")}
           >
             <LayoutGrid className="h-4 w-4" />
@@ -430,7 +431,7 @@ export default function HostProbeServiceManager({
             variant={viewMode === "table" ? "secondary" : "ghost"}
             size="icon"
             className="h-8 w-8 rounded-none"
-            title="列表视图"
+            title={translateText("列表视图")}
             onClick={() => handleViewModeChange("table")}
           >
             <List className="h-4 w-4" />
@@ -443,14 +444,14 @@ export default function HostProbeServiceManager({
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4">
-              <DataSectionLoading label="正在加载服务" />
+              <DataSectionLoading label={translateText("正在加载服务")} />
             </div>
           ) : displayedServiceItems.length === 0 ? (
             <div className="flex min-h-[220px] flex-col items-center justify-center text-muted-foreground">
               <RadioTower className="mb-3 h-9 w-9 opacity-40" />
-              <p className="text-sm">{isTextFiltered && serviceItems.length > 0 ? "未找到匹配服务" : "暂无服务"}</p>
+              <p className="text-sm">{isTextFiltered && serviceItems.length > 0 ? translateText("未找到匹配服务") : translateText("暂无服务")}</p>
               {isTextFiltered && serviceItems.length > 0 && (
-                <p className="mt-1 text-xs text-muted-foreground/60">调整筛选内容或清空搜索</p>
+                <p className="mt-1 text-xs text-muted-foreground/60">{translateText("调整筛选内容或清空搜索")}</p>
               )}
             </div>
           ) : viewMode === "card" ? (
@@ -503,12 +504,12 @@ export default function HostProbeServiceManager({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[44px]" />
-                    <TableHead>服务</TableHead>
-                    <TableHead>目标</TableHead>
-                    <TableHead>主机范围</TableHead>
-                    <TableHead>运行时间</TableHead>
-                    <TableHead className="w-[120px]">状态</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead>{translateText("服务")}</TableHead>
+                    <TableHead>{translateText("目标")}</TableHead>
+                    <TableHead>{translateText("主机范围")}</TableHead>
+                    <TableHead>{translateText("运行时间")}</TableHead>
+                    <TableHead className="w-[120px]">{translateText("状态")}</TableHead>
+                    <TableHead className="text-right">{translateText("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <SortableReorderContext sortable={serviceSortable} ids={displayedServiceItems.map((service) => Number(service.id))} strategy="vertical" restrictToList>
@@ -561,37 +562,37 @@ export default function HostProbeServiceManager({
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingId ? "编辑服务" : "添加服务"}</DialogTitle>
-            <DialogDescription>配置主机 Ping / TCPing 探测服务</DialogDescription>
+            <DialogTitle>{editingId ? translateText("编辑服务") : translateText("添加服务")}</DialogTitle>
+            <DialogDescription>{translateText("配置主机 Ping / TCPing 探测服务")}</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5"><Label>服务名</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 公网 API 延迟" /></div>
-              <div className="space-y-1.5"><Label>类型</Label><Select value={form.method} onValueChange={(value) => setForm({ ...form, method: value as ServiceForm["method"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem></SelectContent></Select></div>
+              <div className="space-y-1.5"><Label>{translateText("服务名")}</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 公网 API 延迟")} /></div>
+              <div className="space-y-1.5"><Label>{translateText("类型")}</Label><Select value={form.method} onValueChange={(value) => setForm({ ...form, method: value as ServiceForm["method"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem></SelectContent></Select></div>
             </div>
             <div className={`grid gap-3 ${form.method === "tcping" ? "sm:grid-cols-[minmax(0,1fr)_150px]" : ""}`}>
-              <div className="space-y-1.5"><Label>IP 地址 / 域名</Label><Input value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder="1.1.1.1 或 example.com" /></div>
-              {form.method === "tcping" && <div className="space-y-1.5"><Label>目标端口</Label><Input type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
+              <div className="space-y-1.5"><Label>{translateText("IP 地址 / 域名")}</Label><Input value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder={translateText("1.1.1.1 或 example.com")} /></div>
+              {form.method === "tcping" && <div className="space-y-1.5"><Label>{translateText("目标端口")}</Label><Input type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
             </div>
             <div className="grid gap-3 sm:grid-cols-[1fr_140px]">
-              <div className="space-y-1.5"><Label>选择主机</Label><Select value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">所有主机</SelectItem><SelectItem value="exclude">排除主机</SelectItem><SelectItem value="specific">特定主机</SelectItem></SelectContent></Select></div>
-              <div className="space-y-1.5"><Label>服务运行时间</Label><Input type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
+              <div className="space-y-1.5"><Label>{translateText("选择主机")}</Label><Select value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{translateText("所有主机")}</SelectItem><SelectItem value="exclude">{translateText("排除主机")}</SelectItem><SelectItem value="specific">{translateText("特定主机")}</SelectItem></SelectContent></Select></div>
+              <div className="space-y-1.5"><Label>{translateText("服务运行时间")}</Label><Input type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
             </div>
             {form.hostScope !== "all" && (
               <div className="space-y-3 rounded-md border border-border/50 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm">{form.hostScope === "exclude" ? "添加需要排除在外的主机" : "选择需要运行服务的主机"}</Label>
+                  <Label className="text-sm">{form.hostScope === "exclude" ? translateText("添加需要排除在外的主机") : translateText("选择需要运行服务的主机")}</Label>
                   {selectedScopeHostIds.length > 0 && (
-                    <span className="text-xs text-muted-foreground">{selectedScopeHostIds.length} 台</span>
+                    <span className="text-xs text-muted-foreground">{selectedScopeHostIds.length}{translateText(" 台")}</span>
                   )}
                 </div>
                 <Select value="" onValueChange={addScopeHost}>
                   <SelectTrigger className="h-9">
-                    <SelectValue placeholder={availableScopeHosts.length === 0 ? "已全部添加" : form.hostScope === "exclude" ? "添加排除主机..." : "添加运行主机..."} />
+                    <SelectValue placeholder={availableScopeHosts.length === 0 ? translateText("已全部添加") : form.hostScope === "exclude" ? translateText("添加排除主机...") : translateText("添加运行主机...")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableScopeHosts.length === 0 ? (
-                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
+                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("已全部添加")}</div>
                     ) : availableScopeHosts.map((host) => (
                       <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
                         <HostStatusLabel host={host} label={host.name} />
@@ -600,9 +601,7 @@ export default function HostProbeServiceManager({
                   </SelectContent>
                 </Select>
                 {selectedScopeHosts.length === 0 ? (
-                  <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
-                    从上方选择主机
-                  </div>
+                  <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">{translateText("从上方选择主机")}</div>
                 ) : (
                   <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
                     {selectedScopeHosts.map((item, index) => (
@@ -621,13 +620,13 @@ export default function HostProbeServiceManager({
               </div>
             )}
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
-              <span className="text-sm font-medium">启用服务</span>
+              <span className="text-sm font-medium">{translateText("启用服务")}</span>
               <Switch checked={form.isEnabled} onCheckedChange={(checked) => setForm({ ...form, isEnabled: checked })} />
             </label>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-            <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? "处理中..." : "保存"}</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>{translateText("取消")}</Button>
+            <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

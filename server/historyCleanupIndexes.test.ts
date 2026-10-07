@@ -11,6 +11,7 @@ test("history cleanup predicates use time-leading SQLite indexes", async () => {
       ["forward_group_events", "createdAt"],
       ["tunnel_latency_stats", "recordedAt"],
       ["forward_group_latency_stats", "recordedAt"],
+      ["probe_counter_snapshots", "recordedAt"],
       ["forward_tests", "updatedAt"],
     ] as const;
     for (const [table, column] of cases) {

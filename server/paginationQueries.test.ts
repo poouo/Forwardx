@@ -471,6 +471,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
         search: "Singapore Exit",
       });
       assert.deepEqual(tunnelSearch.items.map((item) => Number(item.id)), [101]);
+      assert.deepEqual(tunnelSearch.categoryCounts, { all: 1, local: 0, tunnel: 1, chain: 0, group: 0 }, "search still scopes category badges");
 
       const tunnelCategorySearch = await rules.getForwardRulesPage({
         ...visibleRuleInput,
@@ -499,6 +500,8 @@ test("database-backed list queries page, search, scope, and hydrate only request
         resourceId: 10,
       });
       assert.deepEqual(localResourceFiltered.items.map((item) => Number(item.id)), [102]);
+      assert.deepEqual(localResourceFiltered.categoryCounts, rulePage.categoryCounts);
+      assert.equal(localResourceFiltered.totalItems, 1, "pagination still follows the specific route");
       const tunnelResourceFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,
         page: 1,
@@ -507,6 +510,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
         resourceId: 20,
       });
       assert.deepEqual(tunnelResourceFiltered.items.map((item) => Number(item.id)), [101]);
+      assert.deepEqual(tunnelResourceFiltered.categoryCounts, rulePage.categoryCounts);
       const tunnelTypeFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,
         page: 1,
@@ -515,6 +519,20 @@ test("database-backed list queries page, search, scope, and hydrate only request
         resourceId: null,
       });
       assert.deepEqual(tunnelTypeFiltered.items.map((item) => Number(item.id)), [101]);
+      assert.deepEqual(tunnelTypeFiltered.categoryCounts, rulePage.categoryCounts, "type-only picker must not zero other tab badges");
+      for (const category of ["local", "tunnel", "chain", "group"]) {
+        const selectedType = await rules.getForwardRulesPage({
+          ...visibleRuleInput, page: 1, pageSize: 2, category, resourceType: category, resourceId: null,
+        });
+        assert.deepEqual(selectedType.categoryCounts, rulePage.categoryCounts, "badges stay consistent when selecting " + category);
+        assert.equal(selectedType.totalItems, rulePage.categoryCounts[category]);
+        assert.ok(selectedType.items.length <= 2, "category totals are not current-page counts");
+      }
+      const searchedType = await rules.getForwardRulesPage({
+        ...visibleRuleInput, page: 1, pageSize: 10, category: "local", resourceType: "local", search: "Singapore Exit",
+      });
+      assert.equal(searchedType.totalItems, 0);
+      assert.deepEqual(searchedType.categoryCounts, tunnelSearch.categoryCounts, "search badges still expose matches in other categories");
       const chainResourceFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,
         searchVisibleForwardGroupIds: [10, 11, 13, 14],
@@ -524,6 +542,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
         resourceId: 11,
       });
       assert.deepEqual(chainResourceFiltered.items.map((item) => Number(item.id)), [104]);
+      assert.deepEqual(chainResourceFiltered.categoryCounts, rulePage.categoryCounts);
       const mismatchedResourceFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,
         page: 1,
@@ -532,6 +551,7 @@ test("database-backed list queries page, search, scope, and hydrate only request
         resourceId: 10,
       });
       assert.deepEqual(mismatchedResourceFiltered.items, []);
+      assert.deepEqual(mismatchedResourceFiltered.categoryCounts, rulePage.categoryCounts, "an empty route does not zero the owner's category badges");
 
       const revokedTunnelEntryFiltered = await rules.getForwardRulesPage({
         ...visibleRuleInput,

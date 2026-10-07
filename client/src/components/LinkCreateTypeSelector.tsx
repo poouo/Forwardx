@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { ArrowRightLeft, Network, Route } from "lucide-react";
 import type { ComponentType, CSSProperties } from "react";
 import { segmentedControlClassName, segmentedIconClassName, segmentedOptionClassName } from "@/components/ui/segmented";
@@ -20,17 +21,17 @@ const options: Array<{
 }> = [
   {
     value: "tunnel",
-    label: "隧道链路",
+    label: translateText("隧道链路"),
     icon: Network,
   },
   {
     value: "port",
-    label: "端口转发",
+    label: translateText("端口转发"),
     icon: ArrowRightLeft,
   },
   {
     value: "chain",
-    label: "转发链",
+    label: translateText("转发链"),
     icon: Route,
   },
 ];

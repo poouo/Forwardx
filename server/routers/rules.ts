@@ -7,6 +7,7 @@ import { selfTestRulesRouter } from "./rules.selfTest";
 import { trafficRulesRouter } from "./rules.traffic";
 import { canUseForwardRuleResource, getLinkAccessScope } from "../linkAccessView";
 import { isManagedForwardGroupChildRule } from "../forwardRuleVisibility";
+import { assertRuleWritable } from "../../shared/ruleLimits";
 
 async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
   if (user.role === "admin") return value;
@@ -176,6 +177,14 @@ export const rulesRouter = router({
       startIndex: z.number().int().min(0).max(1_000_000).optional().default(0),
     }))
     .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin") {
+        // Validate the entire batch before the first write.
+        for (const id of input.ids) {
+          const rule = await db.getForwardRuleById(id);
+          if (!rule) throw new Error("规则不存在");
+          assertRuleWritable(ctx.user, rule);
+        }
+      }
       await db.reorderForwardRules(input.category, input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id, input.startIndex);
       return { success: true };
     }),

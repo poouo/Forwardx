@@ -1,3 +1,5 @@
+import { t as translateText } from "@/i18n";
+import LanguageSelector from "@/components/LanguageSelector";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
@@ -27,7 +29,7 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { type PanelMigrationScope } from "@shared/panelMigration";
 
 type DatabaseType = "mysql" | "postgresql" | "sqlite";
@@ -43,7 +45,7 @@ function databaseTypeLabel(type: string | null | undefined) {
   if (type === "postgresql") return "PostgreSQL";
   if (type === "mysql") return "MySQL";
   if (type === "sqlite") return "SQLite";
-  return "未配置";
+  return translateText("未配置");
 }
 
 function databaseConfigSummary(config: any) {
@@ -60,6 +62,7 @@ function visibleSavedPassword(value: unknown) {
 }
 
 export default function Setup() {
+  const [, refreshLanguage] = useState(0);
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
   const status = trpc.setup.status.useQuery(undefined, { refetchOnWindowFocus: false, retry: false, refetchInterval: pollingInterval("active") });
@@ -93,7 +96,8 @@ export default function Setup() {
     migrationCode: string;
     targetPanelUrl: string;
     dataScope: PanelMigrationScope;
-  }>({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin, dataScope: "essential" });
+    seamless: boolean;
+  }>({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin, dataScope: "essential", seamless: true });
   const [jobId, setJobId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -181,58 +185,58 @@ export default function Setup() {
     onSuccess: async (next) => {
       await utils.setup.status.invalidate();
       if (next?.needsRestart) {
-        toast.info("数据库类型已保存，服务正在重启，请稍后刷新页面");
+        toast.info(translateText("数据库类型已保存，服务正在重启，请稍后刷新页面"));
         return;
       }
-      toast.success("数据库已初始化");
+      toast.success(translateText("数据库已初始化"));
       setStep(2);
     },
-    onError: (error) => toast.error(error.message || "数据库连接失败"),
+    onError: (error) => toast.error(error.message || translateText("数据库连接失败")),
   });
 
   const createAdmin = trpc.setup.createAdmin.useMutation({
     onSuccess: async () => {
-      toast.success("管理员账户已创建，请登录");
+      toast.success(translateText("管理员账户已创建，请登录"));
       await utils.setup.status.invalidate();
       window.location.href = "/login";
     },
-    onError: (error) => toast.error(error.message || "创建管理员失败"),
+    onError: (error) => toast.error(error.message || translateText("创建管理员失败")),
   });
 
   const updateAdmin = trpc.setup.updateAdmin.useMutation({
     onSuccess: async () => {
-      toast.success("管理员账户已更新，请登录");
+      toast.success(translateText("管理员账户已更新，请登录"));
       await utils.setup.status.invalidate();
       window.location.href = "/login";
     },
-    onError: (error) => toast.error(error.message || "更新管理员失败"),
+    onError: (error) => toast.error(error.message || translateText("更新管理员失败")),
   });
 
   const startMigration = trpc.setup.startMigration.useMutation({
     onSuccess: (job) => {
       setJobId(job.id);
-      toast.success("迁移任务已开始");
+      toast.success(translateText("迁移任务已开始"));
     },
-    onError: (error) => toast.error(error.message || "启动迁移失败"),
+    onError: (error) => toast.error(error.message || translateText("启动迁移失败")),
   });
 
   const useExistingData = trpc.setup.useExistingData.useMutation({
     onSuccess: async () => {
-      toast.success("已选择使用以前的数据");
+      toast.success(translateText("已选择使用以前的数据"));
       await utils.setup.status.invalidate();
       window.location.href = "/login";
     },
-    onError: (error) => toast.error(error.message || "使用旧数据失败"),
+    onError: (error) => toast.error(error.message || translateText("使用旧数据失败")),
   });
 
   const resetExistingData = trpc.setup.resetExistingData.useMutation({
     onSuccess: async () => {
-      toast.success("旧数据已清空，请创建新管理员");
+      toast.success(translateText("旧数据已清空，请创建新管理员"));
       await utils.setup.status.invalidate();
       setMode("new");
       setStep(3);
     },
-    onError: (error) => toast.error(error.message || "清空旧数据失败"),
+    onError: (error) => toast.error(error.message || translateText("清空旧数据失败")),
   });
 
   const migrationStatus = trpc.setup.migrationStatus.useQuery(
@@ -242,13 +246,13 @@ export default function Setup() {
 
   useEffect(() => {
     if (migrationStatus.data?.status === "success") {
-      toast.success("迁移完成，请使用旧面板账户登录");
+      toast.success(translateText("迁移完成，请使用旧面板账户登录"));
       setTimeout(() => {
         window.location.href = "/login";
       }, 1000);
     }
     if (migrationStatus.data?.status === "failed") {
-      toast.error(migrationStatus.data.error || "迁移失败");
+      toast.error(migrationStatus.data.error || translateText("迁移失败"));
     }
   }, [migrationStatus.data?.status, migrationStatus.data?.error]);
 
@@ -268,19 +272,19 @@ export default function Setup() {
 
   const handleModeNext = () => {
     if (!mode) {
-      toast.error("请选择新面板或迁移旧数据");
+      toast.error(translateText("请选择新面板或迁移旧数据"));
       return;
     }
     if (mode === "migrate") {
       if (!migration.oldPanelUrl.trim() || !migration.migrationCode.trim()) {
-        toast.error("请输入旧面板地址和迁移码");
+        toast.error(translateText("请输入旧面板地址和迁移码"));
         return;
       }
       startMigration.mutate(migration);
       return;
     }
     if (hasExistingData && hasAdmin && data?.setupDataChoice !== "new-panel") {
-      toast.info("检测到当前数据库已有业务数据，请先选择使用旧数据或清空后新建");
+      toast.info(translateText("检测到当前数据库已有业务数据，请先选择使用旧数据或清空后新建"));
       return;
     }
     setStep(3);
@@ -289,15 +293,15 @@ export default function Setup() {
   const handleAdminSubmit = () => {
     const email = admin.email.trim().toLowerCase();
     if (!email) {
-      toast.error("请输入管理员邮箱");
+      toast.error(translateText("请输入管理员邮箱"));
       return;
     }
     if (!hasAdmin && !admin.password.trim()) {
-      toast.error("请输入管理员密码");
+      toast.error(translateText("请输入管理员密码"));
       return;
     }
     if (admin.password && admin.password !== adminPasswordConfirmation) {
-      toast.error("两次输入的管理员密码不一致");
+      toast.error(translateText("两次输入的管理员密码不一致"));
       return;
     }
     if (hasAdmin) {
@@ -318,11 +322,12 @@ export default function Setup() {
   return (
     <div className="min-h-screen bg-[linear-gradient(135deg,#f8fbff_0%,#eef7f3_45%,#fff8ed_100%)] px-4 py-8 text-foreground">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+        <div className="self-end"><LanguageSelector setup onLanguageChange={() => refreshLanguage(value => value + 1)} /></div>
         <div className="text-center">
           <img src="/logo-light.png" alt="ForwardX" className="mx-auto h-14 w-14 object-contain dark:hidden" />
           <img src="/logo-dark.png" alt="ForwardX" className="mx-auto hidden h-14 w-14 object-contain dark:block" />
-          <h1 className="mt-4 text-2xl font-semibold tracking-tight">ForwardX 首次部署</h1>
-          <p className="mt-2 text-sm text-muted-foreground">按步骤完成数据库初始化、旧面板迁移和管理员配置。</p>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight">{translateText("ForwardX 首次部署")}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{translateText("按步骤完成数据库初始化、旧面板迁移和管理员配置。")}</p>
         </div>
 
         <div className="rounded-lg border border-white/70 bg-white/75 p-4 shadow-lg shadow-slate-200/60 backdrop-blur-xl">
@@ -342,8 +347,8 @@ export default function Setup() {
                     {done ? <Check className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs">步骤 {item.id}</p>
-                    <p className="truncate text-sm font-medium">{item.title}</p>
+                    <p className="text-xs">{translateText("步骤 ")}{item.id}</p>
+                    <p className="truncate text-sm font-medium">{translateText(item.title)}</p>
                   </div>
                 </div>
               );
@@ -353,7 +358,7 @@ export default function Setup() {
 
         {data?.error && (
           <Alert variant={data.needsRestart ? "default" : "destructive"}>
-            <AlertTitle>{data.needsRestart ? "等待服务重启" : "数据库连接异常"}</AlertTitle>
+            <AlertTitle>{data.needsRestart ? translateText("等待服务重启") : translateText("数据库连接异常")}</AlertTitle>
             <AlertDescription>{data.error}</AlertDescription>
           </Alert>
         )}
@@ -361,10 +366,8 @@ export default function Setup() {
         {setupLocked && (
           <Alert variant="destructive">
             <ShieldCheck className="h-4 w-4" />
-            <AlertTitle>检测到已有面板的初始化锁</AlertTitle>
-            <AlertDescription>
-              为防止公网访问者抢建管理员，当前数据库不能直接重新初始化。请恢复原数据库和管理员账号，或在主机确认备份后完整卸载并删除 Docker 数据卷，再重新安装。
-            </AlertDescription>
+            <AlertTitle>{translateText("检测到已有面板的初始化锁")}</AlertTitle>
+            <AlertDescription>{translateText("为防止公网访问者抢建管理员，当前数据库不能直接重新初始化。请恢复原数据库和管理员账号，或在主机确认备份后完整卸载并删除 Docker 数据卷，再重新安装。")}</AlertDescription>
           </Alert>
         )}
 
@@ -374,10 +377,8 @@ export default function Setup() {
               <Card className="border-white/70 bg-white/85 shadow-xl shadow-slate-200/60 backdrop-blur-xl">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <Database className="h-4 w-4" />
-                    连接数据库
-                  </CardTitle>
-                  <CardDescription>选择数据库并初始化。</CardDescription>
+                    <Database className="h-4 w-4" />{translateText("连接数据库")}</CardTitle>
+                  <CardDescription>{translateText("选择数据库并初始化。")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-5">
                   <div className="grid gap-3 sm:grid-cols-3">
@@ -390,12 +391,12 @@ export default function Setup() {
                       >
                         <div className="flex items-center justify-between gap-3">
                           <div className="font-semibold">
-                            {type === "sqlite" ? "SQLite 本地数据库" : type === "mysql" ? "MySQL 外部数据库" : "PostgreSQL 外部数据库"}
+                            {type === "sqlite" ? translateText("SQLite 本地数据库") : type === "mysql" ? translateText("MySQL 外部数据库") : translateText("PostgreSQL 外部数据库")}
                           </div>
                           {databaseType === type && <CheckCircle2 className="h-4 w-4 text-primary" />}
                         </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          {type === "sqlite" ? "适合单机部署。" : type === "mysql" ? "适合现有 MySQL 环境。" : "适合 PostgreSQL 环境。"}
+                          {type === "sqlite" ? translateText("适合单机部署。") : type === "mysql" ? translateText("适合现有 MySQL 环境。") : translateText("适合 PostgreSQL 环境。")}
                         </p>
                       </button>
                     ))}
@@ -403,57 +404,54 @@ export default function Setup() {
 
                   <Alert className="border-primary/20 bg-primary/5 text-primary">
                     <Database className="h-4 w-4" />
-                    <AlertTitle>数据库版本要求</AlertTitle>
-                    <AlertDescription>
-                      SQLite 无需额外服务；MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
-                    </AlertDescription>
+                    <AlertTitle>{translateText("数据库版本要求")}</AlertTitle>
+                    <AlertDescription>{translateText("SQLite 无需额外服务；MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。")}</AlertDescription>
                   </Alert>
 
                   {dbReady && data?.databaseConfigured && (
                     <Alert className="border-emerald-500/25 bg-emerald-50/80 text-emerald-950">
                       <Database className="h-4 w-4 text-emerald-700" />
-                      <AlertTitle>当前已连接 {configuredDatabaseLabel} 数据库</AlertTitle>
+                      <AlertTitle>{translateText("当前已连接 ")}{configuredDatabaseLabel}{translateText(" 数据库")}</AlertTitle>
                       <AlertDescription>
-                        {configuredDatabaseText || "数据库连接正常。"} 如需修改数据库配置，请选择新的数据库类型并重新保存。
-                      </AlertDescription>
+                        {configuredDatabaseText || translateText("数据库连接正常。")}{translateText(" 如需修改数据库配置，请选择新的数据库类型并重新保存。")}</AlertDescription>
                     </Alert>
                   )}
 
                   {databaseType === "sqlite" ? (
                     <div className="space-y-2">
-                      <Label>SQLite 数据文件</Label>
+                      <Label>{translateText("SQLite 数据文件")}</Label>
                       <Input value={sqlitePath} onChange={(e) => setSqlitePath(e.target.value)} placeholder={defaultSqlitePath} />
                     </div>
                   ) : (
                     <div className="grid gap-4">
                       <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
                         <div className="space-y-2">
-                          <Label>地址</Label>
+                          <Label>{translateText("地址")}</Label>
                           <Input value={externalDatabase.host} onChange={(e) => setExternalDatabase({ ...externalDatabase, host: e.target.value })} placeholder="127.0.0.1" />
                         </div>
                         <div className="space-y-2">
-                          <Label>端口</Label>
+                          <Label>{translateText("端口")}</Label>
                           <Input type="number" min={1} max={65535} value={externalDatabase.port} onChange={(e) => setExternalDatabase({ ...externalDatabase, port: Number(e.target.value || externalDefaultPort) })} />
                         </div>
                       </div>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <Label>数据库名</Label>
+                          <Label>{translateText("数据库名")}</Label>
                           <Input value={externalDatabase.database} onChange={(e) => setExternalDatabase({ ...externalDatabase, database: e.target.value })} />
                         </div>
                         <div className="space-y-2">
-                          <Label>用户名</Label>
+                          <Label>{translateText("用户名")}</Label>
                           <Input value={externalDatabase.user} onChange={(e) => setExternalDatabase({ ...externalDatabase, user: e.target.value })} />
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <Label>密码</Label>
+                        <Label>{translateText("密码")}</Label>
                         <Input type="password" value={externalDatabase.password} onChange={(e) => setExternalDatabase({ ...externalDatabase, password: e.target.value })} />
                       </div>
                       <div className="flex items-center justify-between rounded-md border border-border/50 bg-white/70 p-3">
                         <div>
-                          <p className="text-sm font-medium">启用 SSL</p>
-                          <p className="text-xs text-muted-foreground">远程数据库或云数据库可按需开启。</p>
+                          <p className="text-sm font-medium">{translateText("启用 SSL")}</p>
+                          <p className="text-xs text-muted-foreground">{translateText("远程数据库或云数据库可按需开启。")}</p>
                         </div>
                         <Switch checked={externalDatabase.ssl} onCheckedChange={(ssl) => setExternalDatabase({ ...externalDatabase, ssl })} />
                       </div>
@@ -463,7 +461,7 @@ export default function Setup() {
                   <div className="flex justify-end">
                     <Button disabled={saveDatabase.isPending} onClick={handleDatabaseNext}>
                       {saveDatabase.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      {canContinueWithSavedDatabase ? "继续下一步" : "保存并连接"}
+                      {canContinueWithSavedDatabase ? translateText("继续下一步") : translateText("保存并连接")}
                       {!saveDatabase.isPending && <ArrowRight className="ml-2 h-4 w-4" />}
                     </Button>
                   </div>
@@ -475,28 +473,22 @@ export default function Setup() {
               <Card className="border-white/70 bg-white/85 shadow-xl shadow-slate-200/60 backdrop-blur-xl">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <Sparkles className="h-4 w-4" />
-                    新面板或旧数据迁移
-                  </CardTitle>
-                  <CardDescription>新建面板或导入旧数据。</CardDescription>
+                    <Sparkles className="h-4 w-4" />{translateText("新面板或旧数据迁移")}</CardTitle>
+                  <CardDescription>{translateText("新建面板或导入旧数据。")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-5">
                   {dbReady && data?.databaseConfigured && (
                     <div className="flex flex-col gap-3 rounded-lg border border-emerald-500/25 bg-emerald-50/80 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 font-medium text-emerald-800">
-                          <CheckCircle2 className="h-4 w-4 shrink-0" />
-                          已连接 {configuredDatabaseLabel} 数据库
-                        </div>
+                          <CheckCircle2 className="h-4 w-4 shrink-0" />{translateText("已连接 ")}{configuredDatabaseLabel}{translateText(" 数据库")}</div>
                         {configuredDatabaseText && (
                           <p className="mt-1 truncate text-xs text-emerald-700/80" title={configuredDatabaseText}>
                             {configuredDatabaseText}
                           </p>
                         )}
                       </div>
-                      <Button variant="outline" size="sm" className="shrink-0 bg-white/70" onClick={handleReviewDatabaseStep}>
-                        查看或修改数据库
-                      </Button>
+                      <Button variant="outline" size="sm" className="shrink-0 bg-white/70" onClick={handleReviewDatabaseStep}>{translateText("查看或修改数据库")}</Button>
                     </div>
                   )}
 
@@ -504,30 +496,28 @@ export default function Setup() {
                     <div className="grid gap-4 rounded-lg border border-amber-500/30 bg-amber-50/80 p-4">
                       <Alert className="border-amber-500/30 bg-white/70">
                         <ShieldCheck className="h-4 w-4" />
-                        <AlertTitle>检测到当前数据库已有面板业务数据</AlertTitle>
-                        <AlertDescription>
-                          当前数据库已有主机、规则、隧道、订单或其他业务数据。
-                        </AlertDescription>
+                        <AlertTitle>{translateText("检测到当前数据库已有面板业务数据")}</AlertTitle>
+                        <AlertDescription>{translateText("当前数据库已有主机、规则、隧道、订单或其他业务数据。")}</AlertDescription>
                       </Alert>
                       <div className="grid gap-3 sm:grid-cols-4">
                         <div className="rounded-md border bg-white/70 p-3">
                           <Users className="h-4 w-4 text-primary" />
-                          <p className="mt-2 text-xs text-muted-foreground">用户</p>
+                          <p className="mt-2 text-xs text-muted-foreground">{translateText("用户")}</p>
                           <p className="text-lg font-semibold">{existingData?.userCount ?? 0}</p>
                         </div>
                         <div className="rounded-md border bg-white/70 p-3">
                           <Server className="h-4 w-4 text-primary" />
-                          <p className="mt-2 text-xs text-muted-foreground">主机</p>
+                          <p className="mt-2 text-xs text-muted-foreground">{translateText("主机")}</p>
                           <p className="text-lg font-semibold">{existingData?.hostCount ?? 0}</p>
                         </div>
                         <div className="rounded-md border bg-white/70 p-3">
                           <Sparkles className="h-4 w-4 text-primary" />
-                          <p className="mt-2 text-xs text-muted-foreground">规则</p>
+                          <p className="mt-2 text-xs text-muted-foreground">{translateText("规则")}</p>
                           <p className="text-lg font-semibold">{existingData?.ruleCount ?? 0}</p>
                         </div>
                         <div className="rounded-md border bg-white/70 p-3">
                           <KeyRound className="h-4 w-4 text-primary" />
-                          <p className="mt-2 text-xs text-muted-foreground">隧道</p>
+                          <p className="mt-2 text-xs text-muted-foreground">{translateText("隧道")}</p>
                           <p className="text-lg font-semibold">{existingData?.tunnelCount ?? 0}</p>
                         </div>
                       </div>
@@ -535,26 +525,22 @@ export default function Setup() {
                         <Button disabled={useExistingData.isPending} onClick={() => {
                           useExistingData.mutate();
                         }}>
-                          {useExistingData.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                          使用以前的数据
-                        </Button>
+                          {useExistingData.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{translateText("使用以前的数据")}</Button>
                         <Button
                           variant="destructive"
                           disabled={resetExistingData.isPending}
                           onClick={async () => {
                             if (await confirmDialog({
-                              title: "清空面板数据",
-                              description: "确定要清空当前数据库中的 ForwardX 面板数据，并作为新面板重新初始化吗？此操作不可撤销。",
-                              confirmText: "清空",
+                              title: translateText("清空面板数据"),
+                              description: translateText("确定要清空当前数据库中的 ForwardX 面板数据，并作为新面板重新初始化吗？此操作不可撤销。"),
+                              confirmText: translateText("清空"),
                               tone: "destructive",
                             })) {
                               resetExistingData.mutate();
                             }
                           }}
                         >
-                          {resetExistingData.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
-                          清空并作为新面板
-                        </Button>
+                          {resetExistingData.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}{translateText("清空并作为新面板")}</Button>
                       </div>
                     </div>
                   )}
@@ -566,12 +552,12 @@ export default function Setup() {
                       onClick={() => setMode("new")}
                       className={`rounded-lg border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${mode === "new" ? "border-emerald-500/50 bg-emerald-50" : "border-border bg-white/70 hover:border-emerald-400/40"}`}
                     >
-                      <div className="font-semibold">作为新面板使用</div>
-                      <p className="mt-2 text-sm text-muted-foreground">不导入旧数据。</p>
+                      <div className="font-semibold">{translateText("作为新面板使用")}</div>
+                      <p className="mt-2 text-sm text-muted-foreground">{translateText("不导入旧数据。")}</p>
                     </button>
                     <button type="button" onClick={() => setMode("migrate")} className={`rounded-lg border p-4 text-left transition ${mode === "migrate" ? "border-primary/50 bg-primary/10" : "border-border bg-white/70 hover:border-primary/30"}`}>
-                      <div className="font-semibold">从旧面板导入数据</div>
-                      <p className="mt-2 text-sm text-muted-foreground">使用旧面板迁移码导入。</p>
+                      <div className="font-semibold">{translateText("从旧面板导入数据")}</div>
+                      <p className="mt-2 text-sm text-muted-foreground">{translateText("使用旧面板迁移码导入。")}</p>
                     </button>
                   </div>
 
@@ -579,45 +565,45 @@ export default function Setup() {
                     <div className="grid gap-4 rounded-lg border bg-white/70 p-4">
                       <Alert>
                         <KeyRound className="h-4 w-4" />
-                        <AlertTitle>迁移码规则</AlertTitle>
-                        <AlertDescription>迁移码 5 分钟有效，使用后失效。</AlertDescription>
+                        <AlertTitle>{translateText("迁移码规则")}</AlertTitle>
+                        <AlertDescription>{translateText("迁移码 5 分钟有效，使用后失效。")}</AlertDescription>
                       </Alert>
                       <Alert className="border-primary/20 bg-primary/5 text-primary">
                         <Database className="h-4 w-4" />
-                        <AlertTitle>迁移前请确认数据库版本</AlertTitle>
-                        <AlertDescription>
-                          MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。
-                        </AlertDescription>
+                        <AlertTitle>{translateText("迁移前请确认数据库版本")}</AlertTitle>
+                        <AlertDescription>{translateText("MySQL 需要 8.0.13 或更高版本；PostgreSQL 建议使用 12 或更高版本。")}</AlertDescription>
                       </Alert>
                       <div className="space-y-2">
-                        <Label>迁移内容</Label>
+                        <Label className="flex items-center justify-between">{translateText("无缝迁移（旧地址转交）")}<Switch checked={migration.seamless} onCheckedChange={(seamless) => setMigration({ ...migration, seamless })} /></Label>
+                        <p className="text-xs text-muted-foreground">{translateText("保留转发进程和旧数据库；旧地址必须持续运行。仅支持单实例且同库无其他写入的面板，要求两端版本、数据库类型一致，目标无业务数据，全部 Agent 至少为当前版本。迁移期间暂停面板操作，不自动升级 Agent。")}</p>
+                        <Label>{translateText("迁移内容")}</Label>
                         <Tabs
                           value={migration.dataScope}
                           onValueChange={(value) => setMigration({ ...migration, dataScope: value as PanelMigrationScope })}
                         >
                           <TabsList className="grid h-auto w-full grid-cols-2">
-                            <TabsTrigger value="essential">关键数据迁移</TabsTrigger>
-                            <TabsTrigger value="full">全量迁移</TabsTrigger>
+                            <TabsTrigger value="essential">{translateText("关键数据迁移")}</TabsTrigger>
+                            <TabsTrigger value="full">{translateText("全量迁移")}</TabsTrigger>
                           </TabsList>
                         </Tabs>
                         <p className="text-xs text-muted-foreground">
                           {migration.dataScope === "essential"
-                            ? "保留用户、主机、规则、计费和设置，跳过监控、延迟与测试历史。"
-                            : "迁移全部数据；两端均为 SQLite 且目标库为空时自动使用数据库快速传输。"}
+                            ? translateText("保留用户、主机、规则、计费和设置，跳过监控、延迟与测试历史。")
+                            : translateText("迁移全部数据；两端均为 SQLite 且目标库为空时自动使用数据库快速传输。")}
                         </p>
                       </div>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <Label>旧面板地址</Label>
-                          <Input value={migration.oldPanelUrl} onChange={(e) => setMigration({ ...migration, oldPanelUrl: e.target.value })} placeholder="http://旧IP:3000 或 https://panel.example.com" />
+                          <Label>{translateText("旧面板地址")}</Label>
+                          <Input value={migration.oldPanelUrl} onChange={(e) => setMigration({ ...migration, oldPanelUrl: e.target.value })} placeholder={translateText("http://旧IP:3000 或 https://panel.example.com")} />
                         </div>
                         <div className="space-y-2">
-                          <Label>旧面板迁移码</Label>
-                          <Input value={migration.migrationCode} onChange={(e) => setMigration({ ...migration, migrationCode: e.target.value.toUpperCase() })} placeholder="24 位迁移码" />
+                          <Label>{translateText("旧面板迁移码")}</Label>
+                          <Input value={migration.migrationCode} onChange={(e) => setMigration({ ...migration, migrationCode: e.target.value.toUpperCase() })} placeholder={translateText("24 位迁移码")} />
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <Label>新面板访问地址</Label>
+                        <Label>{translateText("新面板访问地址")}</Label>
                         <Input value={migration.targetPanelUrl} onChange={(e) => setMigration({ ...migration, targetPanelUrl: e.target.value })} />
                       </div>
                       {migrationStatus.data && (
@@ -630,7 +616,7 @@ export default function Setup() {
                           <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                             {migrationStatus.data.status === "running" && <RotateCcw className="h-3.5 w-3.5 animate-spin" />}
                             {migrationStatus.data.status === "success" && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
-                            {migrationStatus.data.error || "正在验证新面板和转发状态，请保持新旧面板可访问。"}
+                            {migrationStatus.data.error || translateText("正在验证新面板和转发状态，请保持新旧面板可访问。")}
                           </div>
                         </div>
                       )}
@@ -639,12 +625,10 @@ export default function Setup() {
 
                   <div className="flex justify-between">
                     <Button variant="outline" onClick={handleReviewDatabaseStep}>
-                      <ArrowLeft className="mr-2 h-4 w-4" />
-                      上一步
-                    </Button>
+                      <ArrowLeft className="mr-2 h-4 w-4" />{translateText("上一步")}</Button>
                     <Button disabled={startMigration.isPending || !!jobId} onClick={handleModeNext}>
                       {startMigration.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : mode === "migrate" ? <MoveRight className="mr-2 h-4 w-4" /> : null}
-                      {mode === "migrate" ? "开始迁移" : "下一步"}
+                      {mode === "migrate" ? translateText("开始迁移") : translateText("下一步")}
                       {mode !== "migrate" && <ArrowRight className="ml-2 h-4 w-4" />}
                     </Button>
                   </div>
@@ -657,10 +641,10 @@ export default function Setup() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <UserCog className="h-4 w-4" />
-                    {hasAdmin ? "确认管理员账户" : "创建管理员账户"}
+                    {hasAdmin ? translateText("确认管理员账户") : translateText("创建管理员账户")}
                   </CardTitle>
                   <CardDescription>
-                    {hasAdmin ? "确认管理员账户。" : "创建初始管理员。"}
+                    {hasAdmin ? translateText("确认管理员账户。") : translateText("创建初始管理员。")}
                   </CardDescription>
                 </CardHeader>
                 <form onSubmit={(event) => { event.preventDefault(); handleAdminSubmit(); }} autoComplete="on">
@@ -668,13 +652,13 @@ export default function Setup() {
                   {hasAdmin && (
                     <Alert>
                       <ShieldCheck className="h-4 w-4" />
-                      <AlertTitle>已存在管理员账户</AlertTitle>
-                      <AlertDescription>如果不需要更改管理员信息，可以直接前往登录页。</AlertDescription>
+                      <AlertTitle>{translateText("已存在管理员账户")}</AlertTitle>
+                      <AlertDescription>{translateText("如果不需要更改管理员信息，可以直接前往登录页。")}</AlertDescription>
                     </Alert>
                   )}
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="setup-admin-email">管理员邮箱</Label>
+                      <Label htmlFor="setup-admin-email">{translateText("管理员邮箱")}</Label>
                       <Input
                         id="setup-admin-email"
                         name="username"
@@ -689,50 +673,46 @@ export default function Setup() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="setup-admin-name">显示名称</Label>
-                      <Input id="setup-admin-name" name="name" value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} placeholder="管理员" />
+                      <Label htmlFor="setup-admin-name">{translateText("显示名称")}</Label>
+                      <Input id="setup-admin-name" name="name" value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} placeholder={translateText("管理员")} />
                     </div>
                   </div>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="setup-admin-password">{hasAdmin ? "新密码（留空不修改）" : "密码"}</Label>
+                      <Label htmlFor="setup-admin-password">{hasAdmin ? translateText("新密码（留空不修改）") : translateText("密码")}</Label>
                       <Input
                         id="setup-admin-password"
                         name="new-password"
                         type="password"
                         value={admin.password}
                         onChange={(e) => setAdmin({ ...admin, password: e.target.value })}
-                        placeholder="至少 8 位"
+                        placeholder={translateText("至少 8 位")}
                         autoComplete="new-password"
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="setup-admin-password-confirmation">{hasAdmin ? "确认新密码" : "确认密码"}</Label>
+                      <Label htmlFor="setup-admin-password-confirmation">{hasAdmin ? translateText("确认新密码") : translateText("确认密码")}</Label>
                       <Input
                         id="setup-admin-password-confirmation"
                         name="new-password-confirmation"
                         type="password"
                         value={adminPasswordConfirmation}
                         onChange={(e) => setAdminPasswordConfirmation(e.target.value)}
-                        placeholder={admin.password ? "再次输入密码" : hasAdmin ? "留空不修改" : "再次输入密码"}
+                        placeholder={admin.password ? translateText("再次输入密码") : hasAdmin ? translateText("留空不修改") : translateText("再次输入密码")}
                         autoComplete="new-password"
                       />
                     </div>
                   </div>
                   <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
                     <Button type="button" variant="outline" onClick={() => setStep(2)}>
-                      <ArrowLeft className="mr-2 h-4 w-4" />
-                      上一步
-                    </Button>
+                      <ArrowLeft className="mr-2 h-4 w-4" />{translateText("上一步")}</Button>
                     <div className="flex flex-col gap-3 sm:flex-row">
                       {hasAdmin && (
-                        <Button type="button" variant="outline" onClick={() => { window.location.href = "/login"; }}>
-                          直接登录
-                        </Button>
+                        <Button type="button" variant="outline" onClick={() => { window.location.href = "/login"; }}>{translateText("直接登录")}</Button>
                       )}
                       <Button type="submit" disabled={createAdmin.isPending || updateAdmin.isPending}>
                         {(createAdmin.isPending || updateAdmin.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {hasAdmin ? "保存并登录" : "创建并登录"}
+                        {hasAdmin ? translateText("保存并登录") : translateText("创建并登录")}
                       </Button>
                     </div>
                   </div>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import { cn } from "@/lib/utils";
+import { getLanguage } from "@/i18n";
 
 const CACHE_PREFIX = "forwardx.stat.";
 
@@ -28,7 +29,7 @@ function readCachedValue(
   try {
     const keys = [cacheKey, ...fallbackCacheKeys].filter((key): key is string => !!key);
     for (const key of keys) {
-      const cached = window.localStorage.getItem(`${CACHE_PREFIX}${key}`);
+      const cached = window.localStorage.getItem(`${CACHE_PREFIX}${getLanguage()}.${key}`);
       if (cached !== null && cached !== "") return cached;
     }
     return null;
@@ -41,7 +42,7 @@ function writeCachedValue(cacheKey: string | undefined, value: string, mirrorCac
   if (typeof window === "undefined") return;
   try {
     const keys = [cacheKey, ...mirrorCacheKeys].filter((key): key is string => !!key);
-    keys.forEach((key) => window.localStorage.setItem(`${CACHE_PREFIX}${key}`, value));
+    keys.forEach((key) => window.localStorage.setItem(`${CACHE_PREFIX}${getLanguage()}.${key}`, value));
   } catch {
     // The value is purely presentational, so private-mode storage failures can be ignored.
   }

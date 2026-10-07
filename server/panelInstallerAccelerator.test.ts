@@ -87,6 +87,7 @@ function runHarness(options: {
     OUTPUT_FILE: shellPath(outputFile),
   };
   delete childEnv.FORWARDX_GITHUB_ACCELERATOR_URL;
+  delete childEnv.FORWARDX_SETUP_LANGUAGE;
   Object.assign(childEnv, options.env || {});
   const result = spawnSync(bash, [harness, ...(options.args || [])], {
     encoding: "utf8",
@@ -97,6 +98,71 @@ function runHarness(options: {
   fs.rmSync(directory, { recursive: true, force: true });
   return { ...result, calls, output };
 }
+
+test("local and Docker installers validate setup language arguments before doing installation work", { skip: !bash }, () => {
+  for (const installer of installers) {
+    for (const language of ["zh-CN", "en", "auto"]) {
+      for (const args of [["install", "--language", language], ["install", `--language=${language}`]]) {
+        const result = runHarness({ installer, args, body: 'printf "LANGUAGE=%s\\n" "$SETUP_LANGUAGE"' });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.trim(), `LANGUAGE=${language}`);
+      }
+    }
+    for (const args of [["install", "--language"], ["install", "--language="], ["install", "--language", "fr"], ["install", "--language", "en; touch unsafe"]]) {
+      const result = runHarness({ installer, args, body: 'echo "installation must not run"' });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /language/);
+      assert.doesNotMatch(result.stdout, /installation must not run/);
+    }
+    const fromEnv = runHarness({ installer, args: ["install"], env: { FORWARDX_SETUP_LANGUAGE: "en" }, body: 'printf "%s\\n" "$SETUP_LANGUAGE"' });
+    assert.equal(fromEnv.status, 0, fromEnv.stderr);
+    assert.equal(fromEnv.stdout.trim(), "en");
+    const invalidEnv = runHarness({ installer, args: ["install"], env: { FORWARDX_SETUP_LANGUAGE: "bad" }, body: 'echo "unexpected"' });
+    assert.notEqual(invalidEnv.status, 0);
+  }
+});
+
+test("installers preserve setup language across upgrades and persist explicit overrides", { skip: !bash }, () => {
+  for (const installer of installers) {
+    for (const [args, env, expected] of [
+      [["upgrade"], {}, "en"],
+      [["upgrade", "--language", "zh-CN"], {}, "zh-CN"],
+      [["upgrade", "--language=auto"], {}, "auto"],
+      [["upgrade"], { FORWARDX_SETUP_LANGUAGE: "zh-CN" }, "zh-CN"],
+      [["upgrade", "--language=en"], { FORWARDX_SETUP_LANGUAGE: "zh-CN" }, "en"],
+    ] as Array<[string[], NodeJS.ProcessEnv, string]>) {
+      const result = runHarness({
+        installer, args, env,
+        prepare: directory => fs.writeFileSync(path.join(directory, ".env"), 'FORWARDX_SETUP_LANGUAGE=en\n'),
+        body: `
+resolve_setup_language
+${section(installer.source, "write_env() {", installer.name === "local" ? "install_panel() {" : "remove_existing_panel_containers() {")}
+JWT_SECRET=test-secret
+GITHUB_ACCELERATOR_URL=""
+write_env ghcr.io/test/panel:latest
+get_env_value FORWARDX_SETUP_LANGUAGE
+`,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), expected);
+    }
+    const noHint = runHarness({ installer, args: ["install"], body: 'resolve_setup_language; printf "LANGUAGE=%s\\n" "$SETUP_LANGUAGE"' });
+    assert.equal(noHint.status, 0, noHint.stderr);
+    assert.equal(noHint.stdout.trim(), "LANGUAGE=");
+  }
+});
+
+test("Docker environment and localized README examples carry the installation language", () => {
+  for (const source of [dockerSource, fs.readFileSync("docker-compose.yml", "utf8")]) {
+    assert.match(source, /FORWARDX_SETUP_LANGUAGE: \$\{FORWARDX_SETUP_LANGUAGE:-\}/);
+  }
+  for (const [file, language] of [["README.md", "zh-CN"], ["README.en.md", "en"]]) {
+    const readme = fs.readFileSync(file, "utf8");
+    for (const line of readme.split(/\r?\n/).filter(line => line.includes("bash -s -- install") && !line.includes("/api/agent/"))) {
+      assert.ok(line.includes(`--language ${language}`), `${file}: ${line}`);
+    }
+  }
+});
 
 test("local and Docker installers parse both GitHub accelerator argument forms", { skip: !bash }, () => {
   for (const installer of installers) {

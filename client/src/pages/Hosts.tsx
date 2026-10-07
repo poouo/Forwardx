@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
@@ -103,7 +105,7 @@ import {
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
 const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
@@ -354,9 +356,9 @@ function escapeTooltipHtml(value: unknown) {
 
 function renderHostGlobeTooltip(point: HostGlobePoint) {
   const rows = [
-    { label: "地址", value: point.addressText },
-    { label: "地区", value: point.regionText || "地区获取中" },
-    { label: "系统", value: point.host.osInfo || "系统信息未上报" },
+    { label: translateText("地址"), value: point.addressText },
+    { label: translateText("地区"), value: point.regionText || "地区获取中" },
+    { label: translateText("系统"), value: point.host.osInfo || "系统信息未上报" },
     { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : "未上报" },
   ];
   const regionValue = point.flagUrl
@@ -374,7 +376,7 @@ function renderHostGlobeTooltip(point: HostGlobePoint) {
       ${rows.map((row) => `
         <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
           <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === "地址" || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === "地区" ? regionValue : escapeTooltipHtml(row.value)}</span>
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === translateText("地址") || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === translateText("地区") ? regionValue : escapeTooltipHtml(row.value)}</span>
         </div>
       `).join("")}
     </div>
@@ -412,7 +414,7 @@ function HostWorldMap({
         displayLng: coord.lng,
         color: isOnline ? "#4ade80" : "#fbbf24",
         glowColor: isOnline ? "rgba(74,222,128,.9)" : "rgba(251,191,36,.82)",
-        statusText: isOnline ? "在线" : "离线",
+        statusText: isOnline ? translateText("在线") : translateText("离线"),
         regionText: hostRegionText(host),
         addressText: hostAddressText(host),
         countryCode: hostCountryCode(host),
@@ -506,9 +508,7 @@ function HostWorldMap({
         <Suspense
           fallback={
             <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              正在加载地球视图
-            </div>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载地球视图")}</div>
           }
         >
           <ReactGlobe
@@ -572,17 +572,13 @@ function HostWorldMap({
           />
         </Suspense>
         <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-          <div className="font-medium">全球主机地图</div>
-          <div className="mt-1 text-white/70">
-            已加载 {hosts.length} / {Math.max(totalHosts, hosts.length)} 台 · 已定位 {points.length} 台 · 待定位 {missingCount} 台
-            {isLoadingMore ? " · 正在补充" : ""}
+          <div className="font-medium">{translateText("全球主机地图")}</div>
+          <div className="mt-1 text-white/70">{translateText("已加载 ")}{hosts.length} / {Math.max(totalHosts, hosts.length)}{translateText(" 台 · 已定位 ")}{points.length}{translateText(" 台 · 待定位 ")}{missingCount}{translateText(" 台")}{isLoadingMore ? translateText(" · 正在补充") : ""}
           </div>
         </div>
         {points.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
-            <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">
-              暂无可定位主机
-            </div>
+            <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">{translateText("暂无可定位主机")}</div>
           </div>
         )}
       </div>
@@ -701,9 +697,9 @@ function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode
 
 function hostTrafficMeasureModeLabel(value: unknown) {
   const mode = normalizeHostTrafficMeasureMode(value);
-  if (mode === "outbound") return "仅出向";
-  if (mode === "max") return "取最大值";
-  return "双向合计";
+  if (mode === "outbound") return translateText("仅出向");
+  if (mode === "max") return translateText("取最大值");
+  return translateText("双向合计");
 }
 
 function hostTrafficUsedBytes(host: any, traffic: any) {
@@ -805,7 +801,7 @@ function parseHostDateTime(value: unknown) {
 function formatHostDateTimeText(value: unknown) {
   const ms = parseHostDateTime(value);
   if (ms === null) return "--";
-  return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+  return new Date(ms).toLocaleString(getFormatLocale(), { hour12: false });
 }
 
 function formatHostRemainingDays(purchasedAt: unknown, stoppedAt: unknown) {
@@ -813,27 +809,27 @@ function formatHostRemainingDays(purchasedAt: unknown, stoppedAt: unknown) {
   const stoppedMs = parseHostDateTime(stoppedAt);
   if (purchasedMs === null || stoppedMs === null || stoppedMs <= purchasedMs) return "--";
   const remainingMs = stoppedMs - Date.now();
-  if (remainingMs <= 0) return "已到期";
-  if (remainingMs < hostListDayMs) return "不足1天";
-  return `${Math.ceil(remainingMs / hostListDayMs)}天`;
+  if (remainingMs <= 0) return translateText("已到期");
+  if (remainingMs < hostListDayMs) return translateText("不足1天");
+  return translateText("{0}天", [Math.ceil(remainingMs / hostListDayMs)]);
 }
 
 function formatHostUptimeTitle(uptime: unknown, uptimeText: string) {
   const seconds = Number(uptime);
-  if (!Number.isFinite(seconds) || seconds < 0) return "运行时间：--";
+  if (!Number.isFinite(seconds) || seconds < 0) return translateText("运行时间：--");
   const startedAt = new Date(Date.now() - seconds * 1000);
-  return `运行时间：${uptimeText}\n启动时间：${startedAt.toLocaleString("zh-CN", { hour12: false })}`;
+  return `运行时间：${uptimeText}\n启动时间：${startedAt.toLocaleString(getFormatLocale(), { hour12: false })}`;
 }
 
 function formatHostExpiryTitle(stoppedAt: unknown, remainingDays: string) {
   const stoppedAtText = formatHostDateTimeText(stoppedAt);
-  if (stoppedAtText === "--") return "到期时间：--";
+  if (stoppedAtText === "--") return translateText("到期时间：--");
   return `到期时间：${stoppedAtText}\n剩余时间：${remainingDays}`;
 }
 
 function hostRemainingClass(value: string) {
-  if (value === "已到期") return "text-destructive";
-  if (value === "不足1天") return "text-amber-500";
+  if (value === translateText("已到期")) return "text-destructive";
+  if (value === translateText("不足1天")) return "text-amber-500";
   if (value === "--") return "text-muted-foreground";
   return "text-emerald-500";
 }
@@ -963,10 +959,10 @@ function HostListStatusBadge({ host }: { host: any }) {
   return (
     <span
       className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] font-medium leading-none"
-      title={online ? "Agent 在线" : "Agent 离线"}
+      title={online ? translateText("Agent 在线") : translateText("Agent 离线")}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-destructive"}`} />
-      <span className={online ? "text-emerald-500" : "text-destructive"}>{online ? "在线" : "离线"}</span>
+      <span className={online ? "text-emerald-500" : "text-destructive"}>{online ? translateText("在线") : translateText("离线")}</span>
     </span>
   );
 }
@@ -1120,7 +1116,7 @@ function HostTrafficSummaryCard({
         </div>
         <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-2.5">
           <HostTrafficDirectionStat
-            label="入向"
+            label={translateText("入向")}
             value={inValue}
             loading={loading}
             cacheKey={`${cacheKey}.in`}
@@ -1129,7 +1125,7 @@ function HostTrafficSummaryCard({
             tone="bg-emerald-500"
           />
           <HostTrafficDirectionStat
-            label="出向"
+            label={translateText("出向")}
             value={outValue}
             loading={loading}
             cacheKey={`${cacheKey}.out`}
@@ -1151,25 +1147,25 @@ type HostDialogTab = "basic" | "other";
 const HOST_MANAGE_TABS_ADMIN = ["hosts", "groups", "tokens", "services"] as const;
 const HOST_MANAGE_TABS_USER = ["hosts"] as const;
 const HOST_MANAGE_TAB_ITEMS_ADMIN = [
-  { value: "hosts", label: "主机管理", icon: Server },
-  { value: "groups", label: "分组管理", icon: FolderKanban },
-  { value: "tokens", label: "Token 管理", icon: Key },
-  { value: "services", label: "服务管理", icon: Rows3 },
+  { value: "hosts", label: translateText("主机管理"), icon: Server },
+  { value: "groups", label: translateText("分组管理"), icon: FolderKanban },
+  { value: "tokens", label: translateText("Token 管理"), icon: Key },
+  { value: "services", label: translateText("服务管理"), icon: Rows3 },
 ] as const satisfies readonly SlidingTabItem<HostManageTab>[];
 const HOST_MANAGE_TAB_ITEMS_USER = [
-  { value: "hosts", label: "主机管理", icon: Server },
+  { value: "hosts", label: translateText("主机管理"), icon: Server },
 ] as const satisfies readonly SlidingTabItem<HostManageTab>[];
 
 const HOST_MANAGE_FILTER_CONFIG: Record<HostManageTab, { placeholder: string; unit: string }> = {
-  hosts: { placeholder: "搜索主机 / IP / 系统 / Agent 版本", unit: "台" },
-  groups: { placeholder: "搜索分组 / 主机名称 / 状态", unit: "组" },
-  tokens: { placeholder: "搜索 Token / 备注 / 状态 / 关联主机", unit: "个" },
-  services: { placeholder: "搜索服务 / 目标地址 / 类型 / 主机范围", unit: "项" },
+  hosts: { placeholder: translateText("搜索主机 / IP / 系统 / Agent 版本"), unit: translateText("台") },
+  groups: { placeholder: translateText("搜索分组 / 主机名称 / 状态"), unit: translateText("组") },
+  tokens: { placeholder: translateText("搜索 Token / 备注 / 状态 / 关联主机"), unit: translateText("个") },
+  services: { placeholder: translateText("搜索服务 / 目标地址 / 类型 / 主机范围"), unit: translateText("项") },
 };
 
 const HOST_DIALOG_TABS = [
-  { value: "basic", label: "基础信息", icon: Server },
-  { value: "other", label: "其他配置", icon: Gauge },
+  { value: "basic", label: translateText("基础信息"), icon: Server },
+  { value: "other", label: translateText("其他配置"), icon: Gauge },
 ] as const;
 
 const HOST_MANAGE_TAB_STORAGE_KEY = "forwardx.hosts.manageTab";
@@ -1319,7 +1315,7 @@ function HostGroupFilterBar({
     <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-card/50 p-2 backdrop-blur-md">
       <button type="button" className={chipClass(selectedGroupId === "all")} onClick={() => onSelectGroup("all")}>
         <Server className="h-3.5 w-3.5" />
-        <span>全部</span>
+        <span>{translateText("全部")}</span>
         <span className={cn("rounded px-1.5 py-0.5 text-[11px] tabular-nums", selectedGroupId === "all" ? "bg-chart-1/15 text-chart-1" : "bg-background/70 text-muted-foreground")}>{totalHosts}</span>
       </button>
       {enabledGroups.map((group) => (
@@ -1459,7 +1455,8 @@ function HostsContent() {
     [systemSettings?.agentVersion]
   );
   const ddnsProviderEnabled = Boolean(systemSettings?.ddns?.enabled && systemSettings?.ddns?.provider && systemSettings.ddns.provider !== "disabled");
-  const telegramBotReady = Boolean(systemSettings?.telegram?.enabled && systemSettings?.telegram?.configured);
+  const notificationConfig = systemSettings?.notificationChannel === "discord" ? systemSettings.discord : systemSettings?.telegram;
+  const telegramBotReady = Boolean(notificationConfig?.enabled && notificationConfig?.configured);
   const telegramBotSettingsLoaded = Boolean(systemSettings?.telegram);
   const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
@@ -1680,9 +1677,9 @@ function HostsContent() {
       utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
-      toast.success("主机添加成功");
+      toast.success(translateText("主机添加成功"));
     },
-    onError: (err) => toast.error(err.message || "添加失败"),
+    onError: (err) => toast.error(err.message || translateText("添加失败")),
   });
 
   const updateMutation = trpc.hosts.update.useMutation({
@@ -1694,9 +1691,9 @@ function HostsContent() {
       utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
-      toast.success("主机更新成功");
+      toast.success(translateText("主机更新成功"));
     },
-    onError: (err) => toast.error(err.message || "更新失败"),
+    onError: (err) => toast.error(err.message || translateText("更新失败")),
   });
 
   const deleteMutation = trpc.hosts.delete.useMutation({
@@ -1706,9 +1703,9 @@ function HostsContent() {
       utils.hosts.listPage.invalidate();
       utils.hosts.mapPoints.invalidate();
       utils.hosts.summary.invalidate();
-      toast.success("主机已删除");
+      toast.success(translateText("主机已删除"));
     },
-    onError: (err) => toast.error(err.message || "删除失败"),
+    onError: (err) => toast.error(err.message || translateText("删除失败")),
   });
 
   const resetHostTrafficMutation = trpc.hosts.resetTraffic.useMutation({
@@ -1716,9 +1713,9 @@ function HostsContent() {
       utils.hosts.trafficSummary.invalidate();
       utils.hosts.summary.invalidate();
       setResetTrafficHost(null);
-      toast.success("流量统计已重置");
+      toast.success(translateText("流量统计已重置"));
     },
-    onError: (err) => toast.error(err.message || "重置流量统计失败"),
+    onError: (err) => toast.error(err.message || translateText("重置流量统计失败")),
     onSettled: () => setResetTrafficHostId(null),
   });
 
@@ -1728,9 +1725,9 @@ function HostsContent() {
       utils.hosts.trafficSummary.invalidate();
       utils.hosts.summary.invalidate();
       setTrafficCorrectionHost(null);
-      toast.success("流量用量已修正");
+      toast.success(translateText("流量用量已修正"));
     },
-    onError: (err) => toast.error(err.message || "修正流量用量失败"),
+    onError: (err) => toast.error(err.message || translateText("修正流量用量失败")),
   });
 
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
@@ -1741,16 +1738,16 @@ function HostsContent() {
       utils.hosts.mapPoints.invalidate();
       setUpgradeHost(null);
       if ((data as any)?.skippedOffline) {
-        toast.info("主机离线，已跳过升级任务");
+        toast.info(translateText("主机离线，已跳过升级任务"));
         return;
       }
       if ((data as any)?.alreadyLatest) {
-        toast.info("该 Agent 已经是最新版本");
+        toast.info(translateText("该 Agent 已经是最新版本"));
         return;
       }
-      toast.success(data?.pushed ? "Agent 升级任务已推送，正在升级" : "Agent 升级任务已记录，等待 Agent 回连后执行");
+      toast.success(data?.pushed ? translateText("Agent 升级任务已推送，正在升级") : translateText("Agent 升级任务已记录，等待 Agent 回连后执行"));
     },
-    onError: (err) => toast.error(err.message || "下发升级任务失败"),
+    onError: (err) => toast.error(err.message || translateText("下发升级任务失败")),
   });
   const upgradeAgentsMutation = trpc.hosts.requestAgentUpgradeMany.useMutation({
     onSuccess: (data) => {
@@ -1763,9 +1760,9 @@ function HostsContent() {
       const skippedLatest = (data as any)?.skippedLatest || 0;
       const skippedOffline = (data as any)?.skippedOffline || 0;
       const scheduled = (data as any)?.scheduled || 0;
-      toast.success(`已安排 ${data?.requested || 0} 台 Agent 滚动升级，首批推送 ${data?.pushed || 0} 台${scheduled ? `，等待后续批次 ${scheduled} 台` : ""}${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}${skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""}`);
+      toast.success(translateText("已安排 {0} 台 Agent 滚动升级，首批推送 {1} 台{2}{3}{4}", [data?.requested || 0, data?.pushed || 0, scheduled ? `，等待后续批次 ${scheduled} 台` : "", skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : "", skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""]));
     },
-    onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
+    onError: (err) => toast.error(err.message || translateText("批量下发升级任务失败")),
   });
 
   useEffect(() => {
@@ -1780,7 +1777,7 @@ function HostsContent() {
       }
       if (tracked.has(host.id)) {
         tracked.delete(host.id);
-        toast.success(`${host.name} Agent 升级成功，当前版本 ${host.agentVersion ? `v${host.agentVersion}` : "已上报"}`);
+        toast.success(translateText("{0} Agent 升级成功，当前版本 {1}", [host.name, host.agentVersion ? `v${host.agentVersion}` : "已上报"]));
       }
     }
     for (const hostId of Array.from(tracked.keys())) {
@@ -1852,12 +1849,12 @@ function HostsContent() {
     try {
       const fullHost = await utils.hosts.getById.fetch({ id: hostId });
       if (!fullHost) {
-        toast.error("主机不存在或当前账号无权访问");
+        toast.error(translateText("主机不存在或当前账号无权访问"));
         return;
       }
       openEdit(fullHost);
     } catch (err: any) {
-      toast.error(err?.message || "获取主机详情失败");
+      toast.error(err?.message || translateText("获取主机详情失败"));
     } finally {
       openingMapHostIds.current.delete(hostId);
     }
@@ -1867,53 +1864,53 @@ function HostsContent() {
     const name = (form.name || "").trim();
     const entry = (form.entryIp || "").trim();
     const tunnelEntry = (form.tunnelEntryIp || "").trim();
-    if (!name) { toast.error("请输入主机名称"); return; }
-    if (name.length > 128) { toast.error("主机名称不能超过 128 个字符"); return; }
-    if (entry.length > 253) { toast.error("入口 IP / 域名不能超过 253 个字符"); return; }
-    if (tunnelEntry.length > 128) { toast.error("内网地址不能超过 128 个字符"); return; }
+    if (!name) { toast.error(translateText("请输入主机名称")); return; }
+    if (name.length > 128) { toast.error(translateText("主机名称不能超过 128 个字符")); return; }
+    if (entry.length > 253) { toast.error(translateText("入口 IP / 域名不能超过 253 个字符")); return; }
+    if (tunnelEntry.length > 128) { toast.error(translateText("内网地址不能超过 128 个字符")); return; }
 
     const ps = form.portRangeStart;
     const pe = form.portRangeEnd;
     if ((ps != null && pe == null) || (ps == null && pe != null)) {
-      toast.error("请同时填写端口区间的起始和结束值，或同时留空"); return;
+      toast.error(translateText("请同时填写端口区间的起始和结束值，或同时留空")); return;
     }
     if (ps != null && pe != null) {
-      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error("端口区间必须在 1-65535 之间"); return; }
-      if (ps > pe) { toast.error("端口区间起始值不能大于结束值"); return; }
+      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error(translateText("端口区间必须在 1-65535 之间")); return; }
+      if (ps > pe) { toast.error(translateText("端口区间起始值不能大于结束值")); return; }
     }
     const customPorts = parseCustomPortsInput(form.portAllowlist);
     if (customPorts.invalid.length > 0) {
-      toast.error("自定义端口只能填写 1-65535 的整数，多个端口请使用英文逗号分隔");
+      toast.error(translateText("自定义端口只能填写 1-65535 的整数，多个端口请使用英文逗号分隔"));
       return;
     }
 
     const ni = (form.networkInterface || "").trim();
     const purchasedAt = parseDateTimeLocal(form.purchasedAt);
     const stoppedAt = parseDateTimeLocal(form.stoppedAt);
-    if (form.purchasedAt && !purchasedAt) { toast.error("机器购买时间格式不正确"); return; }
-    if (form.stoppedAt && !stoppedAt) { toast.error("机器停止时间格式不正确"); return; }
+    if (form.purchasedAt && !purchasedAt) { toast.error(translateText("机器购买时间格式不正确")); return; }
+    if (form.stoppedAt && !stoppedAt) { toast.error(translateText("机器停止时间格式不正确")); return; }
     if (purchasedAt && stoppedAt && stoppedAt.getTime() <= purchasedAt.getTime()) {
-      toast.error("机器停止时间必须晚于购买时间");
+      toast.error(translateText("机器停止时间必须晚于购买时间"));
       return;
     }
     const trafficLimitGb = Number(String(form.trafficLimitGb || "").trim() || 0);
     if (user?.role === "admin" && (!Number.isFinite(trafficLimitGb) || trafficLimitGb < 0)) {
-      toast.error("套餐流量不能小于 0");
+      toast.error(translateText("套餐流量不能小于 0"));
       return;
     }
     if (user?.role === "admin" && form.ddnsEnabled) {
       if (!ddnsProviderEnabled) {
-        toast.error("请先在系统设置内启用 DDNS 服务商");
+        toast.error(translateText("请先在系统设置内启用 DDNS 服务商"));
         return;
       }
       if (!form.ddnsDomain.trim()) {
-        toast.error("开启 DDNS 服务需要填写域名");
+        toast.error(translateText("开启 DDNS 服务需要填写域名"));
         return;
       }
     }
     const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
     if (user?.role === "admin" && form.trafficFailoverEnabled && trafficLimitBytes <= 0) {
-      toast.error("开启流量故障转移需要设置大于 0 的套餐流量");
+      toast.error(translateText("开启流量故障转移需要设置大于 0 的套餐流量"));
       return;
     }
     const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
@@ -2041,12 +2038,12 @@ function HostsContent() {
       .finally(() => releaseOptimisticHostOrder(requestId));
   }, [refreshHostOrderQueries, releaseOptimisticHostOrder]);
   const reorderHostsMutation = trpc.hosts.reorder.useMutation({
-    onSuccess: () => toast.success("主机顺序已更新"),
-    onError: (err) => toast.error(err.message || "更新主机顺序失败"),
+    onSuccess: () => toast.success(translateText("主机顺序已更新")),
+    onError: (err) => toast.error(err.message || translateText("更新主机顺序失败")),
   });
   const reorderHostGroupMembersMutation = trpc.hosts.reorderHostGroupMembers.useMutation({
-    onSuccess: () => toast.success("分组主机顺序已更新"),
-    onError: (err) => toast.error(err.message || "更新分组主机顺序失败"),
+    onSuccess: () => toast.success(translateText("分组主机顺序已更新")),
+    onError: (err) => toast.error(err.message || translateText("更新分组主机顺序失败")),
   });
   const hostReorderPending = reorderHostsMutation.isPending || reorderHostGroupMembersMutation.isPending;
   const hostSortGroupId = selectedHostGroupId === "all" ? null : Number(selectedHostGroupId);
@@ -2172,12 +2169,12 @@ function HostsContent() {
     if (!Number.isInteger(hostId) || hostId <= 0) return;
     const amountGb = Number(trafficCorrectionInput.trim());
     if (!Number.isFinite(amountGb) || amountGb < 0) {
-      toast.error("请输入不小于 0 的流量用量");
+      toast.error(translateText("请输入不小于 0 的流量用量"));
       return;
     }
     const usedBytes = Math.round(amountGb * HOST_TRAFFIC_GB_BYTES);
     if (!Number.isSafeInteger(usedBytes) || usedBytes < 0) {
-      toast.error("流量用量超出可保存范围");
+      toast.error(translateText("流量用量超出可保存范围"));
       return;
     }
     correctHostTrafficMutation.mutate({ hostId, usedBytes });
@@ -2188,11 +2185,11 @@ function HostsContent() {
   };
   const requestAgentUpgrade = (host: any) => {
     if (!host?.isOnline) {
-      toast.info("主机离线，无法下发升级任务");
+      toast.info(translateText("主机离线，无法下发升级任务"));
       return;
     }
     if (isAgentLatest(host)) {
-      toast.info("该 Agent 已经是最新版本");
+      toast.info(translateText("该 Agent 已经是最新版本"));
       return;
     }
     setUpgradeHost(host);
@@ -2200,7 +2197,7 @@ function HostsContent() {
   const confirmAgentUpgrade = () => {
     if (!upgradeHost) return;
     if (isAgentLatest(upgradeHost)) {
-      toast.info("该 Agent 已经是最新版本");
+      toast.info(translateText("该 Agent 已经是最新版本"));
       setUpgradeHost(null);
       return;
     }
@@ -2208,14 +2205,14 @@ function HostsContent() {
   };
   const requestAllAgentUpgrades = () => {
     if (onlineOutdatedCount === 0) {
-      toast.info("暂无需要升级的 Agent");
+      toast.info(translateText("暂无需要升级的 Agent"));
       return;
     }
     setBulkUpgradeDialogOpen(true);
   };
   const confirmAllAgentUpgrades = () => {
     if (bulkUpgradeableHosts.length === 0) {
-      toast.info("暂无需要升级的 Agent");
+      toast.info(translateText("暂无需要升级的 Agent"));
       setBulkUpgradeDialogOpen(false);
       return;
     }
@@ -2230,7 +2227,7 @@ function HostsContent() {
     const cooldownMs = 30 * 1000;
     const waitMs = cooldownMs - (now - lastAgentUpdateCheck.current);
     if (waitMs > 0) {
-      toast.info(`请 ${Math.ceil(waitMs / 1000)} 秒后重试`);
+      toast.info(translateText("请 {0} 秒后重试", [Math.ceil(waitMs / 1000)]));
       return;
     }
     try {
@@ -2241,9 +2238,9 @@ function HostsContent() {
       const latestSettings = await utils.system.getSettings.fetch();
       const agentVersion = latestSettings?.agentVersion || "";
       const count = latestHosts.filter((host: any) => isAgentVersionBehind(host.agentVersion, agentVersion)).length;
-      toast.success(count > 0 ? `发现 ${count} 台 Agent 有新版本` : "Agent 版本检查完成，暂无新版本");
+      toast.success(count > 0 ? translateText("发现 {0} 台 Agent 有新版本", [count]) : translateText("Agent 版本检查完成，暂无新版本"));
     } catch (err: any) {
-      toast.error(err?.message || "检查 Agent 更新失败");
+      toast.error(err?.message || translateText("检查 Agent 更新失败"));
     } finally {
       setCheckingAgentUpdate(false);
     }
@@ -2254,27 +2251,24 @@ function HostsContent() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">主机管理</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            管理 Agent 主机和运行状态
-          </p>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("主机管理")}</h1>
+          <p className="text-muted-foreground mt-1 text-sm">{translateText("管理 Agent 主机和运行状态")}</p>
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
+        <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
-              value={`${onlineCount} / ${displayedHostTotal} 在线`}
+              value={translateText("{0} / {1} 在线", [onlineCount, displayedHostTotal])}
               loading={isInitialLoadingWithoutCache}
               cacheKey="hosts.header.online"
-              fallbackValue="0 / 0 在线"
+              fallbackValue={translateText("0 / 0 在线")}
             />
           </Badge>
           {/* 布局切换按钮 */}
           {updateCount > 0 && (
             <Badge variant="outline" className="justify-center gap-1.5 border-amber-500/30 px-3 py-1.5 text-xs text-amber-500">
               <AlertTriangle className="h-3 w-3" />
-              {updateCount} 台发现新版本
-            </Badge>
+              {updateCount}{translateText(" 台发现新版本")}</Badge>
           )}
           {activeManageTab === "hosts" && (
             <>
@@ -2285,9 +2279,7 @@ function HostsContent() {
                 disabled={checkingAgentUpdate}
                 onClick={handleCheckAgentUpdate}
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
-                检查 Agent 更新
-              </Button>
+                <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />{translateText("检查 Agent 更新")}</Button>
               {user?.role === "admin" && (
                 <Button
                   variant="outline"
@@ -2296,16 +2288,14 @@ function HostsContent() {
                   disabled={onlineOutdatedCount === 0 || upgradeAgentsMutation.isPending}
                   onClick={requestAllAgentUpgrades}
                 >
-                  {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  一键升级 Agent
-                </Button>
+                  {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}{translateText("一键升级 Agent")}</Button>
               )}
               <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
                 <Button
                   variant={viewMode === "compact-card" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
-                  title="精简卡片"
+                  title={translateText("精简卡片")}
                   onClick={() => handleViewModeChange("compact-card")}
                 >
                   <Rows3 className="h-4 w-4" />
@@ -2314,7 +2304,7 @@ function HostsContent() {
                   variant={viewMode === "card" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
-                  title="标准卡片"
+                  title={translateText("标准卡片")}
                   onClick={() => handleViewModeChange("card")}
                 >
                   <LayoutGrid className="h-4 w-4" />
@@ -2323,7 +2313,7 @@ function HostsContent() {
                   variant={viewMode === "table" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
-                  title="列表视图"
+                  title={translateText("列表视图")}
                   onClick={() => handleViewModeChange("table")}
                 >
                   <List className="h-4 w-4" />
@@ -2332,7 +2322,7 @@ function HostsContent() {
                   variant={viewMode === "map" ? "secondary" : "ghost"}
                   size="icon"
                   className="hidden h-8 w-8 rounded-none md:inline-flex"
-                  title="3D 地球视图"
+                  title={translateText("3D 地球视图")}
                   onClick={() => handleViewModeChange("map")}
                 >
                   <Globe className="h-4 w-4" />
@@ -2341,7 +2331,7 @@ function HostsContent() {
                   variant={viewMode === "flat-map" ? "secondary" : "ghost"}
                   size="icon"
                   className="hidden h-8 w-8 rounded-none md:inline-flex"
-                  title="平面地图视图"
+                  title={translateText("平面地图视图")}
                   onClick={() => handleViewModeChange("flat-map")}
                 >
                   <MapPinned className="h-4 w-4" />
@@ -2355,7 +2345,7 @@ function HostsContent() {
                 variant={tokenViewMode === "card" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="卡片视图"
+                title={translateText("卡片视图")}
                 onClick={() => handleTokenViewModeChange("card")}
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -2364,7 +2354,7 @@ function HostsContent() {
                 variant={tokenViewMode === "table" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="列表视图"
+                title={translateText("列表视图")}
                 onClick={() => handleTokenViewModeChange("table")}
               >
                 <List className="h-4 w-4" />
@@ -2377,7 +2367,7 @@ function HostsContent() {
                 variant={hostGroupViewMode === "card" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="卡片视图"
+                title={translateText("卡片视图")}
                 onClick={() => handleHostGroupViewModeChange("card")}
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -2386,7 +2376,7 @@ function HostsContent() {
                 variant={hostGroupViewMode === "table" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="列表视图"
+                title={translateText("列表视图")}
                 onClick={() => handleHostGroupViewModeChange("table")}
               >
                 <List className="h-4 w-4" />
@@ -2399,7 +2389,7 @@ function HostsContent() {
                 variant={serviceViewMode === "card" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="卡片视图"
+                title={translateText("卡片视图")}
                 onClick={() => handleServiceViewModeChange("card")}
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -2408,7 +2398,7 @@ function HostsContent() {
                 variant={serviceViewMode === "table" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="列表视图"
+                title={translateText("列表视图")}
                 onClick={() => handleServiceViewModeChange("table")}
               >
                 <List className="h-4 w-4" />
@@ -2418,7 +2408,7 @@ function HostsContent() {
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
-              {activeManageTab === "services" ? "添加服务" : activeManageTab === "groups" ? "添加分组" : "添加主机"}
+              {activeManageTab === "services" ? translateText("添加服务") : activeManageTab === "groups" ? translateText("添加分组") : translateText("添加主机")}
             </Button>
           )}
         </div>
@@ -2427,7 +2417,7 @@ function HostsContent() {
       <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground">筛选:</span>
+          <span className="text-sm text-muted-foreground">{translateText("筛选:")}</span>
         </div>
         <div className="relative w-full sm:w-[260px] lg:w-[320px]">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -2443,7 +2433,7 @@ function HostsContent() {
           {activeManageSearchQuery ? (
             <button
               type="button"
-              aria-label="清空搜索"
+              aria-label={translateText("清空搜索")}
               className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               onClick={() => setManageSearchQueries((current) => ({ ...current, [activeManageTab]: "" }))}
             >
@@ -2461,21 +2451,21 @@ function HostsContent() {
         onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
         className="space-y-4"
       >
-        <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} ariaLabel="主机管理" minItemWidthRem={7.5} />
+        <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} ariaLabel={translateText("主机管理")} minItemWidthRem={7.5} />
 
         <TabsContent value="hosts" className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           <HostSummaryCard
-            title="在线状态"
+            title={translateText("在线状态")}
             value={`${effectiveHostSummary?.onlineHosts ?? onlineCount} / ${effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length}`}
             subtitle={effectiveHostSummary
               ? (() => {
                 const total = effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length;
                 const online = effectiveHostSummary?.onlineHosts ?? onlineCount;
                 const offlineCount = Math.max(0, total - online);
-                return offlineCount > 0 ? `离线 ${offlineCount} 台` : "全部在线";
+                return offlineCount > 0 ? translateText("离线 {0} 台", [offlineCount]) : translateText("全部在线");
               })()
-              : "暂无统计"}
+              : translateText("暂无统计")}
             icon={Server}
             leadingIcon={CircleCheck}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
@@ -2483,7 +2473,7 @@ function HostsContent() {
             cacheKey="hosts.summary.online"
           />
           <HostTrafficSummaryCard
-            title="当前瞬时流量"
+            title={translateText("当前瞬时流量")}
             inValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
             outValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
@@ -2494,7 +2484,7 @@ function HostsContent() {
             animated={false}
           />
           <HostTrafficSummaryCard
-            title="累计流量"
+            title={translateText("累计流量")}
             inValue={formatBytes(effectiveHostSummary?.totalTrafficIn)}
             outValue={formatBytes(effectiveHostSummary?.totalTrafficOut)}
             icon={ArrowRightLeft}
@@ -2515,7 +2505,7 @@ function HostsContent() {
         )}
       {/* Content */}
       {isInitialLoadingWithoutCache ? (
-        <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />
+        <DataSectionLoading label={translateText("正在加载主机数据")} minHeight="min-h-[260px]" />
       ) : isError ? (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardContent className="p-0">
@@ -2523,14 +2513,12 @@ function HostsContent() {
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
                 <AlertTriangle className="h-8 w-8" />
               </div>
-              <p className="text-lg font-medium text-foreground">主机加载失败</p>
+              <p className="text-lg font-medium text-foreground">{translateText("主机加载失败")}</p>
               <p className="mt-2 max-w-xl break-words text-sm text-muted-foreground">
-                {error?.message || "无法获取主机列表，请稍后重试"}
+                {error?.message || translateText("无法获取主机列表，请稍后重试")}
               </p>
               <Button variant="outline" className="mt-5 gap-2" onClick={() => refetch()}>
-                <RefreshCw className="h-4 w-4" />
-                重新加载
-              </Button>
+                <RefreshCw className="h-4 w-4" />{translateText("重新加载")}</Button>
             </div>
           </CardContent>
         </Card>
@@ -2548,7 +2536,7 @@ function HostsContent() {
               {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
             </AutoAnimateContainer>
             <div className="md:hidden">
-              <PersistentPagination pagination={hostPagination} itemName="台主机" />
+              <PersistentPagination pagination={hostPagination} itemName={translateText("台主机")} />
             </div>
           </>
         ) : viewMode === "flat-map" ? (
@@ -2556,9 +2544,7 @@ function HostsContent() {
             <Suspense
               fallback={
                 <div className="hidden min-h-[720px] items-center justify-center rounded-md border border-border/40 bg-[#020617] text-sm text-white/70 md:flex">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  正在加载平面地图
-                </div>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载平面地图")}</div>
               }
             >
               <HostFlatMap hosts={filteredDisplayHosts} onEdit={openMapHostEdit} />
@@ -2567,7 +2553,7 @@ function HostsContent() {
               {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
             </AutoAnimateContainer>
             <div className="md:hidden">
-              <PersistentPagination pagination={hostPagination} itemName="台主机" />
+              <PersistentPagination pagination={hostPagination} itemName={translateText("台主机")} />
             </div>
           </>
         ) : viewMode === "card" || viewMode === "compact-card" ? (
@@ -2648,25 +2634,21 @@ function HostsContent() {
                   </colgroup>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-30 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card">
-                        设备名称
-                      </TableHead>
-                      <TableHead className="w-[128px] whitespace-nowrap text-center">运行信息</TableHead>
+                      <TableHead className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-30 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card">{translateText("设备名称")}</TableHead>
+                      <TableHead className="w-[128px] whitespace-nowrap text-center">{translateText("运行信息")}</TableHead>
                       <TableHead className="min-w-[204px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5" />{"\u8d44\u6e90"}</span>
+                        <span className="inline-flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5" />{translateText("资源")}</span>
                       </TableHead>
                       <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="h-3.5 w-3.5" />累计流量</span>
+                        <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="h-3.5 w-3.5" />{translateText("累计流量")}</span>
                       </TableHead>
                       <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />实时网络</span>
+                        <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />{translateText("实时网络")}</span>
                       </TableHead>
                       <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{"\u7cfb\u7edf\u7d2f\u8ba1"}</span>
+                        <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{translateText("系统累计")}</span>
                       </TableHead>
-                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 text-right">
-                        操作
-                      </TableHead>
+                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 text-right">{translateText("操作")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
@@ -2726,13 +2708,11 @@ function HostsContent() {
                                   </span>
                                 )}
                                 {agentNeedsUpdate && (
-                                  <Badge variant="outline" className="h-4 shrink-0 border-amber-500/30 px-1 py-0 text-[9px] leading-none text-amber-500">
-                                    新版本
-                                  </Badge>
+                                  <Badge variant="outline" className="h-4 shrink-0 border-amber-500/30 px-1 py-0 text-[9px] leading-none text-amber-500">{translateText("新版本")}</Badge>
                                 )}
                                 {host.agentUpgradeRequested && (
                                   <Badge variant="outline" className={`h-4 shrink-0 px-1 py-0 text-[9px] leading-none ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
-                                    {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                                    {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
                                   </Badge>
                                 )}
                                 <HostRegionBadge host={host} compact />
@@ -2771,16 +2751,16 @@ function HostsContent() {
                           <HostListFlowPair
                             inValue={formatBytes(Number(traffic?.bytesIn || 0))}
                             outValue={formatBytes(Number(traffic?.bytesOut || 0))}
-                            inTitle={`累计入向：${formatBytes(Number(traffic?.bytesIn || 0))}`}
-                            outTitle={`累计出向：${formatBytes(Number(traffic?.bytesOut || 0))}`}
+                            inTitle={translateText("累计入向：{0}", [formatBytes(Number(traffic?.bytesIn || 0))])}
+                            outTitle={translateText("累计出向：{0}", [formatBytes(Number(traffic?.bytesOut || 0))])}
                           />
                         </TableCell>
                         <TableCell className="px-3 py-2.5">
                           <HostListFlowPair
                             inValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedIn)}
                             outValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedOut)}
-                            inTitle="实时入向"
-                            outTitle="实时出向"
+                            inTitle={translateText("实时入向")}
+                            outTitle={translateText("实时出向")}
                           />
                         </TableCell>
                         <TableCell className="px-3 py-2.5">
@@ -2818,7 +2798,7 @@ function HostsContent() {
             </Card>
           </>
         )}
-        {viewMode !== "map" && viewMode !== "flat-map" && <PersistentPagination pagination={hostPagination} itemName="台主机" />}
+        {viewMode !== "map" && viewMode !== "flat-map" && <PersistentPagination pagination={hostPagination} itemName={translateText("台主机")} />}
         </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -2827,9 +2807,9 @@ function HostsContent() {
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <Server className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">{isHostTextFiltered ? "未找到匹配主机" : isHostGroupFiltered ? "当前分组暂无主机" : "暂无主机"}</p>
+              <p className="text-lg font-medium">{isHostTextFiltered ? translateText("未找到匹配主机") : isHostGroupFiltered ? translateText("当前分组暂无主机") : translateText("暂无主机")}</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                {isHostTextFiltered ? "调整筛选内容或清空搜索" : isHostGroupFiltered ? "可以在分组管理中为该分组添加主机" : user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
+                {isHostTextFiltered ? translateText("调整筛选内容或清空搜索") : isHostGroupFiltered ? translateText("可以在分组管理中为该分组添加主机") : user?.role === "admin" ? translateText("点击添加主机生成 Agent 安装命令") : translateText("请联系管理员添加主机")}
               </p>
             </div>
           </CardContent>
@@ -2865,9 +2845,7 @@ function HostsContent() {
 
         {user?.role === "admin" && (
           <TabsContent value="services" className="space-y-4">
-            <p className="text-xs text-muted-foreground sm:text-sm">
-              管理主机 Ping / TCPing 探测服务。
-            </p>
+            <p className="text-xs text-muted-foreground sm:text-sm">{translateText("管理主机 Ping / TCPing 探测服务。")}</p>
             <HostProbeServiceManager
               createSignal={serviceCreateSignal}
               onCreateSignalHandled={() => setServiceCreateSignal(0)}
@@ -2902,22 +2880,18 @@ function HostsContent() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <RotateCcw className="h-5 w-5 text-primary" />
-              重置流量统计
-            </DialogTitle>
-            <DialogDescription>
-              确认清空该主机当前累计的流量统计？
-            </DialogDescription>
+              <RotateCcw className="h-5 w-5 text-primary" />{translateText("重置流量统计")}</DialogTitle>
+            <DialogDescription>{translateText("确认清空该主机当前累计的流量统计？")}</DialogDescription>
           </DialogHeader>
           {resetTrafficHost && (
             <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">主机</span>
+                <span className="text-muted-foreground">{translateText("主机")}</span>
                 <span className="font-medium">{resetTrafficHost.name}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-muted-foreground">Agent</span>
-                <span className="font-mono">{resetTrafficHost.agentVersion ? `v${resetTrafficHost.agentVersion}` : "未上报"}</span>
+                <span className="font-mono">{resetTrafficHost.agentVersion ? `v${resetTrafficHost.agentVersion}` : translateText("未上报")}</span>
               </div>
             </div>
           )}
@@ -2926,16 +2900,14 @@ function HostsContent() {
               variant="outline"
               onClick={() => setResetTrafficHost(null)}
               disabled={resetHostTrafficMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               className="gap-2"
               onClick={confirmResetHostTraffic}
               disabled={!resetTrafficHost || resetHostTrafficMutation.isPending}
             >
               {resetHostTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
-              {resetHostTrafficMutation.isPending ? "重置中..." : "确认重置"}
+              {resetHostTrafficMutation.isPending ? translateText("重置中...") : translateText("确认重置")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2948,31 +2920,27 @@ function HostsContent() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Gauge className="h-5 w-5 text-primary" />
-              用量修正
-            </DialogTitle>
-            <DialogDescription>
-              手动调整该主机当前已使用的流量，后续上报将在修正后的用量上继续累计。
-            </DialogDescription>
+              <Gauge className="h-5 w-5 text-primary" />{translateText("用量修正")}</DialogTitle>
+            <DialogDescription>{translateText("手动调整该主机当前已使用的流量，后续上报将在修正后的用量上继续累计。")}</DialogDescription>
           </DialogHeader>
           {trafficCorrectionHost && (
             <div className="space-y-4">
               <div className="space-y-2 rounded-md border border-border/40 bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">主机</span>
+                  <span className="text-muted-foreground">{translateText("主机")}</span>
                   <span className="truncate font-medium" title={trafficCorrectionHost.name}>{trafficCorrectionHost.name}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">当前统计</span>
+                  <span className="text-muted-foreground">{translateText("当前统计")}</span>
                   <span className="font-medium tabular-nums">{formatBytes(trafficCorrectionCurrentBytes)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">计量方式</span>
+                  <span className="text-muted-foreground">{translateText("计量方式")}</span>
                   <span className="font-medium">{hostTrafficMeasureModeLabel(trafficCorrectionHost.trafficMeasureMode)}</span>
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="host-traffic-correction">修正后已用流量</Label>
+                <Label htmlFor="host-traffic-correction">{translateText("修正后已用流量")}</Label>
                 <div className="relative">
                   <Input
                     id="host-traffic-correction"
@@ -2987,9 +2955,7 @@ function HostsContent() {
                   />
                   <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">GB</span>
                 </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  仅修正面板累计用量，不会修改 Agent 的系统累计流量。
-                </p>
+                <p className="text-xs leading-5 text-muted-foreground">{translateText("仅修正面板累计用量，不会修改 Agent 的系统累计流量。")}</p>
               </div>
             </div>
           )}
@@ -2998,16 +2964,14 @@ function HostsContent() {
               variant="outline"
               onClick={() => setTrafficCorrectionHost(null)}
               disabled={correctHostTrafficMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               className="gap-2"
               onClick={confirmCorrectHostTraffic}
               disabled={!trafficCorrectionInput.trim() || correctHostTrafficMutation.isPending}
             >
               {correctHostTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
-              {correctHostTrafficMutation.isPending ? "保存中..." : "保存修正"}
+              {correctHostTrafficMutation.isPending ? translateText("保存中...") : translateText("保存修正")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3017,40 +2981,34 @@ function HostsContent() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Download className="h-5 w-5 text-primary" />
-              升级 Agent
-            </DialogTitle>
-            <DialogDescription>
-              通过 Agent 下发升级任务。
-            </DialogDescription>
+              <Download className="h-5 w-5 text-primary" />{translateText("升级 Agent")}</DialogTitle>
+            <DialogDescription>{translateText("通过 Agent 下发升级任务。")}</DialogDescription>
           </DialogHeader>
           {upgradeHost && (
             <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">主机</span>
+                <span className="text-muted-foreground">{translateText("主机")}</span>
                 <span className="font-medium">{upgradeHost.name}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">当前 Agent</span>
-                <span className="font-mono">{upgradeHost.agentVersion ? `v${upgradeHost.agentVersion}` : "未上报"}</span>
+                <span className="text-muted-foreground">{translateText("当前 Agent")}</span>
+                <span className="font-mono">{upgradeHost.agentVersion ? `v${upgradeHost.agentVersion}` : translateText("未上报")}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">目标版本</span>
+                <span className="text-muted-foreground">{translateText("目标版本")}</span>
                 <span className="font-mono">v{latestAgentVersion || "-"}</span>
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUpgradeHost(null)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setUpgradeHost(null)}>{translateText("取消")}</Button>
             <Button
               className="gap-2"
               disabled={!upgradeHost || upgradeAgentMutation.isPending}
               onClick={confirmAgentUpgrade}
             >
               {upgradeAgentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {upgradeAgentMutation.isPending ? "下发中..." : "确认升级"}
+              {upgradeAgentMutation.isPending ? translateText("下发中...") : translateText("确认升级")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3061,26 +3019,22 @@ function HostsContent() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Download className="h-5 w-5 text-primary" />
-              一键升级 Agent
-            </DialogTitle>
-            <DialogDescription>
-              点击确认后才会向在线且可升级的 Agent 下发升级任务。
-            </DialogDescription>
+              <Download className="h-5 w-5 text-primary" />{translateText("一键升级 Agent")}</DialogTitle>
+            <DialogDescription>{translateText("点击确认后才会向在线且可升级的 Agent 下发升级任务。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">升级数量</span>
-              <span className="font-medium">{bulkUpgradeableHosts.length} 台</span>
+              <span className="text-muted-foreground">{translateText("升级数量")}</span>
+              <span className="font-medium">{bulkUpgradeableHosts.length}{translateText(" 台")}</span>
             </div>
             {offlineUpgradeableHostCount > 0 && (
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">已跳过离线主机</span>
-                <span className="font-medium">{offlineUpgradeableHostCount} 台</span>
+                <span className="text-muted-foreground">{translateText("已跳过离线主机")}</span>
+                <span className="font-medium">{offlineUpgradeableHostCount}{translateText(" 台")}</span>
               </div>
             )}
             <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">目标版本</span>
+              <span className="text-muted-foreground">{translateText("目标版本")}</span>
               <span className="font-mono">v{latestAgentVersion || "-"}</span>
             </div>
           </div>
@@ -3089,16 +3043,14 @@ function HostsContent() {
               variant="outline"
               onClick={() => setBulkUpgradeDialogOpen(false)}
               disabled={upgradeAgentsMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               className="gap-2"
               disabled={bulkUpgradeCandidateQuery.isLoading || bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
               onClick={confirmAllAgentUpgrades}
             >
               {upgradeAgentsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {upgradeAgentsMutation.isPending ? "下发中..." : "确认升级"}
+              {upgradeAgentsMutation.isPending ? translateText("下发中...") : translateText("确认升级")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3108,10 +3060,8 @@ function HostsContent() {
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="flex h-[min(720px,86vh)] max-h-[86vh] flex-col overflow-hidden sm:max-w-[44rem]">
           <DialogHeader className="shrink-0 space-y-1">
-            <DialogTitle>编辑主机</DialogTitle>
-            <DialogDescription className="sr-only">
-              修改主机信息
-            </DialogDescription>
+            <DialogTitle>{translateText("编辑主机")}</DialogTitle>
+            <DialogDescription className="sr-only">{translateText("修改主机信息")}</DialogDescription>
           </DialogHeader>
           <Tabs
             value={hostDialogTab}
@@ -3133,39 +3083,39 @@ function HostsContent() {
               <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <Label className="text-sm font-semibold">基础信息</Label>
-                    <span className="text-xs text-muted-foreground">主机连接</span>
+                    <Label className="text-sm font-semibold">{translateText("基础信息")}</Label>
+                    <span className="text-xs text-muted-foreground">{translateText("主机连接")}</span>
                   </div>
                   <div className="grid gap-2.5 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <Label className="text-sm">主机名称</Label>
+                      <Label className="text-sm">{translateText("主机名称")}</Label>
                       <Input
                         className="h-8"
-                        placeholder="例如: 香港节点-01"
+                        placeholder={translateText("例如: 香港节点-01")}
                         value={form.name}
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-sm">Agent 检测 IP</Label>
+                      <Label className="text-sm">{translateText("Agent 检测 IP")}</Label>
                       <Input className="h-8 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
                     </div>
                   </div>
                   <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <Label className="text-sm">入口 IP / 域名</Label>
+                      <Label className="text-sm">{translateText("入口 IP / 域名")}</Label>
                       <Input
                         className="h-8"
-                        placeholder="例如: example.com 或 1.2.3.4"
+                        placeholder={translateText("例如: example.com 或 1.2.3.4")}
                         value={form.entryIp}
                         onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
+                      <Label className="text-sm">{translateText("内网地址 ")}<span className="text-xs text-muted-foreground">{translateText("可选")}</span></Label>
                       <Input
                         className="h-8"
-                        placeholder="10.0.0.8 或 node-a.internal"
+                        placeholder={translateText("10.0.0.8 或 node-a.internal")}
                         value={form.tunnelEntryIp}
                         onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
                       />
@@ -3173,7 +3123,7 @@ function HostsContent() {
                   </div>
                   <div className="mt-2.5 grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
+                      <Label className="text-sm">{translateText("网卡名称 ")}<span className="text-xs text-muted-foreground">{translateText("可选")}</span></Label>
                       <Input
                         className="h-8"
                         placeholder="eth0, ens33, bond0"
@@ -3186,19 +3136,19 @@ function HostsContent() {
 
                 <section className="space-y-3 border-t border-border/40 pt-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <Label className="text-sm font-semibold">端口限制</Label>
-                    <span className="text-xs text-muted-foreground">留空不限</span>
+                    <Label className="text-sm font-semibold">{translateText("端口限制")}</Label>
+                    <span className="text-xs text-muted-foreground">{translateText("留空不限")}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2.5">
                     <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">起始端口</Label>
+                      <Label className="text-xs text-muted-foreground">{translateText("起始端口")}</Label>
                       <Input
                         className="h-8"
                         type="number"
                         min={1}
                         max={65535}
                         step={1}
-                        placeholder="例如: 10000"
+                        placeholder={translateText("例如: 10000")}
                         value={form.portRangeStart ?? ""}
                         onChange={(e) => {
                           const v = e.target.value ? parseInt(e.target.value) : null;
@@ -3207,14 +3157,14 @@ function HostsContent() {
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">结束端口</Label>
+                      <Label className="text-xs text-muted-foreground">{translateText("结束端口")}</Label>
                       <Input
                         className="h-8"
                         type="number"
                         min={1}
                         max={65535}
                         step={1}
-                        placeholder="例如: 20000"
+                        placeholder={translateText("例如: 20000")}
                         value={form.portRangeEnd ?? ""}
                         onChange={(e) => {
                           const v = e.target.value ? parseInt(e.target.value) : null;
@@ -3225,37 +3175,32 @@ function HostsContent() {
                   </div>
                   <div className="mt-2.5 space-y-1">
                     <div className="flex items-center justify-between gap-3">
-                      <Label className="text-xs text-muted-foreground">自定义端口</Label>
+                      <Label className="text-xs text-muted-foreground">{translateText("自定义端口")}</Label>
                       {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
-                        <span className="text-xs text-muted-foreground">{customPortInputState.ports.length} 个</span>
+                        <span className="text-xs text-muted-foreground">{customPortInputState.ports.length}{translateText(" 个")}</span>
                       ) : null}
                     </div>
                     <Input
-                      placeholder="例如: 80,443,65095"
+                      placeholder={translateText("例如: 80,443,65095")}
                       value={form.portAllowlist}
                       onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
                       className={`h-8 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
                     />
                     {customPortInputState.invalid.length > 0 ? (
-                      <p className="text-xs text-destructive">
-                        自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔
-                      </p>
+                      <p className="text-xs text-destructive">{translateText("自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔")}</p>
                     ) : null}
                   </div>
                   {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
-                    <p className="mt-3 text-xs text-destructive">
-                      起始端口不能大于结束端口
-                    </p>
+                    <p className="mt-3 text-xs text-destructive">{translateText("起始端口不能大于结束端口")}</p>
                   )}
                 </section>
                 {user?.role === "admin" && (
                   <section className="space-y-3 border-t border-border/40 pt-3">
                     <div className="mb-2 flex items-center justify-between gap-3">
-                      <Label className="text-sm font-semibold">协议屏蔽</Label>
-                      <span className="text-xs text-muted-foreground">访问策略</span>
+                      <Label className="text-sm font-semibold">{translateText("协议屏蔽")}</Label>
+                      <span className="text-xs text-muted-foreground">{translateText("访问策略")}</span>
                     </div>
-                    <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-命中的连接会被拒绝，规则仍保持运行。{nginxFeatureEnabled ? "支持 ForwardX、Realm、GOST、Socat 和 Nginx；不支持 iptables/nftables。" : "支持 ForwardX、Realm、GOST 和 Socat；不支持 iptables/nftables。"}
+                    <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">{translateText("命中的连接会被拒绝，规则仍保持运行。")}{nginxFeatureEnabled ? translateText("支持 ForwardX、Realm、GOST、Socat 和 Nginx；不支持 iptables/nftables。") : translateText("支持 ForwardX、Realm、GOST 和 Socat；不支持 iptables/nftables。")}
                     </p>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
@@ -3278,21 +3223,21 @@ function HostsContent() {
               <TabsContent value="other" className="m-0 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <Label className="text-sm font-semibold">其他配置</Label>
-                    <span className="text-xs text-muted-foreground">主机统计</span>
+                    <Label className="text-sm font-semibold">{translateText("其他配置")}</Label>
+                    <span className="text-xs text-muted-foreground">{translateText("主机统计")}</span>
                   </div>
                   {user?.role === "admin" ? (
                     <>
                       <div className="grid min-w-0 gap-2.5 px-1 md:grid-cols-2">
                         <div className="space-y-1">
-                          <Label className="text-sm">机器购买时间</Label>
+                          <Label className="text-sm">{translateText("机器购买时间")}</Label>
                           <DateTimePickerInput
                             value={form.purchasedAt}
                             onChange={(value) => setForm({ ...form, purchasedAt: value })}
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-sm">机器停止时间</Label>
+                          <Label className="text-sm">{translateText("机器停止时间")}</Label>
                           <DateTimePickerInput
                             value={form.stoppedAt}
                             onChange={(value) => setForm({ ...form, stoppedAt: value })}
@@ -3300,7 +3245,7 @@ function HostsContent() {
                           />
                         </div>
                         <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">账单周期</Label>
+                          <Label className="text-sm">{translateText("账单周期")}</Label>
                           <Select
                             value={String(normalizeHostBillingCycleMonths(form.billingCycleMonths))}
                             onValueChange={(value) => setForm({ ...form, billingCycleMonths: normalizeHostBillingCycleMonths(value) })}
@@ -3309,17 +3254,17 @@ function HostsContent() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="1">月付</SelectItem>
-                              <SelectItem value="3">季付</SelectItem>
-                              <SelectItem value="6">半年付</SelectItem>
-                              <SelectItem value="12">年付</SelectItem>
-                              <SelectItem value="24">两年付</SelectItem>
-                              <SelectItem value="36">三年付</SelectItem>
+                              <SelectItem value="1">{translateText("月付")}</SelectItem>
+                              <SelectItem value="3">{translateText("季付")}</SelectItem>
+                              <SelectItem value="6">{translateText("半年付")}</SelectItem>
+                              <SelectItem value="12">{translateText("年付")}</SelectItem>
+                              <SelectItem value="24">{translateText("两年付")}</SelectItem>
+                              <SelectItem value="36">{translateText("三年付")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">账单月日</Label>
+                          <Label className="text-sm">{translateText("账单月日")}</Label>
                           <div className="grid min-w-0 grid-cols-2 gap-2">
                             <Select
                               value={String(clampBillingMonth(form.billingMonth))}
@@ -3330,7 +3275,7 @@ function HostsContent() {
                               </SelectTrigger>
                               <SelectContent>
                                 {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
-                                  <SelectItem key={month} value={String(month)}>{month} 月</SelectItem>
+                                  <SelectItem key={month} value={String(month)}>{month}{translateText(" 月")}</SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
@@ -3343,14 +3288,14 @@ function HostsContent() {
                               </SelectTrigger>
                               <SelectContent>
                                 {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
-                                  <SelectItem key={day} value={String(day)}>{day} 日</SelectItem>
+                                  <SelectItem key={day} value={String(day)}>{day}{translateText(" 日")}</SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
                           </div>
                         </div>
                         <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">机器到期处理</Label>
+                          <Label className="text-sm">{translateText("机器到期处理")}</Label>
                           <Select
                             value={normalizeHostExpiryAction(form.expiryHandling)}
                             onValueChange={(value) => setForm({ ...form, expiryHandling: normalizeHostExpiryAction(value) })}
@@ -3359,19 +3304,19 @@ function HostsContent() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="none">不处理</SelectItem>
-                              <SelectItem value="extend_cycle">周期顺延</SelectItem>
+                              <SelectItem value="none">{translateText("不处理")}</SelectItem>
+                              <SelectItem value="extend_cycle">{translateText("周期顺延")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">套餐流量</Label>
+                          <Label className="text-sm">{translateText("套餐流量")}</Label>
                           <div className="flex h-8 min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:border-ring focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
                             <Input
                               className="h-8 min-w-0 flex-1 rounded-none border-0 bg-transparent px-3 py-1 focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                               type="text"
                               inputMode="decimal"
-                              placeholder="例如: 2000"
+                              placeholder={translateText("例如: 2000")}
                               value={form.trafficLimitGb}
                               onChange={(e) => setForm({ ...form, trafficLimitGb: e.target.value })}
                             />
@@ -3381,7 +3326,7 @@ function HostsContent() {
                           </div>
                         </div>
                         <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">流量计算</Label>
+                          <Label className="text-sm">{translateText("流量计算")}</Label>
                           <Select
                             value={form.trafficMeasureMode}
                             onValueChange={(value) => setForm({ ...form, trafficMeasureMode: normalizeHostTrafficMeasureMode(value) })}
@@ -3390,19 +3335,19 @@ function HostsContent() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="outbound">仅出向</SelectItem>
-                              <SelectItem value="both">双向</SelectItem>
-                              <SelectItem value="max">取最大值</SelectItem>
+                              <SelectItem value="outbound">{translateText("仅出向")}</SelectItem>
+                              <SelectItem value="both">{translateText("双向")}</SelectItem>
+                              <SelectItem value="max">{translateText("取最大值")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">流量故障转移</Label>
-                          <p className="text-xs text-muted-foreground">达到套餐流量的指定比例后，暂停此主机参与转发组及隧道入口/出口组；流量重置或关闭后恢复，不删除成员配置。</p>
+                          <Label className="text-sm font-medium">{translateText("流量故障转移")}</Label>
+                          <p className="text-xs text-muted-foreground">{translateText("达到套餐流量的指定比例后，暂停此主机参与转发组及隧道入口/出口组；流量重置或关闭后恢复，不删除成员配置。")}</p>
                           {editingId && displayHosts.find((host: any) => host.id === editingId)?.trafficFailoverExcluded && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400">当前已达到流量阈值，已暂停参与组调度（不影响主机在线状态）。</p>
+                            <p className="text-xs text-amber-600 dark:text-amber-400">{translateText("当前已达到流量阈值，已暂停参与组调度（不影响主机在线状态）。")}</p>
                           )}
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
@@ -3417,9 +3362,9 @@ function HostsContent() {
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">流量耗尽提醒</Label>
+                          <Label className="text-sm font-medium">{translateText("流量耗尽提醒")}</Label>
                           <p className="text-xs text-muted-foreground">
-                            {telegramBotReady ? "开启后通过 TG 机器人发送提醒。" : "请先在系统设置内配置并启用 TG 机器人。"}
+                            {telegramBotReady ? translateText("开启后通过所选通知渠道发送提醒。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
@@ -3444,9 +3389,9 @@ function HostsContent() {
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">续费提醒</Label>
+                          <Label className="text-sm font-medium">{translateText("续费提醒")}</Label>
                           <p className="text-xs text-muted-foreground">
-                            {telegramBotReady ? "机器剩余日期不足指定天数时通过 TG 机器人提醒。" : "请先在系统设置内配置并启用 TG 机器人。"}
+                            {telegramBotReady ? translateText("机器剩余日期不足指定天数时通过所选通知渠道提醒。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
@@ -3460,7 +3405,7 @@ function HostsContent() {
                               value={form.renewalReminderDays}
                               onChange={(e) => setForm({ ...form, renewalReminderDays: clampRenewalReminderDays(Number(e.target.value)) })}
                             />
-                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2 text-sm text-muted-foreground">天</span>
+                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2 text-sm text-muted-foreground">{translateText("天")}</span>
                           </div>
                           <Switch
                             checked={telegramBotReady && form.telegramRenewalReminderEnabled}
@@ -3471,7 +3416,7 @@ function HostsContent() {
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
-                          <Label className="text-sm font-medium">自动重置流量</Label>
+                          <Label className="text-sm font-medium">{translateText("自动重置流量")}</Label>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <Select
@@ -3483,21 +3428,21 @@ function HostsContent() {
                             </SelectTrigger>
                             <SelectContent>
                               {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
-                                <SelectItem key={day} value={String(day)}>{day} 号</SelectItem>
+                                <SelectItem key={day} value={String(day)}>{day}{translateText(" 号")}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                           <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
                         </div>
                       </div>
-                      <p className="mt-1.5 px-3 text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
+                      <p className="mt-1.5 px-3 text-xs text-muted-foreground">{translateText("当月没有该日期时按最后一天重置。")}</p>
                       <div className="mt-2.5 space-y-2 rounded-md bg-muted/35 px-3 py-2.5">
                         <div className="flex min-h-8 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <div className="flex min-w-0 items-center gap-2">
                             <RadioTower className="h-4 w-4 shrink-0 text-muted-foreground" />
-                            <Label className="text-sm font-medium">DDNS 服务</Label>
+                            <Label className="text-sm font-medium">{translateText("DDNS 服务")}</Label>
                             {!ddnsProviderEnabled ? (
-                              <Badge variant="secondary" className="shrink-0 text-[11px]">未配置服务商</Badge>
+                              <Badge variant="secondary" className="shrink-0 text-[11px]">{translateText("未配置服务商")}</Badge>
                             ) : null}
                           </div>
                           <Switch
@@ -3522,21 +3467,17 @@ function HostsContent() {
                           </Select>
                           <Input
                             className="h-8 min-w-0"
-                            placeholder="例如: node.example.com"
+                            placeholder={translateText("例如: node.example.com")}
                             value={form.ddnsDomain}
                             disabled={!ddnsProviderEnabled}
                             onChange={(e) => setForm({ ...form, ddnsDomain: e.target.value })}
                           />
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。
-                        </p>
+                        <p className="text-xs text-muted-foreground">{translateText("开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。")}</p>
                       </div>
                     </>
                   ) : (
-                    <div className="rounded-md bg-muted/35 px-3 py-2 text-sm text-muted-foreground">
-                      仅管理员可配置主机其他配置。
-                    </div>
+                    <div className="rounded-md bg-muted/35 px-3 py-2 text-sm text-muted-foreground">{translateText("仅管理员可配置主机其他配置。")}</div>
                   )}
                 </section>
               </TabsContent>
@@ -3544,11 +3485,9 @@ function HostsContent() {
             </div>
           </Tabs>
           <DialogFooter className="shrink-0 pt-2">
-            <Button variant="outline" onClick={() => setShowDialog(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowDialog(false)}>{translateText("取消")}</Button>
             <Button onClick={handleSubmit} disabled={isPending || !form.name}>
-              {isPending ? "处理中..." : "保存"}
+              {isPending ? translateText("处理中...") : translateText("保存")}
             </Button>
           </DialogFooter>
         </DialogContent>

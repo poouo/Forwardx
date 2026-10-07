@@ -1,10 +1,14 @@
 import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
+import { reconcileRuleLimits } from "./ruleLimits";
 import { appendPanelLog } from "./_core/panelLogger";
 import { parseSelfTestMeta } from "./agentRouteUtils";
 import { getEmailConfig, sendMail } from "./email";
-import { sendTelegramMessage } from "./telegramBot";
+import { sendUserNotification, notificationRecipientId } from "./notifications";
+import { notificationSettings } from "./notificationSettings";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
+import { recoverManualTunnelProbeBatches, settleManualTunnelProbeBatch } from "./tunnelManualProbe";
+import { recoverManualForwardChainBatches, settleManualForwardChainBatch } from "./forwardChainManualProbe";
 import { recordHopTestResult } from "./hopTestState";
 import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
@@ -29,11 +33,13 @@ type TimedOutForwardTest = {
   ruleId: number;
   hostId: number;
   message: string | null;
+  requestMessage?: string | null;
+  batchId?: string | null;
   timeoutSeconds?: number;
 };
 
 function timeoutSecondsForForwardTest(test: TimedOutForwardTest) {
-  return selfTestTimeoutSeconds(parseSelfTestMeta(test.message));
+  return selfTestTimeoutSeconds(parseSelfTestMeta(test.requestMessage ?? test.message));
 }
 
 const UPDATE_AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -140,6 +146,7 @@ async function runExpirationCheck() {
 
 async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], defaultTimeoutSeconds: number) {
   const settledTunnelIds = new Set<number>();
+  const settledBatchIds = new Set<string>();
 
   const settleTunnel = async (tunnelId: number, message: string, logSuffix: string, timeoutSeconds: number) => {
     if (!Number.isFinite(tunnelId) || tunnelId <= 0 || settledTunnelIds.has(tunnelId)) return;
@@ -178,8 +185,19 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], d
     const timeoutSeconds = Number(test.timeoutSeconds) > 0
       ? Number(test.timeoutSeconds)
       : defaultTimeoutSeconds;
-    const meta = parseSelfTestMeta(test.message);
+    const meta = parseSelfTestMeta(test.requestMessage ?? test.message);
     if (!meta) continue;
+    if (test.batchId && settledBatchIds.has(test.batchId)) continue;
+    if (test.batchId?.startsWith("tp-")) {
+      settledBatchIds.add(test.batchId);
+      await settleManualTunnelProbeBatch(test.batchId);
+      continue;
+    }
+    if (test.batchId?.startsWith("fc-")) {
+      settledBatchIds.add(test.batchId);
+      await settleManualForwardChainBatch(test.batchId);
+      continue;
+    }
 
     if (meta.kind === "tunnel") {
       await settleTunnel(
@@ -285,7 +303,8 @@ async function runSelfTestTimeoutSweep() {
     if (timedOutTests.length > 0) {
       await settleTimedOutTunnelTests(timedOutTests, SELF_TEST_TIMEOUT_SECONDS);
       for (const test of timedOutTests) {
-        const meta = parseSelfTestMeta(test.message);
+        const meta = parseSelfTestMeta(test.requestMessage ?? test.message);
+        if (test.batchId?.startsWith("tp-") || test.batchId?.startsWith("fc-")) continue;
         if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
         if (!meta || meta.kind === "forward-via-tunnel") {
           await db.insertTcpingStat({
@@ -308,6 +327,8 @@ async function runSelfTestTimeoutSweep() {
       }
       console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }
+    await recoverManualTunnelProbeBatches();
+    await recoverManualForwardChainBatches();
   } catch (error) {
     console.error("[Scheduler] Self-test timeout sweep error:", error);
   }
@@ -315,6 +336,8 @@ async function runSelfTestTimeoutSweep() {
 
 async function recoverPendingSelfTestSweep() {
   try {
+    await recoverManualTunnelProbeBatches();
+    await recoverManualForwardChainBatches();
     if (await db.hasActiveForwardTests()) selfTestSweepActivity.markActive();
   } catch (error) {
     console.error("[Scheduler] Self-test recovery check error:", error);
@@ -391,14 +414,12 @@ async function runEmailReminders() {
 async function runTelegramReminders() {
   try {
     const settings = await db.getAllSettings();
-    const envToken = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-    const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
-    const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
-    if (!botEnabled || !botConfigured) return;
+    const channel = notificationSettings(settings);
+    if (!channel.active) return;
 
-    const expiryReminder = settings.telegramExpiryReminder === "true";
-    const trafficReminder = settings.telegramTrafficReminder === "true";
-    const trafficReminderThreshold = Math.min(99, Math.max(1, Number(settings.telegramTrafficReminderThreshold || 20)));
+    const expiryReminder = channel.expiryReminder;
+    const trafficReminder = channel.trafficReminder;
+    const trafficReminderThreshold = channel.trafficReminderThreshold;
     const hostRows = await db.getHosts();
     const hostTrafficAlertHosts = (hostRows as any[]).filter((host) => !!host.telegramTrafficAlertEnabled && Number(host.trafficLimit || 0) > 0);
     const hostRenewalReminderHosts = (hostRows as any[]).filter((host) => !!host.telegramRenewalReminderEnabled && !!host.stoppedAt);
@@ -409,15 +430,16 @@ async function runTelegramReminders() {
     const now = Date.now();
 
     for (const user of users as any[]) {
-      if (!user.telegramId) continue;
+      if (user.accountEnabled === false) continue;
+      if (!notificationRecipientId(user, channel.channel)) continue;
 
       if (expiryReminder && user.expiresAt) {
         const expiresAt = new Date(user.expiresAt).getTime();
         const daysLeft = Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000));
         const key = dayKey(`telegramReminder:expiry:${daysLeft}`, user.id);
         if (daysLeft >= 0 && daysLeft <= 3 && !(await db.getSetting(key))) {
-          await sendTelegramMessage(
-            user.telegramId,
+          await sendUserNotification(
+            user,
             [
               "ForwardX 到期提醒",
               "",
@@ -436,8 +458,8 @@ async function runTelegramReminders() {
         const leftPercent = Math.max(0, Math.round(((limit - used) / limit) * 100));
         const key = dayKey("telegramReminder:traffic", user.id);
         if (leftPercent <= trafficReminderThreshold && !(await db.getSetting(key))) {
-          await sendTelegramMessage(
-            user.telegramId,
+          await sendUserNotification(
+            user,
             [
               "ForwardX 流量提醒",
               "",
@@ -459,7 +481,8 @@ async function runTelegramReminders() {
 
       for (const host of hostTrafficAlertHosts as any[]) {
         const owner = usersById.get(Number(host.userId));
-        if (!owner?.telegramId) continue;
+        if (owner?.accountEnabled === false) continue;
+        if (!notificationRecipientId(owner, channel.channel)) continue;
 
         const limit = Number(host.trafficLimit || 0);
         const traffic = trafficByHostId.get(Number(host.id));
@@ -468,8 +491,8 @@ async function runTelegramReminders() {
         const hostTrafficReminderThreshold = Math.min(99, Math.max(1, Math.floor(Number(host.trafficAlertThresholdPercent || 20))));
         const key = dayKey(`telegramReminder:hostTraffic:${host.id}`, owner.id);
         if (leftPercent <= hostTrafficReminderThreshold && !(await db.getSetting(key))) {
-          await sendTelegramMessage(
-            owner.telegramId,
+          await sendUserNotification(
+            owner,
             [
               "ForwardX 主机流量提醒",
               "",
@@ -487,7 +510,8 @@ async function runTelegramReminders() {
 
     for (const host of hostRenewalReminderHosts as any[]) {
       const owner = usersById.get(Number(host.userId));
-      if (!owner?.telegramId) continue;
+      if (owner?.accountEnabled === false) continue;
+      if (!notificationRecipientId(owner, channel.channel)) continue;
       const stoppedAt = new Date(host.stoppedAt).getTime();
       if (!Number.isFinite(stoppedAt)) continue;
       const daysLeft = Math.ceil((stoppedAt - now) / (24 * 60 * 60 * 1000));
@@ -498,8 +522,8 @@ async function runTelegramReminders() {
       const expiryKey = Math.floor(stoppedAt / 1000);
       const key = dayKey(`telegramReminder:hostRenewal:${host.id}:${expiryKey}:${daysLeft}`, owner.id);
       if (await db.getSetting(key)) continue;
-      await sendTelegramMessage(
-        owner.telegramId,
+      await sendUserNotification(
+        owner,
         [
           "ForwardX 主机续费提醒",
           "",
@@ -512,7 +536,7 @@ async function runTelegramReminders() {
       await db.setSetting(key, "sent");
     }
   } catch (error) {
-    console.error("[Scheduler] Telegram reminder error:", error);
+    console.error("[Scheduler] Notification reminder error:", error);
   }
 }
 
@@ -645,7 +669,10 @@ export function startScheduler() {
   const hostStatusSweep = createNonOverlappingScheduledTask("host status sweep", async () => {
     await runHostStatusSweep();
   });
-  const reminderSweep = createNonOverlappingScheduledTask("email and Telegram reminders", async () => {
+  const ruleLimitSweep = createNonOverlappingScheduledTask("rule quota and expiration", async () => {
+    await reconcileRuleLimits();
+  });
+  const reminderSweep = createNonOverlappingScheduledTask("email and bot reminders", async () => {
     await runEmailReminders();
     await runTelegramReminders();
   }, { slowTaskMs: 15_000 });
@@ -683,6 +710,7 @@ export function startScheduler() {
   };
 
   repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
+  repeatAfter(ruleLimitSweep, 30_000, 7_000);
   startSelfTestSweepTimer(async () => { await selfTestTimeoutSweep(); });
   void recoverPendingSelfTestSweep();
   // Agent probe reports and host state transitions trigger failover work.

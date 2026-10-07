@@ -170,6 +170,8 @@ function SetupGate() {
   return <Router />;
 }
 
+import { SeamlessMigrationGate } from "./components/SeamlessMigrationGate";
+
 function App() {
   return (
     <ErrorBoundary>
@@ -177,10 +179,12 @@ function App() {
         <TooltipProvider>
           <ConfirmDialogProvider>
             <DatabaseHealthGate>
+              <SeamlessMigrationGate>
               <PersonalizationLayer />
               <Live2DWidgetHost />
               <Toaster />
               <SetupGate />
+              </SeamlessMigrationGate>
             </DatabaseHealthGate>
           </ConfirmDialogProvider>
         </TooltipProvider>

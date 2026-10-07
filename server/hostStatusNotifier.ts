@@ -1,6 +1,6 @@
 import * as db from "./db";
-import { ENV } from "./env";
-import { sendTelegramMessage } from "./telegramBot";
+import { getNotificationAdminRecipients, sendUserNotification } from "./notifications";
+import { notificationSettings } from "./notificationSettings";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 import { partitionHostsByRecentAgentActivity } from "./agentActivity";
 import {
@@ -87,31 +87,29 @@ export function isHostStatusOnline(host: any) {
 
 async function telegramHostStatusEnabled() {
   const settings = await db.getAllSettings();
-  const envToken = ENV.telegramBotToken.trim();
-  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
-  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
-  return settings.telegramHostStatusNotify === "true" && botEnabled && botConfigured;
+  const channel = notificationSettings(settings);
+  return channel.active && channel.hostStatusNotify;
 }
 
 async function sendHostStatusTelegram(host: any, status: HostStatus) {
   if (!(await telegramHostStatusEnabled())) return;
-  const recipients = await db.getTelegramAdminRecipients();
+  const recipients = await getNotificationAdminRecipients();
   if (recipients.length === 0) return;
   const text = hostStatusMessage(host, status);
   let sent = 0;
   let failed = 0;
   for (const user of recipients as any[]) {
-    if (!user.telegramId) continue;
+    if (!user.notificationId) continue;
     try {
-      await sendTelegramMessage(user.telegramId, text);
+      await sendUserNotification(user, text);
       sent += 1;
     } catch (error) {
       failed += 1;
-      console.warn(`[Telegram] Host status notify failed user=${user.id} host=${host?.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[Notification] Host status notify failed user=${user.id} host=${host?.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   if (sent > 0 || failed > 0) {
-    console.info(`[Telegram] Host status notify status=${status} host=${host?.id} sent=${sent} failed=${failed}`);
+    console.info(`[Notification] Host status notify status=${status} host=${host?.id} sent=${sent} failed=${failed}`);
   }
 }
 

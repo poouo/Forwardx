@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.194"
+var Version = "2.2.195"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -4882,7 +4882,11 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 	if strings.TrimSpace(a.StatusType) == "runtime" {
 		mimicAction := isMimicRuntimeAction(a)
 		wireGuardAction := isWireGuardRuntimeAction(a)
+		var managedConfigTx *managedConfigTransaction
 		runRuntimeShellBatch := func(commands []string, phase string) bool {
+			if strings.TrimSpace(a.ForwardType) == "gost-runtime-sync" && phase == "sync" {
+				return runGostAdditiveSyncCommands(commands, managedConfigTx, actionMessage)
+			}
 			if !mimicAction {
 				return runShellBatch(commands)
 			}
@@ -4927,7 +4931,6 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 				logf("mimic environment check failed status=%s commandReady=%v moduleReady=%v message=%s", environment.Status, environment.CommandReady, environment.ModuleReady, environment.Message)
 			}
 		}
-		var managedConfigTx *managedConfigTransaction
 		if ok && len(a.PreCommands) > 0 {
 			ok = runRuntimeShellBatch(a.PreCommands, "prepare") && ok
 		}
@@ -4941,6 +4944,9 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 			}
 		}
 		if ok {
+			if strings.TrimSpace(a.ForwardType) == "gost-runtime-sync" {
+				protectGostRuntimeRollback(managedConfigTx)
+			}
 			ok = runRuntimeShellBatch(append(append([]string{}, a.Commands...), a.PostCommands...), "sync") && ok
 		}
 		if ok && shouldVerifyManagedRuntimeSync(a) {

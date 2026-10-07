@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { ChangeEvent, ReactNode, useRef } from "react";
 import { Image, Shuffle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -64,12 +65,10 @@ export function AvatarPicker({
         <UserAvatar user={{ id: fallback, username: String(fallback || ""), avatar: value }} className={cn("h-14 w-14", previewClassName)} />
         <div className="flex min-w-0 flex-wrap gap-2">
           <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => inputRef.current?.click()} disabled={disabled}>
-            <Upload className="h-4 w-4" />
-            上传
-          </Button>
+            <Upload className="h-4 w-4" />{translateText("上传")}</Button>
           <Button type="button" variant="outline" size="sm" className="gap-2" onClick={randomPreset} disabled={disabled || randomDisabled || randomLoading}>
             <Shuffle className="h-4 w-4" />
-            {randomLoading ? "随机中..." : "随机"}
+            {randomLoading ? translateText("随机中...") : translateText("随机")}
           </Button>
           {actions}
         </div>
@@ -107,7 +106,7 @@ export function AvatarPicker({
           className="flex aspect-square items-center justify-center rounded-full border border-dashed border-border/70 bg-muted/20 text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => inputRef.current?.click()}
           disabled={disabled}
-          title="上传头像"
+          title={translateText("上传头像")}
         >
           <Image className="h-4 w-4" />
         </button>

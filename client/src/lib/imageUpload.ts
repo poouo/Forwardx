@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 export type CompressedImageResult = {
   dataUrl: string;
   size: number;
@@ -18,7 +19,7 @@ function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+    reader.onerror = () => reject(reader.error || new Error(translateText("读取图片失败")));
     reader.readAsDataURL(file);
   });
 }
@@ -27,7 +28,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("图片解析失败"));
+    image.onerror = () => reject(new Error(translateText("图片解析失败")));
     image.src = url;
   });
 }
@@ -45,7 +46,7 @@ export async function compressImageFile(
     minQuality?: number;
   },
 ): Promise<CompressedImageResult> {
-  if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
+  if (!file.type.startsWith("image/")) throw new Error(translateText("请选择图片文件"));
 
   const original = await fileToDataUrl(file);
   if (file.size <= options.maxBytes && original.length <= options.maxBytes * 1.5) {
@@ -66,7 +67,7 @@ export async function compressImageFile(
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("浏览器不支持图片压缩");
+    if (!ctx) throw new Error(translateText("浏览器不支持图片压缩"));
     ctx.drawImage(image, 0, 0, width, height);
 
     for (let quality = 0.88; quality >= minQuality; quality -= 0.08) {
@@ -78,7 +79,7 @@ export async function compressImageFile(
     scale *= 0.82;
   }
 
-  throw new Error("图片压缩后仍超过限制，请换一张更小的图片");
+  throw new Error(translateText("图片压缩后仍超过限制，请换一张更小的图片"));
 }
 
 export function imageDataUrlSize(dataUrl: string) {

@@ -582,6 +582,25 @@ export function restartManagedServiceIfConfigChangedCmd(svcNameRaw: string, conf
   return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ "$new_hash" != "$old_hash" ] || ! { ${alreadyRunning}; }; then ${start}; [ -n "$new_hash" ] && printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${svcName} config unchanged"; fi`;
 }
 
+// New Agents handle this marker with GOST's per-service API. Older Agents
+// execute the following shell fallback, keeping rolling upgrades compatible.
+// A root-only Unix socket avoids exposing another TCP management port.
+export const GOST_API_DIR = "/run/forwardx-agent/gost-api";
+export function gostRuntimeApiConfig(service: string) {
+  if (!["forwardx-runtime", "forwardx-tunnel-runtime"].includes(service)) {
+    throw new Error("Unsupported GOST runtime service");
+  }
+  return { addr: `unix://${GOST_API_DIR}/${service}.sock` };
+}
+
+export function syncGostServiceIfConfigChangedCmd(service: string, configPath: string) {
+  gostRuntimeApiConfig(service);
+  const expectedPath = service === "forwardx-runtime"
+    ? "/etc/forwardx/runtime/gost.json" : "/etc/forwardx/runtime/tunnel-gost.json";
+  if (configPath !== expectedPath) throw new Error("Unsupported GOST runtime config");
+  return `# forwardx-gost-additive-sync ${service} ${configPath}\n${restartManagedServiceIfConfigChangedCmd(service, configPath)}`;
+}
+
 function mimicInterfaceName(value: string) {
   const name = String(value || "").trim();
   if (!/^[A-Za-z0-9_.:-]+$/.test(name) || name === "." || name === "..") {

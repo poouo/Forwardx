@@ -537,6 +537,17 @@
 }
 
 /* Unified scrollbar style and gutter to avoid text overlap with right-side bars */
+/* Action rows may wrap translated labels; compact icon buttons elsewhere keep
+   their fixed dimensions. Scope this to direct actions, not nested toolbars. */
+.responsive-actions > :is(button, a[role="button"]) {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 2.25rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 :root {
   --fx-scrollbar-size: 10px;
 }

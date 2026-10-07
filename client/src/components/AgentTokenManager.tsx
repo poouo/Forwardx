@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
@@ -41,7 +43,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { isTokenHostOnline } from "@/lib/agentTokenStatus";
 
 type AgentTokenManagerProps = {
@@ -149,29 +151,23 @@ function TokenStatusBadge({ tokenItem }: { tokenItem: any }) {
   if (!host) {
     return (
       <Badge variant="secondary" className="shrink-0 gap-1.5 text-[10px]">
-        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-        未绑定
-      </Badge>
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />{translateText("未绑定")}</Badge>
     );
   }
 
   const isOnline = isTokenHostOnline(host);
   return isOnline ? (
     <Badge className="shrink-0 gap-1.5 border-chart-2/25 bg-chart-2/10 text-chart-2 text-[10px]">
-      <span className="h-2 w-2 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
-      在线
-    </Badge>
+      <span className="h-2 w-2 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />{translateText("在线")}</Badge>
   ) : (
     <Badge className="shrink-0 gap-1.5 border-destructive/25 bg-destructive/10 text-destructive text-[10px]">
-      <span className="h-2 w-2 rounded-full bg-destructive shadow-sm shadow-destructive/50" />
-      离线
-    </Badge>
+      <span className="h-2 w-2 rounded-full bg-destructive shadow-sm shadow-destructive/50" />{translateText("离线")}</Badge>
   );
 }
 
 function TokenHostInfo({ tokenItem, compact = false }: { tokenItem: any; compact?: boolean }) {
   if (!tokenItem.host) {
-    return <span className="text-xs text-muted-foreground">{tokenItem.isUsed ? "关联主机不存在" : "-"}</span>;
+    return <span className="text-xs text-muted-foreground">{tokenItem.isUsed ? translateText("关联主机不存在") : "-"}</span>;
   }
   const address = tokenHostAddress(tokenItem.host);
   return (
@@ -212,7 +208,7 @@ function TokenActionButtons({
         variant="ghost"
         size="icon"
         className="h-8 w-8"
-        title="查看安装命令"
+        title={translateText("查看安装命令")}
         disabled={loadingScriptTokenId === tokenItem.id}
         onClick={() => onOpenScript(tokenItem.id)}
       >
@@ -226,7 +222,7 @@ function TokenActionButtons({
         variant="ghost"
         size="icon"
         className="h-8 w-8"
-        title="编辑备注"
+        title={translateText("编辑备注")}
         onClick={() => onEdit(tokenItem)}
       >
         <Pencil className="h-3.5 w-3.5" />
@@ -235,7 +231,7 @@ function TokenActionButtons({
         variant="ghost"
         size="icon"
         className="h-8 w-8 text-destructive hover:text-destructive"
-        title="删除 Token"
+        title={translateText("删除 Token")}
         onClick={() => onDelete(tokenItem)}
       >
         <Trash2 className="h-3.5 w-3.5" />
@@ -262,7 +258,7 @@ function AgentTokenCard({
   sortableClassName?: string;
 }) {
   const description = typeof tokenItem.description === "string" ? tokenItem.description.trim() : "";
-  const createdAtText = new Date(tokenItem.createdAt).toLocaleString();
+  const createdAtText = new Date(tokenItem.createdAt).toLocaleString(getFormatLocale());
 
   return (
     <Card className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", sortableClassName)}>
@@ -279,9 +275,8 @@ function AgentTokenCard({
                 </p>
                 <p
                   className="truncate text-xs text-muted-foreground"
-                  title={`创建时间：${createdAtText}`}
-                >
-                  创建时间 · {createdAtText}
+                  title={translateText("创建时间：{0}", [createdAtText])}
+                >{translateText("创建时间 · ")}{createdAtText}
                 </p>
               </div>
             </div>
@@ -297,7 +292,7 @@ function AgentTokenCard({
         </code>
 
         <div className="rounded-md bg-muted/25 p-3">
-          <p className="mb-2 text-xs text-muted-foreground">对应主机</p>
+          <p className="mb-2 text-xs text-muted-foreground">{translateText("对应主机")}</p>
           <TokenHostInfo tokenItem={tokenItem} compact />
         </div>
 
@@ -368,10 +363,8 @@ function InstallAddressSelector({
     <div className="space-y-2 rounded-lg border border-border/50 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium">安装连接地址</p>
-          <p className="text-xs text-muted-foreground">
-            需要直连 IP 和端口时，请选择“当前访问地址”。
-          </p>
+          <p className="text-sm font-medium">{translateText("安装连接地址")}</p>
+          <p className="text-xs text-muted-foreground">{translateText("需要直连 IP 和端口时，请选择“当前访问地址”。")}</p>
         </div>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -492,24 +485,24 @@ export default function AgentTokenManager({
     if (configuredPanelUrl) {
       options.push({
         id: "public",
-        label: "公开域名",
-        description: "系统设置中的公开地址。",
+        label: translateText("公开域名"),
+        description: translateText("系统设置中的公开地址。"),
         url: configuredPanelUrl,
       });
     }
     if (currentPanelUrl && (!configuredPanelUrl || panelUrlKey(currentPanelUrl) !== panelUrlKey(configuredPanelUrl))) {
       options.push({
         id: "current",
-        label: configuredPanelUrl ? "当前访问地址" : "默认地址",
-        description: configuredPanelUrl ? "当前浏览器使用的地址。" : "当前面板地址。",
+        label: configuredPanelUrl ? translateText("当前访问地址") : translateText("默认地址"),
+        description: configuredPanelUrl ? translateText("当前浏览器使用的地址。") : translateText("当前面板地址。"),
         url: currentPanelUrl,
       });
     }
     if (options.length === 0 && panelUrl) {
       options.push({
         id: "current",
-        label: "默认地址",
-        description: "当前面板地址。",
+        label: translateText("默认地址"),
+        description: translateText("当前面板地址。"),
         url: panelUrl,
       });
     }
@@ -531,12 +524,12 @@ export default function AgentTokenManager({
   const createTokenMutation = trpc.agentTokens.create.useMutation({
     onSuccess: (data) => {
       utils.agentTokens.list.invalidate();
-      toast.success("安装 Token 已生成");
+      toast.success(translateText("安装 Token 已生成"));
       setNewToken(data.token);
       setShowNewToken(true);
       setShowCreate(false);
     },
-    onError: (err) => toast.error(err.message || "生成 Token 失败"),
+    onError: (err) => toast.error(err.message || translateText("生成 Token 失败")),
   });
 
   const deleteTokenMutation = trpc.agentTokens.delete.useMutation({
@@ -550,26 +543,26 @@ export default function AgentTokenManager({
       const released = Number(data?.releasedPendingCleanup || 0);
       const removedHosts = Number(data?.removedHosts || 0);
       toast.success(released > 0
-        ? `Token 已删除，已释放 ${released} 条待清理规则并移除 ${removedHosts} 台关联主机`
+        ? translateText("Token 已删除，已释放 {0} 条待清理规则并移除 {1} 台关联主机", [released, removedHosts])
         : removedHosts > 0
-          ? `Token 已删除，已移除 ${removedHosts} 台关联主机`
-          : "Token 已删除");
+          ? translateText("Token 已删除，已移除 {0} 台关联主机", [removedHosts])
+          : translateText("Token 已删除"));
     },
-    onError: (err) => toast.error(err.message || "删除 Token 失败"),
+    onError: (err) => toast.error(err.message || translateText("删除 Token 失败")),
   });
 
   const updateTokenMutation = trpc.agentTokens.update.useMutation({
     onSuccess: () => {
       utils.agentTokens.list.invalidate();
-      toast.success("Token 备注已更新");
+      toast.success(translateText("Token 备注已更新"));
       setEditingToken(null);
       setEditDescription("");
     },
-    onError: (err) => toast.error(err.message || "更新 Token 备注失败"),
+    onError: (err) => toast.error(err.message || translateText("更新 Token 备注失败")),
   });
   const reorderTokenMutation = trpc.agentTokens.reorder.useMutation({
-    onSuccess: () => toast.success("Token 顺序已更新"),
-    onError: (err) => toast.error(err.message || "更新 Token 顺序失败"),
+    onSuccess: () => toast.success(translateText("Token 顺序已更新")),
+    onError: (err) => toast.error(err.message || translateText("更新 Token 顺序失败")),
   });
   const tokenReorderPending = reorderTokenMutation.isPending;
   const tokenSortable = useSortableReorder({
@@ -595,7 +588,7 @@ export default function AgentTokenManager({
       setScriptToken(data.token);
       setShowScript(true);
     } catch (err: any) {
-      toast.error(err?.message || "获取安装命令失败");
+      toast.error(err?.message || translateText("获取安装命令失败"));
     } finally {
       setLoadingScriptTokenId(null);
     }
@@ -605,7 +598,7 @@ export default function AgentTokenManager({
     if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
       try {
         await navigator.clipboard.writeText(text);
-        toast.success("已复制到剪贴板");
+        toast.success(translateText("已复制到剪贴板"));
         return;
       } catch (err) {
         console.warn("[Clipboard] navigator.clipboard 失败，回退 execCommand:", err);
@@ -642,15 +635,15 @@ export default function AgentTokenManager({
     }
 
     if (success) {
-      toast.success("已复制到剪贴板");
+      toast.success(translateText("已复制到剪贴板"));
       return;
     }
 
     try {
-      window.prompt("复制失败，请手动选中并复制 (Ctrl+C / Cmd+C)：", text);
-      toast.warning("未能自动写入剪贴板，已弹出手动复制窗口");
+      window.prompt(translateText("复制失败，请手动选中并复制 (Ctrl+C / Cmd+C)："), text);
+      toast.warning(translateText("未能自动写入剪贴板，已弹出手动复制窗口"));
     } catch {
-      toast.error("复制失败，请手动复制");
+      toast.error(translateText("复制失败，请手动复制"));
     }
   };
 
@@ -690,16 +683,14 @@ export default function AgentTokenManager({
       {!dialogOnly && (
       <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-muted-foreground">
-          生成 Agent 安装命令；上线后自动绑定到面板。
-        </p>
+        <p className="text-sm text-muted-foreground">{translateText("生成 Agent 安装命令；上线后自动绑定到面板。")}</p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           {!hideViewModeToggle && <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              title="卡片视图"
+              title={translateText("卡片视图")}
               onClick={() => handleViewModeChange("card")}
             >
               <LayoutGrid className="h-4 w-4" />
@@ -708,7 +699,7 @@ export default function AgentTokenManager({
               variant={viewMode === "table" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              title="列表视图"
+              title={translateText("列表视图")}
               onClick={() => handleViewModeChange("table")}
             >
               <List className="h-4 w-4" />
@@ -716,23 +707,21 @@ export default function AgentTokenManager({
           </div>}
           {showCreateButton && (
             <Button onClick={openCreateDialog} className="w-full gap-2 sm:w-auto">
-              <Plus className="h-4 w-4" />
-              添加主机
-            </Button>
+              <Plus className="h-4 w-4" />{translateText("添加主机")}</Button>
           )}
         </div>
       </div>
 
       <Alert className="border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
         <ShieldCheck className="h-4 w-4" />
-        <AlertTitle>通讯已加密</AlertTitle>
+        <AlertTitle>{translateText("通讯已加密")}</AlertTitle>
       </Alert>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4">
-              <DataSectionLoading label="正在加载 Agent Token" />
+              <DataSectionLoading label={translateText("正在加载 Agent Token")} />
             </div>
           ) : displayedTokenItems.length > 0 ? (
             <>
@@ -787,11 +776,11 @@ export default function AgentTokenManager({
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-[44px]" />
                       <TableHead>Token</TableHead>
-                      <TableHead className="hidden sm:table-cell">描述</TableHead>
-                      <TableHead>主机状态</TableHead>
-                      <TableHead>对应主机</TableHead>
-                      <TableHead className="hidden md:table-cell">创建时间</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
+                      <TableHead className="hidden sm:table-cell">{translateText("描述")}</TableHead>
+                      <TableHead>{translateText("主机状态")}</TableHead>
+                      <TableHead>{translateText("对应主机")}</TableHead>
+                      <TableHead className="hidden md:table-cell">{translateText("创建时间")}</TableHead>
+                      <TableHead className="text-right">{translateText("操作")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <SortableReorderContext sortable={tokenSortable} ids={displayedTokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
@@ -828,7 +817,7 @@ export default function AgentTokenManager({
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <span className="text-xs text-muted-foreground">
-                            {new Date(tokenItem.createdAt).toLocaleString()}
+                            {new Date(tokenItem.createdAt).toLocaleString(getFormatLocale())}
                           </span>
                         </TableCell>
                         <TableCell className="text-right">
@@ -856,9 +845,9 @@ export default function AgentTokenManager({
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <Key className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">{isTextFiltered && tokenItems.length > 0 ? "未找到匹配 Token" : "暂无 Token"}</p>
+              <p className="text-lg font-medium">{isTextFiltered && tokenItems.length > 0 ? translateText("未找到匹配 Token") : translateText("暂无 Token")}</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                {isTextFiltered && tokenItems.length > 0 ? "调整筛选内容或清空搜索" : "添加主机后会生成 Agent 安装命令"}
+                {isTextFiltered && tokenItems.length > 0 ? translateText("调整筛选内容或清空搜索") : translateText("添加主机后会生成 Agent 安装命令")}
               </p>
               {showCreateButton && (
                 <Button
@@ -866,9 +855,7 @@ export default function AgentTokenManager({
                   variant="outline"
                   className="mt-4 gap-2"
                 >
-                  <Plus className="h-4 w-4" />
-                  添加主机
-                </Button>
+                  <Plus className="h-4 w-4" />{translateText("添加主机")}</Button>
               )}
             </div>
           )}
@@ -880,31 +867,25 @@ export default function AgentTokenManager({
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>添加主机</DialogTitle>
-            <DialogDescription>
-              先生成 Agent 安装 Token，再复制命令到目标主机执行。
-            </DialogDescription>
+            <DialogTitle>{translateText("添加主机")}</DialogTitle>
+            <DialogDescription>{translateText("先生成 Agent 安装 Token，再复制命令到目标主机执行。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>描述（可选）</Label>
+              <Label>{translateText("描述（可选）")}</Label>
               <Input
-                placeholder="例如: 香港节点 Agent"
+                placeholder={translateText("例如: 香港节点 Agent")}
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreate(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowCreate(false)}>{translateText("取消")}</Button>
             <Button
               onClick={() => createTokenMutation.mutate({ description: description || undefined })}
               disabled={createTokenMutation.isPending}
-            >
-              生成安装命令
-            </Button>
+            >{translateText("生成安装命令")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -913,12 +894,8 @@ export default function AgentTokenManager({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-chart-2" />
-              安装命令已生成
-            </DialogTitle>
-            <DialogDescription>
-              在目标主机执行命令；Agent 上线后会出现在主机列表。
-            </DialogDescription>
+              <CheckCircle2 className="h-5 w-5 text-chart-2" />{translateText("安装命令已生成")}</DialogTitle>
+            <DialogDescription>{translateText("在目标主机执行命令；Agent 上线后会出现在主机列表。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <InstallAddressSelector
@@ -929,14 +906,12 @@ export default function AgentTokenManager({
             {panelUrlUsesLoopback && (
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>当前安装地址是本机回环地址</AlertTitle>
-                <AlertDescription>
-                  Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。
-                </AlertDescription>
+                <AlertTitle>{translateText("当前安装地址是本机回环地址")}</AlertTitle>
+                <AlertDescription>{translateText("Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。")}</AlertDescription>
               </Alert>
             )}
             <div className="space-y-2">
-              <p className="text-sm font-medium">快速安装命令：</p>
+              <p className="text-sm font-medium">{translateText("快速安装命令：")}</p>
               <div className="p-3 rounded-lg bg-background/50 border">
                 <code className="text-xs font-mono break-all">
                   {getInstallCommand(newToken)}
@@ -948,13 +923,11 @@ export default function AgentTokenManager({
                 className="w-full gap-2"
                 onClick={() => copyToClipboard(getInstallCommand(newToken))}
               >
-                <Copy className="h-3 w-3" />
-                复制安装命令
-              </Button>
+                <Copy className="h-3 w-3" />{translateText("复制安装命令")}</Button>
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowNewToken(false)}>确定</Button>
+            <Button onClick={() => setShowNewToken(false)}>{translateText("确定")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -967,33 +940,27 @@ export default function AgentTokenManager({
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>编辑 Token 备注</DialogTitle>
-            <DialogDescription>
-              备注会作为新主机默认名称。
-            </DialogDescription>
+            <DialogTitle>{translateText("编辑 Token 备注")}</DialogTitle>
+            <DialogDescription>{translateText("备注会作为新主机默认名称。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label>备注</Label>
+            <Label>{translateText("备注")}</Label>
             <Input
               value={editDescription}
               maxLength={200}
-              placeholder="例如：香港节点 Agent"
+              placeholder={translateText("例如：香港节点 Agent")}
               onChange={(event) => setEditDescription(event.target.value)}
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingToken(null)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setEditingToken(null)}>{translateText("取消")}</Button>
             <Button
               disabled={updateTokenMutation.isPending || !editingToken}
               onClick={() => updateTokenMutation.mutate({
                 id: editingToken.id,
                 description: editDescription.trim() || null,
               })}
-            >
-              保存
-            </Button>
+            >{translateText("保存")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1002,12 +969,8 @@ export default function AgentTokenManager({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
-              删除 Agent Token
-            </DialogTitle>
-            <DialogDescription>
-              删除后该 Token 将失效；如果关联主机没有转发规则、转发组或隧道引用，会同步从主机管理中移除。
-            </DialogDescription>
+              <AlertTriangle className="h-5 w-5" />{translateText("删除 Agent Token")}</DialogTitle>
+            <DialogDescription>{translateText("删除后该 Token 将失效；如果关联主机没有转发规则、转发组或隧道引用，会同步从主机管理中移除。")}</DialogDescription>
           </DialogHeader>
           <div className="rounded-lg border border-border/50 bg-muted/30 p-3 text-sm">
             <div className="font-mono break-all">{tokenToDelete?.token}</div>
@@ -1016,7 +979,7 @@ export default function AgentTokenManager({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTokenToDelete(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setTokenToDelete(null)}>{translateText("取消")}</Button>
             <Button
               variant="destructive"
               disabled={deleteTokenMutation.isPending || !tokenToDelete}
@@ -1026,9 +989,7 @@ export default function AgentTokenManager({
                 setTokenToDelete(null);
                 deleteTokenMutation.mutate({ id });
               }}
-            >
-              确认删除
-            </Button>
+            >{translateText("确认删除")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1040,12 +1001,8 @@ export default function AgentTokenManager({
         <DialogContent className="w-[calc(100vw-2rem)] max-w-[42rem] sm:w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Terminal className="h-5 w-5" />
-              安装命令
-            </DialogTitle>
-            <DialogDescription>
-              使用 root 执行命令。
-            </DialogDescription>
+              <Terminal className="h-5 w-5" />{translateText("安装命令")}</DialogTitle>
+            <DialogDescription>{translateText("使用 root 执行命令。")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <InstallAddressSelector
@@ -1056,25 +1013,23 @@ export default function AgentTokenManager({
             {panelUrlUsesLoopback && (
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>当前安装地址是本机回环地址</AlertTitle>
-                <AlertDescription>
-                  Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。
-                </AlertDescription>
+                <AlertTitle>{translateText("当前安装地址是本机回环地址")}</AlertTitle>
+                <AlertDescription>{translateText("Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。")}</AlertDescription>
               </Alert>
             )}
             <CommandRow
-              label="安装命令"
+              label={translateText("安装命令")}
               command={scriptToken ? getInstallCommand(scriptToken) : ""}
               copyDisabled={!scriptToken}
               onCopy={() => scriptToken && copyToClipboard(getInstallCommand(scriptToken))}
             />
             <CommandRow
-              label="卸载命令"
+              label={translateText("卸载命令")}
               command={getUninstallCommand()}
               onCopy={() => copyToClipboard(getUninstallCommand())}
             />
             <CommandRow
-              label="升级命令"
+              label={translateText("升级命令")}
               command={getUpgradeCommand()}
               onCopy={() => copyToClipboard(getUpgradeCommand())}
             />
@@ -1083,7 +1038,7 @@ export default function AgentTokenManager({
             <Button onClick={() => {
               setShowScript(false);
               setScriptToken("");
-            }}>关闭</Button>
+            }}>{translateText("关闭")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

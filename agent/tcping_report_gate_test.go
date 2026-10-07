@@ -1,9 +1,124 @@
 package main
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestTCPingCounterPreservesSuppressedSuccessesAndHealth(t *testing.T) {
+	gate := newTCPingReportGate()
+	now := time.Now()
+	sent := 0
+	var last map[string]any
+	for i := 0; i < 1000; i++ {
+		report := tcpingGateResult(1, i == 150, 8)
+		report["probeCount"] = 3
+		report["probeSuccesses"] = 3
+		if i == 150 {
+			report["probeSuccesses"] = 0
+		}
+		plan := gate.plan([]map[string]any{report}, nil, nil, nil, i == 999, now.Add(time.Duration(i)*time.Second))
+		if _, changed := report["probeCounterEpoch"]; changed {
+			t.Fatal("must not mutate current health report")
+		}
+		if len(plan.results) > 0 {
+			sent++
+			last = plan.results[0]
+			if tcpingReportInt(last, "probeCount") != 3 {
+				t.Fatal("must preserve current batch for health decisions")
+			}
+			if (i == 150) != tcpingReportStatus(last) {
+				t.Fatal("health status changed")
+			}
+			gate.commit(plan)
+			gate.commit(plan) // An acknowledgement is not another probe.
+		} else if i == 150 || i == 151 {
+			t.Fatal("failure/recovery must be immediate")
+		}
+	}
+	if sent >= 10 {
+		t.Fatalf("steady report throttling lost: %d reports", sent)
+	}
+	if tcpingReportInt(last, "probeTotalCount") != 3000 || tcpingReportInt(last, "probeTotalSuccesses") != 2997 {
+		t.Fatalf("suppressed probes lost or counted twice: %+v", last)
+	}
+}
+
+func TestTCPingCountersSeparateEpochsAndBoundMemory(t *testing.T) {
+	gate := newTCPingReportGate()
+	now := time.Now()
+	report := tcpingGateResult(1, false, 8)
+	first := gate.plan([]map[string]any{report}, nil, nil, nil, true, now).results[0]
+	second := gate.plan([]map[string]any{report}, nil, nil, nil, true, now.Add(time.Second)).results[0]
+	if tcpingReportInt(second, "probeTotalCount") != 2 || first["probeCounterEpoch"] != second["probeCounterEpoch"] {
+		t.Fatal("unacknowledged POST must keep monotonic counters")
+	}
+	restarted := newTCPingReportGate().plan([]map[string]any{report}, nil, nil, nil, true, now).results[0]
+	if restarted["probeCounterEpoch"] == first["probeCounterEpoch"] {
+		t.Fatal("restart must rotate epoch")
+	}
+	report["topologyKey"] = "new-topology"
+	changed := gate.plan([]map[string]any{report}, nil, nil, nil, true, now.Add(2*time.Second)).results[0]
+	if changed["probeCounterEpoch"] == first["probeCounterEpoch"] {
+		t.Fatal("topology change must rotate counter stream")
+	}
+	expired := gate.plan([]map[string]any{report}, nil, nil, nil, true, now.Add(tcpingReportStateTTL+3*time.Second)).results[0]
+	if expired["probeCounterEpoch"] == changed["probeCounterEpoch"] {
+		t.Fatal("TTL reset must use a new epoch")
+	}
+	for _, element := range gate.counters {
+		element.Value.(*tcpingProbeCounter).count = tcpingCounterMax
+	}
+	rolled := gate.plan([]map[string]any{report}, nil, nil, nil, true, now.Add(tcpingReportStateTTL+4*time.Second)).results[0]
+	if rolled["probeCounterEpoch"] == expired["probeCounterEpoch"] || tcpingReportInt(rolled, "probeTotalCount") != 1 {
+		t.Fatal("counter overflow must rotate epoch")
+	}
+	gate = newTCPingReportGate()
+	for i := 0; i <= tcpingCounterCapacity; i++ {
+		item := map[string]any{"ruleId": i + 1, "probeKey": fmt.Sprint(i), "isTimeout": false}
+		gate.countReports("rule", []map[string]any{item}, now)
+	}
+	if len(gate.counters) != tcpingCounterCapacity || gate.counterOrder.Len() != tcpingCounterCapacity {
+		t.Fatal("counter cache must be bounded")
+	}
+	gate.plan(nil, nil, nil, nil, false, now.Add(tcpingReportStateTTL+time.Second))
+	if len(gate.counters) != 0 || gate.counterOrder.Len() != 0 {
+		t.Fatal("expired counters must be reclaimed")
+	}
+}
+
+func TestTCPingCountersConcurrentCollections(t *testing.T) {
+	gate := newTCPingReportGate()
+	var workers sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			plan := gate.plan([]map[string]any{tcpingGateResult(1, false, 8)}, nil, nil, nil, true, time.Now())
+			gate.commit(plan)
+		}()
+	}
+	workers.Wait()
+	last := gate.plan([]map[string]any{tcpingGateResult(1, false, 8)}, nil, nil, nil, true, time.Now()).results[0]
+	if tcpingReportInt(last, "probeTotalCount") != 101 {
+		t.Fatalf("lost concurrent probes: %+v", last)
+	}
+}
+
+func TestTCPingCountersDoNotCountSyntheticSelfHops(t *testing.T) {
+	gate := newTCPingReportGate()
+	report := tcpingGateHop("group", 3, 0, "group-self", false)
+	report["method"] = "self"
+	plan := gate.plan(nil, nil, []map[string]any{report}, nil, true, time.Now())
+	if len(plan.forwardGroups) != 1 {
+		t.Fatal("synthetic hop must still participate in health topology")
+	}
+	if _, counted := plan.forwardGroups[0]["probeTotalCount"]; counted {
+		t.Fatal("synthetic success must not dilute actual failure rate")
+	}
+}
 
 func tcpingGateResult(id int, timeout bool, latency int) map[string]any {
 	return map[string]any{

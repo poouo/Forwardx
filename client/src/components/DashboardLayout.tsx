@@ -1,4 +1,8 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
+import LanguageSelector from "@/components/LanguageSelector";
+import DiscordAccountCard from "@/components/DiscordAccountCard";
 import { Progress } from "@/components/ui/progress";
 import {
   DropdownMenu,
@@ -71,7 +75,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } f
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { trpc } from "@/lib/trpc";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { renderMixedHtml } from "@/lib/htmlContent";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
@@ -94,25 +98,25 @@ type SidebarNavItem = {
   externalUrl?: string;
 };
 
-const announcementsMenuItem: SidebarNavItem = { icon: Megaphone, label: "公告", path: "/announcements", menuKey: "announcements" };
+const announcementsMenuItem: SidebarNavItem = { icon: Megaphone, label: translateText("公告"), path: "/announcements", menuKey: "announcements" };
 
 const mainMenuItems: SidebarNavItem[] = [
-  { icon: LayoutDashboard, label: "仪表盘", path: "/", menuKey: "dashboard" },
-  { icon: Server, label: "主机管理", path: "/hosts" },
-  { icon: Route, label: "链路管理", path: "/tunnels" },
-  { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
+  { icon: LayoutDashboard, label: translateText("仪表盘"), path: "/", menuKey: "dashboard" },
+  { icon: Server, label: translateText("主机管理"), path: "/hosts" },
+  { icon: Route, label: translateText("链路管理"), path: "/tunnels" },
+  { icon: ArrowRightLeft, label: translateText("转发规则"), path: "/rules" },
 ];
-const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile", menuKey: "profile" };
-const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass", menuKey: "lookingGlass" };
-const pluginManagementMenuItem: SidebarNavItem = { icon: Puzzle, label: "插件管理", path: "/plugins", menuKey: "plugins" };
+const profileMenuItem: SidebarNavItem = { icon: UserRound, label: translateText("个人资料"), path: "/profile", menuKey: "profile" };
+const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: translateText("网络测试"), path: "/looking-glass", menuKey: "lookingGlass" };
+const pluginManagementMenuItem: SidebarNavItem = { icon: Puzzle, label: translateText("插件管理"), path: "/plugins", menuKey: "plugins" };
 
 const adminMenuItems: SidebarNavItem[] = [
-  { icon: CreditCard, label: "支付对接", path: "/payments", menuKey: "payments" },
-  { icon: WalletCards, label: "账单与兑换", path: "/billing", menuKey: "billing" },
-  { icon: Package, label: "套餐管理", path: "/plans", menuKey: "plans" },
-  { icon: Users, label: "用户管理", path: "/users", menuKey: "users" },
+  { icon: CreditCard, label: translateText("支付对接"), path: "/payments", menuKey: "payments" },
+  { icon: WalletCards, label: translateText("账单与兑换"), path: "/billing", menuKey: "billing" },
+  { icon: Package, label: translateText("套餐管理"), path: "/plans", menuKey: "plans" },
+  { icon: Users, label: translateText("用户管理"), path: "/users", menuKey: "users" },
   lookingGlassMenuItem,
-  { icon: Settings, label: "系统设置", path: "/settings", menuKey: "settings" },
+  { icon: Settings, label: translateText("系统设置"), path: "/settings", menuKey: "settings" },
 ];
 
 const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
@@ -294,13 +298,13 @@ function readPanelUpgradeSession(): PanelUpgradeSession | null {
 function getLayoutUpgradeProgress(job: any) {
   const status = job?.status || "idle";
   const isRollback = job?.mode === "rollback";
-  const actionLabel = isRollback ? "回退" : "升级";
+  const actionLabel = isRollback ? translateText("回退") : translateText("升级");
   const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
   const matched = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(logs));
   const steps = [
-    { label: `准备${actionLabel}`, done: status !== "idle" && matched([/开始升级/i, /开始回退/i, /Starting panel/i, /start/i]) },
+    { label: translateText("准备{0}", [actionLabel]), done: status !== "idle" && matched([/开始升级/i, /开始回退/i, /Starting panel/i, /start/i]) },
     {
-      label: "检查发布资产",
+      label: translateText("检查发布资产"),
       done: matched([
         /Release assets/i,
         /not available yet/i,
@@ -312,7 +316,7 @@ function getLayoutUpgradeProgress(job: any) {
       ]),
     },
     {
-      label: "下载或拉取资产",
+      label: translateText("下载或拉取资产"),
       done: matched([
         /Downloading panel bundle/i,
         /Pulling image/i,
@@ -326,26 +330,26 @@ function getLayoutUpgradeProgress(job: any) {
         /Lockfile is up to date/i,
       ]),
     },
-    { label: "安装并重启", done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]) },
+    { label: translateText("安装并重启"), done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]) },
   ];
 
   if (status === "success") {
-    return { percent: 100, label: `${actionLabel}完成，正在等待面板恢复`, steps: steps.map((step) => ({ ...step, done: true, active: false })) };
+    return { percent: 100, label: translateText("{0}完成，正在等待面板恢复", [actionLabel]), steps: steps.map((step) => ({ ...step, done: true, active: false })) };
   }
   if (status === "waiting_assets") {
-    return { percent: 34, label: "等待 GitHub Actions 构建发布资产", steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
+    return { percent: 34, label: translateText("等待 GitHub Actions 构建发布资产"), steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
   }
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    return { percent: Math.max(10, doneCount * 22), label: `${actionLabel}异常`, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
+    return { percent: Math.max(10, doneCount * 22), label: translateText("{0}异常", [actionLabel]), steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
   if (status === "running") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: steps[activeIndex]?.label || `正在${actionLabel}`, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
+    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: steps[activeIndex]?.label || translateText("正在{0}", [actionLabel]), steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
-  return { percent: 0, label: `等待确认${actionLabel}`, steps: steps.map((step) => ({ ...step, active: false })) };
+  return { percent: 0, label: translateText("等待确认{0}", [actionLabel]), steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
 export default function DashboardLayout({
@@ -444,6 +448,7 @@ function DashboardLayoutContent({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const { data: discordStatus } = trpc.discord.status.useQuery(undefined, { enabled: !!user, refetchOnWindowFocus: true });
   const sidebarMenuSettings = useMemo(
     () => normalizeSidebarMenuSettings(publicInfo?.sidebarMenu),
     [publicInfo?.sidebarMenu]
@@ -514,10 +519,10 @@ function DashboardLayoutContent({
         }
       }
       setShowUpgradeDialog(false);
-      toast.success("升级任务已在后台执行");
+      toast.success(translateText("升级任务已在后台执行"));
       refetchUpgradeStatus();
     },
-    onError: (error) => toast.error(error.message || "启动升级失败"),
+    onError: (error) => toast.error(error.message || translateText("启动升级失败")),
   });
 
   const scheduleUpgradeRefresh = useCallback(() => {
@@ -712,7 +717,7 @@ function DashboardLayoutContent({
       utils.announcements.popup.setData(undefined, undefined);
     },
     onError: (error) => {
-      toast.error(error.message || "关闭公告失败");
+      toast.error(error.message || translateText("关闭公告失败"));
     },
     onSettled: () => {
       utils.announcements.popup.invalidate();
@@ -735,7 +740,7 @@ function DashboardLayoutContent({
       utils.announcements.upgradePopup.setData(undefined, undefined);
     },
     onError: (error) => {
-      toast.error(error.message || "关闭升级公告失败");
+      toast.error(error.message || translateText("关闭升级公告失败"));
     },
     onSettled: () => {
       utils.announcements.upgradePopup.invalidate();
@@ -757,14 +762,14 @@ function DashboardLayoutContent({
 
   const changePasswordMutation = trpc.auth.changePassword.useMutation({
     onSuccess: () => {
-      toast.success("密码修改成功");
+      toast.success(translateText("密码修改成功"));
       setShowChangePassword(false);
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
     },
     onError: (error) => {
-      toast.error(error.message || "密码修改失败");
+      toast.error(error.message || translateText("密码修改失败"));
     },
   });
 
@@ -772,10 +777,10 @@ function DashboardLayoutContent({
     onSuccess: () => {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
-      toast.success("头像已更新");
+      toast.success(translateText("头像已更新"));
       setShowAvatarDialog(false);
     },
-    onError: (error) => toast.error(error.message || "头像更新失败"),
+    onError: (error) => toast.error(error.message || translateText("头像更新失败")),
   });
 
   const openAvatarDialog = () => {
@@ -786,7 +791,7 @@ function DashboardLayoutContent({
 
   const handleSaveAvatar = () => {
     if (!avatarDraft) {
-      toast.error("请选择头像");
+      toast.error(translateText("请选择头像"));
       return;
     }
     updateAvatarMutation.mutate({ avatar: avatarDraft });
@@ -798,32 +803,32 @@ function DashboardLayoutContent({
       setTelegramBindTick(Date.now());
       setShowTelegramDialog(true);
       utils.telegram.status.invalidate();
-      toast.success("Telegram 绑定码已生成");
+      toast.success(translateText("Telegram 绑定码已生成"));
     },
-    onError: (error) => toast.error(error.message || "生成 Telegram 绑定码失败"),
+    onError: (error) => toast.error(error.message || translateText("生成 Telegram 绑定码失败")),
   });
 
   const unbindTelegramMutation = trpc.telegram.unbind.useMutation({
     onSuccess: () => {
       setTelegramBind(null);
       utils.telegram.status.invalidate();
-      toast.success("Telegram 已解绑");
+      toast.success(translateText("Telegram 已解绑"));
       setShowTelegramDialog(false);
     },
-    onError: (error) => toast.error(error.message || "解绑 Telegram 失败"),
+    onError: (error) => toast.error(error.message || translateText("解绑 Telegram 失败")),
   });
 
   const handleChangePassword = () => {
     if (!oldPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (newPassword.length < 6) {
-      toast.error("新密码至少6个字符");
+      toast.error(translateText("新密码至少6个字符"));
       return;
     }
     if (newPassword !== confirmPassword) {
-      toast.error("两次输入的新密码不一致");
+      toast.error(translateText("两次输入的新密码不一致"));
       return;
     }
     changePasswordMutation.mutate({ oldPassword, newPassword });
@@ -831,11 +836,12 @@ function DashboardLayoutContent({
 
   const copyText = async (text: string) => {
     const copied = await copyTextToClipboard(text);
-    if (copied) toast.success("已复制到剪贴板");
-    else toast.error("复制失败，请长按或手动选中复制");
+    if (copied) toast.success(translateText("已复制到剪贴板"));
+    else toast.error(translateText("复制失败，请长按或手动选中复制"));
   };
 
   const openTelegramDialog = () => {
+    if (discordStatus?.selected) { setShowTelegramDialog(true); return; }
     if (telegramStatus?.bound) {
       setShowTelegramDialog(true);
       return;
@@ -860,14 +866,14 @@ function DashboardLayoutContent({
       setTwoFactorQrCode("");
       setTwoFactorSetupTick(Date.now());
       setTwoFactorCode("");
-      toast.success("双重验证二维码已生成");
+      toast.success(translateText("双重验证二维码已生成"));
     },
-    onError: (error) => toast.error(error.message || "生成双重验证二维码失败"),
+    onError: (error) => toast.error(error.message || translateText("生成双重验证二维码失败")),
   });
 
   const enableTwoFactorMutation = trpc.auth.enableTwoFactor.useMutation({
     onSuccess: () => {
-      toast.success("双重验证已启用");
+      toast.success(translateText("双重验证已启用"));
       setTwoFactorSetup(null);
       setTwoFactorQrCode("");
       setTwoFactorPassword("");
@@ -875,18 +881,18 @@ function DashboardLayoutContent({
       utils.auth.twoFactorStatus.invalidate();
       utils.auth.me.invalidate();
     },
-    onError: (error) => toast.error(error.message || "启用双重验证失败"),
+    onError: (error) => toast.error(error.message || translateText("启用双重验证失败")),
   });
 
   const disableTwoFactorMutation = trpc.auth.disableTwoFactor.useMutation({
     onSuccess: () => {
-      toast.success("双重验证已关闭");
+      toast.success(translateText("双重验证已关闭"));
       setTwoFactorPassword("");
       setTwoFactorCode("");
       utils.auth.twoFactorStatus.invalidate();
       utils.auth.me.invalidate();
     },
-    onError: (error) => toast.error(error.message || "关闭双重验证失败"),
+    onError: (error) => toast.error(error.message || translateText("关闭双重验证失败")),
   });
 
   useEffect(() => {
@@ -910,7 +916,7 @@ function DashboardLayoutContent({
       .catch(() => {
         if (!cancelled) {
           setTwoFactorQrCode("");
-          toast.error("二维码生成失败，请使用手动密钥添加");
+          toast.error(translateText("二维码生成失败，请使用手动密钥添加"));
         }
       });
     return () => {
@@ -955,15 +961,15 @@ function DashboardLayoutContent({
       return;
     }
     if (twoFactorSetupExpired) {
-      toast.error("二维码已过期，请重新生成");
+      toast.error(translateText("二维码已过期，请重新生成"));
       return;
     }
     if (!twoFactorPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (twoFactorCode.length < 6) {
-      toast.error("请输入 6 位动态验证码");
+      toast.error(translateText("请输入 6 位动态验证码"));
       return;
     }
     enableTwoFactorMutation.mutate({
@@ -975,11 +981,11 @@ function DashboardLayoutContent({
 
   const handleDisableTwoFactor = () => {
     if (!twoFactorPassword) {
-      toast.error("请输入当前密码");
+      toast.error(translateText("请输入当前密码"));
       return;
     }
     if (twoFactorCode.length < 6) {
-      toast.error("请输入 6 位动态验证码");
+      toast.error(translateText("请输入 6 位动态验证码"));
       return;
     }
     disableTwoFactorMutation.mutate({
@@ -1002,10 +1008,10 @@ function DashboardLayoutContent({
         }
         setShowMobileUpdateDialog(true);
       } else if (result) {
-        toast.success(result.hasPackage ? "当前 APP 已是最新版本" : `当前版本暂无 ${result.packageLabel} 更新`);
+        toast.success(result.hasPackage ? translateText("当前 APP 已是最新版本") : translateText("当前版本暂无 {0} 更新", [result.packageLabel]));
       }
     } catch (error: any) {
-      toast.error(error?.message || "APP 更新检查失败");
+      toast.error(error?.message || translateText("APP 更新检查失败"));
     } finally {
       setCheckingMobileUpdate(false);
     }
@@ -1054,9 +1060,9 @@ function DashboardLayoutContent({
   const canShowNetworkTest = (isAdmin || publicInfo?.lookingGlassUserEnabled === true) && sidebarMenuSettings.lookingGlass !== false;
   const userStoreMenuItems = !isAdmin
     ? [
-        { icon: Package, label: "我的订阅", path: "/subscriptions" },
-        { icon: ReceiptText, label: "账单中心", path: "/wallet" },
-        ...(storeStatus?.enabled ? [{ icon: ShoppingBag, label: "商店", path: "/store" }] : []),
+        { icon: Package, label: translateText("我的订阅"), path: "/subscriptions" },
+        { icon: ReceiptText, label: translateText("账单中心"), path: "/wallet" },
+        ...(storeStatus?.enabled ? [{ icon: ShoppingBag, label: translateText("商店"), path: "/store" }] : []),
       ]
     : [];
   const visibleAnnouncementsMenuItems = isSidebarNavItemVisible(announcementsMenuItem) ? [announcementsMenuItem] : [];
@@ -1128,7 +1134,7 @@ function DashboardLayoutContent({
   const upgradeProgress = getLayoutUpgradeProgress(displayUpgradeJob);
   const isPanelVersionTaskVisible = !!displayUpgradeJob?.status && displayUpgradeJob.status !== "idle";
   const isPanelRollbackTask = displayUpgradeJob?.mode === "rollback";
-  const panelVersionActionLabel = isPanelRollbackTask ? "回退" : "升级";
+  const panelVersionActionLabel = isPanelRollbackTask ? translateText("回退") : translateText("升级");
   const upgradeTargetVersion = isPanelVersionTaskVisible
     ? (displayUpgradeJob?.targetVersion || "")
     : (updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || "");
@@ -1148,8 +1154,8 @@ function DashboardLayoutContent({
       : null,
   });
   const upgradeRefreshText = upgradeRefreshCountdown !== null
-    ? (upgradeRefreshCountdown > 0 ? `${upgradeRefreshCountdown} 秒后自动刷新` : "正在刷新页面")
-    : "系统恢复后将自动刷新";
+    ? (upgradeRefreshCountdown > 0 ? translateText("{0} 秒后自动刷新", [upgradeRefreshCountdown]) : translateText("正在刷新页面"))
+    : translateText("系统恢复后将自动刷新");
   const hasPanelUpdate = isAdmin && !!updateInfo?.hasUpdate && !!upgradeTargetVersion;
   const showUpgradeNotice = isAdmin && (
     (hasPanelUpdate && !isPanelUpdateNoticeDismissed) ||
@@ -1168,7 +1174,7 @@ function DashboardLayoutContent({
       // Local dismissal only affects the sidebar notice.
     }
     setShowUpgradeDialog(false);
-    toast.success(`v${normalizedUpgradeTargetVersion} 不再在左下角提醒`);
+    toast.success(translateText("v{0} 不再在左下角提醒", [normalizedUpgradeTargetVersion]));
   };
   const managementMenuItems: SidebarNavItem[] = isAdmin
     ? [...visibleProfileMenuItems, ...visibleAdminMenuItems]
@@ -1208,10 +1214,10 @@ function DashboardLayoutContent({
       if (latestInfo?.hasUpdate) {
         setShowUpgradeDialog(true);
       } else {
-        toast.success("当前已是最新版本");
+        toast.success(translateText("当前已是最新版本"));
       }
     } catch (error: any) {
-      toast.error(error?.message || "检查更新失败");
+      toast.error(error?.message || translateText("检查更新失败"));
     }
   };
   const renderSidebarItems = (items: SidebarNavItem[]) => items.map((item) => {
@@ -1349,7 +1355,7 @@ function DashboardLayoutContent({
                     onClick={toggleTheme}
                     className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
                     aria-label="Toggle theme"
-                    title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
+                    title={resolvedTheme === "dark" ? translateText("切换到白天模式") : translateText("切换到黑夜模式")}
                   >
                     {resolvedTheme === "dark" ? (
                       <Sun className="h-4 w-4 text-muted-foreground" />
@@ -1382,9 +1388,7 @@ function DashboardLayoutContent({
         <SidebarContent className="gap-1 pb-2 mobile-sidebar-content">
           {primaryMenuItems.length > 0 && (
             <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-                主菜单
-              </SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(primaryMenuItems)}
               </SidebarMenu>
@@ -1393,9 +1397,7 @@ function DashboardLayoutContent({
 
           {managementMenuItems.length > 0 && (
             <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-                管理
-              </SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("管理")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(managementMenuItems)}
               </SidebarMenu>
@@ -1404,9 +1406,7 @@ function DashboardLayoutContent({
 
           {otherMenuItems.length > 0 && (
             <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-                其他
-              </SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("其他")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(otherMenuItems)}
               </SidebarMenu>
@@ -1420,7 +1420,7 @@ function DashboardLayoutContent({
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={toggleTheme}
-                    tooltip={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
+                    tooltip={resolvedTheme === "dark" ? translateText("切换到白天模式") : translateText("切换到黑夜模式")}
                     className="h-10 justify-center"
                   >
                     {resolvedTheme === "dark" ? (
@@ -1428,7 +1428,7 @@ function DashboardLayoutContent({
                     ) : (
                       <Moon className="sidebar-nav-icon h-[18px] w-[18px]" />
                     )}
-                    <span className="sr-only">{resolvedTheme === "dark" ? "白天模式" : "黑夜模式"}</span>
+                    <span className="sr-only">{resolvedTheme === "dark" ? translateText("白天模式") : translateText("黑夜模式")}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
@@ -1451,10 +1451,10 @@ function DashboardLayoutContent({
                   : displayUpgradeJob?.status === "success"
                     ? upgradeRefreshText
                     : displayUpgradeJob?.status === "waiting_assets"
-                      ? "发布资产构建中"
+                      ? translateText("发布资产构建中")
                     : displayUpgradeJob?.status === "error"
-                      ? `${panelVersionActionLabel}失败`
-                      : `发现新版本 ${upgradeTargetVersion}`
+                      ? translateText("{0}失败", [panelVersionActionLabel])
+                      : translateText("发现新版本 {0}", [upgradeTargetVersion])
               }
             >
               <div className="flex items-center gap-2">
@@ -1472,14 +1472,14 @@ function DashboardLayoutContent({
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-xs font-semibold">
                     {displayUpgradeJob?.status === "running"
-                      ? `正在${panelVersionActionLabel}`
+                      ? translateText("正在{0}", [panelVersionActionLabel])
                       : displayUpgradeJob?.status === "success"
-                        ? `${panelVersionActionLabel}完成，正在重启`
+                        ? translateText("{0}完成，正在重启", [panelVersionActionLabel])
                         : displayUpgradeJob?.status === "waiting_assets"
-                          ? "发布资产构建中"
+                          ? translateText("发布资产构建中")
                         : displayUpgradeJob?.status === "error"
-                          ? `${panelVersionActionLabel}失败`
-                          : "发现新版本"}
+                          ? translateText("{0}失败", [panelVersionActionLabel])
+                          : translateText("发现新版本")}
                   </p>
                   <p className="mt-1 truncate text-[11px] text-primary/75">
                     {displayUpgradeJob?.status === "running"
@@ -1487,10 +1487,10 @@ function DashboardLayoutContent({
                       : displayUpgradeJob?.status === "success"
                         ? upgradeRefreshText
                         : displayUpgradeJob?.status === "waiting_assets"
-                          ? (displayUpgradeJob.error || "请稍后重新检查更新")
+                          ? (displayUpgradeJob.error || translateText("请稍后重新检查更新"))
                         : displayUpgradeJob?.status === "error"
-                          ? (displayUpgradeJob.error || "点击查看详情")
-                          : `可升级到 ${upgradeTargetVersion}`}
+                          ? (displayUpgradeJob.error || translateText("点击查看详情"))
+                          : translateText("可升级到 {0}", [upgradeTargetVersion])}
                   </p>
                   {(displayUpgradeJob?.status === "running" || displayUpgradeJob?.status === "waiting_assets") && (
                     <div className="mt-2 space-y-2">
@@ -1524,8 +1524,8 @@ function DashboardLayoutContent({
                 <UserAvatar user={user as any} className={cn("shrink-0", isDesktopCollapsed ? "h-8 w-8" : "h-9 w-9")} />
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-sm font-medium leading-5">{accountDisplayName}</p>
-                  <p className="mt-1 truncate text-xs leading-4 text-muted-foreground">
-                    {isAdmin ? "管理员" : "用户"} · {telegramStatus?.bound ? "TG 已绑定" : "TG 未绑定"}
+                  <p className="mt-1 whitespace-normal break-words text-xs leading-4 text-muted-foreground">
+                    {isAdmin ? translateText("管理员") : translateText("用户")} · {discordStatus?.selected ? `Discord ${discordStatus.bound ? translateText("已绑定") : translateText("未绑定")}` : telegramStatus?.bound ? translateText("TG 已绑定") : translateText("TG 未绑定")}
                   </p>
                 </div>
               </button>
@@ -1536,7 +1536,7 @@ function DashboardLayoutContent({
                   <UserAvatar user={user as any} className="h-8 w-8 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{accountDisplayName}</p>
-                    <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? "管理员" : "普通用户"} · {accountUsername}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? translateText("管理员") : translateText("普通用户")} · {accountUsername}</p>
                   </div>
                 </div>
               </div>
@@ -1546,7 +1546,15 @@ function DashboardLayoutContent({
                 className="cursor-pointer"
               >
                 <UserRound />
-                <span>个人资料</span>
+                <span>{translateText("个人资料")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { setAccountMenuOpen(false); openTelegramDialog(); }}
+                disabled={!discordStatus || createTelegramBindMutation.isPending}
+                className="cursor-pointer"
+              >
+                <Send />
+                <span>{discordStatus?.selected ? translateText("Discord 绑定") : translateText("Telegram 绑定")}</span>
               </DropdownMenuItem>
               {!mobileAuth.isNative && isAdmin && (
                 <DropdownMenuItem
@@ -1554,7 +1562,7 @@ function DashboardLayoutContent({
                   className="cursor-pointer"
                 >
                   <Download />
-                  <span>软件更新</span>
+                  <span>{translateText("软件更新")}</span>
                 </DropdownMenuItem>
               )}
               {mobileAuth.isNative && (
@@ -1568,7 +1576,7 @@ function DashboardLayoutContent({
                   ) : (
                     <Download />
                   )}
-                  <span>{checkingMobileUpdate ? "检查中..." : "软件更新"}</span>
+                  <span>{checkingMobileUpdate ? translateText("检查中...") : translateText("软件更新")}</span>
                 </DropdownMenuItem>
               )}
               {isAdmin && (
@@ -1577,16 +1585,18 @@ function DashboardLayoutContent({
                   className="cursor-pointer"
                 >
                   <Settings />
-                  <span>系统设置</span>
+                  <span>{translateText("系统设置")}</span>
                 </DropdownMenuItem>
               )}
+              <DropdownMenuSeparator />
+              <LanguageSelector compact />
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={handleLogout}
                 variant="destructive"
               >
                 <LogOut />
-                <span>退出登录</span>
+                <span>{translateText("退出登录")}</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1631,36 +1641,28 @@ function DashboardLayoutContent({
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
-            >
-              项目地址
-            </a>
+            >{translateText("项目地址")}</a>
             <span className="text-muted-foreground/45">|</span>
             <a
               href="https://poouo.github.io/Forwardx/"
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
-            >
-              使用教程
-            </a>
+            >{translateText("使用教程")}</a>
             <span className="text-muted-foreground/45">|</span>
             <a
               href={publicInfo?.telegramBotUrl || "https://t.me/miyin_private_bot"}
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
-            >
-              联系TG
-            </a>
+            >{translateText("联系TG")}</a>
             <span className="text-muted-foreground/45">|</span>
             <a
               href="https://t.me/ForwardX_panel"
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
-            >
-              TG群组
-            </a>
+            >{translateText("TG群组")}</a>
           </div>
         </footer>
       </SidebarInset>
@@ -1669,12 +1671,12 @@ function DashboardLayoutContent({
         <DialogContent className="w-[calc(100vw-2rem)] max-w-[560px] overflow-x-hidden sm:max-w-xl">
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5 text-primary" />
-            {isPanelRollbackTask ? "面板版本回退" : "发现新版本"}
+            {isPanelRollbackTask ? translateText("面板版本回退") : translateText("发现新版本")}
           </DialogTitle>
           <DialogDescription>
             {isPanelRollbackTask
-              ? "后台回退，完成后自动重启。"
-              : (isDockerDeployment ? "复制一键脚本后在服务器执行，脚本会重建 ForwardX 容器。" : "后台升级，完成后自动重启。")}
+              ? translateText("后台回退，完成后自动重启。")
+              : (isDockerDeployment ? translateText("复制一键脚本后在服务器执行，脚本会重建 ForwardX 容器。") : translateText("后台升级，完成后自动重启。"))}
           </DialogDescription>
           {(() => {
             const job = displayUpgradeJob;
@@ -1689,18 +1691,18 @@ function DashboardLayoutContent({
               <div className="min-w-0 space-y-4 overflow-x-hidden py-2">
                 <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">当前版本</p>
+                    <p className="text-xs text-muted-foreground">{translateText("当前版本")}</p>
                     <p className="mt-1 break-all font-mono">v{currentVersion}</p>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">目标版本</p>
+                    <p className="text-xs text-muted-foreground">{translateText("目标版本")}</p>
                     <p className="mt-1 break-all font-mono">{String(targetVersion).startsWith("v") ? targetVersion : `v${targetVersion}`}</p>
                   </div>
                 </div>
 
                 {upgradeStatus?.upgradeEnabled === false && (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-                    {isDockerDeployment ? `Docker 部署请复制下方一键脚本到服务器执行${panelVersionActionLabel}。` : `当前环境未配置自动${panelVersionActionLabel}命令，无法在面板内一键${panelVersionActionLabel}。`}
+                    {isDockerDeployment ? translateText("Docker 部署请复制下方一键脚本到服务器执行{0}。", [panelVersionActionLabel]) : translateText("当前环境未配置自动{0}命令，无法在面板内一键{1}。", [panelVersionActionLabel, panelVersionActionLabel])}
                   </div>
                 )}
 
@@ -1744,11 +1746,9 @@ function DashboardLayoutContent({
                 {isWaitingAssets && (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
                     <div className="flex items-center gap-2 font-medium">
-                      <RefreshCw className="h-4 w-4" />
-                      发布资产构建中
-                    </div>
+                      <RefreshCw className="h-4 w-4" />{translateText("发布资产构建中")}</div>
                     <p className="mt-2 break-words text-xs leading-5">
-                      {job?.error || `GitHub Actions 正在生成面板安装包或 Docker 镜像，请稍后重新检查${panelVersionActionLabel}。`}
+                      {job?.error || translateText("GitHub Actions 正在生成面板安装包或 Docker 镜像，请稍后重新检查{0}。", [panelVersionActionLabel])}
                     </p>
                   </div>
                 )}
@@ -1757,15 +1757,14 @@ function DashboardLayoutContent({
                   <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                     <div className="flex items-center gap-2 font-medium">
                       <AlertTriangle className="h-4 w-4" />
-                      {panelVersionActionLabel}失败
-                    </div>
-                    <p className="mt-1 text-xs">{job?.error || `${panelVersionActionLabel}命令执行失败，请到系统设置查看日志。`}</p>
+                      {panelVersionActionLabel}{translateText("失败")}</div>
+                    <p className="mt-1 text-xs">{job?.error || translateText("{0}命令执行失败，请到系统设置查看日志。", [panelVersionActionLabel])}</p>
                   </div>
                 )}
 
                 {isSuccess && (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                    {panelVersionActionLabel}任务已完成，面板正在重启。{upgradeRefreshText}。
+                    {panelVersionActionLabel}{translateText("任务已完成，面板正在重启。")}{upgradeRefreshText}。
                   </div>
                 )}
 
@@ -1776,23 +1775,18 @@ function DashboardLayoutContent({
             <Button className="w-full gap-2 sm:w-auto" variant="ghost" asChild>
               <a href={upgradeChangelogUrl} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="h-4 w-4" />
-                {panelVersionActionLabel}日志
-              </a>
+                {panelVersionActionLabel}{translateText("日志")}</a>
             </Button>
             {canDismissPanelUpdateNotice && (
               <Button className="w-full gap-2 sm:w-auto" variant="outline" onClick={dismissPanelUpdateNotice}>
-                <BellOff className="h-4 w-4" />
-                不再提醒
-              </Button>
+                <BellOff className="h-4 w-4" />{translateText("不再提醒")}</Button>
             )}
             <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowUpgradeDialog(false)}>
-              {displayUpgradeJob?.status === "running" ? "后台执行" : "取消"}
+              {displayUpgradeJob?.status === "running" ? translateText("后台执行") : translateText("取消")}
             </Button>
             {isDockerDeployment ? (
               <Button className="w-full gap-2 sm:w-auto" onClick={() => copyText(dockerUpgradeCommand)}>
-                <Copy className="h-4 w-4" />
-                复制脚本
-              </Button>
+                <Copy className="h-4 w-4" />{translateText("复制脚本")}</Button>
             ) : (
               <Button
                 className="w-full gap-2 sm:w-auto"
@@ -1812,8 +1806,8 @@ function DashboardLayoutContent({
                   <Rocket className="h-4 w-4" />
                 )}
                 {isPanelRollbackTask
-                  ? (displayUpgradeJob?.status === "running" ? "回退中..." : "请到系统设置处理")
-                  : (displayUpgradeJob?.status === "running" ? "升级中..." : "确认升级")}
+                  ? (displayUpgradeJob?.status === "running" ? translateText("回退中...") : translateText("请到系统设置处理"))
+                  : (displayUpgradeJob?.status === "running" ? translateText("升级中...") : translateText("确认升级"))}
               </Button>
             )}
           </DialogFooter>
@@ -1824,33 +1818,26 @@ function DashboardLayoutContent({
         <DialogContent className="w-[calc(100vw-2rem)] max-w-[420px] overflow-hidden rounded-xl border-border/60 bg-background p-0 shadow-2xl">
           <div className="border-b border-border/40 bg-primary/10 px-5 py-4">
             <DialogTitle className="flex items-center gap-2 text-base">
-              <Download className="h-5 w-5 text-primary" />
-              发现 APP 新版本
-            </DialogTitle>
-            <DialogDescription className="mt-1 text-xs">
-              前往下载新版 {mobileUpdateInfo?.packageLabel || "安装包"}。
+              <Download className="h-5 w-5 text-primary" />{translateText("发现 APP 新版本")}</DialogTitle>
+            <DialogDescription className="mt-1 text-xs">{translateText("前往下载新版 ")}{mobileUpdateInfo?.packageLabel || translateText("安装包")}。
             </DialogDescription>
           </div>
           <div className="space-y-3 px-5 py-4">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-lg border border-border/40 bg-muted/25 p-3">
-                <p className="text-xs text-muted-foreground">当前版本</p>
+                <p className="text-xs text-muted-foreground">{translateText("当前版本")}</p>
                 <p className="mt-1 font-mono">{mobileUpdateInfo?.currentVersion ? `v${mobileUpdateInfo.currentVersion.replace(/^v/i, "")}` : "-"}</p>
               </div>
               <div className="rounded-lg border border-primary/25 bg-primary/10 p-3">
-                <p className="text-xs text-muted-foreground">最新版本</p>
+                <p className="text-xs text-muted-foreground">{translateText("最新版本")}</p>
                 <p className="mt-1 font-mono text-primary">{mobileUpdateInfo?.latestVersion ? `v${mobileUpdateInfo.latestVersion.replace(/^v/i, "")}` : "-"}</p>
               </div>
             </div>
           </div>
           <DialogFooter className="gap-2 border-t border-border/40 px-5 py-4">
-            <Button variant="outline" className="w-full sm:w-auto" onClick={() => setShowMobileUpdateDialog(false)}>
-              稍后再说
-            </Button>
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => setShowMobileUpdateDialog(false)}>{translateText("稍后再说")}</Button>
             <Button className="w-full gap-2 sm:w-auto" onClick={openDetectedMobileRelease}>
-              <ExternalLink className="h-4 w-4" />
-              前往下载
-            </Button>
+              <ExternalLink className="h-4 w-4" />{translateText("前往下载")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1858,49 +1845,47 @@ function DashboardLayoutContent({
       {/* Change Password Dialog */}
       <Dialog open={showChangePassword} onOpenChange={setShowChangePassword}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>修改密码</DialogTitle>
-          <DialogDescription>请输入当前密码和新密码</DialogDescription>
+          <DialogTitle>{translateText("修改密码")}</DialogTitle>
+          <DialogDescription>{translateText("请输入当前密码和新密码")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label htmlFor="old-password">当前密码</Label>
+              <Label htmlFor="old-password">{translateText("当前密码")}</Label>
               <Input
                 id="old-password"
                 type="password"
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
-                placeholder="请输入当前密码"
+                placeholder={translateText("请输入当前密码")}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="new-password">新密码</Label>
+              <Label htmlFor="new-password">{translateText("新密码")}</Label>
               <Input
                 id="new-password"
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="请输入新密码（至少6个字符）"
+                placeholder={translateText("请输入新密码（至少6个字符）")}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="confirm-password">确认新密码</Label>
+              <Label htmlFor="confirm-password">{translateText("确认新密码")}</Label>
               <Input
                 id="confirm-password"
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="请再次输入新密码"
+                placeholder={translateText("请再次输入新密码")}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowChangePassword(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowChangePassword(false)}>{translateText("取消")}</Button>
             <Button
               onClick={handleChangePassword}
               disabled={changePasswordMutation.isPending}
             >
-              {changePasswordMutation.isPending ? "修改中..." : "确认修改"}
+              {changePasswordMutation.isPending ? translateText("修改中...") : translateText("确认修改")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1908,8 +1893,8 @@ function DashboardLayoutContent({
 
       <Dialog open={showAvatarDialog} onOpenChange={setShowAvatarDialog}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>头像设置</DialogTitle>
-          <DialogDescription>选择预设头像或上传自定义头像。</DialogDescription>
+          <DialogTitle>{translateText("头像设置")}</DialogTitle>
+          <DialogDescription>{translateText("选择预设头像或上传自定义头像。")}</DialogDescription>
           <AvatarPicker
             value={avatarDraft}
             onChange={setAvatarDraft}
@@ -1919,11 +1904,9 @@ function DashboardLayoutContent({
             className="py-2"
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAvatarDialog(false)} disabled={updateAvatarMutation.isPending}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowAvatarDialog(false)} disabled={updateAvatarMutation.isPending}>{translateText("取消")}</Button>
             <Button onClick={handleSaveAvatar} disabled={updateAvatarMutation.isPending}>
-              {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
+              {updateAvatarMutation.isPending ? translateText("保存中...") : translateText("保存头像")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1932,123 +1915,111 @@ function DashboardLayoutContent({
       <Dialog open={showTwoFactorDialog} onOpenChange={setShowTwoFactorDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogTitle className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-primary" />
-            双重验证
-          </DialogTitle>
-          <DialogDescription>使用 2FA 软件生成动态验证码。</DialogDescription>
+            <Shield className="h-5 w-5 text-primary" />{translateText("双重验证")}</DialogTitle>
+          <DialogDescription>{translateText("使用 2FA 软件生成动态验证码。")}</DialogDescription>
           {!twoFactorStatus?.globalEnabled ? (
-            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
-              管理员尚未启用双重验证功能。
-            </div>
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">{translateText("管理员尚未启用双重验证功能。")}</div>
           ) : twoFactorStatus?.enabled ? (
             <div className="space-y-4 py-2">
-              <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                当前账户已启用双重验证。
-              </div>
+              <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">{translateText("当前账户已启用双重验证。")}</div>
               <div className="space-y-2">
-                <Label htmlFor="two-factor-disable-password">当前密码</Label>
+                <Label htmlFor="two-factor-disable-password">{translateText("当前密码")}</Label>
                 <Input
                   id="two-factor-disable-password"
                   type="password"
                   value={twoFactorPassword}
                   onChange={(e) => setTwoFactorPassword(e.target.value)}
-                  placeholder="请输入当前密码"
+                  placeholder={translateText("请输入当前密码")}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="two-factor-disable-code">动态验证码</Label>
+                <Label htmlFor="two-factor-disable-code">{translateText("动态验证码")}</Label>
                 <Input
                   id="two-factor-disable-code"
                   inputMode="numeric"
                   maxLength={6}
                   value={twoFactorCode}
                   onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  placeholder="请输入 6 位验证码"
+                  placeholder={translateText("请输入 6 位验证码")}
                 />
               </div>
             </div>
           ) : (
             <div className="space-y-4 py-2">
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                扫码添加，{Math.round((twoFactorSetup?.expiresInSeconds || TWO_FACTOR_SETUP_SECONDS) / 60)} 分钟内有效。
-              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("扫码添加，")}{Math.round((twoFactorSetup?.expiresInSeconds || TWO_FACTOR_SETUP_SECONDS) / 60)}{translateText(" 分钟内有效。")}</div>
               <div className="flex flex-col items-center gap-3">
                 <div className={`flex h-48 w-48 items-center justify-center rounded-lg border bg-white p-3 ${twoFactorSetupExpired ? "opacity-45" : ""}`}>
                   {beginTwoFactorSetupMutation.isPending ? (
                     <Loader2 className="forwardx-icon-spin h-6 w-6 text-slate-500" />
                   ) : twoFactorQrCode ? (
-                    <img src={twoFactorQrCode} alt="2FA 绑定二维码" className="h-full w-full" />
+                    <img src={twoFactorQrCode} alt={translateText("2FA 绑定二维码")} className="h-full w-full" />
                   ) : (
-                    <span className="text-xs text-slate-500">二维码生成中</span>
+                    <span className="text-xs text-slate-500">{translateText("二维码生成中")}</span>
                   )}
                 </div>
                 <div className={`text-xs ${twoFactorSetupExpired ? "text-destructive" : "text-muted-foreground"}`}>
                   {twoFactorSetup
                     ? twoFactorSetupExpired
-                      ? "二维码已过期，请重新生成"
-                      : `剩余 ${twoFactorSetupRemainingLabel}`
-                    : "正在生成二维码"}
+                      ? translateText("二维码已过期，请重新生成")
+                      : translateText("剩余 {0}", [twoFactorSetupRemainingLabel])
+                    : translateText("正在生成二维码")}
                 </div>
               </div>
               {twoFactorSetup?.otpauthUrl && (
                 <Button variant="outline" asChild className="w-full gap-2">
                   <a href={twoFactorSetup.otpauthUrl}>
-                    <ExternalLink className="h-4 w-4" />
-                    打开 2FA 软件添加
-                  </a>
+                    <ExternalLink className="h-4 w-4" />{translateText("打开 2FA 软件添加")}</a>
                 </Button>
               )}
               <div className="space-y-2">
-                <Label>备用密钥</Label>
+                <Label>{translateText("备用密钥")}</Label>
                 <div className="flex items-center gap-2">
                   <code className="min-w-0 flex-1 break-all rounded-md border bg-background px-3 py-2 font-mono text-sm">
-                    {twoFactorSetup?.secret || "正在生成..."}
+                    {twoFactorSetup?.secret || translateText("正在生成...")}
                   </code>
                   <Button
                     variant="outline"
                     size="icon"
                     onClick={() => twoFactorSetup?.secret && copyText(twoFactorSetup.secret)}
                     disabled={!twoFactorSetup?.secret || twoFactorSetupExpired}
-                    title="复制备用密钥"
+                    title={translateText("复制备用密钥")}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="two-factor-enable-password">当前密码</Label>
+                <Label htmlFor="two-factor-enable-password">{translateText("当前密码")}</Label>
                 <Input
                   id="two-factor-enable-password"
                   type="password"
                   value={twoFactorPassword}
                   onChange={(e) => setTwoFactorPassword(e.target.value)}
-                  placeholder="请输入当前密码"
+                  placeholder={translateText("请输入当前密码")}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="two-factor-enable-code">动态验证码</Label>
+                <Label htmlFor="two-factor-enable-code">{translateText("动态验证码")}</Label>
                 <Input
                   id="two-factor-enable-code"
                   inputMode="numeric"
                   maxLength={6}
                   value={twoFactorCode}
                   onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  placeholder="请输入 6 位验证码"
+                  placeholder={translateText("请输入 6 位验证码")}
                 />
               </div>
             </div>
           )}
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShowTwoFactorDialog(false)}>
-              关闭
-            </Button>
+            <Button variant="outline" onClick={() => setShowTwoFactorDialog(false)}>{translateText("关闭")}</Button>
             {twoFactorStatus?.globalEnabled && twoFactorStatus?.enabled ? (
               <Button
                 variant="destructive"
                 onClick={handleDisableTwoFactor}
                 disabled={disableTwoFactorMutation.isPending}
               >
-                {disableTwoFactorMutation.isPending ? "关闭中..." : "关闭双重验证"}
+                {disableTwoFactorMutation.isPending ? translateText("关闭中...") : translateText("关闭双重验证")}
               </Button>
             ) : twoFactorStatus?.globalEnabled ? (
               <>
@@ -2058,14 +2029,14 @@ function DashboardLayoutContent({
                     onClick={() => beginTwoFactorSetupMutation.mutate()}
                     disabled={beginTwoFactorSetupMutation.isPending}
                   >
-                    {beginTwoFactorSetupMutation.isPending ? "生成中..." : "重新生成二维码"}
+                    {beginTwoFactorSetupMutation.isPending ? translateText("生成中...") : translateText("重新生成二维码")}
                   </Button>
                 )}
                 <Button
                   onClick={handleEnableTwoFactor}
                   disabled={beginTwoFactorSetupMutation.isPending || enableTwoFactorMutation.isPending || twoFactorSetupExpired}
                 >
-                  {enableTwoFactorMutation.isPending ? "启用中..." : "启用双重验证"}
+                  {enableTwoFactorMutation.isPending ? translateText("启用中...") : translateText("启用双重验证")}
                 </Button>
               </>
             ) : null}
@@ -2073,21 +2044,21 @@ function DashboardLayoutContent({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showTelegramDialog} onOpenChange={setShowTelegramDialog}>
+      <Dialog open={showTelegramDialog && !!discordStatus?.selected} onOpenChange={setShowTelegramDialog}>
+        <DialogContent className="sm:max-w-md max-h-[85svh] overflow-y-auto"><DialogTitle>{translateText("Discord 绑定")}</DialogTitle><DialogDescription>{translateText("配置当前账号的 Discord 通知和机器人交互。")}</DialogDescription><DiscordAccountCard /></DialogContent>
+      </Dialog>
+      <Dialog open={showTelegramDialog && !discordStatus?.selected} onOpenChange={setShowTelegramDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogTitle className="flex items-center gap-2">
-            <Send className="h-5 w-5 text-primary" />
-            Telegram 绑定
-          </DialogTitle>
-          <DialogDescription>绑定后可用 Telegram 登录和查询。</DialogDescription>
+            <Send className="h-5 w-5 text-primary" />{translateText("Telegram 绑定")}</DialogTitle>
+          <DialogDescription>{translateText("绑定后可用 Telegram 登录和查询。")}</DialogDescription>
           <div className="space-y-4 py-2">
             {telegramStatus?.bound ? (
               <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                 <p className="text-sm font-medium">
                   {telegramStatus.account?.username ? `@${telegramStatus.account.username}` : telegramStatus.account?.id}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  绑定时间：{telegramStatus.account?.linkedAt ? new Date(telegramStatus.account.linkedAt).toLocaleString() : "-"}
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("绑定时间：")}{telegramStatus.account?.linkedAt ? new Date(telegramStatus.account.linkedAt).toLocaleString(getFormatLocale()) : "-"}
                 </p>
               </div>
             ) : telegramBind ? (
@@ -2099,14 +2070,13 @@ function DashboardLayoutContent({
                     rel="noopener noreferrer"
                     className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary transition-colors hover:bg-primary/10"
                   >
-                    <span>
-                      当前机器人：<b>@{telegramBind.botUsername || telegramStatus?.botUsername}</b>
+                    <span>{translateText("当前机器人：")}<b>@{telegramBind.botUsername || telegramStatus?.botUsername}</b>
                     </span>
                     <Send className="h-4 w-4" />
                   </a>
                 )}
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                  <p className="text-xs text-muted-foreground">绑定码</p>
+                  <p className="text-xs text-muted-foreground">{translateText("绑定码")}</p>
                   <div className="mt-1 flex items-center gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -2114,11 +2084,11 @@ function DashboardLayoutContent({
                           {telegramBind.code}
                         </code>
                         <Badge variant={telegramBindExpired ? "destructive" : "outline"} className="shrink-0">
-                          {telegramBindExpired ? "已过期" : `${telegramBindRemainingLabel} 后过期`}
+                          {telegramBindExpired ? translateText("已过期") : translateText("{0} 后过期", [telegramBindRemainingLabel])}
                         </Badge>
                       </div>
                       <p className="mt-2 text-xs text-muted-foreground">
-                        {telegramBindExpired ? "绑定码已过期，请重新生成。" : "5 分钟内有效，可复制备用，也可以直接打开 Telegram 完成绑定。"}
+                        {telegramBindExpired ? translateText("绑定码已过期，请重新生成。") : translateText("5 分钟内有效，可复制备用，也可以直接打开 Telegram 完成绑定。")}
                       </p>
                     </div>
                     <Button variant="outline" size="icon" onClick={() => copyText(telegramBind.code)} disabled={telegramBindExpired}>
@@ -2126,15 +2096,12 @@ function DashboardLayoutContent({
                     </Button>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  打开 Telegram 点 Start，或发送 <code>/bind {telegramBind.code}</code>。
+                <p className="text-xs text-muted-foreground">{translateText("打开 Telegram 点 Start，或发送 ")}<code>/bind {telegramBind.code}</code>。
                 </p>
                 {telegramBindUrl && !telegramBindExpired && (
                   <Button variant="outline" asChild className="w-full gap-2">
                     <a href={telegramBindUrl} target="_blank" rel="noopener noreferrer">
-                      <Send className="h-4 w-4" />
-                      打开 Telegram 完成绑定
-                    </a>
+                      <Send className="h-4 w-4" />{translateText("打开 Telegram 完成绑定")}</a>
                   </Button>
                 )}
               </div>
@@ -2147,14 +2114,13 @@ function DashboardLayoutContent({
                     rel="noopener noreferrer"
                     className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary transition-colors hover:bg-primary/10"
                   >
-                    <span>
-                      当前机器人：<b>@{telegramStatus?.botUsername}</b>
+                    <span>{translateText("当前机器人：")}<b>@{telegramStatus?.botUsername}</b>
                     </span>
                     <Send className="h-4 w-4" />
                   </a>
                 )}
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
-                  {telegramStatus?.configured ? "先生成绑定码。" : "Telegram 尚未配置。"}
+                  {telegramStatus?.configured ? translateText("先生成绑定码。") : translateText("Telegram 尚未配置。")}
                 </div>
               </div>
             )}
@@ -2165,9 +2131,7 @@ function DashboardLayoutContent({
                 {telegramBotUrl && (
                   <Button variant="outline" asChild className="gap-2">
                     <a href={telegramBotUrl} target="_blank" rel="noopener noreferrer">
-                      <Send className="h-4 w-4" />
-                      打开机器人
-                    </a>
+                      <Send className="h-4 w-4" />{translateText("打开机器人")}</a>
                   </Button>
                 )}
                 <Button
@@ -2176,16 +2140,14 @@ function DashboardLayoutContent({
                   onClick={() => unbindTelegramMutation.mutate()}
                   disabled={unbindTelegramMutation.isPending}
                 >
-                  <Link2Off className="h-4 w-4" />
-                  解除绑定
-                </Button>
+                  <Link2Off className="h-4 w-4" />{translateText("解除绑定")}</Button>
               </>
             ) : (
               <Button
                 onClick={() => createTelegramBindMutation.mutate()}
                 disabled={createTelegramBindMutation.isPending || telegramStatus?.configured === false}
               >
-                {createTelegramBindMutation.isPending ? "生成中..." : telegramBindExpired ? "重新生成绑定码" : "生成绑定码"}
+                {createTelegramBindMutation.isPending ? translateText("生成中...") : telegramBindExpired ? translateText("重新生成绑定码") : translateText("生成绑定码")}
               </Button>
             )}
           </DialogFooter>
@@ -2199,15 +2161,15 @@ function DashboardLayoutContent({
         <DialogContent className="sm:max-w-lg">
           <DialogTitle className="flex items-center gap-2">
             <Megaphone className="h-5 w-5" />
-            {popupAnnouncement?.title || "公告"}
+            {popupAnnouncement?.title || translateText("公告")}
           </DialogTitle>
-          <DialogDescription>关闭后可在公告中查看。</DialogDescription>
+          <DialogDescription>{translateText("关闭后可在公告中查看。")}</DialogDescription>
           <div
             className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml(popupAnnouncement?.content || "") }}
           />
           <DialogFooter>
-            <Button onClick={() => popupAnnouncement?.id && dismissAnnouncement.mutate({ id: popupAnnouncement.id })}>我知道了</Button>
+            <Button onClick={() => popupAnnouncement?.id && dismissAnnouncement.mutate({ id: popupAnnouncement.id })}>{translateText("我知道了")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2218,11 +2180,9 @@ function DashboardLayoutContent({
         <DialogContent className="sm:max-w-lg [&>button]:hidden">
           <DialogTitle className="flex items-center gap-2">
             <Megaphone className="h-5 w-5" />
-            {upgradeAnnouncement?.title || "升级公告"}
+            {upgradeAnnouncement?.title || translateText("升级公告")}
           </DialogTitle>
-          <DialogDescription>
-            已检测到面板已升级。请阅读本次版本公告，{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}S 后可确认进入页面。
-          </DialogDescription>
+          <DialogDescription>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</DialogDescription>
           <div
             className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml(upgradeAnnouncement?.content || "") }}
@@ -2232,7 +2192,7 @@ function DashboardLayoutContent({
               onClick={() => upgradeAnnouncement?.id && dismissUpgradeAnnouncement.mutate({ id: upgradeAnnouncement.id })}
               disabled={upgradeAnnouncementCountdown > 0 || dismissUpgradeAnnouncement.isPending}
             >
-              {upgradeAnnouncementCountdown > 0 ? `${upgradeAnnouncementCountdown}S` : "我知道了"}
+              {upgradeAnnouncementCountdown > 0 ? `${upgradeAnnouncementCountdown}S` : translateText("我知道了")}
             </Button>
           </DialogFooter>
         </DialogContent>

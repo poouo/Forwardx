@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import {
   failedResourceSnapshot,
   hydrateCachedResourceSnapshot,
@@ -155,16 +156,16 @@ function buildForm(fields: PluginResourceFieldDefinition[], value?: unknown) {
 }
 
 function taskStatusLabel(status?: string) {
-  if (status === "success") return "成功";
-  if (status === "effective") return "已生效";
-  if (status === "error") return "失败";
-  if (status === "timeout") return "超时";
-  if (status === "running") return "执行中";
-  if (status === "offline") return "离线";
-  if (status === "queued") return "等待中";
-  if (status === "syncing") return "同步中";
-  if (status === "unsupported") return "版本不支持";
-  return "待读取";
+  if (status === "success") return translateText("成功");
+  if (status === "effective") return translateText("已生效");
+  if (status === "error") return translateText("失败");
+  if (status === "timeout") return translateText("超时");
+  if (status === "running") return translateText("执行中");
+  if (status === "offline") return translateText("离线");
+  if (status === "queued") return translateText("等待中");
+  if (status === "syncing") return translateText("同步中");
+  if (status === "unsupported") return translateText("版本不支持");
+  return translateText("待读取");
 }
 
 function taskStatusClass(status?: string) {
@@ -176,14 +177,14 @@ function taskStatusClass(status?: string) {
 }
 
 function taskPhaseLabel(phase?: TaskPhase) {
-  if (phase === "queueing") return "排队中";
-  if (phase === "waiting-agent") return "等待 Agent";
-  if (phase === "running") return "执行中";
-  if (phase === "applying") return "应用中";
-  if (phase === "refreshing") return "刷新中";
-  if (phase === "success") return "成功";
-  if (phase === "timeout") return "超时";
-  if (phase === "error") return "失败";
+  if (phase === "queueing") return translateText("排队中");
+  if (phase === "waiting-agent") return translateText("等待 Agent");
+  if (phase === "running") return translateText("执行中");
+  if (phase === "applying") return translateText("应用中");
+  if (phase === "refreshing") return translateText("刷新中");
+  if (phase === "success") return translateText("成功");
+  if (phase === "timeout") return translateText("超时");
+  if (phase === "error") return translateText("失败");
   return "";
 }
 
@@ -382,7 +383,7 @@ export function AgentResourceManager({
         pluginId: plugin.pluginId,
         groupId,
       });
-      if (!group) throw new Error("插件任务状态已失效");
+      if (!group) throw new Error(translateText("插件任务状态已失效"));
       const row = ((group as any).results || []).find((item: any) => Number(item.hostId) === hostId);
       if (row) {
         onProgress(row);
@@ -391,8 +392,8 @@ export function AgentResourceManager({
       }
       await sleep(400);
     }
-    if (!mountedRef.current || generation !== generationRef.current) throw new Error("插件任务已取消");
-    throw new Error("等待 Agent 返回插件任务结果超时");
+    if (!mountedRef.current || generation !== generationRef.current) throw new Error(translateText("插件任务已取消"));
+    throw new Error(translateText("等待 Agent 返回插件任务结果超时"));
   }, [plugin.pluginId]);
 
   const executeAction = useCallback(async (
@@ -402,7 +403,7 @@ export function AgentResourceManager({
     hostId = selectedHostId,
     generation = generationRef.current,
   ) => {
-    if (!hostId) throw new Error("请先选择 Agent");
+    if (!hostId) throw new Error(translateText("请先选择 Agent"));
     const localStartedAt = Date.now();
     setTaskStates((current) => ({
       ...current,
@@ -424,7 +425,7 @@ export function AgentResourceManager({
         resourceViewId: view.id,
       });
       const groupId = String(response?.result?.groupId || "");
-      if (!groupId) throw new Error(response?.message || "插件操作没有返回任务编号");
+      if (!groupId) throw new Error(response?.message || translateText("插件操作没有返回任务编号"));
       patchTaskState(meta.key, { phase: "waiting-agent", status: "queued" });
       return await pollTask(groupId, hostId, generation, (row) => {
         const status = row.status === "success" ? "success" : row.status === "timeout" ? "timeout" : row.status === "error" ? "error" : row.status === "running" ? "running" : "queued";
@@ -686,7 +687,7 @@ export function AgentResourceManager({
       const value = form[field.key];
       const empty = Array.isArray(value) ? value.length === 0 : String(value ?? "").trim() === "";
       if (empty) {
-        toast.error(`请填写${field.label}`);
+        toast.error(translateText("请填写{0}", [field.label]));
         return false;
       }
     }
@@ -713,9 +714,9 @@ export function AgentResourceManager({
   ) => {
     if (operation.confirmRequired) {
       const accepted = await confirm({
-        title: operation.label || "确认操作",
-        description: operation.description || "确定执行这个插件操作吗？",
-        confirmText: "执行",
+        title: operation.label || translateText("确认操作"),
+        description: operation.description || translateText("确定执行这个插件操作吗？"),
+        confirmText: translateText("执行"),
       });
       if (!accepted) return false;
     }
@@ -748,14 +749,14 @@ export function AgentResourceManager({
           });
         }
       }
-      toast.success(`${operation.label || "操作"}成功`);
+      toast.success(translateText("{0}成功", [operation.label || "操作"]));
       const refreshAfter = operation.refreshAfter?.length ? operation.refreshAfter : operation.refreshSources;
       patchTaskState(meta.key, { phase: "refreshing", status: "success" });
       void refreshSources(refreshAfter?.length ? refreshAfter : [view.listSourceId]).then((refreshed) => {
         patchTaskState(meta.key, {
           phase: "success",
           status: "success",
-          detail: refreshed ? undefined : "写入已成功，后台刷新失败，当前保留已有数据",
+          detail: refreshed ? undefined : translateText("写入已成功，后台刷新失败，当前保留已有数据"),
         });
       });
       return true;
@@ -778,9 +779,9 @@ export function AgentResourceManager({
     const operation = view.operations?.delete;
     if (!operation) return;
     const accepted = await confirm({
-      title: operation.label || "删除资源",
-      description: operation.description || `确定删除 ${rowIdentity(row, view) || "当前资源"} 吗？`,
-      confirmText: "删除",
+      title: operation.label || translateText("删除资源"),
+      description: operation.description || translateText("确定删除 {0} 吗？", [rowIdentity(row, view) || "当前资源"]),
+      confirmText: translateText("删除"),
       tone: "destructive",
     });
     if (!accepted) return;
@@ -789,7 +790,7 @@ export function AgentResourceManager({
 
   const copyValue = async (value: unknown) => {
     await navigator.clipboard.writeText(displayValue(value));
-    toast.success("已复制");
+    toast.success(translateText("已复制"));
   };
 
   const renderField = (field: PluginResourceFieldDefinition) => {
@@ -814,7 +815,7 @@ export function AgentResourceManager({
           </div>
         ) : field.type === "select" ? (
           <Select value={String(value ?? "")} disabled={disabled} onValueChange={setValue}>
-            <SelectTrigger><SelectValue placeholder={field.placeholder || "请选择"} /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={field.placeholder || translateText("请选择")} /></SelectTrigger>
             <SelectContent>
               {options.map((option: any) => <SelectItem key={option.value} value={String(option.value)} disabled={option.disabled}>{option.label}</SelectItem>)}
             </SelectContent>
@@ -874,7 +875,7 @@ export function AgentResourceManager({
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Server className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium">主机</span>
+                <span className="text-sm font-medium">{translateText("主机")}</span>
               </div>
               <span className="text-xs tabular-nums text-muted-foreground">
                 {filteredResourceHosts.length === resourceHosts.length
@@ -887,7 +888,7 @@ export function AgentResourceManager({
               <Input
                 value={hostSearchQuery}
                 onChange={(event) => setHostSearchQuery(event.target.value)}
-                placeholder="搜索主机"
+                placeholder={translateText("搜索主机")}
                 className="h-8 pl-8 text-xs"
               />
             </div>
@@ -912,9 +913,9 @@ export function AgentResourceManager({
                     status === "success" || status === "effective" ? "bg-emerald-500" : status === "running" || status === "queued" || status === "syncing" ? "bg-amber-400" : status === "error" || status === "timeout" || status === "offline" ? "bg-destructive/75" : "bg-muted-foreground/35",
                   )} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{host.name || `主机 ${host.id}`}</span>
+                    <span className="block truncate text-sm font-medium">{host.name || translateText("主机 {0}", [host.id])}</span>
                     <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                      {host.ip || host.ipv4 || host.ipv6 || "未设置 IP"} · {taskStatusLabel(status)}
+                      {host.ip || host.ipv4 || host.ipv6 || translateText("未设置 IP")} · {taskStatusLabel(status)}
                     </span>
                   </span>
                 </button>
@@ -922,7 +923,7 @@ export function AgentResourceManager({
             })}
             {!filteredResourceHosts.length && (
               <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                {resourceHosts.length ? "没有匹配的主机" : hostScope === "all" ? "暂无主机" : "尚未选择生效主机"}
+                {resourceHosts.length ? translateText("没有匹配的主机") : hostScope === "all" ? translateText("暂无主机") : translateText("尚未选择生效主机")}
               </div>
             )}
           </div>
@@ -932,13 +933,13 @@ export function AgentResourceManager({
           <div className="flex flex-col gap-3 border-b border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 flex-1">
               <div className="space-y-2 lg:hidden">
-                <Label className="block text-xs">管理主机</Label>
+                <Label className="block text-xs">{translateText("管理主机")}</Label>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={hostSearchQuery}
                     onChange={(event) => setHostSearchQuery(event.target.value)}
-                    placeholder="筛选主机"
+                    placeholder={translateText("筛选主机")}
                     className="h-9 pl-8 text-sm"
                   />
                 </div>
@@ -947,20 +948,20 @@ export function AgentResourceManager({
                     <span className="min-w-0 truncate text-left">
                       {selectedHost
                         ? `${selectedHost.name || `主机 ${selectedHost.id}`} · ${taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}`
-                        : "选择 Agent"}
+                        : translateText("选择 Agent")}
                     </span>
                   </SelectTrigger>
                   <SelectContent>
                     {filteredResourceHosts.map((host) => (
                       <SelectItem key={host.id} value={String(host.id)}>
-                        {host.name || `主机 ${host.id}`} · {host.ip || host.ipv4 || host.ipv6 || "无 IP"} · {taskStatusLabel(resourceHostStatus(host, resourceStateByHostId.get(Number(host.id))))}
+                        {host.name || translateText("主机 {0}", [host.id])} · {host.ip || host.ipv4 || host.ipv6 || translateText("无 IP")} · {taskStatusLabel(resourceHostStatus(host, resourceStateByHostId.get(Number(host.id))))}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="hidden min-w-0 lg:block">
-                <p className="truncate text-sm font-semibold">{selectedHost?.name || "请选择主机"}</p>
+                <p className="truncate text-sm font-semibold">{selectedHost?.name || translateText("请选择主机")}</p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   {selectedHost ? `${selectedHost.ip || selectedHost.ipv4 || selectedHost.ipv6 || "未设置 IP"} · ` : ""}{view.title}
                 </p>
@@ -978,12 +979,12 @@ export function AgentResourceManager({
               <Badge variant="outline" className={taskStatusClass(resourceHostStatus(selectedHost, selectedState))}>
                 {taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}
               </Badge>
-              <Button type="button" variant="outline" size="sm" title="刷新" disabled={refreshDisabled} onClick={() => refreshSources()}>
+              <Button type="button" variant="outline" size="sm" title={translateText("刷新")} disabled={refreshDisabled} onClick={() => refreshSources()}>
                 {listLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               </Button>
               {view.operations?.create && (
                 <Button type="button" size="sm" className="gap-2" disabled={actionsDisabled || operationBusy("create", view.operations.create)} onClick={openCreate}>
-                  <Plus className="h-4 w-4" />{view.operations.create.label || "新增"}
+                  <Plus className="h-4 w-4" />{view.operations.create.label || translateText("新增")}
                 </Button>
               )}
             </div>
@@ -1000,10 +1001,10 @@ export function AgentResourceManager({
             <div className="m-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">
               <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0 flex-1 break-words">
-                {listHasData ? "刷新失败，当前保留上次成功数据：" : "读取 Agent 数据失败："}
+                {listHasData ? translateText("刷新失败，当前保留上次成功数据：") : translateText("读取 Agent 数据失败：")}
                 {sourceWarnings[0].snapshot.error}
-                {sourceWarnings.length > 1 ? `（另有 ${sourceWarnings.length - 1} 个数据源失败）` : ""}
-                {sourceWarnings[0].snapshot.advice && <span className="mt-1 block text-xs">处理建议：{sourceWarnings[0].snapshot.advice}</span>}
+                {sourceWarnings.length > 1 ? translateText("（另有 {0} 个数据源失败）", [sourceWarnings.length - 1]) : ""}
+                {sourceWarnings[0].snapshot.advice && <span className="mt-1 block text-xs">{translateText("处理建议：")}{sourceWarnings[0].snapshot.advice}</span>}
                 {sourceWarnings[0].snapshot.detail && <span className="mt-1 block text-xs opacity-80">{sourceWarnings[0].snapshot.detail}</span>}
               </span>
               <Button
@@ -1015,7 +1016,7 @@ export function AgentResourceManager({
                 onClick={() => refreshSources([sourceWarnings[0].source.id])}
               >
                 {busySources.includes(sourceCacheKey(selectedHostId, sourceWarnings[0].source.id)) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                <span className="ml-1.5">重试</span>
+                <span className="ml-1.5">{translateText("重试")}</span>
               </Button>
             </div>
           )}
@@ -1024,8 +1025,8 @@ export function AgentResourceManager({
             <div className="m-3 flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
               <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0 break-words">
-                <span className="block">{latestTaskState.error || "插件操作执行失败"}</span>
-                {latestTaskState.advice && <span className="mt-1 block text-xs">处理建议：{latestTaskState.advice}</span>}
+                <span className="block">{latestTaskState.error || translateText("插件操作执行失败")}</span>
+                {latestTaskState.advice && <span className="mt-1 block text-xs">{translateText("处理建议：")}{latestTaskState.advice}</span>}
                 {latestTaskState.detail && <span className="mt-1 block text-xs opacity-80">{latestTaskState.detail}</span>}
               </span>
             </div>
@@ -1036,7 +1037,7 @@ export function AgentResourceManager({
           <TableHeader>
             <TableRow>
               {(view.columns || []).map((column) => <TableHead key={column.key} style={{ width: column.width }}>{column.label}</TableHead>)}
-              <TableHead className="w-28 text-right">操作</TableHead>
+              <TableHead className="w-28 text-right">{translateText("操作")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1054,22 +1055,22 @@ export function AgentResourceManager({
                           <Switch checked={value === true} disabled aria-label={column.label} />
                         ) : column.type === "status" ? (
                           <Badge variant="outline" className={taskStatusClass(valueStatus(value))}>
-                            {typeof value === "boolean" ? (value ? column.trueLabel || "是" : column.falseLabel || "否") : displayValue(value)}
+                            {typeof value === "boolean" ? (value ? column.trueLabel || translateText("是") : column.falseLabel || translateText("否")) : displayValue(value)}
                           </Badge>
                         ) : column.secret || column.type === "secret" ? (
                           <div className="flex items-center gap-1.5">
                             <span className="truncate font-mono text-xs">{revealed ? displayValue(value) : "••••••••"}</span>
                             {canRevealSecrets && (
-                              <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" title={revealed ? "隐藏" : "显示"} onClick={() => setRevealedValues((items) => revealed ? items.filter((item) => item !== revealKey) : [...items, revealKey])}>
+                              <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" title={revealed ? translateText("隐藏") : translateText("显示")} onClick={() => setRevealedValues((items) => revealed ? items.filter((item) => item !== revealKey) : [...items, revealKey])}>
                                 {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                               </Button>
                             )}
-                            {revealed && column.copyable && <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" title="复制" onClick={() => copyValue(value)}><Clipboard className="h-3.5 w-3.5" /></Button>}
+                            {revealed && column.copyable && <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" title={translateText("复制")} onClick={() => copyValue(value)}><Clipboard className="h-3.5 w-3.5" /></Button>}
                           </div>
                         ) : (
                           <div className="flex min-w-0 items-center gap-1.5">
                             <span className={cn("truncate", column.type === "code" && "font-mono text-xs")} title={displayValue(value)}>{displayValue(value)}</span>
-                            {column.copyable && <Button type="button" variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title="复制" onClick={() => copyValue(value)}><Clipboard className="h-3.5 w-3.5" /></Button>}
+                            {column.copyable && <Button type="button" variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" title={translateText("复制")} onClick={() => copyValue(value)}><Clipboard className="h-3.5 w-3.5" /></Button>}
                           </div>
                         )}
                       </TableCell>
@@ -1077,13 +1078,13 @@ export function AgentResourceManager({
                   })}
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      {view.operations?.update && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" title="编辑" disabled={actionsDisabled || operationBusy("update", view.operations.update, row)} onClick={() => openEdit(row)}>{operationBusy("update", view.operations.update, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}</Button>}
+                      {view.operations?.update && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" title={translateText("编辑")} disabled={actionsDisabled || operationBusy("update", view.operations.update, row)} onClick={() => openEdit(row)}>{operationBusy("update", view.operations.update, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}</Button>}
                       {(view.operations?.execute || []).map((operation) => (
                         <Button key={operation.actionId} type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" title={operation.description || operation.label} disabled={actionsDisabled || operationBusy("execute", operation, row)} onClick={() => runOperation(operation, row, "execute")}>
-                          {operationBusy("execute", operation, row) && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{operation.label || "执行"}
+                          {operationBusy("execute", operation, row) && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{operation.label || translateText("执行")}
                         </Button>
                       ))}
-                      {view.operations?.delete && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="删除" disabled={actionsDisabled || operationBusy("delete", view.operations.delete, row)} onClick={() => deleteRow(row)}>{operationBusy("delete", view.operations.delete, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}</Button>}
+                      {view.operations?.delete && <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive" title={translateText("删除")} disabled={actionsDisabled || operationBusy("delete", view.operations.delete, row)} onClick={() => deleteRow(row)}>{operationBusy("delete", view.operations.delete, row) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}</Button>}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -1092,7 +1093,7 @@ export function AgentResourceManager({
             {!rows.length && (
               <TableRow>
                 <TableCell colSpan={(view.columns || []).length + 1} className="h-28 text-center text-muted-foreground">
-                  {listLoading ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />正在读取 Agent 数据</span> : view.emptyText || "暂无数据"}
+                  {listLoading ? <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />{translateText("正在读取 Agent 数据")}</span> : view.emptyText || translateText("暂无数据")}
                 </TableCell>
               </TableRow>
             )}
@@ -1105,17 +1106,16 @@ export function AgentResourceManager({
       <Dialog open={formOpen} onOpenChange={(open) => { if (!saving) setFormOpen(open); }}>
         <DialogContent className="flex max-h-[88vh] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="border-b border-border/40 px-5 py-4 pr-12 text-left">
-            <DialogTitle>{formMode === "create" ? (view.operations?.create?.label || "新增") : (view.operations?.update?.label || "编辑")}</DialogTitle>
-            <DialogDescription>{view.description || "填写资源信息。"}</DialogDescription>
+            <DialogTitle>{formMode === "create" ? (view.operations?.create?.label || translateText("新增")) : (view.operations?.update?.label || translateText("编辑"))}</DialogTitle>
+            <DialogDescription>{view.description || translateText("填写资源信息。")}</DialogDescription>
           </DialogHeader>
           <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-5 py-4 sm:grid-cols-2">
             {(view.fields || []).map(renderField)}
           </div>
           <DialogFooter className="border-t border-border/40 px-5 py-3">
-            <Button type="button" variant="outline" disabled={saving} onClick={() => setFormOpen(false)}><X className="mr-2 h-4 w-4" />取消</Button>
+            <Button type="button" variant="outline" disabled={saving} onClick={() => setFormOpen(false)}><X className="mr-2 h-4 w-4" />{translateText("取消")}</Button>
             <Button type="button" disabled={saving} onClick={saveForm}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}保存
-            </Button>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}{translateText("保存")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

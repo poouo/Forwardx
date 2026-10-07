@@ -5,11 +5,21 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
-import { createHopTestBatch, registerHopTest } from "../hopTestState";
+import { randomUUID } from "node:crypto";
 import { linkProbeMethodForRule } from "@shared/latencyProbe";
 import { ruleLatencySeriesQueryCache as selfTestQueryCache } from "../ruleLatencyQueryCache";
 
 export const selfTestRulesRouter = router({
+  probeStatistics: protectedProcedure
+    .input(z.object({ ruleId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+    .query(async ({ input, ctx }) => {
+      const rule = await db.getForwardRuleById(input.ruleId);
+      if (!rule) throw new Error("规则不存在");
+      if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权查看此规则");
+      return selfTestQueryCache.get(`probeStatistics:${ctx.user.id}:${input.ruleId}:${input.hours}`,
+        { ttlMs: 5_000, staleMs: 0 },
+        () => db.getTcpingProbeStatisticsByRule(input.ruleId, new Date(Date.now() - input.hours * 3600_000)));
+    }),
   tcpingSeries: protectedProcedure
       .input(z.object({
         ruleId: z.number(),
@@ -52,42 +62,44 @@ export const selfTestRulesRouter = router({
               : "remaining-path"
             : "sum";
           if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
-          const batchId = createHopTestBatch("fgr", Number(group.id));
+          const batchId = `fc-${randomUUID()}`;
           const testHostIds = new Set<number>();
           let firstTestId = 0;
           let queued = 0;
-          for (const probe of probes) {
-            const probeMessage = JSON.stringify({
-              kind: "forward-chain",
-              groupId: group.id,
-              ruleId: rule.id,
-              entryIp: probe.targetIp,
-              entrySourcePort: probe.targetPort,
-              targetIp: probe.targetIp,
-              targetPort: probe.targetPort,
-              method: probe.method,
-              hopLabel: probe.hopLabel,
-              routeLabel: probe.routeLabel,
-              batchId,
-              latencyMode: chainLatencyMode,
-              runtimeDependent: probe.runtimeDependent,
-            });
-            const testId = await db.createForwardTest({
-              ruleId: rule.id,
-              hostId: probe.fromHostId,
-              userId: rule.userId,
-              status: "pending",
-              listenOk: false,
-              targetReachable: false,
-              forwardOk: false,
-              message: probeMessage,
-            });
-            if (!firstTestId) firstTestId = Number(testId);
-            registerHopTest(batchId, Number(testId));
-            testHostIds.add(probe.fromHostId);
-            queued += 1;
-            appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}:${probe.targetPort}`);
-          }
+          await db.withDatabaseTransaction(async () => {
+            for (const probe of probes) {
+              const probeMessage = JSON.stringify({
+                kind: "forward-chain",
+                groupId: group.id,
+                ruleId: rule.id,
+                entryIp: probe.targetIp,
+                entrySourcePort: probe.targetPort,
+                targetIp: probe.targetIp,
+                targetPort: probe.targetPort,
+                method: probe.method,
+                hopLabel: probe.hopLabel,
+                routeLabel: probe.routeLabel,
+                batchId,
+                latencyMode: chainLatencyMode,
+                runtimeDependent: probe.runtimeDependent,
+              });
+              const testId = await db.createForwardTest({
+                ruleId: rule.id,
+                hostId: probe.fromHostId,
+                userId: rule.userId,
+                status: "pending",
+                listenOk: false,
+                targetReachable: false,
+                forwardOk: false,
+                message: probeMessage,
+                batchId,
+              });
+              if (!firstTestId) firstTestId = Number(testId);
+              testHostIds.add(probe.fromHostId);
+              queued += 1;
+            }
+          });
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} batch=${batchId} queued segments=${queued} sourceHosts=${testHostIds.size}`);
           for (const hostId of testHostIds) {
             pushAgentRefresh(hostId, "forward-chain-rule-selftest", { urgent: true });
           }
@@ -103,6 +115,7 @@ export const selfTestRulesRouter = router({
         const tunnelLatencyBaseline = await db.getLatestTunnelLatency(Number(tunnel.id));
         const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel", {
           urgent: true,
+          refreshMode: "probe",
           forceTcping: true,
         });
         message = JSON.stringify({

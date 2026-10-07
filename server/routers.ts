@@ -4,6 +4,7 @@ import { router } from "./_core/trpc";
 import { agentTokensRouter } from "./routers/agentTokens";
 import { announcementsRouter } from "./routers/announcements";
 import { authRouter } from "./routers/auth";
+import { googleRouter } from "./routers/google";
 import { billingRouter } from "./routers/billing";
 import { dashboardRouter } from "./routers/dashboard";
 import { forwardGroupsRouter } from "./routers/forwardGroups";
@@ -14,6 +15,7 @@ import { pluginsRouter } from "./routers/plugins";
 import { rulesRouter } from "./routers/rules";
 import { setupRouter } from "./routers/setup";
 import { telegramRouter } from "./routers/telegram";
+import { discordRouter } from "./routers/discord";
 import { trafficBillingRouter } from "./routers/trafficBilling";
 import { tunnelsRouter } from "./routers/tunnels";
 import { usersRouter } from "./routers/users";
@@ -26,6 +28,7 @@ export const appRouter = router({
   plans: plansRouter,
   plugins: pluginsRouter,
   auth: authRouter,
+  google: googleRouter,
   dashboard: dashboardRouter,
   users: usersRouter,
   hosts: hostsRouter,
@@ -34,6 +37,7 @@ export const appRouter = router({
   forwardGroups: forwardGroupsRouter,
   tunnels: tunnelsRouter,
   telegram: telegramRouter,
+  discord: discordRouter,
   trafficBilling: trafficBillingRouter,
   agentTokens: agentTokensRouter,
   announcements: announcementsRouter,

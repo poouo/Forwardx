@@ -8,7 +8,25 @@ import {
   buildNftForwardCmds,
   buildNftTransitionCleanupCmds,
   restartMimicServiceIfConfigChangedCmd,
+  gostRuntimeApiConfig,
+  syncGostServiceIfConfigChangedCmd,
 } from "./agentActionCommands";
+
+test("GOST incremental sync uses root-only Unix APIs with legacy restart fallback", () => {
+  for (const [service, path] of [
+    ["forwardx-runtime", "/etc/forwardx/runtime/gost.json"],
+    ["forwardx-tunnel-runtime", "/etc/forwardx/runtime/tunnel-gost.json"],
+  ]) {
+    assert.deepEqual(gostRuntimeApiConfig(service), { addr: `unix:///run/forwardx-agent/gost-api/${service}.sock` });
+    const command = syncGostServiceIfConfigChangedCmd(service, path);
+    assert.ok(command.startsWith(`# forwardx-gost-additive-sync ${service} ${path}\n`));
+    assert.match(command, /systemctl restart/);
+    assert.match(command, /config unchanged/);
+    assert.doesNotMatch(command, /127\.0\.0\.1|0\.0\.0\.0|curl/);
+  }
+  assert.throws(() => gostRuntimeApiConfig("other"));
+  assert.throws(() => syncGostServiceIfConfigChangedCmd("forwardx-runtime", "/tmp/config"));
+});
 
 test("nft rule comments keep nft string quotes after shell parsing", () => {
   const commands = buildNftForwardCmds({

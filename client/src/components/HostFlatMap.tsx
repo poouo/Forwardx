@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import DeckGL from "@deck.gl/react";
 import { GeoJsonLayer, LineLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import MapLibreMap from "react-map-gl/maplibre";
@@ -187,9 +188,9 @@ function deckColorToCss(color: [number, number, number, number]) {
 
 function renderHostMapTooltip(point: HostMapPoint) {
   const rows = [
-    { label: "地址", value: point.addressText },
-    { label: "地区", value: point.regionText || "地区获取中" },
-    { label: "系统", value: point.host.osInfo || "系统信息未上报" },
+    { label: translateText("地址"), value: point.addressText },
+    { label: translateText("地区"), value: point.regionText || "地区获取中" },
+    { label: translateText("系统"), value: point.host.osInfo || "系统信息未上报" },
     { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : "未上报" },
   ];
   const regionValue = point.flagUrl
@@ -207,7 +208,7 @@ function renderHostMapTooltip(point: HostMapPoint) {
       ${rows.map((row) => `
         <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
           <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === "地址" || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === "地区" ? regionValue : escapeTooltipHtml(row.value)}</span>
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === translateText("地址") || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === translateText("地区") ? regionValue : escapeTooltipHtml(row.value)}</span>
         </div>
       `).join("")}
     </div>
@@ -227,7 +228,7 @@ function buildHostMapPoints(hosts: any[]) {
       displayLng: coord.lng,
       color: isOnline ? [74, 222, 128, 245] : [251, 191, 36, 235],
       haloColor: isOnline ? [74, 222, 128, 125] : [251, 191, 36, 110],
-      statusText: isOnline ? "在线" : "离线",
+      statusText: isOnline ? translateText("在线") : translateText("离线"),
       regionText: hostRegionText(host),
       addressText: hostAddressText(host),
       countryCode: hostCountryCode(host),
@@ -419,22 +420,16 @@ export default function HostFlatMap({
           />
         </DeckGL>
         <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/40 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-          <div className="font-medium">平面主机地图</div>
-          <div className="mt-1 text-white/70">
-            已定位 {points.length} 台 · 待定位 {missingCount} 台
-          </div>
+          <div className="font-medium">{translateText("平面主机地图")}</div>
+          <div className="mt-1 text-white/70">{translateText("已定位 ")}{points.length}{translateText(" 台 · 待定位 ")}{missingCount}{translateText(" 台")}</div>
         </div>
         {countriesLoading && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#020617]/55 text-sm text-white/70">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            正在加载地图
-          </div>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载地图")}</div>
         )}
         {!countriesLoading && points.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
-            <div className="rounded-md border border-white/10 bg-black/40 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">
-              暂无可定位主机
-            </div>
+            <div className="rounded-md border border-white/10 bg-black/40 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">{translateText("暂无可定位主机")}</div>
           </div>
         )}
       </div>

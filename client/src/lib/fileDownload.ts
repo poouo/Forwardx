@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 export type TextDownloadFile = {
   filename: string;
   content: string;
@@ -46,16 +47,16 @@ export function sanitizeDownloadFilename(filename: string) {
 
 function getBrowserDownloadRuntime(): FileDownloadRuntime {
   if (typeof document === "undefined" || !document.body) {
-    throw new Error("当前环境不支持浏览器文件下载");
+    throw new Error(translateText("当前环境不支持浏览器文件下载"));
   }
   return {
     createBlob: (content, mimeType) => {
-      if (typeof Blob === "undefined") throw new Error("当前浏览器不支持 Blob 文件下载");
+      if (typeof Blob === "undefined") throw new Error(translateText("当前浏览器不支持 Blob 文件下载"));
       return new Blob([content], { type: mimeType });
     },
     createObjectUrl: (blob) => {
       if (typeof globalThis.URL?.createObjectURL !== "function") {
-        throw new Error("当前浏览器不支持 Blob 文件下载");
+        throw new Error(translateText("当前浏览器不支持 Blob 文件下载"));
       }
       return globalThis.URL.createObjectURL(blob as Blob);
     },
@@ -142,12 +143,12 @@ export function downloadTextFile(
 
   try {
     if (content.length > MAX_DATA_URL_FALLBACK_LENGTH) {
-      throw new Error("文件过大，无法使用兼容下载");
+      throw new Error(translateText("文件过大，无法使用兼容下载"));
     }
     const dataUrl = `data:${safeMimeType},${encodeURIComponent(content)}`;
     triggerDownloadLink(runtime, dataUrl, safeFilename);
     return "data";
   } catch {
-    throw new Error("浏览器未能保存文件，请检查下载权限后重试");
+    throw new Error(translateText("浏览器未能保存文件，请检查下载权限后重试"));
   }
 }

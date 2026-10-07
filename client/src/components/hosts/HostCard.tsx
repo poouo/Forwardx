@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -76,9 +77,9 @@ function formatRemainingTime(purchasedAt: unknown, stoppedAt: unknown) {
   const stoppedMs = parseHostDateTime(stoppedAt);
   if (purchasedMs === null || stoppedMs === null || stoppedMs <= purchasedMs) return null;
   const remainingMs = stoppedMs - Date.now();
-  if (remainingMs <= 0) return "已到期";
-  if (remainingMs < dayMs) return "不足1天";
-  return `剩余${Math.ceil(remainingMs / dayMs)}天`;
+  if (remainingMs <= 0) return translateText("已到期");
+  if (remainingMs < dayMs) return translateText("不足1天");
+  return translateText("剩余{0}天", [Math.ceil(remainingMs / dayMs)]);
 }
 
 function compactHostOsInfo(value: unknown) {
@@ -131,16 +132,16 @@ export function HostActionButtons({
   const isOnline = !!host.isOnline;
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const upgradeTitle = !isOnline
-    ? "主机离线，无法下发升级任务"
+    ? translateText("主机离线，无法下发升级任务")
     : agentUpgradeTimedOut
-      ? "升级超时，可重新下发"
-      : "升级 Agent";
+      ? translateText("升级超时，可重新下发")
+      : translateText("升级 Agent");
 
   const confirmDelete = async () => {
     if (await confirmDialog({
-      title: "删除主机",
-      description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
-      confirmText: "删除",
+      title: translateText("删除主机"),
+      description: translateText("确定要删除此主机吗？删除后相关状态和配置会同步移除。"),
+      confirmText: translateText("删除"),
       tone: "destructive",
     })) onDelete(host.id);
   };
@@ -152,8 +153,8 @@ export function HostActionButtons({
           variant="ghost"
           size="icon"
           className={buttonClassName}
-          title="查看服务延迟图表"
-          aria-label="查看服务延迟图表"
+          title={translateText("查看服务延迟图表")}
+          aria-label={translateText("查看服务延迟图表")}
           onClick={() => onViewProbeLatency(host)}
         >
           <Activity className="h-3.5 w-3.5" />
@@ -163,8 +164,8 @@ export function HostActionButtons({
         variant="ghost"
         size="icon"
         className={buttonClassName}
-        title="编辑主机"
-        aria-label="编辑主机"
+        title={translateText("编辑主机")}
+        aria-label={translateText("编辑主机")}
         onClick={() => onEdit(host)}
       >
         <Pencil className="h-3.5 w-3.5" />
@@ -175,8 +176,8 @@ export function HostActionButtons({
             variant="ghost"
             size="icon"
             className={buttonClassName}
-            title="更多操作"
-            aria-label="更多操作"
+            title={translateText("更多操作")}
+            aria-label={translateText("更多操作")}
           >
             <MoreHorizontal className="h-4 w-4" />
           </Button>
@@ -188,13 +189,13 @@ export function HostActionButtons({
               onSelect={() => onResetTraffic(host)}
             >
               {resetTrafficPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-              <span>{resetTrafficPending ? "正在重置流量" : "重置流量统计"}</span>
+              <span>{resetTrafficPending ? translateText("正在重置流量") : translateText("重置流量统计")}</span>
             </DropdownMenuItem>
           )}
           {onCorrectTraffic && (
             <DropdownMenuItem onSelect={() => onCorrectTraffic(host)}>
               <Gauge />
-              <span>用量修正</span>
+              <span>{translateText("用量修正")}</span>
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
@@ -203,7 +204,7 @@ export function HostActionButtons({
             onSelect={() => onUpgrade(host)}
           >
             <Download />
-            <span>升级 Agent</span>
+            <span>{translateText("升级 Agent")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -211,7 +212,7 @@ export function HostActionButtons({
             onSelect={() => void confirmDelete()}
           >
             <Trash2 />
-            <span>删除主机</span>
+            <span>{translateText("删除主机")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -252,10 +253,10 @@ export default function HostCard({
   const trafficLimit = Math.max(0, Number(host.trafficLimit || 0));
   const trafficMeasureMode = host.trafficMeasureMode === "outbound" || host.trafficMeasureMode === "max" ? host.trafficMeasureMode : "both";
   const trafficMeasureModeLabel = trafficMeasureMode === "outbound"
-    ? "仅出向"
+    ? translateText("仅出向")
     : trafficMeasureMode === "max"
-      ? "取最大值"
-      : "双向";
+      ? translateText("取最大值")
+      : translateText("双向");
   const trafficUsedBytes = trafficMeasureMode === "outbound"
     ? Math.max(0, totalNetworkOut ?? 0)
     : trafficMeasureMode === "max"
@@ -287,13 +288,13 @@ export default function HostCard({
   const diskUsage = Number(latestMetric?.diskUsage ?? 0);
   const hasSwapReport = latestMetric?.swapUsed != null || latestMetric?.swapTotal != null || latestMetric?.swapUsage != null;
   const memoryTooltip = [
-    "内存使用详情",
+    translateText("内存使用详情"),
     memoryUsed !== null && memoryTotal
       ? `RAM ${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${memoryUsage}%)`
       : `RAM ${memoryUsage}%`,
     hasSwapReport
       ? `Swap ${formatBytes(swapUsed ?? 0)} / ${formatBytes(swapTotal ?? 0)} (${swapUsage}%)`
-      : "Swap 未上报",
+      : translateText("Swap 未上报"),
   ].join("\n");
   const networkSpeed = useMemo(() => {
     if (!latestMetric) return { in: null as number | null, out: null as number | null };
@@ -319,15 +320,15 @@ export default function HostCard({
   const systemTrafficInLabel = formatOptionalBytes(systemNetworkIn);
   const systemTrafficOutLabel = formatOptionalBytes(systemNetworkOut);
   const currentTrafficTitle = [
-    "当前瞬时流量",
-    `下行 ${currentTrafficInLabel}`,
-    `上行 ${currentTrafficOutLabel}`,
+    translateText("当前瞬时流量"),
+    translateText("下行 {0}", [currentTrafficInLabel]),
+    translateText("上行 {0}", [currentTrafficOutLabel]),
   ].join("\n");
   const systemTrafficTitle = [
-    "系统累计流量（系统重启后重置）",
-    `下行 ${systemTrafficInLabel}`,
-    `上行 ${systemTrafficOutLabel}`,
-    `合计 ${formatOptionalBytes(systemNetworkTotal)}`,
+    translateText("系统累计流量（系统重启后重置）"),
+    translateText("下行 {0}", [systemTrafficInLabel]),
+    translateText("上行 {0}", [systemTrafficOutLabel]),
+    translateText("合计 {0}", [formatOptionalBytes(systemNetworkTotal)]),
   ].join("\n");
   const renderTrafficRow = (Icon: typeof ArrowDownToLine, value: string) => (
     <div className="flex min-w-0 items-center justify-between gap-2 text-xs">
@@ -364,17 +365,17 @@ export default function HostCard({
   const renderTrafficSplitBox = () => (
     <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] divide-x divide-border/40">
-        {renderTrafficColumn({ label: "当前", inValue: currentTrafficInLabel, outValue: currentTrafficOutLabel, title: currentTrafficTitle, className: "pr-2" })}
-        {renderTrafficColumn({ label: "累计", inValue: systemTrafficInLabel, outValue: systemTrafficOutLabel, title: systemTrafficTitle, className: "pl-2" })}
+        {renderTrafficColumn({ label: translateText("当前"), inValue: currentTrafficInLabel, outValue: currentTrafficOutLabel, title: currentTrafficTitle, className: "pr-2" })}
+        {renderTrafficColumn({ label: translateText("累计"), inValue: systemTrafficInLabel, outValue: systemTrafficOutLabel, title: systemTrafficTitle, className: "pl-2" })}
       </div>
     </div>
   );
   const remainingTimeLabel = formatRemainingTime(host.purchasedAt, host.stoppedAt);
   const hostName = String(host.name || "-").trim() || "-";
   const osInfoText = compactHostOsInfo(host.osInfo);
-  const remainingTimeClass = remainingTimeLabel === "已到期"
+  const remainingTimeClass = remainingTimeLabel === translateText("已到期")
     ? "border-destructive/30 bg-destructive/10 text-destructive"
-    : remainingTimeLabel === "不足1天"
+    : remainingTimeLabel === translateText("不足1天")
       ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
@@ -402,11 +403,11 @@ export default function HostCard({
       value: cpuUsage,
       valueLabel: `${cpuUsage}%`,
       progressClass: metricUsageProgressClass(cpuUsage, isOnline),
-      tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : `CPU 使用率 ${cpuUsage}%`,
+      tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : translateText("CPU 使用率 {0}%", [cpuUsage]),
     },
     {
       key: "memory",
-      label: "内存",
+      label: translateText("内存"),
       icon: MemoryStick,
       value: memoryUsage,
       valueLabel: `${memoryUsage}%`,
@@ -415,18 +416,18 @@ export default function HostCard({
     },
     {
       key: "disk",
-      label: "磁盘",
+      label: translateText("磁盘"),
       icon: HardDrive,
       value: diskUsage,
       valueLabel: `${diskUsage}%`,
       progressClass: metricUsageProgressClass(diskUsage, isOnline),
       tooltip: diskUsed !== null && diskTotal
         ? `磁盘使用率 ${diskUsage}%\n${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`
-        : `磁盘使用率 ${diskUsage}%`,
+        : translateText("磁盘使用率 {0}%", [diskUsage]),
     },
     {
       key: "traffic",
-      label: "流量",
+      label: translateText("流量"),
       icon: Activity,
       value: trafficProgress,
       valueLabel: trafficPercent === null ? "∞" : `${trafficPercent}%`,
@@ -438,11 +439,11 @@ export default function HostCard({
   const addressRegionBlock = (regionCompact = false) => (
     <div className={`mt-0.5 min-w-0 space-y-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
       <p className="min-w-0 truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
-        <span className="mr-1.5 text-muted-foreground">地址</span>
+        <span className="mr-1.5 text-muted-foreground">{translateText("地址")}</span>
         {hostPrimaryAddressText(host)}
       </p>
       <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5">
-        <span className="shrink-0 text-muted-foreground">国家/地区：</span>
+        <span className="shrink-0 text-muted-foreground">{translateText("国家/地区：")}</span>
         <HostRegionBadge host={host} compact={regionCompact} />
       </div>
     </div>
@@ -505,7 +506,7 @@ export default function HostCard({
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
-                  title={isOnline ? "在线" : "离线"}
+                  title={isOnline ? translateText("在线") : translateText("离线")}
                 />
                 <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
                 <span
@@ -513,18 +514,16 @@ export default function HostCard({
                     isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
                   }`}
                 >
-                  {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                  {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                 </span>
                 {agentNeedsUpdate && (
-                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                    新版
-                  </Badge>
+                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">{translateText("新版")}</Badge>
                 )}
               </div>
               {host.agentUpgradeRequested && (
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
-                    {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                    {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
                   </Badge>
                 </div>
               )}
@@ -537,7 +536,7 @@ export default function HostCard({
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
-                  title={isOnline ? "在线" : "离线"}
+                  title={isOnline ? translateText("在线") : translateText("离线")}
                 />
                 <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
                 <span
@@ -545,18 +544,16 @@ export default function HostCard({
                     isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
                   }`}
                 >
-                  {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                  {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                 </span>
                 {agentNeedsUpdate && (
-                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                    新版
-                  </Badge>
+                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">{translateText("新版")}</Badge>
                 )}
               </div>
               {host.agentUpgradeRequested && (
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
-                    {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                    {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
                   </Badge>
                 </div>
               )}
@@ -565,7 +562,7 @@ export default function HostCard({
             <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap ${compact ? "text-xs" : "text-sm"}`}>
               <div className="flex shrink-0 items-center gap-1.5">
                 <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
+                <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? translateText("在线") : translateText("离线")}</span>
               </div>
               {!compact && <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
                 <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -602,7 +599,7 @@ export default function HostCard({
               {renderTrafficSplitBox()}
               <div className="flex items-center gap-2 text-xs">
                 <Clock className="h-3 w-3 text-muted-foreground" />
-                <span className="text-muted-foreground">运行</span>
+                <span className="text-muted-foreground">{translateText("运行")}</span>
                 {remainingTimeLabel && (
                   <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
                     {remainingTimeLabel}
@@ -619,7 +616,7 @@ export default function HostCard({
                 <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
               </div>
               <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
-                {host.cpuInfo || "未上报 CPU 型号"}
+                {host.cpuInfo || translateText("未上报 CPU 型号")}
               </p>
               <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
             </div>
@@ -628,7 +625,7 @@ export default function HostCard({
                 <TooltipTrigger asChild>
                   <div className="space-y-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={memoryTooltip} tabIndex={0}>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
+                      <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" />{translateText(" 内存")}</span>
                       <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
                         {memoryUsed !== null && memoryTotal
                           ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
@@ -645,7 +642,7 @@ export default function HostCard({
             </TooltipProvider>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
+                <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" />{translateText(" 磁盘")}</span>
                 <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
                   {diskUsed !== null && diskTotal
                     ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
@@ -656,7 +653,7 @@ export default function HostCard({
             </div>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><Activity className="h-3 w-3" /> 流量</span>
+                <span className="text-muted-foreground flex items-center gap-1"><Activity className="h-3 w-3" />{translateText(" 流量")}</span>
                 <span className="max-w-[70%] truncate text-right font-medium tabular-nums" title={trafficUsageTooltip}>
                   {trafficUsageLabel}
                 </span>
@@ -668,7 +665,7 @@ export default function HostCard({
             </div>
             <div className="flex items-center gap-2 text-xs pt-1">
               <Clock className="h-3 w-3 text-muted-foreground" />
-              <span className="text-muted-foreground">运行时间</span>
+              <span className="text-muted-foreground">{translateText("运行时间")}</span>
               {remainingTimeLabel && (
                 <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
                   {remainingTimeLabel}
@@ -680,7 +677,7 @@ export default function HostCard({
           )
         ) : (
           <div className={`border-t border-border/30 text-center text-muted-foreground/60 ${compact ? "py-3" : "py-4"}`}>
-            <p className="text-xs">暂无监控数据</p>
+            <p className="text-xs">{translateText("暂无监控数据")}</p>
           </div>
         )}
       </CardContent>

@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import {
   AVATAR_MAX_BYTES,
   avataaarsValue,
@@ -76,7 +77,7 @@ function canvasToDataUrl(canvas: HTMLCanvasElement, type: string, quality: numbe
 
 export async function fileToImageDataUrl(file: File, maxBytes = AVATAR_MAX_BYTES) {
   if (!/^image\/(png|jpe?g|webp|gif)$/i.test(file.type)) {
-    throw new Error("仅支持 PNG、JPG、WebP 或 GIF 图片");
+    throw new Error(translateText("仅支持 PNG、JPG、WebP 或 GIF 图片"));
   }
 
   const original = await readAsDataUrl(file);
@@ -85,7 +86,7 @@ export async function fileToImageDataUrl(file: File, maxBytes = AVATAR_MAX_BYTES
   }
 
   if (/image\/gif/i.test(file.type)) {
-    throw new Error("GIF 超过 50K，无法自动压缩");
+    throw new Error(translateText("GIF 超过 50K，无法自动压缩"));
   }
 
   const image = await loadImage(original);
@@ -110,5 +111,5 @@ export async function fileToImageDataUrl(file: File, maxBytes = AVATAR_MAX_BYTES
     else maxSide = Math.max(48, Math.floor(maxSide * 0.82));
   }
 
-  throw new Error("图片压缩后仍超过 50K");
+  throw new Error(translateText("图片压缩后仍超过 50K"));
 }

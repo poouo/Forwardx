@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -41,7 +42,7 @@ export default function CustomSidebarPage({ pageId }: { pageId: string }) {
   return (
     <DashboardLayout>
       {isLoading ? (
-        <DataSectionLoading label="正在加载页面" minHeight="min-h-[320px]" />
+        <DataSectionLoading label={translateText("正在加载页面")} minHeight="min-h-[320px]" />
       ) : page ? (
         <div className="space-y-4">
           <div className="flex min-w-0 items-center justify-between gap-3">
@@ -61,7 +62,7 @@ export default function CustomSidebarPage({ pageId }: { pageId: string }) {
             <Button variant="outline" className="shrink-0 gap-2" asChild>
               <a href={page.url} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="h-4 w-4" />
-                <span className="hidden sm:inline">{page.openMode === "external" ? "打开页面" : "新窗口打开"}</span>
+                <span className="hidden sm:inline">{page.openMode === "external" ? translateText("打开页面") : translateText("新窗口打开")}</span>
               </a>
             </Button>
           </div>
@@ -69,13 +70,11 @@ export default function CustomSidebarPage({ pageId }: { pageId: string }) {
             <div className="grid h-[calc(100svh-9.5rem)] min-h-[32rem] place-items-center rounded-md border border-dashed border-border/60 bg-muted/15 px-6 text-center">
               <div className="max-w-md">
                 <ExternalLink className="mx-auto h-8 w-8 text-primary" />
-                <p className="mt-3 font-medium">此页面使用新窗口打开</p>
-                <p className="mt-2 text-sm text-muted-foreground">目标网站禁止在面板内嵌入，点击上方按钮继续访问。</p>
+                <p className="mt-3 font-medium">{translateText("此页面使用新窗口打开")}</p>
+                <p className="mt-2 text-sm text-muted-foreground">{translateText("目标网站禁止在面板内嵌入，点击上方按钮继续访问。")}</p>
                 <Button variant="outline" className="mt-4 gap-2" asChild>
                   <a href={page.url} target="_blank" rel="noopener noreferrer">
-                    <ExternalLink className="h-4 w-4" />
-                    打开页面
-                  </a>
+                    <ExternalLink className="h-4 w-4" />{translateText("打开页面")}</a>
                 </Button>
               </div>
             </div>
@@ -96,13 +95,11 @@ export default function CustomSidebarPage({ pageId }: { pageId: string }) {
                 <div className="absolute inset-0 z-10 grid place-items-center bg-background/95 px-6 text-center">
                   <div className="max-w-md">
                     <Globe2 className="mx-auto h-8 w-8 text-muted-foreground" />
-                    <p className="mt-3 font-medium">此网站不允许嵌入或加载超时</p>
-                    <p className="mt-2 text-sm text-muted-foreground">请使用新窗口打开；如果是面板内页面，请确认地址与当前面板使用同一个域名。</p>
+                    <p className="mt-3 font-medium">{translateText("此网站不允许嵌入或加载超时")}</p>
+                    <p className="mt-2 text-sm text-muted-foreground">{translateText("请使用新窗口打开；如果是面板内页面，请确认地址与当前面板使用同一个域名。")}</p>
                     <Button variant="outline" className="mt-4 gap-2" asChild>
                       <a href={page.url} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="h-4 w-4" />
-                        新窗口打开
-                      </a>
+                        <ExternalLink className="h-4 w-4" />{translateText("新窗口打开")}</a>
                     </Button>
                   </div>
                 </div>
@@ -114,7 +111,7 @@ export default function CustomSidebarPage({ pageId }: { pageId: string }) {
         <div className="grid min-h-[320px] place-items-center rounded-md border border-dashed border-border/60 bg-muted/15 px-6 text-center">
           <div>
             <Globe2 className="mx-auto h-8 w-8 text-muted-foreground" />
-            <p className="mt-3 font-medium">页面不存在或当前账号不可见</p>
+            <p className="mt-3 font-medium">{translateText("页面不存在或当前账号不可见")}</p>
           </div>
         </div>
       )}

@@ -109,7 +109,7 @@ function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: strin
   return ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
 }
 
-async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
+export async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
   if (user?.accountEnabled === false) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
@@ -143,7 +143,7 @@ function parseEmailWhitelist(value?: string | null) {
   return [...new Set(items)];
 }
 
-function ensureAllowedEmail(email: string, config: Awaited<ReturnType<typeof getEmailConfig>>) {
+export function ensureAllowedEmail(email: string, config: Awaited<ReturnType<typeof getEmailConfig>>) {
   const normalized = normalizeEmail(email);
   if (!z.string().email().safeParse(normalized).success) {
     throw new Error("邮箱格式不正确");

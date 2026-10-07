@@ -381,6 +381,7 @@ export const setupRouter = router({
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码"),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址"),
       dataScope: z.enum(PANEL_MIGRATION_SCOPES).default("essential"),
+      seamless: z.boolean().default(false),
     }))
     .mutation(async ({ input, ctx }) => {
       return withSetupWriteLock(ctx, async () => {

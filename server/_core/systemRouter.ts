@@ -25,6 +25,9 @@ import {
 import { sendMail } from "../email";
 import { SMTP_SECURITY_MODES, effectiveSmtpSecurityMode, resolveSmtpSecurityMode } from "../smtpTransport";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
+import { refreshDiscordBotProfile, resetDiscordBot, startDiscordBot, discordConnectionStatus } from "../discordBot";
+import { notificationChannel, publicNotificationSettings } from "../notificationSettings";
+import { validateDiscordBotToken } from "../discordCredentials";
 import { pushAgentRefresh, pushAgentSupportBundle, pushAgentUpgrade, requestHostTcping } from "../agentEvents";
 import { createSupportBundleTask, failSupportBundleHost, getSupportBundleTask } from "../supportBundle";
 import { withKeyedTaskLock } from "../keyedTaskLock";
@@ -80,6 +83,7 @@ import {
   ANDROID_APK_RELEASE_VERSION,
   ANDROID_APP_VERSION,
   APP_VERSION,
+  IOS_APP_VERSION,
   PANEL_AGENT_COMPATIBILITY,
   PANEL_AGENT_COMPATIBILITY_LIMIT,
 } from "../../shared/versions";
@@ -120,6 +124,8 @@ export const REPO_URL = "https://github.com/poouo/Forwardx";
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
 const ANDROID_APK_DOWNLOAD_URL =
   `${REPO_URL}/releases/download/v${ANDROID_APK_RELEASE_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
+const IOS_IPA_DOWNLOAD_URL =
+  `${REPO_URL}/releases/download/v${APP_VERSION}/forwardx-ios-v${IOS_APP_VERSION}-unsigned.ipa`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const UPGRADE_ASSETS_PENDING_EXIT_CODE = 12;
 const DEFAULT_DOCKER_IMAGE = "ghcr.io/poouo/forwardx:latest";
@@ -1629,6 +1635,8 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     version: APP_VERSION,
     androidAppVersion: ANDROID_APP_VERSION,
     androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+    iosAppVersion: IOS_APP_VERSION,
+    iosIpaDownloadUrl: IOS_IPA_DOWNLOAD_URL,
     agentVersion: AGENT_VERSION,
     siteTitle: all.siteTitle || "ForwardX",
     siteLogoDataUrl: all.siteLogoDataUrl || "",
@@ -1745,6 +1753,8 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       trafficReminderThreshold: 20,
       hostStatusNotify: false,
     },
+    notificationChannel: notificationChannel(all),
+    discord: { ...publicNotificationSettings(all, "discord"), tokenMasked: "", tokenSource: "none" as const, connected: false, queued: 0 },
     deepseek: {
       provider: aiProvider,
       enabled: false,
@@ -1773,6 +1783,8 @@ export const systemRouter = router({
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+      iosAppVersion: IOS_APP_VERSION,
+      iosIpaDownloadUrl: IOS_IPA_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
@@ -1925,6 +1937,8 @@ export const systemRouter = router({
         trafficReminderThreshold: Number(all.telegramTrafficReminderThreshold || 20),
         hostStatusNotify: all.telegramHostStatusNotify === "true",
       },
+      notificationChannel: notificationChannel(all),
+      discord: { ...publicNotificationSettings(all, "discord"), ...discordConnectionStatus() },
       deepseek: {
         provider: aiProvider,
         enabled: all.deepseekAiEnabled === "true",
@@ -2090,6 +2104,12 @@ export const systemRouter = router({
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
           hostStatusNotify: z.boolean().optional(),
         }).optional(),
+        notificationChannel: z.enum(["telegram", "discord"]).optional(),
+        discord: z.object({
+          enabled: z.boolean().optional(), botToken: z.string().max(256).optional(), clearToken: z.boolean().optional(),
+          expiryReminder: z.boolean().optional(), trafficReminder: z.boolean().optional(),
+          trafficReminderThreshold: z.number().int().min(1).max(99).optional(), hostStatusNotify: z.boolean().optional(),
+        }).optional(),
         deepseek: z.object({
           provider: aiProviderSchema.optional(),
           enabled: z.boolean().optional(),
@@ -2228,8 +2248,11 @@ export const systemRouter = router({
         console.info(`[Settings] personalization background updated source=${background.source}`);
       }
       if (input.forwardProtocols !== undefined) {
-        const normalized = normalizeForwardProtocolSettings(input.forwardProtocols);
-        await db.setSetting("forwardProtocols", JSON.stringify(normalized));
+        await withKeyedTaskLock("system-settings:forwardProtocols", async () => {
+          const current = normalizeForwardProtocolSettings(parseForwardProtocolSettings(await db.getSetting("forwardProtocols")));
+          const patch = Object.fromEntries(Object.entries(input.forwardProtocols!).filter(([, value]) => value !== undefined));
+          await db.setSetting("forwardProtocols", JSON.stringify(normalizeForwardProtocolSettings({ ...current, ...patch })));
+        });
         const hosts = await db.getHosts();
         for (const host of hosts as any[]) {
           pushAgentRefresh(host.id, "forward-protocol-settings-updated");
@@ -2237,8 +2260,11 @@ export const systemRouter = router({
         console.info("[Settings] forward protocol switches updated");
       }
       if (input.sidebarMenu !== undefined) {
-        const normalized = normalizeSidebarMenuSettings(input.sidebarMenu);
-        await db.setSetting("sidebarMenu", JSON.stringify(normalized));
+        await withKeyedTaskLock("system-settings:sidebarMenu", async () => {
+          const current = normalizeSidebarMenuSettings(parseSidebarMenuSettings(await db.getSetting("sidebarMenu")));
+          const patch = Object.fromEntries(Object.entries(input.sidebarMenu!).filter(([, value]) => value !== undefined));
+          await db.setSetting("sidebarMenu", JSON.stringify(normalizeSidebarMenuSettings({ ...current, ...patch })));
+        });
         console.info("[Settings] sidebar menu switches updated");
       }
       if (input.customSidebarPages !== undefined) {
@@ -2358,6 +2384,44 @@ export const systemRouter = router({
           });
         }
         console.info("[Settings] telegram settings updated");
+      }
+      if (input.discord) {
+        const current = await db.getAllSettings();
+        if (process.env.DISCORD_BOT_TOKEN?.trim() && (input.discord.clearToken || input.discord.botToken?.trim())) throw new Error("Discord Token 由环境变量管理，请修改环境变量并重启面板");
+        const token = String(process.env.DISCORD_BOT_TOKEN || "").trim() || (input.discord.clearToken ? "" : (input.discord.botToken?.trim() || current.discordBotToken || ""));
+        const enabled = input.discord.enabled ?? (current.discordBotEnabled === "true");
+        if (input.discord.clearToken && input.discord.botToken?.trim()) throw new Error("不能同时删除和设置 Discord Token");
+        if (enabled && !token) throw new Error("请先配置 Discord Bot Token");
+        const profile = token && !input.discord.clearToken && (enabled || input.discord.botToken?.trim())
+          ? await validateDiscordBotToken(token) : null;
+        const next: Record<string, string | null> = {};
+        if (input.discord.enabled !== undefined) next.discordBotEnabled = enabled ? "true" : "false";
+        if (input.discord.clearToken) {
+          next.discordBotToken = null; next.discordBotUsername = null; next.discordBotId = null;
+          if (!process.env.DISCORD_BOT_TOKEN?.trim()) next.discordBotEnabled = "false";
+        }
+        if (input.discord.botToken?.trim()) { next.discordBotToken = input.discord.botToken.trim(); next.discordBotUsername = null; next.discordBotId = null; }
+        if (profile) { next.discordBotUsername = profile.username; next.discordBotId = profile.id; }
+        for (const [field, key] of [["expiryReminder", "discordExpiryReminder"], ["trafficReminder", "discordTrafficReminder"], ["hostStatusNotify", "discordHostStatusNotify"]] as const) {
+          if (input.discord[field] !== undefined) next[key] = input.discord[field] ? "true" : "false";
+        }
+        if (input.discord.trafficReminderThreshold !== undefined) next.discordTrafficReminderThreshold = String(input.discord.trafficReminderThreshold);
+        await db.setSettings(next);
+        resetDiscordBot();
+        if (token && enabled && !input.discord.clearToken) {
+          // Identity validation succeeded; slash command registration can be retried separately.
+          await refreshDiscordBotProfile().catch(() => console.warn("[Discord] Slash command synchronization failed; retry in notification settings"));
+        }
+        console.info("[Settings] discord settings updated");
+      }
+      if (input.notificationChannel !== undefined) {
+        await db.setSetting("notificationChannel", input.notificationChannel);
+        resetDiscordBot();
+        console.info(`[Settings] notification channel selected=${input.notificationChannel}`);
+      }
+      if (input.notificationChannel !== undefined || input.discord) {
+        await startDiscordBot().catch(() => console.warn("[Discord] Bot startup failed; check configuration"));
+        await startTelegramBot().catch(() => console.warn("[Telegram] Bot startup failed; check configuration"));
       }
       if (input.deepseek) {
         const deepseek = input.deepseek;
@@ -2689,6 +2753,7 @@ export const systemRouter = router({
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码").max(64),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址").max(256),
       dataScope: z.enum(PANEL_MIGRATION_SCOPES).default("essential"),
+      seamless: z.boolean().default(false),
       confirmed: z.literal(true),
     }))
     .mutation(({ input }) => {
@@ -2697,6 +2762,7 @@ export const systemRouter = router({
         migrationCode: input.migrationCode,
         targetPanelUrl: input.targetPanelUrl,
         dataScope: input.dataScope,
+        seamless: input.seamless,
       });
       return job;
     }),
@@ -2704,6 +2770,22 @@ export const systemRouter = router({
   panelMigrationStatus: adminProcedure
     .input(z.object({ jobId: z.string().min(1) }))
     .query(({ input }) => getMigrationJob(input.jobId)),
+
+  resumeSeamlessMigration: adminProcedure.mutation(async () => {
+    const { resumeSeamlessMigration } = await import("../seamlessPanelMigration");
+    return resumeSeamlessMigration();
+  }),
+
+  cancelSeamlessSourceMigration: adminProcedure.mutation(async () => {
+    const { getSeamlessMigrationState, persistSeamlessMigrationState } = await import("../seamlessMigrationState");
+    const state = getSeamlessMigrationState();
+    if (state?.role !== "source" || state.phase !== "frozen") throw new Error("仅可取消尚未转交请求的源面板冻结；接管后不能回退旧计费快照");
+    persistSeamlessMigrationState(null);
+    const { startBackgroundServices } = await import("../backgroundServices");
+    startBackgroundServices();
+    console.info(`[Migration] Administrator cancelled uncommitted freeze id=${state.id}; source data preserved`);
+    return { success: true };
+  }),
 
   databaseSwitchStatus: adminProcedure.query(() => {
     return getDatabaseSwitchStatus();
@@ -2820,6 +2902,7 @@ export const systemRouter = router({
       const exported = await formatPanelLogsForExport(level, {
         "App Version": APP_VERSION,
         "Android App Version": ANDROID_APP_VERSION,
+        "iOS App Version": IOS_APP_VERSION,
         "Agent Version": AGENT_VERSION,
         "Repository": REPO_URL,
       });

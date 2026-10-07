@@ -43,6 +43,8 @@ import {
 } from "./panelMigrationAgentState";
 import { markLocalSetupComplete } from "./setupState";
 import { startBackgroundServices } from "./backgroundServices";
+import { getSeamlessMigrationState } from "./seamlessMigrationState";
+import { freezeAndExportSeamless, seamlessMigrationRouter } from "./seamlessPanelMigration";
 import {
   normalizePanelMigrationScope,
   panelMigrationScopeLabel,
@@ -58,6 +60,7 @@ export interface MigrationSnapshot {
   sourcePanelUrl?: string;
   dataScope?: PanelMigrationScope;
   takeoverToken?: string;
+  seamless?: { version: 1; id: string; sourcePanelUrl: string; frozenAt?: number };
   tables: Record<string, Record<string, any>[]>;
 }
 
@@ -196,6 +199,8 @@ function setJob(job: MigrationJob, patch: Partial<MigrationJob>) {
 }
 
 export function getMigrationJob(id: string) {
+  const persisted = getSeamlessMigrationState()?.job;
+  if (persisted?.id === id) return persisted;
   return jobs.get(id) || null;
 }
 
@@ -211,6 +216,7 @@ export const ESSENTIAL_MIGRATION_OMITTED_TABLES = new Set<(typeof MIGRATION_TABL
   "traffic_stats",
   "traffic_stat_buckets",
   "tcping_stats",
+  "probe_counter_snapshots",
   "forward_tests",
   "forward_group_events",
   "ip_geo_cache",
@@ -229,6 +235,7 @@ export async function exportMigrationSnapshot(
   sourcePanelUrl?: string,
   options: {
     dataScope?: PanelMigrationScope;
+    consistent?: boolean;
     onProgress?: (progress: MigrationSnapshotExportProgress) => void;
   } = {},
 ): Promise<MigrationSnapshot> {
@@ -239,20 +246,19 @@ export async function exportMigrationSnapshot(
   const includedTables = MIGRATION_TABLES.filter((table) => (
     dataScope !== "essential" || !ESSENTIAL_MIGRATION_OMITTED_TABLES.has(table)
   ));
-  for (let index = 0; index < includedTables.length; index += 1) {
-    const table = includedTables[index];
-    const tableIndex = index + 1;
-    options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "reading" });
-    const rows = await queryRaw(`SELECT * FROM ${quote(table)}`);
-    tables[table] = rows;
-    options.onProgress?.({
-      table,
-      tableIndex,
-      tableTotal: includedTables.length,
-      status: "complete",
-      rowCount: rows.length,
-    });
-  }
+  const readTables = async () => {
+    if (options.consistent && getDatabaseKind() === "postgresql") await executeRaw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    for (let index = 0; index < includedTables.length; index += 1) {
+      const table = includedTables[index];
+      const tableIndex = index + 1;
+      options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "reading" });
+      const rows = await queryRaw(`SELECT * FROM ${quote(table)}`);
+      tables[table] = rows;
+      options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "complete", rowCount: rows.length });
+    }
+  };
+  if (options.consistent) await withDatabaseTransaction(readTables);
+  else await readTables();
   return { version: 1, exportedAt: Date.now(), appVersion: APP_VERSION, sourcePanelUrl, dataScope, tables };
 }
 
@@ -688,6 +694,7 @@ type PreparedImportRow = {
 };
 
 const IMPORT_TABLE_ORDER = [
+  "ai_bot_workflows",
   "users",
   "hosts",
   "host_groups",
@@ -715,6 +722,7 @@ const IMPORT_TABLE_ORDER = [
   "traffic_stat_buckets",
   "agent_traffic_reports",
   "tcping_stats",
+  "probe_counter_snapshots",
   "forward_tests",
   "forward_group_events",
   "ip_geo_cache",
@@ -757,6 +765,7 @@ const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
   "forward_group_latency_stats",
   "ip_geo_cache",
   "tcping_stats",
+  "probe_counter_snapshots",
   "forward_tests",
   "forward_group_events",
   "config_audit_events",
@@ -1048,13 +1057,15 @@ async function insertGeneratedRows(
 }
 
 async function sanitizeUserUniqueFields(row: Record<string, any>) {
-  for (const key of ["telegramId", "telegramBindCode", "telegramLoginCode"]) {
+  for (const key of ["telegramId", "telegramBindCode", "telegramLoginCode", "discordId", "discordBindCode", "discordLoginCode"]) {
     if (!row[key]) continue;
     const existing = await findExistingId("users", { [key]: row[key] });
     if (existing) {
       row[key] = null;
       if (key === "telegramBindCode") row.telegramBindCodeExpiresAt = null;
       if (key === "telegramLoginCode") row.telegramLoginCodeExpiresAt = null;
+      if (key === "discordBindCode") row.discordBindCodeExpiresAt = null;
+      if (key === "discordLoginCode") row.discordLoginCodeExpiresAt = null;
     }
   }
 }
@@ -1091,6 +1102,9 @@ function mapStoredHostIds(maps: ImportMaps, value: unknown) {
 }
 
 async function prepareImportRow(table: string, source: Record<string, any>, maps: ImportMaps): Promise<PreparedImportRow | null> {
+  // Merge imports remap resource/user IDs. Never transplant an old approval
+  // onto a different account. Exact-ID seamless snapshots retain these rows.
+  if (table === "ai_bot_workflows") return null;
   const row = { ...source };
   delete row.id;
 
@@ -1233,6 +1247,16 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row };
+
+    case "probe_counter_snapshots": {
+      const refTable = source.kind === "rule" ? "forward_rules"
+        : source.kind === "tunnel" ? "tunnels" : source.kind === "forwardGroup" ? "forward_groups" : null;
+      if (!refTable) return null;
+      row.refId = mapRequiredId(maps, refTable, source.refId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { hostId: row.hostId, kind: row.kind, refId: row.refId,
+        probeKey: row.probeKey, epoch: row.epoch, totalCount: row.totalCount } };
+    }
 
     case "forward_tests":
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
@@ -2063,7 +2087,7 @@ async function markPanelAsMigrated(targetPanelUrl: string) {
   await setSetting("panelPublicUrl", normalized);
 }
 
-async function fetchSnapshotFromOldPanelWithApproval(input: {
+export async function fetchSnapshotFromOldPanelWithApproval(input: {
   jobId: string;
   oldPanelUrl: string;
   migrationCode: string;
@@ -2071,6 +2095,7 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
   dataScope: PanelMigrationScope;
   targetDatabaseType: ReturnType<typeof getDatabaseKind>;
   directSqliteRequested: boolean;
+  seamless?: boolean;
   onPendingApproval?: () => void;
   onApproved?: () => void;
 }): Promise<FetchedMigrationPayload> {
@@ -2086,6 +2111,7 @@ async function fetchSnapshotFromOldPanelWithApproval(input: {
     dataScope: input.dataScope,
     targetDatabaseType: input.targetDatabaseType,
     directSqliteRequested: input.directSqliteRequested,
+    seamless: input.seamless === true,
     approvalOnly,
   });
 
@@ -2257,7 +2283,7 @@ export function buildMigrationRuntimeExpectations(
   snapshot: MigrationSnapshot,
   importedIds: MigrationImportedIds,
 ): MigrationRuntimeExpectations {
-  const exportedAt = Number(snapshot.exportedAt || Date.now());
+  const exportedAt = Number(snapshot.seamless?.frozenAt || snapshot.exportedAt || Date.now());
   const onlineHostOldIds = new Set<number>();
   for (const host of snapshot.tables.hosts || []) {
     const id = toNumberId(host.id);
@@ -2350,7 +2376,7 @@ async function waitForMigratedRuntime(
   );
 }
 
-async function verifyTargetPanelIdentity(job: MigrationJob, targetPanelUrl: string) {
+export async function verifyTargetPanelIdentity(job: MigrationJob, targetPanelUrl: string) {
   const probeToken = migrationJobProbeTokens.get(job.id);
   if (!probeToken) throw new Error("新面板验证令牌已失效");
   const url = `${normalizePanelUrl(targetPanelUrl)}/api/migration/target-probe`;
@@ -2396,7 +2422,9 @@ export function startPanelMigration(input: {
   migrationCode: string;
   targetPanelUrl: string;
   dataScope: PanelMigrationScope;
+  seamless?: boolean;
 }) {
+  if (getSeamlessMigrationState()) throw new Error("已有无缝迁移状态，请先完成原迁移");
   const activeJob = [...jobs.values()].find((item) => item.status === "pending" || item.status === "running");
   if (activeJob) throw new Error(`已有迁移任务正在执行：${activeJob.step}`);
   const job: MigrationJob = {
@@ -2417,6 +2445,11 @@ export function startPanelMigration(input: {
     let expectations: MigrationRuntimeExpectations | null = null;
     let incomingSqlitePath = "";
     try {
+      if (input.seamless) {
+        const { runSeamlessPanelMigration } = await import("./seamlessPanelMigration");
+        await runSeamlessPanelMigration(input, job, (patch) => setJob(job, patch));
+        return;
+      }
       setJob(job, { status: "running", progress: 10, step: "正在连接旧面板" });
       const targetDatabaseType = getDatabaseKind();
       const targetSummary = await getPanelDataSummary({ useCache: false });
@@ -2577,6 +2610,7 @@ export function startPanelMigration(input: {
 }
 
 export const migrationRouter = Router();
+migrationRouter.use(seamlessMigrationRouter);
 
 migrationRouter.post("/api/migration/target-probe", async (req: Request, res: Response) => {
   try {
@@ -2604,10 +2638,12 @@ migrationRouter.post("/api/migration/target-probe", async (req: Request, res: Re
 
 migrationRouter.post("/api/migration/export", async (req: Request, res: Response) => {
   try {
+    if (getSeamlessMigrationState()) throw new Error("已有无缝迁移状态，不能重复导出");
     const migrationCode = String(req.body?.migrationCode || "");
     const targetPanelUrl = String(req.body?.targetPanelUrl || "");
     const requestId = String(req.body?.requestId || "");
     const dataScope = normalizePanelMigrationScope(req.body?.dataScope);
+    const seamless = req.body?.seamless === true;
     const requestedTargetDatabaseType = String(req.body?.targetDatabaseType || "").trim().toLowerCase();
     const targetDatabaseType = requestedTargetDatabaseType === "sqlite"
       || requestedTargetDatabaseType === "mysql"
@@ -2626,6 +2662,7 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
           dataScope,
           targetDatabaseType,
           directSqliteRequested,
+          seamless,
         });
     if (!request) {
       res.status(401).json({ error: "迁移码无效、已过期或已使用" });
@@ -2634,6 +2671,7 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
     if (request.targetPanelUrl !== normalizePanelUrl(targetPanelUrl)
       || request.dataScope !== dataScope
       || request.targetDatabaseType !== targetDatabaseType
+      || request.seamless !== seamless
       || request.directSqliteRequested !== (dataScope === "full" && targetDatabaseType === "sqlite" && directSqliteRequested)) {
       res.status(409).json({ error: "迁移请求参数已变化，请重新生成迁移码" });
       return;
@@ -2669,6 +2707,12 @@ migrationRouter.post("/api/migration/export", async (req: Request, res: Response
       return;
     }
     const settings = await getAllSettings();
+    if (takeover.seamless) {
+      const snapshot = await freezeAndExportSeamless({ sourceUrl: String(settings.panelPublicUrl || ""),
+        targetUrl: normalizePanelUrl(targetPanelUrl), token: takeover.takeoverToken, dataScope: takeover.dataScope });
+      await sendStructuredMigrationSnapshot(req, res, snapshot);
+      return;
+    }
     if (takeover.dataScope === "full"
       && takeover.directSqliteRequested
       && takeover.targetDatabaseType === "sqlite"

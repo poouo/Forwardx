@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -27,7 +29,7 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import PublicHome, { CustomPublicHome } from "./PublicHome";
 import {
   Area,
@@ -64,14 +66,14 @@ function formatBytes(bytes: number | string | null | undefined): string {
 }
 
 function quotaSourceLabel(kind: TrafficQuotaSourceKind) {
-  if (kind === "manual") return "手工额度";
-  if (kind === "addon") return "已购附加流量";
-  if (kind === "grant") return "管理员加赠";
-  return "套餐额度";
+  if (kind === "manual") return translateText("手工额度");
+  if (kind === "addon") return translateText("已购附加流量");
+  if (kind === "grant") return translateText("管理员加赠");
+  return translateText("套餐额度");
 }
 
 function money(cents?: number | null, currency = "CNY") {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((Number(cents) || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
 }
 
 function formatTrafficTime(value: string | Date): string {
@@ -85,19 +87,19 @@ function formatTrafficTime(value: string | Date): string {
 }
 
 function formatDate(value: string | Date | null | undefined): string {
-  if (!value) return "永久有效";
+  if (!value) return translateText("永久有效");
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "永久有效" : date.toLocaleDateString("zh-CN");
+  return Number.isNaN(date.getTime()) ? translateText("永久有效") : date.toLocaleDateString(getFormatLocale());
 }
 
 function getExpiryStatus(value: string | Date | null | undefined) {
-  if (!value) return { label: "永久有效", tone: "normal" as const };
+  if (!value) return { label: translateText("永久有效"), tone: "normal" as const };
   const expiry = new Date(value).getTime();
-  if (Number.isNaN(expiry)) return { label: "永久有效", tone: "normal" as const };
+  if (Number.isNaN(expiry)) return { label: translateText("永久有效"), tone: "normal" as const };
   const diffDays = Math.ceil((expiry - Date.now()) / 86_400_000);
-  if (diffDays < 0) return { label: "已到期", tone: "danger" as const };
-  if (diffDays <= 7) return { label: diffDays === 0 ? "今日到期" : `剩余 ${diffDays} 天`, tone: "warning" as const };
-  return { label: `剩余 ${diffDays} 天`, tone: "normal" as const };
+  if (diffDays < 0) return { label: translateText("已到期"), tone: "danger" as const };
+  if (diffDays <= 7) return { label: diffDays === 0 ? translateText("今日到期") : translateText("剩余 {0} 天", [diffDays]), tone: "warning" as const };
+  return { label: translateText("剩余 {0} 天", [diffDays]), tone: "normal" as const };
 }
 
 function StatCard({
@@ -214,12 +216,12 @@ function TrafficTooltipContent({ active, payload, label }: any) {
       <div className="space-y-1">
         <p className="flex items-center gap-1.5 text-xs tabular-nums">
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          <span className="text-muted-foreground">入站</span>
+          <span className="text-muted-foreground">{translateText("入站")}</span>
           <span className="ml-auto font-semibold">{formatBytes(data.bytesIn)}</span>
         </p>
         <p className="flex items-center gap-1.5 text-xs tabular-nums">
           <span className="h-2 w-2 rounded-full bg-amber-500" />
-          <span className="text-muted-foreground">出站</span>
+          <span className="text-muted-foreground">{translateText("出站")}</span>
           <span className="ml-auto font-semibold">{formatBytes(data.bytesOut)}</span>
         </p>
       </div>
@@ -302,7 +304,7 @@ function TrafficPieCard({
     const visible = normalized.slice(0, TRAFFIC_PIE_MAX_SEGMENTS);
     const rest = normalized.slice(TRAFFIC_PIE_MAX_SEGMENTS);
     const merged = rest.length > 0
-      ? [...visible, { id: "other", name: "其他", value: rest.reduce((sum, item) => sum + item.value, 0) }]
+      ? [...visible, { id: "other", name: translateText("其他"), value: rest.reduce((sum, item) => sum + item.value, 0) }]
       : visible;
     const sum = merged.reduce((acc, item) => acc + item.value, 0);
     return merged.map((item, index) => ({
@@ -324,7 +326,7 @@ function TrafficPieCard({
             <BarChart3 className="h-4 w-4" />
             {title}
           </CardTitle>
-          <span className="text-[10px] text-muted-foreground/70">近 24H</span>
+          <span className="text-[10px] text-muted-foreground/70">{translateText("近 24H")}</span>
         </div>
       </CardHeader>
       <CardContent>
@@ -332,9 +334,7 @@ function TrafficPieCard({
           <TrafficPieLoadingState />
         ) : chartData.length === 0 || total <= 0 ? (
           <div className="flex h-56 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-            <BarChart3 className="h-5 w-5 text-muted-foreground/50" />
-            暂无流量数据
-          </div>
+            <BarChart3 className="h-5 w-5 text-muted-foreground/50" />{translateText("暂无流量数据")}</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
             <div className="h-44 min-w-0">
@@ -368,9 +368,7 @@ function TrafficPieCard({
                   <text x="50%" y="46%" textAnchor="middle" dominantBaseline="central" className="fill-foreground text-sm font-semibold tabular-nums">
                     {formatBytes(total)}
                   </text>
-                  <text x="50%" y="59%" textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground text-[10px]">
-                    合计
-                  </text>
+                  <text x="50%" y="59%" textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground text-[10px]">{translateText("合计")}</text>
                   <RTooltip content={<PieTooltipContent />} wrapperStyle={{ pointerEvents: "none" }} />
                 </PieChart>
               </ResponsiveContainer>
@@ -484,18 +482,18 @@ function DashboardContent() {
   const accountExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
   const expiry = quota.hasQuota ? getExpiryStatus(accountExpiresAt) : { label: "---", tone: "normal" as const };
   const canForward = isAdmin || !!currentUserTraffic?.canAddRules;
-  const canForwardText = canForward ? "转发已启用" : "转发已停用";
+  const canForwardText = canForward ? translateText("转发已启用") : translateText("转发已停用");
   const quotaExpiryText = quota.hasQuota ? formatDate(accountExpiresAt) : "---";
   const quotaProgressText = quota.hasQuota
     ? trafficLimit > 0
       ? `${formatBytes(trafficUsed)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`
-      : `${formatBytes(trafficUsed)} / 不限`
+      : translateText("{0} / 不限", [formatBytes(trafficUsed)])
     : "---";
   const quotaProgressValue = quota.hasQuota && trafficLimit > 0 ? trafficPercent : 0;
-  const trafficBillingBytesText = trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启";
+  const trafficBillingBytesText = trafficBillingEnabled ? formatBytes(trafficBillingBytes) : translateText("未开启");
   const trafficBillingAmountText = trafficBillingEnabled ? money(trafficBillingAmount) : "-";
-  const trafficBillingAdminSubtitle = trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "流量计费功能未开启";
-  const trafficBillingUserSubtitle = trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "管理员未开启";
+  const trafficBillingAdminSubtitle = trafficBillingEnabled ? translateText("已计费 {0}GB", [trafficBillingBilledGb]) : translateText("流量计费功能未开启");
+  const trafficBillingUserSubtitle = trafficBillingEnabled ? translateText("已计费 {0}GB", [trafficBillingBilledGb]) : translateText("管理员未开启");
 
   const mobileReminderSnapshot = useMemo(
     () => ({
@@ -525,21 +523,19 @@ function DashboardContent() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">仪表盘</h1>
-          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">欢迎回来，{user?.name || user?.username || "用户"}</p>
+          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("仪表盘")}</h1>
+          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{translateText("欢迎回来，")}{user?.name || user?.username || translateText("用户")}</p>
         </div>
         <Badge variant="outline" className="gap-1.5 border-emerald-500/30 px-3 py-1.5 text-emerald-600">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-          系统在线
-        </Badge>
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{translateText("系统在线")}</Badge>
       </div>
 
       <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${isAdmin ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
         {isAdmin && (
           <StatCard
-            title="主机总数"
+            title={translateText("主机总数")}
             value={stats?.totalHosts ?? 0}
-            subtitle={`${stats?.onlineHosts ?? 0} 台在线`}
+            subtitle={translateText("{0} 台在线", [stats?.onlineHosts ?? 0])}
             icon={Server}
             tone="bg-gradient-to-br from-teal-500 to-teal-600"
             loading={isLoading}
@@ -549,9 +545,9 @@ function DashboardContent() {
           />
         )}
         <StatCard
-          title="转发规则"
+          title={translateText("转发规则")}
           value={stats?.totalRules ?? 0}
-          subtitle={`${stats?.activeRules ?? 0} 条已启用`}
+          subtitle={translateText("{0} 条已启用", [stats?.activeRules ?? 0])}
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={isLoading}
@@ -560,9 +556,9 @@ function DashboardContent() {
           index={isAdmin ? 1 : 0}
         />
         <StatCard
-          title="入站流量"
+          title={translateText("入站流量")}
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
-          subtitle="累计入站"
+          subtitle={translateText("累计入站")}
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-rose-500 to-rose-600"
           loading={trafficTotalsLoading}
@@ -572,9 +568,9 @@ function DashboardContent() {
           index={isAdmin ? 2 : 1}
         />
         <StatCard
-          title="出站流量"
+          title={translateText("出站流量")}
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
-          subtitle="累计出站"
+          subtitle={translateText("累计出站")}
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={trafficTotalsLoading}
@@ -593,15 +589,13 @@ function DashboardContent() {
           <CardHeader className="pb-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Shield className="h-4 w-4" />
-                我的消耗
-              </CardTitle>
+                <Shield className="h-4 w-4" />{translateText("我的消耗")}</CardTitle>
               <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">
                 <AnimatedStatValue
-                  value="管理员权限"
+                  value={translateText("管理员权限")}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.adminBadge`}
-                  fallbackValue="管理员权限"
+                  fallbackValue={translateText("管理员权限")}
                 />
               </Badge>
             </div>
@@ -610,9 +604,7 @@ function DashboardContent() {
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Activity className="h-3 w-3" />
-                  我的已用流量
-                </p>
+                  <Activity className="h-3 w-3" />{translateText("我的已用流量")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={formatBytes(trafficUsed)}
@@ -621,19 +613,17 @@ function DashboardContent() {
                   fallbackValue="0 B"
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">按当前登录账号统计</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{translateText("按当前登录账号统计")}</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Coins className="h-3 w-3" />
-                  计费流量
-                </p>
+                  <Coins className="h-3 w-3" />{translateText("计费流量")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingBytesText}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.billingTraffic`}
-                  fallbackValue="未开启"
+                  fallbackValue={translateText("未开启")}
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
                 <AnimatedStatValue
@@ -641,15 +631,13 @@ function DashboardContent() {
                   value={trafficBillingAdminSubtitle}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.billingTrafficSubtitle`}
-                  fallbackValue="流量计费功能未开启"
+                  fallbackValue={translateText("流量计费功能未开启")}
                   className="mt-1 text-[11px] text-muted-foreground"
                 />
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <WalletCards className="h-3 w-3" />
-                  计费消费
-                </p>
+                  <WalletCards className="h-3 w-3" />{translateText("计费消费")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingAmountText}
@@ -658,22 +646,20 @@ function DashboardContent() {
                   fallbackValue="-"
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">仅统计当前账号</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{translateText("仅统计当前账号")}</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Shield className="h-3 w-3" />
-                  权限状态
-                </p>
+                  <Shield className="h-3 w-3" />{translateText("权限状态")}</p>
                 <AnimatedStatValue
                   as="p"
-                  value="管理员"
+                  value={translateText("管理员")}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.permission`}
-                  fallbackValue="管理员"
+                  fallbackValue={translateText("管理员")}
                   className="mt-1 text-xl font-semibold"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">不受套餐订阅限制</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{translateText("不受套餐订阅限制")}</p>
               </div>
             </div>
           </CardContent>
@@ -684,16 +670,14 @@ function DashboardContent() {
           <CardHeader className="pb-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Shield className="h-4 w-4" />
-                我的账户状态
-              </CardTitle>
+                <Shield className="h-4 w-4" />{translateText("我的账户状态")}</CardTitle>
               <div className="flex flex-wrap gap-2">
                 <Badge variant={canForward ? "outline" : "destructive"} className={canForward ? "border-emerald-500/30 text-emerald-600" : ""}>
                   <AnimatedStatValue
                     value={canForwardText}
                     loading={accountStatusLoading}
                     cacheKey={`home.account.${accountCacheScope}.canForward`}
-                    fallbackValue="转发已停用"
+                    fallbackValue={translateText("转发已停用")}
                   />
                 </Badge>
                 <Badge variant={expiry.tone === "danger" ? "destructive" : "outline"} className={expiry.tone === "warning" ? "border-amber-500/40 text-amber-600" : ""}>
@@ -710,7 +694,7 @@ function DashboardContent() {
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
-                <p className="text-xs text-muted-foreground">流量额度</p>
+                <p className="text-xs text-muted-foreground">{translateText("流量额度")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={quotaProgressText}
@@ -723,14 +707,14 @@ function DashboardContent() {
                   <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                     {quota.sources.map((source) => (
                       <span key={source.kind} className="whitespace-nowrap">
-                        {quotaSourceLabel(source.kind)} {source.unlimited ? "不限" : formatBytes(source.bytes)}
+                        {quotaSourceLabel(source.kind)} {source.unlimited ? translateText("不限") : formatBytes(source.bytes)}
                       </span>
                     ))}
                   </div>
                 )}
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                <p className="text-xs text-muted-foreground">到期时间</p>
+                <p className="text-xs text-muted-foreground">{translateText("到期时间")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={quotaExpiryText}
@@ -742,9 +726,7 @@ function DashboardContent() {
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <WalletCards className="h-3 w-3" />
-                  账户余额
-                </p>
+                  <WalletCards className="h-3 w-3" />{translateText("账户余额")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={money(wallet?.balanceCents)}
@@ -756,15 +738,13 @@ function DashboardContent() {
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <WalletCards className="h-3 w-3" />
-                  计费流量
-                </p>
+                  <WalletCards className="h-3 w-3" />{translateText("计费流量")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingBytesText}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.userBillingTraffic`}
-                  fallbackValue="未开启"
+                  fallbackValue={translateText("未开启")}
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
                 <AnimatedStatValue
@@ -772,15 +752,13 @@ function DashboardContent() {
                   value={trafficBillingUserSubtitle}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.userBillingTrafficSubtitle`}
-                  fallbackValue="管理员未开启"
+                  fallbackValue={translateText("管理员未开启")}
                   className="mt-1 text-[11px] text-muted-foreground"
                 />
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <WalletCards className="h-3 w-3" />
-                  计费消费
-                </p>
+                  <WalletCards className="h-3 w-3" />{translateText("计费消费")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingAmountText}
@@ -789,17 +767,15 @@ function DashboardContent() {
                   fallbackValue="-"
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">仅统计流量计费资源</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{translateText("仅统计流量计费资源")}</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Package className="h-3 w-3" />
-                  当前套餐
-                </p>
+                  <Package className="h-3 w-3" />{translateText("当前套餐")}</p>
                 <AnimatedStatValue
                   as="p"
                   value={activeSubscriptions.length > 1
-                    ? `${activeSubscription?.planName || "---"} 等 ${activeSubscriptions.length} 个套餐`
+                    ? translateText("{0} 等 {1} 个套餐", [activeSubscription?.planName || "---", activeSubscriptions.length])
                     : activeSubscription?.planName || "---"}
                   loading={accountStatusLoading}
                   cacheKey={`home.account.${accountCacheScope}.planName`}
@@ -810,7 +786,7 @@ function DashboardContent() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                <span>流量额度使用进度</span>
+                <span>{translateText("流量额度使用进度")}</span>
                 <AnimatedStatValue
                   value={quotaProgressText}
                   loading={accountStatusLoading}
@@ -822,9 +798,9 @@ function DashboardContent() {
               <Progress value={quotaProgressValue} className="h-2" />
               <p className="text-[11px] text-muted-foreground/70">
                 {quota.sources.length > 0
-                  ? `额度来源：${quota.sources.map((source) => quotaSourceLabel(source.kind)).join("、")}。`
-                  : "暂无生效流量额度。"}
-                {quota.hasQuota && currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
+                  ? translateText("额度来源：{0}。", [quota.sources.map((source) => quotaSourceLabel(source.kind)).join("、")])
+                  : translateText("暂无生效流量额度。")}
+                {quota.hasQuota && currentUserTraffic?.trafficAutoReset ? translateText(" 每月 {0} 日自动重置。", [currentUserTraffic.trafficResetDay || 1]) : ""}
               </p>
             </div>
           </CardContent>
@@ -835,32 +811,24 @@ function DashboardContent() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <BarChart3 className="h-4 w-4" />
-              近 24H 流量展示
-              <span className="text-[10px] font-normal text-muted-foreground/60">每小时汇总</span>
+              <BarChart3 className="h-4 w-4" />{translateText("近 24H 流量展示")}<span className="text-[10px] font-normal text-muted-foreground/60">{translateText("每小时汇总")}</span>
             </CardTitle>
             <div className="flex items-center gap-3 text-[10px]">
               <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                入站
-              </span>
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />{translateText("入站")}</span>
               <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-amber-500" />
-                出站
-              </span>
+                <span className="h-2 w-2 rounded-full bg-amber-500" />{translateText("出站")}</span>
             </div>
           </div>
           <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/60">
-            <Info className="h-3 w-3" />
-            每小时汇总一次可见规则流量。
-          </p>
+            <Info className="h-3 w-3" />{translateText("每小时汇总一次可见规则流量。")}</p>
         </CardHeader>
         <CardContent>
           <div className="h-52 w-full sm:h-64">
             {trendLoading && !trafficSeries ? (
               <Skeleton className="h-full w-full" />
             ) : chartData.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无流量数据</div>
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无流量数据")}</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
@@ -884,8 +852,8 @@ function DashboardContent() {
                     allowDecimals={false}
                   />
                   <RTooltip content={<TrafficTooltipContent />} cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }} />
-                  <Area type="monotone" dataKey="bytesIn" name="入站" stroke="#10b981" strokeWidth={2} fill="url(#trafficInGradient)" dot={false} />
-                  <Area type="monotone" dataKey="bytesOut" name="出站" stroke="#f59e0b" strokeWidth={2} fill="url(#trafficOutGradient)" dot={false} />
+                  <Area type="monotone" dataKey="bytesIn" name={translateText("入站")} stroke="#10b981" strokeWidth={2} fill="url(#trafficInGradient)" dot={false} />
+                  <Area type="monotone" dataKey="bytesOut" name={translateText("出站")} stroke="#f59e0b" strokeWidth={2} fill="url(#trafficOutGradient)" dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -894,9 +862,9 @@ function DashboardContent() {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <TrafficPieCard title="隧道流量" data={tunnelRuleTrafficData} loading={breakdownLoading} />
-        <TrafficPieCard title="端口转发流量" data={portRuleTrafficData} loading={breakdownLoading} />
-        <TrafficPieCard title="转发组流量" data={forwardGroupRuleTrafficData} loading={breakdownLoading} />
+        <TrafficPieCard title={translateText("隧道流量")} data={tunnelRuleTrafficData} loading={breakdownLoading} />
+        <TrafficPieCard title={translateText("端口转发流量")} data={portRuleTrafficData} loading={breakdownLoading} />
+        <TrafficPieCard title={translateText("转发组流量")} data={forwardGroupRuleTrafficData} loading={breakdownLoading} />
       </div>
 
       <div className={`grid grid-cols-1 gap-4 ${isAdmin ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
@@ -904,21 +872,17 @@ function DashboardContent() {
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Wifi className="h-4 w-4" />
-                主机在线率
-              </CardTitle>
+                <Wifi className="h-4 w-4" />{translateText("主机在线率")}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex items-center gap-6">
                 {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={onlineRate} color="#10b981" />}
                 <div className="space-y-1 text-sm">
                   <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                    在线 {stats?.onlineHosts ?? 0}
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />{translateText("在线 ")}{stats?.onlineHosts ?? 0}
                   </div>
                   <div className="flex items-center gap-2 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />
-                    离线 {(stats?.totalHosts ?? 0) - (stats?.onlineHosts ?? 0)}
+                    <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("离线 ")}{(stats?.totalHosts ?? 0) - (stats?.onlineHosts ?? 0)}
                   </div>
                 </div>
               </div>
@@ -929,21 +893,17 @@ function DashboardContent() {
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <Zap className="h-4 w-4" />
-              规则启用率
-            </CardTitle>
+              <Zap className="h-4 w-4" />{translateText("规则启用率")}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-6">
               {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} />}
               <div className="space-y-1 text-sm">
                 <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />
-                  已启用 {stats?.activeRules ?? 0}
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />{translateText("已启用 ")}{stats?.activeRules ?? 0}
                 </div>
                 <div className="flex items-center gap-2 text-muted-foreground">
-                  <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />
-                  停用 {(stats?.totalRules ?? 0) - (stats?.activeRules ?? 0)}
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("停用 ")}{(stats?.totalRules ?? 0) - (stats?.activeRules ?? 0)}
                 </div>
               </div>
             </div>
@@ -953,28 +913,24 @@ function DashboardContent() {
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <Activity className="h-4 w-4" />
-              系统概览
-            </CardTitle>
+              <Activity className="h-4 w-4" />{translateText("系统概览")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">规则负载</span>
+              <span className="text-sm text-muted-foreground">{translateText("规则负载")}</span>
               <div className="flex w-32 items-center gap-2">
                 <FixedColorProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} className="h-1.5" />
                 <span className="w-8 text-right text-xs font-medium tabular-nums">{activeRate}%</span>
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">用户角色</span>
+              <span className="text-sm text-muted-foreground">{translateText("用户角色")}</span>
               <Badge variant="secondary" className="px-2 py-0.5 text-[10px]">
                 {isAdmin ? (
                   <>
-                    <Shield className="mr-1 h-3 w-3" />
-                    管理员
-                  </>
+                    <Shield className="mr-1 h-3 w-3" />{translateText("管理员")}</>
                 ) : (
-                  "普通用户"
+                  translateText("普通用户")
                 )}
               </Badge>
             </div>
@@ -998,7 +954,7 @@ export default function Home() {
     const welcomeName = window.sessionStorage.getItem(LOGIN_WELCOME_TOAST_KEY);
     if (!welcomeName) return;
     window.sessionStorage.removeItem(LOGIN_WELCOME_TOAST_KEY);
-    toast.success(`欢迎回来！${welcomeName} 用户`, { position: "top-right" });
+    toast.success(translateText("欢迎回来！{0} 用户", [welcomeName]), { position: "top-right" });
   }, [user?.id]);
 
   if (loading) return null;

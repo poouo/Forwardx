@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -14,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { renderMixedHtml, describeContentFormat } from "@/lib/htmlContent";
 import { trpc } from "@/lib/trpc";
 import { Eye, Megaphone, Pencil, Plus, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 type AnnouncementType = "normal" | "popup";
 
@@ -39,7 +41,7 @@ const emptyForm: AnnouncementForm = {
 function dateText(value?: string | Date | null) {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(getFormatLocale());
 }
 
 function renderAnnouncementHtml(content: string) {
@@ -47,14 +49,14 @@ function renderAnnouncementHtml(content: string) {
 }
 
 function announcementTypeLabel(type: AnnouncementType) {
-  if (type === "popup") return "登录弹窗";
-  return "普通公告";
+  if (type === "popup") return translateText("登录弹窗");
+  return translateText("普通公告");
 }
 
 function announcementSuccessMessage(action: string, data: any) {
   const push = data?.telegramPush;
-  if (!push?.requested) return `公告已${action}`;
-  return `公告已${action}，TG 推送 ${push.sent || 0}/${push.total || 0}${push.failed ? `，失败 ${push.failed}` : ""}`;
+  if (!push?.requested) return translateText("公告已{0}", [action]);
+  return translateText("公告已{0}，通知推送 {1}/{2}{3}", [action, push.sent || 0, push.total || 0, push.failed ? `，失败 ${push.failed}` : ""]);
 }
 
 export default function Announcements() {
@@ -74,30 +76,30 @@ export default function Announcements() {
 
   const createAnnouncement = trpc.announcements.create.useMutation({
     onSuccess: (data) => {
-      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("创建", data) : "公告已创建");
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("创建", data) : translateText("公告已创建"));
       setOpen(false);
       setForm(emptyForm);
       invalidateAnnouncementQueries();
     },
-    onError: (error) => toast.error(error.message || "创建失败"),
+    onError: (error) => toast.error(error.message || translateText("创建失败")),
   });
 
   const updateAnnouncement = trpc.announcements.update.useMutation({
     onSuccess: (data) => {
-      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("更新", data) : "公告已更新");
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("更新", data) : translateText("公告已更新"));
       setOpen(false);
       setForm(emptyForm);
       invalidateAnnouncementQueries();
     },
-    onError: (error) => toast.error(error.message || "更新失败"),
+    onError: (error) => toast.error(error.message || translateText("更新失败")),
   });
 
   const deleteAnnouncement = trpc.announcements.delete.useMutation({
     onSuccess: () => {
-      toast.success("公告已删除");
+      toast.success(translateText("公告已删除"));
       invalidateAnnouncementQueries();
     },
-    onError: (error) => toast.error(error.message || "删除失败"),
+    onError: (error) => toast.error(error.message || translateText("删除失败")),
   });
 
   const submit = () => {
@@ -130,20 +132,19 @@ export default function Announcements() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? "公告管理" : "公告"}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? translateText("公告管理") : translateText("公告")}</h1>
             <p className="text-sm text-muted-foreground">
-              {isAdmin ? "管理普通公告和登录弹窗。" : "查看管理员发布的公告信息。"}
+              {isAdmin ? translateText("管理普通公告和登录弹窗。") : translateText("查看管理员发布的公告信息。")}
             </p>
           </div>
           {isAdmin && (
             <Button onClick={() => { setForm(emptyForm); setOpen(true); }}>
-              <Plus className="mr-2 h-4 w-4" /> 新增公告
-            </Button>
+              <Plus className="mr-2 h-4 w-4" />{translateText(" 新增公告")}</Button>
           )}
         </div>
 
         {isLoading ? (
-          <DataSectionLoading label="正在加载公告" />
+          <DataSectionLoading label={translateText("正在加载公告")} />
         ) : (
           <div className="grid gap-4">
             {announcements.map((item: any) => {
@@ -160,7 +161,7 @@ export default function Announcements() {
                           <Badge variant={isPopup ? "default" : "outline"}>{announcementTypeLabel(type)}</Badge>
                         </CardTitle>
                         {!isPopup ? (
-                          <CardDescription className="mt-2">发布时间：{dateText(item.createdAt || item.updatedAt)}</CardDescription>
+                          <CardDescription className="mt-2">{translateText("发布时间：")}{dateText(item.createdAt || item.updatedAt)}</CardDescription>
                         ) : null}
                       </div>
                       {isAdmin && (
@@ -184,8 +185,8 @@ export default function Announcements() {
             {announcements.length === 0 && (
               <Card>
                 <CardHeader>
-                  <CardTitle>暂无公告</CardTitle>
-                  <CardDescription>当前没有可查看的公告。</CardDescription>
+                  <CardTitle>{translateText("暂无公告")}</CardTitle>
+                  <CardDescription>{translateText("当前没有可查看的公告。")}</CardDescription>
                 </CardHeader>
               </Card>
             )}
@@ -195,17 +196,17 @@ export default function Announcements() {
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
-              <DialogTitle>{form.id ? "编辑公告" : "新增公告"}</DialogTitle>
-              <DialogDescription>选择公告展示方式。</DialogDescription>
+              <DialogTitle>{form.id ? translateText("编辑公告") : translateText("新增公告")}</DialogTitle>
+              <DialogDescription>{translateText("选择公告展示方式。")}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>标题</Label>
+                  <Label>{translateText("标题")}</Label>
                   <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
                 </div>
                 <div className="space-y-2">
-                  <Label>类型</Label>
+                  <Label>{translateText("类型")}</Label>
                   <Select
                     value={form.type}
                     onValueChange={(type: AnnouncementType) => setForm((current) => ({
@@ -218,8 +219,8 @@ export default function Announcements() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="normal">普通公告</SelectItem>
-                      <SelectItem value="popup">登录弹窗</SelectItem>
+                      <SelectItem value="normal">{translateText("普通公告")}</SelectItem>
+                      <SelectItem value="popup">{translateText("登录弹窗")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -227,10 +228,8 @@ export default function Announcements() {
 
               <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <Label>同步 Telegram 推送</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    仅发送给已绑定 Telegram 且在个人资料中开启公告推送的用户。
-                  </p>
+                  <Label>{translateText("同步通知渠道推送")}</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">{translateText("仅发送给已绑定所选通知渠道且在个人资料中开启公告推送的用户。")}</p>
                 </div>
                 <Switch
                   checked={form.telegramPush}
@@ -241,13 +240,11 @@ export default function Announcements() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <Label>内容</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">支持文字、Markdown 和 HTML。</p>
+                    <Label>{translateText("内容")}</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">{translateText("支持文字、Markdown 和 HTML。")}</p>
                   </div>
                   <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => setPreviewOpen(true)} disabled={!form.content.trim()}>
-                    <Eye className="h-4 w-4" />
-                    预览
-                  </Button>
+                    <Eye className="h-4 w-4" />{translateText("预览")}</Button>
                 </div>
                 <Textarea
                   id="announcement-content"
@@ -256,12 +253,12 @@ export default function Announcements() {
                   onChange={(e) => setForm({ ...form, content: e.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {form.content.length.toLocaleString()} / 60,000 字符，{describeContentFormat(form.content)}
+                  {form.content.length.toLocaleString(getFormatLocale())}{translateText(" / 60,000 字符，")}{describeContentFormat(form.content)}
                 </p>
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
+              <Button variant="outline" onClick={() => setOpen(false)}>{translateText("取消")}</Button>
               <Button
                 onClick={submit}
                 disabled={
@@ -270,9 +267,7 @@ export default function Announcements() {
                   createAnnouncement.isPending ||
                   updateAnnouncement.isPending
                 }
-              >
-                保存
-              </Button>
+              >{translateText("保存")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -280,15 +275,15 @@ export default function Announcements() {
         <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
-              <DialogTitle>公告预览</DialogTitle>
-              <DialogDescription>{describeContentFormat(form.content)} 预览。</DialogDescription>
+              <DialogTitle>{translateText("公告预览")}</DialogTitle>
+              <DialogDescription>{describeContentFormat(form.content)}{translateText(" 预览。")}</DialogDescription>
             </DialogHeader>
             <div
               className="max-h-[60svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
               dangerouslySetInnerHTML={renderAnnouncementHtml(form.content)}
             />
             <DialogFooter>
-              <Button onClick={() => setPreviewOpen(false)}>关闭</Button>
+              <Button onClick={() => setPreviewOpen(false)}>{translateText("关闭")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

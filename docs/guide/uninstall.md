@@ -1,9 +1,9 @@
 # 卸载 ForwardX
 
-本页说明如何卸载面板和 Agent（当前版本：面板 2.3.266 / Agent 2.2.181）。卸载前请先确认是否需要备份数据库、配置和日志。
+本页说明如何卸载面板和 Agent。卸载前请先确认是否需要备份数据库、配置和日志。
 
 ::: warning 先备份
-卸载可能删除服务、程序目录、容器或数据卷。生产环境建议先从面板导出备份，或手动备份数据库文件，再执行卸载。
+卸载可能删除服务、程序目录、容器或数据卷。先完成 [一致备份](./upgrade-backup.md)，再执行卸载。无缝迁移后的旧面板仍负责转交请求，不能直接停止或卸载，见 [迁移限制](./migration.md)。
 :::
 
 ## 卸载前确认
@@ -72,7 +72,7 @@ systemctl status forwardx-panel
 ls -la /opt/forwardx-panel
 ```
 
-脚本可能保留数据目录，确认不再需要后手动删除（见下方"清理遗留文件"）。
+脚本先移除服务，再单独询问是否删除安装目录；拒绝删除时会保留目录及数据。不要将卸载当作密码重置或升级操作。
 
 ## 卸载 Agent
 
@@ -89,7 +89,7 @@ systemctl status forwardx-agent
 ```
 
 ::: tip 只是换面板？
-如果只是重新绑定到新面板，通常不需要卸载。在 Agent 主机重新执行当前面板提供的安装或升级命令即可。
+如果只是换面板，不需要先卸载 Agent。重新绑定可能触发重建并中断连接；要求不中断现有业务时按 [面板迁移](./migration.md) 的无缝模式操作，不能用重装替代。
 :::
 
 ## 清理遗留文件
@@ -107,13 +107,7 @@ ls -la /var/lib/forwardx-agent/
 ls -la /var/log/forwardx-agent/
 ```
 
-确认后手动删除：
-
-```bash
-rm -rf /etc/forwardx
-rm -rf /var/lib/forwardx-agent
-rm -rf /var/log/forwardx-agent
-```
+保留这些目录可能用于恢复或分析日志。确实需要删除时，先逐项核实归属、完成备份，并确认没有其他业务依赖，不提供整段递归删除命令作为默认步骤。
 
 **面板相关目录（本地 systemd）：**
 
@@ -121,11 +115,7 @@ rm -rf /var/log/forwardx-agent
 ls -la /opt/forwardx-panel
 ```
 
-确认后手动删除：
-
-```bash
-rm -rf /opt/forwardx-panel
-```
+需要删除程序目录时优先使用安装器的确认流程；自定义目录需先核实实际绝对路径和备份。
 
 ## 清理转发规则
 
@@ -137,11 +127,7 @@ iptables -t nat -S | grep -i forwardx
 ip6tables -t nat -S | grep -i forwardx
 ```
 
-如果使用 nftables，确认没有业务依赖后，可删除 ForwardX 表：
-
-```bash
-nft delete table inet forwardx
-```
+存在残留时先核对每条规则的归属与业务依赖，再针对具体条目处理；不要把删除整张表作为通用清理步骤。
 
 ::: danger 谨慎操作
 不要随意清空整台机器的 iptables 或 nftables 规则。服务器防火墙、Docker、面板和其他业务可能也依赖这些规则。只针对 ForwardX 相关条目进行清理。

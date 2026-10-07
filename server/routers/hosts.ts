@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
+import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
 import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets";
@@ -220,11 +221,8 @@ async function assertHostDdnsServiceConfigured() {
 
 async function assertTelegramBotConfiguredForHostReminder() {
   const settings = await db.getAllSettings();
-  const envToken = ENV.telegramBotToken.trim();
-  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
-  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
-  if (!botEnabled || !botConfigured) {
-    throw new Error("请先在系统设置内配置并启用 Telegram 机器人");
+  if (!notificationSettings(settings).active) {
+    throw new Error("请先在系统设置内配置并启用所选通知渠道");
   }
 }
 
@@ -633,6 +631,11 @@ export const hostsRouter = router({
         const { configuredPath } = await assertPublicHostMonitorRequest(input?.path);
         const hosts = (await db.getHosts() as any[]).map(compactPublicMonitorHost).filter((host) => host.id > 0);
         const hostIds = hosts.map((host) => host.id);
+        // Public standalone viewers need the same realtime metrics as /hosts.
+        // The short lease expires naturally when polling stops; only the first
+        // viewer (or a resumed expired lease) asks the Agent to refresh now.
+        const newlyWatched = markHostMetricsWatching(hostIds, 15_000);
+        for (const hostId of newlyWatched) pushAgentRefresh(hostId, "public-metrics-watch");
         const visibleHostIds = new Set(hostIds);
         const [metricRows, trafficRows] = await Promise.all([
           db.getLatestHostMetricRows(hostIds),

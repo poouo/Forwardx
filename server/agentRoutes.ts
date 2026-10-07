@@ -9,6 +9,7 @@ import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEve
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
 import { AGENT_PANEL_MIGRATION_VERSION, hasAgentVersionChanged, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
+import { getSeamlessMigrationState } from "./seamlessMigrationState";
 import { decryptPayload, decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import {
   AGENT_AUTH_RESULT_ACCEPTED,
@@ -181,7 +182,7 @@ async function openAgentEventStream(input: {
   const wasOnline = isHostStatusOnline(host);
   recordAuthenticatedAgentActivity(host.id);
   observePresenceCapableHostActivity(host.id);
-  if (agentVersion) {
+  if (agentVersion && getSeamlessMigrationState()?.phase !== "verifying") {
     const upgradedFirewallCounterAgent = isAgentVersionAtLeast(agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
       && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION);
     const upgradedProtocolGuardBackendAgent = isAgentVersionAtLeast(agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)

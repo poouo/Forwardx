@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
@@ -76,7 +78,7 @@ import {
   Pencil,
 } from "lucide-react";
 import { useState, useEffect, useMemo, type ElementType } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { useLocation } from "wouter";
 import { BILLING_DATE_TIME_FORMAT_OPTIONS, billingCalendarParts } from "@shared/billingTime";
 import { FORWARD_TYPES } from "@shared/forwardTypes";
@@ -105,13 +107,13 @@ function parseSpeedInputMbps(value: string): number {
 
 function formatSpeedMbps(mbps: number | string | null | undefined): string {
   const num = Number(mbps);
-  if (!num || isNaN(num) || num <= 0) return "不限";
+  if (!num || isNaN(num) || num <= 0) return translateText("不限");
   return `${parseFloat(num.toFixed(2))} Mbps`;
 }
 
 function formatForwardRateLimit(inMbps: unknown, outMbps: unknown): string {
   const speed = Math.max(0, Math.floor(Number(inMbps) || 0), Math.floor(Number(outMbps) || 0));
-  return speed > 0 ? `上下行 ${formatSpeedMbps(speed)}` : "不限";
+  return speed > 0 ? translateText("上下行 {0}", [formatSpeedMbps(speed)]) : translateText("不限");
 }
 
 function userLabel(user: any) {
@@ -119,22 +121,22 @@ function userLabel(user: any) {
 }
 
 function formatCurrencyCny(cents: number | string | null | undefined): string {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
 }
 
 const USER_MANAGE_TYPES = ["accounts", "subscriptions"] as const;
 type UserManageType = typeof USER_MANAGE_TYPES[number];
 
 function dateText(value?: string | Date | null) {
-  if (!value) return "永久";
+  if (!value) return translateText("永久");
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleDateString("zh-CN");
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleDateString(getFormatLocale());
 }
 
 function billingDateTimeText(value?: string | Date | null) {
   if (!value) return "-";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN", BILLING_DATE_TIME_FORMAT_OPTIONS);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString(getFormatLocale(), BILLING_DATE_TIME_FORMAT_OPTIONS);
 }
 
 function currentBillingResetDay() {
@@ -142,18 +144,18 @@ function currentBillingResetDay() {
 }
 
 function subscriptionStatusLabel(status?: string) {
-  if (status === "active") return "生效中";
-  if (status === "expired") return "已过期";
-  if (status === "cancelled") return "已取消";
+  if (status === "active") return translateText("生效中");
+  if (status === "expired") return translateText("已过期");
+  if (status === "cancelled") return translateText("已取消");
   return status || "-";
 }
 
 function subscriptionSourceLabel(source?: string) {
-  if (source === "admin") return "管理员分配";
-  if (source === "balance") return "余额购买";
-  if (source === "payment") return "在线支付";
-  if (source === "redeem") return "兑换套餐";
-  return source || "套餐记录";
+  if (source === "admin") return translateText("管理员分配");
+  if (source === "balance") return translateText("余额购买");
+  if (source === "payment") return translateText("在线支付");
+  if (source === "redeem") return translateText("兑换套餐");
+  return source || translateText("套餐记录");
 }
 
 function isSubscriptionActive(sub: any) {
@@ -362,7 +364,7 @@ function UsersContent() {
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
     },
-    onError: (err) => toast.error(err.message || "更新转发组授权失败"),
+    onError: (err) => toast.error(err.message || translateText("更新转发组授权失败")),
   });
   const updateHostPermsMutation = trpc.users.setHostPermissions.useMutation({
     onSuccess: () => {
@@ -370,7 +372,7 @@ function UsersContent() {
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
     },
-    onError: (err) => toast.error(err.message || "更新主机授权失败"),
+    onError: (err) => toast.error(err.message || translateText("更新主机授权失败")),
   });
   const updateTunnelPermsMutation = trpc.users.setTunnelPermissions.useMutation({
     onSuccess: () => {
@@ -378,14 +380,14 @@ function UsersContent() {
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
     },
-    onError: (err) => toast.error(err.message || "更新隧道权限失败"),
+    onError: (err) => toast.error(err.message || translateText("更新隧道权限失败")),
   });
   const updateTrafficBillingPermsMutation = trpc.users.setTrafficBillingPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
       utils.users.listPage.invalidate();
     },
-    onError: (err) => toast.error(err.message || "更新流量计费授权失败"),
+    onError: (err) => toast.error(err.message || translateText("更新流量计费授权失败")),
   });
 
 
@@ -445,14 +447,14 @@ function UsersContent() {
       utils.users.list.invalidate();
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("用户创建成功");
+      toast.success(translateText("用户创建成功"));
       setShowCreateUser(false);
       setNewUsername("");
       setNewUserPassword("");
       setNewUserName("");
       setNewCanAddRules(true);
     },
-    onError: (err) => toast.error(err.message || "创建用户失败"),
+    onError: (err) => toast.error(err.message || translateText("创建用户失败")),
   });
 
   const resetPasswordMutation = trpc.users.resetPassword.useMutation({
@@ -460,13 +462,13 @@ function UsersContent() {
       utils.users.list.invalidate();
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("账户信息已更新");
+      toast.success(translateText("账户信息已更新"));
       setShowResetPassword(false);
       setResetUsernameInput("");
       setResetNewPassword("");
       setResetAvatarInput("");
     },
-    onError: (err) => toast.error(err.message || "更新账户信息失败"),
+    onError: (err) => toast.error(err.message || translateText("更新账户信息失败")),
   });
 
   const deleteMutation = trpc.users.delete.useMutation({
@@ -474,34 +476,34 @@ function UsersContent() {
       utils.users.list.invalidate();
       utils.users.options.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("用户已删除");
+      toast.success(translateText("用户已删除"));
       setShowDeleteUser(false);
       setDeleteUserId(null);
       setDeleteUserName("");
     },
-    onError: (err) => toast.error(err.message || "删除用户失败"),
+    onError: (err) => toast.error(err.message || translateText("删除用户失败")),
   });
 
   const removeTwoFactorMutation = trpc.users.removeTwoFactor.useMutation({
     onSuccess: (data) => {
       utils.users.list.invalidate();
       utils.users.listPage.invalidate();
-      toast.success(data.removed ? "双因素认证已移除" : "该用户未绑定双因素认证");
+      toast.success(data.removed ? translateText("双因素认证已移除") : translateText("该用户未绑定双因素认证"));
       setShowRemoveTwoFactor(false);
       setRemoveTwoFactorUserId(null);
       setRemoveTwoFactorUserName("");
     },
-    onError: (err) => toast.error(err.message || "移除双因素认证失败"),
+    onError: (err) => toast.error(err.message || translateText("移除双因素认证失败")),
   });
 
   const sendEmailMutation = trpc.users.sendEmail.useMutation({
     onSuccess: () => {
-      toast.success("邮件已发送");
+      toast.success(translateText("邮件已发送"));
       setShowSendEmail(false);
       setEmailSubject("");
       setEmailContent("");
     },
-    onError: (err) => toast.error(err.message || "邮件发送失败"),
+    onError: (err) => toast.error(err.message || translateText("邮件发送失败")),
   });
 
   const updateTrafficMutation = trpc.users.updateTrafficSettings.useMutation({
@@ -522,10 +524,10 @@ function UsersContent() {
       });
       utils.users.list.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("流量设置已更新");
+      toast.success(translateText("流量设置已更新"));
       setShowTrafficSettings(false);
     },
-    onError: (err) => toast.error(err.message || "更新流量设置失败"),
+    onError: (err) => toast.error(err.message || translateText("更新流量设置失败")),
   });
 
   const resetTrafficMutation = trpc.users.resetTraffic.useMutation({
@@ -536,12 +538,12 @@ function UsersContent() {
       });
       utils.users.list.invalidate();
       utils.users.listPage.invalidate();
-      toast.success("流量统计已重置");
+      toast.success(translateText("流量统计已重置"));
       setShowResetTraffic(false);
       setResetTrafficUserId(null);
       setResetTrafficUserName("");
     },
-    onError: (err) => toast.error(err.message || "重置流量失败"),
+    onError: (err) => toast.error(err.message || translateText("重置流量失败")),
   });
 
   const updateForwardAccessMutation = trpc.users.setForwardAccess.useMutation({
@@ -562,11 +564,11 @@ function UsersContent() {
         manualAllowForwardXTunnel: variables.enabled,
       });
       utils.rules.list.invalidate();
-      toast.success(variables.enabled ? "用户转发已开启" : "用户转发已关闭");
+      toast.success(variables.enabled ? translateText("用户转发已开启") : translateText("用户转发已关闭"));
     },
     onError: (err, _variables, context) => {
       if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
-      toast.error(err.message || "更新转发权限失败");
+      toast.error(err.message || translateText("更新转发权限失败"));
     },
     onSettled: async () => {
       await Promise.all([
@@ -588,11 +590,11 @@ function UsersContent() {
     onSuccess: (_, variables) => {
       patchCachedUser(variables.userId, { accountEnabled: variables.enabled });
       utils.rules.list.invalidate();
-      toast.success(variables.enabled ? "账户已启用" : "账户已禁用，已有规则已失效");
+      toast.success(variables.enabled ? translateText("账户已启用") : translateText("账户已禁用，已有规则已失效"));
     },
     onError: (err, _variables, context) => {
       if (context?.previousUsers) utils.users.listPage.setData(userPageInput, context.previousUsers);
-      toast.error(err.message || "更新账户状态失败");
+      toast.error(err.message || translateText("更新账户状态失败"));
     },
     onSettled: async () => {
       await Promise.all([
@@ -611,11 +613,11 @@ function UsersContent() {
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
-      toast.success("余额已充值");
+      toast.success(translateText("余额已充值"));
       setShowRecharge(false);
       setRechargeAmount("");
     },
-    onError: (err) => toast.error(err.message || "充值失败"),
+    onError: (err) => toast.error(err.message || translateText("充值失败")),
   });
 
   const adminSetBalanceMutation = trpc.billing.adminSetBalance.useMutation({
@@ -625,11 +627,11 @@ function UsersContent() {
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
-      toast.success(data.changed ? "余额已修改" : "余额未变化");
+      toast.success(data.changed ? translateText("余额已修改") : translateText("余额未变化"));
       setShowSetBalance(false);
       setSetBalanceAmount("");
     },
-    onError: (err) => toast.error(err.message || "修改余额失败"),
+    onError: (err) => toast.error(err.message || translateText("修改余额失败")),
   });
   const adminAddTrafficAddonMutation = trpc.billing.adminAddTrafficAddon.useMutation({
     onSuccess: () => {
@@ -638,14 +640,14 @@ function UsersContent() {
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
       utils.plans.subscriptionsPage.invalidate();
-      toast.success("本周期附加流量已生效");
+      toast.success(translateText("本周期附加流量已生效"));
       setShowAddonDialog(false);
       setAddonUserId(null);
       setAddonSubscriptionId("");
       setAddonSubscriptionLabel("");
       setAddonTrafficGB("");
     },
-    onError: (err) => toast.error(err.message || "附加流量失败"),
+    onError: (err) => toast.error(err.message || translateText("附加流量失败")),
   });
 
   const extendSubscriptionMutation = trpc.plans.extendSubscription.useMutation({
@@ -655,13 +657,13 @@ function UsersContent() {
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
       utils.plans.subscriptionsPage.invalidate();
-      toast.success("订阅到期时间已更新");
+      toast.success(translateText("订阅到期时间已更新"));
       setShowExtendDialog(false);
       setExtendSubscriptionId(null);
       setExtendSubscriptionLabel("");
       setExtendExpiresAtInput("");
     },
-    onError: (err) => toast.error(err.message || "更新订阅到期时间失败"),
+    onError: (err) => toast.error(err.message || translateText("更新订阅到期时间失败")),
   });
 
   const cancelSubscriptionMutation = trpc.plans.cancelSubscription.useMutation({
@@ -677,7 +679,7 @@ function UsersContent() {
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
       utils.plans.subscriptionsPage.invalidate();
-      toast.success("订阅已取消");
+      toast.success(translateText("订阅已取消"));
       setShowCancelSubscriptionDialog(false);
       setCancelSubscriptionId(null);
       setCancelSubscriptionLabel("");
@@ -686,7 +688,7 @@ function UsersContent() {
     onError: (err, variables) => {
       const id = Number(variables.id);
       setHiddenCancelledSubscriptionIds((ids) => ids.filter((item) => item !== id));
-      toast.error(err.message || "取消订阅失败");
+      toast.error(err.message || translateText("取消订阅失败"));
     },
   });
 
@@ -697,10 +699,10 @@ function UsersContent() {
   );
   const activeSubscriptionCount = Number(userSummary?.activeSubscriptions ?? subscriptionPageQuery.data?.activeItems ?? 0);
   const userManageTabItems = useMemo<SlidingTabItem<UserManageType>[]>(() => [
-    { value: "accounts", label: "账户管理", icon: UsersIcon },
+    { value: "accounts", label: translateText("账户管理"), icon: UsersIcon },
     {
       value: "subscriptions",
-      label: "用户订阅管理",
+      label: translateText("用户订阅管理"),
       icon: Package,
       badge: (summaryLoading || activeSubscriptionCount > 0) ? (
         <AnimatedStatValue
@@ -728,15 +730,15 @@ function UsersContent() {
 
   const handleCreateUser = () => {
     if (!newUsername.trim()) {
-      toast.error("请输入用户名");
+      toast.error(translateText("请输入用户名"));
       return;
     }
     if (newUserName.trim().length > 24) {
-      toast.error("显示名称最多 24 个字符");
+      toast.error(translateText("显示名称最多 24 个字符"));
       return;
     }
     if (newUserPassword.length < 6) {
-      toast.error("密码至少6个字符");
+      toast.error(translateText("密码至少6个字符"));
       return;
     }
     createUserMutation.mutate({
@@ -752,15 +754,15 @@ function UsersContent() {
     const username = resetUsernameInput.trim();
     const password = resetNewPassword.trim();
     if (!username) {
-      toast.error("请输入账号");
+      toast.error(translateText("请输入账号"));
       return;
     }
     if (resetDisplayNameInput.trim().length > 24) {
-      toast.error("显示名称最多 24 个字符");
+      toast.error(translateText("显示名称最多 24 个字符"));
       return;
     }
     if (password && password.length < 6) {
-      toast.error("密码至少6个字符");
+      toast.error(translateText("密码至少6个字符"));
       return;
     }
     resetPasswordMutation.mutate({
@@ -832,7 +834,7 @@ function UsersContent() {
 
   const openSendEmail = (u: any) => {
     if (!u.email || !u.emailVerified) {
-      toast.error("该用户邮箱尚未验证，不能发送邮件");
+      toast.error(translateText("该用户邮箱尚未验证，不能发送邮件"));
       return;
     }
     setEmailUserId(u.id);
@@ -846,7 +848,7 @@ function UsersContent() {
   const handleSendEmail = () => {
     if (!emailUserId) return;
     if (!emailSubject.trim() || !emailContent.trim()) {
-      toast.error("请填写邮件标题和内容");
+      toast.error(translateText("请填写邮件标题和内容"));
       return;
     }
     sendEmailMutation.mutate({
@@ -858,7 +860,7 @@ function UsersContent() {
 
   const openTrafficSettings = (u: any) => {
     if (u.role === "admin") {
-      toast.info("管理员默认拥有全部权限，且不受流量/资源限制");
+      toast.info(translateText("管理员默认拥有全部权限，且不受流量/资源限制"));
       return;
     }
     setTrafficUserId(u.id);
@@ -1007,15 +1009,15 @@ function UsersContent() {
   const handleRecharge = () => {
     if (!rechargeUserId) return;
     const amountCents = Math.round(Number(rechargeAmount || 0) * 100);
-    if (amountCents <= 0) return toast.error("请输入有效充值金额");
-    adminRechargeMutation.mutate({ userId: rechargeUserId, amountCents, description: "用户管理手动充值" });
+    if (amountCents <= 0) return toast.error(translateText("请输入有效充值金额"));
+    adminRechargeMutation.mutate({ userId: rechargeUserId, amountCents, description: translateText("用户管理手动充值") });
   };
 
   const handleSetBalance = () => {
     if (!setBalanceUserId) return;
     const balanceCents = Math.round(Number(setBalanceAmount || 0) * 100);
-    if (!Number.isFinite(balanceCents) || balanceCents < 0) return toast.error("请输入有效余额");
-    adminSetBalanceMutation.mutate({ userId: setBalanceUserId, balanceCents, description: "用户管理手动修改余额" });
+    if (!Number.isFinite(balanceCents) || balanceCents < 0) return toast.error(translateText("请输入有效余额"));
+    adminSetBalanceMutation.mutate({ userId: setBalanceUserId, balanceCents, description: translateText("用户管理手动修改余额") });
   };
 
   const handleManageTypeChange = (value: string) => {
@@ -1025,7 +1027,7 @@ function UsersContent() {
 
   const openAddonDialog = (sub: any) => {
     if (!isSubscriptionActive(sub) || Number(sub.trafficLimit || 0) <= 0) {
-      toast.error("只有生效中的流量套餐可以附加流量");
+      toast.error(translateText("只有生效中的流量套餐可以附加流量"));
       return;
     }
     setAddonUserId(Number(sub.userId));
@@ -1038,7 +1040,7 @@ function UsersContent() {
 
   const openExtendDialog = (sub: any) => {
     if (sub.status === "cancelled") {
-      toast.error("已取消的订阅不能更改到期时间");
+      toast.error(translateText("已取消的订阅不能更改到期时间"));
       return;
     }
     setExtendSubscriptionId(Number(sub.id));
@@ -1049,7 +1051,7 @@ function UsersContent() {
 
   const openCancelSubscriptionDialog = (sub: any) => {
     if (!isSubscriptionActive(sub)) {
-      toast.error("只有生效中的订阅可以取消");
+      toast.error(translateText("只有生效中的订阅可以取消"));
       return;
     }
     setCancelSubscriptionId(Number(sub.id));
@@ -1061,19 +1063,19 @@ function UsersContent() {
   const handleAdminAddTrafficAddon = () => {
     if (!addonUserId) return;
     const trafficBytes = parseTrafficInputGB(addonTrafficGB);
-    if (trafficBytes <= 0) return toast.error("请输入大于 0 的附加流量");
+    if (trafficBytes <= 0) return toast.error(translateText("请输入大于 0 的附加流量"));
     adminAddTrafficAddonMutation.mutate({
       userId: addonUserId,
       trafficBytes,
       subscriptionId: addonSubscriptionId ? Number(addonSubscriptionId) : undefined,
-      description: "管理员手动附加本周期流量",
+      description: translateText("管理员手动附加本周期流量"),
     });
   };
 
   const handleExtendSubscription = () => {
     if (!extendSubscriptionId) return;
     const text = extendExpiresAtInput.trim();
-    if (text && !parseDateInputValue(text)) return toast.error("请选择有效到期日期");
+    if (text && !parseDateInputValue(text)) return toast.error(translateText("请选择有效到期日期"));
     extendSubscriptionMutation.mutate({
       id: extendSubscriptionId,
       expiresAt: text ? parseDateInputValue(text)?.toISOString() || null : null,
@@ -1096,9 +1098,9 @@ function UsersContent() {
   };
   const forwardGroupAuthLabel = (group: any | null | undefined) => {
     const mode = normalizeForwardGroupModeForAuth(group);
-    if (mode === "port") return "端口转发";
-    if (mode === "chain") return "转发链";
-    return "转发组";
+    if (mode === "port") return translateText("端口转发");
+    if (mode === "chain") return translateText("转发链");
+    return translateText("转发组");
   };
   const authForwardGroups = (allForwardGroups || []).filter((group: any) => {
     const mode = normalizeForwardGroupModeForAuth(group);
@@ -1138,7 +1140,7 @@ function UsersContent() {
             : "flex items-center justify-center"
         }
       >
-        {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">账户</span>}
+        {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">{translateText("账户")}</span>}
         <OptimisticSwitch
           checked={enabled}
           disabled={isSelf}
@@ -1154,36 +1156,36 @@ function UsersContent() {
   const renderUserMoreMenu = (u: any, triggerClassName = "h-8 px-2") => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className={triggerClassName} title="更多操作">
+        <Button variant="ghost" size="sm" className={triggerClassName} title={translateText("更多操作")}>
           <MoreHorizontal className="h-4 w-4" />
-          <span className="text-xs">更多</span>
+          <span className="text-xs">{translateText("更多")}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuItem onSelect={() => openRechargeDialog(u)}>
           <WalletCards />
-          <span>余额充值</span>
+          <span>{translateText("余额充值")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openSetBalanceDialog(u)}>
           <Pencil />
-          <span>修改余额</span>
+          <span>{translateText("修改余额")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openAccountDialog(u)}>
           <User />
-          <span>账户信息</span>
+          <span>{translateText("账户信息")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.emailVerified || !u.email} onSelect={() => openSendEmail(u)}>
           <Mail />
-          <span>发送邮件</span>
+          <span>{translateText("发送邮件")}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => openResetTrafficDialog(u)}>
           <RotateCcw />
-          <span>重置流量统计</span>
+          <span>{translateText("重置流量统计")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.twoFactorEnabled} onSelect={() => openRemoveTwoFactorDialog(u)}>
           <ShieldOff />
-          <span>移除 2FA</span>
+          <span>{translateText("移除 2FA")}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -1192,7 +1194,7 @@ function UsersContent() {
           variant="destructive"
         >
           <Trash2 />
-          <span>删除用户</span>
+          <span>{translateText("删除用户")}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1202,42 +1204,38 @@ function UsersContent() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">用户管理</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            管理系统用户、权限和流量配额
-          </p>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("用户管理")}</h1>
+          <p className="text-muted-foreground mt-1 text-sm">{translateText("管理系统用户、权限和流量配额")}</p>
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:gap-3">
+        <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-3">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <ShieldCheck className="h-3 w-3 text-amber-400" />
             <AnimatedStatValue
-              value={`${adminCount} 管理员`}
+              value={translateText("{0} 管理员", [adminCount])}
               loading={isLoading || !users}
               cacheKey="users.header.adminCount"
-              fallbackValue="0 管理员"
+              fallbackValue={translateText("0 管理员")}
             />
           </Badge>
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <UsersIcon className="h-3 w-3 text-primary" />
             <AnimatedStatValue
-              value={`${userPageQuery.data?.totalItems ?? 0} 用户`}
+              value={translateText("{0} 用户", [userPageQuery.data?.totalItems ?? 0])}
               loading={isLoading || !users}
               cacheKey="users.header.totalUsers"
-              fallbackValue="0 用户"
+              fallbackValue={translateText("0 用户")}
             />
           </Badge>
           <Button size="sm" className="col-span-2 sm:col-span-1" onClick={() => setShowCreateUser(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            添加用户
-          </Button>
+            <Plus className="h-4 w-4 mr-1" />{translateText("添加用户")}</Button>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <UserStatCard
-          title="用户总数"
+          title={translateText("用户总数")}
           value={userSummary?.totalUsers ?? userPageQuery.data?.totalItems ?? 0}
-          subtitle={`${adminCount} 个管理员`}
+          subtitle={translateText("{0} 个管理员", [adminCount])}
           icon={UsersIcon}
           tone="bg-gradient-to-br from-teal-500 to-teal-600"
           loading={summaryLoading || isLoading}
@@ -1245,9 +1243,9 @@ function UsersContent() {
           fallbackValue={0}
         />
         <UserStatCard
-          title="转发规则"
+          title={translateText("转发规则")}
           value={userSummary?.totalRules ?? 0}
-          subtitle={`${userSummary?.activeRules ?? 0} 条已启用`}
+          subtitle={translateText("{0} 条已启用", [userSummary?.activeRules ?? 0])}
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={summaryLoading}
@@ -1255,9 +1253,9 @@ function UsersContent() {
           fallbackValue={0}
         />
         <UserStatCard
-          title="入站流量"
+          title={translateText("入站流量")}
           value={formatBytes(userSummary?.totalTrafficIn ?? 0)}
-          subtitle="所有用户累计入站"
+          subtitle={translateText("所有用户累计入站")}
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-rose-500 to-rose-600"
           loading={summaryLoading}
@@ -1266,9 +1264,9 @@ function UsersContent() {
           className="col-span-2 sm:col-span-1"
         />
         <UserStatCard
-          title="出站流量"
+          title={translateText("出站流量")}
           value={formatBytes(userSummary?.totalTrafficOut ?? 0)}
-          subtitle="所有用户累计出站"
+          subtitle={translateText("所有用户累计出站")}
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={summaryLoading}
@@ -1279,12 +1277,12 @@ function UsersContent() {
       </div>
 
       <Tabs value={manageType} onValueChange={handleManageTypeChange} className="space-y-4">
-        <SlidingTabsList items={userManageTabItems} activeValue={manageType} ariaLabel="用户管理" minItemWidthRem={10.5} />
+        <SlidingTabsList items={userManageTabItems} activeValue={manageType} ariaLabel={translateText("用户管理")} minItemWidthRem={10.5} />
 
         <TabsContent value="accounts" className="space-y-4 data-[state=inactive]:hidden">
 
       {isLoading && (
-        <DataSectionLoading className="sm:hidden" label="正在加载用户数据" minHeight="min-h-[220px]" />
+        <DataSectionLoading className="sm:hidden" label={translateText("正在加载用户数据")} minHeight="min-h-[220px]" />
       )}
 
       {!isLoading && users && users.length > 0 && (
@@ -1304,15 +1302,15 @@ function UsersContent() {
                   <UserAvatar user={u} className="h-10 w-10 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="min-w-0 max-w-full truncate text-sm font-semibold">{u.username || "未命名"}</p>
+                      <p className="min-w-0 max-w-full truncate text-sm font-semibold">{u.username || translateText("未命名")}</p>
                       <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 px-1.5 text-[10px]">
-                        {u.role === "admin" ? "管理员" : "普通用户"}
+                        {u.role === "admin" ? translateText("管理员") : translateText("普通用户")}
                       </Badge>
                       {u.id === currentUser?.id && (
-                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-primary">当前</Badge>
+                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-primary">{translateText("当前")}</Badge>
                       )}
                       {u.accountEnabled === false && (
-                        <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">账户禁用</Badge>
+                        <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">{translateText("账户禁用")}</Badge>
                       )}
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-foreground">
@@ -1324,63 +1322,63 @@ function UsersContent() {
                 <div className="mt-3 grid gap-2">
                   <div className="rounded-md bg-muted/25 p-2">
                     <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="shrink-0 text-muted-foreground">套餐/分配</span>
+                      <span className="shrink-0 text-muted-foreground">{translateText("套餐/分配")}</span>
                       <span className="min-w-0 truncate text-right tabular-nums">
-                        {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : "不限"}
+                        {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : translateText("不限")}
                       </span>
                     </div>
                     {limit > 0 && (
                       <Progress value={pct} className={`mt-2 h-1.5 ${isOverLimit ? "[&>div]:bg-destructive" : ""}`} />
                     )}
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      {isOverLimit && <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">超额</Badge>}
+                      {isOverLimit && <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">{translateText("超额")}</Badge>}
                       {u.trafficAutoReset && (
-                        <Badge variant="outline" className="h-5 px-1.5 text-[10px]">每月{u.trafficResetDay || 1}日重置</Badge>
+                        <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{translateText("每月")}{u.trafficResetDay || 1}{translateText("日重置")}</Badge>
                       )}
                     </div>
                     <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-xs">
-                      <span className="shrink-0 text-muted-foreground">按量计费</span>
+                      <span className="shrink-0 text-muted-foreground">{translateText("按量计费")}</span>
                       <span className="min-w-0 truncate text-right font-medium tabular-nums">{formatBytes(billingUsed)}</span>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                      <p className="text-muted-foreground">余额</p>
+                      <p className="text-muted-foreground">{translateText("余额")}</p>
                       <p className="mt-1 truncate font-medium">{formatCurrencyCny(u.balanceCents)}</p>
                     </div>
                     <div className="min-w-0 rounded-md bg-muted/25 p-2">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-muted-foreground">到期</p>
-                        {isExpired && <Badge variant="destructive" className="h-5 shrink-0 px-1.5 text-[10px]">已到期</Badge>}
+                        <p className="text-muted-foreground">{translateText("到期")}</p>
+                        {isExpired && <Badge variant="destructive" className="h-5 shrink-0 px-1.5 text-[10px]">{translateText("已到期")}</Badge>}
                       </div>
                       <p className={`mt-1 truncate font-medium ${isExpired ? "text-destructive" : ""}`}>
-                        {u.expiresAt ? new Date(u.expiresAt).toLocaleDateString() : "不限"}
+                        {u.expiresAt ? new Date(u.expiresAt).toLocaleDateString(getFormatLocale()) : translateText("不限")}
                       </p>
                     </div>
                     <div className="min-w-0 rounded-md bg-muted/25 p-2">
                       <p className="text-muted-foreground">Telegram</p>
                       <p className="mt-1 truncate font-medium">
-                        {u.telegramId ? (u.telegramUsername ? `@${u.telegramUsername}` : u.telegramFirstName || u.telegramId) : "未绑定"}
+                        {u.telegramId ? (u.telegramUsername ? `@${u.telegramUsername}` : u.telegramFirstName || u.telegramId) : translateText("未绑定")}
                       </p>
                     </div>
                     <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                      <p className="text-muted-foreground">邮箱</p>
-                      <p className="mt-1 truncate font-medium">{u.emailVerified ? "已验证" : u.email ? "未验证" : "未填写"}</p>
+                      <p className="text-muted-foreground">{translateText("邮箱")}</p>
+                      <p className="mt-1 truncate font-medium">{u.emailVerified ? translateText("已验证") : u.email ? translateText("未验证") : translateText("未填写")}</p>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
-                    <span>规则: {u.maxRules ? `${u.maxRules} 条` : "不限"}</span>
-                    <span>端口: {u.maxPorts ? `${u.maxPorts} 个` : "不限"}</span>
-                    <span>连接: {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
-                    <span>单 IP: {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
-                    {speedLimit > 0 && <span className="col-span-2">转发限速: {formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
+                    <span>{translateText("规则: ")}{u.maxRules ? translateText("{0} 条", [u.maxRules]) : translateText("不限")}</span>
+                    <span>{translateText("端口: ")}{u.maxPorts ? translateText("{0} 个", [u.maxPorts]) : translateText("不限")}</span>
+                    <span>{translateText("连接: ")}{u.maxConnections ? `${u.maxConnections}` : translateText("不限")}</span>
+                    <span>{translateText("单 IP: ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
+                    {speedLimit > 0 && <span className="col-span-2">{translateText("转发限速: ")}{formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
                   </div>
 
                   <div className="grid gap-2">
                     <div className="flex h-9 items-center justify-between rounded-md border border-border/50 px-2">
-                      <span className="text-xs text-muted-foreground">转发</span>
+                      <span className="text-xs text-muted-foreground">{translateText("转发")}</span>
                       <OptimisticSwitch
                         checked={u.role === "admin" || !!u.canAddRules}
                         disabled={u.role === "admin"}
@@ -1392,9 +1390,7 @@ function UsersContent() {
                   <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 pt-1">
                     {renderAccountEnabledControl(u, true)}
                     <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => openTrafficSettings(u)}>
-                      <Pencil className="mr-1 h-3.5 w-3.5" />
-                      编辑
-                    </Button>
+                      <Pencil className="mr-1 h-3.5 w-3.5" />{translateText("编辑")}</Button>
                     {renderUserMoreMenu(u, "h-9 justify-center gap-1 rounded-md border border-border/50 px-2 text-xs")}
                   </div>
                 </div>
@@ -1409,8 +1405,8 @@ function UsersContent() {
           <div className="h-14 w-14 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
             <UsersIcon className="h-7 w-7 opacity-40" />
           </div>
-          <p className="text-base font-medium">暂无其他用户</p>
-          <p className="mt-1 text-sm text-muted-foreground/60">点击添加用户创建账号</p>
+          <p className="text-base font-medium">{translateText("暂无其他用户")}</p>
+          <p className="mt-1 text-sm text-muted-foreground/60">{translateText("点击添加用户创建账号")}</p>
         </div>
       )}
 
@@ -1418,7 +1414,7 @@ function UsersContent() {
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4">
-              <DataSectionLoading label="正在加载用户数据" />
+              <DataSectionLoading label={translateText("正在加载用户数据")} />
             </div>
           ) : users && users.length > 0 ? (
             <div className="overflow-x-auto">
@@ -1426,15 +1422,15 @@ function UsersContent() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[60px] whitespace-nowrap">ID</TableHead>
-                    <TableHead className="w-[260px] whitespace-nowrap">用户</TableHead>
-                    <TableHead className="w-[210px] whitespace-nowrap">流量使用</TableHead>
+                    <TableHead className="w-[260px] whitespace-nowrap">{translateText("用户")}</TableHead>
+                    <TableHead className="w-[210px] whitespace-nowrap">{translateText("流量使用")}</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap xl:table-cell">Telegram</TableHead>
-                    <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
-                    <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
-                    <TableHead className="hidden w-[160px] whitespace-nowrap text-center lg:table-cell">转发总开关</TableHead>
-                    <TableHead className="hidden w-[240px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
-                    <TableHead className="w-[150px] whitespace-nowrap text-center">账户状态</TableHead>
-                    <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
+                    <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">{translateText("余额")}</TableHead>
+                    <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">{translateText("到期时间")}</TableHead>
+                    <TableHead className="hidden w-[160px] whitespace-nowrap text-center lg:table-cell">{translateText("转发总开关")}</TableHead>
+                    <TableHead className="hidden w-[240px] whitespace-nowrap lg:table-cell">{translateText("规则限制")}</TableHead>
+                    <TableHead className="w-[150px] whitespace-nowrap text-center">{translateText("账户状态")}</TableHead>
+                    <TableHead className="w-[190px] whitespace-nowrap text-right">{translateText("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <AutoAnimateContainer as={TableBody}>
@@ -1455,16 +1451,16 @@ function UsersContent() {
                           <div className="flex items-center gap-2.5">
                             <UserAvatar user={u} className="h-8 w-8 shrink-0" />
                             <div className="min-w-0 py-0.5">
-                              <p className="truncate text-sm font-medium leading-5">{u.username || "未命名"}</p>
+                              <p className="truncate text-sm font-medium leading-5">{u.username || translateText("未命名")}</p>
                               <div className="mt-1.5 flex min-w-0 items-center gap-1 whitespace-nowrap">
                                 <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit shrink-0 px-1.5 text-[10px] leading-4">
-                                  {u.role === "admin" ? "管理员" : "普通用户"}
+                                  {u.role === "admin" ? translateText("管理员") : translateText("普通用户")}
                                 </Badge>
                                 {u.accountEnabled === false && (
-                                  <Badge variant="destructive" className="h-5 w-fit shrink-0 px-1.5 text-[10px]">账户禁用</Badge>
+                                  <Badge variant="destructive" className="h-5 w-fit shrink-0 px-1.5 text-[10px]">{translateText("账户禁用")}</Badge>
                                 )}
                                 {u.id === currentUser?.id && (
-                                  <span className="shrink-0 text-[10px] font-medium leading-4 text-primary">当前登录</span>
+                                  <span className="shrink-0 text-[10px] font-medium leading-4 text-primary">{translateText("当前登录")}</span>
                                 )}
                               </div>
                               {u.displayRemark && (
@@ -1478,7 +1474,7 @@ function UsersContent() {
                                     className="shrink-0"
                                   />
                                   <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
-                                    {u.canAddRules ? "转发启用" : "转发停用"}
+                                    {u.canAddRules ? translateText("转发启用") : translateText("转发停用")}
                                   </span>
                                 </div>
                               )}
@@ -1488,13 +1484,13 @@ function UsersContent() {
                         <TableCell>
                           <div className="min-w-[190px] space-y-2">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="shrink-0 text-[10px] text-muted-foreground">套餐/分配</span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground">{translateText("套餐/分配")}</span>
                               <div className="flex min-w-0 items-center justify-end gap-1">
                                 {isOverLimit && (
-                                  <Badge variant="destructive" className="h-3.5 shrink-0 px-1 py-0 text-[9px]">超额</Badge>
+                                  <Badge variant="destructive" className="h-3.5 shrink-0 px-1 py-0 text-[9px]">{translateText("超额")}</Badge>
                                 )}
                                 <span className="truncate text-xs tabular-nums">
-                                  {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : "不限"}
+                                  {formatBytes(used)} / {limit > 0 ? formatBytes(limit) : translateText("不限")}
                                 </span>
                               </div>
                             </div>
@@ -1505,7 +1501,7 @@ function UsersContent() {
                               />
                             )}
                             <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-1.5">
-                              <span className="shrink-0 text-[10px] text-muted-foreground">按量计费</span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground">{translateText("按量计费")}</span>
                               <span className="truncate text-xs font-medium tabular-nums">{formatBytes(billingUsed)}</span>
                             </div>
                           </div>
@@ -1519,12 +1515,12 @@ function UsersContent() {
                                   {u.telegramUsername ? `@${u.telegramUsername}` : u.telegramFirstName || u.telegramId}
                                 </p>
                                 <p className="text-[10px] text-muted-foreground">
-                                  {u.telegramLinkedAt ? new Date(u.telegramLinkedAt).toLocaleDateString() : "已绑定"}
+                                  {u.telegramLinkedAt ? new Date(u.telegramLinkedAt).toLocaleDateString(getFormatLocale()) : translateText("已绑定")}
                                 </p>
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-muted-foreground">未绑定</span>
+                            <span className="text-xs text-muted-foreground">{translateText("未绑定")}</span>
                           )}
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
@@ -1539,15 +1535,15 @@ function UsersContent() {
                                 <div className="flex items-center gap-1.5 whitespace-nowrap">
                                   <CalendarClock className="h-3 w-3 text-muted-foreground" />
                                   <span className={`text-xs ${isExpired ? "text-destructive" : "text-muted-foreground"}`}>
-                                    {new Date(u.expiresAt).toLocaleDateString()}
+                                    {new Date(u.expiresAt).toLocaleDateString(getFormatLocale())}
                                   </span>
                                 </div>
                                 {isExpired && (
-                                  <Badge variant="destructive" className="h-4 px-1.5 py-0 text-[9px]">已到期</Badge>
+                                  <Badge variant="destructive" className="h-4 px-1.5 py-0 text-[9px]">{translateText("已到期")}</Badge>
                                 )}
                               </>
                             ) : (
-                              <span className="text-xs text-muted-foreground">不限</span>
+                              <span className="text-xs text-muted-foreground">{translateText("不限")}</span>
                             )}
                           </div>
                         </TableCell>
@@ -1561,30 +1557,24 @@ function UsersContent() {
                                 className="shrink-0"
                               />
                               {u.canAddRules || u.role === "admin" ? (
-                                <Badge variant="outline" className="h-5 w-fit shrink-0 whitespace-nowrap border-chart-2/30 px-2 py-0 text-[10px] text-chart-2">
-                                  转发启用
-                                </Badge>
+                                <Badge variant="outline" className="h-5 w-fit shrink-0 whitespace-nowrap border-chart-2/30 px-2 py-0 text-[10px] text-chart-2">{translateText("转发启用")}</Badge>
                               ) : (
-                                <Badge variant="outline" className="h-5 w-fit shrink-0 whitespace-nowrap border-muted-foreground/30 px-2 py-0 text-[10px] text-muted-foreground">
-                                  转发停用
-                                </Badge>
+                                <Badge variant="outline" className="h-5 w-fit shrink-0 whitespace-nowrap border-muted-foreground/30 px-2 py-0 text-[10px] text-muted-foreground">{translateText("转发停用")}</Badge>
                               )}
                             </div>
                             {u.trafficAutoReset && (
-                              <span className="whitespace-nowrap text-center text-[10px] text-muted-foreground">
-                                每月{u.trafficResetDay || 1}日重置
-                              </span>
+                              <span className="whitespace-nowrap text-center text-[10px] text-muted-foreground">{translateText("每月")}{u.trafficResetDay || 1}{translateText("日重置")}</span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell className="hidden min-w-[240px] lg:table-cell">
                           <div className="flex min-w-[220px] flex-wrap items-center gap-1.5 text-[11px] leading-none text-muted-foreground">
-                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">规则 {u.maxRules ? `${u.maxRules} 条` : "不限"}</span>
-                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">端口 {u.maxPorts ? `${u.maxPorts} 个` : "不限"}</span>
-                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">连接 {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
-                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">单 IP {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("规则 ")}{u.maxRules ? translateText("{0} 条", [u.maxRules]) : translateText("不限")}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("端口 ")}{u.maxPorts ? translateText("{0} 个", [u.maxPorts]) : translateText("不限")}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("连接 ")}{u.maxConnections ? `${u.maxConnections}` : translateText("不限")}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("单 IP ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
-                              <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">转发限速 {formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
+                              <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("转发限速 ")}{formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
                             )}
                           </div>
                         </TableCell>
@@ -1599,12 +1589,10 @@ function UsersContent() {
                               variant="outline"
                               size="sm"
                               className="h-8 gap-1 px-2 text-xs"
-                              title="流量与权限"
+                              title={translateText("流量与权限")}
                               onClick={() => openTrafficSettings(u)}
                             >
-                              <Pencil className="h-3.5 w-3.5" />
-                              编辑
-                            </Button>
+                              <Pencil className="h-3.5 w-3.5" />{translateText("编辑")}</Button>
                             {renderUserMoreMenu(u, "h-8 gap-1 rounded-md border border-border/50 px-2 text-xs")}
                           </div>
                         </TableCell>
@@ -1619,29 +1607,27 @@ function UsersContent() {
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <UsersIcon className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">暂无其他用户</p>
-              <p className="text-sm mt-1 text-muted-foreground/60">
-                点击"添加用户"按钮创建新用户
-              </p>
+              <p className="text-lg font-medium">{translateText("暂无其他用户")}</p>
+              <p className="text-sm mt-1 text-muted-foreground/60">{translateText("点击\"添加用户\"按钮创建新用户")}</p>
             </div>
           )}
         </CardContent>
       </Card>
       {!isLoading && users && users.length > 0 && (
-        <PersistentPagination pagination={userPagination} itemName="个用户" />
+        <PersistentPagination pagination={userPagination} itemName={translateText("个用户")} />
       )}
         </TabsContent>
 
         <TabsContent value="subscriptions" className="space-y-4 data-[state=inactive]:hidden">
           {subscriptionsLoading ? (
-            <DataSectionLoading label="正在加载订阅数据" minHeight="min-h-[240px]" />
+            <DataSectionLoading label={translateText("正在加载订阅数据")} minHeight="min-h-[240px]" />
           ) : visibleSubscriptions.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-border/50 bg-card/60 py-16 text-muted-foreground">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/30">
                 <Package className="h-7 w-7 opacity-40" />
               </div>
-              <p className="text-base font-medium">暂无用户订阅</p>
-              <p className="mt-1 text-sm text-muted-foreground/60">分配或购买套餐后会显示在这里。</p>
+              <p className="text-base font-medium">{translateText("暂无用户订阅")}</p>
+              <p className="mt-1 text-sm text-muted-foreground/60">{translateText("分配或购买套餐后会显示在这里。")}</p>
             </div>
           ) : (
             <>
@@ -1659,7 +1645,7 @@ function UsersContent() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-semibold">{userLabel({ username: sub.username, name: sub.name, id: sub.userId })}</p>
-                            <p className="mt-1 truncate text-xs text-muted-foreground">{sub.planName || `套餐 #${sub.planId}`}</p>
+                            <p className="mt-1 truncate text-xs text-muted-foreground">{sub.planName || translateText("套餐 #{0}", [sub.planId])}</p>
                           </div>
                           <Badge variant={active ? "default" : "secondary"} className="shrink-0 text-[10px]">
                             {subscriptionStatusLabel(sub.status)}
@@ -1668,37 +1654,37 @@ function UsersContent() {
 
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">来源</p>
+                            <p className="text-muted-foreground">{translateText("来源")}</p>
                             <p className="mt-1 truncate font-medium">{subscriptionSourceLabel(sub.source)}</p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">端口段</p>
+                            <p className="text-muted-foreground">{translateText("端口段")}</p>
                             <p className="mt-1 truncate font-medium tabular-nums">
                               {sub.portRangeStart && sub.portRangeEnd ? `${sub.portRangeStart}-${sub.portRangeEnd}` : "-"}
                             </p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">套餐额度</p>
-                            <p className="mt-1 break-words font-medium">{trafficLimit > 0 ? formatBytes(trafficLimit) : "不限"}</p>
+                            <p className="text-muted-foreground">{translateText("套餐额度")}</p>
+                            <p className="mt-1 break-words font-medium">{trafficLimit > 0 ? formatBytes(trafficLimit) : translateText("不限")}</p>
                           </div>
                           {purchasedAddonBytes > 0 && (
                             <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                              <p className="text-muted-foreground">已购附加流量</p>
+                              <p className="text-muted-foreground">{translateText("已购附加流量")}</p>
                               <p className="mt-1 break-words font-medium">{formatBytes(purchasedAddonBytes)}</p>
                             </div>
                           )}
                           {grantedAddonBytes > 0 && (
                             <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                              <p className="text-muted-foreground">管理员加赠</p>
+                              <p className="text-muted-foreground">{translateText("管理员加赠")}</p>
                               <p className="mt-1 break-words font-medium">{formatBytes(grantedAddonBytes)}</p>
                             </div>
                           )}
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">到期</p>
+                            <p className="text-muted-foreground">{translateText("到期")}</p>
                             <p className={`mt-1 truncate font-medium ${sub.expiresAt && !active ? "text-destructive" : ""}`}>{dateText(sub.expiresAt)}</p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                            <p className="text-muted-foreground">流量周期</p>
+                            <p className="text-muted-foreground">{translateText("流量周期")}</p>
                             <p className="mt-1 truncate font-medium">{billingDateTimeText(sub.nextTrafficResetAt)}</p>
                           </div>
                         </div>
@@ -1711,9 +1697,7 @@ function UsersContent() {
                             className="h-8 flex-1 px-2 text-xs sm:flex-none"
                             onClick={() => openAddonDialog(sub)}
                             disabled={!canAddAddon || adminAddTrafficAddonMutation.isPending}
-                          >
-                            加赠流量
-                          </Button>
+                          >{translateText("加赠流量")}</Button>
                           <Button
                             type="button"
                             variant="outline"
@@ -1721,9 +1705,7 @@ function UsersContent() {
                             className="h-8 flex-1 px-2 text-xs sm:flex-none"
                             onClick={() => openExtendDialog(sub)}
                             disabled={!canChangeExpiry || extendSubscriptionMutation.isPending}
-                          >
-                            更改到期
-                          </Button>
+                          >{translateText("更改到期")}</Button>
                           <Button
                             type="button"
                             variant="outline"
@@ -1731,16 +1713,14 @@ function UsersContent() {
                             className="h-8 flex-1 px-2 text-xs text-destructive hover:text-destructive sm:flex-none"
                             disabled={!active || cancelSubscriptionMutation.isPending}
                             onClick={() => openCancelSubscriptionDialog(sub)}
-                          >
-                            取消
-                          </Button>
+                          >{translateText("取消")}</Button>
                         </div>
                       </CardContent>
                     </Card>
                   );
                 })}
               </AutoAnimateContainer>
-              <PersistentPagination pagination={subscriptionPagination} itemName="条订阅" />
+              <PersistentPagination pagination={subscriptionPagination} itemName={translateText("条订阅")} />
             </>
           )}
         </TabsContent>
@@ -1749,44 +1729,44 @@ function UsersContent() {
       {/* Create User Dialog */}
       <Dialog open={showCreateUser} onOpenChange={setShowCreateUser}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>添加用户</DialogTitle>
-          <DialogDescription>创建系统用户。</DialogDescription>
+          <DialogTitle>{translateText("添加用户")}</DialogTitle>
+          <DialogDescription>{translateText("创建系统用户。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label htmlFor="create-username">用户名</Label>
+              <Label htmlFor="create-username">{translateText("用户名")}</Label>
               <Input
                 id="create-username"
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
-                placeholder="请输入用户名"
+                placeholder={translateText("请输入用户名")}
                 autoFocus
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="create-password">密码</Label>
+              <Label htmlFor="create-password">{translateText("密码")}</Label>
               <Input
                 id="create-password"
                 type="password"
                 value={newUserPassword}
                 onChange={(e) => setNewUserPassword(e.target.value)}
-                placeholder="请输入密码（至少6个字符）"
+                placeholder={translateText("请输入密码（至少6个字符）")}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="create-name">显示名称（可选）</Label>
+              <Label htmlFor="create-name">{translateText("显示名称（可选）")}</Label>
               <Input
                 id="create-name"
                 value={newUserName}
                 onChange={(e) => setNewUserName(e.target.value)}
-                placeholder="请输入显示名称"
+                placeholder={translateText("请输入显示名称")}
                 maxLength={24}
               />
             </div>
             <div className="space-y-2">
-              <Label>转发总开关</Label>
+              <Label>{translateText("转发总开关")}</Label>
               <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
                 <div className="min-w-0 pr-3">
-                  <p className="text-xs text-muted-foreground">关闭后不能创建或启用规则。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("关闭后不能创建或启用规则。")}</p>
                 </div>
                 <Switch
                   checked={newCanAddRules}
@@ -1796,11 +1776,9 @@ function UsersContent() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateUser(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowCreateUser(false)}>{translateText("取消")}</Button>
             <Button onClick={handleCreateUser} disabled={createUserMutation.isPending}>
-              {createUserMutation.isPending ? "创建中..." : "创建用户"}
+              {createUserMutation.isPending ? translateText("创建中...") : translateText("创建用户")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1809,41 +1787,41 @@ function UsersContent() {
       {/* Account Dialog */}
       <Dialog open={showResetPassword} onOpenChange={setShowResetPassword}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>账户信息</DialogTitle>
-          <DialogDescription>修改 "{resetUserName}" 的账号信息。</DialogDescription>
+          <DialogTitle>{translateText("账户信息")}</DialogTitle>
+          <DialogDescription>{translateText("修改 \"")}{resetUserName}{translateText("\" 的账号信息。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label htmlFor="reset-username">账号</Label>
+              <Label htmlFor="reset-username">{translateText("账号")}</Label>
               <Input
                 id="reset-username"
                 value={resetUsernameInput}
                 onChange={(e) => setResetUsernameInput(e.target.value)}
-                placeholder="请输入账号"
+                placeholder={translateText("请输入账号")}
                 autoFocus
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="reset-display-name">显示名称</Label>
+              <Label htmlFor="reset-display-name">{translateText("显示名称")}</Label>
               <Input
                 id="reset-display-name"
                 value={resetDisplayNameInput}
                 onChange={(e) => setResetDisplayNameInput(e.target.value)}
-                placeholder="请输入显示名称"
+                placeholder={translateText("请输入显示名称")}
                 maxLength={24}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="reset-password">新密码</Label>
+              <Label htmlFor="reset-password">{translateText("新密码")}</Label>
               <Input
                 id="reset-password"
                 type="password"
                 value={resetNewPassword}
                 onChange={(e) => setResetNewPassword(e.target.value)}
-                placeholder="留空不修改密码"
+                placeholder={translateText("留空不修改密码")}
               />
             </div>
             <div className="space-y-2">
-              <Label>用户头像</Label>
+              <Label>{translateText("用户头像")}</Label>
               <AvatarPicker
                 value={resetAvatarInput}
                 onChange={setResetAvatarInput}
@@ -1854,11 +1832,9 @@ function UsersContent() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowResetPassword(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowResetPassword(false)}>{translateText("取消")}</Button>
             <Button onClick={handleResetPassword} disabled={resetPasswordMutation.isPending}>
-              {resetPasswordMutation.isPending ? "保存中..." : "保存"}
+              {resetPasswordMutation.isPending ? translateText("保存中...") : translateText("保存")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1867,20 +1843,16 @@ function UsersContent() {
       {/* Reset Traffic Dialog */}
       <Dialog open={showResetTraffic} onOpenChange={setShowResetTraffic}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>重置流量统计</DialogTitle>
-          <DialogDescription>
-            确认重置 "{resetTrafficUserName}" 的套餐/分配流量和按量计费流量统计？已产生的扣费记录不会撤销。
-          </DialogDescription>
+          <DialogTitle>{translateText("重置流量统计")}</DialogTitle>
+          <DialogDescription>{translateText("确认重置 \"")}{resetTrafficUserName}{translateText("\" 的套餐/分配流量和按量计费流量统计？已产生的扣费记录不会撤销。")}</DialogDescription>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setShowResetTraffic(false)}
               disabled={resetTrafficMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button onClick={handleResetTraffic} disabled={resetTrafficMutation.isPending}>
-              {resetTrafficMutation.isPending ? "重置中..." : "确认重置"}
+              {resetTrafficMutation.isPending ? translateText("重置中...") : translateText("确认重置")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1888,24 +1860,20 @@ function UsersContent() {
 
       <Dialog open={showRemoveTwoFactor} onOpenChange={setShowRemoveTwoFactor}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>移除双因素认证</DialogTitle>
-          <DialogDescription>
-            确认移除 "{removeTwoFactorUserName}" 已绑定的 2FA？移除后该用户下次登录不再需要双因素验证码。
-          </DialogDescription>
+          <DialogTitle>{translateText("移除双因素认证")}</DialogTitle>
+          <DialogDescription>{translateText("确认移除 \"")}{removeTwoFactorUserName}{translateText("\" 已绑定的 2FA？移除后该用户下次登录不再需要双因素验证码。")}</DialogDescription>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setShowRemoveTwoFactor(false)}
               disabled={removeTwoFactorMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               variant="destructive"
               onClick={handleRemoveTwoFactor}
               disabled={removeTwoFactorMutation.isPending}
             >
-              {removeTwoFactorMutation.isPending ? "移除中..." : "确认移除"}
+              {removeTwoFactorMutation.isPending ? translateText("移除中...") : translateText("确认移除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1913,20 +1881,16 @@ function UsersContent() {
 
       <Dialog open={showDeleteUser} onOpenChange={setShowDeleteUser}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>删除用户</DialogTitle>
-          <DialogDescription>
-            确认删除用户 "{deleteUserName}"？该操作会移除该用户的权限配置，且不可撤销。
-          </DialogDescription>
+          <DialogTitle>{translateText("删除用户")}</DialogTitle>
+          <DialogDescription>{translateText("确认删除用户 \"")}{deleteUserName}{translateText("\"？该操作会移除该用户的权限配置，且不可撤销。")}</DialogDescription>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setShowDeleteUser(false)}
               disabled={deleteMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button variant="destructive" onClick={handleDeleteUser} disabled={deleteMutation.isPending}>
-              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+              {deleteMutation.isPending ? translateText("删除中...") : translateText("确认删除")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1934,27 +1898,25 @@ function UsersContent() {
 
       <Dialog open={showRecharge} onOpenChange={setShowRecharge}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>余额充值</DialogTitle>
-          <DialogDescription>给 "{rechargeUserName}" 增加余额。</DialogDescription>
+          <DialogTitle>{translateText("余额充值")}</DialogTitle>
+          <DialogDescription>{translateText("给 \"")}{rechargeUserName}{translateText("\" 增加余额。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>充值金额</Label>
+              <Label>{translateText("充值金额")}</Label>
               <Input
                 type="number"
                 min={0.01}
                 step="0.01"
                 value={rechargeAmount}
                 onChange={(e) => setRechargeAmount(e.target.value)}
-                placeholder="例如：50"
+                placeholder={translateText("例如：50")}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRecharge(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowRecharge(false)}>{translateText("取消")}</Button>
             <Button onClick={handleRecharge} disabled={adminRechargeMutation.isPending}>
-              {adminRechargeMutation.isPending ? "充值中..." : "确认充值"}
+              {adminRechargeMutation.isPending ? translateText("充值中...") : translateText("确认充值")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1962,27 +1924,25 @@ function UsersContent() {
 
       <Dialog open={showSetBalance} onOpenChange={setShowSetBalance}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>修改余额</DialogTitle>
-          <DialogDescription>直接设置 "{setBalanceUserName}" 的当前余额。</DialogDescription>
+          <DialogTitle>{translateText("修改余额")}</DialogTitle>
+          <DialogDescription>{translateText("直接设置 \"")}{setBalanceUserName}{translateText("\" 的当前余额。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>当前余额</Label>
+              <Label>{translateText("当前余额")}</Label>
               <Input
                 type="number"
                 min={0}
                 step="0.01"
                 value={setBalanceAmount}
                 onChange={(e) => setSetBalanceAmount(e.target.value)}
-                placeholder="例如：50"
+                placeholder={translateText("例如：50")}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSetBalance(false)} disabled={adminSetBalanceMutation.isPending}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowSetBalance(false)} disabled={adminSetBalanceMutation.isPending}>{translateText("取消")}</Button>
             <Button onClick={handleSetBalance} disabled={adminSetBalanceMutation.isPending}>
-              {adminSetBalanceMutation.isPending ? "修改中..." : "确认修改"}
+              {adminSetBalanceMutation.isPending ? translateText("修改中...") : translateText("确认修改")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1990,36 +1950,34 @@ function UsersContent() {
 
       <Dialog open={showSendEmail} onOpenChange={setShowSendEmail}>
         <DialogContent className="sm:max-w-lg">
-          <DialogTitle>发送邮件</DialogTitle>
-          <DialogDescription>发送给用户 "{emailUserName}" 的已验证邮箱：{emailTo}</DialogDescription>
+          <DialogTitle>{translateText("发送邮件")}</DialogTitle>
+          <DialogDescription>{translateText("发送给用户 \"")}{emailUserName}{translateText("\" 的已验证邮箱：")}{emailTo}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>邮件标题</Label>
+              <Label>{translateText("邮件标题")}</Label>
               <Input
                 value={emailSubject}
                 maxLength={120}
                 onChange={(e) => setEmailSubject(e.target.value)}
-                placeholder="请输入邮件标题"
+                placeholder={translateText("请输入邮件标题")}
               />
             </div>
             <div className="space-y-2">
-              <Label>邮件内容</Label>
+              <Label>{translateText("邮件内容")}</Label>
               <textarea
                 value={emailContent}
                 maxLength={4000}
                 onChange={(e) => setEmailContent(e.target.value)}
-                placeholder="请输入邮件内容"
+                placeholder={translateText("请输入邮件内容")}
                 className="flex min-h-40 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               />
               <p className="text-right text-xs text-muted-foreground">{emailContent.length}/4000</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSendEmail(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowSendEmail(false)}>{translateText("取消")}</Button>
             <Button onClick={handleSendEmail} disabled={sendEmailMutation.isPending}>
-              {sendEmailMutation.isPending ? "发送中..." : "发送邮件"}
+              {sendEmailMutation.isPending ? translateText("发送中...") : translateText("发送邮件")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2027,13 +1985,11 @@ function UsersContent() {
 
       <Dialog open={showAddonDialog} onOpenChange={setShowAddonDialog}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>加赠本周期流量</DialogTitle>
-          <DialogDescription>
-            给 "{addonUserName}" 的 {addonSubscriptionLabel || "当前套餐"} 增加仅本周期有效的流量。
-          </DialogDescription>
+          <DialogTitle>{translateText("加赠本周期流量")}</DialogTitle>
+          <DialogDescription>{translateText("给 \"")}{addonUserName}{translateText("\" 的 ")}{addonSubscriptionLabel || translateText("当前套餐")}{translateText(" 增加仅本周期有效的流量。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>加赠流量</Label>
+              <Label>{translateText("加赠流量")}</Label>
               <div className="flex items-center gap-2">
                 <Input
                   type="number"
@@ -2042,19 +1998,17 @@ function UsersContent() {
                   step="0.01"
                   value={addonTrafficGB}
                   onChange={(e) => setAddonTrafficGB(e.target.value)}
-                  placeholder="例如：50"
+                  placeholder={translateText("例如：50")}
                 />
                 <span className="shrink-0 text-sm text-muted-foreground">GB</span>
               </div>
-              <p className="text-xs text-muted-foreground">附加流量会在当前套餐流量周期结束或订阅到期时自动失效。</p>
+              <p className="text-xs text-muted-foreground">{translateText("附加流量会在当前套餐流量周期结束或订阅到期时自动失效。")}</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAddonDialog(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowAddonDialog(false)}>{translateText("取消")}</Button>
             <Button onClick={handleAdminAddTrafficAddon} disabled={adminAddTrafficAddonMutation.isPending}>
-              {adminAddTrafficAddonMutation.isPending ? "加赠中..." : "确认加赠"}
+              {adminAddTrafficAddonMutation.isPending ? translateText("加赠中...") : translateText("确认加赠")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2062,30 +2016,26 @@ function UsersContent() {
 
       <Dialog open={showExtendDialog} onOpenChange={setShowExtendDialog}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>更改到期时间</DialogTitle>
-          <DialogDescription>给 "{extendSubscriptionLabel}" 设置订阅到期时间。</DialogDescription>
+          <DialogTitle>{translateText("更改到期时间")}</DialogTitle>
+          <DialogDescription>{translateText("给 \"")}{extendSubscriptionLabel}{translateText("\" 设置订阅到期时间。")}</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>到期日期</Label>
+              <Label>{translateText("到期日期")}</Label>
               <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                 <DatePickerInput
                   value={extendExpiresAtInput}
                   onChange={setExtendExpiresAtInput}
-                  placeholder="永久有效"
+                  placeholder={translateText("永久有效")}
                 />
-                <Button type="button" variant="outline" className="h-8 px-3" onClick={() => setExtendExpiresAtInput("")}>
-                  永久有效
-                </Button>
+                <Button type="button" variant="outline" className="h-8 px-3" onClick={() => setExtendExpiresAtInput("")}>{translateText("永久有效")}</Button>
               </div>
-              <p className="text-xs text-muted-foreground">留空表示永久有效。</p>
+              <p className="text-xs text-muted-foreground">{translateText("留空表示永久有效。")}</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowExtendDialog(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowExtendDialog(false)}>{translateText("取消")}</Button>
             <Button onClick={handleExtendSubscription} disabled={extendSubscriptionMutation.isPending}>
-              {extendSubscriptionMutation.isPending ? "保存中..." : "保存"}
+              {extendSubscriptionMutation.isPending ? translateText("保存中...") : translateText("保存")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2104,27 +2054,21 @@ function UsersContent() {
         }}
       >
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>取消订阅</DialogTitle>
-          <DialogDescription>
-            确认取消 "{cancelSubscriptionLabel}" 的 {cancelSubscriptionPlanLabel || "当前套餐"} 订阅？
-          </DialogDescription>
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-muted-foreground">
-            取消后该订阅会立即停止生效，关联的本周期附加流量也会失效。用户账户和历史记录不会被删除。
-          </div>
+          <DialogTitle>{translateText("取消订阅")}</DialogTitle>
+          <DialogDescription>{translateText("确认取消 \"")}{cancelSubscriptionLabel}{translateText("\" 的 ")}{cancelSubscriptionPlanLabel || translateText("当前套餐")}{translateText(" 订阅？")}</DialogDescription>
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-muted-foreground">{translateText("取消后该订阅会立即停止生效，关联的本周期附加流量也会失效。用户账户和历史记录不会被删除。")}</div>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setShowCancelSubscriptionDialog(false)}
               disabled={cancelSubscriptionMutation.isPending}
-            >
-              取消
-            </Button>
+            >{translateText("取消")}</Button>
             <Button
               variant="destructive"
               onClick={handleCancelSubscription}
               disabled={!cancelSubscriptionId || cancelSubscriptionMutation.isPending}
             >
-              {cancelSubscriptionMutation.isPending ? "取消中..." : "确认取消"}
+              {cancelSubscriptionMutation.isPending ? translateText("取消中...") : translateText("确认取消")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2133,88 +2077,88 @@ function UsersContent() {
       {/* Traffic & Permission Settings Dialog */}
       <Dialog open={showTrafficSettings} onOpenChange={setShowTrafficSettings}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
-          <DialogTitle>流量与权限设置</DialogTitle>
-          <DialogDescription>
-            设置 "{trafficUserName}" 的管理员额外配额和权限；套餐权益在订阅管理中单独体现。
-          </DialogDescription>
+          <DialogTitle>{translateText("流量与权限设置")}</DialogTitle>
+          <DialogDescription>{translateText("设置 \"")}{trafficUserName}{translateText("\" 的管理员额外配额和权限；套餐权益在订阅管理中单独体现。")}</DialogDescription>
           <Tabs defaultValue="permission" className="flex-1 min-h-0 flex flex-col">
-            <TabsList className="grid grid-cols-3 w-full">
-              <TabsTrigger value="permission" className="gap-1.5">
-                <Shield className="h-3.5 w-3.5" />
-                <span>权限</span>
-              </TabsTrigger>
-              <TabsTrigger value="traffic" className="gap-1.5">
-                <Database className="h-3.5 w-3.5" />
-                <span>流量</span>
-              </TabsTrigger>
-              <TabsTrigger value="hosts" className="gap-1.5">
-                <Server className="h-3.5 w-3.5" />
-                <span>授权</span>
-              </TabsTrigger>
-            </TabsList>
+            <div className="shrink-0 min-w-0 overflow-x-auto pb-1">
+              <TabsList className="w-max min-w-full flex-nowrap [&>[role=tab]]:shrink-0 [&>[role=tab]]:whitespace-nowrap">
+                <TabsTrigger value="permission" className="gap-1.5">
+                  <Shield className="h-3.5 w-3.5" />
+                  <span>{translateText("权限")}</span>
+                </TabsTrigger>
+                <TabsTrigger value="traffic" className="gap-1.5">
+                  <Database className="h-3.5 w-3.5" />
+                  <span>{translateText("流量")}</span>
+                </TabsTrigger>
+                <TabsTrigger value="hosts" className="gap-1.5">
+                  <Server className="h-3.5 w-3.5" />
+                  <span>{translateText("授权")}</span>
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
             {/* 权限标签页 */}
             <TabsContent value="permission" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2 space-y-2">
                   <div className="flex items-center justify-between gap-3">
-                    <Label>用户备注</Label>
+                    <Label>{translateText("用户备注")}</Label>
                     <span className="text-xs text-muted-foreground">{trafficDisplayRemark.trim().length}/24</span>
                   </div>
                   <Input
                     value={trafficDisplayRemark}
                     maxLength={24}
                     onChange={(e) => setTrafficDisplayRemark(e.target.value.slice(0, 24))}
-                    placeholder="可选，留空则不显示"
+                    placeholder={translateText("可选，留空则不显示")}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>最大规则数</Label>
+                  <Label>{translateText("最大规则数")}</Label>
                   <Input
                     type="number"
                     value={maxRules || ""}
                     onChange={(e) => setMaxRules(parseInt(e.target.value) || 0)}
-                    placeholder="0=不限制"
+                    placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                  <p className="text-xs text-muted-foreground">{translateText("0 或留空表示不限制")}</p>
                 </div>
                 <div className="space-y-2">
-                  <Label>最大端口数</Label>
+                  <Label>{translateText("最大端口数")}</Label>
                   <Input
                     type="number"
                     value={maxPorts || ""}
                     onChange={(e) => setMaxPorts(parseInt(e.target.value) || 0)}
-                    placeholder="0=不限制"
+                    placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                  <p className="text-xs text-muted-foreground">{translateText("0 或留空表示不限制")}</p>
                 </div>
                 <div className="space-y-2">
-                  <Label>最大连接数</Label>
+                  <Label>{translateText("最大连接数")}</Label>
                   <Input
                     type="number"
                     min={0}
                     value={maxConnections || ""}
                     onChange={(e) => setMaxConnections(parseInt(e.target.value) || 0)}
-                    placeholder="0=不限制"
+                    placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">按主机或隧道聚合。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("按主机或隧道聚合。")}</p>
                 </div>
                 <div className="space-y-2">
-                  <Label>单 IP 接入限制</Label>
+                  <Label>{translateText("单 IP 接入限制")}</Label>
                   <Input
                     type="number"
                     min={0}
                     value={maxIPs || ""}
                     onChange={(e) => setMaxIPs(parseInt(e.target.value) || 0)}
-                    placeholder="0=不限制"
+                    placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">同一主机或同一隧道下，多条规则共享这个单 IP 接入上限。</p>
+                  <p className="text-xs text-muted-foreground">{translateText("同一主机或同一隧道下，多条规则共享这个单 IP 接入上限。")}</p>
                 </div>
               </div>
               <Separator />
               <div className="space-y-2">
-                <Label className="text-sm font-medium">允许使用的转发方式</Label>
-                <p className="text-xs text-muted-foreground">全部关闭则禁止转发。</p>
+                <Label className="text-sm font-medium">{translateText("允许使用的转发方式")}</Label>
+                <p className="text-xs text-muted-foreground">{translateText("全部关闭则禁止转发。")}</p>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
                   <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
                     <span className="min-w-0 truncate text-xs font-medium">iptables</span>
@@ -2244,9 +2188,7 @@ function UsersContent() {
             <TabsContent value="traffic" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <div className="space-y-2">
                 <Label className="flex items-center gap-1.5 text-sm">
-                  <Database className="h-3.5 w-3.5" />
-                  流量限额
-                </Label>
+                  <Database className="h-3.5 w-3.5" />{translateText("流量限额")}</Label>
                 <div className="flex items-center gap-2">
                   <Input
                     type="number"
@@ -2260,9 +2202,7 @@ function UsersContent() {
                   />
                   <span className="text-sm text-muted-foreground select-none">GB</span>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  单位 GB，0 表示不限。
-                </p>
+                <p className="text-xs text-muted-foreground">{translateText("单位 GB，0 表示不限。")}</p>
               </div>
 
               <Separator />
@@ -2270,15 +2210,11 @@ function UsersContent() {
               <div className="space-y-3 rounded-lg border border-border/50 bg-muted/20 p-3">
                 <div className="space-y-1">
                   <Label className="flex items-center gap-1.5 text-sm">
-                    <Gauge className="h-3.5 w-3.5" />
-                    转发限速
-                  </Label>
-                  <p className="text-xs text-muted-foreground">
-                    对普通端口转发和隧道入口的上下行同时生效。
-                  </p>
+                    <Gauge className="h-3.5 w-3.5" />{translateText("转发限速")}</Label>
+                  <p className="text-xs text-muted-foreground">{translateText("对普通端口转发和隧道入口的上下行同时生效。")}</p>
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-xs">最大速度</Label>
+                  <Label className="text-xs">{translateText("最大速度")}</Label>
                   <div className="flex items-center gap-2">
                     <Input
                       type="number"
@@ -2296,24 +2232,20 @@ function UsersContent() {
                     <span className="text-xs text-muted-foreground select-none whitespace-nowrap">Mbps</span>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新转发配置时生效。</p>
+                <p className="text-xs text-muted-foreground">{translateText("填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新转发配置时生效。")}</p>
               </div>
 
               <Separator />
 
               <div className="space-y-2">
                 <Label className="flex items-center gap-1.5 text-sm">
-                  <CalendarClock className="h-3.5 w-3.5" />
-                  到期日期
-                </Label>
+                  <CalendarClock className="h-3.5 w-3.5" />{translateText("到期日期")}</Label>
                 <DatePickerInput
                   value={expiresAtInput}
                   onChange={setExpiresAtInput}
-                  placeholder="永久有效"
+                  placeholder={translateText("永久有效")}
                 />
-                <p className="text-xs text-muted-foreground">
-                  留空表示永久有效。
-                </p>
+                <p className="text-xs text-muted-foreground">{translateText("留空表示永久有效。")}</p>
               </div>
 
               <Separator />
@@ -2322,10 +2254,8 @@ function UsersContent() {
                 <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
                   <div className="min-w-0 pr-3">
                     <p className="text-sm font-medium flex items-center gap-1.5">
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      启用月度自动重置
-                    </p>
-                    <p className="text-xs text-muted-foreground">每月自动清零已用流量。</p>
+                      <RotateCcw className="h-3.5 w-3.5" />{translateText("启用月度自动重置")}</p>
+                    <p className="text-xs text-muted-foreground">{translateText("每月自动清零已用流量。")}</p>
                   </div>
                   <Switch
                     checked={trafficAutoReset}
@@ -2341,7 +2271,7 @@ function UsersContent() {
                 </div>
                 {trafficAutoReset && (
                   <div className="space-y-2 pt-1">
-                    <Label>重置日期（每月第几天）</Label>
+                    <Label>{translateText("重置日期（每月第几天）")}</Label>
                     <Select
                       value={String(trafficResetDay)}
                       onValueChange={(v) => setTrafficResetDay(parseInt(v))}
@@ -2351,16 +2281,12 @@ function UsersContent() {
                       </SelectTrigger>
                       <SelectContent>
                         {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
-                          <SelectItem key={d} value={String(d)}>
-                            每月 {d} 日
-                            {d === currentBillingResetDay() ? "（今日）" : ""}
+                          <SelectItem key={d} value={String(d)}>{translateText("每月 ")}{d}{translateText(" 日")}{d === currentBillingResetDay() ? translateText("（今日）") : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">
-                      默认以启用当天作为重置日，可修改为每月 1–28 号中任意一天
-                    </p>
+                    <p className="text-xs text-muted-foreground">{translateText("默认以启用当天作为重置日，可修改为每月 1–28 号中任意一天")}</p>
                   </div>
                 )}
               </div>
@@ -2368,18 +2294,16 @@ function UsersContent() {
 
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
-              <p className="text-xs text-muted-foreground">
-                默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道、网络测试主机和计费资源。
-              </p>
+              <p className="text-xs text-muted-foreground">{translateText("默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道、网络测试主机和计费资源。")}</p>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">端口转发授权</Label>
-                  <Badge variant="outline" className="text-[10px]">{selectedAllowedPortForwards.length} 条</Badge>
+                  <Label className="text-sm font-medium">{translateText("端口转发授权")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{selectedAllowedPortForwards.length}{translateText(" 条")}</Badge>
                 </div>
                 <Select value={addAllowedPortForwardId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedPortForwards.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedPortForwards.length ? "选择要授权的端口转发" : "暂无可添加端口转发"} />
+                    <SelectValue placeholder={availableAllowedPortForwards.length ? translateText("选择要授权的端口转发") : translateText("暂无可添加端口转发")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableAllowedPortForwards.map((group: any) => (
@@ -2402,7 +2326,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setAllowedForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2411,9 +2335,7 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权端口转发，可从上方选择添加。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权端口转发，可从上方选择添加。")}</p>
                 )}
               </div>
 
@@ -2421,12 +2343,12 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">转发链/转发组授权</Label>
-                  <Badge variant="outline" className="text-[10px]">{selectedAllowedChainAndFailoverGroups.length} 条</Badge>
+                  <Label className="text-sm font-medium">{translateText("转发链/转发组授权")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{selectedAllowedChainAndFailoverGroups.length}{translateText(" 条")}</Badge>
                 </div>
                 <Select value={addAllowedForwardGroupId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedChainAndFailoverGroups.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedChainAndFailoverGroups.length ? "选择要授权的转发链或转发组" : "暂无可添加转发链或转发组"} />
+                    <SelectValue placeholder={availableAllowedChainAndFailoverGroups.length ? translateText("选择要授权的转发链或转发组") : translateText("暂无可添加转发链或转发组")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableAllowedChainAndFailoverGroups.map((group: any) => (
@@ -2450,7 +2372,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setAllowedForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2459,9 +2381,7 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权转发链或转发组，可从上方选择添加。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权转发链或转发组，可从上方选择添加。")}</p>
                 )}
               </div>
 
@@ -2469,12 +2389,12 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">隧道转发</Label>
-                  <Badge variant="outline" className="text-[10px]">{allowedTunnelIds.length} 条</Badge>
+                  <Label className="text-sm font-medium">{translateText("隧道转发")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedTunnelIds.length}{translateText(" 条")}</Badge>
                 </div>
                 <Select value={addAllowedTunnelId} onValueChange={addTunnelPermission} disabled={!availableAllowedTunnels.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedTunnels.length ? "选择要授权的隧道" : "暂无可添加隧道"} />
+                    <SelectValue placeholder={availableAllowedTunnels.length ? translateText("选择要授权的隧道") : translateText("暂无可添加隧道")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableAllowedTunnels.map((t: any) => (
@@ -2502,7 +2422,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setAllowedTunnelIds(prev => prev.filter(id => id !== Number(t.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2511,9 +2431,7 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权隧道，可从上方选择添加。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权隧道，可从上方选择添加。")}</p>
                 )}
               </div>
 
@@ -2521,15 +2439,13 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">网络测试主机授权</Label>
-                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
+                  <Label className="text-sm font-medium">{translateText("网络测试主机授权")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length}{translateText(" 台")}</Badge>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  网络测试会展示用户自己创建、通过主机授权或套餐授权获得的主机；这里用于手动增加授权。端口转发、转发链或转发组的成员主机不会因此单独展示。
-                </p>
+                <p className="text-xs text-muted-foreground">{translateText("网络测试会展示用户自己创建、通过主机授权或套餐授权获得的主机；这里用于手动增加授权。端口转发、转发链或转发组的成员主机不会因此单独展示。")}</p>
                 <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权用于网络测试的主机" : "暂无可添加网络测试主机"} />
+                    <SelectValue placeholder={availableAllowedHosts.length ? translateText("选择要授权用于网络测试的主机") : translateText("暂无可添加网络测试主机")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableAllowedHosts.map((host: any) => (
@@ -2549,7 +2465,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(host.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2558,9 +2474,7 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未额外授权网络测试主机。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未额外授权网络测试主机。")}</p>
                 )}
               </div>
 
@@ -2568,17 +2482,17 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">流量计费转发资源</Label>
-                  <Badge variant="outline" className="text-[10px]">{trafficBillingForwardGroupIds.length} 个</Badge>
+                  <Label className="text-sm font-medium">{translateText("流量计费转发资源")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingForwardGroupIds.length}{translateText(" 个")}</Badge>
                 </div>
                 <Select value={addBillingForwardGroupId} onValueChange={addTrafficBillingForwardGroup} disabled={!availableBillingForwardGroups.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableBillingForwardGroups.length ? "选择要授权的计费转发资源" : "暂无可添加计费转发资源"} />
+                    <SelectValue placeholder={availableBillingForwardGroups.length ? translateText("选择要授权的计费转发资源") : translateText("暂无可添加计费转发资源")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableBillingForwardGroups.map((group: any) => (
                       <SelectItem key={group.id} value={String(group.id)}>
-                        {group.name || `转发资源 #${group.id}`} · {forwardGroupAuthLabel(group)}
+                        {group.name || translateText("转发资源 #{0}", [group.id])} · {forwardGroupAuthLabel(group)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2589,11 +2503,11 @@ function UsersContent() {
                       <div key={group.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium">{group.name || `转发资源 #${group.id}`}</span>
+                            <span className="truncate text-sm font-medium">{group.name || translateText("转发资源 #{0}", [group.id])}</span>
                             <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{forwardGroupAuthLabel(group)}</Badge>
                           </div>
                           <p className="truncate text-[10px] text-muted-foreground">
-                            {(group.members || []).length ? `${group.members.length} 成员` : "链路管理资源"}
+                            {(group.members || []).length ? translateText("{0} 成员", [group.members.length]) : translateText("链路管理资源")}
                           </p>
                         </div>
                         <Button
@@ -2601,7 +2515,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setTrafficBillingForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2610,20 +2524,18 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权计费转发资源，可从上方选择添加。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权计费转发资源，可从上方选择添加。")}</p>
                 )}
               </div>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">历史计费主机</Label>
-                  <Badge variant="outline" className="text-[10px]">{trafficBillingHostIds.length} 台</Badge>
+                  <Label className="text-sm font-medium">{translateText("历史计费主机")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingHostIds.length}{translateText(" 台")}</Badge>
                 </div>
                 <Select value={addBillingHostId} onValueChange={addTrafficBillingHost} disabled={!availableBillingHosts.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableBillingHosts.length ? "选择要授权的历史计费主机" : "暂无可添加历史计费主机"} />
+                    <SelectValue placeholder={availableBillingHosts.length ? translateText("选择要授权的历史计费主机") : translateText("暂无可添加历史计费主机")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableBillingHosts.map((h: any) => (
@@ -2646,7 +2558,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setTrafficBillingHostIds(prev => prev.filter(id => id !== Number(h.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2655,20 +2567,18 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权历史计费主机。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权历史计费主机。")}</p>
                 )}
               </div>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">流量计费隧道</Label>
-                  <Badge variant="outline" className="text-[10px]">{trafficBillingTunnelIds.length} 条</Badge>
+                  <Label className="text-sm font-medium">{translateText("流量计费隧道")}</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingTunnelIds.length}{translateText(" 条")}</Badge>
                 </div>
                 <Select value={addBillingTunnelId} onValueChange={addTrafficBillingTunnel} disabled={!availableBillingTunnels.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableBillingTunnels.length ? "选择要授权计费的隧道" : "暂无可添加计费隧道"} />
+                    <SelectValue placeholder={availableBillingTunnels.length ? translateText("选择要授权计费的隧道") : translateText("暂无可添加计费隧道")} />
                   </SelectTrigger>
                   <SelectContent>
                     {availableBillingTunnels.map((t: any) => (
@@ -2696,7 +2606,7 @@ function UsersContent() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0"
-                          title="移除授权"
+                          title={translateText("移除授权")}
                           onClick={() => setTrafficBillingTunnelIds(prev => prev.filter(id => id !== Number(t.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2705,19 +2615,15 @@ function UsersContent() {
                     ))}
                   </AutoAnimateContainer>
                 ) : (
-                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权计费隧道，可从上方选择添加。
-                  </p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">{translateText("暂未授权计费隧道，可从上方选择添加。")}</p>
                 )}
               </div>
             </TabsContent>
           </Tabs>
           <DialogFooter className="shrink-0">
-            <Button variant="outline" onClick={() => setShowTrafficSettings(false)}>
-              取消
-            </Button>
+            <Button variant="outline" onClick={() => setShowTrafficSettings(false)}>{translateText("取消")}</Button>
             <Button onClick={handleSaveTrafficSettings} disabled={updateTrafficMutation.isPending || permissionDataLoading}>
-              {updateTrafficMutation.isPending ? "保存中..." : permissionDataLoading ? "权限加载中..." : "保存设置"}
+              {updateTrafficMutation.isPending ? translateText("保存中...") : permissionDataLoading ? translateText("权限加载中...") : translateText("保存设置")}
             </Button>
           </DialogFooter>
         </DialogContent>

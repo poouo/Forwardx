@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { extractReleaseSection } from "./extract-release-notes.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => fs.readFileSync(new URL(path, root), "utf8");
@@ -8,6 +9,7 @@ const versionsTs = read("shared/versions.ts");
 const agentMain = read("agent/main.go");
 const fxpMain = read("forwardx-fxp/main.go");
 const changelog = read("CHANGELOG.md");
+const englishChangelog = read("CHANGELOG.en.md");
 
 const findTsConst = (name) => {
   const match = versionsTs.match(new RegExp(`export const ${name}\\s*=\\s*["']([^"']+)["']`));
@@ -17,6 +19,7 @@ const findTsConst = (name) => {
 
 const appVersion = findTsConst("APP_VERSION");
 const androidAppVersion = findTsConst("ANDROID_APP_VERSION");
+const iosAppVersion = findTsConst("IOS_APP_VERSION");
 const androidApkReleaseVersion = findTsConst("ANDROID_APK_RELEASE_VERSION");
 const agentVersion = findTsConst("AGENT_VERSION");
 const agentMainVersion = agentMain.match(/var Version\s*=\s*"([^"]+)"/)?.[1];
@@ -57,6 +60,15 @@ const releaseTag = (
 ).trim();
 
 const errors = [];
+try {
+  const englishSection = extractReleaseSection(englishChangelog, appVersion, "CHANGELOG.en.md");
+  const englishFxpVersion = englishSection.match(fxpVersionPattern)?.[1];
+  if (!englishFxpVersion || englishFxpVersion !== fxpRuntimeVersion) {
+    errors.push("English changelog must declare the current ForwardX FXP runtime version");
+  }
+} catch (error) {
+  errors.push(error instanceof Error ? error.message : "English changelog validation failed");
+}
 if (pkg.version !== appVersion) {
   errors.push(`package.json version ${pkg.version} does not match APP_VERSION ${appVersion}`);
 }
@@ -77,6 +89,7 @@ if (appVersion === agentVersion) {
 for (const [name, version] of [
   ["APP_VERSION", appVersion],
   ["ANDROID_APP_VERSION", androidAppVersion],
+  ["IOS_APP_VERSION", iosAppVersion],
   ["ANDROID_APK_RELEASE_VERSION", androidApkReleaseVersion],
   ["AGENT_VERSION", agentVersion],
 ]) {
@@ -105,4 +118,4 @@ if (errors.length) {
   process.exit(1);
 }
 
-console.log(`versions ok: panel=${appVersion} android=${androidAppVersion} apkRelease=${androidApkReleaseVersion} agent=${agentVersion} fxp=${fxpRuntimeVersion}${releaseTag ? ` tag=${releaseTag}` : ""}`);
+console.log(`versions ok: panel=${appVersion} android=${androidAppVersion} ios=${iosAppVersion} apkRelease=${androidApkReleaseVersion} agent=${agentVersion} fxp=${fxpRuntimeVersion}${releaseTag ? ` tag=${releaseTag}` : ""}`);

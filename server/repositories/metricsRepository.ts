@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, isNull, notInArray, sql } from "drizzle-orm";
 import {
   hostMetrics, InsertHostMetric,
   trafficStats, InsertTrafficStat,
@@ -20,6 +20,8 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { notifyTunnelLatencyRefresh } from "../tunnelLatencyRefresh";
 import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
 import { reconcileHostTrafficPolicy } from "../hostTrafficPolicy";
+import { getProbeCounterStatistics } from "./probeCounterRepository";
+import { SELF_TEST_MAX_LIFETIME_SECONDS } from "../selfTestTiming";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -2481,7 +2483,12 @@ export async function insertTunnelLatencyStat(
   } else if (!options.preserveMessage) {
     updates.lastTestMessage = null;
   }
-  await db.update(tunnels).set(updates).where(eq(tunnels.id, stat.tunnelId));
+  // Periodic health samples remain in history, but cannot complete a manual
+  // batch or leave its pending details attached to a periodic "success".
+  await db.update(tunnels).set(updates).where(and(
+    eq(tunnels.id, stat.tunnelId),
+    ...(options.preserveMessage ? [or(isNull(tunnels.lastTestStatus), notInArray(tunnels.lastTestStatus, ["pending", "running"]))] : []),
+  ));
 }
 
 export async function getLatestTunnelLatencies(tunnelIds: number[]) {
@@ -2919,6 +2926,30 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
   }));
 }
 
+/** Resolve the same active series as the latency chart, without manufacturing
+ * failed probes for unreported child rules or reusing cached tunnel samples. */
+export async function getTcpingProbeStatisticsByRule(ruleId: number, since: Date) {
+  const db = await getDb();
+  if (!db) return getProbeCounterStatistics("rule", [], since);
+  const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
+  if (chainGroupId) return getProbeCounterStatistics("forwardGroup", chainGroupId, since);
+  const children = await db.select({
+    id: forwardRules.id, groupId: forwardRules.forwardGroupId,
+    parentId: forwardRules.forwardGroupRuleId, memberId: forwardRules.forwardGroupMemberId,
+  }).from(forwardRules).where(and(eq(forwardRules.forwardGroupRuleId, ruleId), eq(forwardRules.pendingDelete, false)))
+    .orderBy(asc(forwardRules.id));
+  if (!children.length) return getProbeCounterStatistics("rule", ruleId, since);
+  const modes = await getForwardGroupModeMap(children.map((row: any) => Number(row.groupId || 0)));
+  const chain = children.filter((row: any) => modes.get(Number(row.groupId)) === "chain");
+  if (chain.length) return getProbeCounterStatistics("forwardGroup", Number(chain[0].groupId), since);
+  const groupId = Number(children[0].groupId);
+  const [active, first] = await Promise.all([getActiveMemberByGroup([groupId]), getFirstEnabledMemberByGroup([groupId])]);
+  const selected = selectPreferredForwardGroupLatencyChild(children.map((row: any) => ({
+    id: Number(row.id), groupId: Number(row.groupId), memberId: Number(row.memberId),
+  })), [Number(active.get(groupId) || 0), Number(first.get(groupId)?.id || 0)]);
+  return getProbeCounterStatistics("rule", selected?.id || ruleId, since);
+}
+
 /** Clean expired TCPing data, keeping the most recent N hours. */
 export async function cleanOldTcpingStats(retainHours: number = 72) {
   const db = await getDb();
@@ -2926,6 +2957,7 @@ export async function cleanOldTcpingStats(retainHours: number = 72) {
   const cutoff = retentionCutoffSeconds(retainHours);
   await deleteExpiredHistoryRows("tcping_stats", "recordedAt", cutoff);
   await deleteExpiredHistoryRows("forward_group_latency_stats", "recordedAt", cutoff);
+  await deleteExpiredHistoryRows("probe_counter_snapshots", "recordedAt", cutoff);
 }
 
 export async function cleanOldTunnelLatencyStats(retainHours: number = 72) {
@@ -2940,6 +2972,8 @@ export type TimedOutForwardTest = {
   ruleId: number;
   hostId: number;
   message: string | null;
+  requestMessage?: string | null;
+  batchId?: string | null;
   timeoutSeconds?: number;
 };
 
@@ -2947,6 +2981,7 @@ type ActiveForwardTestCandidate = TimedOutForwardTest & {
   status: string;
   createdAt: number;
   updatedAt: number;
+  firstDispatchedAt?: number | null;
 };
 
 export async function timeoutStaleForwardTests(
@@ -2961,11 +2996,13 @@ export async function timeoutStaleForwardTests(
   const baseCutoffSec = Math.floor((nowMs - baseTimeoutSeconds * 1000) / 1000);
   const candidates = await queryRaw<ActiveForwardTestCandidate>(
     `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")},
+            ${quoteIdentifier("requestMessage")}, ${quoteIdentifier("batchId")}, ${quoteIdentifier("firstDispatchedAt")},
             ${quoteIdentifier("status")}, ${quoteIdentifier("createdAt")}, ${quoteIdentifier("updatedAt")}
      FROM ${quoteIdentifier("forward_tests")}
      WHERE (${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
-        OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?)`,
-    [baseCutoffSec, baseCutoffSec],
+        OR (${quoteIdentifier("status")} = 'running' AND COALESCE(${quoteIdentifier("firstDispatchedAt")}, ${quoteIdentifier("updatedAt")}) < ?)
+        OR (${quoteIdentifier("status")} IN ('pending', 'running') AND ${quoteIdentifier("createdAt")} < ?)`,
+    [baseCutoffSec, baseCutoffSec, nowSec - SELF_TEST_MAX_LIFETIME_SECONDS],
   );
   if (candidates.length === 0) return [];
 
@@ -2978,10 +3015,11 @@ export async function timeoutStaleForwardTests(
       ? Math.max(baseTimeoutSeconds, Math.floor(requestedTimeout))
       : baseTimeoutSeconds;
     const referenceSec = String(candidate.status) === "running"
-      ? Number(candidate.updatedAt)
+      ? Number(candidate.firstDispatchedAt ?? candidate.updatedAt)
       : Number(candidate.createdAt);
     const cutoffSec = Math.floor((nowMs - effectiveTimeout * 1000) / 1000);
-    if (!Number.isFinite(referenceSec) || referenceSec >= cutoffSec) continue;
+    const lifetimeExceeded = Number(candidate.createdAt) < nowSec - SELF_TEST_MAX_LIFETIME_SECONDS;
+    if (!lifetimeExceeded && (!Number.isFinite(referenceSec) || referenceSec >= cutoffSec)) continue;
     timeoutById.set(id, effectiveTimeout);
   }
   if (timeoutById.size === 0) return [];
@@ -3000,15 +3038,16 @@ export async function timeoutStaleForwardTests(
            ${quoteIdentifier("updatedAt")} = ?
        WHERE ${quoteIdentifier("id")} = ?
          AND ((${quoteIdentifier("status")} = 'pending' AND ${quoteIdentifier("createdAt")} < ?)
-           OR (${quoteIdentifier("status")} = 'running' AND ${quoteIdentifier("updatedAt")} < ?))`,
-      [effectiveTimeout, nowSec, id, cutoffSec, cutoffSec],
+           OR (${quoteIdentifier("status")} = 'running' AND COALESCE(${quoteIdentifier("firstDispatchedAt")}, ${quoteIdentifier("updatedAt")}) < ?)
+           OR (${quoteIdentifier("status")} IN ('pending', 'running') AND ${quoteIdentifier("createdAt")} < ?))`,
+      [effectiveTimeout, nowSec, id, cutoffSec, cutoffSec, nowSec - SELF_TEST_MAX_LIFETIME_SECONDS],
     );
     if (rawAffectedRows(info) > 0) changedIds.push(id);
   }
   if (changedIds.length === 0) return [];
   const placeholders = changedIds.map(() => "?").join(", ");
   const timedOut = await queryRaw<TimedOutForwardTest>(
-    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
+    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}, ${quoteIdentifier("requestMessage")}, ${quoteIdentifier("batchId")}
      FROM ${quoteIdentifier("forward_tests")}
      WHERE ${quoteIdentifier("id")} IN (${placeholders})
        AND ${quoteIdentifier("status")} = 'timeout'

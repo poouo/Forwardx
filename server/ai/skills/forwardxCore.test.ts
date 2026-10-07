@@ -13,7 +13,7 @@ test("registers the versioned ForwardX core skill and exposes read/write tools",
   assert.deepEqual(aiSkillRegistry.get("forwardx-core"), forwardxCoreSkill);
   assert.ok(forwardxCoreSkill.tools.some((tool) => tool.mode === "read"));
   assert.ok(forwardxCoreSkill.tools.some((tool) => tool.mode === "write" && tool.requiresConfirmation));
-  assert.match(buildForwardxQueryIntentPrompt(), /forwardx-core@1\.0\.0/);
+  assert.match(buildForwardxQueryIntentPrompt(), /forwardx-core@1\.1\.0/);
   assert.match(buildForwardxManageIntentPrompt(), /rules\.manage/);
 });
 

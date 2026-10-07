@@ -116,3 +116,25 @@ test("opens the circuit after repeated provider failures", async () => {
   await assert.rejects(request(), (error) => error instanceof AiClientError && error.code === "circuit_open");
   assert.equal(calls, 2);
 });
+
+test("keeps the deadline while a response body stalls after headers", async () => {
+  const client = new ForwardxAiClient({ timeoutMs: 20, transientRetries: 0,
+    fetchImpl: (async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{')); } }))) as typeof fetch });
+  await assert.rejects(client.requestStructuredJson({ operation: "stalled-body", settings: settings(), systemPrompt: "s", userText: "u", schema: z.object({ ok: z.boolean() }) }),
+    (error) => error instanceof AiClientError && error.code === "timeout");
+});
+
+test("retains structured server context and rejects oversized provider responses", async () => {
+  let body: any;
+  const client = new ForwardxAiClient({ fetchImpl: (async (_url, init) => {
+    body = JSON.parse(String(init?.body));
+    return completion({ ok: true });
+  }) as typeof fetch });
+  await client.requestStructuredJson({ operation: "context", settings: settings(), systemPrompt: "s", userText: "u".repeat(800), context: { intent: { target: "2", amountYuan: 50 } }, maxTokens: 2048, schema: z.object({ ok: z.boolean() }) });
+  assert.equal(body.messages[1].content.length, 800);
+  assert.match(body.messages[2].content, /amountYuan/);
+  assert.equal(body.max_tokens, 2048);
+  const oversized = new ForwardxAiClient({ fetchImpl: (async () => new Response("x".repeat(300_000))) as typeof fetch });
+  await assert.rejects(oversized.requestStructuredJson({ operation: "oversized", settings: settings(), systemPrompt: "s", userText: "u", schema: z.object({ ok: z.boolean() }) }),
+    (error) => error instanceof AiClientError && error.code === "invalid_response");
+});

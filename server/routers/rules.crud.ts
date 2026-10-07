@@ -1,6 +1,9 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import { isIP } from "node:net";
+import { ruleLimitInputShape, ruleLimitPatch, hasRuleLimitInput, validateRuleLimitInput, validateRuleRateLimitTargets } from "./ruleLimitInput";
+import { assertRuleWritable, isAdminManagedRule } from "../../shared/ruleLimits";
+import { reconcileRuleLimits } from "../ruleLimits";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
@@ -699,6 +702,7 @@ export async function deleteForwardRuleForActor(
     const rule = await db.getForwardRuleById(ruleId);
     if (!rule || dbBool((rule as any).pendingDelete)) throw new Error("规则不存在或已删除");
     if (actor.role !== "admin" && rule.userId !== actor.id) throw new Error("无权操作此规则");
+    assertRuleWritable(actor, rule);
     if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接删除");
     const reasonPrefix = String(options.reasonPrefix || "forward-rule").trim() || "forward-rule";
     let chargedCents = 0;
@@ -752,6 +756,7 @@ export async function toggleForwardRuleForActor(
       const rule = await db.getForwardRuleById(ruleId);
       if (!rule) throw new Error("规则不存在");
       if (actor.role !== "admin" && rule.userId !== actor.id) throw new Error("无权操作此规则");
+      assertRuleWritable(actor, rule);
       if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接开关");
       if ((rule as any).isForwardGroupTemplate) {
         if (actor.role !== "admin") {
@@ -1037,6 +1042,7 @@ export async function createDirectForwardRuleForActor(
 export const crudRulesRouter = router({
   create: protectedProcedure
     .input(z.object({
+      ...ruleLimitInputShape,
       userId: z.number().int().positive().optional(),
       hostId: z.number().optional(),
       name: z.string().min(1).max(128),
@@ -1062,7 +1068,17 @@ export const crudRulesRouter = router({
       ...proxyProtocolInputShape,
       ...transportTuningInputShape,
     }))
+    .use(async ({ input, next }) => {
+      const result = await next();
+      if (result.ok && (hasRuleLimitInput(input) || (input as any).adminManaged)) await reconcileRuleLimits([Number((result.data as any).id)], true);
+      return result;
+    })
     .mutation(async ({ input, ctx }) => {
+      validateRuleLimitInput(ctx.user.role, input);
+      await validateRuleRateLimitTargets(input);
+      if (ctx.user.role === "admin" && (hasRuleLimitInput(input) || (input.userId && input.userId !== ctx.user.id))) {
+        Object.assign(input, { adminManaged: true });
+      }
       ctx = { ...ctx, user: await resolveRuleOperationOwner(ctx.user, input.userId) };
       await requireRuleTelegramNotifyReady(input.telegramErrorNotifyEnabled);
       // 权限检查：管理员或有 canAddRules 权限的用户
@@ -1178,6 +1194,7 @@ export const crudRulesRouter = router({
         }
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
         const createTemplateRule = () => db.createForwardRule({
+          ...ruleLimitPatch(input),
           hostId,
           name: input.name,
           forwardType,
@@ -1223,7 +1240,9 @@ export const crudRulesRouter = router({
         } as any);
         let id = 0;
         if (isForwardChain) {
-          id = await db.withForwardGroupSyncTransaction(forwardGroupId, createTemplateRule);
+          // Adding a template must not re-dispatch unchanged, healthy listeners
+          // belonging to the existing chain. Runtime-field changes still apply.
+          id = await db.withForwardGroupSyncTransaction(forwardGroupId, createTemplateRule, { preserveRuntime: true });
         } else {
           id = await createTemplateRule();
           await db.syncForwardGroupRules(forwardGroupId);
@@ -1243,6 +1262,7 @@ export const crudRulesRouter = router({
     }),
   update: protectedProcedure
     .input(z.object({
+      ...ruleLimitInputShape,
       id: z.number(),
       hostId: z.number().optional(),
       name: z.string().min(1).max(128).optional(),
@@ -1269,6 +1289,11 @@ export const crudRulesRouter = router({
       ...transportTuningInputShape,
       isEnabled: z.boolean().optional(),
     }))
+    .use(async ({ input, next }) => {
+      const result = await next();
+      if (result.ok && hasRuleLimitInput(input)) await reconcileRuleLimits([input.id], true);
+      return result;
+    })
     .mutation(async ({ input, ctx }) => withKeyedTaskLock(`rule:${input.id}`, async () => {
       const heldReservations: HostPortReservation[] = [];
       // Keep the primary tunnel-exit reservation separate from source-port
@@ -1313,7 +1338,13 @@ export const crudRulesRouter = router({
       try {
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) throw new Error("规则不存在");
+      validateRuleLimitInput(ctx.user.role, input, rule);
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
+      assertRuleWritable(ctx.user, rule);
+      if (ctx.user.role === "admin" && (isAdminManagedRule(rule) || hasRuleLimitInput(input))) {
+        Object.assign(input, { adminManaged: true });
+      }
+      await validateRuleRateLimitTargets({ ...rule, ...input });
       if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接修改");
       await requireRuleTelegramNotifyReady(input.telegramErrorNotifyEnabled);
 
@@ -1540,6 +1571,7 @@ export const crudRulesRouter = router({
             failoverTargets: [],
           }, nextProtocol);
           const data: any = {
+            ...ruleLimitPatch(input),
             name: input.name ?? (rule as any).name,
             hostId: nextHostId,
             forwardType: nextForwardType,
@@ -1719,7 +1751,7 @@ export const crudRulesRouter = router({
         delete data.blockHttp;
         delete data.blockSocks;
         delete data.blockTls;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "proxyProtocolVersion", "tcpFastOpen", "zeroCopy", "udpOverTcp", "udpOverTcpPort", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["rateLimitMbps", "sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "proxyProtocolVersion", "tcpFastOpen", "zeroCopy", "udpOverTcp", "udpOverTcpPort", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (dbBool(data.isEnabled)) {
           data.disabledByUser = false;
@@ -1795,6 +1827,7 @@ export const crudRulesRouter = router({
         }
         const data: any = {
           name: input.name ?? (rule as any).name,
+          ...ruleLimitPatch(input),
           hostId,
           forwardType: nextForwardType,
           protocol: nextProtocol,
@@ -2164,6 +2197,7 @@ export const crudRulesRouter = router({
       }
       // 关键字段变更时重置 isRunning
       const watchedFields: (keyof typeof data)[] = [
+        "rateLimitMbps",
         "sourcePort",
         "targetIp",
         "targetPort",

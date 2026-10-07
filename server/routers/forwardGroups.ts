@@ -215,6 +215,16 @@ export const forwardGroupsRouter = router({
       return { success: true };
     }),
 
+  probeStatistics: protectedProcedure
+    .input(z.object({ groupId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+    .query(async ({ input, ctx }) => {
+      const group = await assertForwardGroupAccess(input.groupId, ctx.user);
+      if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路探测统计");
+      return forwardGroupQueryCache.get(`probeStatistics:${ctx.user.id}:${input.groupId}:${input.hours}`,
+        { ttlMs: 5_000, staleMs: 0 },
+        () => db.getProbeCounterStatistics("forwardGroup", input.groupId, new Date(Date.now() - input.hours * 3600_000)));
+    }),
+
   latencySeries: protectedProcedure
     .input(z.object({
       groupId: z.number(),
@@ -264,6 +274,19 @@ export const forwardGroupsRouter = router({
     .input(baseSchema.extend({ id: z.number() }))
     .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
       const group = await updateForwardGroupFromInput(input.id, input);
+      return { success: true, group };
+    })),
+
+  // Automation sends a patch, not a stale copy of the entire edit form.
+  updateFields: adminProcedure
+    .input(baseSchema.partial().extend({ id: z.number().int().positive() }).strict())
+    .mutation(async ({ input }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
+      const existing = await db.getForwardGroupById(input.id) as any;
+      if (!existing) throw new Error("转发资源不存在");
+      const current = Object.fromEntries(Object.keys(baseSchema.shape).filter(key => existing[key] !== undefined && existing[key] !== null).map(key => [key, existing[key]]));
+      if (typeof current.failoverTargets === "string") current.failoverTargets = JSON.parse(current.failoverTargets);
+      const merged = baseSchema.parse({ ...current, ...input });
+      const group = await updateForwardGroupFromInput(input.id, merged);
       return { success: true, group };
     })),
 

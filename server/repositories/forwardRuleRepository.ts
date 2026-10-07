@@ -616,6 +616,12 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
         isEnabled: forwardRules.isEnabled,
         isRunning: forwardRules.isRunning,
         pendingDelete: forwardRules.pendingDelete,
+        trafficLimit: forwardRules.trafficLimit,
+        quotaUsedIn: forwardRules.quotaUsedIn,
+        adminManaged: forwardRules.adminManaged,
+        rateLimitMbps: forwardRules.rateLimitMbps,
+        expiresAt: forwardRules.expiresAt,
+        ruleLimitReason: forwardRules.ruleLimitReason,
         trafficTunnelId: tunnels.id,
         trafficTunnelEntryHostId: tunnels.entryHostId,
         trafficTunnelEntryGroupId: tunnels.entryGroupId,
@@ -706,6 +712,12 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
         isEnabled: row.isEnabled,
         isRunning: row.isRunning,
         pendingDelete: row.pendingDelete,
+        trafficLimit: row.trafficLimit,
+        quotaUsedIn: row.quotaUsedIn,
+        adminManaged: row.adminManaged,
+        rateLimitMbps: row.rateLimitMbps,
+        expiresAt: row.expiresAt,
+        ruleLimitReason: row.ruleLimitReason,
       },
       tunnel: Number(row.trafficTunnelId || 0) > 0 ? {
         id: row.trafficTunnelId,
@@ -753,7 +765,10 @@ export async function getForwardRulesPage(input: ForwardRuleListQuery) {
     includeSearch: false,
     includeCategory: false,
   });
-  const categoryFilter = buildForwardRuleSqlFilter(input, { includeCategory: false });
+  // Tab badges describe the full owner/search scope, not the currently
+  // selected route. The two-level picker also applies a category predicate
+  // through resourceType, so excluding only input.category is insufficient.
+  const categoryFilter = buildForwardRuleSqlFilter(input, { includeCategory: false, includeResource: false });
   const filtered = buildForwardRuleSqlFilter(input);
   const [scopeRows, totalRows, categoryRows] = await Promise.all([
     queryRaw<{ totalItems: number }>(

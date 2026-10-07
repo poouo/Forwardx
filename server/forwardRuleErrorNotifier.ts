@@ -1,6 +1,5 @@
 import crypto from "crypto";
-import { sendTelegramMessage } from "./telegramBot";
-import { getTelegramAdminRecipients } from "./repositories/userRepository";
+import { sendUserNotification, getNotificationAdminRecipients } from "./notifications";
 import { formatForwardRuleProtocol, FORWARD_TYPE_LABELS, type ForwardType } from "../shared/forwardTypes";
 import { isTelegramBotReady } from "./telegramReady";
 
@@ -98,24 +97,24 @@ export async function notifyForwardRuleError(payload: ForwardRuleErrorPayload) {
   if (!ruleId || !payload.rule?.telegramErrorNotifyEnabled) return;
   if (!(await isTelegramBotReady())) return;
 
-  const recipients = await getTelegramAdminRecipients();
+  const recipients = await getNotificationAdminRecipients();
   if (recipients.length === 0) return;
   if (!shouldNotifyForwardRuleError(ruleId, payload.message)) return;
   const text = ruleErrorMessage(payload);
   let sent = 0;
   let failed = 0;
   for (const user of recipients as any[]) {
-    if (!user.telegramId) continue;
+    if (!user.notificationId) continue;
     try {
-      await sendTelegramMessage(user.telegramId, text);
+      await sendUserNotification(user, text);
       sent += 1;
     } catch (error) {
       failed += 1;
-      console.warn(`[Telegram] Forward rule error notify failed user=${user.id} rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[Notification] Forward rule error notify failed user=${user.id} rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   if (sent > 0 || failed > 0) {
-    console.info(`[Telegram] Forward rule error notify rule=${ruleId} sent=${sent} failed=${failed}`);
+    console.info(`[Notification] Forward rule error notify rule=${ruleId} sent=${sent} failed=${failed}`);
   }
 }
 

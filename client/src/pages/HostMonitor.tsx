@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { Badge } from "@/components/ui/badge";
@@ -6,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
+import { isMonitorNotFound, latestMonitorMetric, monitorLatencyYMax, PUBLIC_MONITOR_REFRESH_OPTIONS } from "@/lib/publicMonitor";
 import {
   Activity,
   ActivitySquare,
@@ -26,6 +29,7 @@ import {
   Monitor,
   MonitorCheck,
   Rows3,
+  RefreshCw,
   Server,
   X,
 } from "lucide-react";
@@ -80,6 +84,24 @@ function formatNetworkSpeed(value: number | null | undefined) {
   return `${formatBytes(Math.max(0, Number(value) || 0)).replace(" ", "\u00a0")}/s`;
 }
 
+function MonitorRefreshStatus({ error, refreshedAt, isFetching, onRetry }: {
+  error: unknown;
+  refreshedAt?: string;
+  isFetching: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground" role="status">
+      {error ? <span className="text-amber-600 dark:text-amber-400">{translateText("刷新失败，正在自动重试")}{refreshedAt ? translateText("；当前展示上次数据") : ""}</span>
+        : <span>{refreshedAt ? translateText("最近刷新 {0}", [formatFullDateTime(refreshedAt)]) : translateText("等待监控数据")}</span>}
+      <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={isFetching} onClick={onRetry}>
+        <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+        {isFetching ? translateText("刷新中") : translateText("刷新")}
+      </Button>
+    </div>
+  );
+}
+
 function formatOptionalBytesPerSecond(value: unknown) {
   if (value === null || value === undefined) return "--";
   const bytes = Number(value);
@@ -130,7 +152,7 @@ function formatFullDateTime(value: unknown) {
 }
 
 function formatMonitorDate(value: unknown) {
-  if (!value) return "永久有效";
+  if (!value) return translateText("永久有效");
   const ms = value instanceof Date
     ? value.getTime()
     : typeof value === "number"
@@ -138,8 +160,8 @@ function formatMonitorDate(value: unknown) {
       : Date.parse(String(value));
   if (!Number.isFinite(ms)) return "--";
   const date = new Date(ms);
-  const text = date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
-  return ms < Date.now() ? `${text} 已到期` : text;
+  const text = date.toLocaleDateString(getFormatLocale(), { year: "numeric", month: "2-digit", day: "2-digit" });
+  return ms < Date.now() ? translateText("{0} 已到期", [text]) : text;
 }
 
 function formatChartTime(value: string | Date | number) {
@@ -273,13 +295,13 @@ function HostMonitorTrafficStatCard({
         <p className="mb-2.5 pr-12 text-xs font-medium text-muted-foreground">{title}</p>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-3 pr-0 sm:pr-9">
           <HostMonitorTrafficDirectionStat
-            label="入向"
+            label={translateText("入向")}
             value={inValue}
             icon={ArrowDownToLine}
             tone="bg-emerald-500"
           />
           <HostMonitorTrafficDirectionStat
-            label="出向"
+            label={translateText("出向")}
             value={outValue}
             icon={ArrowUpFromLine}
             tone="bg-amber-500"
@@ -319,9 +341,9 @@ function PublicHostCard({
   const trafficPercent = trafficLimit > 0 ? Math.round((usedTraffic / trafficLimit) * 100) : 0;
   const metricItems = [
     { key: "cpu", label: "CPU", icon: Cpu, value: cpuUsage, progress: cpuUsage },
-    { key: "memory", label: "内存", icon: MemoryStick, value: memoryUsage, progress: memoryUsage },
-    { key: "disk", label: "磁盘", icon: HardDrive, value: diskUsage, progress: diskUsage },
-    { key: "traffic", label: "流量", icon: Activity, value: trafficLimit > 0 ? trafficPercent : null, progress: trafficLimit > 0 ? trafficPercent : 0 },
+    { key: "memory", label: translateText("内存"), icon: MemoryStick, value: memoryUsage, progress: memoryUsage },
+    { key: "disk", label: translateText("磁盘"), icon: HardDrive, value: diskUsage, progress: diskUsage },
+    { key: "traffic", label: translateText("流量"), icon: Activity, value: trafficLimit > 0 ? trafficPercent : null, progress: trafficLimit > 0 ? trafficPercent : 0 },
   ];
   const cardMinHeightClass = compact ? "min-h-[220px]" : "min-h-[300px]";
   const cardPaddingClass = compact ? "p-3" : "p-4";
@@ -347,14 +369,14 @@ function PublicHostCard({
             <span className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
             <span className="min-w-0 truncate text-sm font-semibold" title={host.name}>{host.name || "-"}</span>
             <span className="shrink-0 rounded border border-border/50 bg-background/40 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
-              {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+              {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
             </span>
             <Badge variant="outline" className={`ml-auto shrink-0 text-[10px] ${isOnline ? "border-emerald-500/30 text-emerald-600" : "border-destructive/30 text-destructive"}`}>
-              {isOnline ? "在线" : "离线"}
+              {isOnline ? translateText("在线") : translateText("离线")}
             </Badge>
           </div>
           <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs">
-            <span className="shrink-0 text-muted-foreground">国家/地区：</span>
+            <span className="shrink-0 text-muted-foreground">{translateText("国家/地区：")}</span>
             <HostRegionBadge host={host} compact />
           </div>
         </div>
@@ -377,13 +399,13 @@ function PublicHostCard({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入站</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" />{translateText(" 入站")}</span>
               <span className="font-medium tabular-nums">{formatNetworkSpeed(metric?.networkSpeedIn)}</span>
             </div>
           </div>
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出站</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" />{translateText(" 出站")}</span>
               <span className="font-medium tabular-nums">{formatNetworkSpeed(metric?.networkSpeedOut)}</span>
             </div>
           </div>
@@ -392,18 +414,16 @@ function PublicHostCard({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="space-y-1">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowRightLeft className="h-3 w-3" /> 累计</span>
-              <div className="truncate font-medium tabular-nums" title={`入 ${formatBytes(totalIn)} / 出 ${formatBytes(totalOut)}`}>
-                入 {formatBytes(totalIn)}
+              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowRightLeft className="h-3 w-3" />{translateText(" 累计")}</span>
+              <div className="truncate font-medium tabular-nums" title={translateText("入 {0} / 出 {1}", [formatBytes(totalIn), formatBytes(totalOut)])}>{translateText("入 ")}{formatBytes(totalIn)}
               </div>
-              <div className="truncate font-medium tabular-nums">
-                出 {formatBytes(totalOut)}
+              <div className="truncate font-medium tabular-nums">{translateText("出 ")}{formatBytes(totalOut)}
               </div>
             </div>
           </div>
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="space-y-1">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><CalendarDays className="h-3 w-3" /> 到期</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><CalendarDays className="h-3 w-3" />{translateText(" 到期")}</span>
               <div className="truncate font-medium tabular-nums" title={formatMonitorDate(host.stoppedAt)}>
                 {formatMonitorDate(host.stoppedAt)}
               </div>
@@ -413,7 +433,7 @@ function PublicHostCard({
 
         <div className="flex items-center gap-2 text-xs">
           <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">运行时间</span>
+          <span className="text-muted-foreground">{translateText("运行时间")}</span>
           <span className="ml-auto font-medium tabular-nums">{metric?.uptime == null ? "-" : formatUptime(metric.uptime)}</span>
         </div>
       </CardContent>
@@ -498,14 +518,14 @@ function PublicHostTable({
         <Table className="min-w-0 table-fixed">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[76px] whitespace-nowrap px-3">状态</TableHead>
-              <TableHead className="w-[230px] px-3">设备名称</TableHead>
+              <TableHead className="w-[76px] whitespace-nowrap px-3">{translateText("状态")}</TableHead>
+              <TableHead className="w-[230px] px-3">{translateText("设备名称")}</TableHead>
               <TableHead className="w-[112px] whitespace-nowrap px-3">CPU</TableHead>
               <TableHead className="w-[116px] whitespace-nowrap px-3">RAM</TableHead>
-              <TableHead className="w-[116px] whitespace-nowrap px-3">磁盘</TableHead>
-              <TableHead className="w-[118px] whitespace-nowrap px-3">累计流量</TableHead>
-              <TableHead className="w-[118px] whitespace-nowrap px-3">实时网络</TableHead>
-              <TableHead className="w-[136px] whitespace-nowrap px-3">时间</TableHead>
+              <TableHead className="w-[116px] whitespace-nowrap px-3">{translateText("磁盘")}</TableHead>
+              <TableHead className="w-[118px] whitespace-nowrap px-3">{translateText("累计流量")}</TableHead>
+              <TableHead className="w-[118px] whitespace-nowrap px-3">{translateText("实时网络")}</TableHead>
+              <TableHead className="w-[136px] whitespace-nowrap px-3">{translateText("时间")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -524,7 +544,7 @@ function PublicHostTable({
                   <TableCell className="w-[76px] whitespace-nowrap px-3 py-3">
                     <Badge variant="outline" className={`gap-1.5 text-xs ${isOnline ? "border-emerald-500/30 text-emerald-600" : "border-destructive/30 text-destructive"}`}>
                       <span className={`h-1.5 w-1.5 rounded-full ${isOnline ? "bg-emerald-500" : "bg-destructive"}`} />
-                      {isOnline ? "在线" : "离线"}
+                      {isOnline ? translateText("在线") : translateText("离线")}
                     </Badge>
                   </TableCell>
                   <TableCell className="w-[230px] px-3 py-3">
@@ -532,11 +552,11 @@ function PublicHostTable({
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name || "-"}</span>
                         <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
-                          {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                          {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                         </span>
                       </div>
                       <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <span className="shrink-0">国家/地区：</span>
+                        <span className="shrink-0">{translateText("国家/地区：")}</span>
                         <HostRegionBadge host={host} compact />
                       </div>
                     </div>
@@ -554,16 +574,16 @@ function PublicHostTable({
                     <PublicHostListFlowPair
                       inValue={formatBytes(Number(traffic?.bytesIn || 0))}
                       outValue={formatBytes(Number(traffic?.bytesOut || 0))}
-                      inTitle={`累计入向：${formatBytes(Number(traffic?.bytesIn || 0))}`}
-                      outTitle={`累计出向：${formatBytes(Number(traffic?.bytesOut || 0))}`}
+                      inTitle={translateText("累计入向：{0}", [formatBytes(Number(traffic?.bytesIn || 0))])}
+                      outTitle={translateText("累计出向：{0}", [formatBytes(Number(traffic?.bytesOut || 0))])}
                     />
                   </TableCell>
                   <TableCell className="px-3 py-3">
                     <PublicHostListFlowPair
                       inValue={formatOptionalBytesPerSecond(metric?.networkSpeedIn)}
                       outValue={formatOptionalBytesPerSecond(metric?.networkSpeedOut)}
-                      inTitle="实时入向"
-                      outTitle="实时出向"
+                      inTitle={translateText("实时入向")}
+                      outTitle={translateText("实时出向")}
                     />
                   </TableCell>
                   <TableCell className="px-3 py-3">
@@ -606,11 +626,10 @@ function ServiceChartTooltip({ active, payload, label, services }: any) {
               </span>
               <span className="text-right">
                 <span className={counts.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
-                  {counts.isTimeout ? "超时" : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+                  {counts.isTimeout ? translateText("超时") : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
                 </span>
                 {counts.probeCount > 1 && counts.probeSuccesses < counts.probeCount ? (
-                  <span className="block text-[10px] font-normal text-muted-foreground">
-                    丢包 {counts.probeCount - counts.probeSuccesses}/{counts.probeCount}
+                  <span className="block text-[10px] font-normal text-muted-foreground">{translateText("丢包 ")}{counts.probeCount - counts.probeSuccesses}/{counts.probeCount}
                   </span>
                 ) : null}
               </span>
@@ -680,14 +699,13 @@ function HostMonitorDetail({
     { path, hostId, hours: 24 },
     {
       enabled: hostId > 0,
-      retry: false,
-      refetchOnWindowFocus: false,
+      ...PUBLIC_MONITOR_REFRESH_OPTIONS,
       refetchInterval: pollingInterval("slow", hostId > 0),
     },
   );
-  const detailHost = detail.data?.host || host;
-  const metric = detail.data?.metric || fallbackMetric || {};
-  const traffic = detail.data?.traffic || fallbackTraffic || {};
+  const detailHost = host || detail.data?.host;
+  const metric = latestMonitorMetric(fallbackMetric, detail.data?.metric) || {};
+  const traffic = fallbackTraffic || detail.data?.traffic || {};
   const services = (detail.data?.services || []) as any[];
   const series = (detail.data?.serviceSeries || []) as any[];
   const isOnline = !!detailHost?.isOnline;
@@ -728,11 +746,7 @@ function HostMonitorDetail({
       return next;
     });
   }, [peakCutEnabled, rawChart, visibleServiceIds]);
-  const yMax = useMemo(() => {
-    const values = chart.flatMap((point) => visibleServices.map((service) => Number(point[`service_${service.id}`]) || 0));
-    const max = Math.max(0, ...values);
-    return max > 0 ? Math.ceil(max * 1.2) : 120;
-  }, [chart, visibleServices]);
+  const yMax = useMemo(() => monitorLatencyYMax(chart, visibleServiceIds), [chart, visibleServiceIds]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
   const totalIn = Number(traffic?.bytesIn || 0);
   const totalOut = Number(traffic?.bytesOut || 0);
@@ -747,33 +761,34 @@ function HostMonitorDetail({
 
   return (
     <div className="animate-in fade-in-0 slide-in-from-right-2 duration-200">
+      <MonitorRefreshStatus error={detail.error} refreshedAt={detail.data?.refreshedAt} isFetching={detail.isFetching} onRetry={() => { void detail.refetch(); }} />
       <div className="mb-4 flex min-w-0 items-center gap-2 sm:mb-6">
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 rounded-full" onClick={onBack} title="返回">
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 rounded-full" onClick={onBack} title={translateText("返回")}>
           <ArrowLeftCircle className="h-5 w-5" />
         </Button>
-        <h2 className="min-w-0 truncate text-lg font-bold tracking-tight sm:text-xl">{detailHost?.name || "主机详情"}</h2>
+        <h2 className="min-w-0 truncate text-lg font-bold tracking-tight sm:text-xl">{detailHost?.name || translateText("主机详情")}</h2>
         <Badge variant="outline" className={`ml-auto shrink-0 gap-1.5 sm:ml-2 ${isOnline ? "border-emerald-500/30 text-emerald-600" : "border-destructive/30 text-destructive"}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${isOnline ? "bg-emerald-500" : "bg-destructive"}`} />
-          {isOnline ? "在线" : "离线"}
+          {isOnline ? translateText("在线") : translateText("离线")}
         </Badge>
       </div>
 
       <div className="grid max-w-6xl grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-x-8 sm:gap-y-4 lg:grid-cols-6">
-        <DetailInfoItem label="状态" value={isOnline ? "在线" : "离线"} className={isOnline ? "text-emerald-600" : "text-destructive"} />
-        <DetailInfoItem label="运行时间" value={metric?.uptime == null ? "-" : formatUptime(metric.uptime)} />
-        <DetailInfoItem label="内存" value={formatMetricSizeDetail(metric?.memoryUsed, detailHost?.memoryTotal) || formatUsagePercent(metric?.memoryUsage)} />
-        <DetailInfoItem label="磁盘" value={formatMetricSizeDetail(metric?.diskUsed, metric?.diskTotal) || formatUsagePercent(metric?.diskUsage)} />
+        <DetailInfoItem label={translateText("状态")} value={isOnline ? translateText("在线") : translateText("离线")} className={isOnline ? "text-emerald-600" : "text-destructive"} />
+        <DetailInfoItem label={translateText("运行时间")} value={metric?.uptime == null ? "-" : formatUptime(metric.uptime)} />
+        <DetailInfoItem label={translateText("内存")} value={formatMetricSizeDetail(metric?.memoryUsed, detailHost?.memoryTotal) || formatUsagePercent(metric?.memoryUsage)} />
+        <DetailInfoItem label={translateText("磁盘")} value={formatMetricSizeDetail(metric?.diskUsed, metric?.diskTotal) || formatUsagePercent(metric?.diskUsage)} />
         <div className="min-w-0 rounded-lg border border-border/30 bg-card/35 px-3 py-2 sm:border-0 sm:bg-transparent sm:p-0">
-          <p className="text-xs text-muted-foreground">区域</p>
+          <p className="text-xs text-muted-foreground">{translateText("区域")}</p>
           <div className="mt-1"><HostRegionBadge host={detailHost} compact /></div>
         </div>
-        <DetailInfoItem label="版本" value={detailHost?.agentVersion ? `v${detailHost.agentVersion}` : "未上报"} />
-        <DetailInfoItem label="实时入站" value={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} />
-        <DetailInfoItem label="实时出站" value={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} />
-        <DetailInfoItem label="累计入站" value={formatBytes(totalIn)} />
-        <DetailInfoItem label="累计出站" value={formatBytes(totalOut)} />
-        <DetailInfoItem label="到期时间" value={formatMonitorDate(detailHost?.stoppedAt)} />
-        <DetailInfoItem label="最后上报" value={formatFullDateTime(metric?.recordedAt || detailHost?.lastHeartbeat)} />
+        <DetailInfoItem label={translateText("版本")} value={detailHost?.agentVersion ? `v${detailHost.agentVersion}` : translateText("未上报")} />
+        <DetailInfoItem label={translateText("实时入站")} value={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} />
+        <DetailInfoItem label={translateText("实时出站")} value={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} />
+        <DetailInfoItem label={translateText("累计入站")} value={formatBytes(totalIn)} />
+        <DetailInfoItem label={translateText("累计出站")} value={formatBytes(totalOut)} />
+        <DetailInfoItem label={translateText("到期时间")} value={formatMonitorDate(detailHost?.stoppedAt)} />
+        <DetailInfoItem label={translateText("最后上报")} value={formatFullDateTime(metric?.recordedAt || detailHost?.lastHeartbeat)} />
       </div>
 
       <div className="my-5 h-px bg-border sm:my-7" />
@@ -784,8 +799,8 @@ function HostMonitorDetail({
               <div className="grid min-w-0 overflow-hidden border-b border-border/40 md:grid-cols-[minmax(0,180px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
                 <div className="flex min-h-[72px] min-w-0 flex-row items-center justify-between gap-3 overflow-hidden border-b border-border/40 p-3 md:min-h-[92px] md:flex-col md:items-start md:justify-center md:border-b-0 md:border-r md:p-4">
                   <div className="min-w-0 flex-1 overflow-hidden md:w-full md:flex-none">
-                    <p className="block max-w-full truncate text-base font-bold md:text-lg" title={detailHost?.name || "主机"}>{detailHost?.name || "主机"}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{services.length} 个监控服务</p>
+                    <p className="block max-w-full truncate text-base font-bold md:text-lg" title={detailHost?.name || translateText("主机")}>{detailHost?.name || translateText("主机")}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{services.length}{translateText(" 个监控服务")}</p>
                   </div>
                   <button
                     type="button"
@@ -793,9 +808,7 @@ function HostMonitorDetail({
                     onClick={() => setSelectedServiceIds(new Set())}
                     disabled={selectedServiceIds.size === 0}
                   >
-                    <X className="h-3.5 w-3.5" />
-                    清除筛选
-                  </button>
+                    <X className="h-3.5 w-3.5" />{translateText("清除筛选")}</button>
                 </div>
                 <div className="grid min-w-0 grid-cols-2 overflow-hidden xl:grid-cols-4">
                   {services.map((service, index) => {
@@ -814,14 +827,14 @@ function HostMonitorDetail({
                         )}
                         onClick={() => toggleService(serviceId)}
                         aria-pressed={active}
-                        title={active ? "点击取消筛选" : "点击筛选该服务"}
+                        title={active ? translateText("点击取消筛选") : translateText("点击筛选该服务")}
                       >
                         <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: serviceChartColors[index % serviceChartColors.length] }} />
                           <span className="min-w-0 truncate" title={service.name}>{service.name}</span>
                         </div>
-                        <p className={`mt-2 text-xl font-bold tabular-nums sm:text-2xl ${timeout ? "text-destructive" : ""}`}>{timeout ? "超时" : latency}</p>
-                        <p className="mt-1 truncate text-[11px] text-muted-foreground sm:text-xs">{latest?.recordedAt ? formatFullDateTime(latest.recordedAt) : "暂无上报"}</p>
+                        <p className={`mt-2 text-xl font-bold tabular-nums sm:text-2xl ${timeout ? "text-destructive" : ""}`}>{timeout ? translateText("超时") : latency}</p>
+                        <p className="mt-1 truncate text-[11px] text-muted-foreground sm:text-xs">{latest?.recordedAt ? formatFullDateTime(latest.recordedAt) : translateText("暂无上报")}</p>
                       </button>
                     );
                   })}
@@ -831,9 +844,9 @@ function HostMonitorDetail({
 
             <div className="flex flex-col gap-3 px-3 pt-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 sm:pt-4">
               <div className="min-w-0">
-                <p className="text-sm font-medium">服务延迟趋势</p>
+                <p className="text-sm font-medium">{translateText("服务延迟趋势")}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {selectedServiceIds.size > 0 ? `已筛选 ${visibleServices.length} 个服务` : "点击上方服务可筛选图表"}
+                  {selectedServiceIds.size > 0 ? translateText("已筛选 {0} 个服务", [visibleServices.length]) : translateText("点击上方服务可筛选图表")}
                 </p>
               </div>
               <LatencyPeakCutToggle id={`public-host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
@@ -842,11 +855,9 @@ function HostMonitorDetail({
             <div className="h-[280px] p-3 sm:h-[360px] sm:p-4">
               {detail.isLoading ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  正在加载服务监控
-                </div>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载服务监控")}</div>
               ) : services.length === 0 || chart.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无服务监控延迟数据</div>
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无服务监控延迟数据")}</div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -895,8 +906,7 @@ export default function HostMonitor() {
   const monitor = trpc.hosts.publicMonitor.useQuery(
     { path },
     {
-      retry: false,
-      refetchOnWindowFocus: false,
+      ...PUBLIC_MONITOR_REFRESH_OPTIONS,
       refetchInterval: pollingInterval("active"),
     },
   );
@@ -928,14 +938,14 @@ export default function HostMonitor() {
   const totalCount = summary.totalHosts;
   const isLoggedIn = !!currentUser.data;
   const monitorTitle = publicInfo.data?.publicHostMonitor?.title?.trim()
-    || `${publicInfo.data?.siteTitle || "ForwardX"} 主机监控`;
+    || translateText("{0} 主机监控", [publicInfo.data?.siteTitle || "ForwardX"]);
   const selectedHost = selectedHostId ? hosts.find((host) => Number(host.id) === selectedHostId) || null : null;
   const handleViewModeChange = (mode: HostMonitorViewMode) => {
     setViewMode(mode);
     storeHostMonitorViewMode(mode);
   };
 
-  if (monitor.isError) return <NotFound />;
+  if (isMonitorNotFound(monitor.error)) return <NotFound />;
 
   return (
     <div className="min-h-screen bg-background/65">
@@ -955,7 +965,7 @@ export default function HostMonitor() {
                 variant={viewMode === "compact-card" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="精简卡片"
+                title={translateText("精简卡片")}
                 onClick={() => handleViewModeChange("compact-card")}
               >
                 <Rows3 className="h-4 w-4" />
@@ -964,7 +974,7 @@ export default function HostMonitor() {
                 variant={viewMode === "card" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="标准卡片"
+                title={translateText("标准卡片")}
                 onClick={() => handleViewModeChange("card")}
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -973,7 +983,7 @@ export default function HostMonitor() {
                 variant={viewMode === "table" ? "secondary" : "ghost"}
                 size="icon"
                 className="h-8 w-8 rounded-none"
-                title="列表视图"
+                title={translateText("列表视图")}
                 onClick={() => handleViewModeChange("table")}
               >
                 <List className="h-4 w-4" />
@@ -982,7 +992,7 @@ export default function HostMonitor() {
             <Button asChild size="sm" className="gap-2">
               <Link href={isLoggedIn ? "/hosts" : "/login"}>
                 <LayoutDashboard className="h-4 w-4" />
-                {isLoggedIn ? "进入后台" : "登录"}
+                {isLoggedIn ? translateText("进入后台") : translateText("登录")}
               </Link>
             </Button>
           </div>
@@ -990,8 +1000,13 @@ export default function HostMonitor() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:px-6">
+        <MonitorRefreshStatus error={monitor.error} refreshedAt={monitor.data?.refreshedAt} isFetching={monitor.isFetching} onRetry={() => { void monitor.refetch(); }} />
         {monitor.isLoading && !monitor.data ? (
-          <DataSectionLoading label="正在加载主机监控" minHeight="min-h-[320px]" />
+          <DataSectionLoading label={translateText("正在加载主机监控")} minHeight="min-h-[320px]" />
+        ) : monitor.isError && !monitor.data ? (
+          <Card className="border-border/40 bg-card/70">
+            <CardContent className="flex min-h-[240px] items-center justify-center p-8 text-sm text-muted-foreground">{translateText("暂时无法读取监控数据，请检查网络连接；页面会自动重试，也可以点击上方刷新。")}</CardContent>
+          </Card>
         ) : selectedHost ? (
           <HostMonitorDetail
             path={path}
@@ -1004,20 +1019,20 @@ export default function HostMonitor() {
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <HostMonitorStatCard
-                title="在线状态"
+                title={translateText("在线状态")}
                 value={`${onlineCount} / ${totalCount}`}
-                subtitle={totalCount - onlineCount > 0 ? `离线 ${Math.max(0, totalCount - onlineCount)} 台` : "全部在线"}
+                subtitle={totalCount - onlineCount > 0 ? translateText("离线 {0} 台", [Math.max(0, totalCount - onlineCount)]) : translateText("全部在线")}
                 icon={MonitorCheck}
                 leadingIcon={CircleCheck}
               />
               <HostMonitorTrafficStatCard
-                title="当前瞬时流量"
+                title={translateText("当前瞬时流量")}
                 inValue={formatNetworkSpeed(summary?.currentTrafficIn)}
                 outValue={formatNetworkSpeed(summary?.currentTrafficOut)}
                 icon={ActivitySquare}
               />
               <HostMonitorTrafficStatCard
-                title="累计流量"
+                title={translateText("累计流量")}
                 inValue={formatBytes(summary?.totalTrafficIn || 0)}
                 outValue={formatBytes(summary?.totalTrafficOut || 0)}
                 icon={ArrowRightLeft}
@@ -1034,9 +1049,7 @@ export default function HostMonitor() {
                   size="sm"
                   className="shrink-0"
                   onClick={() => setSelectedGroupId("all")}
-                >
-                  全部
-                  <span className="ml-1 text-xs text-muted-foreground">{hosts.length}</span>
+                >{translateText("全部")}<span className="ml-1 text-xs text-muted-foreground">{hosts.length}</span>
                 </Button>
                 {groups.map((group) => (
                   <Button
@@ -1051,13 +1064,6 @@ export default function HostMonitor() {
                     <span className="ml-1 text-xs text-muted-foreground">{group.hostIds?.length || 0}</span>
                   </Button>
                 ))}
-              </div>
-              <div
-                className={`flex h-5 items-center justify-end gap-2 text-xs text-muted-foreground transition-opacity ${monitor.isFetching && monitor.data ? "opacity-100" : "opacity-0"}`}
-                aria-hidden={!(monitor.isFetching && monitor.data)}
-              >
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                正在刷新
               </div>
             </div>
 
@@ -1093,8 +1099,8 @@ export default function HostMonitor() {
               <Card className="border-border/40 bg-card/70 backdrop-blur-md">
                 <CardContent className="flex min-h-[240px] flex-col items-center justify-center p-8 text-center text-muted-foreground">
                   <Server className="mb-3 h-10 w-10 opacity-50" />
-                  <p className="font-medium text-foreground">暂无主机</p>
-                  <p className="mt-1 text-sm">后台添加主机后会在这里展示。</p>
+                  <p className="font-medium text-foreground">{translateText("暂无主机")}</p>
+                  <p className="mt-1 text-sm">{translateText("后台添加主机后会在这里展示。")}</p>
                 </CardContent>
               </Card>
             )}

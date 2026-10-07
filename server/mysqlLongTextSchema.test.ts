@@ -33,3 +33,12 @@ test("MySQL system settings use LONGTEXT and upgrade an existing TEXT value colu
     true,
   );
 });
+
+test("MySQL probe summaries retain complete multi-path results beyond the TEXT limit", async () => {
+  const { pool, queries } = mysqlPool();
+  await ensureDatabaseSchema(pool as any);
+  for (const [table, column] of [["tunnels", "lastTestMessage"], ["forward_tests", "message"]]) {
+    assert.equal(getDatabaseTableDefs().find(def => def.name === table)?.columns.find(def => def.name === column)?.type, "longtext");
+    assert.equal(queries.some(entry => entry.sql === `ALTER TABLE \`${table}\` MODIFY COLUMN \`${column}\` LONGTEXT NULL`), true);
+  }
+});

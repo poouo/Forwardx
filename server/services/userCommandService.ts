@@ -120,9 +120,16 @@ export async function renewUserCommand(input: {
   expiresAt: Date;
   reasonPrefix?: string;
 }) {
+  if (!Number.isFinite(input.expiresAt.getTime())) throw new Error("续期时间超出允许范围");
   const target = await requireTargetUser(input.targetUserId);
-  await db.updateUserTrafficSettings(input.targetUserId, { expiresAt: input.expiresAt });
+  // expiresAt is derived from manual + subscription entitlements. Updating
+  // only the derived field is immediately undone by the recovery sync.
+  await db.updateUserManualEntitlements(input.targetUserId, { manualExpiresAt: input.expiresAt });
   const recovery = await recoverForwardAccess(input.targetUserId, input.reasonPrefix || "user-renewed");
+  const updated = await requireTargetUser(input.targetUserId);
+  if (!updated.expiresAt || new Date(updated.expiresAt).getTime() < input.expiresAt.getTime() - 1000) {
+    throw new Error("续期结果与请求不一致，请核实用户有效期");
+  }
   appendPanelLog("info", `[UserCommand] action=user.renew actor=${input.actor.id} target=${input.targetUserId} expiresAt=${input.expiresAt.toISOString()}`);
   return { target, forwardAccessRestored: recovery.restored };
 }

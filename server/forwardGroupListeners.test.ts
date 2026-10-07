@@ -336,6 +336,21 @@ test("forward chain allocates independent downstream listener ports", () => {
       );
       assert.deepEqual(resynced.map((child) => Number(child.sourcePort)), originalPorts);
 
+      // Match the actual create route: a new template synchronizes all members,
+      // but unchanged healthy children of existing templates must stay running.
+      await runtime.executeRaw('UPDATE "forward_rules" SET "isRunning" = 1 WHERE "forwardGroupId" = ? AND "isForwardGroupTemplate" = 0', [20]);
+      const existingBeforeAdd = await runtime.queryRaw('SELECT * FROM "forward_rules" WHERE "forwardGroupRuleId" = ? ORDER BY "hostId"', [200]);
+      await forwardGroups.withForwardGroupSyncTransaction(20, () => insert(
+        "forward_rules",
+        ["id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"],
+        [299, 1, "new chain template", "iptables", "tcp", 20, 1, 12006, "203.0.113.81", 443, 1, 1, 0],
+      ), { preserveRuntime: true });
+      const existingAfterAdd = await runtime.queryRaw('SELECT * FROM "forward_rules" WHERE "forwardGroupRuleId" = ? ORDER BY "hostId"', [200]);
+      assert.deepEqual(existingAfterAdd, existingBeforeAdd, "adding a rule rewrote or stopped existing chain listeners");
+      const newChildren = await runtime.queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "forwardGroupRuleId" = ?', [299]);
+      assert.equal(newChildren.length, 3);
+      assert.ok(newChildren.every((child) => Number(child.isRunning) === 0), "new listeners were incorrectly treated as already applied");
+
       const secondHopTargetPort = Number(children[1].targetPort);
       await runtime.executeRaw(
         'DELETE FROM "forward_rules" WHERE "forwardGroupRuleId" = ? AND "hostId" = ?',

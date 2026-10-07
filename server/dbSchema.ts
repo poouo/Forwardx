@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type Database from "better-sqlite3";
 import type pg from "pg";
+import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { getDatabaseKind, getPool, getPostgresPool, getSqlite } from "./dbRuntime";
 
 export type ColumnType = "id" | "text" | "longtext" | "varchar" | "int" | "bigint" | "bool" | "epoch";
@@ -23,6 +24,7 @@ export type TableDef = {
 const c = (name: string, type: ColumnType, opts: Omit<ColumnDef, "name" | "type"> = {}): ColumnDef => ({ name, type, ...opts });
 
 export const MIGRATION_TABLES = [
+  "ai_bot_workflows",
   "users",
   "hosts",
   "host_groups",
@@ -49,6 +51,7 @@ export const MIGRATION_TABLES = [
   "ip_geo_cache",
   "agent_tokens",
   "tcping_stats",
+  "probe_counter_snapshots",
   "forward_tests",
   "user_host_permissions",
   "user_tunnel_permissions",
@@ -128,10 +131,25 @@ async function backfillPostgresqlLastAutoTrafficReset(pool: pg.Pool) {
 }
 
 const tables: TableDef[] = [
+  { name: "ai_bot_workflows", columns: [c("id", "varchar", { length: 96, notNull: true }), c("scopeKey", "varchar", { length: 64, notNull: true }), c("status", "varchar", { length: 32, notNull: true }), c("payload", "longtext", { notNull: true }), c("result", "longtext"), c("updatedAt", "bigint", { notNull: true })], unique: [["id"]], indexes: [["scopeKey"], ["status", "updatedAt"]] },
+  {
+    name: "probe_counter_snapshots",
+    columns: [
+      c("id", "id"), c("kind", "varchar", { length: 16, notNull: true }),
+      c("refId", "int", { notNull: true }), c("hostId", "int", { notNull: true }),
+      c("probeKey", "varchar", { length: 64, notNull: true }), c("epoch", "varchar", { length: 64, notNull: true }),
+      c("totalCount", "int", { notNull: true }), c("totalSuccesses", "int", { notNull: true }),
+      c("batchCount", "int", { notNull: true }), c("batchSuccesses", "int", { notNull: true }),
+      c("recordedAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    unique: [["hostId", "kind", "refId", "probeKey", "epoch", "totalCount"]],
+    indexes: [["kind", "refId", "recordedAt"], ["recordedAt"]],
+  },
   {
     name: "users",
     columns: [
       c("id", "id"), c("username", "text", { notNull: true }), c("password", "text", { notNull: true }),
+      c("googleSubject", "varchar", { length: 255 }), c("googleEmail", "varchar", { length: 254 }), c("googleLinkedAt", "epoch"),
       c("name", "text"), c("email", "text"), c("emailVerified", "bool", { notNull: true, default: false }), c("emailVerifiedAt", "epoch"), c("displayRemark", "text"), c("avatar", "text"),
       c("avatarChangeDay", "varchar", { length: 16 }), c("avatarChangeCount", "int", { notNull: true, default: 0 }), c("role", "varchar", { length: 32, notNull: true, default: "user" }), c("accountEnabled", "bool", { notNull: true, default: true }),
       c("canAddRules", "bool", { notNull: true, default: false }), c("forwardAccessPauseReason", "varchar", { length: 64 }), c("maxRules", "int", { notNull: true, default: 0 }),
@@ -149,6 +167,11 @@ const tables: TableDef[] = [
       c("expiresAt", "epoch"), c("trafficAutoReset", "bool", { notNull: true, default: false }),
       c("trafficResetDay", "int", { notNull: true, default: 1 }), c("lastTrafficReset", "epoch"), c("lastAutoTrafficReset", "epoch"),
       c("telegramId", "text"), c("telegramUsername", "text"), c("telegramFirstName", "text"), c("telegramLastName", "text"),
+      c("discordId", "varchar", { length: 32 }), c("discordUsername", "text"),
+      c("discordLinkedAt", "epoch"), c("discordLastSeenAt", "epoch"),
+      c("discordAnnouncementSubscribed", "bool", { notNull: true, default: false }),
+      c("discordBindCode", "varchar", { length: 64 }), c("discordBindCodeExpiresAt", "epoch"),
+      c("discordLoginCode", "varchar", { length: 64 }), c("discordLoginCodeExpiresAt", "epoch"),
       c("telegramLinkedAt", "epoch"), c("telegramLastSeenAt", "epoch"), c("telegramAnnouncementSubscribed", "bool", { notNull: true, default: false }), c("telegramBindCode", "text"),
       c("telegramBindCodeExpiresAt", "epoch"), c("telegramLoginCode", "text"), c("telegramLoginCodeExpiresAt", "epoch"),
       c("twoFactorEnabled", "bool", { notNull: true, default: false }), c("twoFactorSecret", "text"), c("twoFactorEnabledAt", "epoch"),
@@ -156,7 +179,7 @@ const tables: TableDef[] = [
       c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
       c("lastSignedIn", "epoch", { notNull: true, default: "now" }),
     ],
-    unique: [["username"], ["telegramId"], ["telegramBindCode"], ["telegramLoginCode"]],
+    unique: [["username"], ["googleSubject"], ["telegramId"], ["telegramBindCode"], ["telegramLoginCode"], ["discordId"], ["discordBindCode"], ["discordLoginCode"]],
   },
   {
     name: "auth_sessions",
@@ -243,6 +266,12 @@ const tables: TableDef[] = [
       c("isForwardGroupTemplate", "bool", { notNull: true, default: false }),
       c("sourcePort", "int", { notNull: true }), c("targetIp", "text", { notNull: true }),
       c("targetPort", "int", { notNull: true }),
+      c("rateLimitMbps", "int", { notNull: true, default: 0 }),
+      c("trafficLimit", "bigint", { notNull: true, default: 0 }),
+      c("trafficMode", "varchar", { length: 16, notNull: true, default: "both" }),
+      c("expiresAt", "epoch"), c("ruleLimitReason", "varchar", { length: 32 }),
+      c("adminManaged", "bool", { notNull: true, default: false }),
+      c("quotaUsedIn", "bigint"), c("quotaUsedOut", "bigint"),
       c("telegramErrorNotifyEnabled", "bool", { notNull: true, default: false }),
       c("blockHttp", "bool", { notNull: true, default: false }), c("blockSocks", "bool", { notNull: true, default: false }),
       c("blockTls", "bool", { notNull: true, default: false }),
@@ -340,7 +369,7 @@ const tables: TableDef[] = [
       c("loadBalanceStrategy", "varchar", { length: 32, notNull: true, default: "round_robin" }),
       c("isEnabled", "bool", { notNull: true, default: true }), c("disabledByGroup", "bool", { notNull: true, default: false }),
       c("isRunning", "bool", { notNull: true, default: false }),
-      c("lastLatencyMs", "int"), c("lastTestStatus", "text"), c("lastTestMessage", "text"), c("lastTestAt", "epoch"),
+      c("lastLatencyMs", "int"), c("lastTestStatus", "text"), c("lastTestMessage", "longtext"), c("lastTestAt", "epoch"),
       c("sortOrder", "int", { notNull: true, default: 0 }), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
       c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
@@ -363,7 +392,7 @@ const tables: TableDef[] = [
   { name: "ip_geo_cache", columns: [c("id", "id"), c("address", "varchar", { length: 253, notNull: true }), c("resolvedAddress", "varchar", { length: 64, notNull: true }), c("geoCountryCode", "varchar", { length: 8, notNull: true }), c("geoCountryName", "text"), c("geoRegion", "text"), c("geoEmoji", "varchar", { length: 16 }), c("geoLatitudeMicro", "int"), c("geoLongitudeMicro", "int"), c("provider", "varchar", { length: 32, notNull: true, default: "ipapi.co" }), c("fetchedAt", "epoch", { notNull: true, default: "now" }), c("expiresAt", "epoch", { notNull: true })], unique: [["address"]], indexes: [["resolvedAddress"], ["expiresAt"]] },
   { name: "agent_tokens", columns: [c("id", "id"), c("token", "text", { notNull: true }), c("hostId", "int"), c("description", "text"), c("isUsed", "bool", { notNull: true, default: false }), c("sortOrder", "int", { notNull: true, default: 0 }), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["token"]], indexes: [["userId"], ["userId", "sortOrder"]] },
   { name: "tcping_stats", columns: [c("id", "id"), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("latencyMs", "int"), c("isTimeout", "bool", { notNull: true, default: false }), c("probeCount", "int", { notNull: true, default: 1 }), c("probeSuccesses", "int", { notNull: true, default: 0 }), c("healthStatus", "varchar", { length: 16 }), c("healthPending", "bool", { notNull: true, default: false }), c("recordedAt", "epoch", { notNull: true, default: "now" })], indexes: [["ruleId", "recordedAt"], ["hostId", "recordedAt"], ["recordedAt", "ruleId"], ["recordedAt", "hostId"]] },
-  { name: "forward_tests", columns: [c("id", "id"), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "pending" }), c("listenOk", "bool", { notNull: true, default: false }), c("targetReachable", "bool", { notNull: true, default: false }), c("forwardOk", "bool", { notNull: true, default: false }), c("latencyMs", "int"), c("message", "text"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], indexes: [["ruleId", "createdAt"], ["hostId", "status"], ["status", "createdAt"], ["status", "updatedAt"], ["updatedAt"]] },
+  { name: "forward_tests", columns: [c("id", "id"), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "pending" }), c("listenOk", "bool", { notNull: true, default: false }), c("targetReachable", "bool", { notNull: true, default: false }), c("forwardOk", "bool", { notNull: true, default: false }), c("latencyMs", "int"), c("message", "longtext"), c("requestMessage", "text"), c("batchId", "varchar", { length: 96 }), c("batchSettled", "bool", { notNull: true, default: false }), c("firstDispatchedAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], indexes: [["ruleId", "createdAt"], ["hostId", "status"], ["batchId"], ["batchSettled", "batchId"], ["status", "createdAt"], ["status", "updatedAt"], ["updatedAt"]] },
   { name: "user_host_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "hostId"]], indexes: [["hostId"]] },
   { name: "user_tunnel_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "tunnelId"]], indexes: [["tunnelId"]] },
   { name: "user_forward_group_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("forwardGroupId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "forwardGroupId"]], indexes: [["forwardGroupId"]] },
@@ -579,6 +608,7 @@ function ensureSqliteSchema(sqlite: Database.Database) {
 }
 
 export async function ensureDatabaseSchema(target?: Pool | pg.Pool | Database.Database) {
+  if (!target && seamlessBackgroundPaused()) return; // frozen snapshots and isolated receivers are already schema-ready
   if (target && "prepare" in target) {
     ensureSqliteSchema(target as Database.Database);
     return;

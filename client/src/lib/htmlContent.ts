@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { escapeHtml, sanitizeHtml } from "@shared/htmlSanitizer";
 
 export function looksLikeHtml(content: string) {
@@ -151,5 +152,5 @@ export function renderMixedHtml(content: string) {
 export function describeContentFormat(content: string) {
   if (looksLikeHtml(content)) return "H5/HTML";
   if (looksLikeMarkdown(content)) return "Markdown";
-  return "普通文本";
+  return translateText("普通文本");
 }

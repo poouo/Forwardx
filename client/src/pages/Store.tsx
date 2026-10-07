@@ -1,3 +1,5 @@
+import { getFormatLocale } from "@/i18n";
+import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
@@ -15,10 +17,10 @@ import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 
 function money(cents?: number, currency = "CNY") {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((cents || 0) / 100);
+  return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((cents || 0) / 100);
 }
 
 const MILLI_CENTS_PER_CENT = 1000;
@@ -32,7 +34,7 @@ function pricePerGbMilliCents(config: any) {
 
 function moneyFromMilliCents(milliCents?: number, currency = "CNY") {
   const yuan = Number(milliCents || 0) / MILLI_CENTS_PER_YUAN;
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat(getFormatLocale(), {
     style: "currency",
     currency,
     minimumFractionDigits: yuan > 0 && yuan < 0.01 ? 3 : 2,
@@ -42,7 +44,7 @@ function moneyFromMilliCents(milliCents?: number, currency = "CNY") {
 
 function bytes(size?: number | null) {
   const value = Number(size || 0);
-  if (!value) return "不限";
+  if (!value) return translateText("不限");
   const units = ["B", "KB", "MB", "GB", "TB"];
   let n = value;
   let idx = 0;
@@ -55,15 +57,15 @@ function bytes(size?: number | null) {
 
 function speed(value?: number | null) {
   const num = Number(value || 0);
-  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : "不限";
+  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : translateText("不限");
 }
 
 const durationOptions = [
-  { value: 30, label: "一个月" },
-  { value: 90, label: "三个月" },
-  { value: 180, label: "半年" },
-  { value: 365, label: "一年" },
-  { value: 730, label: "两年" },
+  { value: 30, label: translateText("一个月") },
+  { value: 90, label: translateText("三个月") },
+  { value: 180, label: translateText("半年") },
+  { value: 365, label: translateText("一年") },
+  { value: 730, label: translateText("两年") },
 ];
 
 type StoreTab = "plans" | "billing";
@@ -71,7 +73,7 @@ const STORE_TABS = ["plans", "billing"] as const;
 const STORE_TAB_STORAGE_KEY = "forwardx.store.tab";
 
 function durationLabel(days?: number | null) {
-  return durationOptions.find((item) => item.value === Number(days))?.label || `${days || 30} 天`;
+  return durationOptions.find((item) => item.value === Number(days))?.label || translateText("{0} 天", [days || 30]);
 }
 
 function planDescription(plan: any) {
@@ -88,15 +90,15 @@ function effectiveBillingPriceMilliCents(config: any) {
 
 function planBenefitItems(plan: any) {
   const items = [
-    `连续端口 ${plan.portCount || 0} 个`,
-    `套餐流量 ${bytes(plan.trafficLimit)}`,
-    `限速 ${speed(plan.rateLimitMbps)}`,
-    `规则 ${plan.maxRules || "不限"} · 连接 ${plan.maxConnections || "不限"} · 单 IP ${plan.maxIPs || "不限"}`,
-    "计数范围：端口转发按主机，隧道转发按隧道",
-    `可用资源 ${planResourceText(plan)}`,
+    translateText("连续端口 {0} 个", [plan.portCount || 0]),
+    translateText("套餐流量 {0}", [bytes(plan.trafficLimit)]),
+    translateText("限速 {0}", [speed(plan.rateLimitMbps)]),
+    translateText("规则 {0} · 连接 {1} · 单 IP {2}", [plan.maxRules || translateText("不限"), plan.maxConnections || translateText("不限"), plan.maxIPs || translateText("不限")]),
+    translateText("计数范围：端口转发按主机，隧道转发按隧道"),
+    translateText("可用资源 {0}", [planResourceText(plan)]),
   ];
   if (Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0) {
-    items.splice(2, 0, "购买日起按月重置套餐流量");
+    items.splice(2, 0, translateText("购买日起按月重置套餐流量"));
   }
   return items;
 }
@@ -135,17 +137,17 @@ function StorePlanCard({
 
         <div className="grid grid-cols-2 gap-2 rounded-md border border-border/50 bg-muted/25 p-1">
           <div className="rounded-[6px] bg-background/80 px-3 py-2 shadow-sm">
-            <div className="text-[11px] font-medium text-muted-foreground">周期</div>
+            <div className="text-[11px] font-medium text-muted-foreground">{translateText("周期")}</div>
             <div className="mt-1 truncate text-sm font-semibold text-foreground">{durationLabel(plan.durationDays)}</div>
           </div>
           <div className="rounded-[6px] px-3 py-2">
-            <div className="text-[11px] font-medium text-muted-foreground">端口</div>
-            <div className="mt-1 truncate text-sm font-semibold text-foreground">{plan.portCount || 0} 个</div>
+            <div className="text-[11px] font-medium text-muted-foreground">{translateText("端口")}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-foreground">{plan.portCount || 0}{translateText(" 个")}</div>
           </div>
         </div>
 
         <div className="flex-1 rounded-md border border-border/40 bg-background/35 p-4">
-          <p className="text-sm font-semibold text-foreground">套餐权益</p>
+          <p className="text-sm font-semibold text-foreground">{translateText("套餐权益")}</p>
           <ul className="mt-3 space-y-2.5">
             {benefits.map((item) => (
               <li key={item} className="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-2 text-xs leading-5 text-muted-foreground">
@@ -172,9 +174,7 @@ function StorePlanCard({
             onClick={onBuy}
             disabled={purchasing}
           >
-            <ShoppingBag className="mr-2 h-4 w-4" />
-            购买套餐
-          </Button>
+            <ShoppingBag className="mr-2 h-4 w-4" />{translateText("购买套餐")}</Button>
         </div>
       </div>
     </div>
@@ -231,13 +231,13 @@ export default function Store() {
         const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: qrOrder.outTradeNo });
         if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
           setQrOrder(null);
-          toast.success("支付成功！");
+          toast.success(translateText("支付成功！"));
           utils.plans.mySubscriptions.invalidate();
           utils.billing.me.invalidate();
           utils.billing.ledger.invalidate();
         } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
           setQrOrder(null);
-          toast.error("订单已失效，请重新下单");
+          toast.error(translateText("订单已失效，请重新下单"));
         }
       } catch {
         // 轮询失败静默忽略，继续等待
@@ -249,7 +249,7 @@ export default function Store() {
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
-      toast.success("订单已创建");
+      toast.success(translateText("订单已创建"));
       setSelectedPlan(null);
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
@@ -262,12 +262,12 @@ export default function Store() {
         window.open(order.payUrl, "_blank", "noopener,noreferrer");
       }
     },
-    onError: (error) => toast.error(error.message || "创建订单失败"),
+    onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
 
   const buyWithBalance = trpc.billing.purchasePlanWithBalance.useMutation({
     onSuccess: () => {
-      toast.success("套餐已购买");
+      toast.success(translateText("套餐已购买"));
       setSelectedPlan(null);
       setDiscountCode("");
       setDiscountPreview(null);
@@ -275,17 +275,17 @@ export default function Store() {
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
     },
-    onError: (error) => toast.error(error.message || "购买失败"),
+    onError: (error) => toast.error(error.message || translateText("购买失败")),
   });
 
   const previewDiscount = trpc.billing.previewDiscount.useMutation({
     onSuccess: (data) => {
       setDiscountPreview(data);
-      toast.success("折扣码已应用");
+      toast.success(translateText("折扣码已应用"));
     },
     onError: (error) => {
       setDiscountPreview(null);
-      toast.error(error.message || "折扣码不可用");
+      toast.error(error.message || translateText("折扣码不可用"));
     },
   });
 
@@ -319,19 +319,19 @@ export default function Store() {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">商店</h1>
-          <p className="text-sm text-muted-foreground">购买套餐，开通资源。</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{translateText("商店")}</h1>
+          <p className="text-sm text-muted-foreground">{translateText("购买套餐，开通资源。")}</p>
         </div>
 
         {storeStatusLoading && (
-          <DataSectionLoading label="正在加载商店状态" />
+          <DataSectionLoading label={translateText("正在加载商店状态")} />
         )}
 
         {!storeStatusLoading && !storeStatus?.enabled && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Lock className="h-5 w-5" /> 商店暂未开启</CardTitle>
-              <CardDescription>请联系管理员开通。</CardDescription>
+              <CardTitle className="flex items-center gap-2"><Lock className="h-5 w-5" />{translateText(" 商店暂未开启")}</CardTitle>
+              <CardDescription>{translateText("请联系管理员开通。")}</CardDescription>
             </CardHeader>
           </Card>
         )}
@@ -340,16 +340,14 @@ export default function Store() {
           <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as StoreTab)} className="space-y-4">
             <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto">
               <TabsTrigger value="plans" className="gap-2">
-                <Package className="h-4 w-4" /> 订阅套餐
-              </TabsTrigger>
+                <Package className="h-4 w-4" />{translateText(" 订阅套餐")}</TabsTrigger>
               <TabsTrigger value="billing" className="gap-2">
-                <Coins className="h-4 w-4" /> 按量计费
-              </TabsTrigger>
+                <Coins className="h-4 w-4" />{translateText(" 按量计费")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="plans" className="mt-0">
               {isLoading ? (
-                <DataSectionLoading label="正在加载商店套餐" />
+                <DataSectionLoading label={translateText("正在加载商店套餐")} />
               ) : (
                 <AutoAnimateContainer className="standard-card-grid gap-4">
                   {plans.map((plan: any) => (
@@ -363,8 +361,8 @@ export default function Store() {
                   {!isLoading && plans.length === 0 && (
                     <Card className="col-span-full">
                       <CardHeader>
-                        <CardTitle>暂无可购买套餐</CardTitle>
-                        <CardDescription>暂无可用套餐。</CardDescription>
+                        <CardTitle>{translateText("暂无可购买套餐")}</CardTitle>
+                        <CardDescription>{translateText("暂无可用套餐。")}</CardDescription>
                       </CardHeader>
                     </Card>
                   )}
@@ -374,7 +372,7 @@ export default function Store() {
 
             <TabsContent value="billing" className="mt-0">
               {trafficBillingLoading ? (
-                <DataSectionLoading label="正在加载按量计费资源" />
+                <DataSectionLoading label={translateText("正在加载按量计费资源")} />
               ) : (
                 <AutoAnimateContainer className="standard-card-grid gap-4">
                   {(trafficBillingStore?.configs || []).map((config: any) => (
@@ -386,13 +384,13 @@ export default function Store() {
                               {config.resourceType === "host" ? <Server className="h-5 w-5" /> : <Route className="h-5 w-5" />}
                               {config.resourceName}
                             </CardTitle>
-                            <CardDescription className="mt-2">余额可用时可直接在转发规则中使用。</CardDescription>
+                            <CardDescription className="mt-2">{translateText("余额可用时可直接在转发规则中使用。")}</CardDescription>
                           </div>
-                          <Badge variant="outline">{config.resourceKind || (config.resourceType === "host" ? "历史主机" : config.resourceType === "tunnel" ? "隧道转发" : "转发资源")}</Badge>
+                          <Badge variant="outline">{config.resourceKind || (config.resourceType === "host" ? translateText("历史主机") : config.resourceType === "tunnel" ? translateText("隧道转发") : translateText("转发资源"))}</Badge>
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-4">
-                        <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 计费 GB</span></div>
+                        <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">{translateText("/ 计费 GB")}</span></div>
                         {billingDescription(config) ? (
                           <div className="whitespace-pre-line break-words text-sm leading-7 text-muted-foreground">
                             {billingDescription(config)}
@@ -400,14 +398,12 @@ export default function Store() {
                         ) : (
                           <>
                             <div className="grid gap-2 text-sm text-muted-foreground">
-                              <div>基础单价：{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
-                              <div>倍率：{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
-                              <div>资源编号：#{config.resourceId}</div>
-                              <div>创建规则时选择该资源，按实际计费流量从余额扣费。</div>
+                              <div>{translateText("基础单价：")}{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
+                              <div>{translateText("倍率：")}{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
+                              <div>{translateText("资源编号：#")}{config.resourceId}</div>
+                              <div>{translateText("创建规则时选择该资源，按实际计费流量从余额扣费。")}</div>
                             </div>
-                            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
-                              该资源无需购买套餐；账户有余额即可使用。
-                            </div>
+                            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("该资源无需购买套餐；账户有余额即可使用。")}</div>
                           </>
                         )}
                       </CardContent>
@@ -416,8 +412,8 @@ export default function Store() {
                   {(trafficBillingStore?.configs || []).length === 0 && (
                     <Card className="col-span-full">
                       <CardHeader>
-                        <CardTitle>暂无公开按量计费资源</CardTitle>
-                        <CardDescription>管理员公开资源后会在这里展示倍率和单价。</CardDescription>
+                        <CardTitle>{translateText("暂无公开按量计费资源")}</CardTitle>
+                        <CardDescription>{translateText("管理员公开资源后会在这里展示倍率和单价。")}</CardDescription>
                       </CardHeader>
                     </Card>
                   )}
@@ -432,31 +428,29 @@ export default function Store() {
           <DialogContent className="sm:max-w-sm">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <WalletCards className="h-5 w-5" />
-                扫码支付
-              </DialogTitle>
+                <WalletCards className="h-5 w-5" />{translateText("扫码支付")}</DialogTitle>
               <DialogDescription>
-                {qrOrder?.subject ? `购买 ${qrOrder.subject}` : "请使用支付宝或微信扫码完成支付"}
+                {qrOrder?.subject ? translateText("购买 {0}", [qrOrder.subject]) : translateText("请使用支付宝或微信扫码完成支付")}
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-col items-center gap-4 py-2">
               {qrDataUrl ? (
                 <div className="rounded-lg border border-border/40 bg-white p-3 shadow-sm">
-                  <img src={qrDataUrl} alt="支付二维码" width={220} height={220} />
+                  <img src={qrDataUrl} alt={translateText("支付二维码")} width={220} height={220} />
                 </div>
               ) : (
                 <div className="flex h-[220px] w-[220px] items-center justify-center rounded-lg border border-border/40">
                   <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
                 </div>
               )}
-              <p className="text-sm text-muted-foreground">请使用支付宝 / 微信扫描二维码</p>
+              <p className="text-sm text-muted-foreground">{translateText("请使用支付宝 / 微信扫描二维码")}</p>
               <div className="flex w-full items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
-                <span>正在等待支付结果，付款后将自动跳转……</span>
+                <span>{translateText("正在等待支付结果，付款后将自动跳转……")}</span>
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setQrOrder(null)}>取消</Button>
+              <Button variant="outline" onClick={() => setQrOrder(null)}>{translateText("取消")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -465,40 +459,36 @@ export default function Store() {
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <CreditCard className="h-5 w-5" />
-                选择支付方式
-              </DialogTitle>
-              <DialogDescription>
-                购买 {selectedPlan?.name || "套餐"}，金额 {selectedPlan ? money(finalAmountCents, selectedPlan.currency) : "-"}
+                <CreditCard className="h-5 w-5" />{translateText("选择支付方式")}</DialogTitle>
+              <DialogDescription>{translateText("购买 ")}{selectedPlan?.name || translateText("套餐")}{translateText("，金额 ")}{selectedPlan ? money(finalAmountCents, selectedPlan.currency) : "-"}
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
               <div className="rounded-lg border bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">原价</span>
+                  <span className="text-muted-foreground">{translateText("原价")}</span>
                   <span>{selectedPlan ? money(selectedPlan.priceCents, selectedPlan.currency) : "-"}</span>
                 </div>
                 {discountPreview && (
                   <div className="mt-1 flex items-center justify-between text-emerald-600">
-                    <span>优惠</span>
+                    <span>{translateText("优惠")}</span>
                     <span>-{money(discountPreview.discountAmountCents, selectedPlan?.currency)}</span>
                   </div>
                 )}
                 <div className="mt-2 flex items-center justify-between font-medium">
-                  <span>应付</span>
+                  <span>{translateText("应付")}</span>
                   <span>{money(finalAmountCents, selectedPlan?.currency)}</span>
                 </div>
               </div>
               {billingFeatures?.discountEnabled && (
               <div className="flex gap-2">
-                <Input value={discountCode} onChange={(e) => setDiscountCode(e.target.value.toUpperCase())} placeholder="折扣码（可选）" />
+                <Input value={discountCode} onChange={(e) => setDiscountCode(e.target.value.toUpperCase())} placeholder={translateText("折扣码（可选）")} />
                 <Button
                   variant="outline"
                   onClick={() => selectedPlan && previewDiscount.mutate({ code: discountCode, amountCents: Number(selectedPlan.priceCents || 0), planId: selectedPlan.id })}
                   disabled={!discountCode.trim() || previewDiscount.isPending}
                 >
-                  <TicketPercent className="mr-2 h-4 w-4" /> 应用
-                </Button>
+                  <TicketPercent className="mr-2 h-4 w-4" />{translateText(" 应用")}</Button>
               </div>
               )}
               <div className="grid gap-2">
@@ -511,9 +501,7 @@ export default function Store() {
                   } disabled:cursor-not-allowed disabled:opacity-60`}
                 >
                   <span className="flex items-center gap-2 font-medium">
-                    <WalletCards className="h-4 w-4" />
-                    余额支付（
-                    <AnimatedStatValue
+                    <WalletCards className="h-4 w-4" />{translateText("余额支付（")}<AnimatedStatValue
                       value={money(wallet?.balanceCents)}
                       loading={walletLoading}
                       cacheKey="store.wallet.balance.inline"
@@ -540,17 +528,15 @@ export default function Store() {
                   </button>
                 ))}
                 {paymentMethods.length === 0 && (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                    暂无在线支付方式。
-                  </div>
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{translateText("暂无在线支付方式。")}</div>
                 )}
               </div>
             </div>
             <DialogFooter className="gap-2">
-              <Button variant="outline" onClick={() => setSelectedPlan(null)}>取消</Button>
+              <Button variant="outline" onClick={() => setSelectedPlan(null)}>{translateText("取消")}</Button>
               <Button onClick={confirmBuy} disabled={createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {payMode === "balance" ? (walletLoading ? "余额加载中" : "余额购买") : "去支付"}
+                {payMode === "balance" ? (walletLoading ? translateText("余额加载中") : translateText("余额购买")) : translateText("去支付")}
               </Button>
             </DialogFooter>
           </DialogContent>

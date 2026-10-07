@@ -1,10 +1,11 @@
+import { t as translateText } from "@/i18n";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 
 export function tunnelEndpointName(tunnel: any | null | undefined, role: "entry" | "exit", hosts: any[] | undefined) {
   const hostId = Number(role === "entry" ? tunnel?.entryHostId : tunnel?.exitHostId);
   const fromList = hosts?.find((host: any) => Number(host.id) === hostId);
   const fromTunnel = role === "entry" ? tunnel?.entryHost : tunnel?.exitHost;
-  return fromList?.name || fromTunnel?.name || `主机 #${hostId}`;
+  return fromList?.name || fromTunnel?.name || translateText("主机 #{0}", [hostId]);
 }
 
 export function tunnelHopHostName(tunnel: any | null | undefined, hostId: number, hosts: any[] | undefined) {
@@ -16,7 +17,7 @@ export function tunnelHopHostName(tunnel: any | null | undefined, hostId: number
   if (fromList?.name || fromTunnel?.name) return fromList?.name || fromTunnel?.name;
   if (Number(tunnel?.entryHostId) === id) return tunnelEndpointName(tunnel, "entry", hosts);
   if (Number(tunnel?.exitHostId) === id) return tunnelEndpointName(tunnel, "exit", hosts);
-  return `主机 #${id}`;
+  return translateText("主机 #{0}", [id]);
 }
 
 export function getTunnelLoadBalanceExitNames(tunnel: any | null | undefined, hosts: any[] | undefined) {
@@ -64,17 +65,17 @@ export function getTunnelRouteText(
     hopNames[hopNames.length - 1] = normalizedExitGroupName;
     const exitNames = getTunnelExitNames(tunnel, hosts);
     const routeText = String(tunnel?.relayMode || "").toLowerCase() === "failover" && hopNames.length >= 4
-      ? `${hopNames[0]} -> 中转：${hopNames.slice(1, -1).join(" / ")} -> ${hopNames[hopNames.length - 1]}`
+      ? translateText("{0} -> 中转：{1} -> {2}", [hopNames[0], hopNames.slice(1, -1).join(" / "), hopNames[hopNames.length - 1]])
       : hopNames.join(" -> ");
-    return `${routeText}${exitNames.length > 0 ? `\uFF1B\u51FA\u53E3\uFF1A${exitNames.join(" / ")}` : ""}`;
+    return exitNames.length > 0 ? translateText("{0}；出口：{1}", [routeText, exitNames.join(" / ")]) : routeText;
   }
   const routeText = String(tunnel?.relayMode || "").toLowerCase() === "failover" && hopNames.length >= 4
-    ? `${hopNames[0]} -> 中转：${hopNames.slice(1, -1).join(" / ")} -> ${hopNames[hopNames.length - 1]}`
+    ? translateText("{0} -> 中转：{1} -> {2}", [hopNames[0], hopNames.slice(1, -1).join(" / "), hopNames[hopNames.length - 1]])
     : hopNames.join(" -> ");
   const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts)
     .filter((name) => !hopNames.includes(name));
   if (extraExitNames.length > 0) {
-    return `${routeText}；出口：${getTunnelExitNames(tunnel, hosts).join(" / ")}`;
+    return translateText("{0}；出口：{1}", [routeText, getTunnelExitNames(tunnel, hosts).join(" / ")]);
   }
   return routeText;
 }

@@ -1,3 +1,4 @@
+import { t as translateText, getFormatLocale } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { useOverlayContainer } from "@/components/ui/overlay-root";
 import { cn } from "@/lib/utils";
@@ -33,7 +34,7 @@ export function parseDateInputValue(value: string) {
 function formatPickerLabel(value: string) {
   const date = parseDateInputValue(value);
   if (!date) return "";
-  return `${date.getFullYear()}年${padDatePart(date.getMonth() + 1)}月${padDatePart(date.getDate())}日`;
+  return translateText("{0}年{1}月{2}日", [date.getFullYear(), padDatePart(date.getMonth() + 1), padDatePart(date.getDate())]);
 }
 
 function sameDateOnly(a: Date | null, b: Date) {
@@ -56,7 +57,7 @@ export default function DatePickerInput({
   onChange,
   align = "start",
   className,
-  placeholder = "年/月/日",
+  placeholder = translateText("年/月/日"),
 }: DatePickerInputProps) {
   const selected = useMemo(() => parseDateInputValue(value), [value]);
   const selectedTime = selected?.getTime() ?? null;
@@ -166,16 +167,16 @@ export default function DatePickerInput({
     >
       <div className="p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label={translateText("上个月")}>
             <ChevronLeft className="h-4 w-4" />
           </button>
-          <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
+          <div className="text-sm font-semibold">{viewDate.toLocaleDateString(getFormatLocale(), { year: "numeric", month: "long" })}</div>
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label={translateText("下个月")}>
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
         <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
-          {["一", "二", "三", "四", "五", "六", "日"].map((day) => <div key={day} className="py-1">{day}</div>)}
+          {Array.from({ length: 7 }, (_, index) => new Date(2024, 0, 1 + index).toLocaleDateString(getFormatLocale(), { weekday: "short" })).map((day) => <div key={day} className="py-1">{day}</div>)}
         </div>
         <div className="mt-1 grid grid-cols-7 gap-1">
           {days.map((day) => (
@@ -190,8 +191,8 @@ export default function DatePickerInput({
           ))}
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background" onClick={() => commitDate(new Date())}>今天</Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background" onClick={() => commitDate(new Date())}>{translateText("今天")}</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>{translateText("清除")}</Button>
         </div>
       </div>
     </div>

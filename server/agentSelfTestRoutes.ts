@@ -26,6 +26,8 @@ import {
   tunnelLatencySampleIsAfterBaseline,
 } from "./tunnelLatencyDetails";
 import { FORWARD_TUNNEL_LATENCY_WAIT_MS } from "./selfTestTiming";
+import { settleManualTunnelProbeBatch } from "./tunnelManualProbe";
+import { settleManualForwardChainBatch } from "./forwardChainManualProbe";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
@@ -154,7 +156,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       return;
     }
     const { testId, targetReachable, latencyMs, message, resolvedTargetIp } = req.body || {};
-    if (typeof testId !== "number") {
+    if (!Number.isInteger(testId) || testId <= 0) {
       res.status(400).json({ error: "testId is required" });
       return;
     }
@@ -163,11 +165,29 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       res.status(404).json({ error: "test not found" });
       return;
     }
-    const meta = parseSelfTestMeta((t as any).message);
+    const meta = parseSelfTestMeta((t as any).requestMessage ?? (t as any).message);
     const success = !!targetReachable;
-    const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
+    const cleanLatency = typeof latencyMs === "number" && Number.isFinite(latencyMs) && latencyMs >= 0
+      ? Math.max(1, Math.round(latencyMs)) : null;
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
+    if (typeof targetReachable !== "boolean" || (targetReachable && cleanLatency === null)) {
+      res.status(400).json({ error: "Invalid probe result: successful probes require a finite latency" });
+      return;
+    }
+    const durableBatchId = String((t as any).batchId || "");
+    if (durableBatchId.startsWith("tp-") || durableBatchId.startsWith("fc-")) {
+      // Commit the individual report before locking the batch. Otherwise two
+      // reporters can each hold one row and deadlock while finalizing all rows.
+      const accepted = await db.completeForwardTestIfActive(testId, {
+        status: success ? "success" : "failed", listenOk: true, targetReachable: success,
+        forwardOk: success, latencyMs: success ? cleanLatency : null, message: cleanMessage,
+      });
+      if (durableBatchId.startsWith("tp-")) await settleManualTunnelProbeBatch(durableBatchId);
+      else await settleManualForwardChainBatch(durableBatchId);
+      res.json({ success: true, ignored: !accepted });
+      return;
+    }
     const tunnelLatencyBaselineId = meta?.kind === "forward-via-tunnel"
       ? Number((meta as any).tunnelLatencyBaselineId || 0)
       : 0;
@@ -525,7 +545,7 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
     for (const t of pendingTests) {
       const claimed = await db.markForwardTestRunning(t.id);
       if (!claimed) continue;
-      const meta = parseSelfTestMeta((t as any).message);
+      const meta = parseSelfTestMeta((t as any).requestMessage ?? (t as any).message);
       const metaSelfTest = buildMetaAgentSelfTestPayload(t, meta);
       if (metaSelfTest) {
         selfTests.push(metaSelfTest);

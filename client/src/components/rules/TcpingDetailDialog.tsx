@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -64,7 +65,7 @@ function TcpingTooltipContent({ active, payload, label }: any) {
     <div className="pointer-events-none rounded-lg border border-border bg-card px-3 py-2 shadow-md">
       <p className="mb-1 text-xs text-muted-foreground">{data.fullLabel || label}</p>
       {isTimeout ? (
-        <p className="text-sm font-semibold text-destructive">超时</p>
+        <p className="text-sm font-semibold text-destructive">{translateText("超时")}</p>
       ) : latency > 0 ? (
         <p className="text-sm font-semibold tabular-nums">
           <span className={latency < 50 ? "text-emerald-500" : latency < 100 ? "text-chart-3" : latency < 200 ? "text-amber-500" : "text-destructive"}>
@@ -72,11 +73,10 @@ function TcpingTooltipContent({ active, payload, label }: any) {
           </span>
         </p>
       ) : (
-        <p className="text-sm text-muted-foreground">无数据</p>
+        <p className="text-sm text-muted-foreground">{translateText("无数据")}</p>
       )}
       {counts.probeCount > 1 && counts.probeSuccesses < counts.probeCount ? (
-        <p className="mt-1 text-xs text-muted-foreground">
-          丢包 {counts.probeCount - counts.probeSuccesses}/{counts.probeCount}（{((counts.probeCount - counts.probeSuccesses) / counts.probeCount * 100).toFixed(0)}%）
+        <p className="mt-1 text-xs text-muted-foreground">{translateText("本轮探测失败 ")}{counts.probeCount - counts.probeSuccesses}/{counts.probeCount}（{((counts.probeCount - counts.probeSuccesses) / counts.probeCount * 100).toFixed(0)}%）
         </p>
       ) : null}
     </div>
@@ -101,6 +101,10 @@ function TcpingDetailDialog({
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const methodLabel = probeMethod === "ping" ? "Ping" : "TCPing";
+  const { data: counterStatistics } = trpc.rules.probeStatistics.useQuery(
+    { ruleId, hours: timeRangeHours },
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+  );
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
     { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
@@ -150,7 +154,7 @@ function TcpingDetailDialog({
   }, [chartData]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
-  const tcpingStats = useMemo(() => getLatencyStabilityStats(chartData), [chartData]);
+  const tcpingStats = useMemo(() => getLatencyStabilityStats(rawChartData, counterStatistics ?? null), [rawChartData, counterStatistics]);
   const shouldAnimateChart = open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
 
   useEffect(() => {
@@ -164,10 +168,10 @@ function TcpingDetailDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle className="truncate text-base sm:text-lg">
-                {isForwardChain ? "转发链路延迟" : `转发链路延迟 (${methodLabel})`} - {ruleName}
+                {isForwardChain ? translateText("转发链路延迟") : translateText("转发链路延迟 ({0})", [methodLabel])} - {ruleName}
               </DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
-                {isForwardChain ? `最近 ${latencyTimeRangeLabel(timeRangeHours)} 链路汇总延迟和丢包。` : `最近 ${latencyTimeRangeLabel(timeRangeHours)} 延迟和丢包。`}
+                {isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? "Ping 丢包" : "TCP 连接失败"])}
               </DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
@@ -181,9 +185,7 @@ function TcpingDetailDialog({
             {showInitialLoading ? (
               <Skeleton className="h-full w-full" />
             ) : chartData.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                暂无 {methodLabel} 数据
-              </div>
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{translateText("暂无 ")}{methodLabel}{translateText(" 数据")}</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
@@ -212,7 +214,7 @@ function TcpingDetailDialog({
                   <Area
                     type="monotone"
                     dataKey="chartLatency"
-                    name="延迟"
+                    name={translateText("延迟")}
                     stroke="var(--color-chart-2)"
                     strokeWidth={1.6}
                     strokeLinecap="round"
@@ -227,7 +229,12 @@ function TcpingDetailDialog({
               </ResponsiveContainer>
             )}
           </div>
-          <LatencyStabilityStats stats={tcpingStats} />
+          <LatencyStabilityStats stats={tcpingStats} sampleLabel={isForwardChain ? translateText("逐跳探测次数") : translateText("实际探测次数")}
+            failureLabel={isForwardChain ? translateText("逐跳探测失败率") : probeMethod === "ping" ? translateText("Ping 丢包率") : translateText("TCP 连接失败率")}
+            counterStatistics={counterStatistics ?? null}
+            description={isForwardChain
+              ? translateText("按各跳实际探测计数，不等于端到端业务丢包；仅包含支持累计计数且已上报的 Agent 探测。")
+              : translateText("统计当前目标的实际探测，不代表业务丢包；隧道路径健康状态另行判断。旧数据不补算，统计边界受上报间隔影响。")} />
         </div>
       </DialogContent>
     </Dialog>

@@ -1,3 +1,5 @@
+import { t as translateText } from "@/i18n";
+import GoogleLoginButton from "@/components/GoogleLoginButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -5,16 +7,16 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { createHomepageDocument } from "@/lib/homepageHtml";
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, Gauge, Lock, Network, Server, ShieldCheck, WalletCards, Zap } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/localizedToast";
 import { Link } from "wouter";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
 
 const features = [
-  { title: "多主机 Agent 管理", text: "统一接入多台 Linux 服务器，面板不保存 SSH 密钥。", icon: Server },
-  { title: "端口与隧道转发", text: "管理 TCP、UDP、隧道和转发链。", icon: Network },
-  { title: "权限与套餐", text: "按用户分配转发资源、流量和有效期。", icon: ShieldCheck },
-  { title: "流量统计与提醒", text: "展示转发流量趋势，并可通过邮件提醒临期和流量不足。", icon: Gauge },
+  { title: translateText("多主机 Agent 管理"), text: translateText("统一接入多台 Linux 服务器，面板不保存 SSH 密钥。"), icon: Server },
+  { title: translateText("端口与隧道转发"), text: translateText("管理 TCP、UDP、隧道和转发链。"), icon: Network },
+  { title: translateText("权限与套餐"), text: translateText("按用户分配转发资源、流量和有效期。"), icon: ShieldCheck },
+  { title: translateText("流量统计与提醒"), text: translateText("展示转发流量趋势，并可通过邮件提醒临期和流量不足。"), icon: Gauge },
 ];
 
 export function CustomPublicHome({ html }: { html: string }) {
@@ -51,10 +53,10 @@ export default function PublicHome() {
         </Link>
         <div className="flex items-center gap-2">
           <Button variant="ghost" asChild>
-            <Link href="/login">登录</Link>
+            <Link href="/login">{translateText("登录")}</Link>
           </Button>
           <Button asChild>
-            <Link href="/login?mode=register" onClick={handleRegisterClick}>注册</Link>
+            <Link href="/login?mode=register" onClick={handleRegisterClick}>{translateText("注册")}</Link>
           </Button>
         </div>
       </header>
@@ -63,26 +65,21 @@ export default function PublicHome() {
         <section className="mx-auto grid min-h-[calc(100vh-84px)] w-full max-w-6xl items-center gap-8 px-4 pb-12 pt-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="space-y-6">
             <Badge variant="outline" className="w-fit gap-2 border-primary/25 bg-background/55 px-3 py-1.5 text-primary backdrop-blur">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-              面向 Linux 服务器的转发管理面板
-            </Badge>
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />{translateText("面向 Linux 服务器的转发管理面板")}</Badge>
             <div className="space-y-4">
               <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">{siteTitle}</h1>
-              <p className="max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
-                统一管理转发、隧道、用户和流量。
-              </p>
+              <p className="max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">{translateText("统一管理转发、隧道、用户和流量。")}</p>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row">
               <Button size="lg" asChild>
-                <Link href="/login">
-                  进入面板
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                <Link href="/login">{translateText("进入面板")}<ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
-                <Link href="/login?mode=register" onClick={handleRegisterClick}>创建账号</Link>
+                <Link href="/login?mode=register" onClick={handleRegisterClick}>{translateText("创建账号")}</Link>
               </Button>
             </div>
+            <GoogleLoginButton className="max-w-sm" />
           </div>
 
           <div className="grid gap-3">
@@ -108,15 +105,15 @@ export default function PublicHome() {
             <div className="grid grid-cols-3 gap-3">
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <Zap className="mx-auto h-4 w-4 text-chart-4" />
-                <p className="mt-2 text-xs text-muted-foreground">在线升级</p>
+                <p className="mt-2 text-xs text-muted-foreground">{translateText("在线升级")}</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <WalletCards className="mx-auto h-4 w-4 text-chart-2" />
-                <p className="mt-2 text-xs text-muted-foreground">套餐支付</p>
+                <p className="mt-2 text-xs text-muted-foreground">{translateText("套餐支付")}</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <Lock className="mx-auto h-4 w-4 text-primary" />
-                <p className="mt-2 text-xs text-muted-foreground">加密通信</p>
+                <p className="mt-2 text-xs text-muted-foreground">{translateText("加密通信")}</p>
               </div>
             </div>
           </div>
@@ -130,13 +127,9 @@ export default function PublicHome() {
             GitHub
           </a>
           <span className="text-muted-foreground/45">|</span>
-          <a href="https://poouo.github.io/Forwardx/" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
-            使用教程
-          </a>
+          <a href="https://poouo.github.io/Forwardx/" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">{translateText("使用教程")}</a>
           <span className="text-muted-foreground/45">|</span>
-          <a href="https://t.me/ForwardX_panel" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
-            Telegram 群组
-          </a>
+          <a href="https://t.me/ForwardX_panel" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">{translateText("Telegram 群组")}</a>
         </div>
       </footer>
     </div>

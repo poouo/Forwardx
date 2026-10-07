@@ -1930,7 +1930,8 @@ func acquireSharedRuntimeSyncGate(a action) func() {
 	statusType := strings.TrimSpace(a.StatusType)
 	forwardType := strings.TrimSpace(a.ForwardType)
 	if statusType == "runtime" && forwardType == "gost-runtime-sync" {
-		// 独占写锁：等待所有 gost/guard worker 完成后才重写 gost.json 并重启服务。
+		// 独占写锁：等待所有 gost/guard worker 完成后同步共享配置。
+		// 新增监听走局部更新，只有非增量修改或进程恢复才需要重启服务。
 		sharedGostRuntimeSyncGate.Lock()
 		return sharedGostRuntimeSyncGate.Unlock
 	}
