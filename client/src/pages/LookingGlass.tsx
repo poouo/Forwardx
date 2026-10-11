@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { HelpDetails } from "@/components/ui/help-details";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -540,21 +541,17 @@ export default function LookingGlass() {
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="gap-1.5 border-chart-1/30 bg-chart-1/10 text-chart-1">
-                <Globe2 className="h-3.5 w-3.5" />{translateText("网络测试")}</Badge>
               <Badge variant="outline" className="gap-1.5 border-chart-4/30 bg-chart-4/10 text-chart-4">
                 <ShieldCheck className="h-3.5 w-3.5" />{translateText("公网目标限定")}</Badge>
             </div>
             <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("网络测试")}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">{translateText("从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，或临时启动 iperf3 服务端进行直连测试。")}</p>
           </div>
         </div>
 
-        <Alert className="border-chart-1/25 bg-chart-1/10 text-foreground [&>svg]:text-chart-1">
-          <Globe2 className="h-4 w-4" />
-          <AlertTitle className="text-chart-1">{translateText("网络测试")}</AlertTitle>
-          <AlertDescription>{translateText("同一时间只允许执行一个测试。普通网络测试会拒绝内网、环回、链路本地或保留地址；iperf3 服务端空闲 3 分钟后会自动停止。")}</AlertDescription>
-        </Alert>
+        <HelpDetails>
+          <p>{translateText("从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，或临时启动 iperf3 服务端进行直连测试。")}</p>
+          <p>{translateText("同一时间只允许执行一个测试。普通网络测试会拒绝内网、环回、链路本地或保留地址；iperf3 服务端空闲 3 分钟后会自动停止。")}</p>
+        </HelpDetails>
 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,420px)_1fr]">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">

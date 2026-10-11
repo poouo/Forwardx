@@ -471,10 +471,9 @@ export default function TrafficBillingConfigManager({
   return (
     <div className="space-y-6">
       {showHeader && (
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("流量计费管理")}</h1>
-            <p className="text-sm text-muted-foreground">{translateText("按资源设置流量单价。")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">

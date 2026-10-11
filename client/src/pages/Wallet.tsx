@@ -56,8 +56,8 @@ function balanceTypeText(type?: string | null) {
 
 function ledgerTone(item: any) {
   if (item.kind === "balance" && Number(item.amountCents) < 0) return "text-destructive";
-  if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600";
-  if (item.kind === "payment" && (item.status === "paid" || item.status === "completed")) return "text-emerald-600";
+  if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600 dark:text-emerald-400";
+  if (item.kind === "payment" && (item.status === "paid" || item.status === "completed")) return "text-emerald-600 dark:text-emerald-400";
   return "";
 }
 
@@ -114,7 +114,6 @@ export default function Wallet() {
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("账单中心")}</h1>
-            <p className="text-sm text-muted-foreground">{translateText("余额、充值和订单记录。")}</p>
           </div>
           <Button onClick={openRecharge}>
             <CreditCard className="mr-2 h-4 w-4" />{translateText("自助充值")}</Button>
@@ -140,7 +139,6 @@ export default function Wallet() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Gift className="h-5 w-5" />{translateText("兑换码")}</CardTitle>
-                <CardDescription>{translateText("输入兑换码即可使用。")}</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3 sm:flex-row">
                 <Input
@@ -159,7 +157,6 @@ export default function Wallet() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <ReceiptText className="h-5 w-5" />{translateText("账单流水")}</CardTitle>
-            <CardDescription>{translateText("按时间查看全部记录。")}</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {ledgerLoading ? (
@@ -244,7 +241,7 @@ export default function Wallet() {
                     <TableCell>
                       <Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge>
                     </TableCell>
-                    <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}>
+                    <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}>
                       {money(tx.amountCents)}
                     </TableCell>
                     <TableCell>{money(tx.balanceAfterCents)}</TableCell>

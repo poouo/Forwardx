@@ -25,7 +25,7 @@ IPA 旁提供 `.sha256` 校验文件和签名说明。更换签名身份或 Bund
 
 也可在 Actions → iOS IPA → Run workflow 手动构建选定分支；手动构建仅提供 Actions 附件，不修改 GitHub Release。Actions 附件默认保留 30 天，Release 附件不受此期限影响。无需 Apple 账号、签名证书或仓库签名 Secrets。
 
-iOS 应用版本来自 `shared/versions.ts` 的 `IOS_APP_VERSION`，独立于面板及 Android 应用版本；修改 iOS 客户端后应递增该版本，应用才会提示有新版本。
+Android 和 iOS 应用版本分别读取 `shared/versions.ts` 的 `ANDROID_APP_VERSION` / `IOS_APP_VERSION`，发布时保持一致（本次均为 `2.4.1`），独立于面板版本。共用 UI 更新时两者一起递增；版本校验会阻止不一致发布。应用根据本平台安装包的版本检查更新，需等相应 APK / IPA 附件构建并上传后才能检测到；仅更新服务端不会替换已安装客户端的内置页面。
 
 ## 本地开发与打包
 

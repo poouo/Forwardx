@@ -20,6 +20,7 @@ ForwardX 通过轻量 Agent 统一管理多台 Linux 服务器上的端口转发
 
 ## 文档目录
 
+- [界面与常用操作](docs/guide/interface.md) · [版本与文档更新](docs/guide/releases.md)
 - [部署总览](docs/guide/deploy-panel.md) · [Docker 部署](docs/guide/deploy-docker.md) · [本地部署](docs/guide/deploy-local.md)
 - [数据库](docs/guide/database.md) · [HTTPS 与反代](docs/guide/reverse-proxy.md) · [环境变量](docs/guide/env-vars.md)
 - [首次初始化](docs/guide/first-setup.md) · [Agent 安装](docs/guide/agent.md) · [转发规则](docs/guide/rules.md)

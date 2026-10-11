@@ -75,6 +75,9 @@ if (pkg.version !== appVersion) {
 if (androidApkReleaseVersion !== appVersion) {
   errors.push(`ANDROID_APK_RELEASE_VERSION ${androidApkReleaseVersion} does not match APP_VERSION ${appVersion}`);
 }
+if (iosAppVersion !== androidAppVersion) {
+  errors.push(`IOS_APP_VERSION ${iosAppVersion} must match ANDROID_APP_VERSION ${androidAppVersion}`);
+}
 if (agentMainVersion !== agentVersion) {
   errors.push(`agent/main.go Version ${agentMainVersion || "(missing)"} does not match AGENT_VERSION ${agentVersion}`);
 }

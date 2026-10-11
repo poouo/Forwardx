@@ -1,12 +1,23 @@
 # 文档目录
 
-ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用户权限、流量和延迟。实际版本以「系统设置 → 系统配置」、主机上报与 [GitHub Releases](https://github.com/poouo/Forwardx/releases) 为准；文档不单独维护版本号清单。
+ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用户权限、流量和延迟。本文档按部署、使用和运维组织；当前发布及文档站更新状态见 [版本与文档更新](./releases.md)，已安装版本以面板与主机实际显示为准。
 
 ## 第一次使用
 
 [部署前准备](./preparation.md) → [选择部署方式](./deploy-panel.md) → [首次初始化](./first-setup.md) → [安装 Agent](./agent.md) → 创建链路资源 → [添加规则](./rules.md)。
 
 只想先跑通一条规则，直接阅读 [快速开始](./quick-start.md)。
+
+## 按需求查找
+
+| 你要做什么 | 从这里开始 |
+| --- | --- |
+| 全新安装 | [快速开始](./quick-start.md) → [首次初始化](./first-setup.md) |
+| 找不到操作或界面变了 | [界面与常用操作](./interface.md) |
+| 规则不通、流量不更新、探测异常 | [故障排查](./troubleshooting.md)、[流量和延迟](./traffic-latency.md) |
+| 设置单规则额度或用户权限 | [转发规则](./rules.md)、[用户与套餐](./users-billing.md) |
+| 升级、备份或迁移 | [升级备份](./upgrade-backup.md)、[迁移](./migration.md) |
+| 手机端安装与更新 | [APK / IPA](./mobile-app.md) |
 
 ## 面板部署与配置
 
@@ -53,6 +64,7 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | [安装目录、数据与日志](./paths-logs.md) | Docker、本地、Agent 路径和诊断信息 |
 | [管理员账号恢复](./account-recovery.md) | 容器内与本地交互式密码重置 |
 | [升级与备份](./upgrade-backup.md) | 一致备份、升级、兼容格式转换 |
+| [版本与文档更新](./releases.md) | 组件版本、构建状态和文档未更新排查 |
 | [迁移到新面板](./migration.md) | 无缝转交与普通迁移，旧面板保留条件 |
 | [常见问题排查](./troubleshooting.md) | 从面板、Agent 到规则和链路逐层定位 |
 | [卸载与数据保留](./uninstall.md) | 卸载范围与不可逆数据删除 |

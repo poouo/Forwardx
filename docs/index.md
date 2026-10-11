@@ -4,7 +4,7 @@ layout: home
 hero:
   name: ForwardX
   text: 转发管理面板用户教程
-  tagline: 面板部署、Agent 安装、转发配置和故障排查。
+  tagline: 从首次部署到日常管理，按需求查找配置、升级与排障方法。
   actions:
     - theme: brand
       text: 快速开始
@@ -15,6 +15,9 @@ hero:
     - theme: alt
       text: 文档目录
       link: /guide/
+    - theme: alt
+      text: 本次更新
+      link: /guide/releases
 
 features:
   - title: 快速部署

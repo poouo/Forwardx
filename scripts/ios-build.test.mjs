@@ -47,6 +47,18 @@ test("IPA version comes from shared iOS version, never panel/Android", () => {
   assert.match(readIOSVersion(), /^\d+\.\d+\.\d+$/);
 });
 
+test("published Android and iOS versions stay aligned, including local Xcode builds", () => {
+  const shared = read("shared/versions.ts");
+  const android = shared.match(/ANDROID_APP_VERSION\s*=\s*"([^"]+)"/)?.[1];
+  const ios = readIOSVersion();
+  assert.equal(ios, android);
+  const project = read("ios/App/App.xcodeproj/project.pbxproj");
+  const marketingVersions = [...project.matchAll(/MARKETING_VERSION = ([^;]+);/g)].map(match => match[1]);
+  const buildVersions = [...project.matchAll(/CURRENT_PROJECT_VERSION = ([^;]+);/g)].map(match => match[1]);
+  assert.deepEqual(marketingVersions, [ios, ios]);
+  assert.deepEqual(buildVersions, [ios, ios]);
+});
+
 test("build targets a Release arm64 physical device with signing disabled", () => {
   const args = iosBuildArguments("1.0.2", "/tmp/ios-derived");
   for (const expected of ["Release", "iphoneos", "generic/platform=iOS", "ARCHS=arm64", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "MARKETING_VERSION=1.0.2", "CURRENT_PROJECT_VERSION=1.0.2"]) {

@@ -21,17 +21,17 @@ const options: Array<{
 }> = [
   {
     value: "tunnel",
-    label: translateText("隧道链路"),
+    label: "隧道链路",
     icon: Network,
   },
   {
     value: "port",
-    label: translateText("端口转发"),
+    label: "端口转发",
     icon: ArrowRightLeft,
   },
   {
     value: "chain",
-    label: translateText("转发链"),
+    label: "转发链",
     icon: Route,
   },
 ];
@@ -65,7 +65,7 @@ export default function LinkCreateTypeSelector({
               className={segmentedOptionClassName(isActive, disabled)}
             >
               <Icon className={segmentedIconClassName(isActive)} />
-              <span>{option.label}</span>
+              <span>{translateText(option.label)}</span>
             </button>
           );
         })}

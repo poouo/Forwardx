@@ -133,9 +133,6 @@ export default function Announcements() {
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? translateText("公告管理") : translateText("公告")}</h1>
-            <p className="text-sm text-muted-foreground">
-              {isAdmin ? translateText("管理普通公告和登录弹窗。") : translateText("查看管理员发布的公告信息。")}
-            </p>
           </div>
           {isAdmin && (
             <Button onClick={() => { setForm(emptyForm); setOpen(true); }}>

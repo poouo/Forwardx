@@ -199,8 +199,8 @@ function downloadCodeTextFile(codes: string[], filename = `redemption-codes-${ne
 
 function ledgerTone(item: any) {
   if (item.kind === "balance" && Number(item.amountCents) < 0) return "text-destructive";
-  if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600";
-  if (item.kind === "payment" && (item.status === "paid" || item.status === "completed")) return "text-emerald-600";
+  if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600 dark:text-emerald-400";
+  if (item.kind === "payment" && (item.status === "paid" || item.status === "completed")) return "text-emerald-600 dark:text-emerald-400";
   return "";
 }
 
@@ -588,7 +588,6 @@ export default function Billing() {
       <div className="space-y-6">
         <div className="pearl-page-header block">
           <h1 className="text-2xl font-semibold tracking-tight">{translateText("余额与营销")}</h1>
-          <p className="text-sm text-muted-foreground">{translateText("管理余额、兑换码和折扣码。")}</p>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -648,7 +647,6 @@ export default function Billing() {
               <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" />{translateText(" 账单流水")}</CardTitle>
-                  <CardDescription>{translateText("余额、支付和订阅记录。")}</CardDescription>
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
                   <Button
@@ -807,7 +805,6 @@ export default function Billing() {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(" 订阅记录")}</CardTitle>
-                <CardDescription>{translateText("套餐购买和后台分配记录。")}</CardDescription>
               </CardHeader>
               <CardContent>
                 {subscriptionsLoading ? (
@@ -874,7 +871,6 @@ export default function Billing() {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" />{translateText(" 余额流水")}</CardTitle>
-                <CardDescription>{translateText("余额变动记录。")}</CardDescription>
               </CardHeader>
               <CardContent>
                 {transactionsLoading ? (
@@ -889,7 +885,7 @@ export default function Billing() {
                           <p className="break-words text-sm font-medium">{tx.name || tx.username || `#${tx.userId}`}</p>
                           <p className="mt-1 text-xs text-muted-foreground">{dateText(tx.createdAt)}</p>
                         </div>
-                        <div className={`shrink-0 text-right text-sm font-medium ${Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}`}>{money(tx.amountCents)}</div>
+                        <div className={`shrink-0 text-right text-sm font-medium ${Number(tx.amountCents) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>{money(tx.amountCents)}</div>
                       </div>
                       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
                         <MobileInfoRow label={translateText("类型")}><Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge></MobileInfoRow>
@@ -910,7 +906,7 @@ export default function Billing() {
                       <TableRow key={tx.id}>
                         <TableCell>{tx.name || tx.username || `#${tx.userId}`}</TableCell>
                         <TableCell><Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge></TableCell>
-                        <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}>{money(tx.amountCents)}</TableCell>
+                        <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}>{money(tx.amountCents)}</TableCell>
                         <TableCell>{money(tx.balanceAfterCents)}</TableCell>
                         <TableCell>{tx.description || "-"}</TableCell>
                         <TableCell>{dateText(tx.createdAt)}</TableCell>
@@ -966,7 +962,6 @@ export default function Billing() {
               <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                   <CardTitle>{translateText("兑换码列表")}</CardTitle>
-                  <CardDescription>{translateText("筛选、选择并导出兑换码。")}</CardDescription>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
                   <Select value={redemptionUsageFilter} onValueChange={(value: "all" | "unused" | "used") => setRedemptionUsageFilter(value)}>

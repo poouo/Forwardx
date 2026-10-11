@@ -1981,7 +1981,6 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("插件")}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">{translateText("安装、更新和调试插件能力。")}</p>
           </div>
           <Button className="w-full gap-2 sm:w-auto" onClick={() => setCustomInstallOpen(true)}>
             <PackagePlus className="h-4 w-4" />{translateText("插件来源")}</Button>
@@ -1997,7 +1996,6 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <Puzzle className="h-4 w-4 text-primary" />{translateText("插件列表")}</CardTitle>
-                <CardDescription>{translateText("选择插件后查看和使用其功能。")}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {pluginListLoading ? (
@@ -2062,7 +2060,6 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               <div>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <PackagePlus className="h-4 w-4 text-primary" />{translateText("插件商店")}</CardTitle>
-                <CardDescription className="mt-1">{translateText("查看详情或安装插件。")}</CardDescription>
               </div>
               <Button
                 type="button"

@@ -37,3 +37,15 @@ test("IPA update version is independent of panel/APK versions and excludes prere
   assert.ok(compareMobileVersions("1.0.10", "1.0.2") > 0);
   assert.equal(compareMobileVersions("v1.0.0", "1.0.0"), 0);
 });
+
+test("the shared UI release is detected by both older Android and iOS clients", () => {
+  const releases = [{
+    html_url: "https://github.com/poouo/Forwardx/releases/tag/v2.3.283",
+    assets: [{ name: "forwardx-android-v2.4.1.apk" }, { name: "forwardx-ios-v2.4.1-unsigned.ipa" }],
+  }];
+  for (const [platform, current] of [["android", "2.4.0"], ["ios", "1.0.0"]] as const) {
+    const latest = latestMobilePackage(releases, platform);
+    assert.equal(latest?.version, "2.4.1");
+    assert.ok(compareMobileVersions(latest!.version, current) > 0);
+  }
+});

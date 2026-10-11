@@ -47,6 +47,7 @@ jobs:
         run: |
           pnpm check:versions
           pnpm test:release-notes
+          pnpm test:ui
           pnpm test:ios
           pnpm test:i18n
           pnpm test:google-auth

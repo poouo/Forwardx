@@ -1,6 +1,9 @@
 import { defineConfig } from "vitepress";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const base = process.env.VITEPRESS_BASE || "/";
+const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 
 export default defineConfig({
   base,
@@ -9,12 +12,23 @@ export default defineConfig({
   description: "ForwardX 转发管理面板用户教程",
   cleanUrls: true,
   lastUpdated: true,
+  buildEnd(siteConfig) {
+    writeFileSync(join(siteConfig.outDir, "build-info.json"), JSON.stringify({
+      version,
+      commit: process.env.GITHUB_SHA || "local",
+      builtAt: new Date().toISOString(),
+    }) + "\n");
+  },
   head: [
     ["meta", { name: "theme-color", content: "#0f766e" }],
     ["meta", { name: "referrer", content: "strict-origin-when-cross-origin" }],
   ],
   themeConfig: {
-    siteTitle: "ForwardX 教程",
+    siteTitle: `ForwardX v${version}`,
+    editLink: {
+      pattern: "https://github.com/poouo/Forwardx/edit/main/docs/:path",
+      text: "在 GitHub 上改进此页",
+    },
     nav: [
       { text: "快速开始", link: "/guide/quick-start" },
       { text: "部署面板", link: "/guide/deploy-panel" },
@@ -30,6 +44,7 @@ export default defineConfig({
           { text: "快速开始", link: "/guide/quick-start" },
           { text: "部署前准备", link: "/guide/preparation" },
           { text: "首次初始化", link: "/guide/first-setup" },
+          { text: "界面与常用操作", link: "/guide/interface" },
           { text: "移动客户端（APK / IPA）", link: "/guide/mobile-app" },
         ],
       },
@@ -73,6 +88,7 @@ export default defineConfig({
           { text: "目录、数据与日志", link: "/guide/paths-logs" },
           { text: "管理员账号恢复", link: "/guide/account-recovery" },
           { text: "升级与备份", link: "/guide/upgrade-backup" },
+          { text: "版本与文档更新", link: "/guide/releases" },
           { text: "迁移到新面板", link: "/guide/migration" },
           { text: "常见问题排查", link: "/guide/troubleshooting" },
           { text: "卸载与数据保留", link: "/guide/uninstall" },

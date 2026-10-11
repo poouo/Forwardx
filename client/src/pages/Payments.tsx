@@ -211,10 +211,10 @@ function statusBadge(status: string) {
     failed: translateText("失败"),
   };
   const tone = status === "paid" || status === "processing" || status === "completed"
-    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
     : status === "pending"
-      ? "border-amber-200 bg-amber-50 text-amber-700"
-      : "border-slate-200 bg-slate-50 text-slate-600";
+      ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+      : "border-border bg-muted/50 text-muted-foreground";
   return <Badge variant="outline" className={tone}>{text[status] || status}</Badge>;
 }
 
@@ -475,7 +475,6 @@ export default function Payments() {
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("支付对接")}</h1>
-            <p className="text-sm text-muted-foreground">{translateText("配置支付方式和订单。")}</p>
           </div>
           <Button onClick={save} disabled={updateConfig.isPending || isLoading}>
             {updateConfig.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}{translateText("保存配置")}</Button>
@@ -486,7 +485,7 @@ export default function Payments() {
             label={translateText("支付状态")}
             value={form.enabled ? translateText("已启用") : translateText("未启用")}
             icon={ShieldCheck}
-            tone={form.enabled ? "text-emerald-600" : "text-muted-foreground"}
+            tone={form.enabled ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}
             loading={isLoading}
             cacheKey="payments.enabled"
             fallbackValue={translateText("未启用")}
@@ -504,7 +503,7 @@ export default function Payments() {
             label={translateText("已支付订单")}
             value={stats?.paidOrders || 0}
             icon={CheckCircle2}
-            tone="text-emerald-600"
+            tone="text-emerald-600 dark:text-emerald-400"
             loading={statsLoading}
             cacheKey="payments.paidOrders"
             fallbackValue={0}
@@ -808,7 +807,7 @@ export default function Payments() {
                   <div className="flex min-w-0 items-center gap-2 text-sm">
                     {testGmPayGateway.data ? (
                       <>
-                        <Badge variant="outline" className={testGmPayGateway.data.supportsUsdt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-destructive/30 bg-destructive/5 text-destructive"}>
+                        <Badge variant="outline" className={testGmPayGateway.data.supportsUsdt ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "border-destructive/30 bg-destructive/5 text-destructive"}>
                           {testGmPayGateway.data.supportsUsdt ? translateText("USDT 可用") : translateText("USDT 不可用")}
                         </Badge>
                         <span className="truncate text-muted-foreground">

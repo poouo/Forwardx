@@ -523,7 +523,6 @@ function DashboardContent() {
     <div className="space-y-6">
       <div className="pearl-page-header">
         <div>
-          <p className="pearl-eyebrow" aria-hidden="true">FORWARDX / OVERVIEW</p>
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("仪表盘")}</h1>
           <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{translateText("欢迎回来，")}{user?.name || user?.username || translateText("用户")}</p>
         </div>

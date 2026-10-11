@@ -169,8 +169,7 @@ export function PersistentPagination<T>({
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-card/60 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-      <div className="text-xs text-muted-foreground">{translateText("第 ")}{pagination.currentPage} / {pagination.totalPages}{translateText(" 页，显示 ")}{pagination.startItem}-{pagination.endItem}{translateText("，共 ")}{pagination.totalItems} {itemName}
-      </div>
+      <div className="text-xs tabular-nums text-muted-foreground">{translateText("{0}–{1} / {2} {3}", [pagination.startItem, pagination.endItem, pagination.totalItems, itemName])}</div>
       <div className="flex items-center justify-between gap-1 sm:justify-end">
         <Button
           variant="outline"
@@ -180,6 +179,7 @@ export function PersistentPagination<T>({
           onClick={pagination.previousPage}
         >
           <ChevronLeft className="h-4 w-4" />{translateText("上一页")}</Button>
+        <span className="px-2 text-xs tabular-nums text-muted-foreground sm:hidden" aria-label={translateText("第 {0} 页，共 {1} 页", [pagination.currentPage, pagination.totalPages])}>{pagination.currentPage} / {pagination.totalPages}</span>
         <div className="hidden items-center gap-1 sm:flex">
           {pages.map((page, index) => {
             const previous = pages[index - 1];

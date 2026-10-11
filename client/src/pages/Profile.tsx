@@ -380,7 +380,6 @@ function ProfileContent() {
       <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("个人资料")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{translateText("管理账号安全、头像和 Telegram。")}</p>
         </div>
         <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
           <UserRound className="h-3.5 w-3.5" />
@@ -394,7 +393,7 @@ function ProfileContent() {
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
                 <UserRound className="h-4 w-4 text-primary" />{translateText("头像与账号")}</CardTitle>
-              <CardDescription>{translateText("低于 50K 的头像会直接上传，较大的图片会自动压缩。")}</CardDescription>
+              <CardDescription>{translateText("较大图片自动压缩。")}</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -467,7 +466,6 @@ function ProfileContent() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <KeyRound className="h-4 w-4 text-primary" />{translateText("登录密码")}</CardTitle>
-            <CardDescription>{translateText("修改当前账号的登录密码。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">

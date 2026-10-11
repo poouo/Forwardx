@@ -135,7 +135,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.117"
+	fxpRuntimeVersion    = "2.2.118"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second

@@ -12,6 +12,7 @@ import { migrateLegacyAvatarValue } from "@/lib/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { HelpDetails } from "@/components/ui/help-details";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1205,7 +1206,6 @@ function UsersContent() {
       <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("用户管理")}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">{translateText("管理系统用户、权限和流量配额")}</p>
         </div>
         <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-3">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
@@ -2152,7 +2152,8 @@ function UsersContent() {
                     onChange={(e) => setMaxIPs(parseInt(e.target.value) || 0)}
                     placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">{translateText("限制每个来源 IP 的 TCP 并发连接数，不是 IP 个数。普通转发按用户、入口主机共享；V1/V2 隧道按规则计数，UDP 不适用。")}</p>
+                  <p className="text-xs text-muted-foreground">{translateText("每个来源 IP 的 TCP 并发上限，非 IP 个数；UDP 不适用。")}</p>
+                  <HelpDetails title={translateText("限制范围")}><p>{translateText("限制每个来源 IP 的 TCP 并发连接数，不是 IP 个数。普通转发按用户、入口主机共享；V1/V2 隧道按规则计数，UDP 不适用。")}</p></HelpDetails>
                 </div>
               </div>
               <Separator />
@@ -2294,7 +2295,7 @@ function UsersContent() {
 
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
-              <p className="text-xs text-muted-foreground">{translateText("默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道、网络测试主机和计费资源。")}</p>
+              <p className="text-xs text-muted-foreground">{translateText("按需添加用户可用的资源。")}</p>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

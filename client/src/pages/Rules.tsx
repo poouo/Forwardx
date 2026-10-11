@@ -6571,7 +6571,6 @@ function RulesContent() {
       <div className="pearl-page-header flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("转发规则")}</h1>
-          <p className="text-muted-foreground mt-1 text-xs sm:text-sm">{translateText("管理转发规则和运行状态")}</p>
         </div>
         <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
@@ -7713,7 +7712,7 @@ function RulesContent() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ClipboardCopy className="h-5 w-5" />{translateText("批量管理转发规则")}</DialogTitle>
-            <DialogDescription>{translateText("管理当前用户筛选范围内的规则；复制或导入的新规则归属：")}{ruleOperationOwnerLabel}{translateText("。编辑不会改变规则归属。")}</DialogDescription>
+            <DialogDescription>{translateText("复制或导入归属：")}{ruleOperationOwnerLabel}{translateText("；编辑不改变归属。")}</DialogDescription>
           </DialogHeader>
           <div className="max-h-[72vh] space-y-4 overflow-y-auto pr-1">
             <div className={segmentedControlClassName}>
@@ -8307,7 +8306,7 @@ function RulesContent() {
               {isBatchExportMode
                 ? translateText("批量导出会按左侧当前选中的规则生成 JSON 文件，不会受右侧资源范围限制。")
                 : isBatchEditMode
-                ? translateText("批量编辑会按你实际填写的项逐条覆盖：入口资源未选择则保留原入口，目标地址或端口留空则保留原目标值。")
+                ? translateText("仅覆盖已填写项；未选择的入口和留空的目标保持不变。")
                 : translateText("复制会保留原规则基础配置，并按当前选择的目标资源生成副本。")}
             </div>
             </>

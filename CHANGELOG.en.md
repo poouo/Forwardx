@@ -2,31 +2,15 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.283] - 2026-10-12
 
-- Further adapt scaffold-master's card hierarchy and interactions: subtle theme-tinted dashboard highlights, recessed host/rule readouts, sorting-safe hover feedback, and real traffic-share bars. Unify content transitions across rules, tunnels, and groups; refine disclosures and sliding tab indicators. Tab scrolling stays within its own horizontal bar. Exiting/collapsed content is inert and form state is retained; reduced-motion and background-tab safeguards remain in place, with no new animation dependency or persistent animation loop.
-
-- Align the desktop sidebar brand header and workspace top bar using a shared fixed height so language controls cannot offset their dividers. Preserve mobile layouts.
-
-- Match network test and iperf3 output panels and scrollbars to light/dark mode and personalized theme colors instead of fixed black backgrounds. Preserve monospace formatting, raw output and copy behavior.
-
-- Fix confirmation context identity changing during development hot updates, which could crash language selectors and other consumers with `useConfirmDialog must be used within ConfirmDialogProvider`. Separate context from translated dialog UI and test mixed module versions.
-
-- Complete missing English labels for network test results and pending states, theme names/descriptions, built-in wallpapers, host/map tooltips, rule filters and usage statistics, payment states, plugin tasks, SMTP and mobile reminders. Preserve custom names, uploaded filenames, configuration identifiers and raw diagnostic output. Add bilingual rendering and translation coverage regression tests.
-
-- Offer only Simplified Chinese and English in language selectors, displaying the effective default language while preserving installation/browser/IP detection and saved preferences. Remove the dark decorative desktop perimeter and its sidebar/top-bar offsets.
-
-- Refresh the panel with a Pearl Glass design inspired by scaffold-master: coordinated light/dark themes, sliding sidebar selection, a full-width desktop workspace and top bar, major page headers, dashboard readings/charts, login/setup pages, and shared buttons, cards, forms, tables, tabs, menus, dialogs, and feedback. Preserve business behavior and personalization. Respect reduced-motion preferences, settle new presentation animations in background tabs, and remove costly backdrop blur from dense cards. Include the upstream MIT notice.
-
-- Improve host removal: group, chain, and linked entry-group membership changes automatically synchronize template host references while preserving unchanged healthy member rules. Individual rules no longer need to be re-saved to remove an old host. The deletion dialog repairs stale references, lists actual rule/group/tunnel dependencies, and links to their management pages. Online hosts must finish Agent cleanup; offline cleanup requires explicit consent and cannot bypass real dependencies. Queued error notifications recheck rule state to avoid alerting for removed, disabled, or recovered rules.
-
-- Custom plan descriptions now replace generated details in management cards, table rows, and the store. Empty descriptions retain default details; custom text preserves line breaks and wraps long words. Keep management controls, actual store prices, and purchase actions unchanged without modifying entitlements, billing, or limits.
-
-- Add per-source-IP TCP connection limits to ordinary port forwarding, covering iptables, nftables, Realm, Socat, GOST, Nginx, and Guard entry listeners. Rules share limits per user and entry host. Match the original port before DNAT and restrict new connections only; adding rules preserves existing counters, while zero limits and removed rules clean up their limits. Synchronize limits independently without restarting forwarding processes. Explicitly report outdated Agents, missing firewall tools, or unsupported kernel capabilities while keeping forwarding active. Add IPv4/IPv6, shared-counter, failure-safety, and isolated Linux network-namespace traffic tests. Requires the matching Agent update; UDP is excluded and existing tunnel limit semantics remain unchanged.
-
-- Protect existing connections during batch rule creation: V1/V2 shared entries add listeners incrementally and exits register UDP targets without rebuilding the shared process. GOST replaces only the matching idle probe when adding a tunnel's first business rule. Port conflicts or unavailable incremental APIs fail the addition explicitly without restarting existing listeners. Added live TCP/UDP, rollback, and batch-snapshot regression coverage. Requires matching Agent and FXP runtime updates.
-
-- Fix forwarding-rule searches by host IP or tunnel connection address showing matching counts but an empty list. Render server-filtered list/map results without filtering them again using incomplete local resource metadata. Preserve independent batch-tool filters and add pagination, count and ownership regression coverage.
+- Refresh themes, cards and transitions; simplify help and pagination, improve dark/light and mobile layouts, and retain the React architecture.
+- Complete English UI, theme and wallpaper labels; fix language switching, header alignment and hot-update dialog errors; reorder Google sign-in settings.
+- Fix mismatched rule search counts/results, improve host removal and stale-reference/notification cleanup, and let custom plan descriptions replace defaults.
+- Add GOST and V1/V2 tunnel rules incrementally to reduce disruption to existing connections; port conflicts preserve existing rules.
+- Support per-source-IP TCP connection limits for ordinary forwarding, shared per user and entry host. UDP is excluded; update the Agent.
+- Reorganize deployment and usage docs, clarify traffic/probe statistics, and verify GitHub Pages publication.
+- Versions: panel `2.3.283`, Android / iOS `2.4.1`, Agent `2.2.196`, ForwardX FXP runtime `2.2.118`. Incremental tunnel updates require matching Agent/runtime upgrades; the upgrade itself is not guaranteed connection-preserving.
 
 ## [2.3.282] - 2026-10-07
 

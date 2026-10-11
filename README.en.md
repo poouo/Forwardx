@@ -22,6 +22,7 @@ ForwardX manages port forwarding, encrypted tunnels, forwarding chains, failover
 
 Detailed guides are currently in Chinese; this README provides English installation instructions.
 
+- [Interface and common tasks](docs/guide/interface.md) · [Versions and documentation updates](docs/guide/releases.md)
 - [Deployment overview](docs/guide/deploy-panel.md) · [Docker](docs/guide/deploy-docker.md) · [Local deployment](docs/guide/deploy-local.md)
 - [Databases](docs/guide/database.md) · [HTTPS and proxies](docs/guide/reverse-proxy.md) · [Environment variables](docs/guide/env-vars.md)
 - [Initial setup](docs/guide/first-setup.md) · [Agent installation](docs/guide/agent.md) · [Forwarding rules](docs/guide/rules.md)

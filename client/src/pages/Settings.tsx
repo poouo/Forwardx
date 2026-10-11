@@ -8,6 +8,7 @@ import { EmailSettingsContent } from "./EmailSettings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { HelpDetails } from "@/components/ui/help-details";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
@@ -770,7 +771,6 @@ function SettingsContent() {
         {/* System Info Tab */}
         <TabsContent value="system" className="space-y-4">
           <SystemInfoSection />
-          <GoogleLoginSettingsCard />
         </TabsContent>
 
         {/* Telegram Bot Tab */}
@@ -1628,7 +1628,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
         <AlertDescription>
           {backupSummaryReady
             ? translateText("增量迁移会保留新面板现有主机、用户、规则和订单数据，并把旧面板数据追加导入；重复的用户账号、主机 Token、订单号、兑换码会复用现有记录。")
-            : translateText("首次进入没有缓存时会先显示 0；接口返回真实数据后会自动更新并缓存，后续进入可直接展示上次统计。")}
+            : translateText("统计加载中，完成后自动更新。")}
         </AlertDescription>
       </Alert>
 
@@ -1703,7 +1703,8 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
           <CardContent className="space-y-3">
             <div className="rounded-md border p-3 space-y-2">
               <Label className="flex items-center justify-between">{translateText("无缝迁移（旧地址转交）")}<Switch checked={onlineMigration.seamless} onCheckedChange={(seamless) => setOnlineMigration({ ...onlineMigration, seamless })} /></Label>
-              <p className="text-xs text-muted-foreground">{translateText("不主动重启 Agent 或转发进程。仅支持单实例面板，两端须为相同版本和数据库类型，目标须无业务数据，迁移期间不能有其他程序写入同库；旧数据库保留为只读，旧地址和转交服务必须持续运行。面板操作会短暂停用，新面板需重新登录。")}</p>
+              <p className="text-xs text-muted-foreground">{translateText("不重启 Agent 或转发进程；旧地址必须持续运行，迁移期间暂停面板操作。")}</p>
+              <HelpDetails title={translateText("迁移条件")}><p>{translateText("不主动重启 Agent 或转发进程。仅支持单实例面板，两端须为相同版本和数据库类型，目标须无业务数据，迁移期间不能有其他程序写入同库；旧数据库保留为只读，旧地址和转交服务必须持续运行。面板操作会短暂停用，新面板需重新登录。")}</p></HelpDetails>
             </div>
             <div className="space-y-2">
               <Label>{translateText("迁移内容")}</Label>
@@ -2669,9 +2670,12 @@ function DeepSeekSettingsCard() {
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Key className="h-4 w-4 text-emerald-500" />{translateText("AI 助手模型")}</CardTitle>
-              <CardDescription className="mt-1">{translateText("支持 DeepSeek / SiliconFlow / 自定义 OpenAI 兼容接口，用于所选通知渠道的 AI 指令解析。")}</CardDescription>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{translateText("复杂请求会按需发送有权限的最少资源信息给 AI 服务，不包含密码、Token 或隧道密钥。待办可发送“继续”恢复，所有修改仍需确认。")}</p>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{translateText("支持规则、到期、设置开关、主机、隧道、转发组、用户额度授权、套餐订阅和公告等常用操作；敏感凭据、迁移和升级仍请使用网页。")}</p>
+              <CardDescription className="mt-1">{translateText("用对话查询和管理；修改前需确认。")}</CardDescription>
+              <HelpDetails className="mt-1">
+                <p>{translateText("支持 DeepSeek / SiliconFlow / 自定义 OpenAI 兼容接口，用于所选通知渠道的 AI 指令解析。")}</p>
+                <p>{translateText("复杂请求会按需发送有权限的最少资源信息给 AI 服务，不包含密码、Token 或隧道密钥。待办可发送“继续”恢复，所有修改仍需确认。")}</p>
+                <p>{translateText("支持规则、到期、设置开关、主机、隧道、转发组、用户额度授权、套餐订阅和公告等常用操作；敏感凭据、迁移和升级仍请使用网页。")}</p>
+              </HelpDetails>
             </div>
             <Badge variant={providerConfigured ? "default" : "outline"} className="w-fit">
               {providerConfigured ? translateText("已配置") : translateText("未配置")}
@@ -3365,7 +3369,6 @@ function PersonalizationSettingsSection() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Globe className="h-4 w-4 text-primary" />{translateText("网站标题")}</CardTitle>
-            <CardDescription>{translateText("配置后台显示的品牌名称。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -3508,7 +3511,7 @@ function PersonalizationSettingsSection() {
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Palette className="h-4 w-4 text-primary" />{translateText("默认配色")}</CardTitle>
-            <CardDescription>{translateText("选择后保存，按钮、选中态、提示框、侧边栏主色和背景轻微渐变会同步变化。")}</CardDescription>
+            <CardDescription>{translateText("保存后应用于整个面板。")}</CardDescription>
           </div>
           <Button
             type="button"
@@ -3570,7 +3573,7 @@ function PersonalizationSettingsSection() {
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Palette className="h-4 w-4 text-primary" />{translateText("自定义背景")}</CardTitle>
-            <CardDescription>{translateText("默认不使用背景，可选择内置、上传或链接背景。")}</CardDescription>
+            <CardDescription>{translateText("选择内置背景，或上传、粘贴链接。")}</CardDescription>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             <Button type="button" variant="outline" onClick={handleResetBackground} disabled={isSavingPersonalization("background")} className="w-full gap-2 sm:w-auto">
@@ -4773,7 +4776,6 @@ function SystemInfoSection() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Wifi className="h-4 w-4 text-primary" />{translateText("网络测试")}</CardTitle>
-            <CardDescription>{translateText("配置普通用户是否可见网络测试入口。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between gap-3">
@@ -4791,7 +4793,6 @@ function SystemInfoSection() {
             <div className="min-w-0 flex-1 basis-40 space-y-1.5">
               <CardTitle className="flex items-center gap-2 text-base">
                 <ShieldCheck className="h-4 w-4 text-primary" />{translateText("转发协议总开关")}</CardTitle>
-              <CardDescription>{translateText("控制用户可用的转发协议。")}</CardDescription>
             </div>
             <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openForwardProtocolDialog}>
               <Settings2 className="h-4 w-4" />{translateText("管理协议开关")}</Button>
@@ -5090,7 +5091,6 @@ function SystemInfoSection() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <UserPlus className="h-4 w-4 text-primary" />{translateText("用户注册")}</CardTitle>
-            <CardDescription>{translateText("控制新用户自助注册。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
@@ -5110,7 +5110,6 @@ function SystemInfoSection() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Shield className="h-4 w-4 text-primary" />{translateText("双重验证")}</CardTitle>
-            <CardDescription>{translateText("账号可绑定 2FA 动态验证码。")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
@@ -5433,7 +5432,6 @@ function SystemInfoSection() {
             <div className="min-w-0 flex-1 basis-40 space-y-1.5">
               <CardTitle className="flex items-center gap-2 text-base">
                 <PanelLeft className="h-4 w-4 text-primary" />{translateText("左侧导航栏菜单展示设置")}</CardTitle>
-              <CardDescription>{translateText("控制左侧导航栏常用入口是否展示。")}</CardDescription>
             </div>
             <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openSidebarMenuDialog}>
               <Settings2 className="h-4 w-4" />{translateText("管理菜单开关")}</Button>
@@ -5553,7 +5551,6 @@ function SystemInfoSection() {
             <div className="space-y-1.5">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Rocket className="h-4 w-4 text-primary" />{translateText("版本升级")}</CardTitle>
-              <CardDescription>{translateText("检查并升级 ForwardX。")}</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -6076,11 +6073,12 @@ function SystemInfoSection() {
         </DialogContent>
       </Dialog>
 
+      <GoogleLoginSettingsCard />
+
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Settings2 className="h-4 w-4 text-primary" />{translateText("开源与联系")}</CardTitle>
-          <CardDescription>{translateText("项目地址与联系渠道。")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">

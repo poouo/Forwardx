@@ -2,6 +2,7 @@ import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
+import { t } from "@/i18n"
 import { useOverlayContainer } from "@/components/ui/overlay-root"
 
 const LOCK_RELEASE_DELAY_MS = 360
@@ -115,7 +116,7 @@ const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive
         {children}
         <DialogPrimitive.Close className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-70 ring-offset-background transition-colors hover:bg-destructive/10 hover:text-destructive hover:opacity-100 focus:bg-destructive/10 focus:text-destructive focus:outline-none focus:ring-2 focus:ring-destructive/40 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
+          <span className="sr-only">{t("关闭")}</span>
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </div>
@@ -124,7 +125,7 @@ const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col space-y-1.5 text-center sm:text-left", className)} {...props} />
+  <div className={cn("min-w-0 flex flex-col space-y-1.5 text-left", className)} {...props} />
 )
 DialogHeader.displayName = "DialogHeader"
 
@@ -139,7 +140,7 @@ const DialogTitle = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.T
 DialogTitle.displayName = DialogPrimitive.Title.displayName
 
 const DialogDescription = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.Description>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>>(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn("text-sm text-muted-foreground", className)} {...props} />
+  <DialogPrimitive.Description ref={ref} className={cn("min-w-0 pr-8 text-sm leading-relaxed [overflow-wrap:anywhere] text-muted-foreground", className)} {...props} />
 ))
 DialogDescription.displayName = DialogPrimitive.Description.displayName
 

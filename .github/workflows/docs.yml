@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -62,6 +64,18 @@ jobs:
             echo "::error::Pages artifact is missing index.html: $artifact_dir/index.html"
             exit 1
           fi
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import assert from "node:assert/strict";
+            const info = JSON.parse(fs.readFileSync("docs/.vitepress/dist/build-info.json", "utf8"));
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            assert.equal(info.version, pkg.version);
+            assert.equal(info.commit, process.env.GITHUB_SHA);
+            for (const page of ["guide/index.html", "guide/interface.html", "guide/releases.html", "guide/rules.html", "guide/mobile-app.html"]) {
+              assert.ok(fs.statSync(`docs/.vitepress/dist/${page}`).size > 0, page);
+            }
+            console.log(`Validated docs v${info.version} at ${info.commit}`);
+          '
           file_count="$(find "$artifact_dir" -type f | wc -l | tr -d '[:space:]')"
           total_bytes="$(du -sb "$artifact_dir" | awk '{print $1}')"
           echo "Pages artifact directory: $artifact_dir"
@@ -89,4 +103,28 @@ jobs:
         uses: actions/deploy-pages@v5
         with:
           timeout: 600000
+
+      - name: Verify published docs version
+        env:
+          DOCS_URL: ${{ steps.deployment.outputs.page_url }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          const url = new URL("build-info.json", process.env.DOCS_URL.replace(/\/?$/, "/"));
+          let lastError;
+          for (let attempt = 0; attempt < 12; attempt++) {
+            try {
+              url.searchParams.set("verify", `${process.env.EXPECTED_COMMIT}-${attempt}`);
+              const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15000) });
+              assert.ok(response.ok, `HTTP ${response.status}`);
+              const info = await response.json();
+              assert.equal(info.commit, process.env.EXPECTED_COMMIT);
+              console.log(`Published docs v${info.version}: ${process.env.DOCS_URL}`);
+              process.exit(0);
+            } catch (error) { lastError = error; }
+            await new Promise(resolve => setTimeout(resolve, 10000));
+          }
+          throw new Error(`Published docs did not match this commit: ${lastError}`);
+          NODE
 

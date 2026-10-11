@@ -174,7 +174,6 @@ export function EmailSettingsContent() {
       <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("邮箱设置")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{translateText("配置验证码和提醒邮件。")}</p>
         </div>
         <Badge variant={form.enabled ? "outline" : "secondary"} className="w-fit gap-1.5 px-3 py-1.5 text-xs">
           <Mail className="h-3.5 w-3.5" />
@@ -192,7 +191,6 @@ export function EmailSettingsContent() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Mail className="h-4 w-4 text-primary" />{translateText("SMTP 对接")}</CardTitle>
-          <CardDescription>{translateText("配置 SMTP 服务器和账号。")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
@@ -253,7 +251,6 @@ export function EmailSettingsContent() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <BellRing className="h-4 w-4 text-primary" />{translateText("功能开关")}</CardTitle>
-          <CardDescription>{translateText("选择需要启用的邮件场景。")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
           <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
@@ -314,7 +311,6 @@ export function EmailSettingsContent() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <KeyRound className="h-4 w-4 text-primary" />{translateText("保存与测试")}</CardTitle>
-          <CardDescription>{translateText("保存后可发送测试邮件。")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {form.enabled && (!form.host.trim() || (!form.from.trim() && !form.user.trim())) && (

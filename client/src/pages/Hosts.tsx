@@ -2256,7 +2256,6 @@ function HostsContent() {
       <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("主机管理")}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">{translateText("管理 Agent 主机和运行状态")}</p>
         </div>
         <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
@@ -3356,7 +3355,7 @@ function HostsContent() {
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
                           <Label className="text-sm font-medium">{translateText("流量故障转移")}</Label>
-                          <p className="text-xs text-muted-foreground">{translateText("达到套餐流量的指定比例后，暂停此主机参与转发组及隧道入口/出口组；流量重置或关闭后恢复，不删除成员配置。")}</p>
+                          <p className="text-xs text-muted-foreground">{translateText("达量后暂停组内使用，流量重置或关闭此项后恢复；不删除成员。")}</p>
                           {editingId && displayHosts.find((host: any) => host.id === editingId)?.trafficFailoverExcluded && (
                             <p className="text-xs text-amber-600 dark:text-amber-400">{translateText("当前已达到流量阈值，已暂停参与组调度（不影响主机在线状态）。")}</p>
                           )}
