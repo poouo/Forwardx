@@ -9,7 +9,7 @@ import { useIsMobile } from "@/hooks/useMobile"
 
 const SIDEBAR_COOKIE_NAME = "sidebar:state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH = "16rem"
+const SIDEBAR_WIDTH = "15rem"
 const SIDEBAR_WIDTH_MOBILE = "var(--forwardx-mobile-sidebar-width, min(16.5rem, calc(100vw - 3.5rem)))"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
@@ -187,6 +187,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & {
     >
       {/* Spacer div - takes up space in the flex layout to push content */}
       <div
+        data-sidebar="spacer"
         className={cn(
           "duration-200 relative h-svh bg-transparent transition-[width] ease-linear",
           side === "right" && "rotate-180"

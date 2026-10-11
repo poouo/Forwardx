@@ -72,7 +72,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ContentTransition } from "@/components/ui/content-transition";
 import { toast } from "@/lib/localizedToast";
 import {
   Area,
@@ -309,21 +309,7 @@ function ForwardGroupViewTransition({
   transitionKey: string;
   children: ReactNode;
 }) {
-  const reduceMotion = useReducedMotion();
-
-  return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={transitionKey}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
-        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      >
-        {children}
-      </motion.div>
-    </AnimatePresence>
-  );
+  return <ContentTransition transitionKey={transitionKey}>{children}</ContentTransition>;
 }
 
 function getStoredForwardGroupViewMode(): ForwardGroupViewMode {
@@ -420,7 +406,7 @@ function entryGroupDisplayText(group: any, groupsByMode: Record<GroupMode, any[]
   if (!entryGroupId) return "";
   const entryGroup = groupsByMode.entry.find((item: any) => Number(item.id) === entryGroupId);
   if (!entryGroup) return translateText("入口组 #{0}", [entryGroupId]);
-  return String(entryGroup.domain || entryGroup.name || `入口组 #${entryGroupId}`).trim();
+  return String(entryGroup.domain || entryGroup.name || translateText("入口组 #{0}", [entryGroupId])).trim();
 }
 
 function normalizeForwardGroupSearchText(value: unknown) {
@@ -741,8 +727,8 @@ function ForwardGroupSelfTestDialog({
       const host = hostById?.get(hostId);
       addHostNodeMeta(meta, host, [
         member.entryAddress,
-        hostId ? `主机${hostId}` : "",
-        hostId ? `主机 #${hostId}` : "",
+        hostId ? translateText("主机{0}", [hostId]) : "",
+        hostId ? translateText("主机 #{0}", [hostId]) : "",
       ]);
     });
     const firstEntryHost = hostById?.get(Number(entryMembers[0]?.hostId || 0));
@@ -761,8 +747,8 @@ function ForwardGroupSelfTestDialog({
         const firstChainHostId = Number(members[0].hostId || 0);
         const entryHost = hostById?.get(Number(entryMember.hostId || 0));
         plannedSegments.push({
-          from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
-          to: hostDisplayName(firstChainHost) || `主机 #${members[0].hostId || "-"}`,
+          from: hostDisplayName(entryHost) || translateText("入口主机 #{0}", [entryMember.hostId || "-"]),
+          to: hostDisplayName(firstChainHost) || translateText("主机 #{0}", [members[0].hostId || "-"]),
           fromHostId: entryHostId || null,
           toHostId: firstChainHostId || null,
           hopIndex: 0,
@@ -778,8 +764,8 @@ function ForwardGroupSelfTestDialog({
       const fromHost = hostById?.get(Number(member.hostId || 0));
       const toHost = hostById?.get(Number(members[index + 1]?.hostId || 0));
       plannedSegments.push({
-        from: hostDisplayName(fromHost) || `主机 #${member.hostId || "-"}`,
-        to: hostDisplayName(toHost) || `主机 #${members[index + 1]?.hostId || "-"}`,
+        from: hostDisplayName(fromHost) || translateText("主机 #{0}", [member.hostId || "-"]),
+        to: hostDisplayName(toHost) || translateText("主机 #{0}", [members[index + 1]?.hostId || "-"]),
         fromHostId: fromHostId || null,
         toHostId: toHostId || null,
         hopIndex: index + (entryMembers.length > 0 ? 1 : 0),
@@ -1609,11 +1595,11 @@ export function ForwardGroupsContent({
         checked={enabled}
         disabled={!groupId}
         onCheckedChangeAsync={(checked) => toggleMutation.mutateAsync({ id: groupId, isEnabled: checked })}
-        onToggleSuccess={(checked) => toast.success(translateText("{0}已{1}", [resourceLabel, checked ? "开启" : "关闭"]))}
+        onToggleSuccess={(checked) => toast.success(translateText("{0}已{1}", [resourceLabel, checked ? translateText("开启") : translateText("关闭")]))}
         onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换{0}状态失败", [resourceLabel]))}
         className="scale-75"
         title={enabled ? translateText("关闭后该资源及关联规则将停止下发和转发") : translateText("开启后将恢复此前由该资源受控关闭的规则")}
-        aria-label={`${enabled ? "停用" : "启用"}${group?.name || "链路资源"}`}
+        aria-label={`${enabled ? translateText("停用") : translateText("启用")}${group?.name || translateText("链路资源")}`}
       />
     );
   };
@@ -1635,9 +1621,9 @@ export function ForwardGroupsContent({
 
   const memberHealthTitle = (group: any, member: any) => {
     const active = isGroupMemberActive(group, member);
-    const parts = [active ? "当前成员可用" : "当前成员不可用"];
+    const parts = [active ? translateText("当前成员可用") : translateText("当前成员不可用")];
     if (member.chinaHealthStatus && member.chinaHealthStatus !== "unknown") {
-      parts.push(`国内 ${member.chinaHealthStatus}${member.chinaHealthLatencyMs ? ` / ${member.chinaHealthLatencyMs}ms` : ""}`);
+      parts.push(translateText("国内 {0}{1}", [member.chinaHealthStatus, member.chinaHealthLatencyMs ? ` / ${member.chinaHealthLatencyMs}ms` : ""]));
     }
     return parts.join(" / ");
   };
@@ -1867,7 +1853,7 @@ export function ForwardGroupsContent({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className={`${embedded ? "" : "pearl-page-header "}flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}>
         <div className="min-w-0">
           {embedded ? (
             <h2 className="text-lg font-semibold tracking-tight sm:text-xl">{pageTitle}</h2>
@@ -1882,10 +1868,10 @@ export function ForwardGroupsContent({
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-current" />
             <AnimatedStatValue
-              value={`${activeCount} / ${modeTotal} ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
+              value={`${activeCount} / ${modeTotal} ${activeGroupMode === "failover" || activeGroupMode === "entry" ? translateText("健康") : translateText("启用")}`}
               loading={isLoading || !groups}
               cacheKey={`forwardGroups.header.${activeGroupMode}.active`}
-              fallbackValue={`0 / 0 ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
+              fallbackValue={`0 / 0 ${activeGroupMode === "failover" || activeGroupMode === "entry" ? translateText("健康") : translateText("启用")}`}
             />
           </Badge>
           {canManualCheck && <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
@@ -1931,6 +1917,7 @@ export function ForwardGroupsContent({
               {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                 <Card
                   {...itemProps}
+                  interactive={!isDragging}
                   className={cn(
                     "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
                     isDragging && "opacity-55 ring-1 ring-primary/35",
@@ -2029,6 +2016,7 @@ export function ForwardGroupsContent({
               {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                 <Card
                   {...itemProps}
+                  interactive={!isDragging}
                   className={cn(
                     "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
                     isDragging && "opacity-55 ring-1 ring-primary/35",

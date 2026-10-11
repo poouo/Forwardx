@@ -4,6 +4,9 @@ import { cn } from "@/lib/utils"
 type CardProps = React.HTMLAttributes<HTMLDivElement> & {
   enterIndex?: number
   disableEnterAnimation?: boolean
+  variant?: "default" | "featured"
+  /** Border/shadow feedback only: safe for sortable cards and nested controls. */
+  interactive?: boolean
 }
 
 function isDialogMotionLocked() {
@@ -15,7 +18,7 @@ function isDialogMotionLocked() {
     || Date.now() < lockUntil
 }
 
-const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, enterIndex, disableEnterAnimation, ...props }, ref) => {
+const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, enterIndex, disableEnterAnimation, variant = "default", interactive = false, ...props }, ref) => {
   const [animateEnter, setAnimateEnter] = React.useState(() => !disableEnterAnimation && !isDialogMotionLocked())
   const enterStyle = enterIndex === undefined
     ? style
@@ -27,7 +30,8 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
   React.useEffect(() => {
     if (!animateEnter) return
     const delay = Math.min(Math.max(enterIndex ?? 0, 0), 12) * 45
-    const timer = window.setTimeout(() => setAnimateEnter(false), delay + 420)
+    // The stylesheet can stagger unspecified indices by up to 360ms.
+    const timer = window.setTimeout(() => setAnimateEnter(false), (enterIndex === undefined ? 360 : delay) + 420)
     return () => window.clearTimeout(timer)
   }, [animateEnter, enterIndex])
 
@@ -35,7 +39,9 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
     <div
       ref={ref}
       className={cn(
-        "glass-panel rounded-lg transition-[border-color,box-shadow,transform] duration-300",
+        "glass-panel pearl-card rounded-2xl transition-[border-color,box-shadow,transform] duration-300",
+        variant === "featured" && "pearl-card-featured",
+        interactive && "pearl-card-interactive",
         animateEnter && "stagger-card",
         className,
       )}

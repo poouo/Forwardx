@@ -221,7 +221,7 @@ const authHighlights = [
 ];
 
 function getWelcomeName(user: any) {
-  return String(user?.name || user?.username || "用户").trim() || translateText("用户");
+  return String(user?.name || user?.username || translateText("用户")).trim() || translateText("用户");
 }
 
 function rememberLoginWelcome(user: any) {
@@ -899,9 +899,10 @@ export default function Login() {
       </div>
 
       <div className="auth-route-enter relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1.05fr)_minmax(460px,.95fr)]">
-        <section className="auth-route-enter-left relative hidden lg:flex">
+        <section className="pearl-auth-intro auth-route-enter-left relative hidden lg:flex">
           <div className="relative flex min-h-screen w-full items-center px-10 py-14 xl:px-16">
             <div className="max-w-xl">
+              <div className="pearl-spec-plate" aria-hidden="true">FORWARDX / NETWORK CONSOLE</div>
               <div className="flex items-center gap-3">
                 <img src={logoSrc} alt={siteTitle} className="h-11 w-11 object-contain" />
                 <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
@@ -963,9 +964,9 @@ export default function Login() {
           <motion.div
             key={mode}
             className={`auth-mode-panel ${mode === "login" ? "min-h-[470px]" : "min-h-[660px]"}`}
-            initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
           >
           {isTelegramPending ? (

@@ -2,6 +2,7 @@ import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LanguageSelector from "@/components/LanguageSelector";
+import PearlSidebarContent from "@/components/PearlSidebarContent";
 import DiscordAccountCard from "@/components/DiscordAccountCard";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -13,7 +14,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
-  SidebarContent,
   SidebarFooter,
   SidebarHeader,
   SidebarInset,
@@ -369,7 +369,7 @@ export default function DashboardLayout({
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="pearl-shell">
       <DashboardLayoutContent>
         {children}
       </DashboardLayoutContent>
@@ -1028,7 +1028,7 @@ function DashboardLayoutContent({
   const telegramBotUrl = (telegramBind?.botUsername || telegramStatus?.botUsername)
     ? `https://t.me/${telegramBind?.botUsername || telegramStatus?.botUsername}`
     : "";
-  const accountDisplayName = String(user?.name || "").trim() || String(user?.username || "").trim() || "账号";
+  const accountDisplayName = String(user?.name || "").trim() || String(user?.username || "").trim() || translateText("账号");
   const accountUsername = String(user?.username || "").trim() || accountDisplayName;
 
   useEffect(() => {
@@ -1234,6 +1234,7 @@ function DashboardLayoutContent({
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton
           isActive={isActive}
+          aria-current={isActive ? "page" : undefined}
           onClick={handleClick}
           tooltip={item.label}
           className={cn("h-10 transition-[width,height,padding,background-color,color,box-shadow] font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
@@ -1339,8 +1340,8 @@ function DashboardLayoutContent({
 
   return (
     <>
-      <Sidebar collapsible="icon" className="border-r border-sidebar-border/60 bg-sidebar/75 backdrop-blur-2xl">
-        <SidebarHeader className="h-16 justify-center mobile-sidebar-header">
+      <Sidebar collapsible="icon" className="pearl-sidebar border-r border-sidebar-border/60">
+        <SidebarHeader className="h-16 md:h-[var(--pearl-header-height)] justify-center mobile-sidebar-header">
           <div className={cn("flex w-full items-center gap-3 transition-all", isDesktopCollapsed ? "justify-center px-0" : "px-2")}>
             {!isDesktopCollapsed ? (
               <div className="flex items-center justify-between flex-1 min-w-0">
@@ -1351,18 +1352,6 @@ function DashboardLayoutContent({
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <button
-                    onClick={toggleTheme}
-                    className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                    aria-label="Toggle theme"
-                    title={resolvedTheme === "dark" ? translateText("切换到白天模式") : translateText("切换到黑夜模式")}
-                  >
-                    {resolvedTheme === "dark" ? (
-                      <Sun className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <Moon className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </button>
                   <button
                     onClick={toggleSidebar}
                     className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
@@ -1385,7 +1374,7 @@ function DashboardLayoutContent({
           </div>
         </SidebarHeader>
 
-        <SidebarContent className="gap-1 pb-2 mobile-sidebar-content">
+        <PearlSidebarContent activeKey={currentPath} className="gap-1 pb-2 mobile-sidebar-content">
           {primaryMenuItems.length > 0 && (
             <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
               <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>
@@ -1413,28 +1402,7 @@ function DashboardLayoutContent({
             </SidebarGroup>
           )}
 
-          {/* Theme toggle for collapsed sidebar */}
-          {isDesktopCollapsed && (
-            <SidebarGroup>
-              <SidebarMenu className="items-center px-0">
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    onClick={toggleTheme}
-                    tooltip={resolvedTheme === "dark" ? translateText("切换到白天模式") : translateText("切换到黑夜模式")}
-                    className="h-10 justify-center"
-                  >
-                    {resolvedTheme === "dark" ? (
-                      <Sun className="sidebar-nav-icon h-[18px] w-[18px]" />
-                    ) : (
-                      <Moon className="sidebar-nav-icon h-[18px] w-[18px]" />
-                    )}
-                    <span className="sr-only">{resolvedTheme === "dark" ? translateText("白天模式") : translateText("黑夜模式")}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroup>
-          )}
-        </SidebarContent>
+        </PearlSidebarContent>
 
         <SidebarFooter className={cn("mobile-sidebar-footer", isDesktopCollapsed ? "items-center p-1.5" : "p-3")}>
           {showUpgradeNotice && (
@@ -1603,7 +1571,23 @@ function DashboardLayoutContent({
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset>
+      <SidebarInset className="pearl-workspace">
+        {!isMobile && (
+          <header className="pearl-topbar">
+            <div className="pearl-topbar-crumb">
+              <span className="text-muted-foreground">{siteTitle}</span>
+              <span className="text-muted-foreground/50" aria-hidden="true">/</span>
+              <span className="font-medium">{activeMenuItem?.label ?? siteTitle}</span>
+            </div>
+            <div className="pearl-topbar-actions">
+              <LanguageSelector compact />
+              <Button variant="ghost" size="icon" className="h-9 w-9" onClick={toggleTheme} aria-label={translateText("切换主题")}>
+                {resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </Button>
+              <span className="max-w-36 truncate border-l border-border pl-3 text-xs text-muted-foreground">{user?.name || user?.username}</span>
+            </div>
+          </header>
+        )}
         {isMobile && (
           <div ref={mobileHeaderRef} data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex min-h-14 items-center justify-between border-b px-2 md:sticky">
             <div className="flex items-center gap-2">
@@ -1619,7 +1603,7 @@ function DashboardLayoutContent({
             <button
               onClick={toggleTheme}
               className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors"
-              aria-label="Toggle theme"
+              aria-label={translateText("切换主题")}
             >
               {resolvedTheme === "dark" ? (
                 <Sun className="h-4 w-4" />

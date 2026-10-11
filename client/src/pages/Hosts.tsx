@@ -126,7 +126,7 @@ function parseCustomPortsInput(value: string) {
   const ports: number[] = [];
   for (const token of tokens) {
     if (!token || !/^\d+$/.test(token)) {
-      invalid.push(token || "空值");
+      invalid.push(token || translateText("空值"));
       continue;
     }
     const port = Number(token);
@@ -322,7 +322,7 @@ function createHostGlobeLabelElement(
     "user-select:none",
     "cursor:pointer",
   ].join(";");
-  element.title = `${point.host.name || point.label} · ${point.regionText || "地区获取中"}`;
+  element.title = `${point.host.name || point.label} · ${point.regionText || translateText("地区获取中")}`;
   element.addEventListener("pointerenter", () => onHoverChange(point));
   element.addEventListener("pointerleave", () => onHoverChange(null));
   element.addEventListener("mouseenter", () => onHoverChange(point));
@@ -358,13 +358,13 @@ function escapeTooltipHtml(value: unknown) {
 function renderHostGlobeTooltip(point: HostGlobePoint) {
   const rows = [
     { label: translateText("地址"), value: point.addressText },
-    { label: translateText("地区"), value: point.regionText || "地区获取中" },
-    { label: translateText("系统"), value: point.host.osInfo || "系统信息未上报" },
-    { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : "未上报" },
+    { label: translateText("地区"), value: point.regionText || translateText("地区获取中") },
+    { label: translateText("系统"), value: point.host.osInfo || translateText("系统信息未上报") },
+    { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : translateText("未上报") },
   ];
   const regionValue = point.flagUrl
-    ? `<span style="display:inline-flex;min-width:0;align-items:center;gap:7px;"><img src="${escapeTooltipHtml(point.flagUrl)}" alt="${escapeTooltipHtml(point.countryCode)}" referrerpolicy="no-referrer" style="width:20px;height:15px;flex:0 0 auto;border-radius:2px;object-fit:cover;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline';" /><span style="display:none;flex:0 0 auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;font-size:11px;color:#cbd5e1;">${escapeTooltipHtml(point.countryCode)}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.regionText || "地区获取中")}</span></span>`
-    : escapeTooltipHtml(point.regionText || "地区获取中");
+    ? `<span style="display:inline-flex;min-width:0;align-items:center;gap:7px;"><img src="${escapeTooltipHtml(point.flagUrl)}" alt="${escapeTooltipHtml(point.countryCode)}" referrerpolicy="no-referrer" style="width:20px;height:15px;flex:0 0 auto;border-radius:2px;object-fit:cover;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline';" /><span style="display:none;flex:0 0 auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;font-size:11px;color:#cbd5e1;">${escapeTooltipHtml(point.countryCode)}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.regionText || translateText("地区获取中"))}</span></span>`
+    : escapeTooltipHtml(point.regionText || translateText("地区获取中"));
   return `
     <div style="min-width:260px;max-width:320px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.92);box-shadow:0 18px 44px rgba(0,0,0,.4);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
@@ -762,10 +762,10 @@ function systemNetworkTotalTitle(metric: any) {
   const bytesOut = metricBytesOrNull(metric?.networkOut);
   const total = bytesIn === null && bytesOut === null ? null : (bytesIn ?? 0) + (bytesOut ?? 0);
   return [
-    "\u7cfb\u7edf\u7d2f\u8ba1\u6d41\u91cf\uff08\u7cfb\u7edf\u91cd\u542f\u540e\u91cd\u7f6e\uff09",
-    `\u5165\u7ad9 ${formatOptionalBytes(bytesIn)}`,
-    `\u51fa\u7ad9 ${formatOptionalBytes(bytesOut)}`,
-    `\u5408\u8ba1 ${formatOptionalBytes(total)}`,
+    translateText("\u7cfb\u7edf\u7d2f\u8ba1\u6d41\u91cf\uff08\u7cfb\u7edf\u91cd\u542f\u540e\u91cd\u7f6e\uff09"),
+    translateText("入站 {0}", [formatOptionalBytes(bytesIn)]),
+    translateText("出站 {0}", [formatOptionalBytes(bytesOut)]),
+    translateText("合计 {0}", [formatOptionalBytes(total)]),
   ].join("\n");
 }
 function clampPercent(value: unknown) {
@@ -819,13 +819,13 @@ function formatHostUptimeTitle(uptime: unknown, uptimeText: string) {
   const seconds = Number(uptime);
   if (!Number.isFinite(seconds) || seconds < 0) return translateText("运行时间：--");
   const startedAt = new Date(Date.now() - seconds * 1000);
-  return `运行时间：${uptimeText}\n启动时间：${startedAt.toLocaleString(getFormatLocale(), { hour12: false })}`;
+  return translateText("运行时间：{0}\n启动时间：{1}", [uptimeText, startedAt.toLocaleString(getFormatLocale(), { hour12: false })]);
 }
 
 function formatHostExpiryTitle(stoppedAt: unknown, remainingDays: string) {
   const stoppedAtText = formatHostDateTimeText(stoppedAt);
   if (stoppedAtText === "--") return translateText("到期时间：--");
-  return `到期时间：${stoppedAtText}\n剩余时间：${remainingDays}`;
+  return translateText("到期时间：{0}\n剩余时间：{1}", [stoppedAtText, remainingDays]);
 }
 
 function hostRemainingClass(value: string) {
@@ -1764,7 +1764,7 @@ function HostsContent() {
       const skippedLatest = (data as any)?.skippedLatest || 0;
       const skippedOffline = (data as any)?.skippedOffline || 0;
       const scheduled = (data as any)?.scheduled || 0;
-      toast.success(translateText("已安排 {0} 台 Agent 滚动升级，首批推送 {1} 台{2}{3}{4}", [data?.requested || 0, data?.pushed || 0, scheduled ? `，等待后续批次 ${scheduled} 台` : "", skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : "", skippedOffline ? `，跳过 ${skippedOffline} 台离线主机` : ""]));
+      toast.success(translateText("已安排 {0} 台 Agent 滚动升级，首批推送 {1} 台{2}{3}{4}", [data?.requested || 0, data?.pushed || 0, scheduled ? translateText("，等待后续批次 {0} 台", [scheduled]) : "", skippedLatest ? translateText("，跳过 {0} 台最新版本", [skippedLatest]) : "", skippedOffline ? translateText("，跳过 {0} 台离线主机", [skippedOffline]) : ""]));
     },
     onError: (err) => toast.error(err.message || translateText("批量下发升级任务失败")),
   });
@@ -1781,7 +1781,7 @@ function HostsContent() {
       }
       if (tracked.has(host.id)) {
         tracked.delete(host.id);
-        toast.success(translateText("{0} Agent 升级成功，当前版本 {1}", [host.name, host.agentVersion ? `v${host.agentVersion}` : "已上报"]));
+        toast.success(translateText("{0} Agent 升级成功，当前版本 {1}", [host.name, host.agentVersion ? `v${host.agentVersion}` : translateText("已上报")]));
       }
     }
     for (const hostId of Array.from(tracked.keys())) {
@@ -2253,7 +2253,7 @@ function HostsContent() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("主机管理")}</h1>
           <p className="text-muted-foreground mt-1 text-sm">{translateText("管理 Agent 主机和运行状态")}</p>
@@ -2675,9 +2675,9 @@ function HostsContent() {
                         String(host.name || ""),
                         host.agentBootId ? `Boot ID: ${host.agentBootId}` : "",
                         host.agentProcessId ? `Agent PID: ${host.agentProcessId}` : "",
-                        recoveryStartedText ? `恢复开始: ${recoveryStartedText}` : "",
-                        recoveryCompletedText ? `恢复完成: ${recoveryCompletedText}` : "",
-                        Number(host.agentRecoveryExpected || 0) > 0 ? `恢复进度: ${Number(host.agentRecoveryReady || 0)}/${Number(host.agentRecoveryExpected || 0)}` : "",
+                        recoveryStartedText ? translateText("恢复开始: {0}", [recoveryStartedText]) : "",
+                        recoveryCompletedText ? translateText("恢复完成: {0}", [recoveryCompletedText]) : "",
+                        Number(host.agentRecoveryExpected || 0) > 0 ? translateText("恢复进度: {0}/{1}", [Number(host.agentRecoveryReady || 0), Number(host.agentRecoveryExpected || 0)]) : "",
                         host.mimicRuntimeStatus ? `Mimic: ${host.mimicRuntimeStatus}` : "",
                         host.mimicRuntimeMessage ? String(host.mimicRuntimeMessage) : "",
                       ].filter(Boolean).join("\n");

@@ -15,7 +15,7 @@ test("rule limits start collapsed, unlimited and timestamped now", () => {
   const html = renderToStaticMarkup(<RuleLimitsForm value={value} onChange={() => {}} />);
   assert.match(html, /<details/);
   assert.doesNotMatch(html, /<details[^>]*\bopen/);
-  assert.match(html, /<summary[^>]*>限额与有效期<\/summary>/);
+  assert.match(html, /<summary[^>]*><span>限额与有效期<\/span><svg[^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/svg><\/summary>/);
   assert.match(html, /Mbps/); assert.match(html, /GiB/);
   assert.match(html, /type="time"/);
   assert.match(html, /管理员可为本人或其他用户的规则设置独立限额/);

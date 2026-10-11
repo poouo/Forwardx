@@ -1,5 +1,7 @@
 import { t as translateText } from "@/i18n";
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { ConfirmDialogContext, type ConfirmOptions } from "./confirm-dialog-context";
+export { useConfirmDialog } from "./confirm-dialog-context";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,22 +13,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type ConfirmTone = "default" | "destructive";
-
-type ConfirmOptions = {
-  title?: string;
-  description: ReactNode;
-  confirmText?: string;
-  cancelText?: string;
-  tone?: ConfirmTone;
-};
-
 type PendingConfirm = Required<Pick<ConfirmOptions, "title" | "confirmText" | "cancelText" | "tone">> & {
   description: ReactNode;
   resolve: (confirmed: boolean) => void;
 };
-
-const ConfirmDialogContext = createContext<((options: ConfirmOptions) => Promise<boolean>) | null>(null);
 
 const DEFAULT_CONFIRM_TITLE = "确认操作";
 
@@ -92,12 +82,4 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
       </Dialog>
     </ConfirmDialogContext.Provider>
   );
-}
-
-export function useConfirmDialog() {
-  const confirm = useContext(ConfirmDialogContext);
-  if (!confirm) {
-    throw new Error("useConfirmDialog must be used within ConfirmDialogProvider");
-  }
-  return confirm;
 }

@@ -230,7 +230,7 @@ function billingResourceSearchText(category: BillingResourceCategory, item: any,
     getResourceDisplayName(category, item),
     forwardGroupTypeText(item),
     formatTrafficMultiplier(item?.trafficMultiplier),
-    item?.members?.length ? `${item.members.length} 成员` : "",
+    item?.members?.length ? translateText("{0} 成员", [item.members.length]) : "",
     item?.id,
   ].filter(Boolean).join(" / ");
 }
@@ -272,12 +272,12 @@ function BillingResourceOption({
   singleLine?: boolean;
 }) {
   const name = getResourceDisplayName(category, item);
-  const kind = category === "tunnel" ? String(item?.mode || "").toUpperCase() || "隧道" : category === "legacy_host" ? "历史主机" : forwardGroupTypeText(item);
+  const kind = category === "tunnel" ? String(item?.mode || "").toUpperCase() || translateText("隧道") : category === "legacy_host" ? translateText("历史主机") : forwardGroupTypeText(item);
   const meta = category === "tunnel"
     ? getTunnelRouteText(item, hosts)
     : category === "legacy_host"
     ? [item?.ip, item?.ipv4, item?.ipv6].filter(Boolean).join(" / ")
-    : item?.members?.length ? `${item.members.length} 成员` : kind;
+    : item?.members?.length ? translateText("{0} 成员", [item.members.length]) : kind;
   const multiplier = category === "legacy_host" ? null : formatTrafficMultiplier(item?.trafficMultiplier ?? 100);
   return (
     <div className={cn("flex min-w-0 items-center gap-2", compact ? "py-0" : "py-1")}>
@@ -681,7 +681,7 @@ export default function TrafficBillingConfigManager({
                 <div className="flex h-10 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-3">
                   <BillingResourceOption
                     category="legacy_host"
-                    item={selectedResource || { id: configForm.resourceId, name: configForm.resourceName || `主机 #${configForm.resourceId}`, missing: true }}
+                    item={selectedResource || { id: configForm.resourceId, name: configForm.resourceName || translateText("主机 #{0}", [configForm.resourceId]), missing: true }}
                     hosts={hosts}
                     compact
                     singleLine

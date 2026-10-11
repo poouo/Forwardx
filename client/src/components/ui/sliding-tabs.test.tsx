@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Send } from "lucide-react";
-import { SlidingTabsList } from "./sliding-tabs";
+import { SlidingTabsList, tabScrollTarget } from "./sliding-tabs";
 import { Tabs, TabsList, TabsTrigger } from "./tabs";
 import { DialogFooter } from "./dialog";
 import { Button } from "./button";
@@ -35,4 +35,14 @@ test("standard tabs wrap long labels and dialog actions may grow without shrinki
   assert.match(html, /responsive-actions/);
   assert.match(html, /sm:flex-wrap/);
   assert.match(html, /\[&amp;&gt;svg\]:shrink-0/);
+});
+
+test("tab scrolling only reveals clipped labels and clamps to the local scroller", () => {
+  assert.equal(tabScrollTarget(0, 300, 900, 30, 120), 0, "visible labels stay still");
+  assert.equal(tabScrollTarget(0, 300, 900, 300, 160), 160, "reveal right edge");
+  assert.equal(tabScrollTarget(300, 300, 900, 180, 120), 180, "reveal left edge");
+  assert.equal(tabScrollTarget(0, 300, 900, 150, 420), 150, "oversized label starts at its left edge");
+  assert.equal(tabScrollTarget(0, 300, 250, 50, 200), 0, "no overflow");
+  assert.equal(tabScrollTarget(0, 300, 900, 820, 100), 600, "clamp at right end");
+  assert.equal(tabScrollTarget(0, 300, 900, -10, 100), 0, "clamp at left end");
 });

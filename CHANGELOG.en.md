@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+- Further adapt scaffold-master's card hierarchy and interactions: subtle theme-tinted dashboard highlights, recessed host/rule readouts, sorting-safe hover feedback, and real traffic-share bars. Unify content transitions across rules, tunnels, and groups; refine disclosures and sliding tab indicators. Tab scrolling stays within its own horizontal bar. Exiting/collapsed content is inert and form state is retained; reduced-motion and background-tab safeguards remain in place, with no new animation dependency or persistent animation loop.
+
+- Align the desktop sidebar brand header and workspace top bar using a shared fixed height so language controls cannot offset their dividers. Preserve mobile layouts.
+
+- Match network test and iperf3 output panels and scrollbars to light/dark mode and personalized theme colors instead of fixed black backgrounds. Preserve monospace formatting, raw output and copy behavior.
+
+- Fix confirmation context identity changing during development hot updates, which could crash language selectors and other consumers with `useConfirmDialog must be used within ConfirmDialogProvider`. Separate context from translated dialog UI and test mixed module versions.
+
+- Complete missing English labels for network test results and pending states, theme names/descriptions, built-in wallpapers, host/map tooltips, rule filters and usage statistics, payment states, plugin tasks, SMTP and mobile reminders. Preserve custom names, uploaded filenames, configuration identifiers and raw diagnostic output. Add bilingual rendering and translation coverage regression tests.
+
+- Offer only Simplified Chinese and English in language selectors, displaying the effective default language while preserving installation/browser/IP detection and saved preferences. Remove the dark decorative desktop perimeter and its sidebar/top-bar offsets.
+
+- Refresh the panel with a Pearl Glass design inspired by scaffold-master: coordinated light/dark themes, sliding sidebar selection, a full-width desktop workspace and top bar, major page headers, dashboard readings/charts, login/setup pages, and shared buttons, cards, forms, tables, tabs, menus, dialogs, and feedback. Preserve business behavior and personalization. Respect reduced-motion preferences, settle new presentation animations in background tabs, and remove costly backdrop blur from dense cards. Include the upstream MIT notice.
+
 - Improve host removal: group, chain, and linked entry-group membership changes automatically synchronize template host references while preserving unchanged healthy member rules. Individual rules no longer need to be re-saved to remove an old host. The deletion dialog repairs stale references, lists actual rule/group/tunnel dependencies, and links to their management pages. Online hosts must finish Agent cleanup; offline cleanup requires explicit consent and cannot bypass real dependencies. Queued error notifications recheck rule state to avoid alerting for removed, disabled, or recovered rules.
 
 - Custom plan descriptions now replace generated details in management cards, table rows, and the store. Empty descriptions retain default details; custom text preserves line breaks and wraps long words. Keep management controls, actual store prices, and purchase actions unchanged without modifying entitlements, billing, or limits.

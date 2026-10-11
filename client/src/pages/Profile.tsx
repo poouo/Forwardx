@@ -367,7 +367,7 @@ function ProfileContent() {
       const result = await checkMobileAppUpdate({ silent: false });
       setMobileUpdateInfo(result);
       if (result?.hasUpdate) toast.success(translateText("发现 APP 新版本 v{0}", [result.latestVersion.replace(/^v/i, "")]));
-      else if (result) toast.success(result.hasPackage ? translateText("当前 APP 已是最新版本") : translateText("当前版本暂无 {0} 更新", [result.packageLabel]));
+      else if (result) toast.success(result.hasPackage ? translateText("当前 APP 已是最新版本") : translateText("当前版本暂无 {0} 更新", [translateText(result.packageLabel)]));
     } catch (error: any) {
       toast.error(error?.message || translateText("APP 更新检查失败"));
     } finally {
@@ -377,7 +377,7 @@ function ProfileContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("个人资料")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{translateText("管理账号安全、头像和 Telegram。")}</p>
@@ -701,7 +701,7 @@ function ProfileContent() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Download className="h-4 w-4 text-primary" />{translateText("软件更新")}</CardTitle>
-            <CardDescription>{translateText("检查当前 APP 是否有新版本。")}{mobileAuth.platform === "ios" && "iOS 提供未签名 IPA，需要自行签名后安装。"}
+            <CardDescription>{translateText("检查当前 APP 是否有新版本。")}{mobileAuth.platform === "ios" && translateText("iOS 提供未签名 IPA，需要自行签名后安装。")}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

@@ -124,8 +124,8 @@ function HostGroupEnabledSwitch({
       onToggleSuccess={(checked) => toast.success(checked ? translateText("主机分组已开启") : translateText("主机分组已关闭"))}
       onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换主机分组状态失败"))}
       className="scale-75"
-      title={translateText("{0}主机分组 {1}", [enabled ? "停用" : "启用", group.name || ""])}
-      aria-label={translateText("{0}分组 {1}", [enabled ? "停用" : "启用", group.name || ""])}
+      title={translateText("{0}主机分组 {1}", [enabled ? translateText("停用") : translateText("启用"), group.name || ""])}
+      aria-label={translateText("{0}分组 {1}", [enabled ? translateText("停用") : translateText("启用"), group.name || ""])}
     />
   );
 }
@@ -327,7 +327,7 @@ export default function HostGroupManager({
   const confirmDelete = async (group: HostGroupView) => {
     if (await confirmDialog({
       title: translateText("删除分组"),
-      description: translateText("确定要删除“{0}”吗？删除后不会影响主机本身。", [group.name || "此分组"]),
+      description: translateText("确定要删除“{0}”吗？删除后不会影响主机本身。", [group.name || translateText("此分组")]),
       confirmText: translateText("删除"),
       tone: "destructive",
     })) {

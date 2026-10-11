@@ -324,21 +324,21 @@ function buildStoreDetailMarkdown(item: any) {
       const title = String(feature?.title || "").trim();
       const detail = String(feature?.description || "").trim();
       if (!title && !detail) continue;
-      lines.push(`- ${title ? `**${title}**` : "功能"}${detail ? `：${detail}` : ""}`);
+      lines.push(`- ${title ? `**${title}**` : translateText("功能")}${detail ? `：${detail}` : ""}`);
     }
   }
 
   const changelog = String(item?.changelog || "").trim();
   if (changelog) {
     if (lines.length) lines.push("");
-    lines.push(`更新说明：${changelog}`);
+    lines.push(translateText("更新说明：{0}", [changelog]));
   }
 
   return lines.join("\n") || translateText("这个插件暂未提供详细介绍。");
 }
 
 function PluginLogo({ logo, name, className }: { logo?: string; name?: string; className?: string }) {
-  const label = String(name || "插件").trim() || "插件";
+  const label = String(name || translateText("插件")).trim() || translateText("插件");
   if (logo) {
     return (
       <img
@@ -1068,7 +1068,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
 
   const updateFromGithubMutation = trpc.plugins.updateFromGithub.useMutation({
     onSuccess: async (plugin) => {
-      toast.success(translateText("插件已更新到 v{0}", [(plugin as any)?.version || "最新版本"]));
+      toast.success(translateText("插件已更新到 v{0}", [(plugin as any)?.version || translateText("最新版本")]));
       await invalidatePluginQueries();
     },
     onError: (error) => toast.error(error.message || translateText("更新失败")),
@@ -1978,7 +1978,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         </div>
       ) : (
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("插件")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{translateText("安装、更新和调试插件能力。")}</p>

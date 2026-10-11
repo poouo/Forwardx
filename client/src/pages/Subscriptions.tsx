@@ -142,7 +142,7 @@ export default function Subscriptions() {
   const confirmDeleteCancelledSubscription = async (sub: any) => {
     const confirmed = await confirmDialog({
       title: translateText("删除订阅记录"),
-      description: translateText("确认删除“{0}”的已取消记录？支付和余额流水会继续保留。", [sub.planName || `套餐 #${sub.planId}`]),
+      description: translateText("确认删除“{0}”的已取消记录？支付和余额流水会继续保留。", [sub.planName || translateText("套餐 #{0}", [sub.planId])]),
       confirmText: translateText("删除"),
       tone: "destructive",
     });
@@ -246,7 +246,7 @@ export default function Subscriptions() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("我的订阅")}</h1>
             <p className="text-sm text-muted-foreground">{translateText("已购买和已分配的套餐。")}</p>

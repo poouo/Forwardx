@@ -27,8 +27,8 @@ function StatCard({ label, children }: { label: string; children: ReactNode }) {
 
 export function LatencyStabilityStats({
   stats,
-  sampleLabel = "统计次数",
-  failureLabel = "探测失败率",
+  sampleLabel = translateText("统计次数"),
+  failureLabel = translateText("探测失败率"),
   counterStatistics,
   description,
 }: LatencyStabilityStatsProps) {
@@ -64,7 +64,7 @@ export function LatencyStabilityStats({
       {counterStatistics !== undefined && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           {counterStatistics?.available
-            ? translateText("按已上报的累计探测次数统计；截至 {0}。", [counterStatistics.latestAt ? new Date(counterStatistics.latestAt).toLocaleString(getFormatLocale()) : "最后上报"])
+            ? translateText("按已上报的累计探测次数统计；截至 {0}。", [counterStatistics.latestAt ? new Date(counterStatistics.latestAt).toLocaleString(getFormatLocale()) : translateText("最后上报")])
             : translateText("暂无累计探测统计，请升级 Agent 并等待上报。旧记录省略了稳定成功探测，无法准确计算失败率与稳定性。")}
           {" "}{description || translateText("仅包含支持累计计数的 Agent 自首次上报后可观察到的探测；不补算旧数据，时间边界受上报间隔影响。")}
         </p>

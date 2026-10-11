@@ -171,7 +171,7 @@ function TcpingDetailDialog({
                 {isForwardChain ? translateText("转发链路延迟") : translateText("转发链路延迟 ({0})", [methodLabel])} - {ruleName}
               </DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
-                {isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? "Ping 丢包" : "TCP 连接失败"])}
+                {isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? translateText("Ping 丢包") : translateText("TCP 连接失败")])}
               </DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">

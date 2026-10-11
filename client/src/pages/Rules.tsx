@@ -131,7 +131,8 @@ import {
 import { ruleLatencyProbeMethodForRule } from "@shared/latencyProbe";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ContentTransition } from "@/components/ui/content-transition";
+import { useMotionEnabled } from "@/components/MotionPolicy";
 import { toast } from "@/lib/localizedToast";
 import { useLocation, useSearch } from "wouter";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
@@ -236,10 +237,10 @@ const failoverModeOptions: Array<{ value: FailoverMode; label: string }> = [
   { value: "ip_hash", label: translateText("哈希模式 - IP哈希") },
 ];
 const failoverStrategyLabels: Record<FailoverStrategy, string> = {
-  fallback: "主备",
-  round_robin: "轮询",
-  random: "随机",
-  ip_hash: "IP哈希",
+  fallback: translateText("主备"),
+  round_robin: translateText("轮询"),
+  random: translateText("随机"),
+  ip_hash: translateText("IP哈希"),
 };
 const normalizeFailoverStrategy = (value: unknown): FailoverStrategy => {
   return value === "round_robin" || value === "random" || value === "ip_hash" || value === "fallback"
@@ -315,10 +316,10 @@ type BatchEditFormData = Pick<RuleFormData, "routeMode" | "forwardType" | "tunne
 
 const RULE_CATEGORIES = ["all", "local", "tunnel", "chain", "group"] as const;
 const ruleTransferScopeLabels: Record<RuleTransferScopeType, string> = {
-  local: "端口转发",
-  tunnel: "隧道",
-  chain: "转发链",
-  group: "转发组",
+  local: translateText("端口转发"),
+  tunnel: translateText("隧道"),
+  chain: translateText("转发链"),
+  group: translateText("转发组"),
 };
 
 const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: string }> = [
@@ -579,7 +580,8 @@ function RuleGroupItems({
   return (
     <div
       aria-hidden={!open}
-      className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+      inert={!open}
+      className={`pearl-disclosure-grid grid transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
     >
       <AutoAnimateContainer layout={layout} className={`min-h-0 overflow-hidden ${className}`}>
         {children}
@@ -597,22 +599,7 @@ function RuleContentTransition({
   className?: string;
   children: ReactNode;
 }) {
-  const reduceMotion = useReducedMotion();
-
-  return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={transitionKey}
-        className={className}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
-        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      >
-        {children}
-      </motion.div>
-    </AnimatePresence>
-  );
+  return <ContentTransition transitionKey={transitionKey} className={className}>{children}</ContentTransition>;
 }
 
 function RuleRouteTransition({
@@ -637,7 +624,7 @@ function RuleCardModeTransition({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const reduceMotion = useReducedMotion();
+  const motionEnabled = useMotionEnabled();
   const mountedModeRef = useRef<RuleCardSize | null>(null);
 
   useEffect(() => {
@@ -648,7 +635,7 @@ function RuleCardModeTransition({
     if (mountedModeRef.current === mode) return;
     mountedModeRef.current = mode;
     const element = ref.current;
-    if (!element || reduceMotion || typeof element.animate !== "function") return;
+    if (!element || !motionEnabled || typeof element.animate !== "function") return;
 
     const animation = element.animate(
       [
@@ -658,7 +645,7 @@ function RuleCardModeTransition({
       { duration: 140, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
     );
     return () => animation.cancel();
-  }, [mode, reduceMotion]);
+  }, [mode, motionEnabled]);
 
   return (
     <div ref={ref} className={className}>
@@ -1079,15 +1066,15 @@ function buildKernelChainForwardWarning(input: Required<Pick<KernelForwardWarnin
 
   if (entryMembers.length > 0) {
     const firstConnectFamily = addressFamily(firstConnectHost);
-    const firstName = warningHostName(firstHost, `主机${Number(firstMember.hostId || 0) || ""}`);
+    const firstName = warningHostName(firstHost, translateText("主机{0}", [Number(firstMember.hostId || 0) || ""]));
     for (const entryMember of entryMembers) {
       const entryHost = getHost(Number(entryMember.hostId || 0));
-      const entryName = warningHostName(entryHost, `入口主机${Number(entryMember.hostId || 0) || ""}`);
+      const entryName = warningHostName(entryHost, translateText("入口主机{0}", [Number(entryMember.hostId || 0) || ""]));
       const warning = kernelFamilyWarning(
         toolLabel,
-        `${entryName} 入口`,
+        translateText("{0} 入口", [entryName]),
         hostEntryFamilies(entryHost),
-        `${firstName} 连接地址`,
+        translateText("{0} 连接地址", [firstName]),
         firstConnectFamily,
       );
       if (warning) return warning;
@@ -1101,13 +1088,13 @@ function buildKernelChainForwardWarning(input: Required<Pick<KernelForwardWarnin
     const currentHost = getHost(Number(current.hostId || 0));
     const nextHost = getHost(Number(next.hostId || 0));
     const nextConnectHost = resolveChainConnectHostForWarning(next, nextHost);
-    const currentName = warningHostName(currentHost, `主机${Number(current.hostId || 0) || ""}`);
-    const nextName = warningHostName(nextHost, `主机${Number(next.hostId || 0) || ""}`);
+    const currentName = warningHostName(currentHost, translateText("主机{0}", [Number(current.hostId || 0) || ""]));
+    const nextName = warningHostName(nextHost, translateText("主机{0}", [Number(next.hostId || 0) || ""]));
     const warning = kernelFamilyWarning(
       toolLabel,
-      `${currentName} 入口`,
+      translateText("{0} 入口", [currentName]),
       inboundFamilies,
-      `${nextName} 连接地址`,
+      translateText("{0} 连接地址", [nextName]),
       addressFamily(nextConnectHost),
     );
     if (warning) return warning;
@@ -1119,9 +1106,9 @@ function buildKernelChainForwardWarning(input: Required<Pick<KernelForwardWarnin
   const lastHost = getHost(Number(lastMember.hostId || 0));
   return kernelFamilyWarning(
     toolLabel,
-    `${warningHostName(lastHost, `主机${Number(lastMember.hostId || 0) || ""}`)} 入口`,
+    translateText("{0} 入口", [warningHostName(lastHost, translateText("主机{0}", [Number(lastMember.hostId || 0) || ""]))]),
     inboundFamilies,
-    `最终目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+    translateText("最终目标 {0}", [String(rule?.targetIp || "").trim() || "-"]),
     addressFamily(rule?.targetIp),
   );
 }
@@ -1139,9 +1126,9 @@ function buildKernelForwardWarning({ rule, host, group, hosts = [], hostById, fo
       const memberHost = lookupHostForWarning(hosts, hostById, Number(member.hostId || 0));
       const warning = kernelFamilyWarning(
         toolLabel,
-        `${warningHostName(memberHost, `成员主机${Number(member.hostId || 0) || ""}`)} 入口`,
+        translateText("{0} 入口", [warningHostName(memberHost, translateText("成员主机{0}", [Number(member.hostId || 0) || ""]))]),
         hostEntryFamilies(memberHost),
-        `最终目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+        translateText("最终目标 {0}", [String(rule?.targetIp || "").trim() || "-"]),
         addressFamily(rule?.targetIp),
       );
       if (warning) return warning;
@@ -1152,9 +1139,9 @@ function buildKernelForwardWarning({ rule, host, group, hosts = [], hostById, fo
   if (!entryHost) return null;
   return kernelFamilyWarning(
     toolLabel,
-    `${warningHostName(entryHost, "入口主机")} 入口`,
+    translateText("{0} 入口", [warningHostName(entryHost, "入口主机")]),
     hostEntryFamilies(entryHost),
-    `目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+    translateText("目标 {0}", [String(rule?.targetIp || "").trim() || "-"]),
     addressFamily(rule?.targetIp),
   );
 }
@@ -1432,9 +1419,9 @@ function ruleGlobeTargetOffset(anchor: RuleGlobePoint, rule: any, targetText: st
 
 function renderRuleGlobePointTooltip(point: RuleGlobePoint) {
   const rows = [
-    { label: translateText("类型"), value: point.kind === "target" ? "目标端口" : "转发节点" },
+    { label: translateText("类型"), value: point.kind === "target" ? translateText("目标端口") : translateText("转发节点") },
     { label: translateText("地址"), value: point.addressText || "-" },
-    { label: translateText("地区"), value: point.regionText || "未定位" },
+    { label: translateText("地区"), value: point.regionText || translateText("未定位") },
     ...(point.targetText ? [{ label: translateText("目标"), value: point.targetText }] : []),
     ...(point.note ? [{ label: translateText("说明"), value: point.note }] : []),
   ];
@@ -1480,7 +1467,7 @@ function renderRuleGlobePathTooltip(path: RuleGlobePath) {
           <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${escapeTooltipHtml(row.value)}</span>
         </div>
       `).join("")}
-      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">点击编辑规则</div>
+      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">${escapeTooltipHtml(translateText("点击编辑规则"))}</div>
     </div>
   `;
 }
@@ -1626,16 +1613,16 @@ function buildRuleGlobeData(
       ? targetGeoCountryCode(targetGeo)
       : "";
     const targetNote = shouldOffsetTargetHost
-      ? "目标端口位于出口节点，已偏移显示末跳"
+      ? translateText("目标端口位于出口节点，已偏移显示末跳")
       : targetHostPoint
-      ? "目标地址匹配已登记主机"
+      ? translateText("目标地址匹配已登记主机")
       : targetGeoCoord
-      ? `目标地址已定位${targetGeo?.resolvedAddress && normalizeAddressKey(targetGeo.resolvedAddress) !== normalizeAddressKey(rule.targetIp) ? `，解析到 ${targetGeo.resolvedAddress}` : ""}`
-      : "目标地址未定位，临时放置在出口附近";
+      ? translateText("目标地址已定位{0}", [targetGeo?.resolvedAddress && normalizeAddressKey(targetGeo.resolvedAddress) !== normalizeAddressKey(rule.targetIp) ? translateText("，解析到 {0}", [targetGeo.resolvedAddress]) : ""])
+      : translateText("目标地址未定位，临时放置在出口附近");
     const targetPoint: RuleGlobePoint = {
       id: `target:${rule.id}`,
       kind: "target",
-      name: `目标 ${targetText}`,
+      name: translateText("目标 {0}", [targetText]),
       lat: targetCoord.lat,
       lng: targetCoord.lng,
       color,
@@ -2422,7 +2409,7 @@ function RulesContent() {
       utils.rules.listSummary.invalidate();
       setShowDialog(false);
       resetForm();
-      const msg = data.sourcePort ? `规则创建成功，源端口: ${data.sourcePort}` : "规则创建成功";
+      const msg = data.sourcePort ? translateText("规则创建成功，源端口: {0}", [data.sourcePort]) : translateText("规则创建成功");
       toast.success(msg);
     },
     onError: (err) => toast.error(err.message || translateText("创建失败")),
@@ -3408,7 +3395,7 @@ function RulesContent() {
     ));
     const targetSummary = targetNames.length <= 3
       ? targetNames.join("、")
-      : `${targetNames.slice(0, 3).join("、")} 等 ${targetNames.length} 个目标`;
+      : translateText("{0} 等 {1} 个目标", [targetNames.slice(0, 3).join("、"), targetNames.length]);
     setCopyWorking(true);
     let copied = 0;
     let skipped = 0;
@@ -3436,7 +3423,7 @@ function RulesContent() {
       if (failures.length > 0) {
         toast.error(translateText("批量复制完成：成功 {0} 条，跳过 {1} 条，失败 {2} 条。{3}", [copied, skipped, failures.length, batchOperationErrorMessage(failures[0].reason)]));
       } else {
-        toast.success(translateText("已复制 {0} 条规则到 {1}{2}", [copied, targetSummary, skipped ? "，跳过 " + skipped + " 条" : ""]));
+        toast.success(translateText("已复制 {0} 条规则到 {1}{2}", [copied, targetSummary, skipped ? translateText("，跳过 ") + skipped + translateText(" 条") : ""]));
         if (copied > 0) setShowCopyDialog(false);
       }
     } catch (error: any) {
@@ -3517,7 +3504,7 @@ function RulesContent() {
       { type: "batch", name: "批量管理选中规则" },
       `forwardx-rules-batch-${date}`,
     );
-    toast.success(translateText("已导出 {0} 条规则{1}", [copySelectedRules.length, partCount > 1 ? `，共 ${partCount} 个文件` : ""]));
+    toast.success(translateText("已导出 {0} 条规则{1}", [copySelectedRules.length, partCount > 1 ? translateText("，共 {0} 个文件", [partCount]) : ""]));
   };
 
   const handleBatchDeleteRules = async () => {
@@ -3544,7 +3531,7 @@ function RulesContent() {
           deletedIdList.push(...(chunkResult.value.deletedIds || []).map(Number));
           failures.push(...(chunkResult.value.failures || []).map((failure) => ({
             id: Number(failure.id),
-            error: String(failure.error || "删除失败"),
+            error: String(failure.error || translateText("删除失败")),
           })));
           continue;
         }
@@ -3563,7 +3550,7 @@ function RulesContent() {
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       if (failures.length > 0) {
-        toast.error(translateText("批量删除完成：成功 {0} 条，失败 {1} 条。{2}", [deletedIdList.length, failures.length, failures[0]?.error || "请稍后重试"]));
+        toast.error(translateText("批量删除完成：成功 {0} 条，失败 {1} 条。{2}", [deletedIdList.length, failures.length, failures[0]?.error || translateText("请稍后重试")]));
       } else {
         toast.success(translateText("已删除 ") + deletedIdList.length + translateText(" 条规则"));
       }
@@ -4094,7 +4081,7 @@ function RulesContent() {
     return map;
   }, [ruleTargetGeoRows]);
   const trafficRangeLabel = translateText("近 24h");
-  const trafficMetricHeaderLabels = ["累计", "24H", "延迟"];
+  const trafficMetricHeaderLabels = [translateText("累计"), "24H", translateText("延迟")];
 
   const { data: totalTrafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
@@ -4394,11 +4381,11 @@ function RulesContent() {
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || translateText("主机 #{0}", [hostId]);
   };
-  const getHostOptionName = (host: any) => host?.name || `主机 #${host?.id || "-"}`;
+  const getHostOptionName = (host: any) => host?.name || translateText("主机 #{0}", [host?.id || "-"]);
   const renderTrafficBillingResourceBadge = (enabled = true) => enabled ? (
     <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-300">{translateText("按量计费资源")}</span>
   ) : null;
-  const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? "在线" : "离线"}）${trafficBillingHostIds.has(Number(host?.id)) ? " / 按量计费资源" : ""}`;
+  const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? translateText("在线") : translateText("离线")}）${trafficBillingHostIds.has(Number(host?.id)) ? translateText(" / 按量计费资源") : ""}`;
   const renderHostStatusLabel = (host: any) => {
     const online = !!host?.isOnline;
     return (
@@ -4428,14 +4415,14 @@ function RulesContent() {
       {formatTrafficMultiplier(value)}
     </span>
   );
-  const getTunnelSelectName = (tunnel: any) => String(tunnel?.name || `隧道 #${tunnel?.id || "-"}`);
+  const getTunnelSelectName = (tunnel: any) => String(tunnel?.name || translateText("隧道 #{0}", [tunnel?.id || "-"]));
   const getTunnelSelectModeLabel = (tunnel: any) => getTunnelDisplay(tunnel, true).shortLabel;
   const getTunnelSelectText = (tunnel: any) => [
     getTunnelSelectName(tunnel),
     getTunnelSelectModeLabel(tunnel),
     getPortRangeText(tunnel),
     formatTrafficMultiplier((tunnel as any)?.trafficMultiplier),
-    trafficBillingTunnelIds.has(Number(tunnel?.id)) ? "按量计费资源" : "",
+    trafficBillingTunnelIds.has(Number(tunnel?.id)) ? translateText("按量计费资源") : "",
   ].filter(Boolean).join(" / ");
   const renderTunnelModeBadge = (tunnel: any) => (
     <span className="shrink-0 rounded border border-chart-4/30 bg-chart-4/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-chart-4">
@@ -4671,7 +4658,7 @@ function RulesContent() {
     const meta: Record<string, any> = {};
     const rule = selfTestRuleDetail;
     if (!rule) {
-      return { nodeMeta: meta, sourceLabel: selfTestRule?.name || "源节点", targetLabel: selfTestRule?.name || "目标", plannedSegments: [] as LinkTestPlannedSegment[] };
+      return { nodeMeta: meta, sourceLabel: selfTestRule?.name || translateText("源节点"), targetLabel: selfTestRule?.name || translateText("目标"), plannedSegments: [] as LinkTestPlannedSegment[] };
     }
 
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
@@ -5053,7 +5040,7 @@ function RulesContent() {
             <span className="truncate">{resource.name || translateText("端口转发 #{0}", [resource.id])}</span>
           </span>
           <span className="truncate text-xs text-muted-foreground">
-            {members.length > 0 ? members.map((member: any) => member.entryAddress || member.connectHost || (member.hostId ? `主机 #${member.hostId}` : "所属主机")).join(" / ") : getForwardGroupKindLabel(resource)}
+            {members.length > 0 ? members.map((member: any) => member.entryAddress || member.connectHost || (member.hostId ? translateText("主机 #{0}", [member.hostId]) : translateText("所属主机"))).join(" / ") : getForwardGroupKindLabel(resource)}
           </span>
         </div>
       );
@@ -5426,7 +5413,7 @@ function RulesContent() {
         resetImportDialog();
       }
     } catch (error: any) {
-      toast.error(translateText("批量导入处理失败：{0}", [error?.message || "请检查规则配置"]));
+      toast.error(translateText("批量导入处理失败：{0}", [error?.message || translateText("请检查规则配置")]));
     } finally {
       importingRulesRef.current = false;
       setImportingRules(false);
@@ -5454,7 +5441,7 @@ function RulesContent() {
       },
       `forwardx-rules-${exportScopeType}-${sanitizeRuleTransferFilePart(resourceLabel)}-${date}`,
     );
-    toast.success(translateText("已导出 {0} 条规则{1}", [exportableRules.length, partCount > 1 ? `，共 ${partCount} 个文件` : ""]));
+    toast.success(translateText("已导出 {0} 条规则{1}", [exportableRules.length, partCount > 1 ? translateText("，共 {0} 个文件", [partCount]) : ""]));
     setShowExportDialog(false);
   };
   const getRuleOwnerName = (rule: any) => {
@@ -5783,15 +5770,15 @@ function RulesContent() {
     ) : null;
 
     const panelClass = compact
-      ? "rounded-md border border-border/50 bg-background/55 px-2 py-1.5"
-      : "rounded-md border border-border/50 bg-background/55 px-2.5 py-2";
+      ? "pearl-readout rounded-xl border border-border/50 px-2 py-1.5"
+      : "pearl-readout rounded-xl border border-border/50 px-2.5 py-2";
     const labelClass = "mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground";
     const valueClass = compact
       ? "min-w-0 break-all text-[11px] leading-4"
       : "min-w-0 break-all text-xs leading-5";
 
     return (
-      <div className="min-w-0 space-y-1.5 font-mono text-xs">
+      <div className="pearl-transfer min-w-0 space-y-1.5 font-mono text-xs">
         <div className={panelClass}>
           <div className={labelClass}>{translateText("入口")}</div>
           <div className="flex min-w-0 flex-col gap-1">
@@ -5811,7 +5798,7 @@ function RulesContent() {
           </div>
         </div>
         <div className="flex justify-center">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/50 bg-background text-muted-foreground shadow-sm">
+          <span aria-hidden="true" className="pearl-transfer-connector inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/50 bg-card text-primary shadow-sm">
             <ArrowDownToLine className="h-3 w-3" />
           </span>
         </div>
@@ -6409,9 +6396,10 @@ function RulesContent() {
       return (
         <Card
           key={rule.id}
+          interactive={supported && !sortable?.isDragging}
           {...(sortable?.itemProps || {})}
           className={cn(
-            "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+            "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
             !supported && "opacity-70",
             sortable?.isDragging && "opacity-55 ring-1 ring-primary/35",
             sortable?.isDropTarget && "ring-1 ring-primary/45",
@@ -6490,9 +6478,10 @@ function RulesContent() {
     return (
       <Card
         key={rule.id}
+        interactive={supported && !sortable?.isDragging}
         {...(sortable?.itemProps || {})}
         className={cn(
-          "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+          "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
           !supported && "opacity-70",
           sortable?.isDragging && "opacity-55 ring-1 ring-primary/35",
           sortable?.isDropTarget && "ring-1 ring-primary/45",
@@ -6550,7 +6539,7 @@ function RulesContent() {
               <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border/40 pt-2 text-xs">
+          <div className="pearl-readout grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl border border-border/40 p-2.5 text-xs">
             <div className="min-w-0">
               <div className="mb-1 text-muted-foreground">{translateText("24H 入向")}</div>
               {renderRuleDailyTrafficValue(rule, "in")}
@@ -6579,7 +6568,7 @@ function RulesContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+      <div className="pearl-page-header flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("转发规则")}</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">{translateText("管理转发规则和运行状态")}</p>
@@ -7827,7 +7816,7 @@ function RulesContent() {
                       <Textarea
                         value={importManualText}
                         onChange={(event) => setImportManualText(event.target.value)}
-                        placeholder={"每行一个目标地址，格式如：\nexample.com:443\n10.0.0.8:8080\n[2408:xxxx::1]:8443"}
+                        placeholder={translateText("每行一个目标地址，格式如：\nexample.com:443\n10.0.0.8:8080\n[2408:xxxx::1]:8443")}
                         className="min-h-[7.5rem] resize-y"
                       />
                     )}
@@ -8373,7 +8362,7 @@ function RulesContent() {
             <DialogTitle>{resetTrafficTarget?.scope === "all" ? translateText("重置全部规则数据") : translateText("重置规则数据")}</DialogTitle>
             <DialogDescription>
               {resetTrafficTarget?.scope === "all"
-                ? translateText("确认重置{0}的全部规则统计数据？此操作包含其他分页中的规则，不受链路和搜索筛选影响。", [filterUser === "all" ? "所有用户" : filterUser === "self" ? "我的规则" : "所选用户"])
+                ? translateText("确认重置{0}的全部规则统计数据？此操作包含其他分页中的规则，不受链路和搜索筛选影响。", [filterUser === "all" ? translateText("所有用户") : filterUser === "self" ? translateText("我的规则") : translateText("所选用户")])
                 : translateText("确认重置规则 \"{0}\" 的所有统计数据？", [resetTrafficTarget?.rule?.name || ""])}
             </DialogDescription>
           </DialogHeader>

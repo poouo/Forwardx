@@ -361,7 +361,7 @@ export default function Billing() {
     onSuccess: async (_data, variables) => {
       const redemptionToggle = typeof variables.redemptionEnabled === "boolean";
       const enabled = redemptionToggle ? variables.redemptionEnabled : !!variables.discountEnabled;
-      toast.success(translateText("{0}已{1}", [redemptionToggle ? "兑换入口" : "折扣入口", enabled ? "开启" : "关闭"]));
+      toast.success(translateText("{0}已{1}", [redemptionToggle ? translateText("兑换入口") : translateText("折扣入口"), enabled ? translateText("开启") : translateText("关闭")]));
       await utils.billing.featureStatus.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("更新失败")),
@@ -379,7 +379,7 @@ export default function Billing() {
   const confirmDeleteCancelledSubscription = async (item: any) => {
     const confirmed = await confirmDialog({
       title: translateText("删除订阅记录"),
-      description: translateText("确认删除“{0}”记录？支付和余额流水会继续保留。", [item.title || "已取消套餐"]),
+      description: translateText("确认删除“{0}”记录？支付和余额流水会继续保留。", [item.title || translateText("已取消套餐")]),
       confirmText: translateText("删除"),
       tone: "destructive",
     });
@@ -586,7 +586,7 @@ export default function Billing() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
+        <div className="pearl-page-header block">
           <h1 className="text-2xl font-semibold tracking-tight">{translateText("余额与营销")}</h1>
           <p className="text-sm text-muted-foreground">{translateText("管理余额、兑换码和折扣码。")}</p>
         </div>
@@ -994,8 +994,8 @@ export default function Billing() {
                   <>
                 <div className="grid gap-3 md:hidden">
                   {filteredRedemptionCodes.map((code: any) => {
-                    const content = code.type === "plan" ? `${code.planName || `套餐 #${code.planId}`} / ${code.durationDays || 30} 天` : money(code.amountCents);
-                    const usage = code.usedAt ? `${code.usedByUsername || code.usedByUserId} 于 ${dateText(code.usedAt)}` : "未使用";
+                    const content = code.type === "plan" ? translateText("{0} / {1} 天", [code.planName || translateText("套餐 #{0}", [code.planId]), code.durationDays || 30]) : money(code.amountCents);
+                    const usage = code.usedAt ? translateText("{0} 于 {1}", [code.usedByUsername || code.usedByUserId, dateText(code.usedAt)]) : translateText("未使用");
                     return (
                       <div key={code.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                         <div className="flex items-start gap-3">
@@ -1036,7 +1036,7 @@ export default function Billing() {
                         <TableCell><input type="checkbox" checked={selectedRedemptionSet.has(Number(code.id))} onChange={(event) => toggleRedemptionCode(Number(code.id), event.target.checked)} /></TableCell>
                         <TableCell className="font-mono break-all">{code.code}</TableCell>
                         <TableCell><Badge variant="outline">{code.type === "plan" ? translateText("套餐") : translateText("余额")}</Badge></TableCell>
-                        <TableCell>{code.type === "plan" ? translateText("{0} / {1} 天", [code.planName || `套餐 #${code.planId}`, code.durationDays || 30]) : money(code.amountCents)}</TableCell>
+                        <TableCell>{code.type === "plan" ? translateText("{0} / {1} 天", [code.planName || translateText("套餐 #{0}", [code.planId]), code.durationDays || 30]) : money(code.amountCents)}</TableCell>
                         <TableCell>{dateText(code.startsAt)} - {dateText(code.expiresAt)}</TableCell>
                         <TableCell>{code.usedAt ? translateText("{0} 于 {1}", [code.usedByUsername || code.usedByUserId, dateText(code.usedAt)]) : translateText("未使用")}</TableCell>
                         <TableCell className="text-right"><Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteRedemptionCode.mutate({ id: code.id })}><Trash2 className="h-4 w-4" /></Button></TableCell>
@@ -1110,7 +1110,7 @@ export default function Billing() {
                 <div className="grid gap-3 md:hidden">
                   {discountCodes.map((code: any) => {
                     const status = discountStatus(code);
-                    const planNames = code.planIds?.length ? code.planIds.map((id: number) => (plans as any[]).find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐";
+                    const planNames = code.planIds?.length ? code.planIds.map((id: number) => (plans as any[]).find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : translateText("全部套餐");
                     return (
                       <div key={code.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                         <div className="flex items-start justify-between gap-2">

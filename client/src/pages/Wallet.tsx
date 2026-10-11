@@ -111,7 +111,7 @@ export default function Wallet() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("账单中心")}</h1>
             <p className="text-sm text-muted-foreground">{translateText("余额、充值和订单记录。")}</p>

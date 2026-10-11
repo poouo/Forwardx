@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 export type BatchOperationResult<T, R> =
   | { item: T; status: "fulfilled"; value: R }
   | { item: T; status: "rejected"; reason: unknown };
@@ -31,7 +32,7 @@ export async function runBatchOperations<T, R>(
 }
 
 export function batchOperationErrorMessage(reason: unknown) {
-  return reason instanceof Error ? reason.message : String(reason || "未知错误");
+  return reason instanceof Error ? reason.message : String(reason || translateText("未知错误"));
 }
 
 export function isBatchPortConflictError(reason: unknown) {

@@ -117,7 +117,7 @@ import {
   EXIT_GROUP_STRATEGY_LABELS,
   normalizeExitGroupStrategy,
 } from "@shared/exitStrategy";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ContentTransition } from "@/components/ui/content-transition";
 import {
   CartesianGrid,
   Line,
@@ -140,21 +140,7 @@ function TunnelSectionTransition({
   transitionKey: string;
   children: ReactNode;
 }) {
-  const reduceMotion = useReducedMotion();
-
-  return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={transitionKey}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
-        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      >
-        {children}
-      </motion.div>
-    </AnimatePresence>
-  );
+  return <ContentTransition transitionKey={transitionKey}>{children}</ContentTransition>;
 }
 
 type TunnelForm = {
@@ -301,7 +287,7 @@ function tunnelLatencySeriesDisplayName(key: string, label?: string | null) {
   if (cleanLabel) return cleanLabel;
   if (key === "total") return translateText("总延迟");
   if (key === "primary") return translateText("主出口");
-  return key.replace(/^exit-/, "出口 ");
+  return key.replace(/^exit-/, `${translateText("出口")} `);
 }
 const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
 const tunnelLatencyAnimatedKeys = new Set<number>();
@@ -662,7 +648,7 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
 function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
   const routeNodes = link.routeHosts.map((host, index) => `${index + 1}. ${host.name}`).join(" -> ");
   const rows = [
-    { label: translateText("类型"), value: link.kind === "tunnel" ? "隧道链路" : "转发链" },
+    { label: translateText("类型"), value: link.kind === "tunnel" ? translateText("隧道链路") : translateText("转发链") },
     { label: translateText("状态"), value: link.statusText },
     { label: translateText("延迟"), value: link.latencyText },
     { label: translateText("链路"), value: link.routeText },
@@ -674,7 +660,7 @@ function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
         <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;">${escapeTooltipHtml(link.name)}</div>
         <div style="display:flex;align-items:center;gap:6px;color:#cbd5e1;font-size:12px;">
           <span style="width:8px;height:8px;border-radius:999px;background:${link.color};box-shadow:0 0 14px ${link.glowColor};"></span>
-          ${escapeTooltipHtml(link.kind === "tunnel" ? "隧道" : "转发链")}
+          ${escapeTooltipHtml(link.kind === "tunnel" ? translateText("隧道") : translateText("转发链"))}
         </div>
       </div>
       ${rows.map((row) => `
@@ -683,7 +669,7 @@ function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
           <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${escapeTooltipHtml(row.value)}</span>
         </div>
       `).join("")}
-      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">点击编辑</div>
+      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">${escapeTooltipHtml(translateText("点击编辑"))}</div>
     </div>
   `;
 }
@@ -692,7 +678,7 @@ function renderTunnelGlobeHostTooltip(point: TunnelGlobeHostPoint) {
   return `
     <div style="min-width:220px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);color:#f8fafc;padding:10px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <div style="font-size:13px;font-weight:700;">${escapeTooltipHtml(point.name)}</div>
-      <div style="margin-top:6px;color:#cbd5e1;font-size:12px;">${escapeTooltipHtml(point.regionText || "地区获取中")}</div>
+      <div style="margin-top:6px;color:#cbd5e1;font-size:12px;">${escapeTooltipHtml(point.regionText || translateText("地区获取中"))}</div>
     </div>
   `;
 }
@@ -941,7 +927,7 @@ function TunnelWorldGlobe({
         id: `tunnel:${tunnel.id}`,
         kind: "tunnel",
         item: tunnel,
-        name: String(tunnel.name || `隧道 #${tunnel.id}`),
+        name: String(tunnel.name || translateText("隧道 #{0}", [tunnel.id])),
         routeText: getTunnelRouteText(tunnel, hosts),
         routeHosts,
         statusText: !supported ? translateText("协议未启用") : style.statusText,
@@ -967,7 +953,7 @@ function TunnelWorldGlobe({
         id: `chain:${group.id}`,
         kind: "chain",
         item: group,
-        name: String(group.name || `转发链 #${group.id}`),
+        name: String(group.name || translateText("转发链 #{0}", [group.id])),
         routeText: routeHosts.map((host) => host.name).join(" -> "),
         routeHosts,
         statusText: style.statusText,
@@ -1048,7 +1034,7 @@ function TunnelWorldGlobe({
         map.set(link.id, {
           ...link,
           item: tunnel,
-          name: String(tunnel.name || `隧道 #${tunnel.id}`),
+          name: String(tunnel.name || translateText("隧道 #{0}", [tunnel.id])),
           routeText: getTunnelRouteText(tunnel, hosts),
           statusText: !supported ? translateText("协议未启用") : style.statusText,
           latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
@@ -1069,7 +1055,7 @@ function TunnelWorldGlobe({
       map.set(link.id, {
         ...link,
         item: group,
-        name: String(group.name || `转发链 #${group.id}`),
+        name: String(group.name || translateText("转发链 #{0}", [group.id])),
         statusText: style.statusText,
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
         color: style.color,
@@ -1739,7 +1725,7 @@ function TunnelSelfTestDialog({
         {
           hostId: lastHostId,
           label: primaryExitLabel,
-          role: "主出口",
+          role: translateText("主出口"),
           connectHost: String(tunnel?.connectHost || "").trim(),
           listenPort: Number(tunnel?.listenPort || 0) || null,
         },
@@ -1748,7 +1734,7 @@ function TunnelSelfTestDialog({
           return {
             hostId,
             label: labelForHostId(hostId),
-            role: `备用出口 ${index + 1}`,
+            role: translateText("备用出口 {0}", [index + 1]),
             connectHost: String(exit?.connectHost || "").trim(),
             listenPort: Number(exit?.listenPort || 0) || null,
           };
@@ -2684,7 +2670,7 @@ function TunnelsContent() {
     const hopIds = getTunnelHopIds(tunnel);
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
     const entryGroupLabel = entryGroup
-      ? `${String(entryGroup.name || "入口组").trim()}${String(entryGroup.domain || "").trim() ? ` (${String(entryGroup.domain).trim()})` : ""}`
+      ? `${String(entryGroup.name || translateText("入口组")).trim()}${String(entryGroup.domain || "").trim() ? ` (${String(entryGroup.domain).trim()})` : ""}`
       : "";
     const visibleHopIds = entryGroup
       ? hopIds.filter((hostId: number) => !entryMembersForGroup(Number(entryGroup.id)).some((member: any) => Number(member.hostId || 0) === Number(hostId)))
@@ -3900,13 +3886,13 @@ function TunnelsContent() {
   const tunnelTableRouteText = (tunnel: any) => {
     const route = getTunnelRouteText(tunnel, hosts);
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
-    const entryGroupLabel = entryGroup ? String(entryGroup.name || "入口组").trim() : "";
-    return [entryGroupLabel ? `入口组 ${entryGroupLabel}` : "", route].filter(Boolean).join(" ｜ ");
+    const entryGroupLabel = entryGroup ? String(entryGroup.name || translateText("入口组")).trim() : "";
+    return [entryGroupLabel ? translateText("入口组 {0}", [entryGroupLabel]) : "", route].filter(Boolean).join(" ｜ ");
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("链路管理")}</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">{translateText("管理隧道、端口转发、转发链及入口/出口组")}</p>

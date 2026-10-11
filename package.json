@@ -6,6 +6,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:ui": "node --import tsx --test client/src/components/ui/pearl-ui.test.tsx client/src/components/ui/sliding-tabs.test.tsx client/src/components/ui/confirm-dialog.test.tsx",
     "test:release-notes": "node --test scripts/release-notes.test.mjs",
     "test:google-auth": "node --import tsx --test server/googleOAuth.test.ts",
     "test:port-access-limits": "node --import tsx --test server/portAccessLimits.test.ts server/portAccessLimitRefresh.test.ts",
@@ -27,7 +28,7 @@
     "mobile:apk": "pnpm mobile:sync:android && cd android && ./gradlew assembleDebug",
     "mobile:ipa": "node scripts/build-ios-ipa.mjs",
     "test:ios": "node --test scripts/ios-build.test.mjs && node --import tsx --test client/src/lib/mobileAppUpdate.test.ts",
-    "test:i18n": "node --import tsx --test client/src/i18n/language.test.ts client/src/i18n/runtime.test.ts client/src/components/ui/sliding-tabs.test.tsx server/localeHint.test.ts",
+    "test:i18n": "node --import tsx --test client/src/i18n/language.test.ts client/src/i18n/runtime.test.ts client/src/i18n/ui-coverage.test.tsx client/src/components/ui/sliding-tabs.test.tsx server/localeHint.test.ts",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

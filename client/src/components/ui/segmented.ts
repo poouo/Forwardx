@@ -1,12 +1,12 @@
 import { cn } from "@/lib/utils";
 
-export const segmentedControlClassName = "rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5";
+export const segmentedControlClassName = "pearl-segmented rounded-xl border border-border/60 bg-muted/60 p-1 shadow-inner shadow-black/5";
 
 export function segmentedOptionClassName(active: boolean, disabled = false, className?: string) {
   return cn(
-    "group flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-3 text-center text-sm font-medium ring-1 ring-transparent transition-all",
+    "group flex h-9 min-w-0 items-center justify-center gap-2 rounded-lg border px-3 text-center text-sm font-medium ring-1 ring-transparent transition-all",
     active
-      ? "border-primary bg-primary/15 text-primary shadow-md shadow-primary/15 ring-primary/35"
+      ? "border-border bg-card text-primary shadow-sm"
       : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground",
     disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-muted-foreground",
     className,

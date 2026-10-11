@@ -309,12 +309,12 @@ export function buildLinkAvailabilityIndex(input: {
 
     if (entryGroupId > 0 && !entryGroup) {
       configurationValid = false;
-      configurationMessage = "关联入口组不存在";
+      configurationMessage = translateText("关联入口组不存在");
     } else if (entryGroup) {
       const members = endpointHostMembers(entryGroup, hostById, tunnelById);
       if (!entryGroup.isEnabled || normalizeGroupMode(entryGroup) !== "entry" || !String(entryGroup.domain || "").trim()) {
         configurationValid = false;
-        configurationMessage = "关联入口组配置不可用";
+        configurationMessage = translateText("关联入口组配置不可用");
       }
       if (routeHostIds.length > 0) requiredHostIds.delete(routeHostIds[0]);
       alternativeNodeSets.push({ label: translateText("入口组"), nodes: members.map((member: any) => hostNode(Number(member.hostId))) });
@@ -322,13 +322,13 @@ export function buildLinkAvailabilityIndex(input: {
 
     if (exitGroupId > 0 && !exitGroup) {
       configurationValid = false;
-      configurationMessage = "关联出口组不存在";
+      configurationMessage = translateText("关联出口组不存在");
     } else if (exitGroup) {
       const groupMembers = endpointHostMembers(exitGroup, hostById, tunnelById);
       const members = normalizeExitGroupStrategy(exitGroup.exitStrategy) === "none" ? groupMembers.slice(0, 1) : groupMembers;
       if (!exitGroup.isEnabled || normalizeGroupMode(exitGroup) !== "exit") {
         configurationValid = false;
-        configurationMessage = "关联出口组配置不可用";
+        configurationMessage = translateText("关联出口组配置不可用");
       }
       if (routeHostIds.length > 0) requiredHostIds.delete(routeHostIds[routeHostIds.length - 1]);
       alternativeNodeSets.push({ label: translateText("出口组"), nodes: members.map((member: any) => hostNode(Number(member.hostId))) });
@@ -414,16 +414,16 @@ export function buildLinkAvailabilityIndex(input: {
     } else {
       let candidates = members;
       let configurationValid = members.length > 0;
-      let configurationMessage = translateText("{0}没有已启用成员", [mode === "entry" ? "入口组" : mode === "exit" ? "出口组" : "转发组"]);
+      let configurationMessage = translateText("{0}没有已启用成员", [mode === "entry" ? translateText("入口组") : mode === "exit" ? translateText("出口组") : translateText("转发组")]);
       if ((mode === "entry" || mode === "failover") && !String(group?.domain || "").trim()) {
         configurationValid = false;
-        configurationMessage = mode === "entry" ? "入口组需要指定入口域名" : "转发组需要指定 DDNS 域名";
+        configurationMessage = mode === "entry" ? translateText("入口组需要指定入口域名") : translateText("转发组需要指定 DDNS 域名");
       }
       if (mode === "entry" || mode === "failover") {
         candidates = candidates.filter((member: any) => memberRecordAvailable(group, member, hostById, tunnelById));
         if (members.length > 0 && candidates.length === 0) {
           configurationValid = false;
-          configurationMessage = `${String(group?.recordType || "A").toUpperCase()} 记录缺少可用成员地址`;
+          configurationMessage = translateText("{0} 记录缺少可用成员地址", [String(group?.recordType || "A").toUpperCase()]);
         }
       }
       if (mode === "exit" && normalizeExitGroupStrategy(group?.exitStrategy) === "none") {
@@ -431,7 +431,7 @@ export function buildLinkAvailabilityIndex(input: {
       }
       if (String(group?.lastStatus || "").toLowerCase() === "error") {
         configurationValid = false;
-        configurationMessage = String(group?.lastMessage || "DDNS 同步异常");
+        configurationMessage = String(group?.lastMessage || translateText("DDNS 同步异常"));
       }
       if (group?.chinaHealthCheckEnabled) {
         const healthy = candidates.filter((member: any) => String(member?.chinaHealthStatus || "unknown").toLowerCase() === "healthy");
@@ -447,7 +447,7 @@ export function buildLinkAvailabilityIndex(input: {
           continue;
         } else if (configurationValid) {
           configurationValid = false;
-          configurationMessage = "入口健康度检测未通过";
+          configurationMessage = translateText("入口健康度检测未通过");
         }
       }
       eligibleMemberIds = new Set<number>(candidates.map((member: any) => Number(member.id)));

@@ -7,6 +7,7 @@ import superjson from "superjson";
 import { initializeLanguage } from "./i18n";
 import { mobileAuth } from "./lib/mobileAuth";
 import "./index.css";
+import "./styles/pearl.css";
 import { DATABASE_UNAVAILABLE_MESSAGE } from "@shared/databaseHealth";
 import { fetchPublicMonitor, PUBLIC_MONITOR_QUERY_PATHS } from "./lib/publicMonitor";
 import { fetchManualProbe, MANUAL_PROBE_QUERY_PATHS } from "./lib/manualProbe";

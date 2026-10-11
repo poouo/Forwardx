@@ -46,7 +46,7 @@ export function AvatarPicker({
     try {
       onChange(await fileToImageDataUrl(file));
     } catch (error: any) {
-      onError?.(error?.message || "头像处理失败");
+      onError?.(error?.message || translateText("头像处理失败"));
     }
   };
 

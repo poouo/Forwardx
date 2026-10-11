@@ -1033,7 +1033,7 @@ function UsersContent() {
     setAddonUserId(Number(sub.userId));
     setAddonUserName(userLabel({ username: sub.username, name: sub.name, id: sub.userId }));
     setAddonSubscriptionId(String(sub.id));
-    setAddonSubscriptionLabel(`${sub.planName || `套餐 #${sub.planId}`} · ${formatBytes(sub.trafficLimit)}`);
+    setAddonSubscriptionLabel(`${sub.planName || translateText("套餐 #{0}", [sub.planId])} · ${formatBytes(sub.trafficLimit)}`);
     setAddonTrafficGB("");
     setShowAddonDialog(true);
   };
@@ -1044,7 +1044,7 @@ function UsersContent() {
       return;
     }
     setExtendSubscriptionId(Number(sub.id));
-    setExtendSubscriptionLabel(`${userLabel({ username: sub.username, name: sub.name, id: sub.userId })} · ${sub.planName || `套餐 #${sub.planId}`}`);
+    setExtendSubscriptionLabel(`${userLabel({ username: sub.username, name: sub.name, id: sub.userId })} · ${sub.planName || translateText("套餐 #{0}", [sub.planId])}`);
     setExtendExpiresAtInput(formatDateInputValue(sub.expiresAt));
     setShowExtendDialog(true);
   };
@@ -1056,7 +1056,7 @@ function UsersContent() {
     }
     setCancelSubscriptionId(Number(sub.id));
     setCancelSubscriptionLabel(userLabel({ username: sub.username, name: sub.name, id: sub.userId }));
-    setCancelSubscriptionPlanLabel(sub.planName || `套餐 #${sub.planId}`);
+    setCancelSubscriptionPlanLabel(sub.planName || translateText("套餐 #{0}", [sub.planId]));
     setShowCancelSubscriptionDialog(true);
   };
 
@@ -1130,8 +1130,8 @@ function UsersContent() {
     const enabled = u.accountEnabled !== false;
     const isSelf = u.id === currentUser?.id;
     const title = isSelf
-      ? "不能停用当前登录账号"
-      : `${enabled ? "停用" : "启用"}账号 ${u.username || ""}`;
+      ? translateText("不能停用当前登录账号")
+      : translateText("{0}账号 {1}", [enabled ? translateText("停用") : translateText("启用"), u.username || ""]);
     return (
       <div
         className={
@@ -1202,7 +1202,7 @@ function UsersContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("用户管理")}</h1>
           <p className="text-muted-foreground mt-1 text-sm">{translateText("管理系统用户、权限和流量配额")}</p>
@@ -2449,8 +2449,8 @@ function UsersContent() {
                   </SelectTrigger>
                   <SelectContent>
                     {availableAllowedHosts.map((host: any) => (
-                      <SelectItem key={host.id} value={String(host.id)} textValue={String(host.name || host.ip || `主机 #${host.id}`)}>
-                        {String(host.name || host.ip || `主机 #${host.id}`)}
+                      <SelectItem key={host.id} value={String(host.id)} textValue={String(host.name || host.ip || translateText("主机 #{0}", [host.id]))}>
+                        {String(host.name || host.ip || translateText("主机 #{0}", [host.id]))}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2459,7 +2459,7 @@ function UsersContent() {
                   <AutoAnimateContainer className="space-y-2">
                     {selectedAllowedHosts.map((host: any) => (
                       <div key={host.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
-                        <span className="min-w-0 truncate text-sm font-medium">{String(host.name || host.ip || `主机 #${host.id}`)}</span>
+                        <span className="min-w-0 truncate text-sm font-medium">{String(host.name || host.ip || translateText("主机 #{0}", [host.id]))}</span>
                         <Button
                           type="button"
                           variant="ghost"

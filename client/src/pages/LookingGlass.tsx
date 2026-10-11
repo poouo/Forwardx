@@ -105,15 +105,15 @@ function resultOk(result?: LookingGlassResult | null) {
   return !!result && !result.timedOut && result.exitCode === 0;
 }
 
-function buildPendingOutput(method: NetworkMethod, hostName: string, target: string, port?: string) {
+export function buildPendingOutput(method: NetworkMethod, hostName: string, target: string, port?: string) {
   const lines = [
-    `[${new Date().toLocaleTimeString(getFormatLocale(), { hour12: false })}] 已创建网络测试任务`,
-    `测试主机: ${hostName || "-"}`,
-    `测试类型: ${methodMeta(method).label}`,
-    `目标地址: ${target || "-"}`,
+    `[${new Date().toLocaleTimeString(getFormatLocale(), { hour12: false })}] ${translateText("已创建网络测试任务")}`,
+    translateText("测试主机: {0}", [hostName || "-"]),
+    translateText("测试类型: {0}", [methodMeta(method).label]),
+    translateText("目标地址: {0}", [target || "-"]),
   ];
-  if (method === "tcp") lines.push(`目标端口: ${port || "443"}`);
-  lines.push("等待 Agent 拉取任务并执行...");
+  if (method === "tcp") lines.push(translateText("目标端口: {0}", [port || "443"]));
+  lines.push(translateText("等待 Agent 拉取任务并执行..."));
   return lines.join("\n");
 }
 
@@ -127,7 +127,7 @@ function iperf3StateLabel(state?: Iperf3State) {
   return translateText("等待");
 }
 
-function ResultOutput({
+export function ResultOutput({
   result,
   liveOutput,
   state,
@@ -138,8 +138,8 @@ function ResultOutput({
 }) {
   const isRunning = state === "queued" || state === "running";
   const ok = resultOk(result);
-  const title = result ? methodMeta(result.method).label : "网络测试结果";
-  const output = result?.output || liveOutput || "选择主机、测试类型和目标后开始执行。";
+  const title = result ? methodMeta(result.method).label : translateText("网络测试结果");
+  const output = result?.output || liveOutput || translateText("选择主机、测试类型和目标后开始执行。");
   const statusLabel = isRunning ? translateText("执行中") : result ? (ok ? translateText("完成") : result.timedOut ? translateText("超时") : translateText("异常")) : translateText("等待");
 
   return (
@@ -189,7 +189,7 @@ function ResultOutput({
         </div>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 p-0">
-        <pre className="terminal-scrollbar h-full min-h-0 overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100">
+        <pre className="pearl-console h-full min-h-0 overflow-auto px-4 py-4 font-mono text-xs leading-6">
           {output}
         </pre>
       </CardContent>
@@ -197,7 +197,7 @@ function ResultOutput({
   );
 }
 
-function Iperf3Output({
+export function Iperf3Output({
   status,
   loading,
   onCopy,
@@ -209,7 +209,7 @@ function Iperf3Output({
   const state = status?.state || "idle";
   const isBusy = state === "queued" || state === "starting" || state === "stopping";
   const isRunning = state === "running";
-  const output = status?.output || "选择测试主机后点击开始测试，Agent 会启动 iperf3 服务端。";
+  const output = status?.output || translateText("选择测试主机后点击开始测试，Agent 会启动 iperf3 服务端。");
   const commands = status?.commands;
 
   return (
@@ -278,7 +278,7 @@ function Iperf3Output({
         </div>
 
         {status?.error && <p className="shrink-0 text-xs text-destructive">{status.error}</p>}
-        <pre className="terminal-scrollbar min-h-0 flex-1 overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100">
+        <pre className="pearl-console min-h-0 flex-1 overflow-auto rounded-lg border border-border/60 px-4 py-3 font-mono text-xs leading-6">
           {output}
         </pre>
       </CardContent>
@@ -350,7 +350,7 @@ export default function LookingGlass() {
   const runningOutput = useMemo(() => {
     if ((runState !== "queued" && runState !== "running") || !runStartedAt) return liveOutput;
     const seconds = Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000));
-    return `${liveOutput}\n运行时间: ${seconds}s`;
+    return `${liveOutput}\n${translateText("运行时间: {0}s", [seconds])}`;
   }, [liveOutput, runStartedAt, runState, runTick]);
 
   const mutation = trpc.lookingGlass.start.useMutation({
@@ -368,7 +368,7 @@ export default function LookingGlass() {
     onError: (error) => {
       setRunState("error");
       setRunStartedAt(null);
-      setLiveOutput((value) => `${value}\n执行失败: ${error.message || "测试失败"}`);
+      setLiveOutput((value) => `${value}\n${translateText("执行失败: {0}", [error.message || translateText("测试失败")])}`);
       toast.error(error.message || translateText("测试失败"));
     },
   });
@@ -424,7 +424,7 @@ export default function LookingGlass() {
     if (!taskStatus.error || !activeTaskId) return;
     setRunState("error");
     setRunStartedAt(null);
-    setLiveOutput((value) => `${value}\n状态查询失败: ${taskStatus.error.message}`);
+    setLiveOutput((value) => `${value}\n${translateText("状态查询失败: {0}", [taskStatus.error.message])}`);
     toast.error(taskStatus.error.message || translateText("状态查询失败"));
     setActiveTaskId("");
   }, [activeTaskId, taskStatus.error]);
@@ -537,7 +537,7 @@ export default function LookingGlass() {
   return (
     <DashboardLayout>
       <div className="space-y-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="gap-1.5 border-chart-1/30 bg-chart-1/10 text-chart-1">

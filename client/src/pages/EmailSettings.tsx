@@ -131,7 +131,7 @@ export function EmailSettingsContent() {
       testAttemptRef.current += 1;
       testTimeoutRef.current = null;
       sendTestEmail.reset();
-      const message = "SMTP 测试请求超时，请检查面板网络和 SMTP 端口";
+      const message = translateText("SMTP 测试请求超时，请检查面板网络和 SMTP 端口");
       setTestError(message);
       toast.error(message);
     }, EMAIL_TEST_UI_TIMEOUT_MS);
@@ -147,7 +147,7 @@ export function EmailSettingsContent() {
         if (testAttemptRef.current !== attempt) return;
         if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
         testTimeoutRef.current = null;
-        const message = error.message || "测试邮件发送失败";
+        const message = error.message || translateText("测试邮件发送失败");
         setTestError(message);
         toast.error(message);
       },
@@ -158,10 +158,10 @@ export function EmailSettingsContent() {
     ? (Number(form.port) === 465 ? "implicit-tls" : "starttls")
     : form.security;
   const securityDescription = effectiveSecurity === "implicit-tls"
-    ? "连接建立时立即启用 TLS，通常使用 465 端口。"
+    ? translateText("连接建立时立即启用 TLS，通常使用 465 端口。")
     : effectiveSecurity === "starttls"
-      ? "先建立 SMTP 连接，再升级到 TLS，通常使用 587 端口。"
-      : "不使用 TLS，仅适用于可信内网 SMTP。";
+      ? translateText("先建立 SMTP 连接，再升级到 TLS，通常使用 587 端口。")
+      : translateText("不使用 TLS，仅适用于可信内网 SMTP。");
 
   if (isLoading) {
     return (
@@ -171,7 +171,7 @@ export function EmailSettingsContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("邮箱设置")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{translateText("配置验证码和提醒邮件。")}</p>

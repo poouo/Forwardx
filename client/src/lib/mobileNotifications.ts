@@ -124,7 +124,7 @@ export async function scheduleMobileReminders(settings: MobileNotificationSettin
       notifications.push({
         id: 40101,
         title: translateText("ForwardX 流量提醒"),
-        body: `套餐流量剩余约 ${remainingPercent}%，请及时关注。`,
+        body: translateText("套餐流量剩余约 {0}%，请及时关注。", [remainingPercent]),
         schedule: { at: nextReminderDate(normalized.reminderTime) },
       });
     }
@@ -139,7 +139,7 @@ export async function scheduleMobileReminders(settings: MobileNotificationSettin
         notifications.push({
           id: 40102,
           title: translateText("ForwardX 套餐到期提醒"),
-          body: `套餐将在 ${normalized.expiryDaysBefore} 天内到期，请及时续费或联系管理员。`,
+          body: translateText("套餐将在 {0} 天内到期，请及时续费或联系管理员。", [normalized.expiryDaysBefore]),
           schedule: { at: new Date(notifyAt) },
         });
       }

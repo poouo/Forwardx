@@ -156,8 +156,8 @@ function ServiceEnabledSwitch({
       onToggleSuccess={(checked) => toast.success(checked ? translateText("探测服务已开启") : translateText("探测服务已关闭"))}
       onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换探测服务状态失败"))}
       className="scale-75"
-      title={translateText("{0}探测服务 {1}", [enabled ? "停用" : "启用", service.name || ""])}
-      aria-label={translateText("{0}服务 {1}", [enabled ? "停用" : "启用", service.name || ""])}
+      title={translateText("{0}探测服务 {1}", [enabled ? translateText("停用") : translateText("启用"), service.name || ""])}
+      aria-label={translateText("{0}服务 {1}", [enabled ? translateText("停用") : translateText("启用"), service.name || ""])}
     />
   );
 }
@@ -407,7 +407,7 @@ export default function HostProbeServiceManager({
   const confirmDelete = async (service: any) => {
     if (await confirmDialog({
       title: translateText("删除探测服务"),
-      description: translateText("确定要删除“{0}”吗？删除后主机将不再执行该服务探测。", [service.name || "此服务"]),
+      description: translateText("确定要删除“{0}”吗？删除后主机将不再执行该服务探测。", [service.name || translateText("此服务")]),
       confirmText: translateText("删除"),
       tone: "destructive",
     })) deleteMutation.mutate({ id: service.id });

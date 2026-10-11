@@ -202,13 +202,13 @@ function providerLabel(value: string) {
 
 function statusBadge(status: string) {
   const text: Record<string, string> = {
-    pending: "待支付",
-    paid: "已支付",
-    processing: "处理中",
-    completed: "已完成",
-    expired: "已过期",
-    cancelled: "已取消",
-    failed: "失败",
+    pending: translateText("待支付"),
+    paid: translateText("已支付"),
+    processing: translateText("处理中"),
+    completed: translateText("已完成"),
+    expired: translateText("已过期"),
+    cancelled: translateText("已取消"),
+    failed: translateText("失败"),
   };
   const tone = status === "paid" || status === "processing" || status === "completed"
     ? "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -472,7 +472,7 @@ export default function Payments() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("支付对接")}</h1>
             <p className="text-sm text-muted-foreground">{translateText("配置支付方式和订单。")}</p>

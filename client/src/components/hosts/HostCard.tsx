@@ -261,8 +261,8 @@ export default function HostCard({
     ? `${formatBytes(trafficUsedBytes)} / ♾️`
     : `${formatBytes(trafficUsedBytes)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`;
   const trafficUsageTooltip = [
-    `流量使用（${trafficMeasureModeLabel}）`,
-    `入站 ${totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)} / 出站 ${totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}`,
+    translateText("流量使用（{0}）", [trafficMeasureModeLabel]),
+    translateText("入站 {0} / 出站 {1}", [totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn), totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)]),
     trafficUsageLabel,
   ].join("\n");
   const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
@@ -356,7 +356,7 @@ export default function HostCard({
     </div>
   );
   const renderTrafficSplitBox = () => (
-    <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
+    <div className={`pearl-readout rounded-xl border px-2.5 py-2 ${trafficPanelClass}`}>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] divide-x divide-border/40">
         {renderTrafficColumn({ label: translateText("当前"), inValue: currentTrafficInLabel, outValue: currentTrafficOutLabel, title: currentTrafficTitle, className: "pr-2" })}
         {renderTrafficColumn({ label: translateText("累计"), inValue: systemTrafficInLabel, outValue: systemTrafficOutLabel, title: systemTrafficTitle, className: "pl-2" })}
@@ -380,7 +380,7 @@ export default function HostCard({
       ? "h-1.5 bg-muted [&>div]:bg-muted-foreground/30"
       : "h-1.5 bg-muted [&>div]:bg-muted-foreground/20";
   const infoPanelClass = isOnline
-    ? "border-border/40 bg-background/30"
+    ? "pearl-readout border-border/40"
     : "border-muted-foreground/20 bg-muted/25";
   const trafficPanelClass = isOnline
     ? "border-border/40 bg-muted/20"
@@ -396,7 +396,7 @@ export default function HostCard({
       value: cpuUsage,
       valueLabel: `${cpuUsage}%`,
       progressClass: metricUsageProgressClass(cpuUsage, isOnline),
-      tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : translateText("CPU 使用率 {0}%", [cpuUsage]),
+      tooltip: host.cpuInfo ? translateText("CPU 使用率 {0}%\n{1}", [cpuUsage, host.cpuInfo]) : translateText("CPU 使用率 {0}%", [cpuUsage]),
     },
     {
       key: "memory",
@@ -415,7 +415,7 @@ export default function HostCard({
       valueLabel: `${diskUsage}%`,
       progressClass: metricUsageProgressClass(diskUsage, isOnline),
       tooltip: diskUsed !== null && diskTotal
-        ? `磁盘使用率 ${diskUsage}%\n${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`
+        ? translateText("磁盘使用率 {0}%\n{1} / {2}", [diskUsage, formatBytes(diskUsed), formatBytes(diskTotal)])
         : translateText("磁盘使用率 {0}%", [diskUsage]),
     },
     {
@@ -448,7 +448,7 @@ export default function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`${cardMinHeightClass} host-card-shell ${dragHandle ? "group/sortable" : ""} ${sortableClassName || ""} backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,opacity] duration-200 ease-out ${
+    <Card interactive={isOnline} className={`${cardMinHeightClass} host-card-shell ${dragHandle ? "group/sortable" : ""} ${sortableClassName || ""} transition-[min-height,border-color,background-color,box-shadow,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"

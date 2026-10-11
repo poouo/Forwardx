@@ -17,7 +17,7 @@ export function LatencyRating({
   latencyMs,
   isTimeout = false,
   emptyText = translateText("暂无数据"),
-  timeoutText = "超时/不可达",
+  timeoutText = translateText("超时/不可达"),
   className,
   icon = "activity",
 }: {

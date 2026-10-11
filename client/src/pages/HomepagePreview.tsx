@@ -30,7 +30,7 @@ export default function HomepagePreview() {
 
   let html = mode === "draft" ? draftHtml : settings?.homepageHtml || "";
   if (!html.trim()) {
-    html = "<main style=\"min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;color:#64748b;\"><div>暂无自定义首页内容</div></main>";
+    html = `<main style="min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;color:#64748b;"><div>${translateText("暂无自定义首页内容")}</div></main>`;
   }
 
   return (

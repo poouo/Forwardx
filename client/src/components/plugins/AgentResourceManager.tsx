@@ -197,16 +197,16 @@ function durationLabel(milliseconds?: number) {
 function taskTimingLabel(task?: TaskState) {
   if (!task) return "";
   return [
-    task.queueDurationMs !== undefined ? `排队 ${durationLabel(task.queueDurationMs)}` : "",
+    task.queueDurationMs !== undefined ? translateText("排队 {0}", [durationLabel(task.queueDurationMs)]) : "",
     task.agentDurationMs !== undefined ? `Agent ${durationLabel(task.agentDurationMs)}` : "",
-    task.endToEndDurationMs !== undefined ? `总计 ${durationLabel(task.endToEndDurationMs)}` : "",
+    task.endToEndDurationMs !== undefined ? translateText("总计 {0}", [durationLabel(task.endToEndDurationMs)]) : "",
   ].filter(Boolean).join(" · ");
 }
 
 function notifyTaskError(error: unknown) {
   if (error instanceof PluginActionError) {
     const description = [
-      error.info.advice ? `处理建议: ${error.info.advice}` : "",
+      error.info.advice ? translateText("处理建议: {0}", [error.info.advice]) : "",
       error.info.detail,
     ].filter(Boolean).join(" · ");
     toast.error(error.info.message, description ? { description } : undefined);
@@ -585,18 +585,18 @@ export function AgentResourceManager({
   const rows = Array.isArray(listValue) ? listValue : Array.isArray(listSnapshot?.data) ? listSnapshot?.data : [];
   const listLoading = !!listSource && busySources.includes(sourceCacheKey(selectedHostId, listSource.id));
   const transportBlockedReason = !selectedHost
-    ? "请先选择 Agent"
+    ? translateText("请先选择 Agent")
     : !selectedHost.isOnline
-      ? "Agent 当前离线"
+      ? translateText("Agent 当前离线")
       : !selectedHost.agentPluginSupported
-        ? "Agent 版本不支持动态插件任务"
+        ? translateText("Agent 版本不支持动态插件任务")
         : selectedHost.pluginSyncPending
-          ? "插件资源正在同步到 Agent"
+          ? translateText("插件资源正在同步到 Agent")
           : plugin.status !== "enabled"
-            ? "插件未启用"
+            ? translateText("插件未启用")
             : "";
   const blockedReason = transportBlockedReason || (pluginVersionMismatch
-    ? `Agent 插件版本 ${reportedPluginVersion} 与面板版本 ${plugin.version} 不一致，请等待同步或升级`
+    ? translateText("Agent 插件版本 {0} 与面板版本 {1} 不一致，请等待同步或升级", [reportedPluginVersion, plugin.version])
     : "");
   const refreshDisabled = !!blockedReason || listLoading;
   const actionsDisabled = !!blockedReason;
@@ -749,7 +749,7 @@ export function AgentResourceManager({
           });
         }
       }
-      toast.success(translateText("{0}成功", [operation.label || "操作"]));
+      toast.success(translateText("{0}成功", [operation.label || translateText("操作")]));
       const refreshAfter = operation.refreshAfter?.length ? operation.refreshAfter : operation.refreshSources;
       patchTaskState(meta.key, { phase: "refreshing", status: "success" });
       void refreshSources(refreshAfter?.length ? refreshAfter : [view.listSourceId]).then((refreshed) => {
@@ -780,7 +780,7 @@ export function AgentResourceManager({
     if (!operation) return;
     const accepted = await confirm({
       title: operation.label || translateText("删除资源"),
-      description: operation.description || translateText("确定删除 {0} 吗？", [rowIdentity(row, view) || "当前资源"]),
+      description: operation.description || translateText("确定删除 {0} 吗？", [rowIdentity(row, view) || translateText("当前资源")]),
       confirmText: translateText("删除"),
       tone: "destructive",
     });
@@ -947,7 +947,7 @@ export function AgentResourceManager({
                   <SelectTrigger className="w-full">
                     <span className="min-w-0 truncate text-left">
                       {selectedHost
-                        ? `${selectedHost.name || `主机 ${selectedHost.id}`} · ${taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}`
+                        ? `${selectedHost.name || translateText("主机 {0}", [selectedHost.id])} · ${taskStatusLabel(resourceHostStatus(selectedHost, selectedState))}`
                         : translateText("选择 Agent")}
                     </span>
                   </SelectTrigger>
@@ -963,7 +963,7 @@ export function AgentResourceManager({
               <div className="hidden min-w-0 lg:block">
                 <p className="truncate text-sm font-semibold">{selectedHost?.name || translateText("请选择主机")}</p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {selectedHost ? `${selectedHost.ip || selectedHost.ipv4 || selectedHost.ipv6 || "未设置 IP"} · ` : ""}{view.title}
+                  {selectedHost ? `${selectedHost.ip || selectedHost.ipv4 || selectedHost.ipv6 || translateText("未设置 IP")} · ` : ""}{view.title}
                 </p>
               </div>
               {latestTaskState && (

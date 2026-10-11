@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 export const PUBLIC_MONITOR_QUERY_PATHS = new Set([
   "hosts.publicMonitor",
   "hosts.publicMonitorHostDetail",
@@ -24,7 +25,7 @@ export async function fetchPublicMonitor(
   const abort = () => controller.abort(sourceSignal?.reason);
   if (sourceSignal?.aborted) abort();
   else sourceSignal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(new DOMException("监控刷新请求超时", "TimeoutError")), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new DOMException(translateText("监控刷新请求超时"), "TimeoutError")), timeoutMs);
   try {
     const response = await fetcher(input, { ...init, signal: controller.signal, cache: "no-store" });
     const body = await response.arrayBuffer();

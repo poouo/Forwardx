@@ -1,3 +1,4 @@
+import { t as translateText } from "@/i18n";
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Loader2 } from "lucide-react";
@@ -39,9 +40,9 @@ export default function HostDeleteDialog({ hostId, onClose, onDelete, pending }:
           {data.blocked ? <>
             <p className="text-amber-600 dark:text-amber-400">{t("该主机仍被以下配置使用，请先移除引用。停用的配置也会保留依赖保护。")}</p>
             {[
-              { label: "转发规则", refs: data.rules, href: "/rules" },
-              { label: "转发组 / 转发链 / 入口组 / 出口组", refs: data.groups, href: "/forward-groups" },
-              { label: "隧道", refs: data.tunnels, href: "/tunnels" },
+              { label: translateText("转发规则"), refs: data.rules, href: "/rules" },
+              { label: translateText("转发组 / 转发链 / 入口组 / 出口组"), refs: data.groups, href: "/forward-groups" },
+              { label: translateText("隧道"), refs: data.tunnels, href: "/tunnels" },
             ].filter((section) => section.refs.count > 0).map((section) => (
               <section key={section.href} className="rounded-md border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 font-medium">

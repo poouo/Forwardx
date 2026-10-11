@@ -159,7 +159,7 @@ export function usePersistentPagination<T>(
 
 export function PersistentPagination<T>({
   pagination,
-  itemName = "项",
+  itemName = translateText("项"),
 }: {
   pagination: PersistentPaginationState<T>;
   itemName?: string;

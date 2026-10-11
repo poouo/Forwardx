@@ -1,4 +1,4 @@
-import { getFormatLocale } from "@/i18n";
+import { getFormatLocale, getLanguage } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import NotificationSettingsCard from "@/components/NotificationSettingsCard";
 import GoogleLoginSettingsCard from "@/components/GoogleLoginSettingsCard";
@@ -180,7 +180,7 @@ function getUpgradeProgress(job: any) {
   if (status === "running") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    const activeStep = steps[activeIndex]?.label || "等待服务重启";
+    const activeStep = steps[activeIndex]?.label || translateText("等待服务重启");
     return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: activeStep, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
   return { percent: 0, label: translateText("等待{0}", [actionLabel]), steps: steps.map((step) => ({ ...step, active: false })) };
@@ -322,7 +322,7 @@ function normalizePanelLogSummary(summary?: Partial<PanelLogSummary> | null): Pa
 function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
   const theme = getPersonalizationThemePreset(themeId);
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${getLanguage()}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -478,20 +478,20 @@ function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
   <main class="page">
     <section class="hero">
       <div>
-        <span class="eyebrow"><span class="dot"></span>ForwardX 面板</span>
-        <h1>多主机转发管理</h1>
-        <p>管理转发、隧道、用户和流量。</p>
+        <span class="eyebrow"><span class="dot"></span>${translateText("ForwardX 面板")}</span>
+        <h1>${translateText("多主机转发管理")}</h1>
+        <p>${translateText("管理转发、隧道、用户和流量。")}</p>
         <div class="actions">
-          <a class="btn primary" href="/login">进入面板</a>
-          <a class="btn secondary" href="/login?mode=register">创建账号</a>
+          <a class="btn primary" href="/login">${translateText("进入面板")}</a>
+          <a class="btn secondary" href="/login?mode=register">${translateText("创建账号")}</a>
         </div>
       </div>
       <div class="panel">
         <div class="grid">
-          <div class="item"><b>多节点</b><span>管理多台 Linux 主机和隧道。</span></div>
-          <div class="item"><b>流量统计</b><span>按用户和规则记录转发用量。</span></div>
-          <div class="item"><b>套餐订阅</b><span>支持余额、套餐和支付配置。</span></div>
-          <div class="item"><b>Telegram</b><span>用户可通过机器人自助查询和管理。</span></div>
+          <div class="item"><b>${translateText("多节点")}</b><span>${translateText("管理多台 Linux 主机和隧道。")}</span></div>
+          <div class="item"><b>${translateText("流量统计")}</b><span>${translateText("按用户和规则记录转发用量。")}</span></div>
+          <div class="item"><b>${translateText("套餐订阅")}</b><span>${translateText("支持余额、套餐和支付配置。")}</span></div>
+          <div class="item"><b>Telegram</b><span>${translateText("用户可通过机器人自助查询和管理。")}</span></div>
         </div>
       </div>
     </section>
@@ -758,7 +758,7 @@ function SettingsContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("系统设置")}</h1>
         </div>
@@ -1122,10 +1122,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const databaseSwitchSucceeded = databaseSwitchJob?.status === "success";
   const databaseSwitchElapsed = databaseSwitchJob
     ? formatDatabaseSwitchDuration((databaseSwitchJob.finishedAt || Date.now()) - databaseSwitchJob.startedAt)
-    : "0 秒";
+    : translateText("0 秒");
   const databaseSwitchUpdatedAgo = databaseSwitchJob
     ? formatDatabaseSwitchDuration(Date.now() - (databaseSwitchJob.updatedAt || databaseSwitchJob.startedAt))
-    : "0 秒";
+    : translateText("0 秒");
 
   useEffect(() => {
     setMigrationCode(currentMigrationCode || null);
@@ -1401,7 +1401,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     },
     onError: (err) => {
       setTestedDatabaseSwitchKey("");
-      const message = err.message || "目标数据库连接或迁移写入权限验证失败";
+      const message = err.message || translateText("目标数据库连接或迁移写入权限验证失败");
       setDatabaseSwitchValidationError(message);
       toast.error(message);
     },
@@ -2961,20 +2961,20 @@ type PersonalizationSaveKey = "title" | "logo" | "theme" | "background" | "homep
 
 const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
   title: translateText("网站标题已保存"),
-  logo: "Logo 已保存",
-  theme: "默认配色已保存",
-  background: "自定义背景已保存",
-  homepage: "公开首页已保存",
-  sidebarPages: "自定义菜单已保存",
+  logo: translateText("Logo 已保存"),
+  theme: translateText("默认配色已保存"),
+  background: translateText("自定义背景已保存"),
+  homepage: translateText("公开首页已保存"),
+  sidebarPages: translateText("自定义菜单已保存"),
 };
 
 const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> = {
   title: translateText("网站标题保存失败"),
-  logo: "Logo 保存失败",
-  theme: "默认配色保存失败",
-  background: "自定义背景保存失败",
-  homepage: "公开首页保存失败",
-  sidebarPages: "自定义菜单保存失败",
+  logo: translateText("Logo 保存失败"),
+  theme: translateText("默认配色保存失败"),
+  background: translateText("自定义背景保存失败"),
+  homepage: translateText("公开首页保存失败"),
+  sidebarPages: translateText("自定义菜单保存失败"),
 };
 
 function PersonalizationSettingsSection() {
@@ -3536,9 +3536,9 @@ function PersonalizationSettingsSection() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="font-medium">{preset.name}</p>
+                      <p className="font-medium">{translateText(preset.name)}</p>
                       <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        {preset.description}
+                        {translateText(preset.description)}
                       </p>
                     </div>
                     <span className="flex h-5 w-5 shrink-0 items-center justify-center">
@@ -3739,12 +3739,12 @@ function PersonalizationSettingsSection() {
                         >
                           <img
                             src={item.url}
-                            alt={item.name}
+                            alt={translateText(item.name)}
                             loading="lazy"
                             decoding="async"
                             className="aspect-[16/9] w-full bg-muted/40 object-contain transition-transform group-hover:scale-[1.02]"
                           />
-                          <div className="px-3 py-2 text-xs font-medium">{item.name}</div>
+                          <div className="px-3 py-2 text-xs font-medium">{translateText(item.name)}</div>
                         </button>
                       );
                     })}
@@ -4671,7 +4671,7 @@ function SystemInfoSection() {
     ["本地部署", "local"],
     ["Docker 部署", "docker"],
   ] as const).map(([label, deployment]) => ({
-    label,
+    label: translateText(label),
     command: buildPanelInstallerCommand({
       deployment,
       action: "upgrade",
@@ -5579,7 +5579,7 @@ function SystemInfoSection() {
                     setUpdateAutoCheckEnabled(checked);
                     utils.system.getSettings.invalidate();
                     utils.system.publicInfo.invalidate();
-                    toast.success(translateText("自动检查更新已{0}", [checked ? "开启" : "关闭"]));
+                    toast.success(translateText("自动检查更新已{0}", [checked ? translateText("开启") : translateText("关闭")]));
                   }}
                   onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("自动检查更新失败"))}
                 />
@@ -5717,11 +5717,11 @@ function SystemInfoSection() {
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {upgradeStatus.job.status === "success"
-                        ? translateText("已完成 {0} {1}，{2} 秒后自动刷新", [upgradeStatus.job.targetVersion || "", upgradeStatus.job.mode === "rollback" ? "回退" : "升级", PANEL_UPGRADE_REFRESH_DELAY_SECONDS])
+                        ? translateText("已完成 {0} {1}，{2} 秒后自动刷新", [upgradeStatus.job.targetVersion || "", upgradeStatus.job.mode === "rollback" ? translateText("回退") : translateText("升级"), PANEL_UPGRADE_REFRESH_DELAY_SECONDS])
                         : upgradeStatus.job.status === "waiting_assets"
                           ? translateText("GitHub Actions 仍在生成面板安装包或镜像，请稍后重新检查更新")
                         : upgradeStatus.job.status === "error"
-                          ? translateText("{0}未完成，请查看下方异常信息", [upgradeStatus.job.mode === "rollback" ? "回退" : "升级"])
+                          ? translateText("{0}未完成，请查看下方异常信息", [upgradeStatus.job.mode === "rollback" ? translateText("回退") : translateText("升级")])
                           : upgradeProgress.label}
                     </p>
                   </div>

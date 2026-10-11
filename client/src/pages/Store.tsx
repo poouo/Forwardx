@@ -321,7 +321,7 @@ export default function Store() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
+        <div className="pearl-page-header block">
           <h1 className="text-2xl font-semibold tracking-tight">{translateText("商店")}</h1>
           <p className="text-sm text-muted-foreground">{translateText("购买套餐，开通资源。")}</p>
         </div>

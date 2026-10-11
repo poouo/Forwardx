@@ -56,7 +56,7 @@ function announcementTypeLabel(type: AnnouncementType) {
 function announcementSuccessMessage(action: string, data: any) {
   const push = data?.telegramPush;
   if (!push?.requested) return translateText("公告已{0}", [action]);
-  return translateText("公告已{0}，通知推送 {1}/{2}{3}", [action, push.sent || 0, push.total || 0, push.failed ? `，失败 ${push.failed}` : ""]);
+  return translateText("公告已{0}，通知推送 {1}/{2}{3}", [action, push.sent || 0, push.total || 0, push.failed ? translateText("，失败 {0}", [push.failed]) : ""]);
 }
 
 export default function Announcements() {
@@ -76,7 +76,7 @@ export default function Announcements() {
 
   const createAnnouncement = trpc.announcements.create.useMutation({
     onSuccess: (data) => {
-      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("创建", data) : translateText("公告已创建"));
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage(translateText("创建"), data) : translateText("公告已创建"));
       setOpen(false);
       setForm(emptyForm);
       invalidateAnnouncementQueries();
@@ -86,7 +86,7 @@ export default function Announcements() {
 
   const updateAnnouncement = trpc.announcements.update.useMutation({
     onSuccess: (data) => {
-      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("更新", data) : translateText("公告已更新"));
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage(translateText("更新"), data) : translateText("公告已更新"));
       setOpen(false);
       setForm(emptyForm);
       invalidateAnnouncementQueries();
@@ -130,7 +130,7 @@ export default function Announcements() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? translateText("公告管理") : translateText("公告")}</h1>
             <p className="text-sm text-muted-foreground">
