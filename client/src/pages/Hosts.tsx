@@ -10,6 +10,7 @@ import DateTimePickerInput, {
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
+import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
@@ -1470,6 +1471,7 @@ function HostsContent() {
   const [trafficCorrectionInput, setTrafficCorrectionInput] = useState("0");
   const [trafficCorrectionCurrentBytes, setTrafficCorrectionCurrentBytes] = useState(0);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [deletingHostId, setDeletingHostId] = useState<number | null>(null);
   const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
@@ -1697,7 +1699,9 @@ function HostsContent() {
   });
 
   const deleteMutation = trpc.hosts.delete.useMutation({
+    onSettled: () => { void utils.hosts.deleteImpact.invalidate(); },
     onSuccess: () => {
+      setDeletingHostId(null);
       utils.hosts.list.invalidate();
       utils.hosts.options.invalidate();
       utils.hosts.listPage.invalidate();
@@ -1705,7 +1709,7 @@ function HostsContent() {
       utils.hosts.summary.invalidate();
       toast.success(translateText("主机已删除"));
     },
-    onError: (err) => toast.error(err.message || translateText("删除失败")),
+    onError: (err) => toast.error(err.message ? translateText(err.message) : translateText("删除失败")),
   });
 
   const resetHostTrafficMutation = trpc.hosts.resetTraffic.useMutation({
@@ -2129,7 +2133,7 @@ function HostsContent() {
       key={host.id}
       host={host}
       onEdit={openEdit}
-      onDelete={(id) => deleteMutation.mutate({ id })}
+      onDelete={setDeletingHostId}
       onUpgrade={requestAgentUpgrade}
       canUpgrade={user?.role === "admin"}
       onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
@@ -2775,7 +2779,7 @@ function HostsContent() {
                           <HostActionButtons
                             host={host}
                             onEdit={openEdit}
-                            onDelete={(id) => deleteMutation.mutate({ id })}
+                            onDelete={setDeletingHostId}
                             onUpgrade={requestAgentUpgrade}
                             onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
                             onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
@@ -2876,6 +2880,13 @@ function HostsContent() {
         services={probeServices as any[]}
       />
       {/* Reset Host Traffic Dialog */}
+      {deletingHostId !== null && <HostDeleteDialog
+        key={deletingHostId}
+        hostId={deletingHostId}
+        onClose={() => setDeletingHostId(null)}
+        onDelete={(input) => deleteMutation.mutate(input)}
+        pending={deleteMutation.isPending}
+      />}
       <Dialog open={!!resetTrafficHost} onOpenChange={(open) => !open && !resetHostTrafficMutation.isPending && setResetTrafficHost(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

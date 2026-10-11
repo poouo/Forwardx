@@ -25,6 +25,7 @@ import {
   shouldPersistAgentPresence,
 } from "./agentHeartbeatGate";
 import { mapWithConcurrency } from "./asyncPool";
+import { portAccessLimitAction, portAccessLimitSpecs } from "./portAccessLimits";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
@@ -463,6 +464,7 @@ function stableActionSignature(actions: any[]) {
     removalCommands: action?.removalCommands || [],
     removalToken: action?.removalToken || "",
     managedConfigs: action?.managedConfigs || [],
+    portAccessLimits: action?.portAccessLimits || [],
     rollbackCommands: action?.rollbackCommands || [],
     preCommands: action?.preCommands || [],
     postCommands: action?.postCommands || [],
@@ -6437,6 +6439,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
 
+    if (!deferActionsForLocalState) {
+      const portLimits = portAccessLimitSpecs((agentHostRules as any[]).filter(rule => (
+        rule && !runtimeBool(rule.pendingDelete) && runtimeBool(rule.isEnabled)
+        && isRuleProtocolEnabled(forwardProtocolSettings, rule, null)
+      )), userAccessLimits);
+      const limitAction = portAccessLimitAction(portLimits, req.body.portAccessLimitsSupported === true);
+      if (limitAction) actions.push(limitAction);
+    }
     const effectiveActions = dropStalePortRemoveActions(actions, protectedRuleRemoveActionKeys);
     const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);
     const ruleByIdForDesired = new Map((rules as any[]).map((rule: any) => [Number(rule.id), rule]));

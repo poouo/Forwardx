@@ -14,6 +14,17 @@ function scriptSection(script: string, start: string, end: string) {
   return script.slice(startIndex, endIndex);
 }
 
+test("Agent uninstall removes pre-DNAT limit hooks with full selectors before deleting counter chains", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  assert.match(script, /for BASE in PREROUTING OUTPUT; do/);
+  assert.match(script, /grep -E -- "-j FWX_PD_\[0-9a-f\]\{20\}\$"/);
+  assert.match(script, /FWX_P\[DC\]_\[0-9a-f\]\{20\}/);
+  assert.match(script, /\$BIN -w 5 -t mangle \$RULE/);
+  const flush = script.indexOf('for CH in $LIMIT_CHAINS; do $BIN -w 5 -t mangle -F');
+  const remove = script.indexOf('for CH in $LIMIT_CHAINS; do $BIN -w 5 -t mangle -X');
+  assert.ok(flush > 0 && remove > flush);
+});
+
 test("panel GitHub accelerator settings reach the Mimic installer", () => {
   const script = generateInstallScript("https://panel.example.com", {
     githubAcceleratorEnabled: true,

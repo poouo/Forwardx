@@ -651,7 +651,7 @@ async function syncChainsUsingEntryGroup(entryGroupId: number, options: SyncForw
   ));
   for (const row of rows as any[]) {
     const chainGroupId = Number(row.id);
-    await syncForwardGroupRules(chainGroupId, options);
+    await syncForwardGroupRules(chainGroupId, { preserveRuntime: true, ...options });
   }
 }
 
@@ -1962,6 +1962,10 @@ async function memberEntryHostId(member: any) {
 export async function getForwardGroupDefaultHostId(groupId: number) {
   const group = await getForwardGroupById(groupId);
   if (!group) throw new Error("Forward group does not exist");
+  return defaultHostIdForGroup(group);
+}
+
+async function defaultHostIdForGroup(group: any) {
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
   if (groupMode === "chain") {
@@ -1982,6 +1986,46 @@ export async function getForwardGroupDefaultHostId(groupId: number) {
     if (hostId) return hostId;
   }
   throw new Error("Forward group has no valid entry agent");
+}
+
+// Templates describe a group, not a listener on their originally selected host.
+// Keep this metadata current without resetting healthy child listeners.
+async function syncTemplateHostReferences(group: any, templates: any[]) {
+  if (templates.length === 0) return;
+  const groupId = Number(group.id);
+  const hostId = await defaultHostIdForGroup(group);
+  const changed = templates.filter((rule) => Number(rule.hostId) !== hostId);
+  if (changed.length === 0) return;
+  const db = await getDb();
+  await db.update(forwardRules).set({ hostId, updatedAt: nowDate() }).where(and(
+    inArray(forwardRules.id, changed.map((rule) => Number(rule.id))),
+    eq(forwardRules.forwardGroupId, groupId),
+    eq(forwardRules.isForwardGroupTemplate, true),
+    eq(forwardRules.pendingDelete, false),
+  ));
+  for (const rule of changed) rule.hostId = hostId;
+  appendPanelLog("info", `[ForwardGroup] template host references synchronized group=${groupId} host=${hostId} count=${changed.length}`);
+}
+
+/** Repair old metadata before deleting a host, without reapplying group runtimes. */
+export async function repairForwardGroupTemplateHostReferencesForHost(hostId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const rows = await db.selectDistinct({ groupId: forwardRules.forwardGroupId })
+    .from(forwardRules).where(and(
+      eq(forwardRules.hostId, hostId),
+      eq(forwardRules.isForwardGroupTemplate, true),
+      eq(forwardRules.pendingDelete, false),
+      isNotNull(forwardRules.forwardGroupId),
+    ));
+  for (const row of rows) {
+    const groupId = Number(row.groupId);
+    await withKeyedTaskLock(`forward-group-sync:${groupId}`, async () => {
+      const group = await getForwardGroupById(groupId);
+      if (!group || isCollectionGroupMode(groupModeOf(group))) return;
+      await syncTemplateHostReferences(group, await getForwardGroupTemplateRules(groupId) as any[]);
+    });
+  }
 }
 
 export async function getForwardGroupRuleEntryHostIds(groupId: number) {
@@ -3168,6 +3212,8 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
     return;
   }
 
+  await syncTemplateHostReferences(group, templates as any[]);
+
   const runtimeDependenciesEnabled = await forwardGroupRuntimeDependenciesEnabled(group);
   const hasEnabledTemplates = (templates as any[]).some((template) => dbBool(template?.isEnabled));
   if (!runtimeDependenciesEnabled || !hasEnabledTemplates) {
@@ -3549,7 +3595,7 @@ export async function replaceForwardGroupMembers(
       previousHostIds,
     });
   } else {
-    await syncForwardGroupRules(groupId);
+    await syncForwardGroupRules(groupId, { preserveRuntime: true });
   }
 }
 

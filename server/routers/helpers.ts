@@ -160,10 +160,16 @@ export async function pushTunnelEndpointRefresh(
 export async function refreshUserForwardEndpoints(
   userId: number,
   reason: string,
-  options: { urgent?: boolean } = {},
+  options: { urgent?: boolean; preserveOrdinaryRuntime?: boolean } = {},
 ) {
   const rules = [...await db.getForwardRulesForUserSync(userId)] as any[];
-  await db.resetForwardRulesForUserSync(userId);
+  if (options.preserveOrdinaryRuntime) {
+    // Ordinary per-IP limits have their own firewall reconciliation. Only
+    // existing tunnel implementations still require a runtime refresh.
+    await db.markForwardRulesNotRunning(rules.filter(rule => rule.tunnelId).map(rule => Number(rule.id)));
+  } else {
+    await db.resetForwardRulesForUserSync(userId);
+  }
   const hostIds = new Set<number>();
   const tunnelIds = new Set<number>();
   for (const rule of rules as any[]) {

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { sendUserNotification, getNotificationAdminRecipients } from "./notifications";
 import { formatForwardRuleProtocol, FORWARD_TYPE_LABELS, type ForwardType } from "../shared/forwardTypes";
 import { isTelegramBotReady } from "./telegramReady";
+import { getForwardRuleById } from "./repositories/forwardRuleRepository";
 
 type ForwardRuleErrorPayload = {
   rule: any;
@@ -38,6 +39,16 @@ export function shouldNotifyForwardRuleError(ruleId: number, message?: string | 
   }
   lastRuleErrorNotifyAt.set(signature, now);
   return true;
+}
+
+export function isCurrentForwardRuleError(current: any, reported: any) {
+  const yes = (value: unknown) => value === true || value === 1 || value === "1" || value === "true";
+  if (!current || !yes(current.isEnabled) || yes(current.isRunning)
+    || yes(current.pendingDelete) || !yes(current.telegramErrorNotifyEnabled)) return false;
+  return ["id", "hostId", "sourcePort", "targetPort", "tunnelId"]
+    .every((key) => Number(current[key] || 0) === Number(reported?.[key] || 0))
+    && ["forwardType", "protocol", "targetIp"]
+      .every((key) => String(current[key] || "") === String(reported?.[key] || ""));
 }
 
 function escapeHtml(value: unknown) {
@@ -99,6 +110,10 @@ export async function notifyForwardRuleError(payload: ForwardRuleErrorPayload) {
 
   const recipients = await getNotificationAdminRecipients();
   if (recipients.length === 0) return;
+  // Notification lookups yield to group edits and deletion. Recheck just before
+  // delivery so a queued failure does not alert for an already retired rule.
+  const current = await getForwardRuleById(ruleId);
+  if (!isCurrentForwardRuleError(current, payload.rule)) return;
   if (!shouldNotifyForwardRuleError(ruleId, payload.message)) return;
   const text = ruleErrorMessage(payload);
   let sent = 0;

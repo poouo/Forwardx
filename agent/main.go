@@ -2353,6 +2353,8 @@ type action struct {
 	ForceRuntimeSync          bool                `json:"forceRuntimeSync,omitempty"`
 	RequiresMimicEnvironment  bool                `json:"requiresMimicEnvironment,omitempty"`
 	HandoffOnly               bool                `json:"-"`
+
+	PortAccessLimits []portAccessLimitSpec `json:"portAccessLimits,omitempty"`
 }
 
 type desiredState struct {
@@ -2591,6 +2593,7 @@ type selfTest struct {
 }
 
 type fxpSpec struct {
+	ControlSocket            string            `json:"controlSocket,omitempty"`
 	Role                     string            `json:"role"`
 	TransportVersion         string            `json:"transportVersion,omitempty"`
 	Entries                  []fxpSpec         `json:"entries,omitempty"`
@@ -4902,6 +4905,24 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 			}
 			return true
 		}
+		if a.ForwardType == "port-access-limit-sync" {
+			err := syncPortAccessLimits(systemPortLimitFirewall{}, a.PortAccessLimits, false)
+			ok = err == nil
+			rememberPortLimitHealth(a, ok)
+			rememberRuntimeActionResult(a, ok)
+			if err != nil {
+				actionMessage.set("%v", err)
+				if shouldLogAgentReport("port-access-limit-sync", agentReportLogInterval) {
+					logf("%v", err)
+				}
+			} else {
+				actionMessage.set("TCP port access limits synchronized users=%d; existing forwarding connections preserved", len(a.PortAccessLimits))
+			}
+			if a.ReportStatus != nil && *a.ReportStatus {
+				reportActionStatus(cfg, a, ok, actionMessage.get())
+			}
+			return ok
+		}
 		if wireGuardAction {
 			if a.Op == "remove" {
 				stopWireGuardRuntime(a.TunnelID)
@@ -5575,6 +5596,9 @@ func runtimeActionKey(a action) string {
 }
 
 func runtimeActionServicesHealthy(a action) bool {
+	if a.ForwardType == "port-access-limit-sync" {
+		return portAccessLimitsReady(a)
+	}
 	if isWireGuardRuntimeAction(a) {
 		if a.Op == "remove" {
 			return !wireGuardRuntimeReady(a.TunnelID, nil)
@@ -6089,6 +6113,11 @@ func actionCommandSignature(a action) string {
 	write(a.ServiceNameExtra)
 	write(a.Unit)
 	write(a.UnitExtra)
+	if len(a.PortAccessLimits) > 0 {
+		if raw, err := json.Marshal(a.PortAccessLimits); err == nil {
+			write(string(raw))
+		}
+	}
 	if a.ForceRuntimeSync {
 		write("force-runtime-sync")
 	}
@@ -8637,13 +8666,14 @@ func removeState(port int) {
 }
 
 type fxpProcess struct {
-	signature             string
-	cmd                   *exec.Cmd
-	configPath            string
-	spec                  fxpSpec
-	wireGuardRefID        string
-	runtimeExecutable     os.FileInfo
-	panelCredentialDigest string
+	signature              string
+	cmd                    *exec.Cmd
+	configPath             string
+	spec                   fxpSpec
+	wireGuardRefID         string
+	wireGuardAdditiveRefID string
+	runtimeExecutable      os.FileInfo
+	panelCredentialDigest  string
 }
 
 const fxpEntryGroupRole = "entry-group"
@@ -9884,6 +9914,12 @@ func startFXPLocked(cfg Config, spec fxpSpec, desiredGroup *fxpSpec, actionMessa
 			actionMessage.set("fxp entry group invalid tunnel=%d rule=%d port=%d", spec.TunnelID, spec.RuleID, spec.ListenPort)
 			return false
 		}
+		fxpMu.Lock()
+		current := fxpServers[fxpServerID(group)]
+		if current != nil && fxpProcessActive(current) {
+			group = mergeFXPApplyGroup(current.spec, group)
+		}
+		fxpMu.Unlock()
 		return startFXPProcessLocked(cfg, group, actionMessage)
 	}
 	return startFXPProcessLocked(cfg, spec, actionMessage)
@@ -9946,6 +9982,13 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 			}
 		}
 		return true
+	}
+	additiveRecovery := existingActive && isFXPEntryGroup(spec) && existing.signature == signature &&
+		fxpProcessUsesCurrentExecutable(existing) && fxpProcessUsesPanelCredentialDigest(existing, expectedCredentialDigest)
+	if existingActive && (fxpIsAdditiveUpdate(existing.spec, originalSpec) || additiveRecovery) {
+		// An unavailable/old control API must fail this addition, not restart
+		// the process carrying established sibling connections.
+		return syncFXPAdditive(cfg, existing, originalSpec, persistenceEnabled, actionMessage)
 	}
 	if existingActive && existing.signature == signature {
 		logf("fxp dependency or listener drift detected; rebuilding role=%s version=%s tunnel=%d rule=%d", spec.Role, spec.TransportVersion, spec.TunnelID, spec.RuleID)
@@ -10021,6 +10064,9 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 			spec.Entries[index].PanelURL = currentPanelURL(cfg)
 			spec.Entries[index].Token = cfg.Token
 		}
+	}
+	if isFXPEntryGroup(spec) || spec.Role == "exit" {
+		spec.ControlSocket = configPath + ".sock"
 	}
 	logf(
 		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d udpListen=%d protocol=%s exitStrategy=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d udpExit=%d relayNext=%s:%d udpRelayNext=%d target=%s:%d udpTargets=%d",
@@ -10105,8 +10151,7 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		}
 	}
 
-	fxpMu.Lock()
-	fxpServers[id] = &fxpProcess{
+	processState := &fxpProcess{
 		signature:             signature,
 		cmd:                   cmd,
 		configPath:            configPath,
@@ -10115,6 +10160,8 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		runtimeExecutable:     runtimeExecutable,
 		panelCredentialDigest: expectedCredentialDigest,
 	}
+	fxpMu.Lock()
+	fxpServers[id] = processState
 	fxpMu.Unlock()
 	desiredStarted = true
 	go func() {
@@ -10124,11 +10171,15 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		if current != nil && current.cmd == cmd {
 			delete(fxpServers, id)
 		}
+		additiveRefID := processState.wireGuardAdditiveRefID
 		fxpMu.Unlock()
 		if err != nil {
 			logf("fxp runtime exited tunnel=%d rule=%d: %v", spec.TunnelID, spec.RuleID, err)
 		}
 		releaseWireGuardRef()
+		if additiveRefID != "" {
+			releaseWireGuardRuntimeRef(originalSpec.TunnelID, additiveRefID)
+		}
 	}()
 	for _, conflicting := range conflictingSpecs {
 		replacement, hasRemaining := fxpSpecWithoutListenConflicts(conflicting, originalSpec)
@@ -13442,6 +13493,11 @@ func postHeartbeatWithClientIfGeneration(client *http.Client, cfg Config, path s
 }
 
 func postHeartbeatAfterStart(client *http.Client, cfg Config, path string, payload any, out any, finish func(bool)) error {
+	if path == "/api/agent/heartbeat" {
+		if fields, ok := payload.(map[string]any); ok {
+			fields["portAccessLimitsSupported"] = true
+		}
+	}
 	err := postWithClient(client, cfg, path, payload, out)
 	finish(err == nil)
 	return err

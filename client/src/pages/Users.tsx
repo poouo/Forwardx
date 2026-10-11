@@ -2152,7 +2152,7 @@ function UsersContent() {
                     onChange={(e) => setMaxIPs(parseInt(e.target.value) || 0)}
                     placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">{translateText("同一主机或同一隧道下，多条规则共享这个单 IP 接入上限。")}</p>
+                  <p className="text-xs text-muted-foreground">{translateText("限制每个来源 IP 的 TCP 并发连接数，不是 IP 个数。普通转发按用户、入口主机共享；V1/V2 隧道按规则计数，UDP 不适用。")}</p>
                 </div>
               </div>
               <Separator />

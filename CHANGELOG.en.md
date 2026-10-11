@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+- Improve host removal: group, chain, and linked entry-group membership changes automatically synchronize template host references while preserving unchanged healthy member rules. Individual rules no longer need to be re-saved to remove an old host. The deletion dialog repairs stale references, lists actual rule/group/tunnel dependencies, and links to their management pages. Online hosts must finish Agent cleanup; offline cleanup requires explicit consent and cannot bypass real dependencies. Queued error notifications recheck rule state to avoid alerting for removed, disabled, or recovered rules.
+
+- Custom plan descriptions now replace generated details in management cards, table rows, and the store. Empty descriptions retain default details; custom text preserves line breaks and wraps long words. Keep management controls, actual store prices, and purchase actions unchanged without modifying entitlements, billing, or limits.
+
+- Add per-source-IP TCP connection limits to ordinary port forwarding, covering iptables, nftables, Realm, Socat, GOST, Nginx, and Guard entry listeners. Rules share limits per user and entry host. Match the original port before DNAT and restrict new connections only; adding rules preserves existing counters, while zero limits and removed rules clean up their limits. Synchronize limits independently without restarting forwarding processes. Explicitly report outdated Agents, missing firewall tools, or unsupported kernel capabilities while keeping forwarding active. Add IPv4/IPv6, shared-counter, failure-safety, and isolated Linux network-namespace traffic tests. Requires the matching Agent update; UDP is excluded and existing tunnel limit semantics remain unchanged.
+
+- Protect existing connections during batch rule creation: V1/V2 shared entries add listeners incrementally and exits register UDP targets without rebuilding the shared process. GOST replaces only the matching idle probe when adding a tunnel's first business rule. Port conflicts or unavailable incremental APIs fail the addition explicitly without restarting existing listeners. Added live TCP/UDP, rollback, and batch-snapshot regression coverage. Requires matching Agent and FXP runtime updates.
+
+- Fix forwarding-rule searches by host IP or tunnel connection address showing matching counts but an empty list. Render server-filtered list/map results without filtering them again using incomplete local resource metadata. Preserve independent batch-tool filters and add pagination, count and ownership regression coverage.
+
 ## [2.3.282] - 2026-10-07
 
 ### Features and configuration

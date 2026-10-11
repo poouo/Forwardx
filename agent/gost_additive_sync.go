@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -282,6 +283,90 @@ func planGostAdditions(live, desired map[string]any) ([]gostAddition, string, er
 	return additions, "", nil
 }
 
+// Only synthetic idle probes may be replaced in place. Never delete an old
+// business listener, even when a new service wants the same port.
+func planGostProbeReplacements(live, desired map[string]any) (map[string]any, []gostAddition) {
+	next, err := gostObjects(desired, "services")
+	if err != nil {
+		return live, nil
+	}
+	filtered := make([]any, 0)
+	var probes []gostAddition
+	services, _ := live["services"].([]any)
+	for _, raw := range services {
+		old, _ := raw.(map[string]any)
+		name, _ := old["name"].(string)
+		parts := strings.Split(strings.TrimPrefix(name, "fwx-tunnel-probe-"), "-")
+		id := parts[0]
+		_, idErr := strconv.Atoi(id)
+		handler, _ := old["handler"].(map[string]any)
+		forwarder, _ := old["forwarder"].(map[string]any)
+		nodes, _ := forwarder["nodes"].([]any)
+		probeTarget := false
+		if len(nodes) == 1 {
+			node, _ := nodes[0].(map[string]any)
+			probeTarget = node["addr"] == "127.0.0.1:9"
+		}
+		replace := false
+		if strings.HasPrefix(name, "fwx-tunnel-probe-") && idErr == nil && id != "0" && handler["type"] == "tcp" && probeTarget && next[name] == nil {
+			for newName, service := range next {
+				if strings.HasPrefix(newName, "fwx-tunnel-exit-"+id+"-") && service["addr"] == old["addr"] {
+					replace = true
+					break
+				}
+			}
+		}
+		if replace {
+			// Live status is read-only API output, not part of the POST schema.
+			copy := make(map[string]any, len(old))
+			for key, value := range old {
+				if key != "status" {
+					copy[key] = value
+				}
+			}
+			probes = append(probes, gostAddition{"services", name, copy})
+		} else {
+			filtered = append(filtered, raw)
+		}
+	}
+	copy := make(map[string]any, len(live))
+	for key, value := range live {
+		copy[key] = value
+	}
+	copy["services"] = filtered
+	return copy, probes
+}
+
+func applyGostProbeReplacements(ctx context.Context, api gostAPIClient, probes, additions []gostAddition, setRestore func(func() bool)) error {
+	var restoreAdditions func() bool
+	var removed []gostAddition
+	setRestore(func() bool {
+		ok := true
+		if restoreAdditions != nil {
+			ok = restoreAdditions()
+		}
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, probe := range removed {
+			if _, err := api.request(rollbackCtx, http.MethodPost, "/services", probe.object); err != nil {
+				if apiErr, yes := err.(*gostAPIError); !yes || apiErr.code != 40002 {
+					logf("gost probe restore failed service=%s error=%v", probe.name, err)
+					ok = false
+				}
+			}
+		}
+		return ok
+	})
+	for _, probe := range probes {
+		// Include before DELETE: a lost reply can conceal a successful removal.
+		removed = append(removed, probe)
+		if _, err := api.request(ctx, http.MethodDelete, "/services/"+probe.name, nil); err != nil {
+			return err
+		}
+	}
+	return applyGostAdditions(ctx, api, additions, func(fn func() bool) { restoreAdditions = fn })
+}
+
 func applyGostAdditions(ctx context.Context, api gostAPIClient, additions []gostAddition, setRestore func(func() bool)) error {
 	// Include the attempted object before issuing POST: a lost response may hide
 	// a successful creation. DELETE-not-found is harmless during rollback.
@@ -409,7 +494,8 @@ func tryGostAdditiveSync(service, path string, tx *managedConfigTransaction) (ha
 	if err := json.Unmarshal(liveData, &live); err != nil {
 		return true, fmt.Errorf("invalid GOST live config")
 	}
-	additions, reason, err := planGostAdditions(live, desired)
+	additiveLive, probes := planGostProbeReplacements(live, desired)
+	additions, reason, err := planGostAdditions(additiveLive, desired)
 	if err != nil {
 		return true, err
 	}
@@ -424,7 +510,7 @@ func tryGostAdditiveSync(service, path string, tx *managedConfigTransaction) (ha
 		logf("gost runtime non-additive update requires restart service=%s reason=%s", service, reason)
 		return false, nil
 	}
-	if err := applyGostAdditions(ctx, api, additions, func(restore func() bool) { tx.setRuntimeRestore(path, restore) }); err != nil {
+	if err := applyGostProbeReplacements(ctx, api, probes, additions, func(restore func() bool) { tx.setRuntimeRestore(path, restore) }); err != nil {
 		return true, err
 	}
 	hash := sha256.Sum256(data)
@@ -432,7 +518,7 @@ func tryGostAdditiveSync(service, path string, tx *managedConfigTransaction) (ha
 		return true, err
 	}
 	if len(additions) > 0 {
-		logf("gost runtime additive sync service=%s objectsAdded=%d; existing listeners preserved", service, len(additions))
+		logf("gost runtime additive sync service=%s objectsAdded=%d probesReplaced=%d; existing listeners preserved", service, len(additions), len(probes))
 	}
 	return true, nil
 }

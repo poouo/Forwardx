@@ -126,6 +126,9 @@ func TestV2EntryGroupWireGuardPreparationAndHandoffReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if group.Entries[0].ExitPort != first.ExitPort || group.Entries[0].ExitHost != first.ExitHost || group.Entries[1].ExitPort != second.ExitPort {
+		t.Fatal("WireGuard preparation mutated the desired/persistent group")
+	}
 	if len(prepared.Entries) != 2 {
 		t.Fatalf("prepared V2 group entries=%d, want 2", len(prepared.Entries))
 	}

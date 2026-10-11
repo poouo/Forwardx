@@ -17,6 +17,8 @@ type udpTarget struct {
 }
 
 type config struct {
+	ControlSocket            string `json:"controlSocket,omitempty"`
+	udpTargetsLive           *liveUDPTargets
 	Role                     string         `json:"role"`
 	Entries                  []config       `json:"entries,omitempty"`
 	TunnelID                 int            `json:"tunnelId"`

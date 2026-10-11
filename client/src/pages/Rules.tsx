@@ -3774,9 +3774,13 @@ function RulesContent() {
   useEffect(() => {
     if (!scopedRulesReady) return;
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
-    setStableFilteredRules(sourceRules.filter((rule: any) => isForwardRuleVisibleByFilters(rule, ruleFilters)));
+    // Page/map endpoints already apply ownership, route, category and search.
+    // Local option lists are incomplete (especially shared tunnel hosts), so
+    // re-filtering here can hide valid matches while server counts remain > 0.
+    // Keep local filtering only for the separate full-list batch tools below.
+    setStableFilteredRules(sourceRules);
     setFilteredRulesPrimed(true);
-  }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
+  }, [baseScopedRules, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
   const filteredRules = stableFilteredRules;
   // Batch tools need all matching source rules, while the page itself stays
   // on its current server page.  Keep these two data sources separate.

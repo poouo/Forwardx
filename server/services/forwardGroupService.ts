@@ -285,7 +285,7 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     await db.withForwardGroupSyncTransaction(
       id,
       () => persistConfiguration({ deferRefresh: true, skipMemberSync: true }),
-      membersChanged ? {} : { preserveRuntime: true },
+      { preserveRuntime: true },
     );
     return db.getForwardGroupById(id);
   }

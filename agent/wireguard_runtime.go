@@ -637,6 +637,9 @@ func wireGuardRefIDForFXPSpec(spec fxpSpec) string {
 	refID := ""
 	if process != nil {
 		refID = strings.TrimSpace(process.wireGuardRefID)
+		if process.wireGuardAdditiveRefID != "" {
+			refID = process.wireGuardAdditiveRefID
+		}
 	}
 	fxpMu.Unlock()
 	return refID
@@ -1649,6 +1652,9 @@ func prepareFXPWireGuard(spec fxpSpec, refID string) (prepared fxpSpec, err erro
 	if strings.ToLower(strings.TrimSpace(spec.TransportVersion)) != forwardXWireGuardVersion {
 		return spec, nil
 	}
+	// Local proxy addresses must never leak into the caller's desired or
+	// persisted plan through shared slice backing arrays.
+	spec = cloneFXPSpecForAdditive(spec)
 	refID = strings.TrimSpace(refID)
 	if refID == "" {
 		return spec, errors.New("wireguard runtime reference is required")

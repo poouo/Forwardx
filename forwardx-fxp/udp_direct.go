@@ -608,6 +608,9 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 		}
 	}
 	targetForRule := func(ruleID int) (udpTarget, bool) {
+		if cfg.udpTargetsLive != nil {
+			return cfg.udpTargetsLive.get(ruleID)
+		}
 		target, ok := targetsByRule[ruleID]
 		return target, ok
 	}

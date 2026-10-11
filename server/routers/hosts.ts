@@ -21,6 +21,7 @@ import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
 import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
 import { billingCalendarParts } from "@shared/billingTime";
 import { normalizeAgentProbeCounts } from "@shared/agentDtos";
+import { deleteHostWithImpact, getHostDeletionImpact, prepareHostDeletion } from "../hostDeletion";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -1294,26 +1295,29 @@ export const hostsRouter = router({
         }
         return { success: true };
       }),
-    delete: protectedProcedure
-      .input(z.object({ id: z.number() }))
+    prepareDelete: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);
         if (!host) throw new Error("主机不存在");
         if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
-        // 检查是否存在仍会占用此主机的规则。已标记删除且停止运行的历史记录不应阻止删除主机。
-        const blockers = await db.getHostRuleDeleteBlockers(input.id);
-        if (blockers.ruleCount > 0) {
-          throw new Error(`该主机下还有 ${blockers.ruleCount} 条转发规则，请先删除所有规则后再删除主机`);
-        }
-        if (blockers.managedRuleCount > 0) {
-          throw new Error(`该主机仍被 ${blockers.managedRuleCount} 条转发组/转发链规则引用，请先在转发组中移除该主机或删除对应转发组`);
-        }
-        if (blockers.pendingCleanupCount > 0) {
-          await db.releaseHostPendingRuleCleanup(input.id);
-        }
-        await db.deleteHostPermissions(input.id);
-        await db.deleteHost(input.id);
-        return { success: true };
+        return prepareHostDeletion(input.id);
+      }),
+    deleteImpact: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(async ({ input, ctx }) => {
+        const host = await db.getHostById(input.id);
+        if (!host) throw new Error("主机不存在");
+        if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
+        return getHostDeletionImpact(input.id);
+      }),
+    delete: protectedProcedure
+      .input(z.object({ id: z.number().int().positive(), confirmOfflineCleanup: z.boolean().optional() }))
+      .mutation(async ({ input, ctx }) => {
+        const host = await db.getHostById(input.id);
+        if (!host) throw new Error("主机不存在");
+        if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
+        return deleteHostWithImpact(input.id, input.confirmOfflineCleanup);
       }),
     metrics: protectedProcedure
       .input(z.object({ hostId: z.number(), limit: z.number().default(60), live: z.boolean().optional() }))

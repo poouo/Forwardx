@@ -5,6 +5,10 @@ type PlanResourceSummary = {
   forwardGroupIds?: unknown[];
 };
 
+export function planDescription(plan: { description?: unknown } | null | undefined) {
+  return typeof plan?.description === "string" ? plan.description.trim() : "";
+}
+
 export function planResourceParts(plan: PlanResourceSummary) {
   return [
     { label: translateText("历史主机"), count: plan.hostIds?.length || 0 },

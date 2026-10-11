@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { planResourceText } from "@/lib/planDisplay";
+import { planDescription, planResourceText } from "@/lib/planDisplay";
+import { PlanDetails } from "@/components/PlanDetails";
 import { trpc } from "@/lib/trpc";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
@@ -76,10 +77,6 @@ function durationLabel(days?: number | null) {
   return durationOptions.find((item) => item.value === Number(days))?.label || translateText("{0} 天", [days || 30]);
 }
 
-function planDescription(plan: any) {
-  return String(plan?.description || "").trim();
-}
-
 function billingDescription(config: any) {
   return String(config?.description || "").trim();
 }
@@ -112,7 +109,7 @@ function StorePlanCard({
   purchasing?: boolean;
   onBuy: () => void;
 }) {
-  const description = planDescription(plan) || "订阅后自动开通端口段和可用资源。";
+  const description = planDescription(plan);
   const benefits = planBenefitItems(plan);
 
   return (
@@ -126,15 +123,20 @@ function StorePlanCard({
               <Package className="h-5 w-5" />
             </div>
             <h3 className="line-clamp-1 text-base font-semibold text-foreground">{plan.name}</h3>
-            <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
-              {description}
-            </p>
+            {!description && <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {translateText("订阅后自动开通端口段和可用资源。")}
+            </p>}
           </div>
           <Badge variant="outline" className="shrink-0 border-primary/25 bg-primary/5 text-primary">
             {durationLabel(plan.durationDays)}
           </Badge>
         </div>
 
+        {description ? (
+          <div className="flex-1 rounded-md border border-border/40 bg-background/35 p-4">
+            <PlanDetails description={description} />
+          </div>
+        ) : (<>
         <div className="grid grid-cols-2 gap-2 rounded-md border border-border/50 bg-muted/25 p-1">
           <div className="rounded-[6px] bg-background/80 px-3 py-2 shadow-sm">
             <div className="text-[11px] font-medium text-muted-foreground">{translateText("周期")}</div>
@@ -159,6 +161,7 @@ function StorePlanCard({
             ))}
           </ul>
         </div>
+        </>)}
 
         <div className="flex flex-col gap-3 border-t border-border/40 pt-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">

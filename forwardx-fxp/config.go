@@ -23,6 +23,10 @@ func readConfig(path string) (config, error) {
 }
 
 func normalizeConfig(cfg config) config {
+	// Normalization is also used by the additive controller while existing
+	// listeners are serving. Do not mutate their slice backing arrays.
+	cfg.Exits = append([]exitEndpoint(nil), cfg.Exits...)
+	cfg.Entries = append([]config(nil), cfg.Entries...)
 	cfg.Role = strings.ToLower(strings.TrimSpace(cfg.Role))
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)

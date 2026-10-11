@@ -548,6 +548,13 @@ func main() {
 		cfg.LimitOut,
 	)
 	ctx := shutdownContext()
+	if cfg.ControlSocket != "" && (cfg.Role == "entry-group" || cfg.Role == "exit") {
+		err = runControlledFXP(ctx.done, cfg)
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Fatal(err)
+		}
+		return
+	}
 	switch strings.ToLower(cfg.Role) {
 	case "entry":
 		err = runEntry(ctx.done, cfg)
@@ -705,6 +712,7 @@ type entryRuntime struct {
 	servers   []entryServer
 	sessionWG sync.WaitGroup
 	closeOnce sync.Once
+	closed    atomic.Bool
 }
 
 func prepareEntryRuntime(cfg config) (*entryRuntime, error) {
@@ -754,6 +762,7 @@ func (runtime *entryRuntime) close() {
 		return
 	}
 	runtime.closeOnce.Do(func() {
+		runtime.closed.Store(true)
 		for _, server := range runtime.servers {
 			_ = server.close()
 		}

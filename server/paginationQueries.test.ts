@@ -4,8 +4,62 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { pageResult, pageWindowForTotal } from "../shared/pagination";
 import { gateForwardRulesForUserSurface } from "./forwardRuleVisibility";
+
+// Exercise the actual page synchronization effect without booting the whole
+// dashboard. Resource option queries are intentionally absent: server-filtered
+// results must not depend on their partial/ACL-filtered search metadata.
+function syncRulePageRows(items: any[], ready = true) {
+  const text = fs.readFileSync(new URL("../client/src/pages/Rules.tsx", import.meta.url), "utf8");
+  const source = ts.createSourceFile("Rules.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let effect: ts.ArrowFunction | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect") {
+      const callback = node.arguments[0];
+      if (callback && ts.isArrowFunction(callback) && callback.body.getText(source).includes("setStableFilteredRules(")) {
+        assert.equal(effect, undefined, "one rule-list synchronization effect");
+        effect = callback;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(effect, "the rule page must synchronize loaded results");
+  let displayed: any[] | undefined;
+  let primed = false;
+  const program = ts.transpileModule(`(${effect.getText(source)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  runInNewContext(program, {
+    scopedRulesReady: ready,
+    selectedScopeQueryEnabled: false,
+    selectedScopedRules: undefined,
+    baseScopedRules: items,
+    ruleFilters: { searchQuery: "198.51.100.181", hostById: new Map(), tunnelById: new Map() },
+    isForwardRuleVisibleByFilters: () => { throw new Error("server results must not be searched a second time"); },
+    setStableFilteredRules: (rows: any[]) => { displayed = rows; },
+    setFilteredRulesPrimed: (value: boolean) => { primed = value; },
+  })();
+  return { displayed, primed };
+}
+
+test("rule page retains all seven server IP matches without local resource metadata", () => {
+  const items = Object.freeze(Array.from({ length: 7 }, (_, index) => Object.freeze({
+    id: 100 + index, hostId: 1, tunnelId: 20, forwardType: "gost", targetIp: "target.example",
+  }))) as unknown as any[];
+  const result = syncRulePageRows(items);
+  assert.equal(result.displayed, items, "preserve every server match and its order");
+  assert.equal(result.primed, true);
+});
+
+test("rule page waits for fresh server results and accepts an authoritative empty page", () => {
+  assert.deepEqual(syncRulePageRows([{ id: 1 }], false), { displayed: undefined, primed: false });
+  const empty: any[] = [];
+  assert.equal(syncRulePageRows(empty).displayed, empty);
+});
 
 test("page helpers clamp stale pages after the last item is removed", () => {
   assert.deepEqual(pageWindowForTotal({ page: 8, pageSize: 12 }, 13), {
@@ -642,6 +696,39 @@ test("database-backed list queries page, search, scope, and hydrate only request
       const discountPage = await billing.listDiscountCodesPage({ page: 2, pageSize: 2 });
       assert.equal(discountPage.totalItems, 3);
       assert.equal(discountPage.items.length, 1);
+
+      // Match an endpoint override that is not present in the global host
+      // options or in the rule itself. Counts, rows, map and summary must agree.
+      const endpointIp = "198.51.100.181";
+      await runtime.executeRaw('UPDATE "tunnels" SET "connectHost" = ? WHERE "id" = ?', [endpointIp, 20]);
+      for (let index = 0; index < 6; index++) {
+        await insert("forward_rules", ruleColumns, [200 + index, 1, "IP Search " + index, "gost", "tcp", 20, null, null, null, 0, 11000 + index, "target.example", 443, 2, 1, 0, 10 + index]);
+      }
+      await insert("forward_rules", ruleColumns, [210, 1, "Other Owner", "gost", "tcp", 20, null, null, null, 0, 12000, "target.example", 443, 1, 1, 0, 20]);
+      const endpointQuery = { page: 1, pageSize: 48, category: "all", search: endpointIp };
+      const endpointPage = await rulesCaller.listPage(endpointQuery);
+      const expectedEndpointIds = [101, 200, 201, 202, 203, 204, 205];
+      assert.equal(endpointPage.totalItems, 7);
+      assert.equal(endpointPage.activeItems, 7);
+      assert.deepEqual(endpointPage.categoryCounts, { all: 7, local: 0, tunnel: 7, chain: 0, group: 0 });
+      assert.deepEqual(endpointPage.items.map(item => Number(item.id)), expectedEndpointIds);
+      assert.ok(endpointPage.items.every(item => Number(item.userId) === 2), "search does not bypass ownership");
+      const pagedEndpointIds = [];
+      for (let page = 1; page <= 3; page++) {
+        const result = await rulesCaller.listPage({ ...endpointQuery, page, pageSize: 3 });
+        assert.equal(result.totalItems, 7);
+        pagedEndpointIds.push(...result.items.map(item => Number(item.id)));
+      }
+      assert.deepEqual(pagedEndpointIds, expectedEndpointIds, "paging retains every IP match exactly once");
+      const endpointMap = await rulesCaller.mapItems({ category: "all", search: endpointIp, limit: 20 });
+      assert.equal(endpointMap.totalItems, 7);
+      assert.deepEqual(endpointMap.items.map(item => Number(item.id)), expectedEndpointIds);
+      const endpointSummary = await rules.getForwardRuleSummarySelection({ ...visibleRuleInput, search: endpointIp });
+      assert.equal(endpointSummary.totalItems, 7);
+      assert.deepEqual(endpointSummary.ruleIds.sort((a, b) => a - b), expectedEndpointIds);
+      const noEndpointMatch = await rulesCaller.listPage({ ...endpointQuery, search: "198.51.100.182" });
+      assert.equal(noEndpointMatch.totalItems, 0);
+      assert.deepEqual(noEndpointMatch.items, []);
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }

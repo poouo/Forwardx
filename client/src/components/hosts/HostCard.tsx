@@ -2,7 +2,6 @@ import { t as translateText } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -128,7 +127,6 @@ export function HostActionButtons({
   className = "flex shrink-0 items-center justify-end gap-1",
   buttonClassName = "h-7 w-7",
 }: HostActionButtonsProps) {
-  const confirmDialog = useConfirmDialog();
   const isOnline = !!host.isOnline;
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const upgradeTitle = !isOnline
@@ -137,13 +135,8 @@ export function HostActionButtons({
       ? translateText("升级超时，可重新下发")
       : translateText("升级 Agent");
 
-  const confirmDelete = async () => {
-    if (await confirmDialog({
-      title: translateText("删除主机"),
-      description: translateText("确定要删除此主机吗？删除后相关状态和配置会同步移除。"),
-      confirmText: translateText("删除"),
-      tone: "destructive",
-    })) onDelete(host.id);
+  const confirmDelete = () => {
+    onDelete(host.id);
   };
 
   return (

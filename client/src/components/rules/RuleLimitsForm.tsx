@@ -46,7 +46,7 @@ export function ruleLimitsPayload(value: RuleLimitsFormValue) {
 export function RuleLimitsForm({ value, onChange }: { value: RuleLimitsFormValue; onChange: (value: RuleLimitsFormValue) => void }) {
   const patch = (data: Partial<RuleLimitsFormValue>) => onChange({ ...value, ...data });
   return <details className="rounded-lg border border-border/60 bg-muted/20 p-3">
-    <summary className="cursor-pointer text-sm font-medium">{t("单条规则限额与有效期")}</summary>
+    <summary className="cursor-pointer text-sm font-medium">{t("限额与有效期")}</summary>
     <div className="mt-4 space-y-4">
       <p className="text-xs text-muted-foreground">{t("管理员可为本人或其他用户的规则设置独立限额；本人账户下提供给他人使用的规则同样适用。")}</p>
       <p className="text-xs text-muted-foreground">{t("0 或留空表示不限制；流量按当前累计统计计算，与用户账户限制同时生效。")}</p>

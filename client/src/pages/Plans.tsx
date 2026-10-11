@@ -19,8 +19,10 @@ import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-ta
 import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
+import { PlanDetails } from "@/components/PlanDetails";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
+import { planDescription } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
@@ -241,7 +243,7 @@ function PlanCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="break-words text-sm font-medium">{plan.name}</p>
-          <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || translateText("无描述")}</p>
+          {!planDescription(plan) && <p className="mt-1 break-words text-xs text-muted-foreground">{translateText("无描述")}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="sm" className="h-8 px-2" onClick={onEdit}>{translateText("编辑")}</Button>
@@ -251,6 +253,7 @@ function PlanCard({
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+        <PlanDetails description={plan.description}>
         <MobileInfoRow label={translateText("价格")}>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
         <MobileInfoRow label={translateText("资源")}>
           <div className="flex flex-wrap justify-end gap-1">
@@ -264,6 +267,7 @@ function PlanCard({
         <MobileInfoRow label={translateText("连接/IP")}>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}</MobileInfoRow>
         <MobileInfoRow label={translateText("限速")}>{speed(plan.rateLimitMbps)}</MobileInfoRow>
         <MobileInfoRow label={translateText("附加流量")}>{plan.trafficAddons?.length || 0}{translateText(" 档")}</MobileInfoRow>
+        </PlanDetails>
         <MobileInfoRow label={translateText("状态")}>
           <PlanStatusQuickToggle
             plan={plan}
@@ -1218,8 +1222,13 @@ export default function Plans() {
                               <TableRow key={plan.id}>
                                 <TableCell>
                                   <div className="font-medium">{plan.name}</div>
-                                  <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || translateText("无描述")}</div>
+                                  {!planDescription(plan) && <div className="text-xs text-muted-foreground">{translateText("无描述")}</div>}
                                 </TableCell>
+                                {planDescription(plan) ? (
+                                  <TableCell colSpan={3} className="max-w-xl">
+                                    <PlanDetails description={plan.description} />
+                                  </TableCell>
+                                ) : (<>
                                 <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
                                 <TableCell>
                                   <div className="flex flex-wrap gap-1">
@@ -1234,6 +1243,7 @@ export default function Plans() {
                                   <div>{translateText("附加流量 ")}{plan.trafficAddons?.length || 0}{translateText(" 档")}</div>
                                   <div>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}{translateText(" · 限速 ")}{speed(plan.rateLimitMbps)}</div>
                                 </TableCell>
+                                </>)}
                                 <TableCell>
                                   <PlanStatusQuickToggle
                                     plan={plan}
@@ -1391,6 +1401,7 @@ export default function Plans() {
                 <div className="space-y-2">
                   <Label>{translateText("说明")}</Label>
                   <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={translateText("展示给用户看的套餐说明")} />
+                  <p className="text-xs text-muted-foreground">{translateText("留空展示默认套餐信息；填写后用说明替换展示内容，不改变实际套餐权益和价格。")}</p>
                 </div>
               </TabsContent>
 

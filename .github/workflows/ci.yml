@@ -50,6 +50,9 @@ jobs:
           pnpm test:ios
           pnpm test:i18n
           pnpm test:google-auth
+          pnpm test:port-access-limits
+          pnpm test:plan-display
+          pnpm test:host-deletion
           pnpm exec tsc --noEmit
           pnpm build
           node --import tsx --test server/agentCrypto.test.ts
@@ -66,3 +69,11 @@ jobs:
           export FORWARDX_TEST_GOST_BINARY="$gost_test_dir/gost"
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
+
+      - name: Verify TCP port limits in an isolated Linux network namespace
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iptables iproute2 util-linux
+          port_limit_test_dir=$(mktemp -d)
+          (cd agent && go test -c -o "$port_limit_test_dir/agent.test")
+          sudo env FORWARDX_TEST_PORT_LIMITS=1 "$port_limit_test_dir/agent.test" -test.run '^TestPortAccessLimitsNetworkNamespace$' -test.v -test.timeout=90s
