@@ -8,11 +8,12 @@ import { getEmailConfig } from "./email";
 import { ensureAllowedEmail } from "./routers/auth";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 import { GoogleAuthError } from "./googleOAuth";
+import { bindAffiliateReferral } from "./repositories/affiliateRepository";
 
 export const GOOGLE_ONLY_PASSWORD = "!google-only";
 export type GoogleIdentity = { subject: string; email: string; name: string };
 
-export async function resolveGoogleAccount(identity: GoogleIdentity, bindingUserId?: number) {
+export async function resolveGoogleAccount(identity: GoogleIdentity, bindingUserId?: number, referralCode?: string) {
   // Local serialization avoids duplicate first-login registration; the unique
   // database subject constraint remains the final protection across processes.
   return withKeyedTaskLock("google-account-link", () => withDatabaseTransaction(async () => {
@@ -43,6 +44,7 @@ export async function resolveGoogleAccount(identity: GoogleIdentity, bindingUser
     const id = await registerUser({ username, password: crypto.randomBytes(48).toString("hex"),
       name: identity.name || identity.email.slice(0, 24), email: identity.email, emailVerified: true, emailVerifiedAt: new Date() });
     await db.update(users).set({ googleSubject: identity.subject, googleEmail: identity.email, googleLinkedAt: new Date(), password: GOOGLE_ONLY_PASSWORD }).where(eq(users.id, id));
+    await bindAffiliateReferral(id, referralCode);
     return (await getUserById(id))!;
   }));
 }

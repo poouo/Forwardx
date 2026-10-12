@@ -530,7 +530,7 @@ export default function Payments() {
           <DataSectionLoading label={translateText("正在加载支付配置")} minHeight="min-h-[260px]" />
         ) : (
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PaymentTab)}>
-          <SlidingTabsList items={PAYMENT_TAB_ITEMS} activeValue={activeTab} ariaLabel={translateText("支付对接")} minItemWidthRem={6.75} />
+          <SlidingTabsList items={PAYMENT_TAB_ITEMS} activeValue={activeTab} onValueChange={setActiveTab} ariaLabel={translateText("支付对接")} minItemWidthRem={6.75} />
 
           <TabsContent value="basic" className="mt-4">
             <Card>

@@ -120,6 +120,19 @@ export function buildMetaAgentSelfTestPayload(
   const tunnelPayload = buildTunnelAgentSelfTestPayload(test, meta);
   if (tunnelPayload) return tunnelPayload;
 
+  if (meta?.kind === "forward-group") {
+    return {
+      testId: agentInteger(test.id),
+      ruleId: agentInteger(meta.runtimeRuleId),
+      forwardType: meta.forwardType,
+      protocol: normalizeLinkProbeMethod(meta.method),
+      method: normalizeLinkProbeMethod(meta.method),
+      sourcePort: agentInteger(meta.sourcePort),
+      targetIp: meta.targetIp,
+      targetPort: agentInteger(meta.targetPort),
+    };
+  }
+
   if (meta?.kind === "forward-via-tunnel" || meta?.kind === "forward-via-tunnel-entry") {
     const entryProbe = meta.kind === "forward-via-tunnel-entry";
     const method = normalizeLinkProbeMethod(meta.method);

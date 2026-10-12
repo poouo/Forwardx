@@ -100,7 +100,7 @@ function planBenefitItems(plan: any) {
   return items;
 }
 
-function StorePlanCard({
+export function StorePlanCard({
   plan,
   purchasing,
   onBuy,
@@ -113,7 +113,7 @@ function StorePlanCard({
   const benefits = planBenefitItems(plan);
 
   return (
-    <div className="flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 bg-card/60 shadow-sm backdrop-blur-md transition-colors hover:border-primary/35">
+    <div className="pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm transition-colors hover:border-primary/35">
       <div className="h-1.5 bg-gradient-to-r from-primary/45 via-primary/20 to-emerald-500/25" />
 
       <div className="flex flex-1 flex-col gap-4 p-5">
@@ -133,7 +133,7 @@ function StorePlanCard({
         </div>
 
         {description ? (
-          <div className="flex-1 rounded-md border border-border/40 bg-background/35 p-4">
+          <div className="pearl-store-plan-details flex-1 rounded-md border border-border/40 p-4">
             <PlanDetails description={description} />
           </div>
         ) : (<>
@@ -148,7 +148,7 @@ function StorePlanCard({
           </div>
         </div>
 
-        <div className="flex-1 rounded-md border border-border/40 bg-background/35 p-4">
+        <div className="pearl-store-plan-details flex-1 rounded-md border border-border/40 p-4">
           <p className="text-sm font-semibold text-foreground">{translateText("套餐权益")}</p>
           <ul className="mt-3 space-y-2.5">
             {benefits.map((item) => (

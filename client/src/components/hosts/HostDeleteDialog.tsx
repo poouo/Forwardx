@@ -66,7 +66,7 @@ export default function HostDeleteDialog({ hostId, onClose, onDelete, pending }:
           </div>}
         </div>}
         <DialogFooter className="flex-wrap gap-2">
-          <Button variant="outline" disabled={pending || prepare.isPending || impact.isFetching} onClick={() => { setConfirmOfflineCleanup(false); if (prepare.isError) prepareDelete({ id: hostId }); else void impact.refetch(); }}>{t("重新检查")}</Button>
+          <Button variant="outline" disabled={pending || prepare.isPending || impact.isFetching} onClick={() => { setConfirmOfflineCleanup(false); prepareDelete({ id: hostId }); }}>{t("重新检查")}</Button>
           <Button variant="outline" disabled={pending} onClick={onClose}>{t("取消")}</Button>
           <Button variant="destructive" disabled={pending || !prepare.isSuccess || impact.isFetching || impact.isError || !data || data.blocked || waiting || (offlineCleanup && !confirmOfflineCleanup)}
             onClick={() => onDelete({ id: hostId, confirmOfflineCleanup: offlineCleanup && confirmOfflineCleanup })}>

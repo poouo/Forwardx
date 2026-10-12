@@ -76,6 +76,17 @@ export const MIGRATION_TABLES = [
   "discount_code_plans",
   "announcements",
   "announcement_reads",
+  "support_tickets",
+  "support_ticket_messages",
+  "support_ticket_attachments",
+  "support_ticket_reads",
+  "support_canned_replies",
+  "affiliate_accounts",
+  "affiliate_codes",
+  "affiliate_referrals",
+  "affiliate_commissions",
+  "affiliate_withdrawals",
+  "affiliate_ledger",
   "plugins",
   "plugin_store_sources",
   "plugin_assets",
@@ -131,6 +142,51 @@ async function backfillPostgresqlLastAutoTrafficReset(pool: pg.Pool) {
 }
 
 const tables: TableDef[] = [
+  { name: "affiliate_accounts", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("availableCents", "bigint", { notNull: true, default: 0 }), c("blocked", "bool", { notNull: true, default: false }), c("rateBps", "int"), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId"]] },
+  { name: "affiliate_codes", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("code", "varchar", { length: 32, notNull: true }), c("active", "bool", { notNull: true, default: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["code"]], indexes: [["userId"]] },
+  { name: "affiliate_referrals", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("affiliateUserId", "int", { notNull: true }), c("codeId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId"]], indexes: [["affiliateUserId"]] },
+  { name: "affiliate_commissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("referredUserId", "int", { notNull: true }), c("orderNo", "varchar", { length: 128, notNull: true }), c("orderAmountCents", "bigint", { notNull: true }), c("amountCents", "bigint", { notNull: true }), c("rateBps", "int", { notNull: true }), c("status", "varchar", { length: 24, notNull: true, default: "pending" }), c("confirmAt", "epoch", { notNull: true }), c("reason", "text"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("settledAt", "epoch")], unique: [["orderNo"]], indexes: [["userId", "status", "confirmAt"], ["referredUserId"]] },
+  { name: "affiliate_withdrawals", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("amountCents", "bigint", { notNull: true }), c("method", "varchar", { length: 24, notNull: true }), c("account", "text", { notNull: true }), c("payee", "varchar", { length: 120, notNull: true }), c("status", "varchar", { length: 24, notNull: true, default: "pending" }), c("note", "text"), c("operatorUserId", "int"), c("requestKey", "varchar", { length: 64, notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("reviewedAt", "epoch")], unique: [["userId", "requestKey"]], indexes: [["userId", "status"]] },
+  { name: "affiliate_ledger", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("type", "varchar", { length: 32, notNull: true }), c("amountCents", "bigint", { notNull: true }), c("balanceAfterCents", "bigint", { notNull: true }), c("reference", "varchar", { length: 128, notNull: true }), c("operatorUserId", "int"), c("note", "text"), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "type", "reference"]], indexes: [["userId", "createdAt"]] },
+  {
+    name: "support_tickets",
+    columns: [
+      c("id", "id"), c("userId", "int", { notNull: true }), c("title", "varchar", { length: 160, notNull: true }),
+      c("status", "varchar", { length: 24, notNull: true, default: "open" }), c("priority", "varchar", { length: 16, notNull: true, default: "normal" }),
+      c("category", "varchar", { length: 24, notNull: true, default: "technical" }), c("serviceType", "varchar", { length: 24 }),
+      c("serviceId", "int"), c("serviceName", "text"), c("assignedTo", "int"),
+      c("version", "int", { notNull: true, default: 1 }), c("publicVersion", "int", { notNull: true, default: 1 }),
+      c("rating", "int"), c("ratingComment", "text"), c("firstResponseAt", "epoch"), c("resolvedAt", "epoch"), c("closedAt", "epoch"),
+      c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    indexes: [["userId", "updatedAt"], ["status", "updatedAt"], ["assignedTo", "status"], ["userId", "createdAt"]],
+  },
+  {
+    name: "support_ticket_messages",
+    columns: [
+      c("id", "id"), c("ticketId", "int", { notNull: true }), c("authorId", "int", { notNull: true }),
+      c("authorName", "varchar", { length: 160, notNull: true }), c("authorRole", "varchar", { length: 16, notNull: true }),
+      c("kind", "varchar", { length: 16, notNull: true, default: "reply" }), c("visibility", "varchar", { length: 16, notNull: true, default: "public" }),
+      c("content", "longtext", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
+    ], indexes: [["ticketId", "id"], ["authorId", "createdAt"]],
+  },
+  {
+    name: "support_ticket_attachments",
+    columns: [
+      c("id", "id"), c("ticketId", "int", { notNull: true }), c("messageId", "int", { notNull: true }),
+      c("name", "varchar", { length: 160, notNull: true }), c("mime", "varchar", { length: 64, notNull: true }),
+      c("size", "int", { notNull: true }), c("base64", "longtext", { notNull: true }),
+    ], indexes: [["ticketId"], ["messageId"]],
+  },
+  {
+    name: "support_ticket_reads",
+    columns: [c("id", "id"), c("ticketId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("version", "int", { notNull: true, default: 0 })],
+    unique: [["ticketId", "userId"]], indexes: [["userId"]],
+  },
+  {
+    name: "support_canned_replies",
+    columns: [c("id", "id"), c("title", "varchar", { length: 120, notNull: true }), c("content", "longtext", { notNull: true }), c("updatedAt", "epoch", { notNull: true, default: "now" })],
+  },
   { name: "ai_bot_workflows", columns: [c("id", "varchar", { length: 96, notNull: true }), c("scopeKey", "varchar", { length: 64, notNull: true }), c("status", "varchar", { length: 32, notNull: true }), c("payload", "longtext", { notNull: true }), c("result", "longtext"), c("updatedAt", "bigint", { notNull: true })], unique: [["id"]], indexes: [["scopeKey"], ["status", "updatedAt"]] },
   {
     name: "probe_counter_snapshots",

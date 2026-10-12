@@ -77,6 +77,8 @@ export default defineConfig({
         text: "账户与系统功能",
         items: [
           { text: "用户、套餐和权限", link: "/guide/users-billing" },
+          { text: "工单支持", link: "/guide/support-tickets" },
+          { text: "推广返佣（AFF）", link: "/guide/affiliates" },
           { text: "Telegram / Discord 和通知", link: "/guide/notifications" },
           { text: "AI 助手", link: "/guide/ai-assistant" },
           { text: "Google 账户登录", link: "/guide/google-login" },

@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { getAffiliateReferral } from "@/lib/affiliateReferral";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { toast } from "@/lib/localizedToast";
@@ -18,7 +19,7 @@ export default function GoogleLoginButton({ disabled = false, className = "" }: 
   const { data } = trpc.google.loginStatus.useQuery(undefined, { enabled: !mobileAuth.isNative, retry: false, staleTime: 30_000 });
   const start = trpc.google.start.useMutation({ onSuccess: data => { window.location.assign(data.url); }, onError: error => toast.error(error.message) });
   if (!data?.enabled || mobileAuth.isNative) return null;
-  return <Button type="button" variant="outline" className={`w-full gap-2 whitespace-normal ${className}`} disabled={disabled || start.isPending} onClick={() => start.mutate({})}>
+  return <Button type="button" variant="outline" className={`w-full gap-2 whitespace-normal ${className}`} disabled={disabled || start.isPending} onClick={() => start.mutate({ referralCode: getAffiliateReferral() })}>
     {start.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <GoogleMark />}
     {t("使用 Google 继续")}
   </Button>;

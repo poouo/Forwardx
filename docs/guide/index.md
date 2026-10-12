@@ -57,6 +57,12 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | [Google 账户登录](./google-login.md) | OAuth 配置、绑定、注册及登录排障 |
 | [移动客户端](./mobile-app.md) | Android APK、iOS 未签名 IPA 与自行签名 |
 
+## 工单支持
+
+见 [工单支持](./support-tickets.md)：默认关闭的入口、可选关联服务、附件、处理流程与权限。
+
+见 [推广返佣（AFF）](./affiliates.md)：邀请码、套餐订单返佣、佣金转余额与提现审核，默认关闭。
+
 ## 运维与排障
 
 | 文档 | 内容 |

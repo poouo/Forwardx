@@ -27,6 +27,7 @@ import {
 } from "./selfTestTiming";
 import { billingMonthlyBoundary, billingStartOfCalendarDay } from "@shared/billingTime";
 import { expireStalePendingOrders, recoverStaleProcessingPaymentOrders } from "./payment";
+import { settleAffiliateCommissions } from "./repositories/affiliateRepository";
 
 type TimedOutForwardTest = {
   id: number;
@@ -685,6 +686,7 @@ export function startScheduler() {
   const paymentMaintenance = createNonOverlappingScheduledTask("payment order maintenance", async () => {
     await expireStalePendingOrders();
     await recoverStaleProcessingPaymentOrders();
+    await settleAffiliateCommissions();
   });
 
   const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {

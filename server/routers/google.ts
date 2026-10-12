@@ -53,7 +53,7 @@ export const googleRouter = router({
       console.info(`[GoogleAuth] settings updated actor=${ctx.user.id} enabled=${config.enabled} configured=${googleConfigured(config)}`);
       return googleSettingsSummary(config);
     })),
-  start: publicProcedure.input(z.object({ bind: z.boolean().optional() })).mutation(async ({ ctx, input }) => {
+  start: publicProcedure.input(z.object({ bind: z.boolean().optional(), referralCode: z.string().regex(/^[a-zA-Z0-9]{6,32}$/).optional() })).mutation(async ({ ctx, input }) => {
     if (input.bind && (!ctx.user || !ctx.authSession?.sid)) throw new GoogleAuthError("session_expired");
     const ip = String(ctx.req.ip || ctx.req.socket.remoteAddress || "unknown");
     if (authRateLimitState(ip, "google-login").limited) throw new GoogleAuthError("rate_limited");
@@ -62,7 +62,7 @@ export const googleRouter = router({
     // The explicit configured URL avoids deriving OAuth redirects from Host headers.
     const origin = ctx.req.headers.origin;
     if (origin && origin !== new URL(config.redirectUri || "http://invalid").origin) throw new Error("请从 Google 回调地址对应的面板域名发起登录");
-    const flow = googleFlows.create(config, ip, input.bind ? { userId: ctx.user!.id, sid: ctx.authSession!.sid! } : undefined);
+    const flow = googleFlows.create(config, ip, input.bind ? { userId: ctx.user!.id, sid: ctx.authSession!.sid! } : undefined, Date.now(), input.referralCode);
     ctx.res.cookie(GOOGLE_FLOW_COOKIE, flow.browserToken, { ...getSessionCookieOptions(ctx.req), maxAge: GOOGLE_FLOW_TTL_MS, path: "/api/auth/google", secure: config.redirectUri.startsWith("https:") });
     ctx.res.clearCookie(GOOGLE_RESULT_COOKIE, googleClearCookieOptions(ctx.req));
     return { url: flow.url };

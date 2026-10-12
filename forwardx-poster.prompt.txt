@@ -1,0 +1,25 @@
+Use case: ads-marketing
+Create a finished portrait Chinese promotional poster for ForwardX, an open-source multi-host port forwarding and encrypted tunnel management panel. Size 1024x1536. Audience: Linux server owners and network administrators.
+
+Art direction: premium software campaign, deep charcoal background, off-white typography, restrained emerald-green accents, elegant grid, generous margins, precise modern Chinese sans-serif typography. Make it feel like a professionally designed product launch poster, with strong hierarchy and no clutter.
+
+Layout: top third has a small OPEN SOURCE / SELF-HOSTED eyebrow, a prominent ForwardX wordmark and bold two-line Chinese headline. Center has a beautifully lit browser dashboard concept with host cards, traffic graphs, and a subtle network topology linking entry, relay, and exit nodes. It is an illustrative preview, not a literal screenshot. Keep UI text minimal. Lower third has a clean 2x2 grid of four feature blocks, then a GitHub call to action and license footer. Subtle connecting emerald paths unify the composition. No QR code.
+
+Render these exact text lines clearly and correctly, each once, arranging paired feature headings and descriptions together:
+"ForwardX"
+"多主机转发"
+"一站式掌控"
+"端口转发与加密隧道管理面板"
+"端口转发"
+"TCP / UDP · 多种转发引擎"
+"加密隧道"
+"多跳链路 · 多入口与多出口"
+"链路监控"
+"流量统计 · 延迟趋势 · 故障转移"
+"多用户管理"
+"资源授权 · 流量配额 · 套餐计费"
+"开源 · 自托管 · Docker 部署"
+"github.com/poouo/Forwardx"
+"AGPL-3.0-only"
+
+Constraints: sharp, correct Simplified Chinese; balanced whitespace; no clipped copy; no tiny unreadable marketing text; no watermarks, unrelated brands, people, version numbers, fabricated benchmark claims, security certifications, customer counts, prices, or awards. Fully opaque background. Complete poster ready to share, no surrounding room or mockup frame.

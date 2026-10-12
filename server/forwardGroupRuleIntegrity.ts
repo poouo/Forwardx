@@ -14,6 +14,7 @@ import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
 import {
   getForwardRuleById,
   markOrphanedForwardGroupTemplatesPendingDelete,
+  settlePendingForwardGroupTemplates,
 } from "./repositories/forwardRuleRepository";
 import {
   findTrafficBillingResourceForRule,
@@ -41,6 +42,7 @@ type ManagedChildIntegrityRow = {
   parentPendingDelete: unknown;
   memberExists: unknown;
   memberGroupId: unknown;
+  topologyHostMatches: unknown;
 };
 
 type LegacyMemberRuleRow = {
@@ -116,7 +118,8 @@ function isValidManagedChild(row: ManagedChildIntegrityRow | undefined) {
     && positiveId(row.parentGroupId) === groupId
     && memberId > 0
     && positiveId(row.memberExists) === memberId
-    && positiveId(row.memberGroupId) === groupId;
+    && positiveId(row.memberGroupId) === groupId
+    && databaseBoolean(row.topologyHostMatches);
 }
 
 function normalizedText(value: unknown) {
@@ -191,14 +194,34 @@ async function managedChildIntegrity(ruleId: number) {
         p.${q("isForwardGroupTemplate")} AS ${q("parentIsTemplate")},
         p.${q("pendingDelete")} AS ${q("parentPendingDelete")},
         m.${q("id")} AS ${q("memberExists")},
-        m.${q("groupId")} AS ${q("memberGroupId")}
+        m.${q("groupId")} AS ${q("memberGroupId")},
+        CASE
+          WHEN g.${q("groupMode")} IN ('entry', 'exit') THEN 0
+          WHEN m.${q("memberType")} = 'host' AND m.${q("hostId")} = r.${q("hostId")}
+            AND (g.${q("groupMode")} <> 'chain' OR m.${q("isEnabled")} = ?)
+            AND COALESCE(r.${q("tunnelId")}, 0) = 0 THEN 1
+          WHEN g.${q("groupMode")} <> 'chain' AND m.${q("memberType")} = 'tunnel'
+            AND m.${q("tunnelId")} = r.${q("tunnelId")}
+            AND EXISTS (SELECT 1 FROM ${q("tunnels")} t
+              WHERE t.${q("id")} = m.${q("tunnelId")} AND t.${q("entryHostId")} = r.${q("hostId")}) THEN 1
+          WHEN g.${q("groupMode")} = 'chain' AND COALESCE(r.${q("tunnelId")}, 0) = 0
+            AND m.${q("id")} = (SELECT first_member.${q("id")} FROM ${q("forward_group_members")} first_member
+              WHERE first_member.${q("groupId")} = g.${q("id")} AND first_member.${q("isEnabled")} = ?
+              ORDER BY first_member.${q("priority")}, first_member.${q("id")} LIMIT 1)
+            AND EXISTS (SELECT 1 FROM ${q("forward_groups")} entry_group
+              INNER JOIN ${q("forward_group_members")} entry_member ON entry_member.${q("groupId")} = entry_group.${q("id")}
+              WHERE entry_group.${q("id")} = g.${q("entryGroupId")} AND entry_group.${q("groupMode")} = 'entry'
+                AND entry_member.${q("memberType")} = 'host' AND entry_member.${q("hostId")} = r.${q("hostId")}
+                AND entry_member.${q("isEnabled")} = ?) THEN 1
+          ELSE 0
+        END AS ${q("topologyHostMatches")}
        FROM ${q("forward_rules")} r
        LEFT JOIN ${q("forward_groups")} g ON g.${q("id")} = r.${q("forwardGroupId")}
        LEFT JOIN ${q("forward_rules")} p ON p.${q("id")} = r.${q("forwardGroupRuleId")}
        LEFT JOIN ${q("forward_group_members")} m ON m.${q("id")} = r.${q("forwardGroupMemberId")}
       WHERE r.${q("id")} = ?
       LIMIT 1`,
-    [ruleId],
+    [boolValue(true), boolValue(true), boolValue(true), ruleId],
   );
   return rows[0];
 }
@@ -499,6 +522,7 @@ export async function repairForwardGroupRuleIntegrity(hostId?: number): Promise<
   const orphanRules = await repairOrphanManagedChildren(hostId);
   const legacy = await repairLegacyMemberRuleReferences(hostId);
   const orphanTemplates = await markOrphanedForwardGroupTemplatesPendingDelete(positiveId(hostId) || undefined);
+  await settlePendingForwardGroupTemplates(positiveId(hostId) || undefined);
   return {
     orphanRules,
     legacyRules: legacy.rules,

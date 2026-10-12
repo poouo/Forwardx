@@ -7,6 +7,7 @@ import { pipeline } from "stream/promises";
 import { createGzip } from "zlib";
 import Database from "better-sqlite3";
 import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs } from "./dbSchema";
+import { AFFILIATE_TABLES, assertAffiliateImportSafe } from "./affiliateMigration";
 import {
   connectDatabase,
   defaultSqlitePath,
@@ -248,11 +249,21 @@ export async function exportMigrationSnapshot(
   ));
   const readTables = async () => {
     if (options.consistent && getDatabaseKind() === "postgresql") await executeRaw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    const financialTables = new Set<string>(AFFILIATE_TABLES);
+    const financialRows = new Map<string, Record<string, any>[]>();
     for (let index = 0; index < includedTables.length; index += 1) {
       const table = includedTables[index];
       const tableIndex = index + 1;
       options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "reading" });
-      const rows = await queryRaw(`SELECT * FROM ${quote(table)}`);
+      if (financialTables.has(table) && financialRows.size === 0) {
+        // Even lightweight/live backups must read wallets, reservations and
+        // their ledger at one point in time, not on opposite sides of a payout.
+        await withDatabaseTransaction(async () => {
+          if (!options.consistent && getDatabaseKind() === "postgresql") await executeRaw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+          for (const financialTable of AFFILIATE_TABLES) financialRows.set(financialTable, await queryRaw(`SELECT * FROM ${quote(financialTable)}`));
+        });
+      }
+      const rows = financialRows.get(table) || await queryRaw(`SELECT * FROM ${quote(table)}`);
       tables[table] = rows;
       options.onProgress?.({ table, tableIndex, tableTotal: includedTables.length, status: "complete", rowCount: rows.length });
     }
@@ -745,6 +756,17 @@ const IMPORT_TABLE_ORDER = [
   "user_traffic_billing_permissions",
   "announcements",
   "announcement_reads",
+  "support_tickets",
+  "support_ticket_messages",
+  "support_ticket_attachments",
+  "support_ticket_reads",
+  "support_canned_replies",
+  "affiliate_accounts",
+  "affiliate_codes",
+  "affiliate_referrals",
+  "affiliate_commissions",
+  "affiliate_withdrawals",
+  "affiliate_ledger",
   "plugins",
   "plugin_store_sources",
   "plugin_assets",
@@ -1390,6 +1412,61 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.userId = mapRequiredId(maps, "users", source.userId);
       return { row, existingWhere: { announcementId: row.announcementId, userId: row.userId } };
 
+    case "affiliate_accounts":
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      return { row, existingWhere: { userId: row.userId } };
+    case "affiliate_codes":
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      return { row, existingWhere: { code: row.code } };
+    case "affiliate_referrals":
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      row.affiliateUserId = mapId(maps, "users", source.affiliateUserId) || -Math.abs(Number(source.affiliateUserId));
+      row.codeId = mapRequiredId(maps, "affiliate_codes", source.codeId);
+      return { row, existingWhere: { userId: row.userId } };
+    case "affiliate_commissions":
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      row.referredUserId = mapId(maps, "users", source.referredUserId) || -Math.abs(Number(source.referredUserId));
+      return { row, existingWhere: { orderNo: row.orderNo } };
+    case "affiliate_withdrawals":
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      row.operatorUserId = mapOptionalId(maps, "users", source.operatorUserId);
+      return { row, existingWhere: { userId: row.userId, requestKey: row.requestKey } };
+    case "affiliate_ledger": {
+      row.userId = mapId(maps, "users", source.userId) || -Math.abs(Number(source.userId));
+      row.operatorUserId = mapOptionalId(maps, "users", source.operatorUserId);
+      const commissionTypes = ["commission", "reversal", "cancellation"];
+      const withdrawalTypes = ["withdrawal", "withdrawal_return", "payout"];
+      if (commissionTypes.includes(row.type)) row.reference = String(mapRequiredId(maps, "affiliate_commissions", source.reference));
+      if (withdrawalTypes.includes(row.type)) row.reference = String(mapRequiredId(maps, "affiliate_withdrawals", source.reference));
+      return { row, existingWhere: { userId: row.userId, type: row.type, reference: row.reference } };
+    }
+    case "support_tickets": {
+      row.userId = mapId(maps, "users", source.userId) || 0;
+      row.assignedTo = mapId(maps, "users", source.assignedTo) || null;
+      const resourceTables: Record<string, string> = { subscription: "user_subscriptions", rule: "forward_rules", host: "hosts", tunnel: "tunnels", group: "forward_groups", billing: "traffic_billing_configs" };
+      row.serviceId = resourceTables[source.serviceType] ? mapId(maps, resourceTables[source.serviceType], source.serviceId) || null : null;
+      return { row };
+    }
+    case "support_ticket_messages": {
+      row.ticketId = mapRequiredId(maps, "support_tickets", source.ticketId);
+      row.authorId = mapId(maps, "users", source.authorId) || 0;
+      if (source.kind === "event") {
+        try {
+          const event = JSON.parse(source.content);
+          if (event.action === "assignedTo") { event.from = mapId(maps, "users", event.from) || null; event.to = mapId(maps, "users", event.to) || null; row.content = JSON.stringify(event); }
+        } catch { /* Preserve opaque historical events. */ }
+      }
+      return { row };
+    }
+    case "support_ticket_attachments":
+      row.ticketId = mapRequiredId(maps, "support_tickets", source.ticketId);
+      row.messageId = mapRequiredId(maps, "support_ticket_messages", source.messageId);
+      return { row };
+    case "support_ticket_reads":
+      row.ticketId = mapRequiredId(maps, "support_tickets", source.ticketId);
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      return { row, existingWhere: { ticketId: row.ticketId, userId: row.userId } };
+
     case "ip_geo_cache":
       return { row, existingWhere: row.address ? { address: row.address } : undefined };
 
@@ -1732,6 +1809,7 @@ export async function importMigrationSnapshot(
   if (!snapshot || snapshot.version !== 1 || !snapshot.tables || typeof snapshot.tables !== "object") {
     throw new Error("迁移数据格式无效");
   }
+  await assertAffiliateImportSafe(snapshot.tables);
 
   const existingData = await getPanelDataSummary({ useCache: false });
   const mode = existingData.hasExistingData ? "incremental" : "restore";

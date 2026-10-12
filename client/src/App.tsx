@@ -31,6 +31,8 @@ import ProfilePage from "@/pages/Profile";
 import RulesPage from "@/pages/Rules";
 import SettingsPage from "@/pages/Settings";
 import StorePage from "@/pages/Store";
+import SupportTicketsPage from "@/pages/SupportTickets";
+import AffiliatesPage from "@/pages/Affiliates";
 import SubscriptionsPage from "@/pages/Subscriptions";
 import TrafficBillingPage from "@/pages/TrafficBilling";
 import TunnelsPage from "@/pages/Tunnels";
@@ -117,6 +119,9 @@ function Router() {
       <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
       <Route path="/wallet">{routeComponent(WalletPage)}</Route>
       <Route path="/announcements">{routeComponent(AnnouncementsPage)}</Route>
+      <Route path="/tickets">{routeComponent(SupportTicketsPage)}</Route>
+      <Route path="/affiliates">{routeComponent(AffiliatesPage)}</Route>
+      <Route path="/affiliate-management">{() => <AdminRoute component={() => <AffiliatesPage admin />} />}</Route>
       <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
       <Route path="/custom-pages/:pageId">
         {(params) => <CustomSidebarPage pageId={params.pageId} />}

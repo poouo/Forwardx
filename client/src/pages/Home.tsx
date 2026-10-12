@@ -281,7 +281,7 @@ function TrafficPieLoadingState() {
   );
 }
 
-function TrafficPieCard({
+function TrafficPieSection({
   title,
   data,
   loading,
@@ -315,21 +315,18 @@ function TrafficPieCard({
   const shouldAnimate = motionEnabled && chartData.length > 0 && total > 0 && !hasAnimated;
 
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+    <section aria-label={title} className="min-w-0 p-4 sm:p-5">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <BarChart3 className="h-4 w-4" />
             {title}
-          </CardTitle>
+          </h3>
           <span className="text-[10px] text-muted-foreground/70">{translateText("近 24H")}</span>
         </div>
-      </CardHeader>
-      <CardContent>
         {loading && chartData.length === 0 ? (
           <TrafficPieLoadingState />
         ) : chartData.length === 0 || total <= 0 ? (
-          <div className="flex h-56 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+          <div className="flex h-44 flex-col items-center justify-center gap-2 rounded-xl bg-muted/20 text-sm text-muted-foreground">
             <BarChart3 className="h-5 w-5 text-muted-foreground/50" />{translateText("暂无流量数据")}</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
@@ -402,7 +399,97 @@ function TrafficPieCard({
             </div>
           </div>
         )}
-      </CardContent>
+    </section>
+  );
+}
+
+type TrafficSectionData = Array<{ id: number; name: string; value: number }>;
+
+export function DashboardTrafficOverview({ tunnelData, portData, groupData, loading }: {
+  tunnelData: TrafficSectionData;
+  portData: TrafficSectionData;
+  groupData: TrafficSectionData;
+  loading: boolean;
+}) {
+  return (
+    <Card className="border-border/40">
+      <div className="grid min-w-0 divide-y divide-border/50 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
+        <TrafficPieSection title={translateText("隧道流量")} data={tunnelData} loading={loading} />
+        <TrafficPieSection title={translateText("端口转发流量")} data={portData} loading={loading} />
+        <TrafficPieSection title={translateText("转发组流量")} data={groupData} loading={loading} />
+      </div>
+    </Card>
+  );
+}
+
+export function DashboardStatusOverview({ isAdmin, loading, onlineHosts, totalHosts, activeRules, totalRules }: {
+  isAdmin: boolean;
+  loading: boolean;
+  onlineHosts: number;
+  totalHosts: number;
+  activeRules: number;
+  totalRules: number;
+}) {
+  const onlineRate = totalHosts > 0 ? Math.round((onlineHosts / totalHosts) * 100) : 0;
+  const activeRate = totalRules > 0 ? Math.round((activeRules / totalRules) * 100) : 0;
+  return (
+    <Card className="border-border/40">
+      <div className={`grid min-w-0 divide-y divide-border/50 lg:divide-x lg:divide-y-0 ${isAdmin ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
+        {isAdmin && (
+          <section aria-label={translateText("主机在线率")} className="min-w-0 p-4 sm:p-5">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Wifi className="h-4 w-4" />{translateText("主机在线率")}
+            </h3>
+            <div className="flex items-center gap-5">
+              {loading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={onlineRate} color="#10b981" />}
+              <div className="space-y-2 text-sm tabular-nums">
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />{translateText("在线 ")}{onlineHosts}
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("离线 ")}{totalHosts - onlineHosts}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+        <section aria-label={translateText("规则启用率")} className="min-w-0 p-4 sm:p-5">
+          <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Zap className="h-4 w-4" />{translateText("规则启用率")}
+          </h3>
+          <div className="flex items-center gap-5">
+            {loading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} />}
+            <div className="space-y-2 text-sm tabular-nums">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />{translateText("已启用 ")}{activeRules}
+              </div>
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("停用 ")}{totalRules - activeRules}
+              </div>
+            </div>
+          </div>
+        </section>
+        <section aria-label={translateText("系统概览")} className="min-w-0 p-4 sm:p-5">
+          <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Activity className="h-4 w-4" />{translateText("系统概览")}
+          </h3>
+          <div className="flex min-h-20 flex-col justify-center gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm text-muted-foreground">{translateText("规则负载")}</span>
+              <div className="flex w-32 items-center gap-2">
+                <FixedColorProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} className="h-1.5" />
+                <span className="w-8 text-right text-xs font-medium tabular-nums">{activeRate}%</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm text-muted-foreground">{translateText("用户角色")}</span>
+              <Badge variant="secondary" className="px-2 py-0.5 text-[10px]">
+                {isAdmin ? <><Shield className="mr-1 h-3 w-3" />{translateText("管理员")}</> : translateText("普通用户")}
+              </Badge>
+            </div>
+          </div>
+        </section>
+      </div>
     </Card>
   );
 }
@@ -504,8 +591,6 @@ function DashboardContent() {
     [accountExpiresAt, quota.hasQuota, trafficLimit, trafficUsed],
   );
 
-  const onlineRate = stats?.totalHosts ? Math.round((stats.onlineHosts / stats.totalHosts) * 100) : 0;
-  const activeRate = stats?.totalRules ? Math.round((stats.activeRules / stats.totalRules) * 100) : 0;
   const tunnelRuleTrafficData = useMemo(
     () => (visibleTrafficBreakdown?.tunnelRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
     [visibleTrafficBreakdown?.tunnelRules],
@@ -861,82 +946,15 @@ function DashboardContent() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <TrafficPieCard title={translateText("隧道流量")} data={tunnelRuleTrafficData} loading={breakdownLoading} />
-        <TrafficPieCard title={translateText("端口转发流量")} data={portRuleTrafficData} loading={breakdownLoading} />
-        <TrafficPieCard title={translateText("转发组流量")} data={forwardGroupRuleTrafficData} loading={breakdownLoading} />
-      </div>
-
-      <div className={`grid grid-cols-1 gap-4 ${isAdmin ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
-        {isAdmin && (
-          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Wifi className="h-4 w-4" />{translateText("主机在线率")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-6">
-                {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={onlineRate} color="#10b981" />}
-                <div className="space-y-1 text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-chart-1" />{translateText("在线 ")}{stats?.onlineHosts ?? 0}
-                  </div>
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("离线 ")}{(stats?.totalHosts ?? 0) - (stats?.onlineHosts ?? 0)}
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <Zap className="h-4 w-4" />{translateText("规则启用率")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-6">
-              {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} />}
-              <div className="space-y-1 text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />{translateText("已启用 ")}{stats?.activeRules ?? 0}
-                </div>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />{translateText("停用 ")}{(stats?.totalRules ?? 0) - (stats?.activeRules ?? 0)}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <Activity className="h-4 w-4" />{translateText("系统概览")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">{translateText("规则负载")}</span>
-              <div className="flex w-32 items-center gap-2">
-                <FixedColorProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} className="h-1.5" />
-                <span className="w-8 text-right text-xs font-medium tabular-nums">{activeRate}%</span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">{translateText("用户角色")}</span>
-              <Badge variant="secondary" className="px-2 py-0.5 text-[10px]">
-                {isAdmin ? (
-                  <>
-                    <Shield className="mr-1 h-3 w-3" />{translateText("管理员")}</>
-                ) : (
-                  translateText("普通用户")
-                )}
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <DashboardTrafficOverview tunnelData={tunnelRuleTrafficData} portData={portRuleTrafficData} groupData={forwardGroupRuleTrafficData} loading={breakdownLoading} />
+      <DashboardStatusOverview
+        isAdmin={isAdmin}
+        loading={isLoading}
+        onlineHosts={stats?.onlineHosts ?? 0}
+        totalHosts={stats?.totalHosts ?? 0}
+        activeRules={stats?.activeRules ?? 0}
+        totalRules={stats?.totalRules ?? 0}
+      />
     </div>
   );
 }

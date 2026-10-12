@@ -35,7 +35,8 @@ export async function getHostDeletionImpact(hostId: number) {
         OR EXISTS (SELECT 1 FROM ${q("tunnel_exit_nodes")} e WHERE e.${q("tunnelId")} = t.${q("id")} AND e.${q("hostId")} = ?)
       ORDER BY t.${q("id")}`, [hostId, hostId, hostId, hostId]),
     queryRaw<{ count: number }>(`SELECT COUNT(*) AS ${q("count")} FROM ${q("forward_rules")}
-      WHERE ${q("hostId")} = ? AND ${q("pendingDelete")} = ${boolLiteral(true)} AND ${q("isRunning")} = ${boolLiteral(true)}`, [hostId]),
+      WHERE ${q("hostId")} = ? AND ${q("pendingDelete")} = ${boolLiteral(true)} AND ${q("isRunning")} = ${boolLiteral(true)}
+        AND ${q("isForwardGroupTemplate")} = ${boolLiteral(false)}`, [hostId]),
   ]);
   const ruleRefs = referenceList(rules);
   const groupRefs = referenceList(groups);

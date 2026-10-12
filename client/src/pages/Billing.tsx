@@ -640,7 +640,7 @@ export default function Billing() {
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as BillingTab)}>
-          <SlidingTabsList items={BILLING_TAB_ITEMS} activeValue={activeTab} ariaLabel={translateText("余额与营销")} minItemWidthRem={6.75} />
+          <SlidingTabsList items={BILLING_TAB_ITEMS} activeValue={activeTab} onValueChange={setActiveTab} ariaLabel={translateText("余额与营销")} minItemWidthRem={6.75} />
 
           <TabsContent value="ledger" className="mt-4">
             <Card>

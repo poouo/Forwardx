@@ -1150,7 +1150,7 @@ export default function Plans() {
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PlanManageTab)} className="space-y-4">
-          <SlidingTabsList items={PLAN_MANAGE_TAB_ITEMS} activeValue={activeTab} ariaLabel={translateText("套餐管理")} minItemWidthRem={9.5} />
+          <SlidingTabsList items={PLAN_MANAGE_TAB_ITEMS} activeValue={activeTab} onValueChange={setActiveTab} ariaLabel={translateText("套餐管理")} minItemWidthRem={9.5} />
 
           <TabsContent value="plans" className="mt-0 space-y-6">
             <Card>

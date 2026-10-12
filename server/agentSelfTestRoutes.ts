@@ -514,7 +514,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         `[SelfTest] forward-chain test=${testId} group=${meta.groupId} success=${success} latency=${success && cleanLatency !== null ? `${cleanLatency}ms` : "-"} entry=${entryTarget} target=${finalTarget}${cleanMessage && !success ? ` message=${cleanMessage}` : ""}`,
       );
     }
-    if (!meta) {
+    if (!meta || meta.kind === "forward-group") {
       await db.insertTcpingStat({
         ruleId: Number(t.ruleId),
         hostId: Number(host.id),

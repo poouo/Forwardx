@@ -43,7 +43,7 @@ const fingerprint = (config: GoogleSettings) => crypto.createHash("sha256").upda
 const digest = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
 
 type GoogleFlow = { expiresAt: number; browserHash: string; nonce: string; verifier: string; configHash: string;
-  userId?: number; sid?: string };
+  userId?: number; sid?: string; referralCode?: string };
 
 // Short-lived, bounded, single-use state. A panel restart requires restarting login,
 // never accepting an unverified callback. Parallel browser tabs fail closed.
@@ -52,7 +52,7 @@ export class GoogleFlowStore {
   private rates = new Map<string, { count: number; until: number }>();
   private nextPrune = 0;
   constructor(private readonly maxSize = 10_000) {}
-  create(config: GoogleSettings, ip: string, binding?: { userId: number; sid: string }, now = Date.now()) {
+  create(config: GoogleSettings, ip: string, binding?: { userId: number; sid: string }, now = Date.now(), referralCode?: string) {
     if (!config.enabled || !googleConfigured(config)) throw new GoogleAuthError("disabled");
     if (now >= this.nextPrune) {
       for (const [key, item] of this.flows) if (item.expiresAt <= now) this.flows.delete(key);
@@ -68,7 +68,7 @@ export class GoogleFlowStore {
     const browserToken = crypto.randomBytes(32).toString("base64url");
     const flow: GoogleFlow = { expiresAt: now + GOOGLE_FLOW_TTL_MS, browserHash: digest(browserToken),
       nonce: crypto.randomBytes(32).toString("base64url"), verifier: crypto.randomBytes(48).toString("base64url"),
-      configHash: fingerprint(config), ...binding };
+      configHash: fingerprint(config), ...binding, ...(!binding && referralCode ? { referralCode } : {}) };
     this.flows.set(state, flow);
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     url.search = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri,

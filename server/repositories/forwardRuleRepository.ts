@@ -1134,10 +1134,23 @@ export async function markForwardRulePendingDelete(id: number) {
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
   await db.update(forwardRules).set({
     isEnabled: false,
-    isRunning: true,
+    // Templates never own an Agent listener and cannot acknowledge removal.
+    isRunning: sql`CASE WHEN COALESCE(${forwardRules.isForwardGroupTemplate}, ${sqlBool(false)}) = ${sqlBool(true)} THEN ${sqlBool(false)} ELSE ${sqlBool(true)} END`,
     pendingDelete: true,
     updatedAt: nowDate(),
-  }).where(eq(forwardRules.id, id));
+  }).where(and(eq(forwardRules.id, id), eq(forwardRules.pendingDelete, false)));
+}
+
+/** Repair historical template tombstones without releasing real Agent cleanup. */
+export async function settlePendingForwardGroupTemplates(hostId?: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(and(
+    eq(forwardRules.isForwardGroupTemplate, true),
+    eq(forwardRules.pendingDelete, true),
+    eq(forwardRules.isRunning, true),
+    ...(hostId ? [eq(forwardRules.hostId, hostId)] : []),
+  ));
 }
 
 export async function finalizeForwardRuleDelete(id: number) {
@@ -1157,6 +1170,7 @@ export async function finalizeForwardRuleDelete(id: number) {
 export async function purgeSettledPendingForwardRuleDeletes() {
   const db = await getDb();
   if (!db) return 0;
+  await settlePendingForwardGroupTemplates();
   const rows = await db
     .select({ id: forwardRules.id })
     .from(forwardRules)

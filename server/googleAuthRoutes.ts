@@ -41,7 +41,7 @@ export async function handleGoogleCallback(req: Request, res: Response) {
     const current = await getGoogleSettings();
     if (JSON.stringify(config) !== JSON.stringify(current)) throw new GoogleAuthError("disabled");
     await checkBinding();
-    const user = await resolveGoogleAccount(identity, flow.userId);
+    const user = await resolveGoogleAccount(identity, flow.userId, flow.referralCode);
     if (binding) {
       console.info(`[GoogleAuth] account bound userId=${user.id}`);
       res.redirect(303, "/profile?google=bound");

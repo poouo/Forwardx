@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { accrueAffiliateCommission } from "./repositories/affiliateRepository";
 import express from "express";
 import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
@@ -815,6 +816,7 @@ async function finalizePaidOrder(outTradeNo: string) {
             await db.updatePaymentOrder(outTradeNo, { discountConsumed: true } as any);
           }
           await db.updatePaymentOrder(outTradeNo, { subscriptionId: existingSubscription.id, status: "completed" } as any);
+          await accrueAffiliateCommission(outTradeNo);
           return;
         }
         if ((order as any).discountCodeId && !(order as any).discountConsumed) {
@@ -832,6 +834,7 @@ async function finalizePaidOrder(outTradeNo: string) {
         );
         await db.recoverUserForwardAccessIfEligible(order.userId);
         await db.updatePaymentOrder(outTradeNo, { subscriptionId: result.subscriptionId, status: "completed" } as any);
+        await accrueAffiliateCommission(outTradeNo);
         appendPanelLog("info", `[Plan] subscription ${order.subscriptionId ? "renewed" : "granted"} user=${order.userId} plan=${order.planId} order=${outTradeNo} subscription=${result.subscriptionId} ports=${result.portRangeStart}-${result.portRangeEnd}`);
         return;
       }

@@ -3981,7 +3981,7 @@ function TunnelsContent() {
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
-        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} ariaLabel={translateText("链路管理")} minItemWidthRem={7.75} />
+        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} onValueChange={setActiveSection} ariaLabel={translateText("链路管理")} minItemWidthRem={7.75} />
 
         <TabsContent value="tunnels" className="space-y-4">
           <div className="min-w-0">

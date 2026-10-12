@@ -2,6 +2,7 @@ import { t as translateText } from "@/i18n";
 import { useState, useCallback, useEffect, useRef } from "react";
 import LanguageSelector from "@/components/LanguageSelector";
 import GoogleLoginButton from "@/components/GoogleLoginButton";
+import { captureAffiliateReferral, getAffiliateReferral, clearAffiliateReferral } from "@/lib/affiliateReferral";
 import { googleAuthMessage } from "@shared/googleAuth";
 import "@cap.js/widget";
 import { trpc } from "@/lib/trpc";
@@ -232,6 +233,8 @@ function rememberLoginWelcome(user: any) {
 export default function Login() {
   const [location] = useLocation();
   const search = useSearch();
+  const [referralCode, setReferralCode] = useState("");
+  useEffect(() => { captureAffiliateReferral(search); setReferralCode(getAffiliateReferral() || ""); }, [search]);
   const initialMode = new URLSearchParams(location.split("?")[1] || "").get("mode") === "register" ? "register" : "login";
   const [mode, setMode] = useState<Mode>(initialMode);
   const [username, setUsername] = useState(() => mobileAuth.getUsername());
@@ -300,6 +303,7 @@ export default function Login() {
     refetchOnWindowFocus: true,
   });
   const registrationEnabled = emailConfig?.registrationEnabled !== false;
+  const referralStatus = trpc.affiliates.registrationStatus.useQuery(undefined, { enabled: hasMobilePanelUrl && mode === "register", staleTime: 30_000 });
   const registrationCaptchaEnabled = emailConfig?.authCaptchaEnabled !== false;
   const siteTitle = "ForwardX";
   const logoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
@@ -596,6 +600,7 @@ export default function Login() {
   // 注册 mutation
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: (data) => {
+      clearAffiliateReferral();
       toast.success(data.message || translateText("注册成功"));
       setMode("login");
       setConfirmPassword("");
@@ -813,6 +818,7 @@ export default function Login() {
       return;
     }
     registerMutation.mutate({
+      referralCode: /^[a-zA-Z0-9]{6,32}$/.test(referralCode.trim()) ? referralCode.trim() : undefined,
       username: username.trim(),
       password,
       name: name.trim() || undefined,
@@ -1153,6 +1159,7 @@ export default function Login() {
                   disabled={isPending}
                 />
               </div>
+              {referralStatus.data?.enabled && <div className="space-y-2"><Label htmlFor="reg-referral">{translateText("邀请码（选填）")}</Label><Input id="reg-referral" value={referralCode} maxLength={32} autoComplete="off" disabled={isPending} onChange={e => { setReferralCode(e.target.value); clearAffiliateReferral(); captureAffiliateReferral(`ref=${encodeURIComponent(e.target.value.trim())}`); }} /></div>}
               {emailConfig?.verifyRegistration && (
                 <div className="space-y-2">
                   <Label htmlFor="reg-email">{translateText("邮箱")}</Label>

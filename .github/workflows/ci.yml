@@ -48,6 +48,8 @@ jobs:
           pnpm check:versions
           pnpm test:release-notes
           pnpm test:ui
+          pnpm test:support
+          pnpm test:affiliates
           pnpm test:ios
           pnpm test:i18n
           pnpm test:google-auth

@@ -49,6 +49,7 @@ export const selfTestRulesRouter = router({
       }
       await requireRuleProtocolEnabled(rule);
       let hostId = rule.hostId;
+      let runtimeRule: any = rule;
       let message: string | null = null;
       if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
         const group = await db.getForwardGroupById(Number((rule as any).forwardGroupId)) as any;
@@ -105,12 +106,32 @@ export const selfTestRulesRouter = router({
           }
           return { id: firstTestId, queued };
         }
+        const selected = await db.getForwardGroupRuleForSelfTest(rule, group);
+        runtimeRule = selected.rule;
+        await requireRuleProtocolEnabled(runtimeRule);
+        hostId = runtimeRule.hostId;
+        const sourceHost = await db.getHostById(hostId);
+        // Persist the selected listener/target at click time. Both Agent pull
+        // paths must execute the same test even if failover occurs afterward.
+        message = JSON.stringify({
+          kind: "forward-group",
+          groupId: selected.groupId,
+          memberId: selected.memberId,
+          runtimeRuleId: runtimeRule.id,
+          forwardType: runtimeRule.forwardType,
+          sourcePort: runtimeRule.sourcePort,
+          targetIp: runtimeRule.targetIp,
+          targetPort: runtimeRule.targetPort,
+          method: linkProbeMethodForRule(runtimeRule),
+          sourceLabel: sourceHost?.name || `主机 #${hostId}`,
+          targetLabel: rule.name,
+        });
       }
-      if ((rule as any).tunnelId) {
-        const tunnel = await db.getTunnelById((rule as any).tunnelId);
+      if (runtimeRule.tunnelId) {
+        const tunnel = await db.getTunnelById(runtimeRule.tunnelId);
         if (!tunnel) throw new Error("隧道不存在");
         hostId = tunnel.exitHostId;
-        const targetIp = rule.targetIp;
+        const targetIp = runtimeRule.targetIp;
         if (!targetIp) throw new Error("目标地址不可用，请检查规则目标地址");
         const tunnelLatencyBaseline = await db.getLatestTunnelLatency(Number(tunnel.id));
         const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel", {
@@ -124,8 +145,8 @@ export const selfTestRulesRouter = router({
           entryHostId: tunnel.entryHostId,
           exitHostId: tunnel.exitHostId,
           targetIp,
-          targetPort: rule.targetPort,
-          method: linkProbeMethodForRule(rule),
+          targetPort: runtimeRule.targetPort,
+          method: linkProbeMethodForRule(runtimeRule),
           tunnelLatencyBaselineId: Number((tunnelLatencyBaseline as any)?.id || 0),
           refreshPushed: pushed,
         });
@@ -142,7 +163,7 @@ export const selfTestRulesRouter = router({
         message,
       });
       pushAgentRefresh(hostId, "forward-selftest", { urgent: true });
-      if (!(rule as any).tunnelId) {
+      if (!runtimeRule.tunnelId) {
         appendPanelLog("info", `[SelfTest] rule=${rule.id} queued direct test=${id} from host=${hostId} to target=${rule.targetIp}:${rule.targetPort}`);
       }
       return { id };

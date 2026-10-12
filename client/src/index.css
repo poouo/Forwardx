@@ -78,8 +78,10 @@
   --sidebar-accent-foreground: oklch(0.15 0.01 260);
   --sidebar-border: oklch(0.88 0.01 260);
   --sidebar-ring: oklch(0.42 0.02 260);
-  --forwardx-safe-area-top: env(safe-area-inset-top, 0px);
-  --forwardx-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  /* Capacitor's Android bridge supplies CSS variables when WebView env()
+     insets are unavailable. iOS and browsers continue to use env(). */
+  --forwardx-safe-area-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --forwardx-safe-area-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   --forwardx-mobile-header-offset: calc(3.5rem + var(--forwardx-safe-area-top));
 }
 
@@ -406,21 +408,13 @@
     }
   }
 
-  html.capacitor-native [data-sidebar="header"] {
-    padding-top: max(0.5rem, env(safe-area-inset-top));
-  }
-
-  html.capacitor-native [data-sidebar="footer"] {
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
-  }
-
   html.capacitor-native [data-mobile-sidebar="true"] {
     --forwardx-mobile-sidebar-width: min(16rem, calc(100vw - 4.5rem));
     box-shadow: 16px 0 44px color-mix(in oklch, black 18%, transparent);
   }
 
   html.capacitor-native [data-mobile-sidebar="true"] .mobile-sidebar-header {
-    min-height: calc(3.75rem + env(safe-area-inset-top));
+    min-height: 3.75rem;
   }
 
   html.capacitor-native [data-mobile-sidebar="true"] .mobile-sidebar-content {
@@ -464,7 +458,7 @@
     }
 
     html.capacitor-native [data-mobile-sidebar="true"] .mobile-sidebar-header {
-      min-height: calc(3rem + env(safe-area-inset-top));
+      min-height: 3rem;
     }
 
     html.capacitor-native [data-mobile-sidebar="true"] .mobile-sidebar-content {
@@ -503,8 +497,8 @@
 
   html.capacitor-native .mobile-login-screen {
     min-height: 100dvh;
-    padding-top: max(0.75rem, env(safe-area-inset-top));
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-top: max(0.75rem, var(--forwardx-safe-area-top));
+    padding-bottom: max(0.75rem, var(--forwardx-safe-area-bottom));
   }
 
   html.capacitor-native [data-latency-stats="true"] {
@@ -534,6 +528,15 @@
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
   }
+}
+
+/* The fixed drawer paints behind system bars, but its children stay inside the
+   safe area. Keep geometry unlayered so utility padding cannot override it;
+   header/footer retain their normal spacing without counting the inset twice. */
+[data-mobile-sidebar="true"] {
+  box-sizing: border-box;
+  padding-top: var(--forwardx-safe-area-top);
+  padding-bottom: var(--forwardx-safe-area-bottom);
 }
 
 /* Unified scrollbar style and gutter to avoid text overlap with right-side bars */
@@ -758,9 +761,6 @@
   .group[data-collapsible="icon"] [data-sidebar="menu-button"],
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
     transition:
-      width 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      height 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      padding 160ms cubic-bezier(0.22, 1, 0.36, 1),
       background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
       color 160ms cubic-bezier(0.22, 1, 0.36, 1),
       box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);

@@ -1277,7 +1277,7 @@ function UsersContent() {
       </div>
 
       <Tabs value={manageType} onValueChange={handleManageTypeChange} className="space-y-4">
-        <SlidingTabsList items={userManageTabItems} activeValue={manageType} ariaLabel={translateText("用户管理")} minItemWidthRem={10.5} />
+        <SlidingTabsList items={userManageTabItems} activeValue={manageType} onValueChange={handleManageTypeChange} ariaLabel={translateText("用户管理")} minItemWidthRem={10.5} />
 
         <TabsContent value="accounts" className="space-y-4 data-[state=inactive]:hidden">
 

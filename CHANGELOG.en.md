@@ -2,6 +2,21 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Combine dashboard traffic breakdowns into one card and status summaries into another, with responsive sections and subtle dividers.
+- Add opt-in affiliates: invitation codes/QR, first-order or recurring commissions, confirmation periods, balance transfers, withdrawal reviews, custom rates and reversals; link email and first-time Google registrations.
+- Commission applies only to CNY online plan payments, not top-ups or balance purchases. Payouts are manual; external refunds require administrator commission cancellation.
+- Add opt-in support tickets: optional service links, attachments, conversations, status/priority, assignment, private notes, saved replies, bulk actions, unread alerts and ratings, with authorization and backup/migration support.
+- Keep batch-rule counters horizontal and wrap copy/import/export/edit panel headers to fit narrow containers.
+- Add subtle gradient washes and corner arcs to plan cards, matching the top accent in light and dark themes.
+- Use dropdowns for overflowing sections in narrow pages and dialogs, preserving existing behavior; improve heading alignment, card spacing and form sizing, and avoid mobile input zoom.
+- Streamline sidebar collapse/expand: remove large-area blur and redundant size animations, reduce menu measurements, and respect reduced motion.
+- Fix the app sidebar overlapping the status bar; reserve top and bottom safe areas consistently across Android WebView and iOS.
+- Rule link tests follow the active host or tunnel member of a forwarding group; route displays follow failover, and test records retain the actual tested entry.
+- Fix stale child rules blocking host deletion after disabling groups or changing entry-group members or tunnel entry hosts.
+- Repair historical bindings and template deletion states; make cleanup idempotent, preserve logical rules in empty groups, and rerun repairs on recheck. Retain real dependency and Agent cleanup safeguards.
+
 ## [2.3.283] - 2026-10-12
 
 - Refresh themes, cards and transitions; simplify help and pagination, improve dark/light and mobile layouts, and retain the React architecture.

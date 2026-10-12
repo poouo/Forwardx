@@ -614,7 +614,12 @@ export async function deleteHost(id: number) {
   if (!db) return;
   const before = await getHostById(id).catch(() => undefined);
   await repairPortForwardRuleHostReferences();
-  await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
+  // A template's host is only metadata. An empty historical group can have no
+  // replacement host yet; deleting that host must not delete the user's rule.
+  await db.delete(forwardRules).where(and(eq(forwardRules.hostId, id), or(
+    eq(forwardRules.isForwardGroupTemplate, false),
+    eq(forwardRules.pendingDelete, true),
+  )));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.exitHostId, id));
   await db.delete(agentTokens).where(eq(agentTokens.hostId, id));
   await db.delete(userHostPermissions).where(eq(userHostPermissions.hostId, id));
@@ -1056,6 +1061,7 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
       ${forwardRules.hostId} = ${hostId}
       AND ${forwardRules.pendingDelete} = ${sqlBool(true)}
       AND ${forwardRules.isRunning} = ${sqlBool(true)}
+      AND ${forwardRules.isForwardGroupTemplate} = ${sqlBool(false)}
     `),
   ]);
   const normalizeOwners = (rows: any[]) => rows

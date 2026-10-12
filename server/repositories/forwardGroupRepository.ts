@@ -76,7 +76,7 @@ import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
-import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
+import { MAX_FORWARD_GROUP_MEMBERS, forwardGroupRouteMembers } from "../../shared/forwardGroup";
 import { getLastAuthenticatedAgentActivity } from "../agentActivity";
 import { hostTrafficExcluded } from "../../shared/hostTrafficPolicy";
 import { getTrafficExcludedHostIds } from "../hostTrafficPolicy";
@@ -632,11 +632,11 @@ function sortedMembers(group: any, enabledOnly = false) {
   return enabledOnly ? members.filter((member: any) => dbBool(member?.isEnabled)) : members;
 }
 
-async function chainEntryMembers(group: any) {
+async function chainEntryMembers(group: any, includeDisabledGroup = false) {
   const entryGroupId = Number((group as any)?.entryGroupId || 0);
   if (!entryGroupId) return [] as any[];
   const entryGroup = await getForwardGroupById(entryGroupId) as any;
-  if (!entryGroup || groupModeOf(entryGroup) !== "entry" || !dbBool(entryGroup.isEnabled)) return [] as any[];
+  if (!entryGroup || groupModeOf(entryGroup) !== "entry" || (!includeDisabledGroup && !dbBool(entryGroup.isEnabled))) return [] as any[];
   return sortedMembers(entryGroup, true).filter((member: any) => member.memberType === "host");
 }
 
@@ -1965,11 +1965,36 @@ export async function getForwardGroupDefaultHostId(groupId: number) {
   return defaultHostIdForGroup(group);
 }
 
-async function defaultHostIdForGroup(group: any) {
+/** Select an existing listener, never the template's historical host metadata. */
+export async function getForwardGroupRuleForSelfTest(template: any, group: any) {
+  if (!group || !dbBool(group.isEnabled)) throw new Error("转发组不存在或已停用");
+  if (!["port", "failover"].includes(groupModeOf(group))) throw new Error("此转发组不支持单入口链路测试");
+  const members = forwardGroupRouteMembers(group);
+  const activeMemberId = Number(group.activeMemberId || 0);
+  const candidates = activeMemberId > 0
+    ? members.filter((member) => Number(member.id) === activeMemberId)
+    : group.domain ? [] : members;
+  const children = await getForwardGroupChildRulesForTemplate(Number(template.id)) as any[];
+  for (const member of candidates) {
+    const liveness = await resolveMemberAgentLiveness(member);
+    if (!liveness.available) continue;
+    const tunnelId = member.memberType === "tunnel" ? Number(member.tunnelId || 0) : 0;
+    const child = children.find((rule) => !dbBool(rule.pendingDelete)
+      && dbBool(rule.isEnabled)
+      && Number(rule.forwardGroupId) === Number(group.id)
+      && Number(rule.forwardGroupMemberId) === Number(member.id)
+      && Number(rule.hostId) === liveness.hostId
+      && Number(rule.tunnelId || 0) === tunnelId);
+    if (child) return { rule: child, memberId: Number(member.id), groupId: Number(group.id) };
+  }
+  throw new Error("转发组当前没有可测试的活动入口，请等待故障切换完成后重试");
+}
+
+async function defaultHostIdForGroup(group: any, metadataOnly = false) {
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
   if (groupMode === "chain") {
-    const entryMembers = await chainEntryMembers(group);
+    const entryMembers = await chainEntryMembers(group, metadataOnly);
     for (const member of entryMembers) {
       const hostId = await memberEntryHostId(member);
       if (hostId) return hostId;
@@ -1985,6 +2010,7 @@ async function defaultHostIdForGroup(group: any) {
     const hostId = await memberEntryHostId(member);
     if (hostId) return hostId;
   }
+  if (metadataOnly) return 0;
   throw new Error("Forward group has no valid entry agent");
 }
 
@@ -1993,7 +2019,10 @@ async function defaultHostIdForGroup(group: any) {
 async function syncTemplateHostReferences(group: any, templates: any[]) {
   if (templates.length === 0) return;
   const groupId = Number(group.id);
-  const hostId = await defaultHostIdForGroup(group);
+  const hostId = await defaultHostIdForGroup(group, true);
+  // Historical empty groups must not prevent obsolete listener cleanup. Keep
+  // the logical template until the group is configured with another host.
+  if (!hostId) return;
   const changed = templates.filter((rule) => Number(rule.hostId) !== hostId);
   if (changed.length === 0) return;
   const db = await getDb();
@@ -2052,6 +2081,7 @@ async function existingChildRule(templateRuleId: number, memberId: number, hostI
   const conds: any[] = [
     eq(forwardRules.forwardGroupRuleId, templateRuleId),
     eq(forwardRules.forwardGroupMemberId, memberId),
+    eq(forwardRules.pendingDelete, false),
   ];
   if (hostId) conds.push(eq(forwardRules.hostId, Number(hostId)));
   const rows = await db.select().from(forwardRules).where(and(...conds)).limit(1);
@@ -3147,7 +3177,7 @@ async function removeManagedRule(
   options: Pick<SyncForwardGroupRulesOptions, "deferRefresh"> = {},
 ) {
   const rule = await getForwardRuleById(ruleId);
-  if (!rule) return;
+  if (!rule || dbBool(rule.pendingDelete)) return;
   const billingResource = await findTrafficBillingResourceForRule(rule);
   const fallback = trafficBillingResourceCandidatesForRule(rule)[0];
   const resource = billingResource || fallback;
@@ -3216,6 +3246,65 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
 
   const runtimeDependenciesEnabled = await forwardGroupRuntimeDependenciesEnabled(group);
   const hasEnabledTemplates = (templates as any[]).some((template) => dbBool(template?.isEnabled));
+  const activeChainEntryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
+  // A disabled dependency still has configured members. Clean obsolete hosts
+  // before returning, while retaining current listeners for later re-enabling.
+  const topologyChainEntryMembers = groupMode === "chain" ? await chainEntryMembers(group, true) : [];
+  if (runtimeDependenciesEnabled && hasEnabledTemplates && groupMode === "chain" && activeChainEntryMembers.length > 0) {
+    const chainHostIds = new Set(activeChainMembers.map((member: any) => Number(member.hostId || 0)));
+    for (const entryMember of activeChainEntryMembers) {
+      const entryHostId = await memberEntryHostId(entryMember);
+      if (entryHostId > 0 && chainHostIds.has(entryHostId)) {
+        throw new Error("Entry group host cannot also be used inside the port forwarding chain");
+      }
+    }
+  }
+
+  const liveMemberIds = new Set((groupMode === "chain" ? activeChainMembers : members).map((m: any) => Number(m.id)));
+  const liveTemplateIds = new Set((templates as any[]).map((rule: any) => Number(rule.id)));
+
+  if (groupMode === "chain") {
+    const liveChildKeys = new Set<string>();
+    const entryMembers = topologyChainEntryMembers;
+    const firstChainMember = activeChainMembers[0] || null;
+    for (const template of templates as any[]) {
+      if (firstChainMember && entryMembers.length > 0) {
+        for (const entryMember of entryMembers) {
+          const entryHostId = await memberEntryHostId(entryMember);
+          if (entryHostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(firstChainMember.id)}:${entryHostId}`);
+        }
+      }
+      for (const member of activeChainMembers) {
+        const hostId = await memberEntryHostId(member);
+        if (hostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(member.id)}:${hostId}`);
+      }
+    }
+    await removeStaleForwardGroupChildRules(groupId, liveMemberIds, liveTemplateIds, liveChildKeys, options);
+  } else {
+    const expectedHosts = new Map(await Promise.all(members.map(async (member) => [
+      Number(member.id),
+      await memberEntryHostId(member),
+    ] as const)));
+    const expectedTunnels = new Map(members.map((member) => [
+      Number(member.id), member.memberType === "tunnel" ? Number(member.tunnelId || 0) : 0,
+    ]));
+    const childRules = await getForwardGroupChildRules(groupId);
+    for (const child of childRules as any[]) {
+      if (!liveMemberIds.has(Number(child.forwardGroupMemberId)) || !liveTemplateIds.has(Number(child.forwardGroupRuleId))
+        || expectedHosts.get(Number(child.forwardGroupMemberId)) !== Number(child.hostId)
+        || expectedTunnels.get(Number(child.forwardGroupMemberId)) !== Number(child.tunnelId || 0)) {
+        await removeManagedRule(Number(child.id), options);
+      }
+    }
+  }
+
+  for (const member of members) {
+    if (member.ruleId) {
+      await removeManagedRule(Number(member.ruleId), options);
+      await db.update(forwardGroupMembers).set({ ruleId: null, updatedAt: nowDate() } as any).where(eq(forwardGroupMembers.id, member.id));
+    }
+  }
+
   if (!runtimeDependenciesEnabled || !hasEnabledTemplates) {
     const childRules = (await getForwardGroupChildRules(groupId) as any[]).filter((rule) => !dbBool(rule?.pendingDelete));
     const childIds = childRules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
@@ -3234,53 +3323,6 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
       await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() } as any).where(inArray(forwardRules.id, templateIds));
     }
     return;
-  }
-
-  const activeChainEntryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
-  if (groupMode === "chain" && activeChainEntryMembers.length > 0) {
-    const chainHostIds = new Set(activeChainMembers.map((member: any) => Number(member.hostId || 0)));
-    for (const entryMember of activeChainEntryMembers) {
-      const entryHostId = await memberEntryHostId(entryMember);
-      if (entryHostId > 0 && chainHostIds.has(entryHostId)) {
-        throw new Error("Entry group host cannot also be used inside the port forwarding chain");
-      }
-    }
-  }
-
-  const liveMemberIds = new Set((groupMode === "chain" ? activeChainMembers : members).map((m: any) => Number(m.id)));
-  const liveTemplateIds = new Set((templates as any[]).map((rule: any) => Number(rule.id)));
-
-  if (groupMode === "chain") {
-    const liveChildKeys = new Set<string>();
-    const entryMembers = activeChainEntryMembers;
-    const firstChainMember = activeChainMembers[0] || null;
-    for (const template of templates as any[]) {
-      if (firstChainMember && entryMembers.length > 0) {
-        for (const entryMember of entryMembers) {
-          const entryHostId = await memberEntryHostId(entryMember);
-          if (entryHostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(firstChainMember.id)}:${entryHostId}`);
-        }
-      }
-      for (const member of activeChainMembers) {
-        const hostId = await memberEntryHostId(member);
-        if (hostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(member.id)}:${hostId}`);
-      }
-    }
-    await removeStaleForwardGroupChildRules(groupId, liveMemberIds, liveTemplateIds, liveChildKeys, options);
-  } else {
-    const childRules = await getForwardGroupChildRules(groupId);
-    for (const child of childRules as any[]) {
-      if (!liveMemberIds.has(Number(child.forwardGroupMemberId)) || !liveTemplateIds.has(Number(child.forwardGroupRuleId))) {
-        await removeManagedRule(Number(child.id));
-      }
-    }
-  }
-
-  for (const member of members) {
-    if (member.ruleId) {
-      await removeManagedRule(Number(member.ruleId), options);
-      await db.update(forwardGroupMembers).set({ ruleId: null, updatedAt: nowDate() } as any).where(eq(forwardGroupMembers.id, member.id));
-    }
   }
 
   for (const template of templates as any[]) {

@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, type ComponentProps } from "react";
 import { SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-type Marker = { left: number; top: number; width: number; height: number; viewport: number; rail: number };
+type Marker = { left: number; top: number; width: number; height: number; viewport: number; rail: number; mode: string };
 // The existing page architecture remounts the shell on navigation. Remember only
 // the last marker geometry (not a DOM node) to keep the sliding rail continuous.
 let lastMarker: Marker | null = null;
@@ -20,9 +20,18 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
     let animation: Animation | undefined;
     let first = true;
     let measured: Marker | null = null;
+    let observer: ResizeObserver | null = null;
+    let observedActive: HTMLElement | null = null;
+    const heights = new WeakMap<Element, number>();
+    const container = content.closest('[data-sidebar="container"]');
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const measure = () => {
       const active = content.querySelector<HTMLElement>('[data-sidebar="menu-button"][data-active="true"]');
+      if (observedActive !== active) {
+        if (observedActive) observer?.unobserve(observedActive);
+        observedActive = active;
+        if (active) observer?.observe(active);
+      }
       if (!active) {
         marker.hidden = true;
         delete content.dataset.indicatorReady;
@@ -37,17 +46,29 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
         top: target.top - bounds.top + content.scrollTop,
         width: target.width, height: target.height,
         viewport: window.innerWidth, rail: bounds.width,
+        mode: isMobile ? "mobile" : state,
       };
       // ResizeObserver fires once on registration. Don't cancel a navigation
       // animation (or touch styles on every data refresh) for identical bounds.
       if (measured && Object.keys(next).every(key => next[key as keyof Marker] === measured![key as keyof Marker])) return;
       measured = next;
       marker.hidden = false;
-      Object.assign(marker.style, { left: `${next.left}px`, top: `${next.top}px`, width: `${next.width}px`, height: `${next.height}px` });
+      // Let CSS track the rail's width. Re-measuring every menu item during
+      // the width transition used to force geometry reads/writes every frame.
+      const centered = !isMobile && state === "collapsed";
+      const buttonStyle = getComputedStyle(active);
+      Object.assign(marker.style, {
+        left: centered ? `calc(50% - ${next.width / 2}px)` : `${next.left}px`,
+        // Menus use symmetric gutters. Measuring the right gap while the rail
+        // is still narrow would capture the button's padding-clamped width.
+        right: centered ? `calc(50% - ${next.width / 2}px)` : `${next.left}px`,
+        minWidth: `${parseFloat(buttonStyle.paddingLeft) + parseFloat(buttonStyle.paddingRight)}px`,
+        top: `${next.top}px`, height: `${next.height}px`,
+      });
       content.dataset.indicatorReady = "true";
       const previous = lastMarker;
       animation?.cancel();
-      if (first && previous && previous.viewport === next.viewport && previous.rail === next.rail
+      if (first && previous && previous.mode === next.mode && previous.viewport === next.viewport && previous.rail === next.rail
         && (previous.left !== next.left || previous.top !== next.top)
         && !document.hidden && !reducedMotion.matches
         && typeof marker.animate === "function") {
@@ -63,10 +84,27 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(measure);
     };
-    measure();
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(entries => {
+      // Width-only changes are handled by the marker's left/right anchors.
+      // Height changes (footer, active item) still need fresh vertical geometry.
+      let heightChanged = false;
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        if (heights.get(entry.target) !== height) heightChanged = true;
+        heights.set(entry.target, height);
+      }
+      if (heightChanged) schedule();
+    }) : null;
     observer?.observe(content);
-    content.querySelectorAll('[data-sidebar="menu-button"]').forEach(button => observer?.observe(button));
+    measure();
+    // Refresh the saved geometry once at the end, including interrupted/rapid
+    // toggles, so subsequent page navigation starts at the actual final rail.
+    const finishResize = (event: Event) => {
+      if (event.target === container && (event as TransitionEvent).propertyName === "width") schedule();
+    };
+    container?.addEventListener("transitionend", finishResize);
+    container?.addEventListener("transitioncancel", finishResize);
+    window.addEventListener("resize", schedule);
     // Navigation can be populated asynchronously (plugins/custom pages).
     // Only watch child lists; watching our own style attributes would loop.
     const mutations = new MutationObserver(schedule);
@@ -79,6 +117,9 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
       animation?.cancel();
       observer?.disconnect();
       mutations.disconnect();
+      container?.removeEventListener("transitionend", finishResize);
+      container?.removeEventListener("transitioncancel", finishResize);
+      window.removeEventListener("resize", schedule);
       document.removeEventListener("visibilitychange", settle);
       reducedMotion.removeEventListener("change", settle);
     };

@@ -2454,7 +2454,7 @@ function HostsContent() {
         onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
         className="space-y-4"
       >
-        <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} ariaLabel={translateText("主机管理")} minItemWidthRem={7.5} />
+        <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} onValueChange={setActiveManageTab} ariaLabel={translateText("主机管理")} minItemWidthRem={7.5} />
 
         <TabsContent value="hosts" className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

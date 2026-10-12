@@ -1,6 +1,8 @@
 export const SIDEBAR_MENU_KEYS = [
   "dashboard",
   "announcements",
+  "tickets",
+  "affiliates",
   "profile",
   "payments",
   "billing",
@@ -17,6 +19,8 @@ export type SidebarMenuSettings = Record<SidebarMenuKey, boolean>;
 export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
   dashboard: "仪表盘",
   announcements: "公告",
+  tickets: "工单支持",
+  affiliates: "推广返佣",
   profile: "个人资料",
   payments: "支付对接",
   billing: "账单与兑换",
@@ -28,7 +32,7 @@ export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
 };
 
 export const DEFAULT_SIDEBAR_MENU_SETTINGS: SidebarMenuSettings = SIDEBAR_MENU_KEYS.reduce((acc, key) => {
-  acc[key] = key !== "plugins";
+  acc[key] = key !== "plugins" && key !== "tickets" && key !== "affiliates";
   return acc;
 }, {} as SidebarMenuSettings);
 

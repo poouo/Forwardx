@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Button } from "./button";
-import { Card } from "./card";
+import { Card, CardContent, CardFooter, CardHeader } from "./card";
 import { ContentTransition } from "./content-transition";
 import { RuleLimitsForm, newRuleLimitsForm } from "../rules/RuleLimitsForm";
 import { Input } from "./input";
@@ -18,6 +18,74 @@ import { ConfirmDialogProvider } from "./confirm-dialog";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
 
 const css = readFileSync("client/src/styles/pearl.css", "utf8");
+
+test("Dashboard traffic shares one card with responsive internal sections", async () => {
+  const { DashboardTrafficOverview } = await import("@/pages/Home");
+  for (const loading of [false, true]) {
+    const html = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[]} portData={[]} groupData={[]} loading={loading} />);
+    assert.equal((html.match(/glass-panel pearl-card /g) || []).length, 1);
+    assert.equal((html.match(/<section /g) || []).length, 3);
+    for (const label of ["隧道流量", "端口转发流量", "转发组流量"]) assert.match(html, new RegExp(label));
+    assert.match(html, /divide-y divide-border\/50 lg:grid-cols-3 lg:divide-x lg:divide-y-0/);
+    assert.doesNotMatch(html, /backdrop-blur/);
+    if (!loading) assert.equal((html.match(/暂无流量数据/g) || []).length, 3);
+    else assert.match(html, /animate-spin/);
+  }
+  const html = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[{ id: 1, name: "Tunnel example", value: 2048 }]} portData={[{ id: 2, name: "Port example", value: 4096 }]} groupData={[{ id: 3, name: "Group example", value: 1024 }]} loading={false} />);
+  for (const label of ["Tunnel example", "Port example", "Group example", "2 KB", "4 KB", "1 KB"]) assert.ok(html.includes(label));
+  assert.doesNotMatch(html, /暂无流量数据/);
+});
+
+test("Dashboard status shares one card and preserves admin-only host visibility", async () => {
+  const { DashboardStatusOverview } = await import("@/pages/Home");
+  for (const isAdmin of [false, true]) {
+    const html = renderToStaticMarkup(<DashboardStatusOverview isAdmin={isAdmin} loading={false} onlineHosts={3} totalHosts={4} activeRules={2} totalRules={5} />);
+    assert.equal((html.match(/glass-panel pearl-card /g) || []).length, 1);
+    assert.equal((html.match(/<section /g) || []).length, isAdmin ? 3 : 2);
+    assert.match(html, /规则启用率/);
+    assert.match(html, /系统概览/);
+    assert.match(html, /40%/);
+    assert.match(html, /lg:divide-x lg:divide-y-0/);
+    if (isAdmin) {
+      assert.match(html, /主机在线率/);
+      assert.match(html, /75%/);
+      assert.match(html, /lg:grid-cols-3/);
+    } else {
+      assert.doesNotMatch(html, /主机在线率|75%/);
+      assert.match(html, /普通用户/);
+      assert.match(html, /lg:grid-cols-2/);
+    }
+  }
+  const html = renderToStaticMarkup(<DashboardStatusOverview isAdmin loading={true} onlineHosts={0} totalHosts={0} activeRules={0} totalRules={0} />);
+  assert.doesNotMatch(html, /NaN|Infinity/);
+  assert.match(html, /animate-pulse/);
+});
+
+test("Store plan decoration stays behind custom/default content and preserves purchase controls", async () => {
+  const { StorePlanCard } = await import("@/pages/Store");
+  const plan = { name: "Test plan", priceCents: 1200, durationDays: 30, portCount: 5 };
+  const custom = renderToStaticMarkup(<StorePlanCard plan={{ ...plan, description: "Custom plan details" }} purchasing onBuy={() => {}} />);
+  const defaults = renderToStaticMarkup(<StorePlanCard plan={plan} onBuy={() => {}} />);
+  for (const html of [custom, defaults]) {
+    assert.match(html, /pearl-store-plan flex/);
+    assert.equal((html.match(/pearl-store-plan-details/g) || []).length, 1);
+    assert.match(html, /from-primary\/45 via-primary\/20 to-emerald-500\/25/);
+    assert.match(html, /Test plan/);
+    assert.match(html, /<button/);
+  }
+  assert.match(custom, /Custom plan details/);
+  assert.doesNotMatch(custom, /连续端口/);
+  assert.match(custom, /<button[^>]*disabled=""/);
+  assert.doesNotMatch(defaults, /disabled=""/);
+  assert.match(defaults, /连续端口/);
+  for (const selector of ["pearl-store-plan", "pearl-store-plan-details"]) {
+    const rule = css.match(new RegExp(`\\.${selector} \\{([^}]+)\\}`))?.[1];
+    assert.ok(rule);
+    assert.match(rule, /background-image:[\s\S]*radial-gradient/);
+    assert.match(rule, /var\(--primary\)/);
+    assert.doesNotMatch(rule, /animation:|filter:|position:|z-index:/);
+  }
+});
 
 test("Language selectors expose only Chinese and English and select the effective default", async () => {
   const previous = getLanguagePreference();
@@ -54,6 +122,73 @@ test("Desktop brand header and topbar share a fixed border-inclusive height", ()
   assert.ok(topbar);
   assert.match(topbar, /height: var\(--pearl-header-height\); min-height: var\(--pearl-header-height\)/);
   assert.match(topbar, /flex-shrink: 0; box-sizing: border-box; padding: 0 1\.5rem/);
+});
+
+test("Mobile page headings align left and card spacing remains overridable", () => {
+  const mobile = css.slice(css.indexOf("@media (max-width: 767px)"), css.indexOf("@keyframes pearl-content-reveal"));
+  assert.match(mobile, /\.pearl-card-header \{ padding: 1rem; \}/);
+  assert.match(mobile, /\.pearl-card-content, \.pearl-card-footer \{ padding: 0 1rem 1rem; \}/);
+  assert.match(mobile, /\.pearl-page-header \{ align-items: stretch; text-align: left; \}/);
+  assert.match(mobile, /\.pearl-page-header > div:first-child \{ min-width: 0; \}/);
+  assert.match(css, /@media \(max-width: 767px\) and \(pointer: coarse\) \{\s*input\.pearl-field, textarea\.pearl-field \{ font-size: 1rem; \}/);
+  const html = renderToStaticMarkup(<Card disableEnterAnimation>
+    <CardHeader className="p-2">Header</CardHeader>
+    <CardContent className="p-3 sm:p-4">Content</CardContent>
+    <CardFooter className="px-0">Actions</CardFooter>
+  </Card>);
+  assert.match(html, /pearl-card-header[^\"]*p-2/);
+  assert.match(html, /pearl-card-content[^\"]*p-3 sm:p-4/);
+  assert.match(html, /pearl-card-footer[^\"]*px-0/);
+  assert.doesNotMatch(html, /\bp-6\b|\bsm:p-6\b/);
+});
+
+test("Mobile sidebar reserves native safe areas on the drawer, not its utility-padded children", () => {
+  const mobileCss = readFileSync("client/src/index.css", "utf8");
+  assert.match(mobileCss, /--forwardx-safe-area-top: var\(--safe-area-inset-top, env\(safe-area-inset-top, 0px\)\)/);
+  assert.match(mobileCss, /--forwardx-safe-area-bottom: var\(--safe-area-inset-bottom, env\(safe-area-inset-bottom, 0px\)\)/);
+  const unlayered = mobileCss.slice(mobileCss.indexOf("/* The fixed drawer"), mobileCss.indexOf("/* Unified scrollbar"));
+  assert.match(unlayered, /\[data-mobile-sidebar="true"\] \{/);
+  assert.match(unlayered, /box-sizing: border-box/);
+  assert.match(unlayered, /padding-top: var\(--forwardx-safe-area-top\)/);
+  assert.match(unlayered, /padding-bottom: var\(--forwardx-safe-area-bottom\)/);
+  assert.doesNotMatch(unlayered, /@layer/);
+  assert.doesNotMatch(mobileCss, /html\.capacitor-native \[data-sidebar="(?:header|footer)"\] \{/);
+  assert.doesNotMatch(mobileCss, /min-height: calc\((?:3\.75|3)rem \+ env\(safe-area-inset-top\)\)/);
+});
+
+test("Sidebar animation keeps one geometry transition and avoids large-area blur", () => {
+  const sidebar = readFileSync("client/src/components/ui/sidebar.tsx", "utf8");
+  const layout = readFileSync("client/src/components/DashboardLayout.tsx", "utf8");
+  const legacyCss = readFileSync("client/src/index.css", "utf8");
+  assert.match(sidebar, /data-sidebar="container"/);
+  assert.match(sidebar, /transition-\[width\] ease-linear/);
+  assert.match(sidebar, /transition-\[left,right,width\] ease-linear/);
+  assert.doesNotMatch(sidebar, /backdrop-blur-2xl|supports-\[backdrop-filter\]|transition-\[margin,opa\]/);
+  assert.doesNotMatch(sidebar, /transition-\[width,height,padding/);
+  assert.doesNotMatch(layout, /transition-\[width,height,padding/);
+  const collapsed = legacyCss.match(/\.group\[data-collapsible="icon"\] \[data-sidebar="menu-button"\],\s*\.group\[data-collapsible="icon"\] \.collapsed-sidebar-logo-button \{([^}]+)\}/)?.[1];
+  assert.ok(collapsed);
+  assert.doesNotMatch(collapsed, /width \d|height \d|padding \d/);
+  assert.match(css, /\.pearl-sidebar \{ overflow: hidden; contain: layout paint; \}/);
+  const topbar = css.match(/\.pearl-topbar \{([^}]+)\}/)?.[1];
+  assert.ok(topbar);
+  assert.doesNotMatch(topbar, /backdrop-filter/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\[data-sidebar="spacer"\], \[data-sidebar="container"\], \[data-mobile-sidebar="true"\],\s*\[data-sidebar="group-label"\] \{ transition: none !important; \}/);
+});
+
+test("Sidebar marker follows CSS width instead of measuring every menu item every frame", () => {
+  const nav = readFileSync("client/src/components/PearlSidebarContent.tsx", "utf8");
+  assert.match(nav, /right: centered \? `calc\(50% - \$\{next.width \/ 2\}px\)` : `\$\{next.left\}px`/);
+  assert.match(nav, /previous.mode === next.mode/);
+  assert.doesNotMatch(nav, /width: `\$\{next.width\}px`|querySelectorAll/);
+  assert.match(nav, /if \(heightChanged\) schedule\(\)/);
+  assert.match(nav, /observer\?\.observe\(active\)/);
+  assert.match(nav, /observer\?\.unobserve\(observedActive\)/);
+  for (const event of ["transitionend", "transitioncancel"]) {
+    assert.ok(nav.includes(`addEventListener("${event}", finishResize)`));
+    assert.ok(nav.includes(`removeEventListener("${event}", finishResize)`));
+  }
+  assert.match(nav, /removeEventListener\("resize", schedule\)/);
 });
 
 test("Desktop topbar does not duplicate the sidebar toggle and mobile retains its trigger", () => {
@@ -133,7 +268,7 @@ test("Progress exposes its real value and switches keep Radix checked/disabled s
 });
 
 test("Glass sliding tabs retain intrinsic long-label widths, selected semantics and readable text", () => {
-  const html = renderToStaticMarkup(<Tabs value="notifications"><SlidingTabsList activeValue="notifications" items={[
+  const html = renderToStaticMarkup(<Tabs value="notifications"><SlidingTabsList activeValue="notifications" onValueChange={() => {}} items={[
     { value: "system", label: "System Configuration" },
     { value: "notifications", label: "Notification Channels", badge: 120 },
   ]} /></Tabs>);

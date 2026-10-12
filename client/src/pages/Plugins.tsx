@@ -1987,7 +1987,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
         </div>
 
         <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as PluginSection)} className="space-y-4">
-          <SlidingTabsList items={PLUGIN_SECTIONS} activeValue={activeSection} ariaLabel={translateText("插件管理")} minItemWidthRem={7.5} />
+          <SlidingTabsList items={PLUGIN_SECTIONS} activeValue={activeSection} onValueChange={setActiveSection} ariaLabel={translateText("插件管理")} minItemWidthRem={7.5} />
         </Tabs>
 
         {activeSection === "usage" && (
