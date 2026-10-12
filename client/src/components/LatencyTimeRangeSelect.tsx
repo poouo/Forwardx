@@ -1,11 +1,16 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
-export type LatencyTimeRangeHours = 24 | 12 | 6 | 3 | 1 | 0.5;
+export type LatencyTimeRangeHours = 720 | 336 | 168 | 72 | 24 | 12 | 6 | 3 | 1 | 0.5;
 
 export const DEFAULT_LATENCY_TIME_RANGE_HOURS: LatencyTimeRangeHours = 24;
 
 export const LATENCY_TIME_RANGE_OPTIONS: Array<{ value: string; hours: LatencyTimeRangeHours; label: string }> = [
+  { value: "720", hours: 720, label: "30D" },
+  { value: "336", hours: 336, label: "14D" },
+  { value: "168", hours: 168, label: "7D" },
+  { value: "72", hours: 72, label: "3D" },
   { value: "24", hours: 24, label: "24H" },
   { value: "12", hours: 12, label: "12H" },
   { value: "6", hours: 6, label: "6H" },
@@ -13,6 +18,11 @@ export const LATENCY_TIME_RANGE_OPTIONS: Array<{ value: string; hours: LatencyTi
   { value: "1", hours: 1, label: "1H" },
   { value: "0.5", hours: 0.5, label: "0.5H" },
 ];
+
+/** Long history is loaded only while open, with no frequent month-wide scans. */
+export function latencyHistoryPollingInterval(hours: number, open: boolean, recentInterval: number | false) {
+  return !open ? false : hours > 24 ? 5 * 60_000 : recentInterval;
+}
 
 export function latencyTimeRangeLabel(hours: number) {
   const option = LATENCY_TIME_RANGE_OPTIONS.find((item) => item.hours === hours);
@@ -37,14 +47,16 @@ export function LatencyTimeRangeSelect({
   value,
   onChange,
   className,
+  daySelected = false,
 }: {
   value: LatencyTimeRangeHours;
   onChange: (value: LatencyTimeRangeHours) => void;
   className?: string;
+  daySelected?: boolean;
 }) {
   return (
     <Select
-      value={String(value)}
+      value={daySelected ? "day" : String(value)}
       onValueChange={(next) => {
         const option = LATENCY_TIME_RANGE_OPTIONS.find((item) => item.value === next);
         if (option) onChange(option.hours);
@@ -54,6 +66,7 @@ export function LatencyTimeRangeSelect({
         <SelectValue />
       </SelectTrigger>
       <SelectContent align="end">
+        {daySelected && <SelectItem value="day" disabled>{t("按天")}</SelectItem>}
         {LATENCY_TIME_RANGE_OPTIONS.map((option) => (
           <SelectItem key={option.value} value={option.value}>
             {option.label}

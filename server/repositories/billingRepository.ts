@@ -790,12 +790,13 @@ function subscriptionVisibilityConditions(visibility: SubscriptionListVisibility
 
 export async function listUserSubscriptions(
   userId?: number,
-  options: { visibility?: SubscriptionListVisibility } = {},
+  options: { visibility?: SubscriptionListVisibility; excludeCancelled?: boolean } = {},
 ) {
   const db = await getDb();
   if (!db) return [];
   const base = userSubscriptionsListQuery(db);
   const conditions = subscriptionVisibilityConditions(options.visibility || "all");
+  if (options.excludeCancelled) conditions.push(ne(userSubscriptions.status, "cancelled"));
   if (userId !== undefined) conditions.push(eq(userSubscriptions.userId, userId));
   const rows = conditions.length > 0
     ? await base.where(and(...conditions)).orderBy(desc(userSubscriptions.createdAt))
@@ -2781,7 +2782,7 @@ export async function listBillingLedger(options?: {
     listPaymentOrders(limit, targetUserId),
     listUserSubscriptionsForLedger(targetUserId, limit, {
       isAdmin: !!options?.isAdmin,
-      includeCancelledSubscriptions: !!options?.includeCancelledSubscriptions,
+      includeCancelledSubscriptions: options?.includeCancelledSubscriptions !== false,
     }),
   ]);
 

@@ -13,6 +13,8 @@
 
 正式部署推荐单面板实例。数据库支持 SQLite、MySQL 和 PostgreSQL；使用外部数据库不会自动获得多副本部署能力。
 
+文档对应当前源码，发布包以 Release 实际构建为准；新功能需要包含它的安装器和程序版本。旧部署不会仅因文档更新而具备新命令。
+
 ## 推荐顺序
 
 1. 阅读 [部署前准备](./preparation.md)，规划端口、防火墙和数据库。
@@ -56,6 +58,8 @@
 
 ## 配置与运维索引
 
+- [SSH 交互管理、运行状态和重启（fwxm）](./ssh-management.md)
+- [Agent SOCKS / HTTP 代理安装、运行和升级](./agent-proxy-manager.md)
 - [数据库配置与连接排查](./database.md)
 - [环境变量及生效方式](./env-vars.md)
 - [安装目录、数据与日志](./paths-logs.md)

@@ -6,9 +6,9 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import { LatencyHistoryDayStrip, LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
-  filterLatencySeriesByTimeRange,
   latencyTimeRangeLabel,
   LatencyTimeRangeSelect,
   type LatencyTimeRangeHours,
@@ -204,6 +204,8 @@ function normalizePemText(value: unknown) {
 }
 
 type TunnelLatencySeriesDatum = {
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
   recordedAt: string | Date;
   latencyMs?: number | null;
   isTimeout?: boolean | null;
@@ -289,7 +291,6 @@ function tunnelLatencySeriesDisplayName(key: string, label?: string | null) {
   if (key === "primary") return translateText("主出口");
   return key.replace(/^exit-/, `${translateText("出口")} `);
 }
-const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
 const tunnelLatencyAnimatedKeys = new Set<number>();
 const TUNNEL_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const TUNNEL_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
@@ -1246,29 +1247,25 @@ function TunnelLatencyDialog({
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
+  const history = useLatencyHistoryDays(timeRangeHours, open, pollingInterval("slow", open));
   const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
-    { tunnelId, hours: 24 },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
+    { tunnelId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false }
   );
   const { data: counterStatistics } = trpc.tunnels.probeStatistics.useQuery(
-    { tunnelId, hours: timeRangeHours },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+    { tunnelId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false },
   );
-  const cachedData = tunnelLatencySeriesCache.get(tunnelId);
-  const rawSeriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
+  const daily = trpc.tunnels.latencySeries.useQuery({ tunnelId, ...history.summaryInput },
+    { enabled: open, staleTime: 60_000, refetchInterval: open ? 300_000 : false, refetchOnWindowFocus: false });
+  const rawSeriesData = data as TunnelLatencySeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
   const rangedSeriesData = useMemo(
-    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
-    [seriesData, timeRangeHours],
+    () => history.filter(seriesData),
+    [seriesData, timeRangeHours, history.selectedDay],
   );
   const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
-
-  useEffect(() => {
-    if (data) {
-      tunnelLatencySeriesCache.set(tunnelId, data as TunnelLatencySeriesDatum[]);
-    }
-  }, [data, tunnelId]);
 
   const seriesMeta = useMemo<TunnelLatencySeriesMeta[]>(() => {
     if (rangedSeriesData.length === 0) return [];
@@ -1313,6 +1310,8 @@ function TunnelLatencyDialog({
       point[`${key}Timeout`] = isTimeout;
       point[`${key}ProbeCount`] = counts.probeCount;
       point[`${key}ProbeSuccesses`] = counts.probeSuccesses;
+      point[`${key}MinLatencyMs`] = item.minLatencyMs;
+      point[`${key}MaxLatencyMs`] = item.maxLatencyMs;
       byTime.set(time, point);
     }
     return Array.from(byTime.entries()).sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
@@ -1337,6 +1336,8 @@ function TunnelLatencyDialog({
         isTimeout: !!point[meta.timeoutKey],
         probeCount: Number(point[`${meta.key}ProbeCount`] || 1),
         probeSuccesses: Number(point[`${meta.key}ProbeSuccesses`]),
+        minLatencyMs: point[`${meta.key}MinLatencyMs`] == null ? null : Number(point[`${meta.key}MinLatencyMs`]),
+        maxLatencyMs: point[`${meta.key}MaxLatencyMs`] == null ? null : Number(point[`${meta.key}MaxLatencyMs`]),
       }));
   }, [rawChartData, seriesMeta]);
 
@@ -1367,10 +1368,11 @@ function TunnelLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle className="text-base sm:text-lg">{translateText("隧道链路延迟 - ")}{tunnelName}</DialogTitle>
-              <DialogDescription>{translateText("最近 {0} 路径延迟与逐跳连接探测统计。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
+              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 路径延迟与逐跳连接探测统计。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+              <LatencyHistoryTodayButton onClick={history.today} />
               <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
             </div>
           </div>
@@ -1458,6 +1460,7 @@ function TunnelLatencyDialog({
             ))}
           </div>
         ) : null}
+        <LatencyHistoryDayStrip days={history.days} selectedDay={history.selectedDay} onSelect={history.setSelectedDay} samples={daily.data} loading={daily.isLoading} error={daily.isError} />
         <LatencyStabilityStats stats={stats} sampleLabel={translateText("逐跳探测次数")} failureLabel={translateText("逐跳连接失败率")} counterStatistics={counterStatistics ?? null}
           description={translateText("统计各跳实际连接探测，包含已上报的备用入口/出口，不等于可用路径的业务丢包；旧 Agent 或未上报的探测不计入。延迟为路径健康样本，稳定性仅供参考。")} />
         </div>

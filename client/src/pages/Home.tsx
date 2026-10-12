@@ -102,7 +102,7 @@ function getExpiryStatus(value: string | Date | null | undefined) {
   return { label: translateText("剩余 {0} 天", [diffDays]), tone: "normal" as const };
 }
 
-function StatCard({
+export function DashboardStatCard({
   title,
   value,
   subtitle,
@@ -112,7 +112,7 @@ function StatCard({
   fallbackValue,
   className,
   index = 0,
-  featured = false,
+  tone = "bg-gradient-to-br from-teal-500 to-teal-600",
 }: {
   title: string;
   value: string | number;
@@ -123,24 +123,25 @@ function StatCard({
   fallbackValue?: string | number;
   className?: string;
   index?: number;
-  featured?: boolean;
+  tone?: string;
 }) {
   return (
     <div
       className={className}
     >
-      <Card enterIndex={index} interactive variant={featured ? "featured" : "default"} className="pearl-stat group h-full">
-        <CardContent className="relative p-3 sm:p-5">
-          <div className="flex items-start justify-between gap-2 sm:gap-4">
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
+      <Card enterIndex={index} interactive className="pearl-stat group h-full border-border/40">
+        <div aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.07] ${tone}`} />
+        <CardContent className="relative p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="break-words text-xs font-medium text-muted-foreground">{title}</p>
               <AnimatedStatValue
                 as="p"
                 value={value}
                 loading={loading}
                 cacheKey={cacheKey}
                 fallbackValue={fallbackValue}
-                className="pearl-stat-value break-words text-2xl leading-tight tabular-nums sm:text-3xl"
+                className="break-words text-2xl font-bold leading-tight tracking-tight tabular-nums"
               />
               {subtitle && (
                 <AnimatedStatValue
@@ -153,8 +154,8 @@ function StatCard({
                 />
               )}
             </div>
-            <div className="pearl-stat-icon hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-primary sm:flex">
-              <Icon className="h-5 w-5" />
+            <div aria-hidden="true" className={`pearl-stat-icon hidden h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm sm:flex ${tone}`}>
+              <Icon className="h-5 w-5 text-white" />
             </div>
           </div>
         </CardContent>
@@ -620,7 +621,7 @@ function DashboardContent() {
 
       <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${isAdmin ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
         {isAdmin && (
-          <StatCard
+          <DashboardStatCard
             title={translateText("主机总数")}
             value={stats?.totalHosts ?? 0}
             subtitle={translateText("{0} 台在线", [stats?.onlineHosts ?? 0])}
@@ -631,8 +632,9 @@ function DashboardContent() {
             index={0}
           />
         )}
-        <StatCard
+        <DashboardStatCard
           title={translateText("转发规则")}
+          tone="bg-gradient-to-br from-blue-500 to-blue-600"
           value={stats?.totalRules ?? 0}
           subtitle={translateText("{0} 条已启用", [stats?.activeRules ?? 0])}
           icon={ArrowRightLeft}
@@ -641,8 +643,9 @@ function DashboardContent() {
           fallbackValue={0}
           index={isAdmin ? 1 : 0}
         />
-        <StatCard
+        <DashboardStatCard
           title={translateText("入站流量")}
+          tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
           subtitle={translateText("累计入站")}
           icon={ArrowDownToLine}
@@ -652,9 +655,9 @@ function DashboardContent() {
           className="col-span-2 sm:col-span-1"
           index={isAdmin ? 2 : 1}
         />
-        <StatCard
+        <DashboardStatCard
           title={translateText("出站流量")}
-          featured
+          tone="bg-gradient-to-br from-orange-500 to-orange-600"
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
           subtitle={translateText("累计出站")}
           icon={ArrowUpFromLine}

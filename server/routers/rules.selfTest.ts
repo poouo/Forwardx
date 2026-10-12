@@ -8,22 +8,26 @@ import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { randomUUID } from "node:crypto";
 import { linkProbeMethodForRule } from "@shared/latencyProbe";
 import { ruleLatencySeriesQueryCache as selfTestQueryCache } from "../ruleLatencyQueryCache";
+import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
+import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
+import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
 
 export const selfTestRulesRouter = router({
   probeStatistics: protectedProcedure
-    .input(z.object({ ruleId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+    .input(z.object({ ruleId: z.number().int().positive(), ...latencyHistoryWindowInput }))
     .query(async ({ input, ctx }) => {
       const rule = await db.getForwardRuleById(input.ruleId);
       if (!rule) throw new Error("规则不存在");
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权查看此规则");
-      return selfTestQueryCache.get(`probeStatistics:${ctx.user.id}:${input.ruleId}:${input.hours}`,
-        { ttlMs: 5_000, staleMs: 0 },
-        () => db.getTcpingProbeStatisticsByRule(input.ruleId, new Date(Date.now() - input.hours * 3600_000)));
+      const window = resolveLatencyHistoryWindow(input);
+      return (window.longHistory ? latencyHistoryQueryCache : selfTestQueryCache).get(`ruleProbeStatistics:${ctx.user.id}:${input.ruleId}:${window.cacheKey}`,
+        window.cacheOptions,
+        () => db.getTcpingProbeStatisticsByRule(input.ruleId, window.since, window.until));
     }),
   tcpingSeries: protectedProcedure
       .input(z.object({
         ruleId: z.number(),
-        hours: z.number().min(0.5).max(24 * 3).default(24),
+        ...latencyHistoryWindowInput,
       }))
     .query(async ({ input, ctx }) => {
       const rule = await db.getForwardRuleById(input.ruleId);
@@ -31,11 +35,11 @@ export const selfTestRulesRouter = router({
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) {
         throw new Error("无权查看此规则");
       }
-      const since = new Date(Date.now() - input.hours * 3600 * 1000);
-      return selfTestQueryCache.get(
-        `tcpingSeries:${ctx.user.id}:${input.ruleId}:${input.hours}`,
-        { ttlMs: 5_000, staleMs: 0 },
-        () => db.getTcpingSeriesByRule(input.ruleId, { since }),
+      const window = resolveLatencyHistoryWindow(input);
+      return (window.longHistory ? latencyHistoryQueryCache : selfTestQueryCache).get(
+        `tcpingSeries:${ctx.user.id}:${input.ruleId}:${window.cacheKey}`,
+        window.cacheOptions,
+        () => db.getTcpingSeriesByRule(input.ruleId, { ...window, bucketSeconds: latencyChartBucketSeconds(window.hours) }),
       );
     }),
 

@@ -57,7 +57,7 @@ export const billingRouter = router({
     .input(z.object({
       userId: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(500).default(100),
-      includeCancelledSubscriptions: z.boolean().default(false),
+      includeCancelledSubscriptions: z.boolean().default(true),
     }).optional())
     .query(async ({ input, ctx }) => {
       const isAdmin = ctx.user.role === "admin";
@@ -66,7 +66,7 @@ export const billingRouter = router({
         isAdmin,
         userId: isAdmin ? input?.userId : undefined,
         limit: input?.limit || 100,
-        includeCancelledSubscriptions: input?.includeCancelledSubscriptions || false,
+        includeCancelledSubscriptions: input?.includeCancelledSubscriptions ?? true,
       });
     }),
 

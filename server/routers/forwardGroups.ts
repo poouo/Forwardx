@@ -2,6 +2,9 @@ import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { createQueryCache } from "../queryCache";
+import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
+import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
+import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
 import {
   createForwardGroupFromInput,
   deleteForwardGroupWithImpact,
@@ -216,28 +219,29 @@ export const forwardGroupsRouter = router({
     }),
 
   probeStatistics: protectedProcedure
-    .input(z.object({ groupId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+    .input(z.object({ groupId: z.number().int().positive(), ...latencyHistoryWindowInput }))
     .query(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user);
       if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路探测统计");
-      return forwardGroupQueryCache.get(`probeStatistics:${ctx.user.id}:${input.groupId}:${input.hours}`,
-        { ttlMs: 5_000, staleMs: 0 },
-        () => db.getProbeCounterStatistics("forwardGroup", input.groupId, new Date(Date.now() - input.hours * 3600_000)));
+      const window = resolveLatencyHistoryWindow(input);
+      return (window.longHistory ? latencyHistoryQueryCache : forwardGroupQueryCache).get(`groupProbeStatistics:${ctx.user.id}:${input.groupId}:${window.cacheKey}`,
+        window.cacheOptions,
+        () => db.getProbeCounterStatistics("forwardGroup", input.groupId, window.since, window.until));
     }),
 
   latencySeries: protectedProcedure
     .input(z.object({
       groupId: z.number(),
-      hours: z.number().min(0.5).max(24 * 3).default(24),
+      ...latencyHistoryWindowInput,
     }))
     .query(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user);
       if (String(group.groupMode || "failover") !== "chain") throw new Error("仅转发链支持链路延迟图表");
-      const since = new Date(Date.now() - input.hours * 3600 * 1000);
-      return forwardGroupQueryCache.get(
-        `latencySeries:${ctx.user.id}:${input.groupId}:${input.hours}`,
-        { ttlMs: 5_000, staleMs: 0 },
-        () => db.getForwardGroupLatencySeries(input.groupId, { since }),
+      const window = resolveLatencyHistoryWindow(input);
+      return (window.longHistory ? latencyHistoryQueryCache : forwardGroupQueryCache).get(
+        `groupLatencySeries:${ctx.user.id}:${input.groupId}:${window.cacheKey}`,
+        window.cacheOptions,
+        () => db.getForwardGroupLatencySeries(input.groupId, { ...window, bucketSeconds: latencyChartBucketSeconds(window.hours) }),
       );
     }),
 

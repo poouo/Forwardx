@@ -287,9 +287,6 @@
   .pearl-eyebrow { margin-bottom: .5rem; color: var(--muted-foreground); font: 600 .65rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .16em; }
   .pearl-spec-plate { padding: .55rem .85rem; border: 1px solid rgb(255 255 255 / 10%); border-radius: 12px; background: #20282c; color: #e4ece7; font: 500 .75rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%); }
   .pearl-stat { position: relative; overflow: hidden; }
-  .pearl-stat::after { content: ""; position: absolute; bottom: 0; left: 1.25rem; right: 1.25rem; height: 5px; opacity: .35; background: repeating-linear-gradient(90deg, var(--muted-foreground) 0 1px, transparent 1px 9px); }
-  .pearl-stat-icon { border: 1px solid var(--border); background: var(--muted); box-shadow: inset 0 1px 0 var(--pearl-highlight); }
-  .pearl-stat-value { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 500; letter-spacing: -.06em; }
   .auth-shell, .dark .auth-shell, .public-home-shell, .dark .public-home-shell, .pearl-setup {
     background: radial-gradient(ellipse at 15% 5%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 55%), var(--background);
   }
@@ -332,7 +329,6 @@
     .dialog-panel, .dark .dialog-panel { border-radius: 18px; }
     .glass-surface, .action-menu-content, .pearl-select-content { backdrop-filter: none; -webkit-backdrop-filter: none; }
     .pearl-nav-content [data-sidebar="menu-button"] { min-height: 42px; }
-    .pearl-stat-value { letter-spacing: -.04em; }
   }
   @media (max-width: 639px) {
     .pearl-page-header { align-items: stretch; text-align: left; }

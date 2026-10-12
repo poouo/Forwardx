@@ -30,6 +30,7 @@ import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/p
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 import { invalidateAgentAuthTokenCandidates } from "./tokenRepository";
+import { hostAvailabilityRecorder } from "./hostAvailabilityRepository";
 import { getSetting, setSetting } from "./settingsRepository";
 import {
   isPresenceCapableHostConfirmedOffline,
@@ -627,6 +628,8 @@ export async function deleteHost(id: number) {
   await db.delete(hostGroupMembers).where(eq(hostGroupMembers.hostId, id));
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
   await db.delete(hostProbeServiceStats).where(eq(hostProbeServiceStats.hostId, id));
+  hostAvailabilityRecorder.forget(id);
+  await executeRaw(`DELETE FROM ${quoteIdentifier("host_availability_intervals")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));
   await db.delete(trafficStats).where(eq(trafficStats.hostId, id));
   await db.delete(trafficStatBuckets).where(eq(trafficStatBuckets.hostId, id));

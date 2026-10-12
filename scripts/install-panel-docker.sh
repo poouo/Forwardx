@@ -938,6 +938,16 @@ start_panel() {
   cleanup_old_panel_images "$image"
 }
 
+register_management_command() {
+  local assets
+  assets="$(mktemp -d /tmp/forwardx-management.XXXXXX)" || return 1
+  if docker cp "$CONTAINER_NAME:/app/dist/management/." "$assets/" && [ -s "$assets/install-management.sh" ]; then
+    source "$assets/install-management.sh"
+    install_panel_management docker "$assets" || echo '[WARN] fwxm setup failed; panel remains available.' >&2
+  else echo '[WARN] Management assets unavailable in this image.' >&2; fi
+  rm -rf "$assets"
+}
+
 install_panel() {
   local image
   require_root
@@ -951,6 +961,7 @@ install_panel() {
   write_env "$image"
   write_database_config_to_volume
   start_panel "$image" "$EXPECTED_PANEL_VERSION"
+  register_management_command
   echo "[DONE] ForwardX Docker panel started: http://SERVER_IP:$PORT"
   echo "[INFO] Image: $image"
 }
@@ -966,6 +977,7 @@ upgrade_panel() {
   write_compose_file
   write_env "$image"
   start_panel "$image" "$EXPECTED_PANEL_VERSION"
+  register_management_command
   echo "[DONE] ForwardX Docker panel upgraded and restarted"
   echo "[INFO] Image: $image"
 }

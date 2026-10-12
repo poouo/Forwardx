@@ -1,4 +1,10 @@
 import { build } from "esbuild";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
+mkdirSync("dist/management", { recursive: true });
+for (const name of ["agent-proxy.sh", "install-agent.sh", "forwardx-manage.sh", "install-management.sh", "install-panel-local.sh", "install-panel-docker.sh"]) {
+  writeFileSync(`dist/management/${name}`, readFileSync(`scripts/${name}`, "utf8").replace(/\r\n/g, "\n"));
+}
 
 await build({
   entryPoints: {

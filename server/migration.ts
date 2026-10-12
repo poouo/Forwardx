@@ -211,6 +211,7 @@ export function hasActivePanelMigration() {
 
 export const ESSENTIAL_MIGRATION_OMITTED_TABLES = new Set<(typeof MIGRATION_TABLES)[number]>([
   "host_metrics",
+  "host_availability_intervals",
   "host_probe_service_stats",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
@@ -723,6 +724,7 @@ const IMPORT_TABLE_ORDER = [
   "user_forward_group_permissions",
   "host_probe_services",
   "host_metrics",
+  "host_availability_intervals",
   "host_probe_service_stats",
   "host_traffic_counters",
   "user_traffic_counters",
@@ -777,6 +779,7 @@ const IMPORT_TABLE_ORDER = [
 
 const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
   "host_metrics",
+  "host_availability_intervals",
   "host_probe_service_stats",
   "host_traffic_counters",
   "user_traffic_counters",
@@ -1212,6 +1215,11 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
     case "host_metrics":
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row };
+
+    case "host_availability_intervals":
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      if (!row.observationKey) return null;
+      return { row, existingWhere: { observationKey: row.observationKey } };
 
     case "host_traffic_counters":
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);

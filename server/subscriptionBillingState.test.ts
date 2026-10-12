@@ -227,6 +227,34 @@ test("subscription quota, cancellation, reassignment, and cancelled-record dismi
       });
       assert.equal(compactLedger.some((item) => item.kind === "subscription" && Number(item.sourceId) === 900), true);
       assert.equal(compactLedger.some((item) => item.kind === "subscription" && item.status === "cancelled"), false);
+      const defaultLedger = await billing.listBillingLedger({ viewerUserId: 1, isAdmin: false, limit: 10 });
+      const cancelledLedgerItem = defaultLedger.find((item) => item.kind === "subscription" && item.status === "cancelled");
+      assert.ok(cancelledLedgerItem, "cancelled subscriptions appear in the ledger by default");
+      assert.equal(cancelledLedgerItem.statusLabel, "已取消");
+      const packageRows = await billing.listUserSubscriptions(1, { visibility: "user", excludeCancelled: true });
+      assert.equal(packageRows.some((sub) => sub.status === "cancelled"), false);
+      assert.ok(packageRows.some((sub) => Number(sub.id) === 900), "expired subscriptions remain visible in packages");
+
+      // Both ledger entry points include history, while package APIs exclude it.
+      const { billingRouter } = await import(moduleUrl("server/routers/billing.ts"));
+      const { plansRouter } = await import(moduleUrl("server/routers/plans.ts"));
+      const context = (id, role) => ({ user: { id, role, username: "viewer" }, req: { headers: {}, socket: {} }, res: { clearCookie() {} }, authSession: null, authFailureReason: null });
+      const userBilling = billingRouter.createCaller(context(1, "user"));
+      assert.ok((await userBilling.ledger()).some((item) => item.status === "cancelled"));
+      assert.ok((await userBilling.ledger({ limit: 10 })).some((item) => item.status === "cancelled"));
+      const userPackages = plansRouter.createCaller(context(1, "user"));
+      assert.equal((await userPackages.mySubscriptions()).some((sub) => sub.status === "cancelled"), false);
+      const adminPackages = plansRouter.createCaller(context(1, "admin"));
+      assert.equal((await adminPackages.subscriptions()).some((sub) => sub.status === "cancelled"), false);
+      assert.equal((await adminPackages.subscriptionsPage({ page: 1, pageSize: 100 })).items.some((sub) => sub.status === "cancelled"), false);
+      const adminLedger = await billingRouter.createCaller(context(1, "admin")).ledger({ userId: 1, limit: 10 });
+      assert.ok(adminLedger.some((item) => item.status === "cancelled"));
+      await runtime.executeRaw('INSERT INTO "users" ("id", "username", "password", "role") VALUES (?, ?, ?, ?)', [2, "other-ledger-user", "hash", "user"]);
+      await runtime.executeRaw(
+        'INSERT INTO "user_subscriptions" ("id", "userId", "planId", "status", "source", "planSnapshot", "startedAt", "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [2000, 2, 1, "cancelled", "admin", snapshot, epoch(now), epoch(now + 1000000)],
+      );
+      assert.ok((await userBilling.ledger({ userId: 2 })).every((item) => Number(item.userId) === 1), "user cannot read another user's cancellation history");
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }

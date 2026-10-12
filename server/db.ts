@@ -13,7 +13,7 @@ import { ensureDatabaseSchema } from "./dbSchema";
 import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
-import { randomAvataaarsValue } from "../shared/avatar";
+import { randomBuiltinAvatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { revokeUserAuthSessions } from "./repositories/sessionRepository";
 import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
@@ -513,7 +513,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     password: hashPassword(input.password),
     name: input.name?.trim() || email,
     email,
-    avatar: randomAvataaarsValue(String(`admin-${email}-${Date.now()}`)),
+    avatar: randomBuiltinAvatarValue(),
     role: "admin",
     accountEnabled: true,
     canAddRules: true,
@@ -536,8 +536,8 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     email,
     name: input.name?.trim() || email,
     avatar: (admin as any).avatar?.startsWith?.("preset:")
-      ? randomAvataaarsValue(String(`admin-${email}-${Date.now()}`))
-      : (admin as any).avatar || randomAvataaarsValue(String(`admin-${email}-${Date.now()}`)),
+      ? randomBuiltinAvatarValue()
+      : (admin as any).avatar || randomBuiltinAvatarValue(),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

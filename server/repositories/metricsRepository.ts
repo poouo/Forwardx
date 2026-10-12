@@ -22,12 +22,14 @@ import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
 import { reconcileHostTrafficPolicy } from "../hostTrafficPolicy";
 import { getProbeCounterStatistics } from "./probeCounterRepository";
 import { SELF_TEST_MAX_LIFETIME_SECONDS } from "../selfTestTiming";
+import { LATENCY_HISTORY_HOURS } from "../../shared/latencyHistory";
+import { deleteExpiredHistoryRows } from "./historyRetention";
+import { mapLatencyChartBucket, queryLatencyChartBuckets, queryLatestHistoryRows } from "./latencyHistoryRepository";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
 const TRAFFIC_BUCKET_RETENTION_HOURS = 72;
 const LEGACY_TRAFFIC_REPORT_RETENTION_HOURS = 7 * 24;
-const SQLITE_HISTORY_DELETE_BATCH_SIZE = 2_000;
 const SQLITE_LATEST_METRIC_HOST_BATCH_SIZE = 100;
 // v3 repairs bucket gaps left by older best-effort writes. Current traffic
 // writes update raw rows, counters and buckets in one transaction.
@@ -120,50 +122,6 @@ function withProbeCounts<T extends { isTimeout?: unknown; probeCount?: unknown; 
 
 function mappedProbeCounts(row: { isTimeout?: unknown; probeCount?: unknown; probeSuccesses?: unknown }) {
   return normalizeAgentProbeCounts({ ...row, isTimeout: rowBool(row.isTimeout) });
-}
-
-async function yieldToEventLoop() {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
-async function deleteExpiredHistoryRows(
-  tableName: string,
-  timeColumn: string,
-  cutoff: number,
-  options: { whereSql?: string; whereParams?: unknown[] } = {},
-) {
-  const q = quoteIdentifier;
-  const whereSql = String(options.whereSql || "").trim();
-  const prefix = whereSql ? `${whereSql} AND ` : "";
-  const whereParams = options.whereParams || [];
-
-  if (getDatabaseKind() !== "sqlite") {
-    return executeRaw(
-      `DELETE FROM ${q(tableName)} WHERE ${prefix}${q(timeColumn)} < ?`,
-      [...whereParams, cutoff],
-    );
-  }
-
-  let deleted = 0;
-  while (true) {
-    const result = await executeRaw(
-      `DELETE FROM ${q(tableName)}
-        WHERE ${q("id")} IN (
-          SELECT ${q("id")}
-            FROM ${q(tableName)}
-           WHERE ${prefix}${q(timeColumn)} < ?
-           ORDER BY ${q(timeColumn)} ASC, ${q("id")} ASC
-           LIMIT ?
-        )`,
-      [...whereParams, cutoff, SQLITE_HISTORY_DELETE_BATCH_SIZE],
-    );
-    const affected = rawAffectedRows(result);
-    deleted += affected;
-    if (affected < SQLITE_HISTORY_DELETE_BATCH_SIZE) return deleted;
-    // better-sqlite3 is synchronous. Releasing the connection lock between
-    // bounded batches lets heartbeats and panel reads run during cleanup.
-    await yieldToEventLoop();
-  }
 }
 
 async function queryLatestHostMetricRows(
@@ -2131,23 +2089,8 @@ export async function getTrafficSummaryByRule(opts: {
     ...Array.from(parentChainChildren.values()).flat(),
   ]));
   const q = quoteIdentifier;
-  const latestRows = latencyRuleIds.length > 0
-    ? await queryRaw<any>(
-      `SELECT s.${q("ruleId")} AS ${q("ruleId")},
-              s.${q("latencyMs")} AS ${q("latencyMs")},
-              s.${q("isTimeout")} AS ${q("isTimeout")},
-              s.${q("recordedAt")} AS ${q("recordedAt")}
-         FROM ${q("tcping_stats")} s
-         INNER JOIN (
-           SELECT ${q("ruleId")}, MAX(${q("recordedAt")}) AS ${q("recordedAt")}
-             FROM ${q("tcping_stats")}
-            WHERE ${q("ruleId")} IN (${latencyRuleIds.map(() => "?").join(",")})
-            GROUP BY ${q("ruleId")}
-         ) latest ON latest.${q("ruleId")} = s.${q("ruleId")} AND latest.${q("recordedAt")} = s.${q("recordedAt")}
-        ORDER BY s.${q("recordedAt")} DESC`,
-      latencyRuleIds,
-    )
-    : [];
+  const latestRows = await queryLatestHistoryRows("tcping_stats", "ruleId", latencyRuleIds, { orderByTime: true });
+  latestRows.sort((a, b) => Number(b.recordedAt) - Number(a.recordedAt));
   const latestByRule = new Map<number, any>();
   for (const row of latestRows as any[]) {
     row.isTimeout = rowBool(row.isTimeout);
@@ -2658,11 +2601,19 @@ export async function getTunnelLatencyBranchSeriesForTotal(tunnelId: number, tot
 
 export async function getTunnelLatencySeries(
   tunnelId: number,
-  opts: { since?: Date; limit?: number } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date; seriesKey: string; seriesLabel: string | null }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  if (opts.bucketSeconds) {
+    const rows = await queryLatencyChartBuckets("tunnel_latency_stats", "tunnelId", [tunnelId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    return rows.reverse().map((row) => ({
+      ...mapLatencyChartBucket(row),
+      seriesKey: String(row.seriesKey || "total"),
+      seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
+    }));
+  }
   const limit = clampPositiveInt(opts.limit, 20_000, 50_000);
   const q = quoteIdentifier;
   const startedAt = Date.now();
@@ -2700,11 +2651,15 @@ export async function insertForwardGroupLatencyStat(stat: InsertForwardGroupLate
 
 export async function getForwardGroupLatencySeries(
   groupId: number,
-  opts: { since?: Date; limit?: number } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  if (opts.bucketSeconds) {
+    const rows = await queryLatencyChartBuckets("forward_group_latency_stats", "groupId", [groupId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    return rows.reverse().map(mapLatencyChartBucket);
+  }
   const limit = clampPositiveInt(opts.limit, 2880, 10_000);
   const q = quoteIdentifier;
   const startedAt = Date.now();
@@ -2731,7 +2686,7 @@ export async function getForwardGroupLatencySeries(
 
 export async function getTcpingSeriesByRule(
   ruleId: number,
-  opts: { since?: Date; limit?: number } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
@@ -2741,7 +2696,7 @@ export async function getTcpingSeriesByRule(
   let seriesRuleId = ruleId;
   const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
   if (chainGroupId) {
-    const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, limit });
+    const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, until: opts.until, limit, bucketSeconds: opts.bucketSeconds, dayBoundaries: opts.dayBoundaries });
     if (groupSeries.length > 0) return groupSeries;
   }
   const childRows = await db
@@ -2760,7 +2715,10 @@ export async function getTcpingSeriesByRule(
     if (chainChildren.length > 0) {
       const childIds = chainChildren.map((row: any) => Number(row.id)).filter((id: number) => id > 0);
       const page = limitOffset(Math.max(limit * childIds.length, limit));
-      const rawRows = await queryRaw<any>(
+      const rawRows = opts.bucketSeconds
+        ? (await queryLatencyChartBuckets("tcping_stats", "ruleId", childIds, since, opts.bucketSeconds, opts.until, opts.dayBoundaries))
+          .map((row) => ({ ...row, isTimeout: Number(row.probeSuccesses) <= 0 }))
+        : await queryRaw<any>(
         `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}
            FROM ${q("tcping_stats")}
          WHERE ${q("ruleId")} IN (${childIds.map(() => "?").join(",")})
@@ -2769,7 +2727,7 @@ export async function getTcpingSeriesByRule(
           ${page.sql}`,
         [...childIds, epochSeconds(since), ...page.params],
       );
-      const bucketMs = 30_000;
+      const bucketMs = opts.bucketSeconds ? opts.bucketSeconds * 1000 : 30_000;
       const byBucket = new Map<number, {
         latencyMs: number;
         timeoutCount: number;
@@ -2777,10 +2735,12 @@ export async function getTcpingSeriesByRule(
         probeCount: number;
         probeSuccesses: number;
         recordedAt: Date;
+        minLatencyMs: number | null;
+        maxLatencyMs: number | null;
       }>();
       for (const row of (rawRows as any[]).reverse()) {
         const at = rowDate(row.recordedAt);
-        const key = Math.floor(at.getTime() / bucketMs) * bucketMs;
+        const key = opts.bucketSeconds ? Number(row.bucketStart) * 1000 : Math.floor(at.getTime() / bucketMs) * bucketMs;
         const prev = byBucket.get(key) || {
           latencyMs: 0,
           timeoutCount: 0,
@@ -2788,11 +2748,13 @@ export async function getTcpingSeriesByRule(
           probeCount: 0,
           probeSuccesses: 0,
           recordedAt: at,
+          minLatencyMs: null,
+          maxLatencyMs: null,
         };
         // Child rows may represent a multi-packet ping. Preserve those
         // counters while retaining the historical chain latency aggregation.
         const rawProbeCount = Number(row.probeCount);
-        const probeCount = Number.isInteger(rawProbeCount) && rawProbeCount >= 1 && rawProbeCount <= 1024
+        const probeCount = Number.isSafeInteger(rawProbeCount) && rawProbeCount >= 1 && rawProbeCount <= (opts.bucketSeconds ? 1_000_000_000 : 1024)
           ? rawProbeCount
           : 1;
         const rawProbeSuccesses = Number(row.probeSuccesses);
@@ -2810,6 +2772,8 @@ export async function getTcpingSeriesByRule(
           prev.timeoutCount += probeCount;
         } else {
           prev.latencyMs += Number(row.latencyMs) || 0;
+          prev.minLatencyMs = (prev.minLatencyMs ?? 0) + Number(row.minLatencyMs ?? row.latencyMs);
+          prev.maxLatencyMs = (prev.maxLatencyMs ?? 0) + Number(row.maxLatencyMs ?? row.latencyMs);
         }
         prev.count += 1;
         if (at.getTime() > new Date(prev.recordedAt).getTime()) prev.recordedAt = at;
@@ -2818,7 +2782,7 @@ export async function getTcpingSeriesByRule(
       return Array.from(byBucket.entries())
         .sort((a, b) => a[0] - b[0])
         .slice(-limit)
-        .map(([, bucket]) => {
+        .map(([key, bucket]) => {
           // A bucket is a timeout only when every represented packet failed.
           // Partial packet loss must remain a valid latency sample so the
           // chart can calculate a non-zero loss rate from the counters.
@@ -2834,6 +2798,9 @@ export async function getTcpingSeriesByRule(
             probeCount: totalProbeCount,
             probeSuccesses,
             recordedAt: bucket.recordedAt,
+            dayStart: opts.dayBoundaries ? Number(key) : undefined,
+            minLatencyMs: bucket.minLatencyMs,
+            maxLatencyMs: bucket.maxLatencyMs,
           };
         });
     }
@@ -2857,6 +2824,10 @@ export async function getTcpingSeriesByRule(
       ]);
       if (selectedChild) seriesRuleId = selectedChild.id;
     }
+  }
+  if (opts.bucketSeconds) {
+    const rows = await queryLatencyChartBuckets("tcping_stats", "ruleId", [seriesRuleId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    return rows.reverse().map(mapLatencyChartBucket);
   }
   const page = limitOffset(limit);
   const rows = await queryRaw<any>(
@@ -2928,30 +2899,30 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
 
 /** Resolve the same active series as the latency chart, without manufacturing
  * failed probes for unreported child rules or reusing cached tunnel samples. */
-export async function getTcpingProbeStatisticsByRule(ruleId: number, since: Date) {
+export async function getTcpingProbeStatisticsByRule(ruleId: number, since: Date, until?: Date) {
   const db = await getDb();
-  if (!db) return getProbeCounterStatistics("rule", [], since);
+  if (!db) return getProbeCounterStatistics("rule", [], since, until);
   const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
-  if (chainGroupId) return getProbeCounterStatistics("forwardGroup", chainGroupId, since);
+  if (chainGroupId) return getProbeCounterStatistics("forwardGroup", chainGroupId, since, until);
   const children = await db.select({
     id: forwardRules.id, groupId: forwardRules.forwardGroupId,
     parentId: forwardRules.forwardGroupRuleId, memberId: forwardRules.forwardGroupMemberId,
   }).from(forwardRules).where(and(eq(forwardRules.forwardGroupRuleId, ruleId), eq(forwardRules.pendingDelete, false)))
     .orderBy(asc(forwardRules.id));
-  if (!children.length) return getProbeCounterStatistics("rule", ruleId, since);
+  if (!children.length) return getProbeCounterStatistics("rule", ruleId, since, until);
   const modes = await getForwardGroupModeMap(children.map((row: any) => Number(row.groupId || 0)));
   const chain = children.filter((row: any) => modes.get(Number(row.groupId)) === "chain");
-  if (chain.length) return getProbeCounterStatistics("forwardGroup", Number(chain[0].groupId), since);
+  if (chain.length) return getProbeCounterStatistics("forwardGroup", Number(chain[0].groupId), since, until);
   const groupId = Number(children[0].groupId);
   const [active, first] = await Promise.all([getActiveMemberByGroup([groupId]), getFirstEnabledMemberByGroup([groupId])]);
   const selected = selectPreferredForwardGroupLatencyChild(children.map((row: any) => ({
     id: Number(row.id), groupId: Number(row.groupId), memberId: Number(row.memberId),
   })), [Number(active.get(groupId) || 0), Number(first.get(groupId)?.id || 0)]);
-  return getProbeCounterStatistics("rule", selected?.id || ruleId, since);
+  return getProbeCounterStatistics("rule", selected?.id || ruleId, since, until);
 }
 
 /** Clean expired TCPing data, keeping the most recent N hours. */
-export async function cleanOldTcpingStats(retainHours: number = 72) {
+export async function cleanOldTcpingStats(retainHours: number = LATENCY_HISTORY_HOURS) {
   const db = await getDb();
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);
@@ -2960,7 +2931,7 @@ export async function cleanOldTcpingStats(retainHours: number = 72) {
   await deleteExpiredHistoryRows("probe_counter_snapshots", "recordedAt", cutoff);
 }
 
-export async function cleanOldTunnelLatencyStats(retainHours: number = 72) {
+export async function cleanOldTunnelLatencyStats(retainHours: number = LATENCY_HISTORY_HOURS) {
   const db = await getDb();
   if (!db) return;
   const cutoff = retentionCutoffSeconds(retainHours);

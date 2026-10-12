@@ -15,6 +15,8 @@ export async function notificationRecipients(kind: "admin" | "announcement") {
   const identity = channel === "discord" ? users.discordId : users.telegramId;
   const subscribed = channel === "discord" ? users.discordAnnouncementSubscribed : users.telegramAnnouncementSubscribed;
   return db.select({ id: users.id, name: users.name, username: users.username, telegramId: users.telegramId, discordId: users.discordId,
+    supportTicketNotificationSubscribed: users.supportTicketNotificationSubscribed,
+    accountEnabled: users.accountEnabled,
     notificationId: identity }).from(users).where(and(eq(users.accountEnabled, true), sql`${identity} IS NOT NULL`,
     kind === "admin" ? eq(users.role, "admin") : eq(subscribed, true)));
 }

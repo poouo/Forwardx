@@ -54,6 +54,8 @@ pg_dump -h 127.0.0.1 -U forwardx -d forwardx -Fc -f forwardx.dump
 
 ## 面板升级
 
+新版官方脚本部署可使用 `fwxm panel upgrade`；它仍调用对应部署安装器，遵循下述备份和重启要求。`fwxm panel repair` 也走重装/升级流程，不是回退或数据恢复。手工 Compose / 手工发布包继续使用原部署流程。
+
 原地升级会重建容器或重启面板服务，管理页面可能短暂不可用；不要将它与 [无缝迁移](./migration.md) 混为一谈。升级后检查实际版本、数据库状态、Agent 在线状态，并测试实际业务。
 
 ::: tip 权限说明
@@ -121,6 +123,8 @@ GitHub 加速不会作用于 `ghcr.io` Docker 镜像。需要更换镜像源时�
 
 可以在面板中选择主机批量升级 Agent，也可以单独选择某台主机升级。
 
+新版安装器注册管理命令后，在 Agent 主机执行 `fwxm agent upgrade`，无需重复填写 Token。升级读取配置中的 `proxyUrl`；面板触发的自动升级也沿用代理。手动脚本支持 `upgrade --proxy URL` / `upgrade --no-proxy`，详见 [代理说明](./agent-proxy-manager.md)。
+
 如果 Agent 因面板地址变化而失联，可在 Agent 主机重新执行安装或升级命令，并指定当前正确的面板地址。
 
 查看 Agent 日志：
@@ -172,15 +176,14 @@ docker compose up -d forwardx
 ~~~bash
 sudo systemctl stop forwardx-panel
 cd /opt/forwardx-panel
-set -a
-. ./.env
-set +a
-node dist/migrate-legacy.js
-node dist/migrate-legacy.js --apply
+SQLITE_PATH=/opt/forwardx-panel/data/forwardx.db node dist/migrate-legacy.js --config /opt/forwardx-panel/data/database.json
+SQLITE_PATH=/opt/forwardx-panel/data/forwardx.db node dist/migrate-legacy.js --config /opt/forwardx-panel/data/database.json --apply
 sudo systemctl start forwardx-panel
 ~~~
 
 数据库设置损坏、表结构缺失或迁移未完成时，写入命令会失败且事务回滚，不会写入完成标记。处理提示的问题后可直接重试。
+
+以上本地命令适用于安装器将数据库连接保存到 `database.json` 的部署，不把 `.env` 当作 Shell 脚本执行。若原部署通过进程环境强制指定数据库，请使用相同的可信环境、实际配置路径和 SQLite 路径，避免操作另一套数据库。
 
 ### Agent 插件清单
 

@@ -9,6 +9,57 @@ export const AVATAR_DAILY_CHANGE_LIMIT = 3;
 export const AVATAR_RANDOM_WINDOW_MS = 60 * 1000;
 export const AVATAR_RANDOM_WINDOW_LIMIT = 10;
 
+export const BUILTIN_AVATAR_PREFIX = "builtin:";
+export const BUILTIN_AVATARS = [
+  { id: "ink-mountains", name: "水墨青山", nameEn: "Ink Mountains" },
+  { id: "jiangnan-bridge", name: "烟雨江南", nameEn: "Jiangnan Bridge" },
+  { id: "hanfu-woman", name: "青衣花影", nameEn: "Jade Blossom" },
+  { id: "hanfu-man", name: "竹影公子", nameEn: "Bamboo Scholar" },
+  { id: "crane-moon", name: "月下仙鹤", nameEn: "Moonlit Crane" },
+  { id: "koi", name: "锦鲤游春", nameEn: "Spring Koi" },
+  { id: "panda", name: "竹林熊猫", nameEn: "Bamboo Panda" },
+  { id: "moon-rabbit", name: "桂月玉兔", nameEn: "Moon Rabbit" },
+  { id: "celadon-tea", name: "青瓷茶韵", nameEn: "Celadon Tea" },
+  { id: "dunhuang-lotus", name: "敦煌飞花", nameEn: "Dunhuang Lotus" },
+  { id: "snow-plum", name: "踏雪寻梅", nameEn: "Snowy Plum" },
+  { id: "pink-lotus", name: "荷风清韵", nameEn: "Pink Lotus" },
+  { id: "ginger-cat", name: "花间橘猫", nameEn: "Garden Cat" },
+  { id: "blue-dragon", name: "祥云青龙", nameEn: "Cloud Dragon" },
+  { id: "starry-peaks", name: "雪山星河", nameEn: "Starry Peaks" },
+  { id: "ginkgo-temple", name: "银杏古寺", nameEn: "Ginkgo Temple" },
+  { id: "paper-swallow", name: "剪纸春燕", nameEn: "Paper Swallow" },
+  { id: "porcelain-lotus", name: "青花莲韵", nameEn: "Porcelain Lotus" },
+  { id: "neon-pavilion", name: "霓虹楼阁", nameEn: "Neon Pavilion" },
+  { id: "cloud-sunrise", name: "云海朝阳", nameEn: "Cloud Sunrise" },
+] as const;
+
+export type BuiltinAvatarId = typeof BUILTIN_AVATARS[number]["id"];
+
+export function builtinAvatarValue(id: BuiltinAvatarId) {
+  return `${BUILTIN_AVATAR_PREFIX}${id}`;
+}
+
+export function isBuiltinAvatarValue(value?: string | null) {
+  return BUILTIN_AVATARS.some((avatar) => builtinAvatarValue(avatar.id) === value);
+}
+
+// Map old generated avatars deterministically without rewriting user records.
+export function builtinAvatarForSeed(seed: string | number) {
+  let hash = 2166136261;
+  for (const char of String(seed)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return builtinAvatarValue(BUILTIN_AVATARS[(hash >>> 0) % BUILTIN_AVATARS.length].id);
+}
+
+export function randomBuiltinAvatarValue(exclude?: string | null) {
+  const choices = BUILTIN_AVATARS.filter((avatar) => builtinAvatarValue(avatar.id) !== exclude);
+  return builtinAvatarValue(choices[Math.floor(Math.random() * choices.length)].id);
+}
+
+export function builtinAvatarPath(value?: string | null, fallback?: string | number | null) {
+  const normalized = isBuiltinAvatarValue(value) ? String(value) : builtinAvatarForSeed(avatarSeedFromValue(value, fallback));
+  return `/avatars/${normalized.slice(BUILTIN_AVATAR_PREFIX.length)}.webp`;
+}
+
 const AVATAAARS_RE = /^avataaars:[a-z0-9_-]{1,80}$/i;
 const MULTIAVATAR_RE = /^multiavatar:[a-z0-9_-]{1,80}$/i;
 const LEGACY_PRESET_RE = /^preset:[a-z0-9_-]{1,80}$/i;
@@ -21,27 +72,6 @@ function normalizeSeed(seed: string) {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-}
-
-export function multiavatarValue(seed: string) {
-  return `${MULTIAVATAR_PREFIX}${normalizeSeed(seed) || "forwardx"}`;
-}
-
-export function avataaarsValue(seed: string) {
-  return `${AVATAAARS_PREFIX}${normalizeSeed(seed) || "forwardx"}`;
-}
-
-function randomSeed(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  return uuid || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
-export function randomMultiavatarValue(seed: string = randomSeed()) {
-  return multiavatarValue(seed);
-}
-
-export function randomAvataaarsValue(seed: string = randomSeed()) {
-  return avataaarsValue(seed);
 }
 
 export function isAvataaarsValue(value?: string | null) {
@@ -58,10 +88,8 @@ export function isLegacyAvatarPreset(value?: string | null) {
 
 export function migrateLegacyAvatarValue(value?: string | null, fallback?: string | number | null) {
   const text = String(value || "").trim();
-  if (isAvataaarsValue(text)) return text;
-  if (isMultiavatarValue(text)) return text;
-  if (isLegacyAvatarPreset(text)) return avataaarsValue(text.slice(LEGACY_AVATAR_PRESET_PREFIX.length));
-  return avataaarsValue(String(fallback || "forwardx"));
+  if (isBuiltinAvatarValue(text) || (IMAGE_DATA_URL_RE.test(text) && isValidAvatarValue(text))) return text;
+  return builtinAvatarForSeed(avatarSeedFromValue(text, fallback));
 }
 
 export function avatarSeedFromValue(value?: string | null, fallback?: string | number | null) {
@@ -87,6 +115,7 @@ export function getAvatarDataUrlByteLength(value: string) {
 export function isValidAvatarValue(value?: string | null) {
   const text = String(value || "").trim();
   if (!text) return false;
+  if (isBuiltinAvatarValue(text)) return true;
   if (isAvataaarsValue(text)) return true;
   if (isMultiavatarValue(text)) return true;
   if (text.length > AVATAR_MAX_DATA_URL_LENGTH) return false;

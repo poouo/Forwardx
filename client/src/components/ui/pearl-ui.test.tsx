@@ -19,6 +19,45 @@ import { getLanguagePreference, initializeLanguage, setLanguagePreference } from
 
 const css = readFileSync("client/src/styles/pearl.css", "utf8");
 
+test("animated stat values leave glyph bottoms visible at system-font and zoom boundaries", async () => {
+  const { default: AnimatedStatValue } = await import("../AnimatedStatValue");
+  const baseCss = readFileSync("client/src/index.css", "utf8");
+  const inner = baseCss.match(/\.forwardx-stat-value-inner\s*\{([^}]+)\}/)?.[1];
+  assert.ok(inner);
+  assert.match(inner, /overflow: visible/);
+  assert.match(inner, /vertical-align: baseline/);
+  assert.match(inner, /line-height: inherit/);
+  assert.doesNotMatch(inner, /overflow:\s*(?:hidden|clip)|backface-visibility:\s*hidden|text-overflow:\s*ellipsis/);
+  for (const value of ["59", "1.84 TB", "180.27 GB", "gjpqy"]) {
+    const html = renderToStaticMarkup(<AnimatedStatValue as="p" value={value} className="text-2xl leading-tight" />);
+    assert.ok(html.includes(value));
+    assert.match(html, /forwardx-stat-value-inner/);
+    assert.doesNotMatch(html, /overflow-hidden|overflow-clip/);
+  }
+  assert.match(baseCss, /animation: forwardx-stat-value-change 260ms/);
+});
+
+test("Dashboard stats match the tinted billing cards without ruler decorations", async () => {
+  const { DashboardStatCard } = await import("@/pages/Home");
+  const { Server } = await import("lucide-react");
+  for (const tone of ["teal", "blue", "emerald", "orange"]) {
+    const html = renderToStaticMarkup(<DashboardStatCard title="Total inbound traffic"
+      value="59.58 GB" subtitle="Cumulative inbound" icon={Server} cacheKey={`test.${tone}`}
+      tone={`bg-gradient-to-br from-${tone}-500 to-${tone}-600`} />);
+    assert.match(html, /Total inbound traffic/);
+    assert.match(html, /59\.58 GB/);
+    assert.match(html, /Cumulative inbound/);
+    assert.match(html, /pointer-events-none absolute inset-0 opacity-\[0\.04\] dark:opacity-\[0\.07\]/);
+    assert.match(html, /text-2xl font-bold leading-tight tracking-tight tabular-nums/);
+    assert.match(html, /pearl-stat-icon[^"\n]*rounded-full[^"\n]*shadow-sm/);
+    assert.match(html, /h-5 w-5 text-white/);
+    assert.equal((html.match(new RegExp(`from-${tone}-500`, "g")) || []).length, 2);
+    assert.doesNotMatch(html, /pearl-card-featured|font-mono|role="button"/);
+  }
+  assert.doesNotMatch(css, /\.pearl-stat::after|repeating-linear-gradient|\.pearl-stat-value/);
+  assert.doesNotMatch(css, /\.pearl-stat-icon\s*\{/);
+});
+
 test("Dashboard traffic shares one card with responsive internal sections", async () => {
   const { DashboardTrafficOverview } = await import("@/pages/Home");
   for (const loading of [false, true]) {

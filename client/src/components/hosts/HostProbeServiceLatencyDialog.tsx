@@ -3,10 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import { LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
+import { HostAvailabilityHistory } from "./HostAvailabilityHistory";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
-  filterLatencySeriesByTimeRange,
   latencyTimeRangeLabel,
   LatencyTimeRangeSelect,
   type LatencyTimeRangeHours,
@@ -147,6 +148,7 @@ export default function HostProbeServiceLatencyDialog({
   const [selectedServiceIds, setSelectedServiceIds] = useState<Set<number>>(new Set());
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
+  const history = useLatencyHistoryDays(timeRangeHours, open, pollingInterval("slow", open));
   const hostServices = useMemo(
     () => (services || []).filter((service) => serviceAppliesToHost(service, hostId)),
     [services, hostId],
@@ -159,12 +161,16 @@ export default function HostProbeServiceLatencyDialog({
   const visibleServiceIds = useMemo(() => visibleServices.map((service) => Number(service.id)).filter(Boolean), [visibleServices]);
   const chartAnimationKey = useMemo(() => `${hostId || "host"}`, [hostId]);
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
-    { serviceIds, hostId, hours: timeRangeHours },
-    { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: pollingInterval("slow", open) },
+    { serviceIds, hostId, ...history.input },
+    { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: history.refetchInterval, refetchOnWindowFocus: false },
   );
+  const availability = trpc.hosts.availabilityHistory.useQuery({ hostId, ...history.summaryInput },
+    { enabled: open && hostId > 0, staleTime: 15_000, refetchInterval: open ? 30_000 : false, refetchOnWindowFocus: false });
+  const availabilityDetail = trpc.hosts.availabilityHistory.useQuery({ hostId, ...history.input },
+    { enabled: open && hostId > 0 && !!history.selectedDay, staleTime: 15_000, refetchInterval: history.refetchInterval, refetchOnWindowFocus: false });
   const rangedData = useMemo(
-    () => filterLatencySeriesByTimeRange(data as any[], timeRangeHours),
-    [data, timeRangeHours],
+    () => history.filter(data as any[]),
+    [data, timeRangeHours, history.selectedDay],
   );
 
   const stats = useMemo(() => {
@@ -178,6 +184,8 @@ export default function HostProbeServiceLatencyDialog({
           isTimeout,
           probeCount: row.probeCount,
           probeSuccesses: row.probeSuccesses,
+          minLatencyMs: row.minLatencyMs,
+          maxLatencyMs: row.maxLatencyMs,
         };
       })
       .filter((sample) => sample.isTimeout || (Number.isFinite(sample.latency) && sample.latency > 0));
@@ -278,10 +286,11 @@ export default function HostProbeServiceLatencyDialog({
     [processedChart, visibleServiceIds],
   );
   const chartTimeDomain = useMemo<[number, number]>(() => {
+    if (history.domain) return history.domain;
     const end = Date.now();
     const rangeMs = Math.max(0.5, Number(timeRangeHours) || DEFAULT_LATENCY_TIME_RANGE_HOURS) * 60 * 60 * 1000;
     return [end - rangeMs, end];
-  }, [data, timeRangeHours]);
+  }, [data, timeRangeHours, history.selectedDay]);
   const yMax = useMemo(() => {
     const maxLatency = Math.max(0, ...chart.flatMap((point) => (
       visibleServiceIds.map((id) => {
@@ -308,10 +317,11 @@ export default function HostProbeServiceLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>{translateText("服务延迟图表")}</DialogTitle>
-              <DialogDescription>{host?.name ? translateText("{0} 最近 {1} 服务探测延迟", [host.name, latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 服务探测延迟", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
+              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : host?.name ? translateText("{0} 最近 {1} 服务探测延迟", [host.name, latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 服务探测延迟", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+              <LatencyHistoryTodayButton onClick={history.today} />
               <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
             </div>
           </div>
@@ -401,6 +411,9 @@ export default function HostProbeServiceLatencyDialog({
           failureLabel={visibleServices.length > 0 && visibleServices.every((service) => service.method === "ping")
             ? translateText("Ping 丢包率") : visibleServices.length > 0 && visibleServices.every((service) => service.method !== "ping")
               ? translateText("TCP 连接失败率") : translateText("探测失败率")} />
+        <HostAvailabilityHistory days={history.days} selectedDay={history.selectedDay} onSelect={history.setSelectedDay}
+          summaries={availability.data?.days} loading={availability.isLoading} error={availability.isError}
+          detail={availabilityDetail.data} detailLoading={availabilityDetail.isLoading} detailError={availabilityDetail.isError} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>{translateText("关闭")}</Button>

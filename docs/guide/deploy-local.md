@@ -30,6 +30,17 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 ## 检查和重启
 
+新版安装器注册 `fwxm` 后，直接输入命令打开交互菜单，或执行：
+
+~~~bash
+fwxm panel status
+fwxm panel restart
+fwxm panel logs
+fwxm panel address
+~~~
+
+支持默认及安装器记录的自定义服务；操作说明见 [SSH 管理菜单](./ssh-management.md)。旧版/手工部署可使用下方 systemd 命令。
+
 ~~~bash
 systemctl status forwardx-panel --no-pager -l
 journalctl -u forwardx-panel -n 300 --no-pager
@@ -44,6 +55,8 @@ sudo systemctl restart forwardx-panel
 仅修改 .env 不需要 daemon-reload；修改 systemd 单元文件后才需要先执行 systemctl daemon-reload。日志文件目录的选择规则见 [目录与日志](./paths-logs.md)。
 
 ## 升级
+
+已有新版管理命令时使用 `fwxm panel upgrade`；旧版可执行：
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- upgrade

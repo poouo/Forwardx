@@ -71,7 +71,7 @@ jobs:
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
             assert.equal(info.version, pkg.version);
             assert.equal(info.commit, process.env.GITHUB_SHA);
-            for (const page of ["guide/index.html", "guide/interface.html", "guide/releases.html", "guide/rules.html", "guide/mobile-app.html"]) {
+            for (const page of ["guide/index.html", "guide/interface.html", "guide/releases.html", "guide/rules.html", "guide/mobile-app.html", "guide/deploy-panel.html", "guide/deploy-docker.html", "guide/deploy-local.html", "guide/agent.html", "guide/ssh-management.html", "guide/agent-proxy-manager.html", "guide/agent-proxy-manager.en.html"]) {
               assert.ok(fs.statSync(`docs/.vitepress/dist/${page}`).size > 0, page);
             }
             console.log(`Validated docs v${info.version} at ${info.commit}`);

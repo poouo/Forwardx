@@ -10,7 +10,8 @@ import {
   AVATAR_RANDOM_WINDOW_MS,
   migrateLegacyAvatarValue,
   normalizeAvatarValue,
-  randomAvataaarsValue,
+  builtinAvatarForSeed,
+  randomBuiltinAvatarValue,
 } from "../../shared/avatar";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { billingCalendarParts, billingMonthStart } from "../../shared/billingTime";
@@ -120,7 +121,7 @@ export async function verifyUserPassword(userId: number, password: string) {
   return verifyPassword(password, user.password);
 }
 
-export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean }) {
+export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean; discordAnnouncementSubscribed?: boolean; supportTicketNotificationSubscribed?: boolean }) {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
@@ -339,7 +340,7 @@ export async function createUser(data: { username: string; password: string; nam
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomAvataaarsValue(String(`user-${data.username}-${Date.now()}`)),
+    avatar: randomBuiltinAvatarValue(),
     role: data.role ?? "user",
     accountEnabled: true,
     canAddRules: data.canAddRules ?? false,
@@ -357,7 +358,7 @@ export async function registerUser(data: { username: string; password: string; n
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomAvataaarsValue(String(`user-${data.username}-${Date.now()}`)),
+    avatar: randomBuiltinAvatarValue(),
     role: "user",
     accountEnabled: true,
     canAddRules: false,
@@ -392,7 +393,7 @@ export async function updateUserAccount(userId: number, data: { username?: strin
     patch.password = hashPassword(password);
   }
   if (data.avatar !== undefined) {
-    patch.avatar = normalizeAvatarValue(data.avatar) || randomAvataaarsValue(String(`user-${userId}`));
+    patch.avatar = normalizeAvatarValue(data.avatar) || builtinAvatarForSeed(`user-${userId}`);
   }
   if (Object.keys(patch).length > 1) {
     await db.update(users).set(patch).where(eq(users.id, userId));
@@ -420,7 +421,7 @@ export async function getUserAvatarQuota(userId: number) {
 export async function updateUserAvatarWithQuota(userId: number, avatar: string, options: { actorRole?: string; countQuota?: boolean } = {}) {
   const db = await getDb();
   if (!db) return getUserAvatarQuota(userId);
-  const normalized = normalizeAvatarValue(avatar) || randomAvataaarsValue(String(`user-${userId}`));
+  const normalized = normalizeAvatarValue(avatar) || builtinAvatarForSeed(`user-${userId}`);
   const current = await getUserById(userId);
   if (!current) throw new Error("用户不存在");
   const isSelfServiceLimited = options.countQuota && options.actorRole !== "admin" && current.role !== "admin";
@@ -471,7 +472,8 @@ export function checkAvatarRandomRateLimit(userId: number) {
 
 export async function updateUserAvatarRandomWithQuota(userId: number, options: { actorRole?: string; countQuota?: boolean } = {}) {
   const rateLimit = checkAvatarRandomRateLimit(userId);
-  const avatar = randomAvataaarsValue(String(`user-${userId}-${Date.now()}-${rateLimit.remaining}`));
+  const current = await getUserById(userId);
+  const avatar = randomBuiltinAvatarValue(migrateLegacyAvatarValue(current?.avatar, `user-${userId}`));
   const quota = await updateUserAvatarWithQuota(userId, avatar, options);
   return { avatar, quota, rateLimit };
 }

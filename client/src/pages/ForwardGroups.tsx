@@ -4,9 +4,9 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import { LatencyHistoryDayStrip, LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
-  filterLatencySeriesByTimeRange,
   latencyTimeRangeLabel,
   LatencyTimeRangeSelect,
   type LatencyTimeRangeHours,
@@ -505,6 +505,8 @@ function forwardGroupMatchesSearchQuery(
 }
 
 type GroupLatencyPoint = {
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
   label: string;
   fullLabel: string;
   latency: number;
@@ -515,6 +517,8 @@ type GroupLatencyPoint = {
 };
 
 type GroupLatencySeriesDatum = {
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
   recordedAt: string | Date;
   latencyMs?: number | null;
   isTimeout?: boolean | null;
@@ -522,7 +526,6 @@ type GroupLatencySeriesDatum = {
   probeSuccesses?: number | null;
 };
 
-const groupLatencySeriesCache = new Map<number, GroupLatencySeriesDatum[]>();
 const groupLatencyAnimatedKeys = new Set<number>();
 
 function formatGroupLatencyTime(value: string | Date) {
@@ -547,26 +550,24 @@ function ForwardGroupLatencyDialog({
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
+  const history = useLatencyHistoryDays(timeRangeHours, open, pollingInterval("slow", open));
   const { data, isLoading, isFetching } = trpc.forwardGroups.latencySeries.useQuery(
-    { groupId, hours: 24 },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
+    { groupId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false }
   );
   const { data: counterStatistics } = trpc.forwardGroups.probeStatistics.useQuery(
-    { groupId, hours: timeRangeHours },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+    { groupId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false },
   );
-  const cachedData = groupLatencySeriesCache.get(groupId);
-  const rawSeriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
+  const daily = trpc.forwardGroups.latencySeries.useQuery({ groupId, ...history.summaryInput },
+    { enabled: open, staleTime: 60_000, refetchInterval: open ? 300_000 : false, refetchOnWindowFocus: false });
+  const rawSeriesData = data as GroupLatencySeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
   const rangedSeriesData = useMemo(
-    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
-    [seriesData, timeRangeHours],
+    () => history.filter(seriesData),
+    [seriesData, timeRangeHours, history.selectedDay],
   );
-
-  useEffect(() => {
-    if (data) groupLatencySeriesCache.set(groupId, data as GroupLatencySeriesDatum[]);
-  }, [data, groupId]);
 
   const rawChartData = useMemo<GroupLatencyPoint[]>(() => {
     if (!rangedSeriesData.length) return [];
@@ -581,6 +582,8 @@ function ForwardGroupLatencyDialog({
         isTimeout: counts.isTimeout,
         probeCount: counts.probeCount,
         probeSuccesses: counts.probeSuccesses,
+        minLatencyMs: d.minLatencyMs,
+        maxLatencyMs: d.maxLatencyMs,
       };
     });
   }, [rangedSeriesData]);
@@ -608,10 +611,11 @@ function ForwardGroupLatencyDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>{translateText("转发链延迟 - ")}{groupName}</DialogTitle>
-              <DialogDescription>{translateText("最近 {0} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
+              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+              <LatencyHistoryTodayButton onClick={history.today} />
               <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
             </div>
           </div>
@@ -657,6 +661,7 @@ function ForwardGroupLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
+        <LatencyHistoryDayStrip days={history.days} selectedDay={history.selectedDay} onSelect={history.setSelectedDay} samples={daily.data} loading={daily.isLoading} error={daily.isError} />
         <LatencyStabilityStats stats={stats} sampleLabel={translateText("逐跳探测次数")} failureLabel={translateText("逐跳探测失败率")} counterStatistics={counterStatistics ?? null}
           description={translateText("统计各跳实际 TCP/Ping 探测，包含已上报的备用路径，不等于端到端业务丢包；旧 Agent 或未上报的探测不计入。延迟为路径健康样本，稳定性仅供参考。")} />
         </div>

@@ -31,5 +31,5 @@ features:
   - title: 流量与延迟
     details: 查看规则流量、累计流量、延迟趋势和多跳自测结果。
   - title: 通知与维护
-    details: 配置邮件、Telegram / Discord、Google 登录、AI 助手、备份与面板迁移。
+    details: 使用 fwxm SSH 菜单、Agent 代理、通知、备份和迁移；日常维护按专题查找。
 ---

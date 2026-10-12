@@ -132,7 +132,7 @@ export const plansRouter = router({
     .input(z.object({ userId: z.number().optional() }).optional())
     .query(async ({ input }) => {
       await db.expireUserSubscriptions();
-      return db.listUserSubscriptions(input?.userId, { visibility: "admin" });
+      return db.listUserSubscriptions(input?.userId, { visibility: "admin", excludeCancelled: true });
     }),
   subscriptionsPage: adminProcedure
     .input(z.object({
@@ -150,7 +150,7 @@ export const plansRouter = router({
     }),
   mySubscriptions: protectedProcedure.query(async ({ ctx }) => {
     await db.expireUserSubscriptions();
-    return db.listUserSubscriptions(ctx.user.id, { visibility: "user" });
+    return db.listUserSubscriptions(ctx.user.id, { visibility: "user", excludeCancelled: true });
   }),
   assign: adminProcedure
     .input(z.object({

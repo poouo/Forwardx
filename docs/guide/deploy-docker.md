@@ -38,6 +38,18 @@ docker inspect forwardx-panel --format '{{range .Mounts}}{{println .Type .Name .
 
 ## 日常管理
 
+新版官方安装/升级后，在**宿主机 SSH** 直接输入 `fwxm` 打开交互菜单；同机装有 Agent 时先选择面板。常用命令：
+
+~~~bash
+fwxm panel status
+fwxm panel restart
+fwxm panel logs
+fwxm panel address
+fwxm panel reset-admin
+~~~
+
+详见 [SSH 管理菜单](./ssh-management.md)。旧版或手工部署未注册该命令时，使用原生 Docker 命令：
+
 ~~~bash
 docker ps --filter name=forwardx-panel
 docker logs --tail 300 forwardx-panel
@@ -47,6 +59,8 @@ docker restart forwardx-panel
 上面的 restart 只重启已有容器，**不会重新读取修改后的 Compose 环境变量**。修改环境配置后需要重建容器，详见 [环境变量](./env-vars.md)。
 
 脚本管理的部署使用脚本升级：
+
+已有新版管理命令时可使用 `fwxm panel upgrade`；否则执行下方入口脚本。
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- upgrade

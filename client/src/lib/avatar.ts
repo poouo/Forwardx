@@ -1,52 +1,34 @@
 import { t as translateText } from "@/i18n";
 import {
   AVATAR_MAX_BYTES,
-  avataaarsValue,
-  avatarSeedFromValue,
+  BUILTIN_AVATARS,
+  builtinAvatarPath,
+  builtinAvatarValue,
   getAvatarDataUrlByteLength,
   isAvataaarsValue,
   isMultiavatarValue,
   isValidAvatarValue,
   migrateLegacyAvatarValue,
-  multiavatarValue,
+  randomBuiltinAvatarValue,
 } from "@shared/avatar";
 
 export {
   AVATAR_MAX_BYTES,
-  avataaarsValue,
+  BUILTIN_AVATARS,
+  builtinAvatarPath,
+  builtinAvatarValue,
   getAvatarDataUrlByteLength,
   isAvataaarsValue,
   isMultiavatarValue,
   isValidAvatarValue,
   migrateLegacyAvatarValue,
-  multiavatarValue,
+  randomBuiltinAvatarValue,
 };
-
-export const DEFAULT_AVATAR_SEEDS = [
-  "forwardx-nova",
-  "forwardx-orbit",
-  "forwardx-ember",
-  "forwardx-pixel",
-  "forwardx-mint",
-  "forwardx-coral",
-  "forwardx-sunrise",
-  "forwardx-aurora",
-  "forwardx-cobalt",
-  "forwardx-meadow",
-  "forwardx-plum",
-  "forwardx-lagoon",
-];
-
-export function avatarSeed(value?: string | null, fallback?: string | number | null) {
-  return avatarSeedFromValue(value, fallback);
-}
 
 export function avatarSrc(value?: string | null, fallback?: string | number | null) {
   const text = String(value || "").trim();
-  if (isAvataaarsValue(text) || isMultiavatarValue(text) || text.startsWith("preset:") || !text) {
-    return "";
-  }
-  return text;
+  if (text.startsWith("data:image/") && isValidAvatarValue(text)) return text;
+  return builtinAvatarPath(text, fallback);
 }
 
 export function avatarInitial(user?: { username?: string | null; name?: string | null } | null) {

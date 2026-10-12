@@ -153,13 +153,18 @@ AI API Key 不建议写入 Docker `.env`。后台保存后会做脱敏展示，�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `FORWARDX_AGENT_RELEASE_VERSION` | 面板版本对应的 Agent 版本 | 指定 Agent 安装脚本下载的 Agent Release 版本。 |
+| `FORWARDX_AGENT_RELEASE_VERSION` | 当前面板 Release 标签 | 指定 Agent 安装器下载资产所在的面板 Release，不是 Agent 自身版本号。 |
+| `FORWARDX_AGENT_PROXY` | 未指定时读取 Agent 配置 | 安装器的显式代理覆盖，空值表示直连；推荐使用 `--proxy URL` / `--no-proxy`。运行时以 `config.json` 的 `proxyUrl` 为准，不以此环境变量替代配置。 |
+| `FORWARDX_REALM_VERSION` | `2.9.4` | Agent 安装器的 Realm 版本，默认兼容版；显式指定其他版本前确认 libc 和系统兼容性。 |
+| `FORWARDX_INSTALL_MIMIC` | `ask` | 可选 mimic 安装选择，默认交互询问；普通转发不依赖它。 |
 | `FORWARDX_AGENT_PANEL_FIRST` | 面板设置决定 | 优先从面板内置资产下载 Agent 运行时，失败再回退到 GitHub。 |
 | `FORWARDX_CURL_CONNECT_TIMEOUT` | `15` | 下载连接超时时间。 |
 | `FORWARDX_CURL_LOW_SPEED_LIMIT` | `1024` | 下载低速判断阈值。 |
 | `FORWARDX_CURL_ASSET_LOW_SPEED_TIME` | `180` | 下载资产允许低速持续的时间。 |
 
 普通用户通常不需要配置这些变量。只有在 GitHub 访问不稳定、内网镜像分发或排查 Agent 升级问题时才会用到。
+
+`FORWARDX_AGENT_RELEASE_VERSION` 指面板发布的 Release 标签，不等于 Agent 自身版本号。例如面板和 Agent 使用不同版本序列，不要把主机显示的 Agent 版本直接当作面板 Release 标签。代理下载、运行直连和密码保护见 [Agent 代理](./agent-proxy-manager.md)。
 
 ## 调试日志变量
 
@@ -185,3 +190,5 @@ AI API Key 不建议写入 Docker `.env`。后台保存后会做脱敏展示，�
 | FORWARDX_SERVICE_NAME | forwardx-panel | 本地服务名 |
 
 这些不是在网页里更换目录的开关。变更卷名或数据库路径前，先 [备份](./upgrade-backup.md) 并确认实际挂载，避免启动到另一套空数据库。
+
+新版 `fwxm panel` 会沿用安装器记录的上述目录与名称，见 [SSH 管理菜单](./ssh-management.md)。管理命令不代表手工部署会被自动识别或迁移。

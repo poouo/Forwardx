@@ -11,6 +11,7 @@ import {
 } from "./agentFastLiveness";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 import { HostOfflineNotificationDebouncer } from "./hostOfflineNotificationDebouncer";
+import { recordHostAvailability } from "./repositories/hostAvailabilityRepository";
 
 type HostStatus = "online" | "offline";
 
@@ -161,6 +162,7 @@ export async function primeHostStatusNotifier() {
 }
 
 export async function notifyHostOnlineIfNeeded(host: any) {
+  if (!isPresenceCapableHostConfirmedOffline(host?.id)) void recordHostAvailability(Number(host?.id || 0), true);
   fastOfflineNotificationDebouncer.cancel(Number(host?.id || 0));
   await notifyHostStatusChange(host, "online");
   void db.scheduleForwardGroupsForHostHealthChange(Number(host?.id || 0)).catch((error) => {
@@ -192,6 +194,7 @@ async function handlePresenceCapableHostOnline(event: AgentFastLivenessTransitio
   if (!event.isCurrent()) return;
   const host = await db.getHostById(hostId);
   if (!host || !event.isCurrent()) return;
+  void recordHostAvailability(hostId, true);
   await db.scheduleForwardGroupsForHostHealthChange(hostId);
   if (!event.isCurrent()) return;
   await notifyHostStatusChange({ ...host, isOnline: true, lastHeartbeat: new Date() }, "online");
@@ -209,6 +212,9 @@ export async function handlePresenceCapableHostOffline(event: AgentFastLivenessT
     return;
   }
 
+  // Record the confirmed transition immediately, independently of notification
+  // debounce/preferences; a short recovery must not erase an offline incident.
+  void recordHostAvailability(hostId, false, event.offlineAt);
   clearTunnelRuntimeStatusForHost(hostId);
   await db.scheduleForwardGroupsForHostHealthChange(hostId);
   if (!event.isCurrent()) {
@@ -297,6 +303,7 @@ export async function sweepOfflineHostsAndNotify() {
   const transitionedIdSet = new Set(transitionedIds);
   const transitionedHosts = (staleHosts as any[]).filter((host) => transitionedIdSet.has(Number(host.id)));
   for (const host of transitionedHosts) {
+    void recordHostAvailability(Number(host.id), false);
     clearTunnelRuntimeStatusForHost(Number(host.id));
     void db.scheduleForwardGroupsForHostHealthChange(Number(host.id)).catch((error) => {
       console.warn(`[HostStatus] Offline forward-group evaluation failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);

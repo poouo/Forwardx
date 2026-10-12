@@ -8,6 +8,8 @@
 
 ## 卸载前确认
 
+新版官方脚本部署可用 `fwxm panel uninstall` / `fwxm agent uninstall`，仍会调用对应卸载脚本并要求交互确认。只想暂停时使用 `fwxm panel stop` / `fwxm agent stop`；不要用卸载代替停止、升级或重置密码。
+
 建议先确认以下几点：
 
 - 是否还需要保留用户、主机、规则、套餐和订单数据。
@@ -93,6 +95,8 @@ systemctl status forwardx-agent
 :::
 
 ## 清理遗留文件
+
+`/usr/local/bin/fwxm` 和 `/etc/forwardx/manage` 中的小型管理脚本、缓存安装器及元数据会保留，用于排障和重装，不会运行后台服务。同机装有面板和 Agent 时，卸载 Agent 不删除面板的管理配置。不要递归删除整个 `/etc/forwardx` 作为通用清理操作。
 
 卸载脚本可能不会删除所有文件。根据需要手动清理：
 

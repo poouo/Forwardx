@@ -8,7 +8,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 
-export default function DiscordAccountCard() {
+export default function DiscordAccountCard({ showAnnouncementPreference = true }: { showAnnouncementPreference?: boolean }) {
   const utils = trpc.useUtils();
   const confirm = useConfirmDialog();
   const [pendingCode, setPendingCode] = useState<{ code: string; expiresAt: Date | string } | null>(null);
@@ -18,7 +18,7 @@ export default function DiscordAccountCard() {
   }, [status?.bound, status?.pendingBind?.code, pendingCode]);
   const bind = trpc.discord.createBindCode.useMutation({ onSuccess: (value) => { setPendingCode(value); void utils.discord.status.invalidate(); }, onError: (error) => toast.error(error.message) });
   const unbind = trpc.discord.unbind.useMutation({ onSuccess: () => { setPendingCode(null); void utils.discord.status.invalidate(); }, onError: (error) => toast.error(error.message) });
-  const subscribe = trpc.discord.subscribe.useMutation({ onSuccess: () => void utils.discord.status.invalidate(), onError: (error) => toast.error(error.message) });
+  const subscribe = trpc.discord.subscribe.useMutation({ onSuccess: () => { void utils.discord.status.invalidate(); void utils.auth.notificationPreferences.invalidate(); }, onError: (error) => toast.error(error.message) });
   const code = status?.bound ? null : pendingCode || status?.pendingBind;
   const valid = code && new Date(code.expiresAt).getTime() > Date.now();
   return <Card>
@@ -27,7 +27,7 @@ export default function DiscordAccountCard() {
       <p className="text-sm">{status?.bound ? `${t("已绑定")}：${status.account?.username || status.account?.id}` : t("未绑定")}</p>
       {!status?.enabled && <p className="text-sm text-muted-foreground">{t("管理员尚未启用 Discord 通知渠道。")}</p>}
       {status?.bound ? <>
-        <div className="flex items-center justify-between gap-3"><span>{t("公告通知")}</span><Switch checked={!!status.announcementSubscribed} disabled={subscribe.isPending} onCheckedChange={(enabled) => subscribe.mutate({ enabled })} /></div>
+        {showAnnouncementPreference && <div className="flex items-center justify-between gap-3"><span>{t("公告通知")}</span><Switch checked={!!status.announcementSubscribed} disabled={subscribe.isPending} onCheckedChange={(enabled) => subscribe.mutate({ enabled })} /></div>}
         <Button variant="destructive" disabled={unbind.isPending} onClick={async () => {
           if (await confirm({ title: t("解除 Discord 绑定"), description: t("解除后将停止接收 Discord 通知，并使未使用的登录链接失效。") })) unbind.mutate();
         }}>{t("解除绑定")}</Button>

@@ -1755,6 +1755,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       hostStatusNotify: false,
     },
     notificationChannel: notificationChannel(all),
+    supportTicketNotificationsEnabled: all.supportTicketNotificationsEnabled !== "false",
     discord: { ...publicNotificationSettings(all, "discord"), tokenMasked: "", tokenSource: "none" as const, connected: false, queued: 0 },
     deepseek: {
       provider: aiProvider,
@@ -1941,6 +1942,7 @@ export const systemRouter = router({
         hostStatusNotify: all.telegramHostStatusNotify === "true",
       },
       notificationChannel: notificationChannel(all),
+      supportTicketNotificationsEnabled: all.supportTicketNotificationsEnabled !== "false",
       discord: { ...publicNotificationSettings(all, "discord"), ...discordConnectionStatus() },
       deepseek: {
         provider: aiProvider,
@@ -2109,6 +2111,7 @@ export const systemRouter = router({
           hostStatusNotify: z.boolean().optional(),
         }).optional(),
         notificationChannel: z.enum(["telegram", "discord"]).optional(),
+        supportTicketNotificationsEnabled: z.boolean().optional(),
         discord: z.object({
           enabled: z.boolean().optional(), botToken: z.string().max(256).optional(), clearToken: z.boolean().optional(),
           expiryReminder: z.boolean().optional(), trafficReminder: z.boolean().optional(),
@@ -2421,6 +2424,10 @@ export const systemRouter = router({
           await refreshDiscordBotProfile().catch(() => console.warn("[Discord] Slash command synchronization failed; retry in notification settings"));
         }
         console.info("[Settings] discord settings updated");
+      }
+      if (input.supportTicketNotificationsEnabled !== undefined) {
+        await db.setSetting("supportTicketNotificationsEnabled", String(input.supportTicketNotificationsEnabled));
+        console.info(`[Settings] support ticket notifications enabled=${input.supportTicketNotificationsEnabled}`);
       }
       if (input.notificationChannel !== undefined) {
         await db.setSetting("notificationChannel", input.notificationChannel);

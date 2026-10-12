@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 安装时按提示选择端口和数据库。默认访问 http://服务器IP:9810；不使用 Docker 时参考 [本地部署](./deploy-local.md)。
 
+新版安装完成后可在宿主机 SSH 输入 `fwxm` 查看运行状态、日志和重启面板，见 [管理菜单](./ssh-management.md)。如果提示命令不存在，按原生 Docker/服务管理方式检查，不要反复重装。
+
 ## 2. 初始化数据库与管理员
 
 打开网页，核对安装脚本可能已预填的数据库配置，测试连接并完成初始化，再创建第一个管理员。使用已有数据库时直接使用原管理员登录。
@@ -31,6 +33,8 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install Y
 ~~~
 
 使用面板实际生成的地址与 Token。确认主机在线及环境检测正常；独立 Token 不影响多个主机加入同一个组。详见 [Agent 安装](./agent.md)。
+
+需要 SOCKS / HTTP 代理时，脚本下载和安装执行阶段均需指定代理，配置持久化后运行/升级沿用；不能只在管道后添加参数。完整示例见 [Agent 代理](./agent-proxy-manager.md)。
 
 ## 5. 先创建链路资源
 

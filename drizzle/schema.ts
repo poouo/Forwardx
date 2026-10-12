@@ -182,6 +182,7 @@ export const users = table("users", {
   // cannot suppress the scheduled reset for the same month.
   lastAutoTrafficReset: epoch("lastAutoTrafficReset"),
   telegramId: text("telegramId").unique(),
+  supportTicketNotificationSubscribed: boolean("supportTicketNotificationSubscribed").notNull().default(true),
   discordId: varchar("discordId", { length: 32 }).unique(),
   discordUsername: text("discordUsername"),
   discordLinkedAt: epoch("discordLinkedAt"),
@@ -761,6 +762,16 @@ export const hostProbeServices = table("host_probe_services", {
 });
 export type HostProbeService = typeof hostProbeServices.$inferSelect;
 export type InsertHostProbeService = typeof hostProbeServices.$inferInsert;
+
+export const hostAvailabilityIntervals = table("host_availability_intervals", {
+  id: serial("id"),
+  observationKey: varchar("observationKey", { length: 36 }).notNull().unique(),
+  hostId: int("hostId").notNull(),
+  online: int("online").notNull(),
+  offlineIncident: int("offlineIncident").notNull().default(0),
+  startAt: epoch("startAt").notNull(),
+  endAt: epoch("endAt").notNull(),
+});
 
 export const hostProbeServiceStats = table("host_probe_service_stats", {
   id: serial("id"),

@@ -11,17 +11,30 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import DiscordAccountCard from "./DiscordAccountCard";
+import { NotificationPreferenceRow } from "./NotificationPreferencesCard";
 
 export default function NotificationSettingsCard({ telegram }: { telegram: ReactNode }) {
   const utils = trpc.useUtils();
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [channel, setChannel] = useState<"telegram" | "discord">("telegram");
   useEffect(() => { if (settings) setChannel(settings.notificationChannel); }, [settings?.notificationChannel]);
-  const update = trpc.system.updateSettings.useMutation({ onSuccess: () => { void utils.system.getSettings.invalidate(); void utils.telegram.status.invalidate(); void utils.discord.status.invalidate(); toast.success(t("通知渠道已保存")); }, onError: (error) => toast.error(error.message) });
+  const update = trpc.system.updateSettings.useMutation({ onSuccess: () => { void utils.system.getSettings.invalidate(); void utils.telegram.status.invalidate(); void utils.discord.status.invalidate(); void utils.auth.notificationPreferences.invalidate(); toast.success(t("通知渠道已保存")); }, onError: (error) => toast.error(error.message) });
+  const updateTickets = trpc.system.updateSettings.useMutation({
+    onSuccess: async () => {
+      await Promise.all([utils.system.getSettings.invalidate(), utils.auth.notificationPreferences.invalidate()]);
+      toast.success(t("工单通知设置已保存"));
+    },
+    onError: (error) => toast.error(error.message),
+  });
   return <div className="space-y-4">
     <Card><CardHeader><CardTitle>{t("通知渠道")}</CardTitle><CardDescription>{t("仅所选渠道生效，切换保留配置与绑定。")}</CardDescription></CardHeader>
-      <CardContent className="responsive-actions flex flex-wrap items-center gap-3"><Select value={channel} onValueChange={(value) => setChannel(value as "telegram" | "discord")}><SelectTrigger className="w-full sm:w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="telegram">Telegram</SelectItem><SelectItem value="discord">Discord</SelectItem></SelectContent></Select>
+      <CardContent className="space-y-4"><div className="responsive-actions flex flex-wrap items-center gap-3"><Select value={channel} onValueChange={(value) => setChannel(value as "telegram" | "discord")}><SelectTrigger className="w-full sm:w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="telegram">Telegram</SelectItem><SelectItem value="discord">Discord</SelectItem></SelectContent></Select>
         <Button className="w-full sm:w-auto" disabled={update.isPending || channel === settings?.notificationChannel} onClick={() => update.mutate({ notificationChannel: channel })}>{t("保存")}</Button>
+      </div>
+      <NotificationPreferenceRow title={t("工单通知")}
+        description={t("关闭后停止所有工单推送，不影响工单和个人偏好。")}
+        checked={settings?.supportTicketNotificationsEnabled ?? true} disabled={!settings || updateTickets.isPending}
+        onChange={(enabled) => updateTickets.mutateAsync({ supportTicketNotificationsEnabled: enabled })} />
       </CardContent></Card>
     {channel === "telegram" ? telegram : <DiscordBotSettings />}
   </div>;

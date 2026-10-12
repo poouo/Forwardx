@@ -10,6 +10,63 @@ import { PersistentPagination, type PersistentPaginationState } from "../Persist
 import { RuleLimitsForm, newRuleLimitsForm } from "../rules/RuleLimitsForm";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
 
+test("sidebar menu toggles use a uniform label-only row without per-feature descriptions", () => {
+  const settings = readFileSync("client/src/pages/Settings.tsx", "utf8");
+  const rows = settings.slice(settings.indexOf("{SIDEBAR_MENU_KEYS.map((key) => ("));
+  const menu = rows.slice(0, rows.indexOf("</Dialog>"));
+  assert.match(menu, /<span className="min-w-0 text-sm">\{translateText\(SIDEBAR_MENU_LABELS\[key\]\)\}<\/span>/);
+  assert.match(menu, /checked=\{sidebarMenu\[key\]\}/);
+  assert.match(menu, /setSidebarMenuEnabled\(key, checked\)/);
+  assert.doesNotMatch(menu, /<p\b|key === "tickets"|key === "affiliates"|默认关闭/);
+});
+
+test("ticket navigation belongs to management for both roles and keeps unread badges", () => {
+  const layout = readFileSync("client/src/components/DashboardLayout.tsx", "utf8");
+  const primary = layout.slice(layout.indexOf("  const primaryMenuItems = ["), layout.indexOf("  const otherMenuItems:"));
+  assert.doesNotMatch(primary, /ticketMenuItems|\/tickets|sidebarMenuSettings\.tickets/);
+  const management = layout.slice(layout.indexOf("  const managementMenuItems:"), layout.indexOf("  const allMenuItems ="));
+  assert.equal((management.match(/\.\.\.ticketMenuItems/g) || []).length, 2);
+  assert.match(layout, /const ticketMenuItems: SidebarNavItem\[\] = sidebarMenuSettings\.tickets/);
+  assert.match(layout, /ticketSummary\.unread > 99/);
+  assert.match(layout, /const allMenuItems = \[\.\.\.primaryMenuItems, \.\.\.managementMenuItems, \.\.\.otherMenuItems\]/);
+});
+
+test("ticket actions distinguish administrator handling from user submission in both languages", async () => {
+  const { TicketListActions } = await import("@/pages/SupportTickets");
+  const previous = getLanguagePreference();
+  try {
+    for (const language of ["zh-CN", "en"] as const) {
+      setLanguagePreference(language);
+      await initializeLanguage();
+      for (const admin of [true, false]) {
+        const html = renderToStaticMarkup(<TicketListActions admin={admin} onCreate={() => {}} onManageReplies={() => {}} />);
+        assert.equal((html.match(/<button/g) || []).length, 1);
+        const create = language === "en" ? "Submit a ticket" : "提交工单";
+        const manage = language === "en" ? "Manage saved replies" : "管理快捷回复";
+        assert.ok(html.includes(admin ? manage : create));
+        assert.ok(!html.includes(admin ? create : manage));
+      }
+    }
+  } finally {
+    setLanguagePreference(previous);
+    await initializeLanguage();
+  }
+  const page = readFileSync("client/src/pages/SupportTickets.tsx", "utf8");
+  assert.match(page, /creating && user\?\.role === "user" &&/);
+});
+
+test("cancelled subscriptions stay in default billing history, not in the package view", () => {
+  const billing = readFileSync("client/src/pages/Billing.tsx", "utf8");
+  const packages = readFileSync("client/src/pages/Subscriptions.tsx", "utf8");
+  assert.doesNotMatch(billing, /showCancelledSubscriptions|visibleLedger|查看已取消|隐藏已取消/);
+  assert.match(billing, /\{ledger\.map\(\(item: any\) =>/);
+  assert.match(billing, /translateText\(item\.statusLabel \|\| item\.status\)/);
+  assert.doesNotMatch(packages, /showCancelled|cancelledCount|已取消记录当前处于隐藏状态|删除已取消订阅/);
+  assert.match(packages, /subscriptions\.filter\(\(sub: any\) => sub\.status !== "cancelled"\)/);
+  const wallet = readFileSync("client/src/pages/Wallet.tsx", "utf8");
+  assert.match(wallet, /translateText\(item\.statusLabel \|\| item\.status\)/);
+});
+
 test("secondary help is native, collapsed, touch/keyboard accessible and retains full content", () => {
   const html = renderToStaticMarkup(<HelpDetails><p>Detailed guidance</p><a href="/guide">Read more</a></HelpDetails>);
   assert.match(html, /<details class="pearl-disclosure pearl-help/);

@@ -5,7 +5,7 @@ import { executeRaw, getDb, insertAndGetId, nowDate, quoteDbIdentifier } from ".
 import { setSetting, setSettings } from "./repositories/settingsRepository";
 import { getUserByUsername } from "./repositories/userRepository";
 import { hashPassword } from "./password";
-import { randomAvataaarsValue } from "../shared/avatar";
+import { builtinAvatarForSeed } from "../shared/avatar";
 import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
 import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
 import { AGENT_VERSION } from "../shared/versions";
@@ -152,7 +152,7 @@ async function ensureDevAdmin() {
 
   return insertAndGetId("users", {
     ...patch,
-    avatar: randomAvataaarsValue("forwardx-dev-admin"),
+    avatar: builtinAvatarForSeed("forwardx-dev-admin"),
     createdAt: nowDate(),
     lastSignedIn: nowDate(),
   });
@@ -261,7 +261,7 @@ async function seedUsers(adminId: number): Promise<DevUsers> {
       password: hashPassword(row.password),
       emailVerified: true,
       emailVerifiedAt: daysFromNow(-60),
-      avatar: randomAvataaarsValue(`dev-user-${row.username}`),
+      avatar: builtinAvatarForSeed(`dev-user-${row.username}`),
       createdAt: daysFromNow(-120 + index * 16),
       updatedAt: nowDate(),
     }));
@@ -2188,6 +2188,28 @@ async function seedSettings() {
   });
 }
 
+async function seedHostAvailability(hostIds: number[]) {
+  const now = new Date();
+  const nowSec = Math.floor(now.getTime() / 1000);
+  for (const [hostIndex, hostId] of hostIds.entries()) {
+    for (let day = 29; day >= 0; day--) {
+      const startAt = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - day).getTime() / 1000);
+      const endAt = Math.min(nowSec, Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1).getTime() / 1000));
+      const outageStart = startAt + Math.floor((endAt - startAt) / 3);
+      const duration = (day + hostIndex) % 7 === 0 ? 3000 : (day + hostIndex) % 5 === 0 ? 300 : 20;
+      const outageEnd = Math.min(endAt, outageStart + duration);
+      for (const [index, row] of [
+        { online: 1, offlineIncident: 0, startAt, endAt: outageStart },
+        { online: 0, offlineIncident: 1, startAt: outageStart, endAt: outageEnd },
+        { online: 1, offlineIncident: 0, startAt: outageEnd, endAt },
+      ].entries()) {
+        if (row.endAt <= row.startAt) continue;
+        await insertAndGetId("host_availability_intervals", { observationKey: `dev-${hostId}-${day}-${index}`, hostId, ...row });
+      }
+    }
+  }
+}
+
 export async function seedDevPanelData() {
   if (!isDevPanelMode()) return;
   const db = await getDb();
@@ -2201,6 +2223,7 @@ export async function seedDevPanelData() {
   await seedAgentTokens(adminId, hostIds);
   await seedHostGroups(adminId, hostIds);
   await seedHostMetrics(hostIds);
+  await seedHostAvailability(hostIds);
   const resources = await seedTunnelsAndGroups(adminId, hostIds);
   const rules = await seedRules(hostIds, resources, usersSeed);
   await seedProbeServices(adminId, hostIds);

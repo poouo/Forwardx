@@ -1102,11 +1102,13 @@ function DashboardLayoutContent({
         path: `/plugins/sidebar/${page.pluginId}`,
       }))
     : [];
+  const ticketMenuItems: SidebarNavItem[] = sidebarMenuSettings.tickets
+    ? [{ icon: LifeBuoy, label: `${translateText("工单支持")}${ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" }]
+    : [];
   const primaryMenuItems = [
     ...visibleMainMenuItems,
     ...userStoreMenuItems,
     ...(!isAdmin && (sidebarMenuSettings.affiliates || affiliateStatus?.hasHistory) ? [{ icon: Handshake, label: translateText("推广返佣"), path: "/affiliates", menuKey: "affiliates" as const }] : []),
-    ...(sidebarMenuSettings.tickets ? [{ icon: LifeBuoy, label: `${translateText("工单支持")}${ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" as const }] : []),
     ...visibleAnnouncementsMenuItems,
   ];
   const otherMenuItems: SidebarNavItem[] = [
@@ -1115,9 +1117,10 @@ function DashboardLayoutContent({
     ...customPageMenuItems,
   ];
 
-  const allMenuItems = isAdmin
-    ? [...primaryMenuItems, ...visibleProfileMenuItems, ...visibleAdminMenuItems, ...otherMenuItems]
-    : [...primaryMenuItems, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems, ...otherMenuItems];
+  const managementMenuItems: SidebarNavItem[] = isAdmin
+    ? [...visibleProfileMenuItems, ...ticketMenuItems, ...visibleAdminMenuItems]
+    : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems, ...ticketMenuItems];
+  const allMenuItems = [...primaryMenuItems, ...managementMenuItems, ...otherMenuItems];
 
   const currentPath = location.split("?")[0] || "/";
   const activeMenuItem = allMenuItems.find((item) => item.path === currentPath);
@@ -1191,9 +1194,6 @@ function DashboardLayoutContent({
     setShowUpgradeDialog(false);
     toast.success(translateText("v{0} 不再在左下角提醒", [normalizedUpgradeTargetVersion]));
   };
-  const managementMenuItems: SidebarNavItem[] = isAdmin
-    ? [...visibleProfileMenuItems, ...visibleAdminMenuItems]
-    : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems];
   const closeMobileNavigation = () => {
     if (isMobile) {
       setAccountMenuOpen(false);

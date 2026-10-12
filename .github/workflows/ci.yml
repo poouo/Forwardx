@@ -50,6 +50,10 @@ jobs:
           pnpm test:ui
           pnpm test:support
           pnpm test:affiliates
+          pnpm test:avatars
+          pnpm test:latency-history
+          pnpm test:agent-proxy
+          pnpm test:deployment-docs
           pnpm test:ios
           pnpm test:i18n
           pnpm test:google-auth

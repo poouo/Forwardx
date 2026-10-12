@@ -1163,6 +1163,31 @@ function TicketDetail({
   );
 }
 
+export function TicketListActions({
+  admin,
+  onCreate,
+  onManageReplies,
+}: {
+  admin: boolean;
+  onCreate: () => void;
+  onManageReplies: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {admin ? (
+        <Button variant="outline" onClick={onManageReplies}>
+          {t("管理快捷回复")}
+        </Button>
+      ) : (
+        <Button onClick={onCreate}>
+          <MessageSquarePlus className="mr-2 h-4 w-4" />
+          {t("提交工单")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function TicketList({
   admin,
   onOpen,
@@ -1248,17 +1273,11 @@ function TicketList({
             )}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {admin && (
-            <Button variant="outline" onClick={() => setCannedOpen(true)}>
-              {t("管理快捷回复")}
-            </Button>
-          )}
-          <Button onClick={onCreate}>
-            <MessageSquarePlus className="mr-2 h-4 w-4" />
-            {t("提交工单")}
-          </Button>
-        </div>
+        <TicketListActions
+          admin={admin}
+          onCreate={onCreate}
+          onManageReplies={() => setCannedOpen(true)}
+        />
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
         {TICKET_STATUSES.map((value) => (
@@ -1580,7 +1599,7 @@ export default function SupportTickets() {
               onCreate={() => setCreating(true)}
             />
           )}
-          {creating && (
+          {creating && user?.role === "user" && (
             <CreateTicket
               onClose={() => setCreating(false)}
               onCreated={(id) => {

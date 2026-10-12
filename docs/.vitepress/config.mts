@@ -63,6 +63,7 @@ export default defineConfig({
         text: "Agent、链路与转发",
         items: [
           { text: "安装 Agent", link: "/guide/agent" },
+          { text: "Agent SOCKS / HTTP 代理", link: "/guide/agent-proxy-manager" },
           { text: "主机管理", link: "/guide/hosts" },
           { text: "转发规则与单规则限额", link: "/guide/rules" },
           { text: "流量和延迟", link: "/guide/traffic-latency" },
@@ -87,6 +88,7 @@ export default defineConfig({
       {
         text: "运维与排障",
         items: [
+          { text: "SSH 管理菜单（fwxm）", link: "/guide/ssh-management" },
           { text: "目录、数据与日志", link: "/guide/paths-logs" },
           { text: "管理员账号恢复", link: "/guide/account-recovery" },
           { text: "升级与备份", link: "/guide/upgrade-backup" },

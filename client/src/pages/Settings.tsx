@@ -5532,7 +5532,7 @@ function SystemInfoSection() {
                 key={key}
                 className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
               >
-                <div className="min-w-0 space-y-1"><span className="text-sm">{translateText(SIDEBAR_MENU_LABELS[key])}</span>{key === "tickets" && <p className="text-xs text-muted-foreground">{translateText("默认关闭；开启后用户可提交工单，关闭后保留历史数据并停用接口。")}</p>}{key === "affiliates" && <p className="text-xs text-muted-foreground">{translateText("默认关闭；开启后允许邀请注册和订单返佣，关闭后保留历史佣金及提现处理。")}</p>}</div>
+                <span className="min-w-0 text-sm">{translateText(SIDEBAR_MENU_LABELS[key])}</span>
                 <Switch className="shrink-0" aria-label={translateText(SIDEBAR_MENU_LABELS[key])} checked={sidebarMenu[key]} onCheckedChange={(checked) => setSidebarMenuEnabled(key, checked)} />
               </div>
             ))}

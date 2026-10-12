@@ -4,18 +4,15 @@
 
 ## [Unreleased]
 
-- Combine dashboard traffic breakdowns into one card and status summaries into another, with responsive sections and subtle dividers.
-- Add opt-in affiliates: invitation codes/QR, first-order or recurring commissions, confirmation periods, balance transfers, withdrawal reviews, custom rates and reversals; link email and first-time Google registrations.
-- Commission applies only to CNY online plan payments, not top-ups or balance purchases. Payouts are manual; external refunds require administrator commission cancellation.
-- Add opt-in support tickets: optional service links, attachments, conversations, status/priority, assignment, private notes, saved replies, bulk actions, unread alerts and ratings, with authorization and backup/migration support.
-- Keep batch-rule counters horizontal and wrap copy/import/export/edit panel headers to fit narrow containers.
-- Add subtle gradient washes and corner arcs to plan cards, matching the top accent in light and dark themes.
-- Use dropdowns for overflowing sections in narrow pages and dialogs, preserving existing behavior; improve heading alignment, card spacing and form sizing, and avoid mobile input zoom.
-- Streamline sidebar collapse/expand: remove large-area blur and redundant size animations, reduce menu measurements, and respect reduced motion.
-- Fix the app sidebar overlapping the status bar; reserve top and bottom safe areas consistently across Android WebView and iOS.
-- Rule link tests follow the active host or tunnel member of a forwarding group; route displays follow failover, and test records retain the actual tested entry.
-- Fix stale child rules blocking host deletion after disabling groups or changing entry-group members or tunnel entry hosts.
-- Repair historical bindings and template deletion states; make cleanup idempotent, preserve logical rules in empty groups, and rerun repairs on recheck. Retain real dependency and Agent cleanup safeguards.
+## [2.3.284] - 2026-10-13
+
+- Add optional affiliates and support tickets, with global/per-user ticket notification switches for Telegram / Discord.
+- Retain latency and host availability history for 30 days, with color-coded daily navigation, hover statistics, offline details and a Today shortcut; optimize indexes, queries and batched cleanup.
+- Support SOCKS/HTTP proxies for Agent installation, management traffic and upgrades. Add the `fwxm` SSH menu for status, restart, logs, proxies, repair and panel admin password recovery. Proxies cover management/downloads, not forwarded traffic.
+- Refine dashboard, sidebar, mobile safe areas and numeric displays; provide 20 local avatars and show cancelled plans only in billing.
+- Correct active-member forwarding-group link tests and stale child-rule references, preserving real dependencies and Agent cleanup acknowledgements.
+- Reorganize both READMEs and deployment guides, including proxy, SSH management, upgrade, backup and recovery instructions.
+- Versions: panel `2.3.284`, Android / iOS `2.4.2`, Agent `2.2.197`, ForwardX FXP runtime `2.2.118` (unchanged). Agent proxy support requires an Agent upgrade; upgrades are not guaranteed to preserve active connections.
 
 ## [2.3.283] - 2026-10-12
 

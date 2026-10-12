@@ -5,13 +5,13 @@ import { AvatarPicker } from "@/components/AvatarPicker";
 import DashboardLayout from "@/components/DashboardLayout";
 import DiscordAccountCard from "@/components/DiscordAccountCard";
 import GoogleAccountCard from "@/components/GoogleAccountCard";
+import NotificationPreferencesCard from "@/components/NotificationPreferencesCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { migrateLegacyAvatarValue } from "@/lib/avatar";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { mobileAuth } from "@/lib/mobileAuth";
@@ -88,6 +88,9 @@ function ProfileContent() {
     retry: false,
   });
   useEffect(() => {
+    void utils.auth.notificationPreferences.invalidate();
+  }, [telegramStatus?.bound, discordStatus?.bound, discordStatus?.selected, utils]);
+  useEffect(() => {
     if (user) setAvatarDraft(migrateLegacyAvatarValue((user as any).avatar, `user-${user.id}`));
   }, [user?.id, (user as any)?.avatar]);
 
@@ -102,17 +105,6 @@ function ProfileContent() {
       toast.success(translateText("显示名称已更新"));
     },
     onError: (error) => toast.error(error.message || translateText("显示名称更新失败")),
-  });
-
-  const updateTelegramAnnouncementSubscriptionMutation = trpc.auth.updateProfile.useMutation({
-    onSuccess: async (_data, variables) => {
-      await Promise.all([
-        utils.auth.me.invalidate(),
-        utils.telegram.status.invalidate(),
-      ]);
-      toast.success(variables.telegramAnnouncementSubscribed ? translateText("已开启公告 TG 推送") : translateText("已关闭公告 TG 推送"));
-    },
-    onError: (error) => toast.error(error.message || translateText("公告 TG 推送设置失败")),
   });
 
   const updateAvatarMutation = trpc.users.updateAvatar.useMutation({
@@ -356,10 +348,6 @@ function ProfileContent() {
     createTelegramBindMutation.mutate();
   };
 
-  const handleTelegramAnnouncementSubscribedChange = (enabled: boolean) => (
-    updateTelegramAnnouncementSubscriptionMutation.mutateAsync({ telegramAnnouncementSubscribed: enabled })
-  );
-
   const handleMobileUpdateCheck = async () => {
     if (!mobileAuth.isNative || checkingMobileUpdate) return;
     try {
@@ -489,7 +477,7 @@ function ProfileContent() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <GoogleAccountCard />
-        {discordStatus?.selected ? <DiscordAccountCard /> : (
+        {discordStatus?.selected ? <DiscordAccountCard showAnnouncementPreference={false} /> : (
         <Card className="border-border/50 bg-card/70">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -502,20 +490,6 @@ function ProfileContent() {
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">{translateText("公告 Telegram 推送")}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{translateText("默认关闭。开启后，新公告仅在管理员选择 TG 推送时发送到已绑定的 Telegram。")}</p>
-              </div>
-              <OptimisticSwitch
-                checked={!!telegramStatus?.announcementSubscribed}
-                disabled={!telegramStatus?.bound}
-                onCheckedChangeAsync={handleTelegramAnnouncementSubscribedChange}
-              />
-            </div>
-            {!telegramStatus?.bound && telegramStatus?.configured !== false && (
-              <p className="text-xs text-muted-foreground">{translateText("绑定 Telegram 后可开启公告推送订阅。")}</p>
-            )}
             {telegramStatus?.bound ? (
               <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:flex-row sm:items-center">
                 <div className="grid min-w-0 flex-1 gap-3 sm:grid-cols-2">
@@ -590,6 +564,7 @@ function ProfileContent() {
         </Card>
 
         )}
+        <NotificationPreferencesCard />
         <Card className="border-border/50 bg-card/70">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>

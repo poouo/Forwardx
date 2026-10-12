@@ -195,7 +195,7 @@ export default function Wallet() {
                       </TableCell>
                       <TableCell>
                         <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>
-                          {item.statusLabel || item.status}
+                          {translateText(item.statusLabel || item.status)}
                         </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">

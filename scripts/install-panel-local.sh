@@ -777,6 +777,14 @@ FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgr
 EOF
 }
 
+register_management_command() {
+  local assets="$APP_DIR/dist/management"
+  if [ -s "$assets/install-management.sh" ]; then
+    source "$assets/install-management.sh"
+    install_panel_management local "$assets" || echo '[WARN] fwxm setup failed; panel remains available.' >&2
+  else echo '[WARN] Management assets unavailable in this release.' >&2; fi
+}
+
 install_panel() {
   local release_version
   require_root
@@ -790,6 +798,7 @@ install_panel() {
   read_database_config
   write_service
   restart_service
+  register_management_command
   echo "[DONE] ForwardX panel started (release v$release_version): http://SERVER_IP:$PORT"
 }
 
@@ -804,6 +813,7 @@ upgrade_panel() {
   write_env
   write_service
   restart_service
+  register_management_command
   echo "[DONE] ForwardX panel upgraded to release v$release_version and restarted"
 }
 

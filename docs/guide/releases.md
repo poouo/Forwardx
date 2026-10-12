@@ -1,17 +1,19 @@
 # 版本与文档更新
 
-## 当前发布
+## 当前源码版本标识
 
-| 组件 | 本次版本 |
+| 组件 | 源码标识 |
 | --- | --- |
-| 面板 | 2.3.283 |
-| Android / iOS | 2.4.1 |
-| Agent | 2.2.196 |
+| 面板 | 2.3.284 |
+| Android / iOS | 2.4.2 |
+| Agent | 2.2.197 |
 | FXP 运行时 | 2.2.118 |
 
-本次更新包含界面精简与主题动效、英文补齐、规则搜索与主机移除修复、隧道批量新增连接保护，以及普通端口转发的单 IP TCP 并发限制。完整历史见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+本次更新包含 Agent SOCKS / HTTP 代理、`fwxm` SSH 交互管理、30 天延迟与在线历史、可选推广返佣与工单、工单通知开关、本地头像及界面优化，并重新整理中英文 README 和部署文档。完整历史见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
-隧道增量新增与普通端口限制需升级配套 Agent，FXP 增量控制需更新配套运行时。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。升级前先 [备份](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
+该表反映仓库中的版本字段，不证明对应 Release 已构建完成。安装或升级时，以实际 Release 附件和构建任务结果为准；各平台安装包可能先后完成。
+
+Agent 代理功能需升级至 `2.2.197`；本次 FXP 运行时保持 `2.2.118`。从旧版本升级时，隧道增量新增与普通端口限制仍需配套 Agent / 运行时。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。升级前先 [备份](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
 
 Android 和 iOS 使用相同的应用版本号；面板、Agent 和 FXP 分别维护自己的版本。安装包按平台识别更新，不会把 APK 当作 IPA。iOS 包仍需 [自行签名](./mobile-app.md)。
 

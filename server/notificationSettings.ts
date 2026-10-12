@@ -23,6 +23,7 @@ export function notificationSettings(settings: Record<string, string | null | un
     trafficReminder: settings[`${channel}TrafficReminder`] === "true",
     trafficReminderThreshold: Number.isFinite(threshold) ? Math.min(99, Math.max(1, threshold)) : 20,
     hostStatusNotify: settings[`${channel}HostStatusNotify`] === "true",
+    supportTicketNotificationsEnabled: settings.supportTicketNotificationsEnabled !== "false",
   };
 }
 export async function getNotificationSettings(channel?: NotificationChannel) {

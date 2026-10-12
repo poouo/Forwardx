@@ -1,9 +1,9 @@
-import { t as translateText } from "@/i18n";
+import { getLanguage, t as translateText } from "@/i18n";
 import { ChangeEvent, ReactNode, useRef } from "react";
-import { Image, Shuffle, Upload } from "lucide-react";
+import { Shuffle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/UserAvatar";
-import { DEFAULT_AVATAR_SEEDS, avataaarsValue, fileToImageDataUrl } from "@/lib/avatar";
+import { BUILTIN_AVATARS, builtinAvatarPath, builtinAvatarValue, fileToImageDataUrl, migrateLegacyAvatarValue, randomBuiltinAvatarValue } from "@/lib/avatar";
 import { cn } from "@/lib/utils";
 
 type AvatarPickerProps = {
@@ -55,8 +55,7 @@ export function AvatarPicker({
       onRandom();
       return;
     }
-    const seed = DEFAULT_AVATAR_SEEDS[Math.floor(Math.random() * DEFAULT_AVATAR_SEEDS.length)] || "forwardx";
-    onChange(avataaarsValue(`${seed}-${Math.random().toString(36).slice(2, 8)}`));
+    onChange(randomBuiltinAvatarValue(migrateLegacyAvatarValue(value, fallback)));
   };
 
   return (
@@ -81,35 +80,29 @@ export function AvatarPicker({
         onChange={handleUpload}
         disabled={disabled}
       />
-      <div className={cn("grid grid-cols-6 gap-2 sm:grid-cols-8", gridClassName)}>
-        {DEFAULT_AVATAR_SEEDS.map((seed) => {
-          const preset = avataaarsValue(seed);
-          const selected = value === preset;
+      <div className={cn("grid grid-cols-5 gap-2 sm:gap-3", gridClassName)}>
+        {BUILTIN_AVATARS.map((avatar) => {
+          const preset = builtinAvatarValue(avatar.id);
+          const selected = migrateLegacyAvatarValue(value, fallback) === preset;
+          const label = getLanguage() === "en" ? avatar.nameEn : avatar.name;
           return (
             <button
               type="button"
-              key={seed}
+              key={avatar.id}
               className={cn(
-                "flex aspect-square items-center justify-center rounded-full border bg-background transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex aspect-square items-center justify-center overflow-hidden rounded-full border bg-background transition-[transform,box-shadow,border-color] duration-200 motion-safe:hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
                 selected ? "border-primary ring-2 ring-primary/30" : "border-border/50 hover:border-primary/50",
               )}
               onClick={() => onChange(preset)}
               disabled={disabled}
-              title={seed}
+              title={label}
+              aria-label={label}
+              aria-pressed={selected}
             >
-              <UserAvatar user={{ id: seed, username: seed, avatar: preset }} className="h-full w-full border-0" />
+              <img src={builtinAvatarPath(preset)} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
             </button>
           );
         })}
-        <button
-          type="button"
-          className="flex aspect-square items-center justify-center rounded-full border border-dashed border-border/70 bg-muted/20 text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => inputRef.current?.click()}
-          disabled={disabled}
-          title={translateText("上传头像")}
-        >
-          <Image className="h-4 w-4" />
-        </button>
       </div>
     </div>
   );

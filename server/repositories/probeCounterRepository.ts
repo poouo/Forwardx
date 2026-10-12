@@ -3,6 +3,7 @@ import { hasAgentProbeCounter, normalizeAgentProbeCounts, type AgentProbeCounter
 import type { ProbeStatistics } from "../../shared/probeStatistics";
 import { executeRaw, getDatabaseKind, queryRaw } from "../dbRuntime";
 import { quoteIdentifier as q } from "../dbCompat";
+import { LATENCY_HISTORY_HOURS } from "../../shared/latencyHistory";
 
 export type ProbeCounterKind = "rule" | "tunnel" | "forwardGroup";
 export type ProbeCounterSnapshot = {
@@ -53,12 +54,12 @@ export async function insertProbeCounterSnapshots(rows: ProbeCounterSnapshot[], 
   }
 }
 
-export async function getProbeCounterStatistics(kind: ProbeCounterKind, refIds: number | number[], since: Date): Promise<ProbeStatistics> {
+export async function getProbeCounterStatistics(kind: ProbeCounterKind, refIds: number | number[], since: Date, until = new Date(Date.now() + 1000)): Promise<ProbeStatistics> {
   const ids = [...new Set((Array.isArray(refIds) ? refIds : [refIds]).filter((id) => Number.isInteger(id) && id > 0))];
   const empty: ProbeStatistics = { total: 0, successes: 0, available: false, observedSince: null, latestAt: null };
   if (!ids.length) return empty;
   const start = Math.floor(since.getTime() / 1000);
-  // Retention is 72h. The latest pre-window snapshot is the baseline; for a
+  // Retention is 30 days. The latest pre-window snapshot is the baseline; for a
   // newly observed stream count only its first batch + subsequent deltas,
   // never its unobserved lifetime. MAX tolerates retries and out-of-order POSTs.
   const rows = await queryRaw<any>(`
@@ -74,8 +75,11 @@ export async function getProbeCounterStatistics(kind: ProbeCounterKind, refIds: 
     FROM ${q("probe_counter_snapshots")}
     WHERE ${q("kind")} = ? AND ${q("refId")} IN (${ids.map(() => "?").join(", ")})
       AND ${q("recordedAt")} >= ?
+      AND ${q("recordedAt")} < ?
     GROUP BY ${q("hostId")}, ${q("refId")}, ${q("probeKey")}, ${q("epoch")}`,
-  [start, start, start, start, start, start, start, start, kind, ...ids, start - 72 * 3600]);
+  [start, start, start, start, start, start, start, start, kind, ...ids,
+    Math.floor(Date.now() / 1000) - LATENCY_HISTORY_HOURS * 3600,
+    Math.min(Math.floor(until.getTime() / 1000), Math.floor(Date.now() / 1000) + 1)]);
   for (const row of rows) {
     if (row.endCount === null || row.endCount === undefined) continue;
     const count = Math.max(0, Number(row.endCount) - Number(row.baseCount ?? row.initialCount));

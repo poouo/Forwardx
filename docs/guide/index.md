@@ -17,6 +17,8 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | 规则不通、流量不更新、探测异常 | [故障排查](./troubleshooting.md)、[流量和延迟](./traffic-latency.md) |
 | 设置单规则额度或用户权限 | [转发规则](./rules.md)、[用户与套餐](./users-billing.md) |
 | 升级、备份或迁移 | [升级备份](./upgrade-backup.md)、[迁移](./migration.md) |
+| SSH 查看状态、重启或修复 | [fwxm 管理菜单](./ssh-management.md) |
+| Agent 使用 SOCKS / HTTP 代理 | [安装、运行与升级代理](./agent-proxy-manager.md) |
 | 手机端安装与更新 | [APK / IPA](./mobile-app.md) |
 
 ## 面板部署与配置
@@ -36,6 +38,7 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | 文档 | 内容 |
 | --- | --- |
 | [安装 Agent](./agent.md) | 每主机独立 Token、安装与升级 |
+| [Agent 代理](./agent-proxy-manager.md) | SOCKS / HTTP 安装、运行与升级；[English](./agent-proxy-manager.en.md) |
 | [主机管理](./hosts.md) | 主机状态、端口限制及资源监控 |
 | [转发规则](./rules.md) | 引用链路、批量操作、管理员单规则限额 |
 | [流量和延迟](./traffic-latency.md) | 用量、探测、自测和图表 |
@@ -68,6 +71,7 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | 文档 | 内容 |
 | --- | --- |
 | [安装目录、数据与日志](./paths-logs.md) | Docker、本地、Agent 路径和诊断信息 |
+| [SSH 管理菜单（fwxm）](./ssh-management.md) | 面板/Agent 交互菜单、状态、重启、修复和命令速查 |
 | [管理员账号恢复](./account-recovery.md) | 容器内与本地交互式密码重置 |
 | [升级与备份](./upgrade-backup.md) | 一致备份、升级、兼容格式转换 |
 | [版本与文档更新](./releases.md) | 组件版本、构建状态和文档未更新排查 |

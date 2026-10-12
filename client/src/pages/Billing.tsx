@@ -18,7 +18,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
-import { CreditCard, Download, Eye, EyeOff, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
+import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
@@ -236,7 +236,6 @@ export default function Billing() {
     storageKey: BILLING_TAB_STORAGE_KEY,
   });
   const [ledgerUserId, setLedgerUserId] = useState("all");
-  const [showCancelledSubscriptions, setShowCancelledSubscriptions] = useState(false);
   const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
   const subscriptionPageRequest = usePersistentPageRequest("forwardx.billing.subscriptions.page");
   const redemptionPageRequest = usePersistentPageRequest("forwardx.billing.redemption.page");
@@ -277,19 +276,12 @@ export default function Billing() {
   const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
     limit: 200,
     userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
-    includeCancelledSubscriptions: showCancelledSubscriptions,
   }, {
     enabled: activeTab === "ledger",
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
   });
-  const visibleLedger = useMemo(
-    () => showCancelledSubscriptions
-      ? ledger
-      : ledger.filter((item: any) => item.kind !== "subscription" || item.status !== "cancelled"),
-    [ledger, showCancelledSubscriptions],
-  );
   const redemptionPageQuery = trpc.billing.listRedemptionCodesPage.useQuery({
     page: redemptionPageRequest.page,
     pageSize: 50,
@@ -649,15 +641,6 @@ export default function Billing() {
                   <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" />{translateText(" 账单流水")}</CardTitle>
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setShowCancelledSubscriptions((value) => !value)}
-                  >
-                    {showCancelledSubscriptions ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}
-                    {showCancelledSubscriptions ? translateText("隐藏已取消") : translateText("查看已取消")}
-                  </Button>
                   <Select value={ledgerUserId} onValueChange={setLedgerUserId}>
                     <SelectTrigger className="w-full sm:w-56">
                       <SelectValue placeholder={translateText("筛选用户")} />
@@ -679,7 +662,7 @@ export default function Billing() {
                 ) : (
                   <>
                 <div className="grid gap-3 md:hidden">
-                  {visibleLedger.map((item: any) => {
+                  {ledger.map((item: any) => {
                     const Icon = ledgerIcon(item);
                     const relatedInfo = item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-");
                     return (
@@ -718,7 +701,7 @@ export default function Billing() {
                           <MobileInfoRow label={translateText("用户")}>{item.name || item.username || `#${item.userId}`}</MobileInfoRow>
                           <MobileInfoRow label={translateText("类型")}><Badge variant="outline">{item.category}</Badge></MobileInfoRow>
                           <MobileInfoRow label={translateText("状态")}>
-                            <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel || item.status}</Badge>
+                            <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge>
                           </MobileInfoRow>
                           <MobileInfoRow label={translateText("关联")} valueClassName="font-mono text-xs text-muted-foreground">{relatedInfo}</MobileInfoRow>
                           <MobileInfoRow label={translateText("时间")}>{dateText(item.createdAt)}</MobileInfoRow>
@@ -726,7 +709,7 @@ export default function Billing() {
                       </div>
                     );
                   })}
-                  {visibleLedger.length === 0 && (
+                  {ledger.length === 0 && (
                     <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无账单流水")}</div>
                   )}
                 </div>
@@ -745,7 +728,7 @@ export default function Billing() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {visibleLedger.map((item: any) => {
+                    {ledger.map((item: any) => {
                       const Icon = ledgerIcon(item);
                       return (
                         <TableRow key={item.id}>
@@ -765,7 +748,7 @@ export default function Billing() {
                           <TableCell className={ledgerTone(item)}>
                             {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
                           </TableCell>
-                          <TableCell><Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel || item.status}</Badge></TableCell>
+                          <TableCell><Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge></TableCell>
                           <TableCell className="font-mono text-xs text-muted-foreground">{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</TableCell>
                           <TableCell>{dateText(item.createdAt)}</TableCell>
                           <TableCell>
@@ -787,7 +770,7 @@ export default function Billing() {
                         </TableRow>
                       );
                     })}
-                    {visibleLedger.length === 0 && (
+                    {ledger.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">{translateText("暂无账单流水")}</TableCell>
                       </TableRow>

@@ -5,12 +5,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
-  filterLatencySeriesByTimeRange,
   latencyTimeRangeLabel,
   LatencyTimeRangeSelect,
   type LatencyTimeRangeHours,
 } from "@/components/LatencyTimeRangeSelect";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
+import { LatencyHistoryDayStrip, LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   applyLatencyPeakCut,
@@ -32,6 +32,8 @@ type TcpingChartPoint = {
   isTimeout: boolean;
   probeCount?: number | null;
   probeSuccesses?: number | null;
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
 };
 
 type TcpingSeriesDatum = {
@@ -40,9 +42,10 @@ type TcpingSeriesDatum = {
   isTimeout?: boolean | null;
   probeCount?: number | null;
   probeSuccesses?: number | null;
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
 };
 
-const tcpingSeriesCache = new Map<number, TcpingSeriesDatum[]>();
 const tcpingAnimatedKeys = new Set<number>();
 
 function formatTcpingTime(dateStr: string | Date): string {
@@ -101,27 +104,27 @@ function TcpingDetailDialog({
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const [timeRangeHours, setTimeRangeHours] = useState<LatencyTimeRangeHours>(DEFAULT_LATENCY_TIME_RANGE_HOURS);
   const methodLabel = probeMethod === "ping" ? "Ping" : "TCPing";
+  const history = useLatencyHistoryDays(timeRangeHours, open, pollingInterval("slow", open));
   const { data: counterStatistics } = trpc.rules.probeStatistics.useQuery(
-    { ruleId, hours: timeRangeHours },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+    { ruleId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false },
   );
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
-    { ruleId, hours: 24 },
-    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
+    { ruleId, ...history.input },
+    { enabled: open, refetchInterval: history.refetchInterval, refetchOnMount: "always", refetchOnWindowFocus: false },
   );
-  const cachedData = tcpingSeriesCache.get(ruleId);
-  const rawSeriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
+  const daily = trpc.rules.tcpingSeries.useQuery({ ruleId, ...history.summaryInput },
+    { enabled: open, staleTime: 60_000, refetchInterval: open ? 300_000 : false, refetchOnWindowFocus: false });
+  // React Query already caches each rule/range separately. An entity-only
+  // fallback cache could show a previous 24h response as a monthly result.
+  const rawSeriesData = data as TcpingSeriesDatum[] | undefined;
   const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
   const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
   const rangedSeriesData = useMemo(
-    () => filterLatencySeriesByTimeRange(seriesData, timeRangeHours),
-    [seriesData, timeRangeHours],
+    () => history.filter(seriesData),
+    [seriesData, timeRangeHours, history.selectedDay],
   );
   const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
-
-  useEffect(() => {
-    if (data) tcpingSeriesCache.set(ruleId, data as TcpingSeriesDatum[]);
-  }, [data, ruleId]);
 
   const rawChartData = useMemo<TcpingChartPoint[]>(() => {
     if (!rangedSeriesData.length) return [];
@@ -136,6 +139,8 @@ function TcpingDetailDialog({
         isTimeout: counts.isTimeout,
         probeCount: counts.probeCount,
         probeSuccesses: counts.probeSuccesses,
+        minLatencyMs: d.minLatencyMs,
+        maxLatencyMs: d.maxLatencyMs,
       };
     });
   }, [rangedSeriesData]);
@@ -171,11 +176,12 @@ function TcpingDetailDialog({
                 {isForwardChain ? translateText("转发链路延迟") : translateText("转发链路延迟 ({0})", [methodLabel])} - {ruleName}
               </DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
-                {isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? translateText("Ping 丢包") : translateText("TCP 连接失败")])}
+                {history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? translateText("Ping 丢包") : translateText("TCP 连接失败")])}
               </DialogDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} onChange={setTimeRangeHours} />
+              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+              <LatencyHistoryTodayButton onClick={history.today} />
               <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
             </div>
           </div>
@@ -229,6 +235,7 @@ function TcpingDetailDialog({
               </ResponsiveContainer>
             )}
           </div>
+          <LatencyHistoryDayStrip days={history.days} selectedDay={history.selectedDay} onSelect={history.setSelectedDay} samples={daily.data} loading={daily.isLoading} error={daily.isError} />
           <LatencyStabilityStats stats={tcpingStats} sampleLabel={isForwardChain ? translateText("逐跳探测次数") : translateText("实际探测次数")}
             failureLabel={isForwardChain ? translateText("逐跳探测失败率") : probeMethod === "ping" ? translateText("Ping 丢包率") : translateText("TCP 连接失败率")}
             counterStatistics={counterStatistics ?? null}

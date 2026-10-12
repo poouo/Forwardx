@@ -176,13 +176,13 @@
   .forwardx-stat-value-inner {
     display: inline-block;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: bottom;
+    /* Do not clip glyph ink to the inline box: some system fonts and zoom
+       levels paint the bottom of digits/units slightly outside that box. */
+    overflow: visible;
+    vertical-align: baseline;
+    line-height: inherit;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1, "kern" 1;
-    backface-visibility: hidden;
-    will-change: transform;
   }
 
   .forwardx-stat-value[data-changing="true"][data-loading="false"] .forwardx-stat-value-inner {

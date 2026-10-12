@@ -42,6 +42,45 @@ LEGACY_CONFIG_DIR="/etc/forwardx-agent"
 LOG_DIR="/var/log/forwardx-agent"
 STATE_DIR="/var/lib/forwardx-agent"
 
+# Keep this bootstrap self-contained: curl|bash cannot source adjacent files.
+configure_proxy() {
+  local explicit=false value="${FORWARDX_AGENT_PROXY:-}" file authority endpoint port
+  [ "${FORWARDX_AGENT_PROXY+x}" != x ] || explicit=true
+  ACTION='' TOKEN=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      install|upgrade|update|uninstall|remove|delete) [ -z "$ACTION" ] || return 1; ACTION="$1"; shift ;;
+      --proxy) [ "$#" -ge 2 ] && [ -n "$2" ] || return 1; value="$2"; explicit=true; shift 2 ;;
+      --proxy=*) value="${1#*=}"; explicit=true; shift ;;
+      --no-proxy) value=''; explicit=true; shift ;;
+      -h|--help) ACTION=help; shift ;;
+      --*) echo '[ERROR] Unknown option.' >&2; return 1 ;;
+      *) [ -z "$TOKEN" ] || return 1; TOKEN="$1"; shift ;;
+    esac
+  done
+  case "$ACTION" in uninstall|remove|delete|help|'') return 0 ;; esac
+  if [ "$explicit" = false ]; then
+    for file in "$CONFIG_DIR/config.json" "$LEGACY_CONFIG_DIR/config.json"; do
+      if [ -f "$file" ]; then
+        command -v jq >/dev/null 2>&1 || { echo '[ERROR] jq required to read Agent proxy.' >&2; return 1; }
+        value="$(jq -er 'if type == "object" and (.proxyUrl == null or (.proxyUrl | type == "string")) then (.proxyUrl // "") else error("invalid config") end' "$file" 2>/dev/null)" || { echo '[ERROR] Invalid Agent proxy configuration.' >&2; return 1; }
+        break
+      fi
+    done
+  fi
+  if [ -n "$value" ]; then
+    case "$value" in http://*|https://*|socks5://*|socks5h://*) ;; *) echo '[ERROR] Unsupported proxy scheme.' >&2; return 1 ;; esac
+    case "$value" in *$'\n'*|*$'\r'*|*$'\t'*|*' '*|*'?'*|*'#'*) echo '[ERROR] Invalid proxy URL.' >&2; return 1 ;; esac
+    authority="${value#*://}"; endpoint="${authority##*@}"; port="${endpoint##*:}"
+    case "$authority" in */*|'') return 1 ;; esac
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [ "$endpoint" != "$port" ] && [ -n "${endpoint%:*}" ] || return 1
+    case "$value" in socks5://*) value="socks5h://${value#socks5://}" ;; esac
+  fi
+  unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY
+  export FORWARDX_AGENT_PROXY="$value" http_proxy="$value" https_proxy="$value" all_proxy="$value" HTTP_PROXY="$value" HTTPS_PROXY="$value" ALL_PROXY="$value" no_proxy='' NO_PROXY=''
+}
+
 show_help() {
   cat <<'EOF'
 ======================================
@@ -65,6 +104,8 @@ show_help() {
   install   <TOKEN>  安装 Agent 并注册到面板
   upgrade   [TOKEN]  升级 Agent，默认复用现有配置
   uninstall          完全卸载 Agent 及相关服务
+  --proxy URL        安装/运行/升级使用代理，例如 socks5h://127.0.0.1:1080
+  --no-proxy         保存为直连；升级默认保留配置中的 proxyUrl
 
 说明:
   安装过程中会询问是否安装 mimic UDP 混淆环境，默认 n，只有输入 Y 才会安装。
@@ -151,6 +192,7 @@ run_panel_installer() {
   fi
 
   chmod 700 "$tmp_script"
+  local rc=0
 
   if PANEL_URL="$PANEL_URL" \
     GITHUB_ACCELERATOR_ENABLED="$GITHUB_ACCELERATOR_ENABLED" \
@@ -164,9 +206,10 @@ run_panel_installer() {
     bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0
+  else
+    rc=$?
   fi
 
-  local rc=$?
   rm -f "$tmp_script"
   return "$rc"
 }
@@ -283,12 +326,14 @@ do_uninstall() {
   done
 
   rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN" "$NGINX_BIN" /usr/local/bin/forwardx-udp2raw
-  rm -rf "$CONFIG_DIR" "$LEGACY_CONFIG_DIR" "$LOG_DIR" "$STATE_DIR" /etc/forwardx /etc/forwardx-runtime /etc/forwardx-tunnel-runtime /etc/forwardx-gost /etc/forwardx-tunnels /etc/forwardx/nginx
+  rm -rf "$CONFIG_DIR" "$LEGACY_CONFIG_DIR" "$LOG_DIR" "$STATE_DIR" /etc/forwardx/runtime /etc/forwardx/realm /etc/forwardx-runtime /etc/forwardx-tunnel-runtime /etc/forwardx-gost /etc/forwardx-tunnels /etc/forwardx/nginx
 
   echo "[完成] Agent 已卸载"
 }
 
+configure_proxy "$@" || { echo '[ERROR] Cannot configure proxy; cancelled (no direct fallback).' >&2; exit 1; }
 case "$ACTION" in
+  help) show_help; exit 0 ;;
   install)
     do_install "$TOKEN"
     ;;

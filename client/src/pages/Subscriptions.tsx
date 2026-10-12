@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -14,7 +13,7 @@ import { planResourceText } from "@/lib/planDisplay";
 import { pollingInterval } from "@/lib/polling";
 import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
-import { CalendarClock, CheckCircle2, CreditCard, Eye, EyeOff, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, Trash2, WalletCards } from "lucide-react";
+import { CalendarClock, CheckCircle2, CreditCard, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "@/lib/localizedToast";
 import { useLocation } from "wouter";
@@ -85,7 +84,6 @@ function quotaSourceLabel(kind: TrafficQuotaSourceKind) {
 export default function Subscriptions() {
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const confirmDialog = useConfirmDialog();
   const [, setLocation] = useLocation();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
@@ -104,19 +102,14 @@ export default function Subscriptions() {
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
-  const [showCancelled, setShowCancelled] = useState(false);
 
   const activeCount = useMemo(
     () => subscriptions.filter((sub: any) => sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date())).length,
     [subscriptions],
   );
-  const cancelledCount = useMemo(
-    () => subscriptions.filter((sub: any) => sub.status === "cancelled").length,
-    [subscriptions],
-  );
   const visibleSubscriptions = useMemo(
-    () => showCancelled ? subscriptions : subscriptions.filter((sub: any) => sub.status !== "cancelled"),
-    [showCancelled, subscriptions],
+    () => subscriptions.filter((sub: any) => sub.status !== "cancelled"),
+    [subscriptions],
   );
   const currentUserTraffic = useMemo(
     () => userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || user,
@@ -129,25 +122,6 @@ export default function Subscriptions() {
   const effectiveTrafficLimit = quota.unlimited
     ? 0
     : Number(currentUserTraffic?.trafficLimit || 0) || quota.totalBytes;
-
-  const deleteCancelledSubscription = trpc.plans.deleteCancelledSubscription.useMutation({
-    onSuccess: () => {
-      toast.success(translateText("已取消的订阅记录已删除"));
-      utils.plans.mySubscriptions.invalidate();
-      utils.billing.ledger.invalidate();
-    },
-    onError: (error) => toast.error(error.message || translateText("删除订阅记录失败")),
-  });
-
-  const confirmDeleteCancelledSubscription = async (sub: any) => {
-    const confirmed = await confirmDialog({
-      title: translateText("删除订阅记录"),
-      description: translateText("确认删除“{0}”的已取消记录？支付和余额流水会继续保留。", [sub.planName || translateText("套餐 #{0}", [sub.planId])]),
-      confirmText: translateText("删除"),
-      tone: "destructive",
-    });
-    if (confirmed) deleteCancelledSubscription.mutate({ id: Number(sub.id) });
-  };
 
   const purchaseAddon = trpc.billing.purchaseTrafficAddonWithBalance.useMutation({
     onSuccess: () => {
@@ -251,12 +225,6 @@ export default function Subscriptions() {
             <h1 className="text-2xl font-semibold tracking-tight">{translateText("我的订阅")}</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {cancelledCount > 0 && (
-              <Button type="button" size="sm" variant="outline" onClick={() => setShowCancelled((value) => !value)}>
-                {showCancelled ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}
-                {showCancelled ? translateText("隐藏已取消") : translateText("已取消 {0}", [cancelledCount])}
-              </Button>
-            )}
             <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
               {activeCount}{translateText(" 个生效套餐")}</Badge>
@@ -290,7 +258,7 @@ export default function Subscriptions() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(" 暂无可显示订阅")}</CardTitle>
-              <CardDescription>{cancelledCount > 0 ? translateText("已取消记录当前处于隐藏状态。") : translateText("当前账户还没有套餐记录。")}</CardDescription>
+              <CardDescription>{translateText("当前账户还没有套餐记录。")}</CardDescription>
             </CardHeader>
             {storeStatus?.enabled && (
               <CardFooter>
@@ -327,20 +295,6 @@ export default function Subscriptions() {
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                       <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
-                      {sub.status === "cancelled" && (
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 text-destructive"
-                          title={translateText("删除已取消订阅")}
-                          aria-label={translateText("删除已取消订阅")}
-                          onClick={() => void confirmDeleteCancelledSubscription(sub)}
-                          disabled={deleteCancelledSubscription.isPending}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
                       {canRenew && (
                         <Button
                           type="button"

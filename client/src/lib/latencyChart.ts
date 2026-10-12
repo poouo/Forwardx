@@ -5,6 +5,8 @@ export const MAX_LATENCY_CHART_MS = 500;
 
 export type LatencyStabilitySample = {
   latency: number;
+  minLatencyMs?: number | null;
+  maxLatencyMs?: number | null;
   isTimeout?: boolean | null;
   probeCount?: number | null;
   probeSuccesses?: number | null;
@@ -339,8 +341,8 @@ export function getLatencyStabilityStats(samples: LatencyStabilitySample[], actu
     timeout,
     valid,
     lossRate,
-    max: weightedValues[weightedValues.length - 1].value,
-    min: weightedValues[0].value,
+    max: Math.max(...weightedSamples.filter((item) => item.probeSuccesses > 0 && item.sample.latency > 0).map(({ sample }) => sample.maxLatencyMs ?? sample.latency)),
+    min: Math.min(...weightedSamples.filter((item) => item.probeSuccesses > 0 && item.sample.latency > 0).map(({ sample }) => sample.minLatencyMs ?? sample.latency)),
     avg: Math.round(sum / latencyValid),
     p50: Math.round(p50),
     p95: Math.round(p95),

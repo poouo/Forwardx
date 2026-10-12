@@ -10,6 +10,9 @@ import * as hopRepo from "../repositories/tunnelRepository";
 import { planManualTunnelProbes, queueManualTunnelProbeBatch } from "../tunnelManualProbe";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
+import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
+import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
+import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 import { isValidHostOrIp } from "../networkAddress";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
@@ -779,19 +782,20 @@ export const tunnelsRouter = router({
         return { success: true };
       }),
     probeStatistics: protectedProcedure
-      .input(z.object({ tunnelId: z.number().int().positive(), hours: z.number().min(0.5).max(72).default(24) }))
+      .input(z.object({ tunnelId: z.number().int().positive(), ...latencyHistoryWindowInput }))
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.tunnelId);
         if (!tunnel) throw new Error("Tunnel not found");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("No permission to view this tunnel");
-        return tunnelQueryCache.get(`probeStatistics:${ctx.user.id}:${input.tunnelId}:${input.hours}`,
-          { ttlMs: 5_000, staleMs: 0 },
-          () => db.getProbeCounterStatistics("tunnel", input.tunnelId, new Date(Date.now() - input.hours * 3600_000)));
+        const window = resolveLatencyHistoryWindow(input);
+        return (window.longHistory ? latencyHistoryQueryCache : tunnelQueryCache).get(`tunnelProbeStatistics:${ctx.user.id}:${input.tunnelId}:${window.cacheKey}`,
+          window.cacheOptions,
+          () => db.getProbeCounterStatistics("tunnel", input.tunnelId, window.since, window.until));
       }),
     latencySeries: protectedProcedure
     .input(z.object({
       tunnelId: z.number(),
-      hours: z.number().min(0.5).max(24 * 3).default(24),
+      ...latencyHistoryWindowInput,
     }))
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.tunnelId);
@@ -799,11 +803,11 @@ export const tunnelsRouter = router({
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) {
           throw new Error("No permission to view this tunnel");
         }
-        const since = new Date(Date.now() - input.hours * 3600 * 1000);
-        return tunnelQueryCache.get(
-          `latencySeries:${ctx.user.id}:${input.tunnelId}:${input.hours}`,
-          { ttlMs: 5_000, staleMs: 0 },
-          () => db.getTunnelLatencySeries(input.tunnelId, { since }),
+        const window = resolveLatencyHistoryWindow(input);
+        return (window.longHistory ? latencyHistoryQueryCache : tunnelQueryCache).get(
+          `tunnelLatencySeries:${ctx.user.id}:${input.tunnelId}:${window.cacheKey}`,
+          window.cacheOptions,
+          () => db.getTunnelLatencySeries(input.tunnelId, { ...window, bucketSeconds: latencyChartBucketSeconds(window.hours) }),
         );
       }),
     create: protectedProcedure

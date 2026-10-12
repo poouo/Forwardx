@@ -1,150 +1,124 @@
-# 安装 Agent
+# 安装与维护 Agent
 
-Agent 是安装在被管理服务器上的程序，负责执行转发规则、上报主机状态、统计流量和执行链路测试。
+Agent 安装在被管理的 Linux 主机上，执行转发配置、上报状态和流量、完成网络测试。实际转发由 Agent 与对应运行时完成，不是由面板服务器中转。
 
-Agent 版本以主机上报与当前面板推荐版本为准。部署目录和日志汇总见 [目录与日志](./paths-logs.md)。
+## 1. 创建独立 Token
 
----
+进入「主机管理 → Token 管理」，创建 Token，再复制对应的安装命令。
 
-## 创建 Agent Token
+**每个 Token 只绑定一台主机**。多台主机分别创建，不影响加入同一转发组、入口组或出口组。Token 泄露后应吊销并重新创建，不能公开截图或发送完整配置。
 
-进入：
+![创建 Token 并获取 Agent 安装命令](./images/agent-token-management.png)
 
-```
-主机管理 → Token 管理
-```
+## 2. 安装并确认在线
 
-点击"添加主机"创建新的 Agent Token。Token 用于允许服务器注册到当前面板。
-
-**一个 Token 只绑定一台被控主机，多台主机分别创建。** 独立 Token 不影响主机加入转发组、入口组或出口组。 Token 泄露后，请在 Token 管理中删除或禁用旧 Token，再重新创建。
-
-![在 Token 管理中创建 Token 并获取 Agent 安装命令](./images/agent-token-management.png)
-
----
-
-## 安装 Agent
-
-在 Token 管理中点击对应 Token 的"安装命令"，复制面板生成的命令，在被控 Linux 主机上以 root 权限执行。
-
-```bash
-curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
-```
-
-如果面板使用 HTTPS 域名：
+在被管理主机以 root 执行面板生成的命令，例如：
 
 ```bash
 curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
-> **关于地址选择：** 如果系统设置里配置了面板公开域名，安装命令弹窗会默认使用公开域名。需要让 Agent 通过 IP + 端口直连时，可以先用 IP + 端口打开面板，再在弹窗里选择"当前访问地址"后复制命令。
+替换实际面板地址和 Token。安装命令默认采用配置的公开地址；需要其他可达入口时，在安装命令弹窗核对地址来源。安装后在主机列表确认在线及环境检测结果。
 
-安装完成后，进入**主机管理**，主机状态显示为绿色在线，说明 Agent 已正常连接面板。
+前置要求：Linux、root、可访问面板，以及到下载源/系统软件源的网络。Agent 不支持将 Windows 作为被控运行环境。安装器会检测架构并安装相应资产；不要把不支持的系统或 libc 强行套用其他二进制。
 
-### mimic UDP 混淆（可选）
+安装器默认选择兼容的 Realm `2.9.4`，其他版本可通过 `FORWARDX_REALM_VERSION` 显式选择。iperf3 仅用于网络测试，安装失败会警告，不应阻断 Agent 主流程。
 
-安装脚本执行过程中会交互询问是否安装 mimic UDP 混淆环境：
+## 3. SOCKS / HTTP 代理（可选）
 
-```
-是否安装 mimic UDP 混淆环境？[y/N]
-```
-
-- 默认选择 `n`，直接回车跳过，不影响正常转发功能。
-- 输入 `Y` 才会进入 mimic 安装流程。
-- 目标版本为 **mimic v0.7.1**；已安装旧版时会提示升级，已满足目标版本时直接复用。
-- 对于不提供预编译二进制包的系统，脚本会询问是否从源码编译。
-
-**mimic 说明：**
-
-| 项目 | 内容 |
-|------|------|
-| 来源 | [hack3ric/mimic](https://github.com/hack3ric/mimic) |
-| 版本 | v0.7.1 |
-| 许可证 | GPL-2.0-only |
-| 内核要求 | Linux 6.1+（XDP ingress + TC egress；XDP `native`/`skb` 自动回退） |
-
----
-
-## 升级 Agent
-
-可在面板**主机管理**中点击"升级"按钮，也可复制升级命令到服务器执行：
+需要使用代理时，下载入口脚本与安装执行均需设置：
 
 ```bash
-curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- upgrade YOUR_AGENT_TOKEN
+curl --proxy 'socks5h://127.0.0.1:1080' -fsSL \
+  https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh \
+  -o /tmp/forwardx-install-agent.sh
+
+PANEL_URL='https://panel.example.com' bash /tmp/forwardx-install-agent.sh \
+  install YOUR_AGENT_TOKEN --proxy 'socks5h://127.0.0.1:1080'
 ```
 
-> 如果面板地址变化导致 Agent 离线，重新执行带正确面板地址的安装或升级命令即可恢复连接。
+新版 Agent 的运行配置为 `/etc/forwardx/agent/config.json` 中的 `proxyUrl`。代理覆盖注册、心跳、上报、事件流与下载/升级，**不代理业务转发和 ping/tcping/iperf**。
 
----
+已有新版 Agent 可添加该字段并重启；清空或删除后重启即直连，不继承系统代理环境变量。旧版 Agent 必须先升级。认证、远端 DNS、包管理器限制和完整方法见 [代理专题](./agent-proxy-manager.md)。
 
-## 卸载 Agent
+## 4. 使用 SSH 菜单
 
-卸载命令可在 Token 管理的安装命令弹窗中获取，通用卸载命令如下：
+包含此功能的新版安装器会注册 `fwxm`。直接输入打开菜单：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | bash -s -- uninstall
+fwxm
 ```
 
----
-
-## 安装后文件位置
-
-| 用途 | 路径 |
-|------|------|
-| Agent 通讯配置 | `/etc/forwardx/agent/config.json` |
-| Agent 日志 | `/var/log/forwardx-agent/agent-go.log` |
-| Agent 本地状态 | `/var/lib/forwardx-agent/` |
-| ForwardX FXP 运行时（Go 实现） | `/usr/local/bin/forwardx-fxp` |
-| GOST / 隧道运行时配置 | `/etc/forwardx/runtime/` |
-
-**历史路径说明：** 旧版本留下的 `/etc/forwardx-agent`、`/etc/forwardx-runtime`、`/etc/forwardx-tunnel-runtime`、`/etc/forwardx-gost`、`/etc/forwardx-tunnels` 属于历史路径，升级时会优先迁移到 `/etc/forwardx` 下，后续不再新增这些分散目录。
-
----
-
-## 常用运维命令
-
-### 查看运行状态
+同机有面板时先选择 Agent；也可执行 `fwxm agent`。非 root 使用 `sudo fwxm`。菜单可查看运行状态、日志、重启、代理、升级和重装修复，详见 [SSH 管理](./ssh-management.md)。
 
 ```bash
-systemctl status forwardx-agent
+fwxm agent status
+fwxm agent logs
+fwxm agent restart
+fwxm agent info
+fwxm agent proxy show
+fwxm agent proxy set
+fwxm agent proxy off
 ```
 
-### 查看日志
+`proxy set` 支持隐藏输入，`set/off` 保存后重启 Agent。信息/代理查看会隐藏凭据，不建议用 `cat config.json` 向他人提供排障数据。
+
+旧部署没有管理命令时可用原生命令：
 
 ```bash
+systemctl status forwardx-agent --no-pager -l
 tail -n 300 /var/log/forwardx-agent/agent-go.log
-```
-
-### 重启 Agent
-
-```bash
 systemctl restart forwardx-agent
 ```
 
-### 查看配置
+非 systemd 主机用 OpenRC / SysV 对应服务命令。
+
+## 5. 升级与修复
+
+可在主机管理页面选择单台或批量升级，也可在该 Agent 主机执行：
 
 ```bash
-cat /etc/forwardx/agent/config.json
+fwxm agent upgrade
 ```
 
-### 检查磁盘占用
-
-Agent 会限制单个日志文件及 `/var/log/forwardx-agent` 的总占用。如发现磁盘异常增长，可用以下命令定位实际占用来源：
+升级复用 Token 和配置代理，无需再次填写凭据。旧版可从当前可达面板下载升级入口：
 
 ```bash
-du -ak /var/log/forwardx-agent /var/lib/forwardx-agent 2>/dev/null | sort -n | tail -n 30
-journalctl --disk-usage 2>/dev/null || true
-du -sh /var/lib/systemd/coredump /var/crash 2>/dev/null || true
+curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- upgrade
 ```
 
-> **注意：** 环境变量 `FORWARDX_FXP_VERBOSE_LOG=1` 会记录每个 TCP/UDP 会话明细，仅应在短时间排障时启用，常规运行不建议开启。
+已有代理时优先使用 `fwxm`；直接运行上面的下载命令时，前面的 curl 也必须单独设置代理。面板地址变化、离线时请明确指定正确入口，不要指望只修改面板公开地址就能通知失联主机。
 
----
+`fwxm agent repair` 保留配置，重新下载安装当前可用版本并重启，可能升级版本，不等同于只重启。升级或修复运行时不保证业务连接不断；跨面板迁移请用 [迁移流程](./migration.md)，不要先卸载。
 
-## 常见问题
+## 6. 卸载
 
-**Agent 安装后显示离线？**
+```bash
+fwxm agent uninstall
+```
 
-- 检查面板地址是否正确，是否仍然是旧 IP。
-- 如果面板已改为 HTTPS 域名，确认 Agent 配置也使用了 HTTPS 域名。
-- 执行 `systemctl status forwardx-agent` 并查看日志，确认具体连接错误。
-- 重新执行带正确面板地址的安装或升级命令，Agent 会自动更新配置并重连。
+需要交互确认，会停止受管转发。管理命令调用缓存入口执行本地清理，不要求面板在线；旧版可先下载 GitHub 入口脚本，再运行 `uninstall`。详见 [卸载与数据保留](./uninstall.md)。
+
+## 文件与日志
+
+| 用途 | 默认路径 |
+| --- | --- |
+| 通信、Token 和代理配置 | `/etc/forwardx/agent/config.json` |
+| Agent 程序 | `/usr/local/bin/forwardx-agent` |
+| FXP / GOST 运行时 | `/usr/local/bin/forwardx-fxp` / `/usr/local/bin/forwardx-runtime` |
+| 常规日志 | `/var/log/forwardx-agent/agent-go.log` |
+| 自升级安装日志 | `/var/log/forwardx-agent/agent-upgrade.log` |
+| 持久化状态 | `/var/lib/forwardx-agent/` |
+| 临时运行态 | `/run/forwardx-agent/` |
+| GOST 配置 | `/etc/forwardx/runtime/` |
+| SSH 管理辅助脚本 | `/etc/forwardx/manage/` |
+
+历史路径 `/etc/forwardx-agent`、`/etc/forwardx-runtime`、`/etc/forwardx-tunnel-runtime`、`/etc/forwardx-gost`、`/etc/forwardx-tunnels` 可能存在，升级会处理相应迁移。不要手动清空整个 `/etc/forwardx`；同机可能还有面板管理配置。
+
+日志有大小限制，详细会话日志仅用于短时排障。Agent 离线时先核对面板 URL、代理连通性、证书及日志；安装失败看第一个真实错误，升级失败还要看 `agent-upgrade.log`。目录、日志与资源排障见 [运维目录](./paths-logs.md) 和 [常见问题](./troubleshooting.md)。
+
+## mimic UDP 混淆（可选）
+
+仅显式启用 ForwardX 隧道混淆时需要；普通转发不依赖 mimic。安装器默认询问，回车跳过，输入 Y 才安装。当前目标 `mimic v0.7.1`，需要 Linux 6.1+ 与相应 XDP/TC 内核能力。
+
+缺少依赖时面板会阻止启用并提供安装提示；Agent 不会因运行中的混淆开关自动安装内核组件。详见 [部署准备](./preparation.md) 和 [隧道](./tunnels.md)。

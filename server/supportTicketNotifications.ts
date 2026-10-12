@@ -4,11 +4,12 @@ import {
 } from "./repositories/supportTicketRepository";
 import {
   getNotificationAdminRecipients,
-  isNotificationReady,
+  notificationRecipientId,
   sendUserNotification,
 } from "./notifications";
 import { getUserById } from "./repositories/userRepository";
 import { appendPanelLog } from "./_core/panelLogger";
+import { getNotificationSettings } from "./notificationSettings";
 
 const escape = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -18,8 +19,9 @@ export function notifySupportTicket(
   id: number,
   created = false,
 ) {
-  void (async () => {
-    if (!(await isNotificationReady())) return;
+  return (async () => {
+    const settings = await getNotificationSettings();
+    if (!settings.active || !settings.supportTicketNotificationsEnabled) return;
     const ticket = await getSupportTicket(actor, id);
     const recipients =
       actor.role === "admin" && !created
@@ -29,7 +31,9 @@ export function notifySupportTicket(
     for (const user of recipients) {
       if (
         Number(user!.id) === actor.id ||
-        (!user!.telegramId && !user!.discordId)
+        user!.accountEnabled === false ||
+        user!.supportTicketNotificationSubscribed === false ||
+        !notificationRecipientId(user, settings.channel)
       )
         continue;
       try {

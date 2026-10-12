@@ -15,6 +15,9 @@ import { refreshHostAddressRuntime } from "../hostAddressRuntime";
 import { scheduleHostDdnsUpdate } from "../hostDdns";
 import { clearTunnelRuntimeStatusForHost } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
+import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
+import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
+import { getHostAvailability } from "../repositories/hostAvailabilityRepository";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
@@ -914,16 +917,32 @@ export const hostsRouter = router({
         latest: latestById.get(Number(service.id)) || null,
       }));
     }),
-    probeServiceSeries: protectedProcedure
-      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hostId: z.number().int().positive().optional(), hours: z.number().min(0.5).max(24 * 3).default(24) }).optional())
+    availabilityHistory: protectedProcedure
+      .input(z.object({ hostId: z.number().int().positive(), ...latencyHistoryWindowInput }))
       .query(async ({ input, ctx }) => {
+        await requireHostAccess(ctx, input.hostId);
+        const window = resolveLatencyHistoryWindow(input);
+        return latencyHistoryQueryCache.get(`hostAvailability:${ctx.user.id}:${input.hostId}:${window.cacheKey}`,
+          { ttlMs: 15_000, staleMs: 0 }, () => getHostAvailability(input.hostId, window));
+      }),
+    probeServiceSeries: protectedProcedure
+      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hostId: z.number().int().positive().optional(), ...latencyHistoryWindowInput }).optional())
+      .query(async ({ input, ctx }) => {
+        if (input?.dayBoundaries && !input.hostId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "A host is required for daily latency summaries" });
+        }
         const isAdmin = ctx.user.role === "admin";
         const visibleServices = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);
         const visibleIds = new Set((visibleServices as any[]).map((service) => Number(service.id)));
         const requested = Array.from(new Set((input?.serviceIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
         const serviceIds = requested.length > 0 ? requested.filter((id) => visibleIds.has(id)) : Array.from(visibleIds);
         if (serviceIds.length === 0) return [];
-        return db.getHostProbeServiceSeries({ serviceIds, hostId: input?.hostId, hours: input?.hours || 24 });
+        const window = resolveLatencyHistoryWindow(input || {});
+        return latencyHistoryQueryCache.get(
+          `serviceLatency:${ctx.user.id}:${input?.hostId || 0}:${window.cacheKey}:${serviceIds.sort((a, b) => a - b).join(",")}`,
+          window.cacheOptions,
+          () => db.getHostProbeServiceSeries({ serviceIds, hostId: input?.hostId, ...window }),
+        );
       }),
     createProbeService: adminProcedure
       .input(hostProbeServiceInputSchema)

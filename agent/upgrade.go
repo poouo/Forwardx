@@ -46,6 +46,9 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 	upgradeRelease := shellQuote(releaseVersion)
 	upgradeLogPath := shellQuote(agentLogDir + "/agent-upgrade.log")
 	upgradeCmd := fmt.Sprintf(`sleep 1; upgrade_log(){ stage="$1"; shift; printf '%%s self-upgrade stage=%%s target=%%s release=%%s %%s\n' "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" "$stage" %s %s "$*" >> %s 2>/dev/null || true; }; lock=/var/lock/forwardx-agent-upgrade; if ! mkdir -p /var/lock || ! mkdir "$lock" 2>/dev/null; then upgrade_log lock-skipped; exit 0; fi; upgrade_log lock-acquired; tmp=$(mktemp /tmp/forwardx-agent-upgrade.XXXXXX) || { upgrade_log temp-file-failed; exit 1; }; cleanup(){ rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; }; trap cleanup EXIT; if ! curl -fsSL --connect-timeout 15 --speed-limit 1024 --speed-time 60 %s -o "$tmp"; then upgrade_log download-failed; exit 1; fi; upgrade_log download-ok; if ! bash -n "$tmp"; then upgrade_log syntax-check-failed; exit 1; fi; upgrade_log syntax-check-ok; env %s bash "$tmp" upgrade >> %s 2>&1; status=$?; upgrade_log installer-finished exit=$status; exit $status`, upgradeTarget, upgradeRelease, upgradeLogPath, installURL, installEnv, upgradeLogPath)
+	// systemd-run does not inherit the Agent's environment. Read the protected
+	// config inside the new task; never put proxy credentials in its command line.
+	upgradeCmd = agentUpgradeProxySetup(activeConfigPath) + upgradeCmd
 	cmd := fmt.Sprintf(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=forwardx-agent-upgrade --collect /bin/sh -lc %s; else nohup sh -lc %s >/var/log/forwardx-agent/agent-upgrade.log 2>&1 < /dev/null & fi`, shellQuote(upgradeCmd), shellQuote(upgradeCmd))
 	logf("self-upgrade requested target=%s release=%s", up.TargetVersion, releaseVersion)
 	if !runShell(cmd) {
