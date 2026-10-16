@@ -331,7 +331,23 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
   }
 
   const wasRunning = !!(rule as any).isRunning;
-  await db.updateRuleRunningStatus(ruleId, !!isRunning);
+  // Persist diagnostics only for managed direct-forwarding children. Apply existing
+  // host/topology/staleness checks above before accepting any error details.
+  let runtimeDiagnostic: string | null | undefined;
+  const now = Date.now();
+  const failures = Number(payload?.consecutiveFailures);
+  const retryAt = Number(payload?.retryNotBefore);
+  const consecutiveFailures = Number.isSafeInteger(failures) && failures > 0 ? Math.min(failures, 1_000_000) : null;
+  const retryNotBefore = Number.isSafeInteger(retryAt) && retryAt > now - 24 * 60 * 60_000 && retryAt <= now + 5 * 60_000 ? retryAt : null;
+  if (Number((rule as any).forwardGroupRuleId) > 0 && !currentRuleTunnelId) {
+    runtimeDiagnostic = isRunning ? null : JSON.stringify({
+      message: message || "Agent did not report an error reason",
+      reportedAt: now,
+      consecutiveFailures,
+      retryNotBefore,
+    });
+  }
+  await db.updateRuleRunningStatus(ruleId, !!isRunning, runtimeDiagnostic);
   if (
     (wasRunning || !!message)
     && !isRunning
@@ -364,9 +380,12 @@ async function applyAgentRuleStatus(host: any, payload: any): Promise<AgentStatu
     }
   }
   if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
+    const retryLog = !isRunning
+      ? `${consecutiveFailures ? ` consecutiveFailures=${consecutiveFailures}` : ""}${retryNotBefore ? ` retryNotBefore=${new Date(retryNotBefore).toISOString()}` : ""}`
+      : wasRunning ? "" : " transition=recovered-or-started";
     appendPanelLog(
       !!isRunning ? "info" : "warn",
-        `[Rule] status rule=${ruleId} name=${safeStatusLogText((rule as any).name)} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${safeStatusLogText((rule as any).forwardType, 32)} proto=${safeStatusLogText((rule as any).protocol, 32)} target=${safeStatusLogText((rule as any).targetIp)}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
+        `[Rule] status rule=${ruleId} name=${safeStatusLogText((rule as any).name)} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${safeStatusLogText((rule as any).forwardType, 32)} proto=${safeStatusLogText((rule as any).protocol, 32)} target=${safeStatusLogText((rule as any).targetIp)}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${retryLog}${logMessage !== "-" ? ` message=${logMessage}` : ""}`,
     );
   }
   return { status: 200, body: { success: true } };

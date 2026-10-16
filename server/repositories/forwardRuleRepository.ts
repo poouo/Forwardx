@@ -1156,6 +1156,18 @@ export async function settlePendingForwardGroupTemplates(hostId?: number) {
 export async function finalizeForwardRuleDelete(id: number) {
   const db = await getDb();
   if (!db) return;
+  // A removed parallel entry still owns historical counters. Keep its disabled
+  // tombstone as an accounting link until the logical rule is removed; it has
+  // no live listener and must never be re-applied or reserve a port.
+  const retained = await queryRaw<{ id: number }>(`SELECT child.${quoteIdentifier("id")} AS ${quoteIdentifier("id")}
+    FROM ${quoteIdentifier("forward_rules")} child
+    JOIN ${quoteIdentifier("forward_rules")} parent ON parent.${quoteIdentifier("id")} = child.${quoteIdentifier("forwardGroupRuleId")}
+    JOIN ${quoteIdentifier("forward_groups")} g ON g.${quoteIdentifier("id")} = child.${quoteIdentifier("forwardGroupId")}
+    WHERE child.${quoteIdentifier("id")} = ? AND parent.${quoteIdentifier("pendingDelete")} = ${boolLiteral(false)}
+      AND parent.${quoteIdentifier("isForwardGroupTemplate")} = ${boolLiteral(true)}
+      AND parent.${quoteIdentifier("forwardGroupId")} = g.${quoteIdentifier("id")}
+      AND g.${quoteIdentifier("groupMode")} = 'port' LIMIT 1`, [id]);
+  if (retained.length) return;
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
   await db.update(forwardGroupMembers).set({
     ruleId: null,
@@ -1177,6 +1189,13 @@ export async function purgeSettledPendingForwardRuleDeletes() {
     .where(and(
       eq(forwardRules.pendingDelete, true),
       eq(forwardRules.isRunning, false),
+      sql.raw(`NOT EXISTS (SELECT 1 FROM ${quoteIdentifier("forward_rules")} parent
+        JOIN ${quoteIdentifier("forward_groups")} g ON g.${quoteIdentifier("id")} = parent.${quoteIdentifier("forwardGroupId")}
+        WHERE parent.${quoteIdentifier("id")} = ${quoteIdentifier("forward_rules")}.${quoteIdentifier("forwardGroupRuleId")}
+          AND parent.${quoteIdentifier("pendingDelete")} = ${boolLiteral(false)}
+          AND parent.${quoteIdentifier("isForwardGroupTemplate")} = ${boolLiteral(true)}
+          AND g.${quoteIdentifier("id")} = ${quoteIdentifier("forward_rules")}.${quoteIdentifier("forwardGroupId")}
+          AND g.${quoteIdentifier("groupMode")} = 'port')`),
     ));
   let count = 0;
   for (const row of rows as any[]) {
@@ -1251,7 +1270,7 @@ export async function toggleForwardRule(id: number, isEnabled: boolean) {
   }
 }
 
-export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
+export async function updateRuleRunningStatus(id: number, isRunning: boolean, runtimeDiagnostic?: string | null) {
   const db = await getDb();
   if (!db) return;
   const rule = await getForwardRuleById(id);
@@ -1259,7 +1278,7 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
     await finalizeForwardRuleDelete(id);
     return;
   }
-  await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  await db.update(forwardRules).set({ isRunning, ...(runtimeDiagnostic !== undefined ? {runtimeDiagnostic} : {}), updatedAt: nowDate() }).where(eq(forwardRules.id, id));
 }
 
 export async function markForwardRulesNotRunning(ids: number[]) {

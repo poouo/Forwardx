@@ -4,6 +4,7 @@ import { t } from "@/i18n";
 import { toast } from "@/lib/localizedToast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { AsyncButton } from "@/components/ui/async-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -53,7 +54,7 @@ export default function GoogleLoginSettingsCard() {
         <a className="inline-block text-primary underline underline-offset-4" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">{t("打开 Google Cloud 配置客户端")}</a>
       </HelpDetails>
       <div className="flex flex-wrap gap-2">
-        <Button type="button" disabled={isPending || !!error || save.isPending} onClick={() => save.mutate({ enabled, clientId, clientSecret: secret || undefined, redirectUri })}>{save.isPending ? t("保存中...") : t("保存配置")}</Button>
+        <AsyncButton disabled={isPending || !!error} pending={save.isPending} onClick={() => save.mutate({ enabled, clientId, clientSecret: secret || undefined, redirectUri })}>{t("保存配置")}</AsyncButton>
         {data?.secretConfigured && <Button type="button" variant="outline" disabled={save.isPending} onClick={() => {
           if (window.confirm(t("确定清除 Google 客户端密钥并关闭 Google 登录？密码登录不受影响。"))) save.mutate({ enabled: false, clientId, redirectUri, clearSecret: true });
         }}>{t("清除密钥并关闭")}</Button>}

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AsyncButton } from "@/components/ui/async-button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -328,8 +329,8 @@ export function EmailSettingsContent() {
             </Alert>
           )}
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Button onClick={saveEmailSettings} disabled={updateSettings.isPending}>
-              {updateSettings.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{translateText("保存邮箱设置")}</Button>
+            <AsyncButton onClick={saveEmailSettings} pending={updateSettings.isPending}>
+              {translateText("保存邮箱设置")}</AsyncButton>
             <div className="flex flex-1 flex-col gap-2 sm:flex-row">
               <Input type="email" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder={translateText("测试收件邮箱")} />
               <Button variant="outline" onClick={handleTestEmail} disabled={sendTestEmail.isPending || !form.enabled}>

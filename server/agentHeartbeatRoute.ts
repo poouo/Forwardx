@@ -34,6 +34,7 @@ import { hasQueuedLookingGlassAgentTasks, takeLookingGlassAgentTasks } from "./l
 import { hasQueuedIperf3AgentTasks, takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
+import { updateAgentToolInventory } from "./agentToolInventory";
 import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
@@ -93,7 +94,18 @@ import {
 } from "./forwardXWireGuard";
 import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
-import { resolveLocalForwardXTransportVersion, resolveRuleTrafficPortForHost } from "./agentRuntimeRuleState";
+import {
+  normalizeForwardXRuntimeTransportVersion,
+  resolveLocalForwardXTransportVersion,
+  resolveRuleTrafficPortForHost,
+  type ForwardXRuntimeTransportVersion,
+} from "./agentRuntimeRuleState";
+import {
+  applyForwardXTransport as applyForwardXTransportSpec,
+  expectedForwardXTransportVersion as resolveExpectedForwardXTransportVersion,
+  forwardXTransportVersionForTunnel,
+  localForwardXTransportCompatible,
+} from "./forwardXTransport";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "@shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { forwardXExitStrategy, gostExitSelector, shouldUseFastTunnelFailover } from "./tunnelExitStrategy";
@@ -422,14 +434,14 @@ type AgentLocalRuntimeRuleState = {
   targetIp?: string;
   targetPort?: number;
   protocol?: string;
-  transportVersion?: "v1" | "v2";
+  transportVersion?: ForwardXRuntimeTransportVersion;
   ready?: boolean;
 };
 type AgentLocalRuntimeTunnelState = {
   port: number;
   tunnelId: number;
   forwardType: string;
-  transportVersion?: "v1" | "v2";
+  transportVersion?: ForwardXRuntimeTransportVersion;
   ready?: boolean;
 };
 type AgentLocalRuntimeServiceState = {
@@ -644,11 +656,7 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
         targetIp: String(item?.targetIp || "").trim() || undefined,
         targetPort: Number(item?.targetPort || 0) || undefined,
         protocol: String(item?.protocol || "").trim() || undefined,
-        transportVersion: String(item?.transportVersion || "").trim().toLowerCase() === "v2"
-          ? "v2" as const
-          : String(item?.transportVersion || "").trim().toLowerCase() === "v1"
-            ? "v1" as const
-            : undefined,
+        transportVersion: normalizeForwardXRuntimeTransportVersion(item?.transportVersion),
         ready: item?.ready !== false,
       }))
       .filter((item: AgentLocalRuntimeRuleState) => item.port > 0)
@@ -659,11 +667,7 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
         port: Number(item?.port || 0),
         tunnelId: Number(item?.tunnelId || 0),
         forwardType: String(item?.forwardType || "").trim(),
-        transportVersion: String(item?.transportVersion || "").trim().toLowerCase() === "v2"
-          ? "v2" as const
-          : String(item?.transportVersion || "").trim().toLowerCase() === "v1"
-            ? "v1" as const
-            : undefined,
+        transportVersion: normalizeForwardXRuntimeTransportVersion(item?.transportVersion),
         ready: item?.ready !== false,
       }))
       .filter((item: AgentLocalRuntimeTunnelState) => item.port > 0 && item.tunnelId > 0)
@@ -1440,6 +1444,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
     updateAgentPluginInventory(logHostId, req.body?.pluginVersions, req.body?.pluginSyncSignatures);
+    updateAgentToolInventory(logHostId, req.body?.forwardTools, req.body?.forwardToolsCheckedAt);
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
     const busyHeartbeat = req.body?.busy === true || String(req.body?.busy || "").toLowerCase() === "true";
@@ -3006,16 +3011,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return null;
       }
     };
-    const applyForwardXTransport = async (fxpSpec: any, tunnel: any) => {
-      if (!isForwardXWireGuardV2(tunnel)) {
-        fxpSpec.transportVersion = "v1";
-        return fxpSpec;
-      }
-      const plan = await getCurrentHostForwardXWireGuardPlan(tunnel);
-      if (!plan) return null;
-      fxpSpec.transportVersion = "v2";
-      return fxpSpec;
-    };
+    const applyForwardXTransport = (fxpSpec: any, tunnel: any) =>
+      applyForwardXTransportSpec(fxpSpec, tunnel, () => getCurrentHostForwardXWireGuardPlan(tunnel));
     const tunnelRuleExitMappings = (rule: any) => {
       const rows = tunnelExitRowsByRuleId.get(Number(rule?.id || 0)) || [];
       return rows
@@ -4452,7 +4449,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ],
           fxp: tunnel && isForwardXTunnel(tunnel) ? {
             role: "entry",
-            transportVersion: isForwardXWireGuardV2(tunnel) ? "v2" : "v1",
+            transportVersion: forwardXTransportVersionForTunnel(tunnel),
             tunnelId: tunnel.id,
             ruleId: rule.id,
             listenPort: rule.sourcePort,
@@ -4529,21 +4526,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!localValue || !expectedValue) return true;
       return normalizeForwardRuleProtocol(localValue) === normalizeForwardRuleProtocol(expectedValue);
     };
-    const expectedForwardXTransportVersion = (tunnelId: number, expectedForwardType: string) => {
-      const normalizedType = String(expectedForwardType || "").trim();
-      if (normalizedType !== "forwardx" && normalizedType !== "forwardx-tunnel") return undefined;
-      const tunnel = tunnelById.get(Number(tunnelId || 0)) as any;
-      if (!isForwardXTunnelMode(tunnel)) return undefined;
-      return isForwardXWireGuardV2(tunnel) ? "v2" as const : "v1" as const;
-    };
-    const localForwardXTransportCompatible = (local: { transportVersion?: "v1" | "v2" }, expected: "v1" | "v2" | undefined) => {
-      if (!expected) return true;
-      // V2 must never adopt a V1 runtime. For V1, tolerate an omitted field
-      // from older Agents while still rejecting a clearly stale V2 process.
-      return expected === "v2"
-        ? local.transportVersion === "v2"
-        : local.transportVersion !== "v2";
-    };
+    const expectedForwardXTransportVersion = (tunnelId: number, expectedForwardType: string) =>
+      resolveExpectedForwardXTransportVersion({
+        tunnelId,
+        expectedForwardType,
+        tunnel: tunnelById.get(Number(tunnelId || 0)),
+      });
     const findLocalRuleState = (port: number, protocol: unknown, ruleId?: number) => {
       const normalizedProtocol = normalizeForwardRuleProtocol(protocol, "both");
       const candidates = reportedLocalRules.filter((local: AgentLocalRuntimeRuleState) => Number(local.port || 0) === Number(port || 0));
@@ -5741,7 +5729,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: removeCmds,
             fxp: tunnel && isForwardXTunnel(tunnel) ? {
               role: "entry",
-              transportVersion: isForwardXWireGuardV2(tunnel) ? "v2" : "v1",
+              transportVersion: forwardXTransportVersionForTunnel(tunnel),
               tunnelId: tunnel.id,
               ruleId: rule.id,
               listenPort: rule.sourcePort,

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { MIGRATION_TABLES } from "./dbSchema";
-import { executeRaw, getDb, insertAndGetId, nowDate, quoteDbIdentifier } from "./dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, withDatabaseTransaction } from "./dbRuntime";
 import { setSetting, setSettings } from "./repositories/settingsRepository";
 import { getUserByUsername } from "./repositories/userRepository";
 import { hashPassword } from "./password";
@@ -9,6 +9,7 @@ import { builtinAvatarForSeed } from "../shared/avatar";
 import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
 import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
 import { AGENT_VERSION } from "../shared/versions";
+import { operationsDay } from "../shared/operations";
 
 export const DEV_PANEL_FLAG = "FORWARDX_DEV_PANEL";
 export const DEV_ADMIN_USERNAME = "dev.admin@forwardx.local";
@@ -2210,6 +2211,100 @@ async function seedHostAvailability(hostIds: number[]) {
   }
 }
 
+async function seedOperationsData(hostIds: number[], resources: DevResources) {
+  const now = Math.floor(Date.now() / 1000), today = operationsDay(now);
+  const rules = await queryRaw<any>(`SELECT r.*, h.name AS hostName, g.name AS groupName, t.name AS tunnelName
+    FROM forward_rules r LEFT JOIN hosts h ON h.id = r.hostId
+    LEFT JOIN forward_groups g ON g.id = r.forwardGroupId LEFT JOIN tunnels t ON t.id = r.tunnelId
+    WHERE r.isForwardGroupTemplate = 0 AND r.forwardGroupRuleId IS NULL ORDER BY r.id LIMIT 24`);
+  if (!rules.length) return;
+  // Reserved documentation ranges only. Locations are synthetic cached
+  // fixtures, never inferred from the IPs or looked up over the network.
+  const regions = ["广东", "浙江", "江苏", "北京", "上海", "山东", "四川", "湖北", "福建", "河南",
+    "湖南", "河北", "安徽", "陕西", "重庆", "辽宁", "广西", "云南", "香港", "台湾"];
+  const sources = Array.from({ length: 84 }, (_, index) => ({
+    ip: index === 83 ? "2001:db8::84" : `${["192.0.2", "198.51.100", "203.0.113"][index % 3]}.${index + 1}`,
+    region: index < 80 ? regions[Math.floor(index * index / (80 * 80) * regions.length)] : "",
+    country: index < 80 ? "CN" : index === 80 ? "US" : index === 81 ? "JP" : "ZZ",
+  }));
+  await withDatabaseTransaction(async () => {
+    for (const source of sources) {
+      await insertAndGetId("ip_geo_cache", {
+        address: source.ip, resolvedAddress: source.ip, geoCountryCode: source.country,
+        geoRegion: source.region, expiresAt: now + 31 * 86400,
+      });
+    }
+    for (let day = 29; day >= 0; day--) {
+      const dayStart = today - day * 86400;
+      const lastSeen = Math.min(now, dayStart + 22 * 3600);
+      // Repeatable daily variation with a weekly peak and upward trend.
+      const factor = (0.65 + (29 - day) / 55) * (1 + Math.sin(day * 0.8) * 0.23);
+      for (const [index, rule] of rules.entries()) {
+        const resourceKey = rule.forwardGroupId ? `group:${rule.forwardGroupId}` : rule.tunnelId ? `tunnel:${rule.tunnelId}` : `host:${rule.hostId}`;
+        await insertAndGetId("operations_traffic_daily", {
+          dayStart, ruleId: rule.id, hostId: rule.hostId, userId: rule.userId, logicalRuleId: rule.id,
+          resourceKey, ruleName: rule.name, hostName: rule.hostName || "Dev host",
+          resourceName: rule.groupName || rule.tunnelName || rule.hostName || "Dev resource",
+          bytesIn: Math.round((0.7 + (rules.length - index) * 0.28) * factor * 1024 ** 3),
+          bytesOut: Math.round((1.1 + (rules.length - index) * 0.53) * factor * 1024 ** 3),
+          connections: Math.round((1500 + index * 173) * factor),
+        });
+      }
+      for (const [index, source] of sources.entries()) {
+        // A few IPs touch multiple rules to exercise the details dialog.
+        for (let link = 0; link < (index < 6 ? 2 : 1); link++) {
+          const rule = rules[(index + link) % rules.length];
+          const known = index !== 82;
+          await insertAndGetId("operations_source_daily", {
+            dayStart, ruleId: rule.id, hostId: rule.hostId, ip: source.ip, userId: rule.userId,
+            logicalRuleId: rule.id, lastSeen,
+            bytesIn: known ? Math.round((12 + (84 - index) * 2.4) * factor * 1024 ** 2) : 0,
+            bytesOut: known ? Math.round((30 + (84 - index) * 5.8) * factor * 1024 ** 2) : 0,
+            knownSamples: known ? 24 + index % 12 : 0, unknownSamples: index % 11 === 0 || !known ? 3 : 0,
+          });
+        }
+      }
+      for (const [index, type] of ["auto_switch", "recovered"].entries()) {
+        await insertAndGetId("forward_group_events", {
+          groupId: resources.groups.failoverGroupId, type,
+          message: index ? "[Demo] Primary entry recovered; traffic returned to the preferred route."
+            : "[Demo] Health check failed; traffic switched to the standby entry.",
+          createdAt: Math.max(dayStart, lastSeen - (index ? 60 : 300)),
+        });
+      }
+    }
+    for (const [index, hostId] of hostIds.entries()) {
+      await insertAndGetId("operations_source_status", { hostId,
+        status: ["sampled", "sampled", "limited", "unavailable"][index % 4], lastSeen: now - index * 17 });
+    }
+  });
+  await setSetting("operationsSourceAnalytics", "true");
+}
+
+async function seedOperationsFinanceData(accounts: DevUsers, catalog: DevCatalog) {
+  const now = Math.floor(Date.now()/1000), today = operationsDay(now);
+  for (const userId of [accounts.adminId,accounts.activeUserId]) {
+    let balance = 0;
+    for (let day=29;day>=0;day--) {
+      const at = Math.min(now-30,today-day*86400+10*3600);
+      const orderNo = `DEV-OPS-${userId}-${day}`;
+      await insertAndGetId("payment_orders", {userId,outTradeNo:orderNo,provider:"easypay",paymentType:day%2 ? "alipay" : "wxpay",orderType:"balance",subject:"Demo wallet top-up",status:"completed",currency:"CNY",amountCents:5000,paidAt:at,createdAt:at-60,updatedAt:at});
+      for (const [type,delta] of [["payment",5000],["purchase",-1800],["traffic_billing",-250],...(day%7 === 0 ? [["traffic_addon_purchase",-900]] : [])] as Array<[string,number]>) {
+        balance+=delta;
+        await insertAndGetId("balance_transactions",{userId,type,amountCents:delta,balanceAfterCents:balance,description:"Demo operations billing",paymentOrderNo:type === "payment" ? orderNo : null,createdAt:at+1});
+      }
+      if(day%3 === 0) await insertAndGetId("payment_orders",{userId,outTradeNo:`${orderNo}-PLAN`,provider:"easypay",paymentType:"alipay",orderType:"plan",planId:catalog.starterPlanId,subject:"Demo online plan purchase",status:"completed",currency:"CNY",amountCents:3900,paidAt:at+2,createdAt:at-60,updatedAt:at+2});
+    }
+    for(const status of ["pending","failed","cancelled"]) await insertAndGetId("payment_orders",{userId,outTradeNo:`DEV-OPS-${userId}-${status}`,provider:"easypay",paymentType:"wxpay",orderType:"balance",subject:"Demo unpaid order",status,currency:"CNY",amountCents:2000,createdAt:now-20,updatedAt:now-20});
+    for(const [type,delta] of [["admin_recharge",1000],["redeem",500]] as const) {
+      balance+=delta;
+      await insertAndGetId("balance_transactions",{userId,type,amountCents:delta,balanceAfterCents:balance,description:"Demo manual or redeemed credit",createdAt:now-10});
+    }
+    await executeRaw('UPDATE users SET balanceCents=? WHERE id=?',[balance,userId]);
+  }
+  await insertAndGetId("user_subscriptions",{userId:accounts.adminId,planId:catalog.starterPlanId,source:"payment",status:"active",startedAt:now-60,createdAt:now-60,expiresAt:now+29*86400});
+}
+
 export async function seedDevPanelData() {
   if (!isDevPanelMode()) return;
   const db = await getDb();
@@ -2231,6 +2326,8 @@ export async function seedDevPanelData() {
   await seedUserState(usersSeed, hostIds, resources, rules, catalog);
   await seedForwardTests(usersSeed, rules, hostIds);
   await seedSettings();
+  await seedOperationsData(hostIds, resources);
+  await seedOperationsFinanceData(usersSeed, catalog);
   await setSetting("devPanelSeededAt", new Date().toISOString());
 
   console.log(`[DevPanel] Seeded local development data as ${DEV_ADMIN_USERNAME}`);

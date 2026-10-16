@@ -20,6 +20,13 @@ type config struct {
 	ControlSocket            string `json:"controlSocket,omitempty"`
 	udpTargetsLive           *liveUDPTargets
 	Role                     string         `json:"role"`
+	TransportVersion         string         `json:"transportVersion,omitempty"`
+	V3Transport              string         `json:"v3Transport,omitempty"`
+	V3Host                   string         `json:"v3Host,omitempty"`
+	V3Path                   string         `json:"v3Path,omitempty"`
+	V3UserAgent              string         `json:"v3UserAgent,omitempty"`
+	V3ServerName             string         `json:"v3ServerName,omitempty"`
+	V3Multiplex              *bool          `json:"v3Multiplex,omitempty"`
 	Entries                  []config       `json:"entries,omitempty"`
 	TunnelID                 int            `json:"tunnelId"`
 	RuleID                   int            `json:"ruleId"`

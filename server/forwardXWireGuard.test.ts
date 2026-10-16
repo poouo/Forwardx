@@ -14,6 +14,8 @@ import {
   buildForwardXWireGuardPlans,
   deriveForwardXWireGuardKeyPair,
   forwardXWireGuardMTU,
+  isForwardXForwardxV3,
+  isForwardXWireGuardV2,
 } from "./forwardXWireGuard";
 
 test("derives stable, valid X25519 WireGuard keys", () => {
@@ -231,4 +233,15 @@ test("reserves outer packet headroom only when Mimic is active", () => {
   });
   assert.equal(plans.get(1)?.mtu, FORWARDX_WIREGUARD_MIMIC_MTU);
   assert.equal(plans.get(2)?.mtu, FORWARDX_WIREGUARD_MIMIC_MTU);
+});
+
+test("V3 tunnels are recognised separately from WireGuard V2", () => {
+  assert.equal(isForwardXForwardxV3({ mode: "forwardx", forwardxVersion: "v3" }), true);
+  assert.equal(isForwardXForwardxV3({ mode: " forwardx ", forwardxVersion: " V3 " }), true);
+  assert.equal(isForwardXForwardxV3({ mode: "forwardx", forwardxVersion: "v2" }), false);
+  assert.equal(isForwardXForwardxV3({ mode: "tls", forwardxVersion: "v3" }), false);
+  assert.equal(isForwardXForwardxV3(null), false);
+
+  assert.equal(isForwardXWireGuardV2({ mode: "forwardx", forwardxVersion: "v3" }), false);
+  assert.equal(isForwardXWireGuardV2({ mode: "forwardx", forwardxVersion: "v2" }), true);
 });

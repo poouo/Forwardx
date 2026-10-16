@@ -1,6 +1,8 @@
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
+import { PortEntryRuntimeSummary } from "@/components/PortEntryRuntimeSummary";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -901,6 +903,11 @@ export function ForwardGroupsContent({
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<GroupForm>(makeDefaultForm());
+  const toolPreflight = trpc.forwardGroups.toolPreflight.useQuery({
+    entryGroupId:form.entryGroupId,
+    hostIds:form.members.filter((member) => member.memberType === "host" && member.isEnabled !== false).map((member) => Number(member.hostId)).filter((id) => id > 0),
+    forwardType:form.forwardType,
+  }, {enabled:showDialog && mode === "port", staleTime:10_000,refetchInterval:showDialog && mode === "port" ? 30_000 : false});
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [internalViewMode, setInternalViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
@@ -1476,6 +1483,9 @@ export function ForwardGroupsContent({
 
   const handleSubmit = () => {
     const isPortMode = form.groupMode === "port";
+    if (isPortMode && form.isEnabled && toolPreflight.data?.some((host) => host.status === "missing")) {
+      return toast.error(translateText("部分入口缺少所选转发工具，请先安装或更换工具"));
+    }
     const isFailoverMode = form.groupMode === "failover";
     const isChainGroup = form.groupMode === "chain";
     const isEntryGroup = form.groupMode === "entry";
@@ -1484,7 +1494,7 @@ export function ForwardGroupsContent({
     const supportsSwitchNotify = isFailoverMode || isEntryGroup;
     if (!form.name.trim()) return toast.error(isPortMode ? translateText("请填写端口转发名称") : isChainGroup ? translateText("请填写转发链名称") : translateText("请填写组名称"));
     if (isPortMode) {
-      if (form.members.length !== 1) return toast.error(translateText("端口转发需要选择 1 台所属主机"));
+      if (!form.entryGroupId && form.members.length !== 1) return toast.error(translateText("端口转发需要选择 1 台所属主机"));
     } else if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
       if (form.members.length < minChainMembers || form.members.length > MAX_FORWARD_GROUP_MEMBERS) {
@@ -1551,7 +1561,7 @@ export function ForwardGroupsContent({
       ...form,
       name: form.name.trim(),
       remark: null,
-      entryGroupId: isChainGroup ? form.entryGroupId || null : null,
+      entryGroupId: isChainGroup || isPortMode ? form.entryGroupId || null : null,
       groupType: "host" as const,
       exitStrategy: isExitGroup ? normalizeExitGroupStrategy(form.exitStrategy) : "round_robin",
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
@@ -1611,10 +1621,14 @@ export function ForwardGroupsContent({
 
   const groupStatusBadge = (group: any) => {
     const configState = getGroupConfigState(group);
-    if (configState.status === "disabled") return <Badge variant="outline">{translateText("停用")}</Badge>;
-    if (configState.status === "available") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">{translateText("可用")}</Badge>;
-    if (configState.status === "degraded") return <Badge className="border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300">{translateText("部分可用")}</Badge>;
-    if (configState.status === "pending") return <Badge variant="secondary">{translateText("等待检测")}</Badge>;
+    const status = configState.status === "available" && normalizeGroupMode(group.groupMode) === "port" && group.entryGroupId
+      && Number(group.runtimeExpectedRuleCount || 0) > 0 && Number(group.runtimeRunningRuleCount || 0) < Number(group.runtimeExpectedRuleCount)
+      ? Number(group.runtimeRunningRuleCount || 0) > 0 ? "degraded" : "pending"
+      : configState.status;
+    if (status === "disabled") return <Badge variant="outline">{translateText("停用")}</Badge>;
+    if (status === "available") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">{translateText("可用")}</Badge>;
+    if (status === "degraded") return <Badge className="border-amber-500/25 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300">{translateText("部分可用")}</Badge>;
+    if (status === "pending") return <Badge variant="secondary">{translateText("等待检测")}</Badge>;
     return <Badge variant="destructive">{translateText("不可用")}</Badge>;
   };
 
@@ -1654,13 +1668,18 @@ export function ForwardGroupsContent({
       <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{FORWARD_TYPE_LABELS[group.forwardType as ForwardType] || group.forwardType || "iptables"}</Badge>
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{translateText("倍率 ")}{formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
+        {mode === "port" && !!group.entryGroupId && (
+          <Badge variant="outline" className="h-5 rounded px-1.5 font-normal" title={group.lastMessage || undefined}>
+            {group.entryRuntime ? translateText("入口节点 {0}/{1}",[group.entryRuntime.runningHostCount,group.entryRuntime.expectedHostCount]) : translateText("运行规则 {0}/{1}", [Number(group.runtimeRunningRuleCount || 0), Number(group.runtimeExpectedRuleCount || 0)])}
+          </Badge>
+        )}
       </div>
     );
   };
 
   const groupMemberTitle = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
-    if (mode === "port") return translateText("所属主机");
+    if (mode === "port") return translateText(group.entryGroupId ? "入口主机" : "所属主机");
     if (mode === "chain") return translateText("链路顺序");
     if (mode === "entry") return translateText("入口主机");
     if (mode === "exit") return translateText("出口主机");
@@ -1668,6 +1687,7 @@ export function ForwardGroupsContent({
   };
 
   const groupStatusMessage = (group: any) => {
+    if (normalizeGroupMode(group.groupMode) === "port" && group.entryGroupId && group.lastMessage) return String(group.lastMessage);
     const templateRuleCount = Number(group.templateRuleCount || 0);
     const availabilityMessage = getGroupConfigState(group).message;
     return templateRuleCount > 0
@@ -1691,6 +1711,14 @@ export function ForwardGroupsContent({
     const entryGroupText = entryGroupDisplayText(group, groupsByMode);
     if (entryGroupText) return entryGroupText;
     return group.members?.[0]?.entryAddress || translateText("第一台主机");
+  };
+
+  const portEntryText = (group: any) => {
+    if (group.entryGroupId) {
+      const entry = groupsByMode.entry.find((item: any) => Number(item.id) === Number(group.entryGroupId));
+      return `${entry?.name || translateText("入口组 #{0}", [group.entryGroupId])} · ${translateText("{0} 台主机", [(group.members || []).filter((member: any) => member.isEnabled !== false).length])}`;
+    }
+    return group.members?.length ? memberLabel(group.members[0]) : translateText("未选择");
   };
 
   const memberConnectLabel = (member: any) => {
@@ -1854,7 +1882,7 @@ export function ForwardGroupsContent({
   const emptyDescription = currentModeMeta.emptyDescription;
   const paginationItemName = currentModeMeta.paginationItemName;
   const dialogTitle = editingId ? translateText("编辑{0}", [currentModeMeta.title]) : translateText("添加{0}", [currentModeMeta.title]);
-  const contentTransitionKey = `${activeGroupMode}-${normalizedSearchQuery || "all"}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
+  const contentTransitionKey = `${activeGroupMode}-${normalizedSearchQuery || "all"}-${isLoading ? "loading" : groupPageQuery.isError ? "error" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
     <div className="space-y-6">
@@ -1911,6 +1939,11 @@ export function ForwardGroupsContent({
       <ForwardGroupViewTransition transitionKey={contentTransitionKey}>
         {isLoading ? (
         <DataSectionLoading label={loadingLabel} />
+      ) : groupPageQuery.isError ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+          <p className="flex items-center gap-2 text-destructive"><AlertCircle className="size-4 shrink-0" />{translateText("链路列表加载失败，请重试。")}</p>
+          <Button variant="outline" disabled={groupPageQuery.isFetching} onClick={() => void groupPageQuery.refetch()}>{translateText("重试")}</Button>
+        </div>
       ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
@@ -1978,13 +2011,16 @@ export function ForwardGroupsContent({
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
                       <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
+
+                  <ResourceTrafficSummary summary={group.trafficSummary} />
+                  {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <PortEntryRuntimeSummary summary={group.entryRuntime} />}
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
@@ -2077,13 +2113,16 @@ export function ForwardGroupsContent({
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
                       <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
+
+                  <ResourceTrafficSummary summary={group.trafficSummary} />
+                  {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <PortEntryRuntimeSummary summary={group.entryRuntime} />}
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
@@ -2122,6 +2161,7 @@ export function ForwardGroupsContent({
                     <TableHead>{translateText("成员/链路")}</TableHead>
                     <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? translateText("所属主机") : activeGroupMode === "exit" ? translateText("出口") : activeGroupMode === "entry" ? "DDNS" : translateText("入口")}</TableHead>
                     <TableHead className="hidden md:table-cell">{isChainMode ? translateText("链路延迟") : isCollectionMode(activeGroupMode) ? translateText("用途") : translateText("引用规则")}</TableHead>
+                    <TableHead>{translateText("累计流量")}</TableHead>
                     <TableHead className="text-right">{translateText("操作")}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -2159,12 +2199,15 @@ export function ForwardGroupsContent({
                       </TableCell>
                       <TableCell className="py-3">
                         {renderTableMembersSummary(group)}
+                        {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <div className="mt-2 min-w-[14rem]"><PortEntryRuntimeSummary summary={group.entryRuntime} /></div>}
                       </TableCell>
                       <TableCell className="hidden max-w-[16rem] py-3 md:table-cell">
-                        <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : translateText("未选择")) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台出口主机", [(group.members || []).length]) : group.domain || translateText("未配置域名")}</div>
+                        <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台出口主机", [(group.members || []).length]) : group.domain || translateText("未配置域名")}</div>
+                        {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && groupRuntimeBadges(group)}
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("转发规则中直接选择") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("规则使用时监听入口端口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("隧道出口组") : group.lastDdnsValue || translateText("未切换")}</div>
                       </TableCell>
                       <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact /></TableCell>
                       <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
@@ -2234,6 +2277,21 @@ export function ForwardGroupsContent({
               </div>
 
               {isPortMode && (
+                <div className="space-y-2">
+                  <Label>{translateText("入口类型")}</Label>
+                  <Select value={form.entryGroupId ? "group" : "host"} onValueChange={(value) => setForm(prev => ({
+                    ...prev, entryGroupId: value === "group" ? Number(usableEntryGroups[0]?.id) || null : null,
+                    members: value === "group" ? [] : prev.members.slice(0, 1),
+                  }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="host">{translateText("单台主机")}</SelectItem>
+                      <SelectItem value="group" disabled={!usableEntryGroups.length}>{translateText("入口组")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {isPortMode && !form.entryGroupId && (
                 <div className="space-y-2">
                   <Label>{translateText("所属主机")}</Label>
                   <Select
@@ -2338,6 +2396,15 @@ export function ForwardGroupsContent({
                         <SelectItem value="CNAME">CNAME</SelectItem>
                       </SelectContent>
                     </Select>
+                    {isPortMode && <div className="text-xs text-muted-foreground" role="status">
+                      {toolPreflight.isError ? translateText("工具检查失败，保存时将再次校验")
+                        : !toolPreflight.data ? translateText("正在检查入口工具…")
+                          : toolPreflight.data.some((host) => host.status === "missing")
+                            ? <span className="text-amber-700 dark:text-amber-300">{translateText("缺少 {0}：{1}",[form.forwardType,toolPreflight.data.filter((host) => host.status === "missing").map((host) => host.hostName || `#${host.hostId}`).join("、")])}</span>
+                            : toolPreflight.data.some((host) => host.status === "unknown") ? translateText("部分入口工具未确认（离线、旧版 Agent 或上报过期），允许保存")
+                              : toolPreflight.data.length ? translateText("所选入口均已检测到工具") : translateText("请先选择入口")}
+                      <p className="mt-1">{translateText("仅检查可执行文件，不保证内核模块、权限或业务连通性。")}</p>
+                    </div>}
                   </div>
                   {form.groupMode === "entry" && (
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
@@ -2418,12 +2485,14 @@ export function ForwardGroupsContent({
               </>
             )}
 
-            {form.groupMode === "chain" && (
+            {(form.groupMode === "chain" || (isPortMode && !!form.entryGroupId)) && (
               <div className="space-y-2">
                 <Label>{translateText("入口组")}</Label>
                 <Select
                   value={form.entryGroupId ? String(form.entryGroupId) : "none"}
-                  onValueChange={(value) => setForm((prev) => applyEntryGroupToChainForm(prev, value === "none" ? null : Number(value)))}
+                  onValueChange={(value) => setForm((prev) => isPortMode
+                    ? { ...prev, entryGroupId: value === "none" ? null : Number(value), members: [] }
+                    : applyEntryGroupToChainForm(prev, value === "none" ? null : Number(value)))}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder={translateText("选择已保存入口组")} />
@@ -2442,6 +2511,7 @@ export function ForwardGroupsContent({
                     ))}
                   </SelectContent>
                 </Select>
+                {isPortMode && <p className="text-xs text-muted-foreground">{translateText("所有入口同时直连目标，成员自动同步；限速按每个节点生效。")}</p>}
               </div>
             )}
 
@@ -2772,7 +2842,7 @@ export function ForwardGroupsContent({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={closeDialog}>{translateText("取消")}</Button>
-            <Button onClick={handleSubmit} disabled={isPending}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
+            <Button onClick={handleSubmit} disabled={isPending || (isPortMode && form.isEnabled && !!toolPreflight.data?.some((host) => host.status === "missing"))}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

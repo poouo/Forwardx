@@ -88,6 +88,7 @@ export default defineConfig({
       {
         text: "运维与排障",
         items: [
+          { text: "运维看板", link: "/guide/operations" },
           { text: "SSH 管理菜单（fwxm）", link: "/guide/ssh-management" },
           { text: "目录、数据与日志", link: "/guide/paths-logs" },
           { text: "管理员账号恢复", link: "/guide/account-recovery" },

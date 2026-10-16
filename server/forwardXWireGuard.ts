@@ -54,6 +54,11 @@ export function isForwardXWireGuardV2(tunnel: any) {
     && normalizeForwardXVersion(tunnel?.forwardxVersion) === "v2";
 }
 
+export function isForwardXForwardxV3(tunnel: any) {
+  return String(tunnel?.mode || "").trim().toLowerCase() === "forwardx"
+    && normalizeForwardXVersion(tunnel?.forwardxVersion) === "v3";
+}
+
 export function buildForwardXWireGuardMimicFilters(plan: Pick<ForwardXWireGuardNodePlan, "listenPort" | "peers">) {
   const filters = new Set<string>();
   const listenPort = Number(plan?.listenPort || 0);

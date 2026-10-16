@@ -6,6 +6,7 @@ import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { HelpDetails } from "@/components/ui/help-details";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { AsyncButton } from "@/components/ui/async-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -65,7 +66,7 @@ function DiscordBotSettings() {
       <div className="flex items-center justify-between gap-3"><Label className="min-w-0 leading-snug">{t("主机上线/离线通知")}</Label><Switch className="shrink-0" checked={status} onCheckedChange={setStatus} /></div>
       <div className="flex flex-wrap items-center gap-3"><Label>{t("剩余流量阈值")}</Label><div className="flex shrink-0 items-center gap-2"><Input className="w-24" type="number" min={1} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(1, Number(event.target.value) || 20)))} /><span>%</span></div></div>
       <p className="text-sm text-muted-foreground">{connection?.connected ? t("机器人已连接") : t("机器人未连接；请确认已选择 Discord 并检查 Token")}</p>
-      <div className="responsive-actions flex flex-wrap gap-2"><Button disabled={update.isPending} onClick={() => update.mutate({ discord: { enabled, botToken: token.trim() || undefined, expiryReminder: expiry, trafficReminder: traffic, hostStatusNotify: status, trafficReminderThreshold: threshold } })}>{t("保存配置")}</Button>
+      <div className="responsive-actions flex flex-wrap gap-2"><AsyncButton pending={update.isPending} onClick={() => update.mutate({ discord: { enabled, botToken: token.trim() || undefined, expiryReminder: expiry, trafficReminder: traffic, hostStatusNotify: status, trafficReminderThreshold: threshold } })}>{t("保存配置")}</AsyncButton>
         <Button variant="outline" disabled={!discord?.active || test.isPending} onClick={() => test.mutate()}>{t("测试发送")}</Button>
         <Button variant="outline" disabled={!discord?.configured || refresh.isPending} onClick={() => refresh.mutate()}>{t("校验并同步")}</Button>
         {discord?.tokenSource === "database" && <Button variant="destructive" disabled={update.isPending} onClick={async () => { if (await confirm({ title: t("删除 Discord 机器人"), description: t("删除 Bot Token 并关闭机器人，保留用户绑定。") })) update.mutate({ discord: { enabled: false, clearToken: true } }); }}>{t("删除机器人")}</Button>}

@@ -2,11 +2,13 @@ import crypto from "crypto";
 import { accrueAffiliateCommission } from "./repositories/affiliateRepository";
 import express from "express";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
 import { appendPanelLog } from "./_core/panelLogger";
 import { getConfiguredPanelUrl, resolvePanelUrl } from "./agentPanelUrl";
 import * as db from "./db";
 import { withTrafficBillingUserLock } from "./keyedTaskLock";
+import { importPaymentPrivateKey, importPaymentPublicKey, paymentOrderFailureMessage } from "./paymentCrypto";
 import {
   createGmPayOrder,
   getGmPayGatewayInfo,
@@ -325,29 +327,13 @@ function getClientIp(req: express.Request) {
   return req.ip || req.socket.remoteAddress || "";
 }
 
-function formatPem(key: string, type: "PRIVATE KEY" | "PUBLIC KEY") {
-  const value = key.trim();
-  if (!value) return "";
-  if (value.includes("-----BEGIN")) return value;
-  const lines = value.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") || value;
-  return `-----BEGIN ${type}-----\n${lines}\n-----END ${type}-----`;
-}
-
-function importPrivateKey(key: string) {
-  return crypto.createPrivateKey(formatPem(key, "PRIVATE KEY"));
-}
-
-function importPublicKey(key: string) {
-  return crypto.createPublicKey(formatPem(key, "PUBLIC KEY"));
-}
-
-function rsaSha256Sign(data: string, privateKey: string, output: BufferEncoding = "base64") {
-  return crypto.sign("RSA-SHA256", Buffer.from(data), importPrivateKey(privateKey)).toString(output);
+function rsaSha256Sign(data: string, privateKey: string, provider: "alipay" | "wxpay", output: BufferEncoding = "base64") {
+  return crypto.sign("RSA-SHA256", Buffer.from(data), importPaymentPrivateKey(privateKey, provider)).toString(output);
 }
 
 function rsaSha256Verify(data: string, signature: string, publicKey: string, input: BufferEncoding = "base64") {
   try {
-    return crypto.verify("RSA-SHA256", Buffer.from(data), importPublicKey(publicKey), Buffer.from(signature, input));
+    return crypto.verify("RSA-SHA256", Buffer.from(data), importPaymentPublicKey(publicKey, "alipay"), Buffer.from(signature, input));
   } catch {
     return false;
   }
@@ -422,7 +408,7 @@ function alipaySign(params: Record<string, string>, privateKey: string) {
     .sort()
     .map((key) => `${key}=${params[key]}`)
     .join("&");
-  return rsaSha256Sign(signContent, privateKey);
+  return rsaSha256Sign(signContent, privateKey, "alipay");
 }
 
 function alipaySignContent(params: Record<string, string>) {
@@ -590,7 +576,7 @@ function wxpayAuthorization(config: WxpayConfig, method: string, urlPathWithQuer
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce = wxpayNonce();
   const message = `${method}\n${urlPathWithQuery}\n${timestamp}\n${nonce}\n${body}\n`;
-  const signature = rsaSha256Sign(message, config.privateKey);
+  const signature = rsaSha256Sign(message, config.privateKey, "wxpay");
   return `WECHATPAY2-SHA256-RSA2048 mchid="${config.mchId}",nonce_str="${nonce}",timestamp="${timestamp}",serial_no="${config.certSerial}",signature="${signature}"`;
 }
 
@@ -997,6 +983,18 @@ export const paymentRouter = router({
       if (next.gmpay.enabled && (!next.gmpay.apiBase || !next.gmpay.pid || !next.gmpay.secretKey)) {
         throw new Error("启用 USDT 支付前请完整填写网关地址、商户 PID 和商户密钥");
       }
+      try {
+        for (const provider of ["alipay", "wxpay"] as const) {
+          if (next[provider].enabled || input[provider].privateKey?.trim()) {
+            importPaymentPrivateKey(next[provider].privateKey, provider);
+          }
+          if ((next[provider].enabled && (provider === "alipay" || next[provider].publicKey)) || input[provider].publicKey?.trim()) {
+            importPaymentPublicKey(next[provider].publicKey, provider);
+          }
+        }
+      } catch (cause) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: paymentOrderFailureMessage(cause), cause });
+      }
       await savePaymentConfig(next);
       appendPanelLog("info", "[Payment] config updated");
       return sanitizeConfig(next);
@@ -1202,7 +1200,7 @@ export const paymentRouter = router({
         // callback can complete the order while the create request is unwinding.
         await closePaymentOrderAndReleaseDiscount(outTradeNo, "failed").catch(() => undefined);
         appendPanelLog("error", `[Payment] order create failed user=${ctx.user.id} provider=${provider} outTradeNo=${outTradeNo}: ${error?.message || error}`);
-        throw error;
+        throw new TRPCError({ code: "BAD_GATEWAY", message: paymentOrderFailureMessage(error), cause: error });
       }
     }),
 });

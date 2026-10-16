@@ -15,6 +15,20 @@ import (
 )
 
 func TestControlledFXPAddsRulesWithoutDisconnectingTCPOrUDPSessions(t *testing.T) {
+	for _, mode := range []string{"", "http", "ws", "tls"} {
+		name := mode
+		if name == "" {
+			name = "legacy"
+		}
+		t.Run(name, func(t *testing.T) { testControlledFXPAddsRules(t, mode) })
+	}
+}
+
+func testControlledFXPAddsRules(t *testing.T, mode string) {
+	version := ""
+	if mode != "" {
+		version = "v3"
+	}
 	dir, err := os.MkdirTemp("", "fxp-add-")
 	if err != nil {
 		t.Fatal(err)
@@ -58,11 +72,11 @@ func TestControlledFXPAddsRulesWithoutDisconnectingTCPOrUDPSessions(t *testing.T
 	for secondPort == firstPort || secondPort == exitPort {
 		secondPort = freeTCPUDPPort(t)
 	}
-	exit := normalizeConfig(config{Role: "exit", TunnelID: 991, Protocol: "both", ListenHost: "127.0.0.1", ListenPort: exitPort, Key: "additive-test", ControlSocket: filepath.Join(dir, "exit.sock"), UDPTargets: []udpTarget{{RuleID: 1, TargetIP: "127.0.0.1", TargetPort: targetPort}}})
+	exit := normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "exit", TunnelID: 991, Protocol: "both", ListenHost: "127.0.0.1", ListenPort: exitPort, Key: "additive-test", ControlSocket: filepath.Join(dir, "exit.sock"), UDPTargets: []udpTarget{{RuleID: 1, TargetIP: "127.0.0.1", TargetPort: targetPort}}})
 	entry := func(id, port int) config {
-		return normalizeConfig(config{Role: "entry", TunnelID: 991, RuleID: id, ListenHost: "127.0.0.1", ListenPort: port, Protocol: "both", ExitHost: "127.0.0.1", ExitPort: exitPort, TargetIP: "127.0.0.1", TargetPort: targetPort, Key: "additive-test"})
+		return normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "entry", TunnelID: 991, RuleID: id, ListenHost: "127.0.0.1", ListenPort: port, Protocol: "both", ExitHost: "127.0.0.1", ExitPort: exitPort, TargetIP: "127.0.0.1", TargetPort: targetPort, Key: "additive-test"})
 	}
-	group := normalizeConfig(config{Role: "entry-group", TunnelID: 991, ControlSocket: filepath.Join(dir, "entry.sock"), Entries: []config{entry(1, firstPort)}})
+	group := normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "entry-group", TunnelID: 991, ControlSocket: filepath.Join(dir, "entry.sock"), Entries: []config{entry(1, firstPort)}})
 	start := func(cfg config, port int) {
 		done, result := make(chan struct{}), make(chan error, 1)
 		go func() { result <- runControlledFXP(done, cfg) }()
@@ -81,6 +95,9 @@ func TestControlledFXPAddsRulesWithoutDisconnectingTCPOrUDPSessions(t *testing.T
 	}
 	start(exit, exitPort)
 	start(group, firstPort)
+	if version == "v3" {
+		t.Cleanup(func() { closeV3TestEndpoint(exitPort, entry(1, firstPort)) })
+	}
 	client, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(firstPort)), time.Second)
 	if err != nil {
 		t.Fatal(err)

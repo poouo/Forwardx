@@ -1,7 +1,11 @@
 import { build } from "esbuild";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 
 mkdirSync("dist/management", { recursive: true });
+mkdirSync("dist/geo", { recursive: true });
+for (const name of ["ip2region_v4.xdb.gz", "ip2region_v6.xdb.gz", "LICENSE.txt", "NOTICE.md"]) {
+  copyFileSync(`server/assets/ip2region/${name}`, `dist/geo/${name}`);
+}
 for (const name of ["agent-proxy.sh", "install-agent.sh", "forwardx-manage.sh", "install-management.sh", "install-panel-local.sh", "install-panel-docker.sh"]) {
   writeFileSync(`dist/management/${name}`, readFileSync(`scripts/${name}`, "utf8").replace(/\r\n/g, "\n"));
 }

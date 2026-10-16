@@ -13,16 +13,18 @@ const actionStatusRetryMinDelay = time.Second
 const actionStatusRetryMaxDelay = 30 * time.Second
 
 type actionStatusPayload struct {
-	RuleID      int    `json:"ruleId"`
-	TunnelID    int    `json:"tunnelId"`
-	StatusType  string `json:"statusType,omitempty"`
-	SourcePort  int    `json:"sourcePort,omitempty"`
-	TargetPort  int    `json:"targetPort,omitempty"`
-	IsRunning   bool   `json:"isRunning"`
-	Message     string `json:"message,omitempty"`
-	ForwardType string `json:"forwardType,omitempty"`
-	Protocol    string `json:"protocol,omitempty"`
-	IssuedAt    int64  `json:"issuedAt,omitempty"`
+	RuleID              int    `json:"ruleId"`
+	TunnelID            int    `json:"tunnelId"`
+	StatusType          string `json:"statusType,omitempty"`
+	SourcePort          int    `json:"sourcePort,omitempty"`
+	TargetPort          int    `json:"targetPort,omitempty"`
+	IsRunning           bool   `json:"isRunning"`
+	Message             string `json:"message,omitempty"`
+	ForwardType         string `json:"forwardType,omitempty"`
+	Protocol            string `json:"protocol,omitempty"`
+	IssuedAt            int64  `json:"issuedAt,omitempty"`
+	ConsecutiveFailures int    `json:"consecutiveFailures,omitempty"`
+	RetryNotBefore      int64  `json:"retryNotBefore,omitempty"`
 }
 
 type actionStatusReport struct {
@@ -66,6 +68,22 @@ func enqueueActionStatusReport(cfg Config, a action, running bool, message strin
 	}
 	if payload.StatusType == "" {
 		payload.StatusType = "rule"
+	}
+	if !running && payload.StatusType == "rule" && strings.TrimSpace(a.Op) == "apply" && a.ConfigRevision > 0 {
+		// This report is emitted during execution, before the worker persists
+		// the result. Read the previous matching result without incrementing it.
+		desiredActionRecordMu.Lock()
+		ensureDesiredActionRecordsLoadedLocked()
+		previous, exists := desiredActionRecordsMem[desiredActionKey(a)]
+		payload.ConsecutiveFailures = 1
+		if desiredActionRecordMatches(previous, exists, desiredActionSignature(a)) && !previous.Success {
+			payload.ConsecutiveFailures = previous.Failures + 1
+			if payload.ConsecutiveFailures > 1000000 {
+				payload.ConsecutiveFailures = 1000000
+			}
+		}
+		desiredActionRecordMu.Unlock()
+		payload.RetryNotBefore = time.Now().Add(desiredActionFailureRetryInterval).UnixMilli()
 	}
 	key := actionStatusReportKey(payload)
 	actionStatusReportsMu.Lock()

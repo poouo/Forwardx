@@ -106,6 +106,7 @@ import { useMemo, useRef, useState, useEffect } from "react";
 import { toast } from "@/lib/localizedToast";
 import { useLocation } from "wouter";
 import { BRAND_LOGO_MAX_BYTES } from "@shared/avatar";
+import { ForwardXLogo } from "@/components/ForwardXLogo";
 import {
   BUILTIN_WALLPAPERS,
   DEFAULT_PERSONALIZATION_BACKGROUND,
@@ -3399,10 +3400,7 @@ function PersonalizationSettingsSection() {
                 {siteLogoDataUrl ? (
                   <img src={siteLogoDataUrl} alt={translateText("Logo 预览")} className="h-full w-full object-contain p-2" />
                 ) : (
-                  <>
-                    <img src="/logo-light.png" alt={translateText("默认 Logo")} className="h-full w-full object-contain p-2 dark:hidden" />
-                    <img src="/logo-dark.png" alt={translateText("默认 Logo")} className="hidden h-full w-full object-contain p-2 dark:block" />
-                  </>
+                  <ForwardXLogo size={48} alt={translateText("默认 Logo")} />
                 )}
               </div>
               <div className="min-w-0 flex-1 space-y-2">

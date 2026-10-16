@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getLanguage, getLanguagePreference, getFormatLocale, initializeLanguage, LANGUAGE_STORAGE_KEY, setLanguagePreference, t } from "./index";
-import { translateNotificationText } from "./messages";
+import { translateErrorNotificationText, translateNotificationText } from "./messages";
+import { PAYMENT_ERRORS } from "../../../shared/paymentErrors";
+import { toast } from "../lib/localizedToast";
 
 test("language initialization, persistence and network/storage failures are safe", async () => {
   const original = new Map<string, PropertyDescriptor | undefined>();
@@ -36,6 +38,23 @@ test("language initialization, persistence and network/storage failures are safe
     assert.equal(translateNotificationText("所选用户不存在"), "The selected user does not exist");
     assert.equal(translateNotificationText("Agent stderr: User not found"), "Agent stderr: User not found");
     assert.equal(translateNotificationText("__proto__"), "__proto__");
+    for (const message of Object.values(PAYMENT_ERRORS)) {
+      assert.equal(/\p{Script=Han}/u.test(translateErrorNotificationText(message)), false, message);
+      assert.notEqual(translateErrorNotificationText(message), message);
+    }
+    assert.equal(translateErrorNotificationText("error:1E08010C:DECODER routines::unsupported"), t("密钥或证书无法解析，请检查格式或联系管理员查看日志。"));
+    assert.equal(translateNotificationText("最低支付金额为 1.25"), "The minimum payment amount is 1.25");
+    assert.equal(translateNotificationText("最高支付金额为 100"), "The maximum payment amount is 100");
+    assert.equal(translateNotificationText("cancelled subscriptions cannot be renewed"), "Cancelled subscriptions cannot be renewed");
+    assert.equal(translateErrorNotificationText("Failed to fetch"), "The network request failed. Check your connection and try again.");
+    assert.equal(translateErrorNotificationText("Unknown error"), "The operation failed. Try again later or ask the administrator to check the logs.");
+    assert.equal(translateErrorNotificationText("Agent stderr: error:1E08010C:DECODER routines::unsupported"), "Agent stderr: error:1E08010C:DECODER routines::unsupported");
+    const errorToastId = toast.error("error:1E08010C:DECODER routines::unsupported", { description: "Failed to fetch" });
+    const errorToast = toast.getHistory().find(item => item.id === errorToastId);
+    assert.ok(errorToast && "title" in errorToast);
+    assert.equal(errorToast?.title, t("密钥或证书无法解析，请检查格式或联系管理员查看日志。"));
+    assert.equal(errorToast?.description, "The network request failed. Check your connection and try again.");
+    toast.dismiss(errorToastId);
     // English labels must never leak into serialized rule fields or state IDs.
     const { parseRuleTransferFile } = await import("../lib/ruleTransfer");
     const ruleInput = { kind: "forwardx.forward-rules", version: 1, scope: { type: "chain", id: 7, name: "用户链路" }, rules: [{ name: "用户规则", forwardType: "realm", protocol: "both", sourcePort: 65535, targetIp: "example.com", targetPort: 443, proxyProtocolSend: false }] };
@@ -54,6 +73,11 @@ test("language initialization, persistence and network/storage failures are safe
     assert.equal(translateNotificationText("用户不存在"), "用户不存在");
     assert.equal(translateNotificationText("所选用户不存在"), "所选用户不存在");
     assert.equal(translateNotificationText("Agent stderr: User not found"), "Agent stderr: User not found");
+    for (const message of Object.values(PAYMENT_ERRORS)) assert.equal(translateErrorNotificationText(message), message);
+    assert.equal(translateErrorNotificationText("error:1E08010C:DECODER routines::unsupported"), "密钥或证书无法解析，请检查格式或联系管理员查看日志。");
+    assert.equal(translateNotificationText("最低支付金额为 1.25"), "最低支付金额为 1.25");
+    assert.equal(translateNotificationText("cancelled subscriptions cannot be renewed"), "已取消的订阅不能续费");
+    assert.equal(translateErrorNotificationText("Failed to fetch"), "网络请求失败，请检查连接后重试。");
     assert.deepEqual(parseRuleTransferFile(ruleInput), englishRule);
     const chineseState = resolveLinkAvailability({ label: "用户链路", enabled: true, hostsLoaded: true, requiredNodes: [{ id: 17, available: true }] });
     assert.equal(chineseState.status, englishState.status);

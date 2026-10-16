@@ -146,7 +146,7 @@ For forgotten passwords use `fwxm panel reset-admin`, or the [older deployment r
 
 ## Documentation map
 
-Most detailed guides are in Chinese; the SSH/proxy guide also has an English version.
+Most detailed guides are in Chinese; English guides cover [SSH/proxies](docs/guide/agent-proxy-manager.en.md) and [multi-entry direct forwarding](docs/guide/port-entry-groups.en.md).
 
 | Topic | Guides |
 | --- | --- |

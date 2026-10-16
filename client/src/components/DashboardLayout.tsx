@@ -88,6 +88,7 @@ import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
+import { ForwardXLogo } from "@/components/ForwardXLogo";
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
@@ -113,6 +114,7 @@ const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: translateTex
 const pluginManagementMenuItem: SidebarNavItem = { icon: Puzzle, label: translateText("插件管理"), path: "/plugins", menuKey: "plugins" };
 
 const adminMenuItems: SidebarNavItem[] = [
+  { icon: LayoutDashboard, label: translateText("运维看板"), path: "/operations" },
   { icon: CreditCard, label: translateText("支付对接"), path: "/payments", menuKey: "payments" },
   { icon: WalletCards, label: translateText("账单与兑换"), path: "/billing", menuKey: "billing" },
   { icon: Handshake, label: translateText("推广管理"), path: "/affiliate-management" },
@@ -476,15 +478,15 @@ function DashboardLayoutContent({
     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
       <Zap className="h-4 w-4" />
     </div>
-  ) : !displayLogoSrc ? (
-    <span className="h-7 w-7 shrink-0" aria-hidden="true" />
-  ) : (
+  ) : displayLogoSrc && displayLogoSrc !== "/logo-dark.png" && displayLogoSrc !== "/logo-light.png" ? (
     <img
       src={displayLogoSrc}
       alt={siteTitle}
       className="h-7 w-7 shrink-0 object-contain"
       onError={() => setLogoLoadFailed(true)}
     />
+  ) : (
+    <ForwardXLogo size={28} alt={siteTitle} />
   );
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [showUpgradeAnnouncement, setShowUpgradeAnnouncement] = useState(false);

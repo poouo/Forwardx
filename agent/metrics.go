@@ -1150,6 +1150,7 @@ func collectTraffic(cfg Config) time.Duration {
 				logf("traffic report retry failed stats=%d: %v", pending.StatCount, err)
 			}
 		} else {
+			updateSourceAnalyticsPolicy(response)
 			if seconds, ok := response["trafficReportInterval"].(float64); ok {
 				setActiveTrafficReportIntervalSeconds(int(seconds))
 			}
@@ -1259,6 +1260,12 @@ func collectTraffic(cfg Config) time.Duration {
 		}
 	}
 	if reportRuleTraffic || hostTraffic != nil {
+		sourceRows, sourceStatus := collectSourceAnalytics(discoveredStates)
+		if sourceAnalyticsEnabled.Load() {
+			payload["sourceSamples"] = sourceRows
+			payload["sourceStatus"] = sourceStatus
+			payload["sourceSampledAt"] = time.Now().Unix()
+		}
 		payload["reportId"] = newTrafficReportID()
 		payload["reportProducerId"] = trafficReportProducerID(reportIdentity)
 		pending := pendingTrafficReport{
@@ -1281,6 +1288,7 @@ func collectTraffic(cfg Config) time.Duration {
 				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 			}
 		} else {
+			updateSourceAnalyticsPolicy(response)
 			if seconds, ok := response["trafficReportInterval"].(float64); ok {
 				setActiveTrafficReportIntervalSeconds(int(seconds))
 			}

@@ -407,6 +407,7 @@ export const forwardRules = table("forward_rules", {
   disabledByUser: boolean("disabledByUser").notNull().default(false),
   isRunning: boolean("isRunning").notNull().default(false),
   pendingDelete: boolean("pendingDelete").notNull().default(false),
+  runtimeDiagnostic: text("runtimeDiagnostic"),
   sortOrder: int("sortOrder").notNull().default(0),
   userId: int("userId").notNull(),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
@@ -479,6 +480,7 @@ export const forwardGroupMembers = table("forward_group_members", {
   connectHost: text("connectHost"),
   priority: int("priority").notNull().default(0),
   ruleId: int("ruleId"),
+  syncDiagnostic: text("syncDiagnostic"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   healthStatus: varchar("healthStatus", { length: 32 }).notNull().default("unknown"),
   lastLatencyMs: int("lastLatencyMs"),
@@ -516,6 +518,13 @@ export const tunnels = table("tunnels", {
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // forwardx | tls | wss | tcp | mtls | mwss | mtcp | nginx_stream
   relayMode: varchar("relayMode", { length: 16 }).notNull().default("chain"), // chain | failover
   forwardxVersion: varchar("forwardxVersion", { length: 8 }).notNull().default("v1"),
+  // V3 outer-transport options (null for v1/v2 tunnels).
+  v3Transport: varchar("v3Transport", { length: 8 }),
+  v3Host: text("v3Host"),
+  v3Path: text("v3Path"),
+  v3UserAgent: text("v3UserAgent"),
+  v3ServerName: text("v3ServerName"),
+  v3Multiplex: boolean("v3Multiplex"),
   certDomain: text("certDomain"),
   certPem: text("certPem"),
   certKeyPem: text("certKeyPem"),
@@ -696,6 +705,24 @@ export const agentTrafficReports = table("agent_traffic_reports", {
   producerId: varchar("producerId", { length: 128 }),
   reportId: varchar("reportId", { length: 128 }).notNull(),
   receivedAt: epoch("receivedAt").notNull().default(nowDefault()),
+});
+export const operationsTrafficDaily = table("operations_traffic_daily", {
+  id: serial("id"), dayStart: epoch("dayStart").notNull(), ruleId: int("ruleId").notNull(), hostId: int("hostId").notNull(), userId: int("userId").notNull(), logicalRuleId: int("logicalRuleId").notNull(),
+  resourceKey: varchar("resourceKey", { length: 64 }).notNull(), ruleName: varchar("ruleName", { length: 255 }).notNull(), hostName: varchar("hostName", { length: 255 }).notNull(), resourceName: varchar("resourceName", { length: 255 }).notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0), bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0), connections: bigint("connections", { mode: "number" }).notNull().default(0),
+});
+export const operationsSourceDaily = table("operations_source_daily", {
+  knownSamples: bigint("knownSamples", { mode: "number" }).notNull().default(0),
+  id: serial("id"), dayStart: epoch("dayStart").notNull(), ruleId: int("ruleId").notNull(), hostId: int("hostId").notNull(), ip: varchar("ip", { length: 64 }).notNull(), userId: int("userId").notNull(), logicalRuleId: int("logicalRuleId").notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0), bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0), unknownSamples: bigint("unknownSamples", { mode: "number" }).notNull().default(0), lastSeen: epoch("lastSeen").notNull(),
+});
+export const operationsSourceStatus = table("operations_source_status", {
+  id: serial("id"), hostId: int("hostId").notNull(), status: varchar("status", { length: 32 }).notNull(), lastSeen: epoch("lastSeen").notNull(),
+});
+export const operationsIpGeo = table("operations_ip_geo", {
+  id: serial("id"), address: varchar("address", { length: 64 }).notNull(), countryCode: varchar("countryCode", { length: 8 }).notNull(),
+  countryName: varchar("countryName", { length: 128 }), region: varchar("region", { length: 128 }), city: varchar("city", { length: 128 }), isp: varchar("isp", { length: 128 }),
+  datasetVersion: varchar("datasetVersion", { length: 64 }).notNull(), expiresAt: epoch("expiresAt").notNull(),
 });
 export type AgentTrafficReport = typeof agentTrafficReports.$inferSelect;
 export type InsertAgentTrafficReport = typeof agentTrafficReports.$inferInsert;

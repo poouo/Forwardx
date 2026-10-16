@@ -45,6 +45,7 @@
   --pearl-shadow: 0 2px 3px rgb(28 44 38 / 3%), 0 12px 28px -16px rgb(28 44 38 / 15%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(20 34 28 / 8%), 0 30px 80px -24px rgb(20 34 28 / 24%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-ease: cubic-bezier(.22, 1, .36, 1);
+  --theme-glow: rgb(35 109 233 / 20%);
 }
 
 .dark {
@@ -85,6 +86,7 @@
   --pearl-highlight: rgb(255 255 255 / 7%);
   --pearl-shadow: 0 2px 3px rgb(0 0 0 / 10%), 0 12px 28px -16px rgb(0 0 0 / 32%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(0 0 0 / 20%), 0 30px 80px -24px rgb(0 0 0 / 60%), inset 0 1px 0 var(--pearl-highlight);
+  --theme-glow: rgb(118 167 255 / 22%);
 }
 
 @layer components {
@@ -316,9 +318,23 @@
     .pearl-button:hover:not(:disabled) { transform: translateY(-1px); }
     .pearl-button:active:not(:disabled) { transform: scale(.965); }
     .pearl-card-interactive:hover {
-      border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
-      box-shadow: var(--pearl-overlay-shadow);
+      border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+      box-shadow: 0 4px 20px -4px var(--theme-glow, rgb(0 0 0 / 12%)), var(--pearl-overlay-shadow);
     }
+  }
+  .pearl-icon-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--primary) 10%, var(--card));
+    color: var(--primary);
+    border: 1px solid color-mix(in srgb, var(--primary) 16%, var(--border));
+    box-shadow: 0 1px 2px rgb(0 0 0 / 4%), inset 0 1px 0 var(--pearl-highlight);
+  }
+  html[data-personalization-theme]:not([data-personalization-theme="ink"]) body {
+    background-image: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--primary) 4.5%, transparent), transparent 70%);
+    background-attachment: fixed;
   }
   @media (max-width: 767px) {
     .pearl-card-header { padding: 1rem; }

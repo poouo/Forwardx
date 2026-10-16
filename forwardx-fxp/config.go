@@ -28,6 +28,9 @@ func normalizeConfig(cfg config) config {
 	cfg.Exits = append([]exitEndpoint(nil), cfg.Exits...)
 	cfg.Entries = append([]config(nil), cfg.Entries...)
 	cfg.Role = strings.ToLower(strings.TrimSpace(cfg.Role))
+	cfg.TransportVersion = strings.ToLower(strings.TrimSpace(cfg.TransportVersion))
+	cfg.V3Transport = strings.ToLower(strings.TrimSpace(cfg.V3Transport))
+	cfg.V3UserAgent = strings.TrimSpace(cfg.V3UserAgent)
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
@@ -82,6 +85,9 @@ func normalizeExitStrategy(value string) string {
 }
 
 func validateConfig(cfg config) error {
+	if err := validateTransportConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.Role == "entry-group" {
 		return validateEntryGroupConfig(cfg)
 	}

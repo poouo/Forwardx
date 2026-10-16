@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  FORWARDX_V3_RUNTIME_CAPABILITY,
   gostTunnelTransportType,
+  hostSupportsForwardXV3Runtime,
   isPassiveForwardXFirstHopMarker,
+  planForwardXV3Capability,
   planGostTunnelProbeListeners,
   planManualTunnelTestRefresh,
   shouldReconcileGostRuntime,
@@ -291,4 +294,41 @@ test("periodically reconciles desired and stale GOST shared runtimes", () => {
     desiredRelevant: false,
     reportedHasWork: false,
   }), false);
+});
+
+test("V3 requires an explicit runtime capability on every host of the link", () => {
+  const hostCapabilitiesById = new Map<number, readonly string[]>([
+    [1, [FORWARDX_V3_RUNTIME_CAPABILITY]],
+    [2, ["forwardx.v1", "forwardx.v2"]],
+    [3, [FORWARDX_V3_RUNTIME_CAPABILITY, "forwardx.v2"]],
+  ]);
+
+  const granted = planForwardXV3Capability({ requiredHostIds: [1, 3], hostCapabilitiesById });
+  assert.deepEqual(granted, { supported: true, requiredHostIds: [1, 3], unsupportedHostIds: [] });
+
+  const missingExit = planForwardXV3Capability({ requiredHostIds: [1, 2, 3, 2], hostCapabilitiesById });
+  assert.deepEqual(missingExit, { supported: false, requiredHostIds: [1, 2, 3], unsupportedHostIds: [2] });
+
+  // An unknown host reports no capability at all.
+  const unknownHost = planForwardXV3Capability({ requiredHostIds: [9], hostCapabilitiesById });
+  assert.deepEqual(unknownHost, { supported: false, requiredHostIds: [9], unsupportedHostIds: [9] });
+
+  // No host means support is unknown, never granted.
+  assert.deepEqual(planForwardXV3Capability({ requiredHostIds: [], hostCapabilitiesById }), {
+    supported: false,
+    requiredHostIds: [],
+    unsupportedHostIds: [],
+  });
+  assert.deepEqual(planForwardXV3Capability({ requiredHostIds: [0, -1, Number.NaN, "host" as any], hostCapabilitiesById }), {
+    supported: false,
+    requiredHostIds: [],
+    unsupportedHostIds: [],
+  });
+});
+
+test("V3 runtime capability matching ignores case and surrounding whitespace", () => {
+  assert.equal(hostSupportsForwardXV3Runtime([" forwardx.V3 "]), true);
+  assert.equal(hostSupportsForwardXV3Runtime(["forwardx.v2"]), false);
+  assert.equal(hostSupportsForwardXV3Runtime([]), false);
+  assert.equal(hostSupportsForwardXV3Runtime(null), false);
 });

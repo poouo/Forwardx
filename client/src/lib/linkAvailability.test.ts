@@ -8,6 +8,20 @@ import {
 
 const now = Date.UTC(2026, 6, 16, 12, 0, 0);
 
+test("direct port entry groups remain usable when one entry is offline and honor the dependency switch", () => {
+  const hosts = [{ id: 1, isOnline: true }, { id: 2, isOnline: false }];
+  const entry = { id: 70, groupMode: "entry", domain: "entry.test", isEnabled: true, members: [] };
+  const port = { id: 71, groupMode: "port", entryGroupId: 70, isEnabled: true, members: [
+    { id: 711, hostId: 1, memberType: "host", isEnabled: true },
+    { id: 712, hostId: 2, memberType: "host", isEnabled: true },
+  ] };
+  const state = buildLinkAvailabilityIndex({ hosts, groups: [port, entry], tunnels: [], now }).groupAvailabilityById.get(71)!;
+  assert.equal(state.status, "degraded");
+  assert.equal(state.available, true);
+  assert.deepEqual([...state.usableMemberIds], [711]);
+  assert.equal(buildLinkAvailabilityIndex({ hosts, groups: [port, { ...entry, isEnabled: false }], tunnels: [], now }).groupAvailabilityById.get(71)?.available, false);
+});
+
 test("a fresh successful probe owns availability even when cached host state is offline", () => {
   const state = resolveLinkAvailability({
     label: "隧道",

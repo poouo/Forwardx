@@ -403,13 +403,20 @@ export function buildLinkAvailabilityIndex(input: {
         alternativeNodeSets: alternatives,
       }, now);
     } else if (mode === "port") {
+      const entryGroupId = Number(group?.entryGroupId || 0);
+      const entryGroup = entryGroupId > 0 ? groupById.get(entryGroupId) : null;
+      const parallel = entryGroupId > 0;
       state = resolveLinkAvailability({
         label: translateText("端口转发"),
         enabled: group?.isEnabled !== false,
-        configurationValid: members.length === 1 && memberNodes.size === 1,
-        configurationMessage: translateText("端口转发需要一台所属主机"),
+        configurationValid: parallel
+          ? members.length > 0 && memberNodes.size === members.length && !!entryGroup
+            && entryGroup.isEnabled !== false && normalizeGroupMode(entryGroup) === "entry"
+          : members.length === 1 && memberNodes.size === 1,
+        configurationMessage: parallel ? translateText("端口转发需要配置单台主机或有效入口组") : translateText("端口转发需要一台所属主机"),
         hostsLoaded,
-        requiredNodes: Array.from(memberNodes.values()),
+        requiredNodes: parallel ? [] : Array.from(memberNodes.values()),
+        alternativeNodeSets: parallel ? [{ label: translateText("入口组"), nodes: Array.from(memberNodes.values()) }] : [],
       }, now);
     } else {
       let candidates = members;

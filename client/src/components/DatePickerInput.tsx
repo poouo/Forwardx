@@ -45,19 +45,27 @@ const PANEL_WIDTH = 320;
 const PANEL_HEIGHT = 360;
 
 type DatePickerInputProps = {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   align?: "start" | "end";
   className?: string;
   placeholder?: string;
+  min?: string;
+  max?: string;
+  allowClear?: boolean;
 };
 
 export default function DatePickerInput({
+  id,
   value,
   onChange,
   align = "start",
   className,
   placeholder = translateText("年/月/日"),
+  min,
+  max,
+  allowClear = true,
 }: DatePickerInputProps) {
   const selected = useMemo(() => parseDateInputValue(value), [value]);
   const selectedTime = selected?.getTime() ?? null;
@@ -131,6 +139,15 @@ export default function DatePickerInput({
   }, [open, align, selectedTime]);
 
   const monthStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+  const inRange = (date: Date) => {
+    const text = formatDateInputValue(date);
+    return (!min || text >= min) && (!max || text <= max);
+  };
+  const canShiftMonth = (offset: number) => {
+    const first = formatDateInputValue(new Date(viewDate.getFullYear(), viewDate.getMonth() + offset, 1));
+    const last = formatDateInputValue(new Date(viewDate.getFullYear(), viewDate.getMonth() + offset + 1, 0));
+    return (!min || last >= min) && (!max || first <= max);
+  };
   const calendarOffset = (monthStart.getDay() + 6) % 7;
   const days = Array.from({ length: 42 }, (_, index) => {
     const date = new Date(viewDate.getFullYear(), viewDate.getMonth(), index - calendarOffset + 1);
@@ -143,6 +160,7 @@ export default function DatePickerInput({
   });
 
   const commitDate = (date: Date) => {
+    if (!inRange(date)) return;
     const next = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
     onChange(formatDateInputValue(next));
     setViewDate(next);
@@ -162,16 +180,17 @@ export default function DatePickerInput({
     <div
       ref={panelRef}
       aria-hidden={!open}
+      inert={!open}
       style={panelStyle}
       className={`fixed z-[70] overflow-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
     >
       <div className="p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label={translateText("上个月")}>
+          <button type="button" disabled={!canShiftMonth(-1)} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30" onClick={() => shiftMonth(-1)} aria-label={translateText("上个月")}>
             <ChevronLeft className="h-4 w-4" />
           </button>
           <div className="text-sm font-semibold">{viewDate.toLocaleDateString(getFormatLocale(), { year: "numeric", month: "long" })}</div>
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label={translateText("下个月")}>
+          <button type="button" disabled={!canShiftMonth(1)} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30" onClick={() => shiftMonth(1)} aria-label={translateText("下个月")}>
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
@@ -183,16 +202,18 @@ export default function DatePickerInput({
             <button
               key={day.date.toISOString()}
               type="button"
-              className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
+              disabled={!inRange(day.date)}
+              aria-label={formatPickerLabel(formatDateInputValue(day.date))}
+              className={`h-8 rounded-md text-sm transition-colors disabled:pointer-events-none disabled:opacity-30 ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
               onClick={() => commitDate(day.date)}
             >
               {day.date.getDate()}
             </button>
           ))}
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background" onClick={() => commitDate(new Date())}>{translateText("今天")}</Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>{translateText("清除")}</Button>
+        <div className={`mt-3 grid gap-2 ${allowClear ? "grid-cols-2" : "grid-cols-1"}`}>
+          <Button type="button" size="sm" variant="outline" disabled={!inRange(new Date())} className="h-8 border-input bg-background" onClick={() => commitDate(new Date())}>{translateText("今天")}</Button>
+          {allowClear && <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>{translateText("清除")}</Button>}
         </div>
       </div>
     </div>
@@ -201,6 +222,7 @@ export default function DatePickerInput({
   return (
     <div ref={rootRef} className={cn("relative", className)}>
       <button
+        id={id}
         ref={triggerRef}
         type="button"
         className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"

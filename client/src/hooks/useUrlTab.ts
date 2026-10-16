@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 
 type UseUrlTabOptions<T extends string> = {
   values: readonly T[];
@@ -39,7 +39,11 @@ export function useUrlTab<T extends string>({
   queryKey = "tab",
   clearDefaultFromUrl = true,
 }: UseUrlTabOptions<T>) {
-  const [location, setLocation] = useLocation();
+  // Wouter's useLocation returns only the pathname. Query-only navigation
+  // needs its own subscription, otherwise incoming ?tab= links are ignored.
+  const [pathname, setLocation] = useLocation();
+  const search = useSearch();
+  const location = `${pathname}${search ? `?${search}` : ""}`;
   const valuesKey = values.join("\0");
   const allowedValues = useMemo(() => new Set<T>(values), [valuesKey]);
 

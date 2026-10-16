@@ -17,6 +17,7 @@ import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { cleanOldAddressGeoCache } from "./hostGeo";
+import { cleanOperationsHistory } from "./repositories/operationsRepository";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
@@ -361,6 +362,7 @@ async function runTcpingCleanup() {
       db.cleanOldHostProbeServiceStats(LATENCY_HISTORY_HOURS),
       cleanOldHostAvailability(),
       cleanOldAddressGeoCache(),
+      cleanOperationsHistory(),
     ]);
   } catch (error) {
     console.error("[Scheduler] TCPing cleanup error:", error);
@@ -673,6 +675,9 @@ export function startScheduler() {
     await runForwardGroupFailover();
     await runHostDdnsReconcile();
   });
+  const portEntryMaintenance = createNonOverlappingScheduledTask("port entry-group reconciliation", async () => {
+    await db.reconcilePortEntryGroups();
+  });
   const hostStatusSweep = createNonOverlappingScheduledTask("host status sweep", async () => {
     await runHostStatusSweep();
   });
@@ -726,6 +731,7 @@ export function startScheduler() {
   // Let the liveness prime's startup grace accept a live Agent presence before
   // the broad recovery sweep evaluates persisted heartbeat timestamps.
   repeatAfter(forwardingMaintenance, 5 * 60 * 1000, 20_000);
+  repeatAfter(portEntryMaintenance, 60_000, 25_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   // Keep host expiry dates responsive without changing the account-expiration
   // scan cadence or creating a timer per host.

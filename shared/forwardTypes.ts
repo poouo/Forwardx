@@ -3,11 +3,14 @@ export const FORWARD_TYPES = ["iptables", "nftables", "realm", "socat", "gost", 
 export type ForwardType = (typeof FORWARD_TYPES)[number];
 export type ForwardRuleProtocol = "tcp" | "udp" | "both";
 
-export const FORWARDX_VERSIONS = ["v1", "v2"] as const;
+export const FORWARDX_VERSIONS = ["v1", "v2", "v3"] as const;
 export type ForwardXVersion = (typeof FORWARDX_VERSIONS)[number];
 
 export function normalizeForwardXVersion(value: unknown): ForwardXVersion {
-  return String(value || "").trim().toLowerCase() === "v2" ? "v2" : "v1";
+  const normalized = String(value || "").trim().toLowerCase();
+  return (FORWARDX_VERSIONS as readonly string[]).includes(normalized)
+    ? normalized as ForwardXVersion
+    : "v1";
 }
 
 export const FORWARD_TYPE_LABELS: Record<ForwardType, string> = {

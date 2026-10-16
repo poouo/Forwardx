@@ -1,0 +1,18 @@
+<svg viewBox="0 0 120 120" width="120" height="120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fx-fav-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#0d9488" />
+    </linearGradient>
+    <linearGradient id="fx-fav-chev" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d1fae5" />
+      <stop offset="100%" stop-color="#a7f3d0" />
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="28" fill="url(#fx-fav-bg)" />
+  <g>
+    <path d="M26 28 L68 28 L68 40 L40 40 L40 50 L58 50 L58 60 L40 60 L40 92 L26 92 Z" fill="#ffffff" />
+    <path d="M52 57 L84 35 L94 45 L70 60 L94 75 L84 85 L52 63 Z" fill="url(#fx-fav-chev)" />
+  </g>
+</svg>
+

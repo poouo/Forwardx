@@ -1313,7 +1313,7 @@ func TestFxpClientRetriesCompatibilityWireContext(t *testing.T) {
 	}()
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	conn, sec, err := dialSecureTCP("127.0.0.1", port, cfg)
+	conn, sec, err := dialSecureTCP("127.0.0.1", port, cfg, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

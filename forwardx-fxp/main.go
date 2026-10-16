@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/poouo/Forwardx/forwardx-fxp/internal/v3"
 	"lukechampine.com/blake3"
 )
 
@@ -67,7 +68,11 @@ type fxpHandshake struct {
 }
 
 type secureConn struct {
-	conn          net.Conn
+	conn net.Conn
+	// V3 logical streams are already protected by the physical session AEAD.
+	// Their record framing preserves the existing business EOF/UDP semantics.
+	logicalFrames bool
+	maxReadFrame  uint32
 	lenWriteAEAD  cipher.AEAD
 	dataWriteAEAD cipher.AEAD
 	lenReadAEAD   cipher.AEAD
@@ -135,7 +140,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.118"
+	fxpRuntimeVersion    = "2.2.119"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -369,10 +374,56 @@ func (s *exitEndpointSelector) markHealthy(index int) {
 	}
 }
 
+// dialSelectedSecureTCP picks a healthy exit endpoint and opens a business
+// connection to it.
+//
+// The V3 multiplexed path delegates endpoint selection to the session pool,
+// which owns physical sessions and therefore knows which endpoint actually
+// failed. The legacy paths keep the per-attempt loop below, where each attempt
+// dials its own physical connection.
 func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
 	if selector == nil || selector.count() == 0 {
 		return nil, nil, exitEndpoint{}, errors.New("no exit endpoints")
 	}
+	if v3MuxEnabled(cfg) {
+		conn, sec, err := v3Outbound.open("", 0, cfg, selector, selectionKey)
+		if err != nil {
+			return nil, nil, exitEndpoint{}, err
+		}
+		// The pool may have moved to another endpoint during failover. Report
+		// what the connection is actually attached to.
+		return conn, sec, endpointFromConn(conn, selector), nil
+	}
+	return dialSelectedEndpointLoop(selector, cfg, selectionKey)
+}
+
+// endpointFromConn reports the endpoint a pooled connection is attached to by
+// matching its remote address against the selector's endpoint list. When no
+// endpoint matches, the first configured endpoint is reported so callers still
+// get a usable record for logging.
+func endpointFromConn(conn net.Conn, selector *exitEndpointSelector) exitEndpoint {
+	if conn != nil && selector != nil {
+		if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+			selector.mu.Lock()
+			defer selector.mu.Unlock()
+			for _, endpoint := range selector.endpoints {
+				if endpoint.Port == addr.Port {
+					return endpoint
+				}
+			}
+		}
+	}
+	if selector != nil {
+		selector.mu.Lock()
+		defer selector.mu.Unlock()
+		if len(selector.endpoints) > 0 {
+			return selector.endpoints[0]
+		}
+	}
+	return exitEndpoint{}
+}
+
+func dialSelectedEndpointLoop(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
 	attempted := map[int]bool{}
 	var lastErr error
 	for len(attempted) < selector.count() {
@@ -385,7 +436,9 @@ func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config, selection
 		if endpoint.Key != "" {
 			dialCfg.Key = endpoint.Key
 		}
-		conn, sec, err := dialSecureTCP(endpoint.Host, endpoint.Port, dialCfg)
+		// nil selector: this loop owns the endpoint choice, so the pool must not
+		// run a second selection pass on top of it.
+		conn, sec, err := dialSecureTCP(endpoint.Host, endpoint.Port, dialCfg, nil, "")
 		if err == nil {
 			selector.markHealthy(index)
 			return conn, sec, endpoint, nil
@@ -507,6 +560,7 @@ func logListenerConnGateRejection(role string, cfg config, remoteAddr net.Addr, 
 }
 
 func main() {
+	defer v3Outbound.Close()
 	configureFXPLogging()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	configPath := flag.String("config", "", "config file")
@@ -547,6 +601,9 @@ func main() {
 		cfg.LimitIn,
 		cfg.LimitOut,
 	)
+	if cfg.TransportVersion == "v3" {
+		log.Printf("fxp V3 transport=%s role=%s tunnel=%d auth=forwardx-aead mux=%v maxStreamsPerSession=128 maxPhysicalSessions=%d maxBusinessConnections=%d", cfg.V3Transport, cfg.Role, cfg.TunnelID, v3MuxEnabled(cfg), v3PoolSessionLimit, fxpListenerMaxConnections)
+	}
 	ctx := shutdownContext()
 	if cfg.ControlSocket != "" && (cfg.Role == "entry-group" || cfg.Role == "exit") {
 		err = runControlledFXP(ctx.done, cfg)
@@ -662,7 +719,40 @@ func secureDialTimeout(cfg config) time.Duration {
 	return 10 * time.Second
 }
 
-func dialSecureTCP(host string, port int, cfg config) (net.Conn, *secureConn, error) {
+func dialSecureTCP(host string, port int, cfg config, selector *exitEndpointSelector, selectionKey string) (net.Conn, *secureConn, error) {
+	if v3MuxEnabled(cfg) {
+		return v3Outbound.open(host, port, cfg, selector, selectionKey)
+	}
+	if cfg.TransportVersion == "v3" {
+		return dialV3SingleStream(host, port, cfg)
+	}
+	return dialPhysicalSecureTCP(host, port, cfg)
+}
+
+// dialV3SingleStream opens one V3 physical connection dedicated to a single
+// business session. It uses the same inner handshake and record layer as the
+// multiplexed path, just without the stream multiplexer.
+func dialV3SingleStream(host string, port int, cfg config) (net.Conn, *secureConn, error) {
+	conn, err := dialV3Physical(host, port, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := setFXPConnDeadline(conn, fxpHandshakeTimeout); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	inner, err := v3.InnerClient(conn, cfg.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := clearFXPConnDeadline(conn); err != nil {
+		_ = inner.Close()
+		return nil, nil, err
+	}
+	return inner, &secureConn{conn: inner, logicalFrames: true}, nil
+}
+
+func dialPhysicalSecureTCP(host string, port int, cfg config) (net.Conn, *secureConn, error) {
 	var lastErr error
 	dialTimeout := secureDialTimeout(cfg)
 	for _, wire := range fxpWireContexts {
@@ -1751,11 +1841,38 @@ func handleExitSession(conn net.Conn, cfg config) error {
 
 func handleExitSessionWithStartup(conn net.Conn, cfg config, startupComplete func()) error {
 	defer conn.Close()
+	if cfg.TransportVersion == "v3" {
+		// V3 always uses the inner handshake and record layer, whether or not the
+		// stream multiplexer is enabled. Only the outer transport wrapper differs.
+		wrapped, err := wrapV3Server(conn, cfg)
+		if err != nil {
+			probeDelay()
+			return err
+		}
+		if v3MuxEnabled(cfg) {
+			if startupComplete != nil {
+				startupComplete()
+			}
+			return serveV3Session(wrapped, cfg, func(logical *secureConn) error {
+				return handleExitBusiness(logical, cfg, nil)
+			})
+		}
+		inner, err := v3.InnerServer(wrapped, cfg.Key)
+		if err != nil {
+			probeDelay()
+			return err
+		}
+		return handleExitBusiness(&secureConn{conn: inner, logicalFrames: true}, cfg, startupComplete)
+	}
 	sec, err := newExitSecureConn(conn, cfg)
 	if err != nil {
 		probeDelay()
 		return err
 	}
+	return handleExitBusiness(sec, cfg, startupComplete)
+}
+
+func handleExitBusiness(sec *secureConn, cfg config, startupComplete func()) error {
 	frame, err := readSecureHello(sec)
 	if err != nil {
 		probeDelay()
@@ -1997,11 +2114,37 @@ func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelec
 func handleRelaySessionWithStartup(upConn net.Conn, cfg config, selector *exitEndpointSelector, startupComplete func()) error {
 	defer upConn.Close()
 	// Accept upstream encrypted connection (like exit)
+	if cfg.TransportVersion == "v3" {
+		wrapped, err := wrapV3Server(upConn, cfg)
+		if err != nil {
+			probeDelay()
+			return err
+		}
+		if v3MuxEnabled(cfg) {
+			if startupComplete != nil {
+				startupComplete()
+			}
+			return serveV3Session(wrapped, cfg, func(logical *secureConn) error {
+				return handleRelayBusiness(logical, cfg, selector, nil)
+			})
+		}
+		inner, err := v3.InnerServer(wrapped, cfg.Key)
+		if err != nil {
+			probeDelay()
+			return err
+		}
+		return handleRelayBusiness(&secureConn{conn: inner, logicalFrames: true}, cfg, selector, startupComplete)
+	}
 	upSec, err := newExitSecureConn(upConn, cfg)
 	if err != nil {
 		probeDelay()
 		return err
 	}
+	return handleRelayBusiness(upSec, cfg, selector, startupComplete)
+}
+
+func handleRelayBusiness(upSec *secureConn, cfg config, selector *exitEndpointSelector, startupComplete func()) error {
+	upConn := upSec.conn
 	frame, err := readSecureHello(upSec)
 	if err != nil {
 		probeDelay()
@@ -2058,10 +2201,14 @@ func relayBidir(up *secureConn, down *secureConn) error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- relayCopy(up, down) }()
 	go func() { errCh <- relayCopy(down, up) }()
-	return waitBidirectional(errCh, func() {
+	linger := fxpHalfCloseLinger
+	if up.logicalFrames || down.logicalFrames {
+		linger = 0
+	}
+	return waitBidirectionalWithLinger(errCh, func() {
 		_ = up.conn.Close()
 		_ = down.conn.Close()
-	})
+	}, linger)
 }
 
 func relayCopy(src, dst *secureConn) error {
@@ -2094,10 +2241,14 @@ func proxyPlainSecureWithPolicy(plain net.Conn, sec *secureConn, inLimiter, outL
 		errCh <- copyPlainToSecureWithPolicy(sec, plain, inLimiter, inCounter, policy, onBlock, initialSample)
 	}()
 	go func() { errCh <- copySecureToPlain(plain, sec, outLimiter, outCounter) }()
-	return waitBidirectional(errCh, func() {
+	linger := fxpHalfCloseLinger
+	if sec.logicalFrames {
+		linger = 0
+	}
+	return waitBidirectionalWithLinger(errCh, func() {
 		_ = plain.Close()
 		_ = sec.conn.Close()
-	})
+	}, linger)
 }
 
 func waitBidirectional(errCh <-chan error, closeAll func()) error {
@@ -2195,7 +2346,7 @@ func copySecureToPlain(dst net.Conn, src *secureConn, limiter *limiter, counter 
 	for {
 		frame, err := src.readFrame()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) && !src.logicalFrames {
 				return nil
 			}
 			return err
@@ -2330,6 +2481,11 @@ func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext)
 	if err := setFXPConnDeadline(conn, fxpHandshakeTimeout); err != nil {
 		return nil, err
 	}
+	var err error
+	conn, err = wrapV3Client(conn, cfg)
+	if err != nil {
+		return nil, err
+	}
 	salt := make([]byte, fxpSaltSize)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
@@ -2365,6 +2521,11 @@ func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 
 func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireContext) (*secureConn, error) {
 	if err := setFXPConnDeadline(conn, fxpHandshakeTimeout); err != nil {
+		return nil, err
+	}
+	var err error
+	conn, err = wrapV3Server(conn, cfg)
+	if err != nil {
 		return nil, err
 	}
 	salt := make([]byte, fxpSaltSize)
@@ -2545,10 +2706,16 @@ func blake3Derive(secret, salt, context []byte, masterContext string, length int
 }
 
 func (c *secureConn) writeFrame(plain []byte) error {
+	if c.logicalFrames {
+		return c.writeV3LogicalFrame(plain)
+	}
 	return c.writeEncryptedFrame(plain)
 }
 
 func (c *secureConn) readFrame() ([]byte, error) {
+	if c.logicalFrames {
+		return c.readV3LogicalFrame()
+	}
 	return c.readEncryptedFrame()
 }
 
@@ -2620,7 +2787,7 @@ func (c *secureConn) decryptFrameLength(counter uint64, lenCipher []byte) (uint3
 		return 0, errors.New("invalid frame length")
 	}
 	n := binary.BigEndian.Uint32(lenPlain)
-	if n > fxpMaxFrame {
+	if n > fxpMaxFrame || (c.maxReadFrame > 0 && n > c.maxReadFrame) {
 		return 0, fmt.Errorf("invalid frame size %d", n)
 	}
 	return n, nil

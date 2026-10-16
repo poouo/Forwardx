@@ -1644,7 +1644,10 @@ async function getForwardGroupTrafficChildRows(parentRuleIds: number[]) {
       hostId: forwardRules.hostId,
     })
     .from(forwardRules)
-    .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(parentIds.map((id) => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${sqlBool(false)}`);
+    .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(parentIds.map((id) => sql`${id}`), sql`, `)}) AND (
+      ${forwardRules.pendingDelete} = ${sqlBool(false)} OR EXISTS (
+        SELECT 1 FROM ${forwardGroups} WHERE ${forwardGroups.id} = ${forwardRules.forwardGroupId}
+          AND ${forwardGroups.groupMode} = 'port'))`);
   const childRows = (rows as any[]).map((row) => ({
     id: Number(row.id || 0),
     parentId: Number(row.parentId || 0),
@@ -1941,6 +1944,65 @@ export async function getTotalTraffic(userId?: number) {
     totalIn: Number(row?.totalIn) || 0,
     totalOut: Number(row?.totalOut) || 0,
   };
+}
+
+/** Resource totals use logical-rule counters, never host/interface totals or hop sums.
+ * Only requested resources are hydrated; no raw history scan or per-card query.
+ * A shared resource exposes only the caller's own rule usage to non-admins.
+ */
+export async function getForwardGroupTrafficSummaries(groupIds: number[], userId?: number) {
+  const ids = Array.from(new Set(groupIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+  const totals = new Map(ids.map((id) => [id, { bytesIn: 0, bytesOut: 0, totalBytes: 0, ruleCount: 0 }]));
+  const db = await getDb();
+  if (!db || ids.length === 0) return totals;
+  const q = quoteIdentifier;
+  const placeholders = ids.map(() => "?").join(",");
+  // Entry/exit collections inherit usage from resources that explicitly reference
+  // them, not from unrelated forwarding on the same machines. Root rules only:
+  // materialized children are expanded by getTrafficCounterSummaryByRule below.
+  const rules = await queryRaw<{
+    id: number; groupId: number | null; groupEntryId: number | null;
+    tunnelEntryId: number | null; tunnelExitId: number | null;
+  }>(
+    `SELECT r.${q("id")}, r.${q("forwardGroupId")} AS ${q("groupId")},
+            g.${q("entryGroupId")} AS ${q("groupEntryId")},
+            t.${q("entryGroupId")} AS ${q("tunnelEntryId")},
+            t.${q("exitGroupId")} AS ${q("tunnelExitId")}
+       FROM ${q("forward_rules")} r
+       LEFT JOIN ${q("forward_groups")} g ON g.${q("id")} = r.${q("forwardGroupId")}
+       LEFT JOIN ${q("tunnels")} t ON t.${q("id")} = r.${q("tunnelId")}
+      WHERE r.${q("pendingDelete")} = ${boolLiteral(false)}
+        AND r.${q("forwardGroupRuleId")} IS NULL
+        ${userId !== undefined ? `AND r.${q("userId")} = ?` : ""}
+        AND (r.${q("forwardGroupId")} IN (${placeholders})
+          OR g.${q("entryGroupId")} IN (${placeholders})
+          OR t.${q("entryGroupId")} IN (${placeholders})
+          OR t.${q("exitGroupId")} IN (${placeholders}))`,
+    [...(userId !== undefined ? [userId] : []), ...ids, ...ids, ...ids, ...ids],
+  );
+  const resourcesByRule = new Map<number, number[]>();
+  for (const rule of rules) {
+    const resourceIds = Array.from(new Set([
+      rule.groupId, rule.groupEntryId, rule.tunnelEntryId, rule.tunnelExitId,
+    ].map(Number).filter((id) => totals.has(id))));
+    resourcesByRule.set(Number(rule.id), resourceIds);
+    for (const id of resourceIds) totals.get(id)!.ruleCount++;
+  }
+  const ruleIds = Array.from(resourcesByRule.keys());
+  // Bound the size of SQL IN lists for large resources. Guard the empty case:
+  // the existing counter API intentionally treats [] as an unfiltered request.
+  for (let offset = 0; offset < ruleIds.length; offset += 200) {
+    const rows = await getTrafficCounterSummaryByRule({ ruleIds: ruleIds.slice(offset, offset + 200), userId });
+    for (const row of rows) {
+      for (const id of resourcesByRule.get(row.ruleId) || []) {
+        const total = totals.get(id)!;
+        total.bytesIn += row.bytesIn;
+        total.bytesOut += row.bytesOut;
+        total.totalBytes += row.bytesIn + row.bytesOut;
+      }
+    }
+  }
+  return totals;
 }
 
 /** Summarize cumulative traffic by rule from bounded counter rows. */

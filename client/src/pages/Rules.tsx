@@ -4,6 +4,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { RuleLimitsForm, newRuleLimitsForm, ruleLimitsPayload, type RuleLimitsFormValue } from "@/components/rules/RuleLimitsForm";
 import { RuleUsageSummary } from "@/components/rules/RuleUsageSummary";
+import { NyanpassImportPreview } from "@/components/rules/NyanpassImportPreview";
 import { isAdminManagedRule } from "../../../shared/ruleLimits";
 import { forwardGroupRouteMembers, forwardGroupSelfTestSource } from "../../../shared/forwardGroup";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
@@ -74,10 +75,10 @@ import {
   RULE_TRANSFER_FILE_VERSION,
   RULE_TRANSFER_MAX_FILE_SIZE,
   RULE_TRANSFER_MAX_IMPORT_COUNT,
-  parseRuleTransferFile,
   type RuleTransferFile,
   type RuleTransferFileRule,
 } from "@/lib/ruleTransfer";
+import { createImportedRule, parseCompatibleRuleTransferText, validateNyanpassImportTarget, type CompatibleRuleFile } from "@/lib/nyanpassImport";
 import {
   filterRuleEntryAddressesForDisplay,
   getEntryAddressFamily as addressFamily,
@@ -727,7 +728,7 @@ function addRuleSearchForwardGroupParts(parts: string[], group: any | null | und
   addRuleSearchPart(parts, desktopRuleTypeLabels[getRuleForwardGroupKind({ forwardGroupId: group.id }, filters.forwardGroupById) || "group"]);
   if (group.domain && port !== undefined) addRuleSearchPart(parts, formatAddressWithPort(group.domain, port));
 
-  const entryGroup = isForwardChainGroup(group) && Number(group.entryGroupId || 0) > 0
+  const entryGroup = (isForwardChainGroup(group) || normalizeForwardGroupModeForRule(group) === "port") && Number(group.entryGroupId || 0) > 0
     ? filters.forwardGroupById.get(Number(group.entryGroupId))
     : null;
   if (entryGroup) addRuleSearchForwardGroupParts(parts, entryGroup, filters, port);
@@ -2277,8 +2278,10 @@ function RulesContent() {
   const [importScopeType, setImportScopeType] = useState<RuleTransferScopeType>("tunnel");
   const [importResourceId, setImportResourceId] = useState("");
   const [importResourceSearch, setImportResourceSearch] = useState("");
-  const [importSourceMode, setImportSourceMode] = useState<"file" | "manual">("file");
-  const [importFile, setImportFile] = useState<RuleTransferFile | null>(null);
+  const [importSourceMode, setImportSourceMode] = useState<"file" | "manual" | "nyanpass">("file");
+  const [importFile, setImportFile] = useState<CompatibleRuleFile | null>(null);
+  const [importNyanpassProtocol, setImportNyanpassProtocol] = useState<RuleProtocol>("both");
+  const [importNyanpassAcknowledged, setImportNyanpassAcknowledged] = useState(false);
   const [importFileName, setImportFileName] = useState("");
   const [importFileError, setImportFileError] = useState("");
   const [importFileInputKey, setImportFileInputKey] = useState(0);
@@ -5243,8 +5246,25 @@ function RulesContent() {
     return { ok: true, message: translateText("已识别 {0} 条手动输入规则", [rules.length]), rules };
   }, [defaultForm.forwardType, defaultForm.protocol, importManualText]);
 
+  const nyanpassPaste = useMemo(() => importSourceMode === "nyanpass" && importManualText.trim()
+    ? parseCompatibleRuleTransferText(importManualText) : null, [importSourceMode,importManualText]);
+  const nyanpassFile = importSourceMode === "nyanpass"
+    ? nyanpassPaste?.ok && nyanpassPaste.file.importSource === "nyanpass" ? nyanpassPaste.file : null
+    : importSourceMode === "file" && importFile?.importSource === "nyanpass" ? importFile : null;
+  const isNyanpassImport = importSourceMode === "nyanpass" || !!nyanpassFile;
+  useEffect(() => { setImportNyanpassAcknowledged(false); }, [importResourceId,importScopeType,importNyanpassProtocol,importManualText]);
+
   const importValidation = useMemo<{ ok: boolean; message: string; rules: RuleTransferFileRule[] }>(() => {
     if (!importResourceId) return { ok: false, message: translateText("请选择{0}", [ruleTransferScopeLabels[importScopeType]]), rules: [] };
+    if (isNyanpassImport) {
+      if (nyanpassPaste && !nyanpassPaste.ok) return {ok:false,message:nyanpassPaste.error,rules:[]};
+      if (!nyanpassFile) return {ok:false,message:translateText("请选择或粘贴 ny 导出的逐行 JSON 规则"),rules:[]};
+      const rules=nyanpassFile.rules.map(rule=>({...rule,protocol:importNyanpassProtocol}));
+      const error=validateNyanpassImportTarget(rules,{protocol:importNyanpassProtocol,scope:importScopeType,resource:selectedImportResource,admin:user?.role === "admin"});
+      if (error) return {ok:false,message:error,rules};
+      if (!importNyanpassAcknowledged) return {ok:false,message:translateText("请确认实验性导入说明后继续"),rules};
+      return {ok:true,message:translateText("ny（实验性）：已识别 {0} 条规则，导入后停用，端口冲突保留为失败项",[rules.length]),rules};
+    }
     if (importSourceMode === "manual") {
       if (!manualImportValidation.ok) return manualImportValidation;
       return manualImportValidation;
@@ -5252,7 +5272,22 @@ function RulesContent() {
     if (importFileError) return { ok: false, message: importFileError, rules: [] };
     if (!importFile) return { ok: false, message: translateText("请选择导入文件"), rules: [] };
     return { ok: true, message: translateText("已识别 {0} 条{1}规则", [importFile.rules.length, ruleTransferScopeLabels[importScopeType]]), rules: importFile.rules };
-  }, [importFile, importFileError, importResourceId, importScopeType, importSourceMode, manualImportValidation]);
+  }, [importFile, importFileError, importResourceId, importScopeType, importSourceMode, manualImportValidation,isNyanpassImport,nyanpassPaste,nyanpassFile,importNyanpassProtocol,importNyanpassAcknowledged,selectedImportResource,user?.role]);
+
+  const renderNyanpassImportOptions = () => isNyanpassImport ? (
+    <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+      <p className="font-medium text-amber-700 dark:text-amber-300">{translateText("ny / Nyanpass 导入（实验性）")}</p>
+      <p className="text-muted-foreground">{translateText("导出未包含完整协议、启停状态及拓扑。请选择协议；规则导入后停用，不迁移历史流量，不覆盖已有规则或自动更换冲突端口。")}</p>
+      <Select value={importNyanpassProtocol} onValueChange={value=>setImportNyanpassProtocol(value as RuleProtocol)} disabled={importingRules}>
+        <SelectTrigger aria-label={translateText("ny 导入协议")}><SelectValue /></SelectTrigger>
+        <SelectContent>{(["tcp","udp","both"] as const).map(value=><SelectItem key={value} value={value}>{formatForwardRuleProtocol(value)}</SelectItem>)}</SelectContent>
+      </Select>
+      <label className="flex cursor-pointer items-start gap-2 leading-5">
+        <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-primary" checked={importNyanpassAcknowledged} onChange={event=>setImportNyanpassAcknowledged(event.target.checked)} disabled={importingRules} />
+        <span>{translateText("我已核对目标资源、协议和预览，接受实验性兼容限制")}</span>
+      </label>
+    </div>
+  ) : null;
 
   const resetImportDialog = () => {
     setImportFile(null);
@@ -5260,6 +5295,7 @@ function RulesContent() {
     setImportFileError("");
     setImportFileInputKey((key) => key + 1);
     setImportManualText("");
+    setImportNyanpassAcknowledged(false);
   };
 
   const openExportDialog = () => {
@@ -5308,6 +5344,7 @@ function RulesContent() {
     setImportFile(null);
     setImportFileError("");
     setImportFileName(file?.name || "");
+    setImportNyanpassAcknowledged(false);
     if (!file) return;
     if (Number(file.size || 0) > RULE_TRANSFER_MAX_FILE_SIZE) {
       setImportFileError(translateText("规则文件不能超过 5 MiB"));
@@ -5315,8 +5352,7 @@ function RulesContent() {
     }
     try {
       const rawText = await file.text();
-      const parsed = JSON.parse(rawText);
-      const result = parseRuleTransferFile(parsed);
+      const result = parseCompatibleRuleTransferText(rawText);
       if (!result.ok) {
         setImportFileError(result.error);
         return;
@@ -5349,6 +5385,7 @@ function RulesContent() {
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
       isEnabled: rule.isEnabled,
+      ...(isNyanpassImport && rule.rateLimitMbps ? {rateLimitMbps:rule.rateLimitMbps} : {}),
       telegramErrorNotifyEnabled: telegramBotReady && !!rule.telegramErrorNotifyEnabled,
       proxyProtocolReceive: rule.proxyProtocolReceive,
       proxyProtocolSend: rule.proxyProtocolSend,
@@ -5379,12 +5416,7 @@ function RulesContent() {
     try {
       const results = await runBatchOperations(importValidation.rules, 6, async (rule) => {
         const payload = buildImportRulePayload(rule);
-        try {
-          return await importCreateMutation.mutateAsync(payload);
-        } catch (error) {
-          if (rule.sourcePort <= 0 || !isBatchPortConflictError(error)) throw error;
-          return importCreateMutation.mutateAsync({ ...payload, sourcePort: 0 });
-        }
+        return createImportedRule(rule.sourcePort,isNyanpassImport,sourcePort=>importCreateMutation.mutateAsync({...payload,sourcePort}));
       });
       const importedCount = results.filter((result) => result.status === "fulfilled").length;
       const failures = results.filter((result) => result.status === "rejected");
@@ -5398,7 +5430,12 @@ function RulesContent() {
       if (showCopyDialog) await fullRulesQuery.refetch();
       if (failures.length > 0) {
         const failedRules = failures.map((result) => result.item);
-        if (importSourceMode === "file") {
+        if (isNyanpassImport && nyanpassFile) {
+          setImportFile({...nyanpassFile,rules:failedRules});
+          setImportSourceMode("file");
+          setImportFileName(translateText("ny 剩余失败规则（实验性）"));
+          setImportFileError("");
+        } else if (importSourceMode === "file") {
           setImportFile((current) => current ? { ...current, rules: failedRules } : current);
         } else {
           setImportManualText(failedRules
@@ -5480,7 +5517,7 @@ function RulesContent() {
 
   const entryDomainForForwardGroup = (group: any | null | undefined) => {
     if (!group) return "";
-    if (isForwardChainGroup(group) && group.entryGroupId) {
+    if ((isForwardChainGroup(group) || normalizeForwardGroupModeForRule(group) === "port") && group.entryGroupId) {
       const entryGroup = forwardGroupById.get(Number(group.entryGroupId)) || group.entryGroup;
       return String(entryGroup?.domain || "").trim();
     }
@@ -5584,10 +5621,11 @@ function RulesContent() {
   const getForwardGroupEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
     if (!group) return [];
     const rows: EntryAddress[] = [];
-    const domain = String(group?.domain || "").trim();
+    const parallel = normalizeForwardGroupModeForRule(group) === "port" && Number(group.entryGroupId || 0) > 0;
+    const domain = String(group?.domain || (parallel ? entryDomainForForwardGroup(group) : "")).trim();
     if (domain) {
       pushUniqueEntryAddress(rows, getForwardGroupRouteLabel(group), domain);
-      return rows;
+      if (!parallel) return rows;
     }
     const activeMemberId = Number(group?.activeMemberId || 0);
     const members = [...(group?.members || [])]
@@ -5601,7 +5639,7 @@ function RulesContent() {
       });
     for (const member of members) {
       pushMemberEntryAddresses(rows, member);
-      if (rows.length > 0) return rows;
+      if (rows.length > 0 && !parallel) return rows;
     }
     return rows;
   };
@@ -7683,8 +7721,11 @@ function RulesContent() {
             </div>
             <div className="space-y-2">
               <Label>{translateText("规则文件")}</Label>
-              <Input key={importFileInputKey} type="file" accept=".json,application/json" onChange={handleImportFileChange} />
+              <Input key={importFileInputKey} type="file" accept=".json,.jsonl,.ndjson,.txt,application/json,text/plain" onChange={handleImportFileChange} />
+              <p className="text-xs text-muted-foreground">{translateText("支持 ForwardX 文件及 ny / Nyanpass 逐行 JSON（实验性）")}</p>
             </div>
+            {renderNyanpassImportOptions()}
+            {isNyanpassImport && <NyanpassImportPreview rules={importValidation.rules} />}
             <div
               className={`rounded-md border px-3 py-2 text-sm ${
                 importValidation.ok
@@ -7776,7 +7817,7 @@ function RulesContent() {
                     </div>
                   </div>
                   <div className={segmentedControlClassName}>
-                    <div className="grid grid-cols-2 gap-1">
+                    <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
                       <button
                         type="button"
                         className={routeModeOptionClass(importSourceMode === "file", importingRules)}
@@ -7806,21 +7847,27 @@ function RulesContent() {
                         <Pencil className="h-4 w-4 shrink-0" />
                         <span className="truncate">{translateText("手动输入")}</span>
                       </button>
+                      <button type="button" className={routeModeOptionClass(importSourceMode === "nyanpass", importingRules)} aria-pressed={importSourceMode === "nyanpass"}
+                        onClick={() => {setImportSourceMode("nyanpass");setImportManualText("");setImportFile(null);setImportFileError("");setImportNyanpassAcknowledged(false);}} disabled={importingRules}>
+                        <span className="whitespace-normal leading-4">{translateText("ny（实验性）")}</span>
+                      </button>
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>{importSourceMode === "file" ? translateText("规则文件") : translateText("目标地址列表")}</Label>
+                    <Label>{importSourceMode === "file" ? translateText("规则文件") : importSourceMode === "nyanpass" ? translateText("ny 导出内容（逐行 JSON）") : translateText("目标地址列表")}</Label>
                     {importSourceMode === "file" ? (
-                      <Input key={importFileInputKey} type="file" accept=".json,application/json" onChange={handleImportFileChange} />
+                      <><Input key={importFileInputKey} type="file" accept=".json,.jsonl,.ndjson,.txt,application/json,text/plain" onChange={handleImportFileChange} />
+                        <p className="text-xs text-muted-foreground">{translateText("支持 ForwardX 文件及 ny / Nyanpass 逐行 JSON（实验性）")}</p></>
                     ) : (
                       <Textarea
                         value={importManualText}
                         onChange={(event) => setImportManualText(event.target.value)}
-                        placeholder={translateText("每行一个目标地址，格式如：\nexample.com:443\n10.0.0.8:8080\n[2408:xxxx::1]:8443")}
+                        placeholder={importSourceMode === "nyanpass" ? translateText("粘贴 ny 批量导出的内容，每行一条 JSON") : translateText("每行一个目标地址，格式如：\nexample.com:443\n10.0.0.8:8080\n[2408:xxxx::1]:8443")}
                         className="min-h-[7.5rem] resize-y"
                       />
                     )}
                   </div>
+                  {renderNyanpassImportOptions()}
                   {(importSourceMode === "file" || importFileName || importFileError || importValidation.ok || String(importManualText || "").trim()) && (
                     <div
                       className={`rounded-md border px-3 py-2 text-sm ${
@@ -7834,7 +7881,8 @@ function RulesContent() {
                       {importValidation.message}
                     </div>
                   )}
-                  {importValidation.rules.length > 0 && (
+                  {isNyanpassImport && <NyanpassImportPreview rules={importValidation.rules} />}
+                  {!isNyanpassImport && importValidation.rules.length > 0 && (
                     <div className="max-h-[24rem] space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
                       {importValidation.rules.map((rule, index) => (
                         <div key={`${rule.name}-${rule.sourcePort}-${index}`} className="rounded-md border border-border/40 bg-background/70 px-3 py-2">

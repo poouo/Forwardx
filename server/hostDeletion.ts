@@ -6,9 +6,12 @@ import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
 import { repairForwardGroupTemplateHostReferencesForHost } from "./repositories/forwardGroupRepository";
 import { pushAgentRefresh } from "./agentEvents";
 
-type Reference = { id: number; name: string };
+type Reference = { id: number; name: string; groupMode?: string | null };
 function referenceList(rows: Reference[]) {
-  return { count: rows.length, items: rows.slice(0, 50).map((row) => ({ id: Number(row.id), name: String(row.name || `#${row.id}`) })) };
+  return { count: rows.length, items: rows.slice(0, 50).map((row) => ({
+    id: Number(row.id), name: String(row.name || `#${row.id}`),
+    ...(row.groupMode !== undefined ? { groupMode: ["port", "chain", "entry", "exit"].includes(String(row.groupMode)) ? String(row.groupMode) : "failover" } : {}),
+  })) };
 }
 
 /** Read-only preview: template host IDs are metadata; members define actual usage. */
@@ -25,7 +28,7 @@ export async function getHostDeletionImpact(hostId: number) {
           SELECT 1 FROM ${q("forward_rule_tunnel_exits")} e
           WHERE e.${q("ruleId")} = r.${q("id")} AND e.${q("exitHostId")} = ?))
       ORDER BY r.${q("id")}`, [hostId, hostId]),
-    queryRaw<Reference>(`SELECT DISTINCT g.${q("id")} AS ${q("id")}, g.${q("name")} AS ${q("name")}
+    queryRaw<Reference>(`SELECT DISTINCT g.${q("id")} AS ${q("id")}, g.${q("name")} AS ${q("name")}, g.${q("groupMode")} AS ${q("groupMode")}
       FROM ${q("forward_groups")} g
       INNER JOIN ${q("forward_group_members")} m ON m.${q("groupId")} = g.${q("id")}
       WHERE m.${q("memberType")} = 'host' AND m.${q("hostId")} = ? ORDER BY g.${q("id")}`, [hostId]),

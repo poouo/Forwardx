@@ -22,6 +22,7 @@ export type RuleTransferFileRule = {
   targetIp: string;
   targetPort: number;
   isEnabled: boolean;
+  rateLimitMbps?: number;
   telegramErrorNotifyEnabled?: boolean;
   proxyProtocolReceive: boolean;
   proxyProtocolSend: boolean;

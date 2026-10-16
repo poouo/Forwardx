@@ -1,5 +1,6 @@
 import { t as translateText } from "@/i18n";
 import LanguageSelector from "@/components/LanguageSelector";
+import { ForwardXLogo } from "@/components/ForwardXLogo";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
@@ -324,8 +325,8 @@ export default function Setup() {
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
         <div className="self-end"><LanguageSelector setup onLanguageChange={() => refreshLanguage(value => value + 1)} /></div>
         <div className="text-center">
-          <img src="/logo-light.png" alt="ForwardX" className="mx-auto h-14 w-14 object-contain dark:hidden" />
-          <img src="/logo-dark.png" alt="ForwardX" className="mx-auto hidden h-14 w-14 object-contain dark:block" />
+          <ForwardXLogo size={56} className="mx-auto" alt="ForwardX" />
+
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">{translateText("ForwardX 首次部署")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{translateText("按步骤完成数据库初始化、旧面板迁移和管理员配置。")}</p>
         </div>

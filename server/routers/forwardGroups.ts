@@ -14,6 +14,8 @@ import {
 } from "../services/forwardGroupService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { EXIT_GROUP_STRATEGIES } from "../../shared/exitStrategy";
+import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
+import { portForwardToolPreflight } from "../portForwardToolPreflight";
 import { getLinkAccessScope, visibleForwardGroupMemberIds, type LinkAccessScope } from "../linkAccessView";
 import {
   buildForwardGroupAvailabilitySummaryIndex,
@@ -72,7 +74,7 @@ const baseSchema = z.object({
   ddnsAutoResolveEnabled: z.boolean().default(true),
   autoFailback: z.boolean().default(true),
   isEnabled: z.boolean().default(true),
-  members: z.array(memberSchema).min(1),
+  members: z.array(memberSchema).max(MAX_FORWARD_GROUP_MEMBERS),
 });
 
 async function assertForwardGroupAccess(
@@ -112,6 +114,17 @@ function availabilityIndexForGroups(groups: any[], supportingGroups: any[] = [])
 }
 
 export const forwardGroupsRouter = router({
+  toolPreflight: adminProcedure.input(z.object({
+    entryGroupId:z.number().int().positive().nullable().optional(),
+    hostIds:z.array(z.number().int().positive()).max(MAX_FORWARD_GROUP_MEMBERS).default([]),
+    forwardType:z.enum(["iptables","nftables","realm","socat","gost","nginx"]),
+  })).query(async ({input}) => {
+    const entry = input.entryGroupId ? await db.getForwardGroupById(input.entryGroupId) as any : null;
+    if (input.entryGroupId && (!entry || entry.groupMode !== "entry")) throw new Error("入口组不存在或类型不正确");
+    const hostIds = entry ? entry.members.filter((member: any) => member.isEnabled).map((member: any) => Number(member.hostId)) : input.hostIds;
+    const hosts = (await Promise.all(Array.from(new Set<number>(hostIds)).map((id) => db.getHostById(id)))).filter(Boolean);
+    return portForwardToolPreflight(hosts,input.forwardType);
+  }),
   list: protectedProcedure.query(async ({ ctx }) => {
     const [groups, accessScope] = await Promise.all([
       db.getForwardGroups(undefined, { includeRuntime: true }) as Promise<any[]>,
@@ -190,9 +203,17 @@ export const forwardGroupsRouter = router({
         : [];
       const availabilityIndex = await availabilityIndexForGroups(result.items as any[], relatedRows as any[]);
       const hydratedItems = attachForwardGroupAvailability(result.items as any[], availabilityIndex, accessScope);
-      const items = accessScope
+      const visibleItems = accessScope
         ? db.filterForwardGroupFieldsForUse(hydratedItems, accessScope)
         : hydratedItems;
+      const trafficByGroupId = await db.getForwardGroupTrafficSummaries(
+        visibleItems.map((group: any) => Number(group.id)),
+        ctx.user.role === "admin" ? undefined : ctx.user.id,
+      );
+      const items = visibleItems.map((group: any) => ({
+        ...group,
+        trafficSummary: trafficByGroupId.get(Number(group.id)),
+      }));
       const visibleRelatedRows = accessScope
         ? (relatedRows as any[]).filter((group) => accessScope.groupIds.has(Number(group.id)))
         : relatedRows as any[];

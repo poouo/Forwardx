@@ -1,5 +1,14 @@
 # Third-Party Notices
 
+## ip2region
+
+- Upstream: <https://github.com/lionsoul2014/ip2region>
+- JavaScript binding: `ip2region.js` 3.1.8 (Apache-2.0 OR MIT).
+- Bundled IPv4/IPv6 XDB data: commit `1bf6cabfb63c1a14af0971749c2120a3e5c77d72`, distributed under MIT.
+- Usage: offline operations source-IP analytics only.
+- Copyright (c) 2015 Lionsoul<chenxin619315@gmail.com>.
+- Full MIT license and data checksums: `dist/geo/LICENSE.txt` and `dist/geo/NOTICE.md` in runtime bundles, `server/assets/ip2region/` in source checkouts.
+
 ## scaffold-master / Pearl Glass UI
 
 - Upstream: <https://github.com/wbr664393425-lgtm/scaffold-master>

@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [2.3.285] - 2026-10-16
+
+- Support entry groups for direct port forwarding, with unified management and all entries running concurrently.
+- Add resource traffic totals and per-entry runtime status.
+- Add ny / Nyanpass rule import (Experimental).
+- Add an operations dashboard for billing, traffic history, source IP rankings and an offline location map, with date and user filters.
+- Fix scheduled history cleanup failures on some MySQL deployments.
+- Improve payment key compatibility and validation, with clearer localized payment errors.
+- Improve error messages, automatic retries and panel/Agent diagnostic logs.
+- Fix host-dependency navigation and rechecks so linked resources are not mistaken for missing ones.
+- Smooth settings save feedback to reduce flicker and layout shifts.
+- Improve V3 tunnel stability, security and multi-exit failover; V3 is not yet available in the panel.
+- Versions: panel `2.3.285`, Android / iOS `2.4.3`, Agent `2.2.198`, ForwardX FXP runtime `2.2.119`.
+
+Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are incompatible. V1/V2 protocols remain compatible.
+
 ## [2.3.284] - 2026-10-13
 
 - Add optional affiliates and support tickets, with global/per-user ticket notification switches for Telegram / Discord.

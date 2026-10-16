@@ -11,10 +11,13 @@ export async function deleteExpiredHistoryRows(
   options: { whereSql?: string; whereParams?: unknown[] } = {},
 ) {
   const prefix = options.whereSql ? `${options.whereSql} AND ` : "";
-  const params = [...(options.whereParams || []), cutoff, HISTORY_DELETE_BATCH_SIZE];
+  const params = [...(options.whereParams || []), cutoff];
+  // mysql2 encodes JS numbers as DOUBLE in prepared statements. Some MySQL
+  // versions reject that type for LIMIT with ER_WRONG_ARGUMENTS (1210).
+  // Inline only our fixed integer batch size; keep all input values bound.
   const selection = `SELECT ${q("id")} FROM ${q(tableName)}
     WHERE ${prefix}${q(timeColumn)} < ?
-    ORDER BY ${q(timeColumn)} ASC, ${q("id")} ASC LIMIT ?`;
+    ORDER BY ${q(timeColumn)} ASC, ${q("id")} ASC LIMIT ${HISTORY_DELETE_BATCH_SIZE}`;
   // MySQL disallows selecting the delete target directly from an IN subquery.
   // The extra derived table materializes the bounded set of primary keys.
   const selectedIds = getDatabaseKind() === "mysql"

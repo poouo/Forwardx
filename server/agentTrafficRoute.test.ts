@@ -36,7 +36,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       return "route-token-" + hostId;
     }
 
-    async function postTraffic(baseUrl, hostId, reportId, ruleId, bytesIn = 10, bytesOut = 20) {
+    async function postTraffic(baseUrl, hostId, reportId, ruleId, bytesIn = 10, bytesOut = 20, extra = {}) {
       const response = await fetch(baseUrl + "/api/agent/traffic", {
         method: "POST",
         headers: {
@@ -47,6 +47,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
           reportId,
           reportProducerId: producerByHost.get(hostId),
           stats: [{ ruleId, bytesIn, bytesOut, connections: 1 }],
+          ...extra,
         }),
       });
       const body = await response.json();
@@ -174,7 +175,7 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       const duplicate = await postTraffic(baseUrl, 1, "local-idempotent", 100, 100, 200);
       assert.equal(first.status, 200);
       assert.equal(first.body.success, true);
-      assert.deepEqual(duplicate, { status: 200, body: { success: true, duplicate: true } });
+      assert.deepEqual(duplicate, { status: 200, body: { success: true, duplicate: true, sourceAnalyticsEnabled: false } });
       assert.deepEqual(await trafficRows(100), [
         { hostId: 1, bytesIn: 100, bytesOut: 200, connections: 1 },
       ]);
@@ -309,6 +310,19 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       const ordinary = (await runtime.queryRaw('SELECT "trafficUsed" FROM "users" WHERE "id" = 2'))[0];
       assert.equal(admin.trafficUsed, adminSummed, "admin quota traffic must include only admin-owned rules");
       assert.equal(ordinary.trafficUsed, ordinarySummed, "ordinary quota traffic must include its shared-resource rules");
+      const settings = await import(url("server/repositories/settingsRepository.ts"));
+      await settings.setSetting("operationsSourceAnalytics", "true");
+      const source = {sourceSampledAt:Math.floor(Date.now()/1000),sourceStatus:"sampled",sourceSamples:[{ruleId:100,ip:"8.8.8.8",bytesIn:7,bytesOut:9,accounting:true}]};
+      const observed = await postTraffic(baseUrl,1,"source-idempotent",100,0,0,source);
+      assert.equal(observed.body.sourceAnalyticsEnabled,true);
+      await postTraffic(baseUrl,1,"source-idempotent",100,0,0,source);
+      assert.deepEqual(await runtime.queryRaw('SELECT "bytesIn", "bytesOut" FROM "operations_source_daily"'),[{bytesIn:7,bytesOut:9}]);
+      // Source-only reports still resolve ingress ownership and keep byte deltas.
+      await postTraffic(baseUrl,1,"source-only",100,0,0,{...source,stats:[]});
+      assert.deepEqual(await runtime.queryRaw('SELECT "bytesIn", "bytesOut" FROM "operations_source_daily"'),[{bytesIn:14,bytesOut:18}]);
+      // A different host cannot attribute the same client-facing rule to itself.
+      await postTraffic(baseUrl,10,"source-wrong-host",100,0,0,{...source,stats:[]});
+      assert.deepEqual(await runtime.queryRaw('SELECT "bytesIn", "bytesOut" FROM "operations_source_daily"'),[{bytesIn:14,bytesOut:18}]);
     } finally {
       if (server) await new Promise((resolve) => server.close(() => resolve()));
       await runtime.closeDatabase();

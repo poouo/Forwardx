@@ -31,6 +31,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
 import {
   formatBytes,
   formatUptime,
@@ -457,7 +458,7 @@ export default function HostCard({
         {compact ? (
           <div className="flex min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className={cn("pearl-icon-badge h-7 w-7", isOnline ? "text-primary" : "text-muted-foreground opacity-60")}><Monitor className="h-3.5 w-3.5" /></span>
               {dragHandle}
             </div>
             <HostActionButtons
@@ -475,7 +476,7 @@ export default function HostCard({
         ) : (
           <div className="flex min-w-0 items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className={cn("pearl-icon-badge h-7 w-7", isOnline ? "text-primary" : "text-muted-foreground opacity-60")}><Monitor className="h-3.5 w-3.5" /></span>
               {dragHandle}
             </div>
             <HostActionButtons

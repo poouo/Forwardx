@@ -152,7 +152,13 @@ type TunnelForm = {
   hopConnectHosts: Array<string | null>;
   mode: TunnelProtocol;
   relayMode: TunnelRelayMode;
-  forwardxVersion: "v1" | "v2";
+  forwardxVersion: "v1" | "v2" | "v3";
+  v3Transport: "http" | "ws" | "tls";
+  v3Host: string;
+  v3Path: string;
+  v3UserAgent: string;
+  v3ServerName: string;
+  v3Multiplex: boolean;
   certDomain: string;
   certPem: string;
   certKeyPem: string;
@@ -311,6 +317,12 @@ const defaultForm: TunnelForm = {
   mode: "forwardx",
   relayMode: "chain",
   forwardxVersion: "v1",
+  v3Transport: "ws",
+  v3Host: "",
+  v3Path: "",
+  v3UserAgent: "",
+  v3ServerName: "",
+  v3Multiplex: true,
   certDomain: "",
   certPem: "",
   certKeyPem: "",
@@ -765,11 +777,31 @@ function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
     : "forwardx";
 }
 
+function normalizeForwardXV3TransportForForm(value: unknown): TunnelForm["v3Transport"] {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "http" || normalized === "tls" ? normalized : "ws";
+}
+
+// A missing multiplex flag means the runtime default (enabled).
+function forwardXV3MultiplexForForm(value: unknown) {
+  if (value === undefined || value === null || value === "") return true;
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  return true;
+}
+
 function getTunnelModeDisplay(mode: unknown, showNginxLabel = true, forwardxVersion: unknown = "v1") {
   const normalized = String(mode || "").toLowerCase() as TunnelForm["mode"];
   const label = tunnelModeLabels[normalized] || String(mode || "").toUpperCase();
   if (isNginxTunnelModeValue(normalized)) return showNginxLabel ? "Nginx" : "Stream";
-  if (normalized === "forwardx") return normalizeForwardXVersion(forwardxVersion) === "v2" ? "ForwardX V2" : "ForwardX V1";
+  if (normalized === "forwardx") {
+    const version = normalizeForwardXVersion(forwardxVersion);
+    if (version === "v3") return "ForwardX V3";
+    return version === "v2" ? "ForwardX V2" : "ForwardX V1";
+  }
   return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
 }
 
@@ -2790,6 +2822,12 @@ function TunnelsContent() {
       mode,
       relayMode: tunnelRelayFailoverSupported(mode) ? normalizeTunnelRelayMode(tunnel.relayMode) : "chain",
       forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
+      v3Transport: normalizeForwardXV3TransportForForm(tunnel.v3Transport),
+      v3Host: String(tunnel.v3Host || ""),
+      v3Path: String(tunnel.v3Path || ""),
+      v3UserAgent: String(tunnel.v3UserAgent || ""),
+      v3ServerName: String(tunnel.v3ServerName || ""),
+      v3Multiplex: forwardXV3MultiplexForForm(tunnel.v3Multiplex),
       certDomain: String(tunnel.certDomain || ""),
       certPem: String(tunnel.certPem || ""),
       certKeyPem: String(tunnel.certKeyPem || ""),
@@ -3123,6 +3161,41 @@ function TunnelsContent() {
       submitForm.proxyProtocolExitSend
     );
     const transportTuningSupported = isTunnelTransportTuningSupported(submitForm.mode);
+    // V3 options are only sent for ForwardX tunnels; the API clears the
+    // persisted columns when the tunnel is not a v3 ForwardX tunnel.
+    const forwardXV3Fields = submitForm.mode === "forwardx"
+      ? forwardxVersion === "v3"
+        ? {
+          v3Transport: submitForm.v3Transport,
+          v3Host: submitForm.v3Host.trim() || null,
+          v3Path: submitForm.v3Path.trim() || null,
+          v3UserAgent: submitForm.v3UserAgent.trim() || null,
+          v3ServerName: submitForm.v3Transport === "tls" ? (submitForm.v3ServerName.trim() || null) : null,
+          v3Multiplex: submitForm.v3Multiplex,
+        }
+        : {
+          v3Transport: null,
+          v3Host: null,
+          v3Path: null,
+          v3UserAgent: null,
+          v3ServerName: null,
+          v3Multiplex: null,
+        }
+      : {};
+    if (forwardxVersion === "v3" && submitForm.mode === "forwardx") {
+      if (!submitForm.v3Transport) {
+        toast.error(translateText("V3 隧道必须选择 http、ws 或 tls 传输方式"));
+        return;
+      }
+      if (/[\s\0]/.test(submitForm.v3Host.trim()) || /[\s\0]/.test(submitForm.v3Path.trim())) {
+        toast.error(translateText("V3 Host 和路径不能包含空白字符"));
+        return;
+      }
+      if (submitForm.v3Transport === "tls" && /[\s\0]/.test(submitForm.v3ServerName.trim())) {
+        toast.error(translateText("TLS SNI 服务器名称不能包含空白字符"));
+        return;
+      }
+    }
     const payload: any = {
       name: submitForm.name,
       mode: normalizeTunnelModeForForm(submitForm.mode),
@@ -3130,6 +3203,7 @@ function TunnelsContent() {
         ? submitForm.relayMode
         : "chain",
       forwardxVersion,
+      ...forwardXV3Fields,
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
@@ -3461,7 +3535,7 @@ function TunnelsContent() {
       <>
         <div className="space-y-2">
           <Label>{translateText("隧道版本")}</Label>
-          <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
+          <div className={`${segmentedControlClassName} grid grid-cols-3 gap-1`}>
             <button
               type="button"
               aria-pressed={form.forwardxVersion === "v1"}
@@ -3501,6 +3575,25 @@ function TunnelsContent() {
                 <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("内置 UDP 通道（无需安装系统 WireGuard）")}</span>
               </span>
             </button>
+            <button
+              type="button"
+              aria-pressed={form.forwardxVersion === "v3"}
+              className={segmentedOptionClassName(
+                form.forwardxVersion === "v3",
+                false,
+                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
+              )}
+              onClick={() => setForm((prev) => ({
+                ...prev,
+                forwardxVersion: "v3",
+              }))}
+            >
+              <Globe className={segmentedIconClassName(form.forwardxVersion === "v3", "mt-0.5")} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">V3 HTTP/WS/TLS</span>
+                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("伪装为常规 HTTP、WebSocket 或 TLS 流量")}</span>
+              </span>
+            </button>
           </div>
         </div>
         {form.forwardxVersion === "v2" && (
@@ -3518,6 +3611,60 @@ function TunnelsContent() {
                 setForm((prev) => ({ ...prev, mimicPort: value === "" ? 0 : Number.parseInt(value, 10) || 0 }));
               }}
             />
+          </div>
+        )}
+        {form.forwardxVersion === "v3" && (
+          <div className="space-y-2">
+            <Label>{translateText("V3 外层传输")}</Label>
+            <Select
+              value={form.v3Transport}
+              onValueChange={(value) => setForm((prev) => ({
+                ...prev,
+                v3Transport: normalizeForwardXV3TransportForForm(value),
+                v3ServerName: value === "tls" ? prev.v3ServerName : "",
+              }))}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="http">HTTP</SelectItem>
+                <SelectItem value="ws">WebSocket</SelectItem>
+                <SelectItem value="tls">TLS</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              value={form.v3Host}
+              placeholder={translateText("Host（可选，例如 www.example.com）")}
+              onChange={(event) => setForm((prev) => ({ ...prev, v3Host: event.target.value }))}
+            />
+            <Input
+              value={form.v3Path}
+              placeholder={translateText("路径（可选，例如 /stream）")}
+              onChange={(event) => setForm((prev) => ({ ...prev, v3Path: event.target.value }))}
+            />
+            <Input
+              value={form.v3UserAgent}
+              placeholder={translateText("User-Agent（可选）")}
+              onChange={(event) => setForm((prev) => ({ ...prev, v3UserAgent: event.target.value }))}
+            />
+            {form.v3Transport === "tls" && (
+              <Input
+                value={form.v3ServerName}
+                placeholder={translateText("TLS SNI（可选）")}
+                onChange={(event) => setForm((prev) => ({ ...prev, v3ServerName: event.target.value }))}
+              />
+            )}
+            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2">
+              <span className="min-w-0 truncate text-sm">{translateText("多路复用")}</span>
+              <Switch
+                checked={form.v3Multiplex}
+                onCheckedChange={(v3Multiplex) => setForm((prev) => ({ ...prev, v3Multiplex }))}
+              />
+            </label>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              {translateText("同一条隧道的所有入口规则必须使用完全相同的 V3 选项。")}
+            </p>
           </div>
         )}
       </>
@@ -3651,7 +3798,7 @@ function TunnelsContent() {
             translateText("需要安装 mimic/mimic-dkms。UDP 丢包时可将业务 MTU 调整为 1200-1300。"),
           )}
         </div>
-        {form.udpOverTcp && form.forwardxVersion === "v1" && (
+        {form.udpOverTcp && form.forwardxVersion !== "v2" && (
           <label className="flex min-h-12 items-center justify-between gap-3 rounded-md border border-primary/25 bg-primary/5 px-3 py-2">
             <span className="min-w-0">
               <span className="block text-sm font-medium">{translateText("mimic UDP 线路端口")}</span>

@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { Loader2 } from "lucide-react";
 import { t } from "@/i18n";
 import { trpc } from "@/lib/trpc";
+import { hostDependencyGroupTarget } from "@/lib/hostDependencyLinks";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +15,16 @@ export default function HostDeleteDialog({ hostId, onClose, onDelete, pending }:
   pending: boolean;
 }) {
   const [confirmOfflineCleanup, setConfirmOfflineCleanup] = useState(false);
-  const prepare = trpc.hosts.prepareDelete.useMutation({ retry: false });
+  const utils = trpc.useUtils();
+  const prepare = trpc.hosts.prepareDelete.useMutation({
+    retry: false,
+    onSuccess: async (data) => {
+      // A repeated successful mutation does not toggle the query's enabled
+      // flag. Replace its cached preview so Recheck cannot keep old blockers.
+      utils.hosts.deleteImpact.setData({ id: data.hostId }, data);
+      await utils.hosts.deleteImpact.invalidate({ id: data.hostId });
+    },
+  });
   const prepareDelete = prepare.mutate;
   useEffect(() => { prepareDelete({ id: hostId }); }, [hostId, prepareDelete]);
   const impact = trpc.hosts.deleteImpact.useQuery({ id: hostId }, {
@@ -40,9 +50,9 @@ export default function HostDeleteDialog({ hostId, onClose, onDelete, pending }:
           {data.blocked ? <>
             <p className="text-amber-600 dark:text-amber-400">{t("该主机仍被以下配置使用，请先移除引用。停用的配置也会保留依赖保护。")}</p>
             {[
-              { label: translateText("转发规则"), refs: data.rules, href: "/rules" },
-              { label: translateText("转发组 / 转发链 / 入口组 / 出口组"), refs: data.groups, href: "/forward-groups" },
-              { label: translateText("隧道"), refs: data.tunnels, href: "/tunnels" },
+              { label: translateText("转发规则"), refs: data.rules, href: "/rules", isGroup: false },
+              { label: translateText("关联链路"), refs: data.groups, href: hostDependencyGroupTarget(data.groups.items[0]?.groupMode).href, isGroup: true },
+              { label: translateText("隧道"), refs: data.tunnels, href: "/tunnels?tab=tunnels", isGroup: false },
             ].filter((section) => section.refs.count > 0).map((section) => (
               <section key={section.href} className="rounded-md border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 font-medium">
@@ -50,7 +60,13 @@ export default function HostDeleteDialog({ hostId, onClose, onDelete, pending }:
                   <Link href={section.href} className="text-primary underline" onClick={onClose}>{t("前往处理")}</Link>
                 </div>
                 <ul className="mt-2 space-y-1 break-words text-muted-foreground">
-                  {section.refs.items.map((item) => <li key={item.id}>{item.name} (#{item.id})</li>)}
+                  {section.refs.items.map((item) => {
+                    const target = section.isGroup ? hostDependencyGroupTarget(item.groupMode) : null;
+                    return <li key={item.id}>
+                      {target && <span className="mr-2 text-xs">{t(target.label)}</span>}
+                      <Link href={target?.href || section.href} className="text-primary underline" onClick={onClose}>{item.name} (#{item.id})</Link>
+                    </li>;
+                  })}
                   {section.refs.count > section.refs.items.length && <li>{t("仅展示前 50 项")}</li>}
                 </ul>
               </section>

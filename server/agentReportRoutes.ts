@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
+import { sourceAnalyticsEnabled, parseSourceObservations, recordOperationsTraffic, recordOperationsSources } from "./repositories/operationsRepository";
 import { reconcileRuleLimits, recordRuleQuotaTraffic } from "./ruleLimits";
 import { isHostMetricsWatching, pushAgentRefresh } from "./agentEvents";
 import {
@@ -672,6 +673,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
     logHostId = Number((host as any).id || 0);
+    const analyticsEnabled = await sourceAnalyticsEnabled();
+    const sourceSamples = analyticsEnabled && typeof req.body?.reportId === "string" ? parseSourceObservations(req.body?.sourceSamples) : [];
+    const reportedRuleIds = sourceSamples.map(row => row.ruleId);
     logHostName = cleanTunnelSeriesLabel((host as any).name, "-");
     trafficReportId = typeof req.body?.reportId === "string"
       ? req.body.reportId.trim().slice(0, 128)
@@ -696,7 +700,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     // An idle Agent may only report the host-wide network counters. Avoid
     // opening the full traffic transaction and querying billing/rule/tunnel
     // context when there are no rule deltas to account.
-    if (stats.length === 0) {
+    if (stats.length === 0 && sourceSamples.length === 0) {
       await db.withDatabaseTransaction(async () => {
         if (trafficReportId && !await db.claimAgentTrafficReport(host.id, trafficReportId, trafficReportProducerId)) {
           duplicateTrafficReport = true;
@@ -708,6 +712,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             bytesOut: Number(hostTraffic.bytesOut) || 0,
           });
         }
+        if (analyticsEnabled && trafficReportId) await recordOperationsSources(host, [], new Map(), new Map(), req.body?.sourceStatus, req.body?.sourceSampledAt);
       });
       if (duplicateTrafficReport) {
         logTrafficReportSummary({
@@ -724,7 +729,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           duplicate: true,
           durationMs: Date.now() - requestStartedAt,
         });
-        res.json({ success: true, duplicate: true });
+        res.json({ success: true, duplicate: true, sourceAnalyticsEnabled: analyticsEnabled });
         return;
       }
       const durationMs = Date.now() - requestStartedAt;
@@ -746,12 +751,12 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       }
       // No rule delta means the panel cannot infer whether this host is on a
       // strict quota/billing path. Preserve the Agent's last confirmed policy.
-      res.json({ success: true });
+      res.json({ success: true, sourceAnalyticsEnabled: analyticsEnabled });
       return;
     }
 
     const preliminaryTrafficContexts = await db.getForwardRuleTrafficContextsByIds(
-      stats.map((stat) => Number(stat.ruleId)),
+      [...reportedRuleIds, ...stats.map((stat) => Number(stat.ruleId))],
     );
     const accountingUserIds = (preliminaryTrafficContexts as any[])
       .map((context) => Number(context?.rule?.userId || 0))
@@ -781,7 +786,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       billingResource: NonNullable<Awaited<ReturnType<typeof db.findTrafficBillingResourceForRule>>>;
     }> = [];
     const trafficBillingEnabled = await db.getTrafficBillingEnabledForWrite();
-    const trafficContexts = await db.getForwardRuleTrafficContextsByIds(stats.map((stat) => Number(stat.ruleId)));
+    const trafficContexts = await db.getForwardRuleTrafficContextsByIds([...reportedRuleIds, ...stats.map((stat) => Number(stat.ruleId))]);
     const contextsByRuleId = new Map((trafficContexts as any[]).map((context) => [Number(context.rule.id), context]));
     const tunnelContextsById = new Map<number, any>();
     for (const context of trafficContexts as any[]) {
@@ -888,6 +893,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     }
 
     await db.insertTrafficStatsBatch(trafficBatch);
+    await recordOperationsTraffic(trafficBatch, contextsByRuleId, host);
+    if (analyticsEnabled && trafficReportId) await recordOperationsSources(host, sourceSamples, contextsByRuleId, entryHostsByTunnelId, req.body?.sourceStatus, req.body?.sourceSampledAt);
     await recordRuleQuotaTraffic(trafficBatch, contextsByRuleId);
     await db.markForwardRulesRunning(Array.from(runningRuleIds));
 
@@ -951,7 +958,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         duplicate: true,
         durationMs: Date.now() - requestStartedAt,
       });
-      res.json({ success: true, duplicate: true });
+      res.json({ success: true, duplicate: true, sourceAnalyticsEnabled: analyticsEnabled });
       return;
     }
 
@@ -980,6 +987,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 
     res.json({
       success: true,
+      sourceAnalyticsEnabled: analyticsEnabled,
       trafficReportInterval: selectAgentTrafficReportInterval({
         metricsWatching: isHostMetricsWatching(Number(host.id)),
         strictAccounting: strictTrafficAccounting,

@@ -1,12 +1,13 @@
 import { toast as originalToast } from "sonner";
-import { translateNotificationText } from "../i18n/messages";
+import { translateErrorNotificationText, translateNotificationText } from "../i18n/messages";
 
-function translateArgs(args: unknown[]) {
+function translateArgs(args: unknown[], isError = false) {
   const [message, options, ...rest] = args;
+  const translate = isError ? translateErrorNotificationText : translateNotificationText;
   const translatedOptions = options && typeof options === "object" && "description" in options && typeof options.description === "string"
-    ? { ...options, description: translateNotificationText(options.description) }
+    ? { ...options, description: translate(options.description) }
     : options;
-  return [typeof message === "string" ? translateNotificationText(message) : message, translatedOptions, ...rest];
+  return [typeof message === "string" ? translate(message) : message, translatedOptions, ...rest];
 }
 
 // Only presentation methods are translated. dismiss IDs, promise results,
@@ -17,7 +18,7 @@ export const toast: typeof originalToast = new Proxy(originalToast, {
   get(target, property, receiver) {
     const member = Reflect.get(target, property, receiver);
     return methods.has(String(property)) && typeof member === "function"
-      ? (...args: unknown[]) => Reflect.apply(member, target, translateArgs(args))
+      ? (...args: unknown[]) => Reflect.apply(member, target, translateArgs(args, property === "error"))
       : member;
   },
 });

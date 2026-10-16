@@ -12,3 +12,4 @@ udp2raw/third-party
 *.md
 !.dockerignore
 !THIRD_PARTY_NOTICES.md
+!server/assets/ip2region/NOTICE.md

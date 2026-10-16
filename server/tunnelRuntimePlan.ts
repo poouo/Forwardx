@@ -200,3 +200,45 @@ export function shouldReconcileNginxRuntime(input: SharedRuntimeReconcileInput) 
 export function shouldReconcileGostRuntime(input: SharedRuntimeReconcileInput) {
   return shouldReconcileSharedRuntime(input);
 }
+
+/**
+ * V3 FXP transport requires a runtime that understands the extra outer
+ * transport options on both ends of the link. The panel does not receive a
+ * runtime capability list from Agents yet, so these helpers are deliberately
+ * pure: the caller must supply the capability set that an Agent reported for a
+ * host. Do not assume V3 support from a host id, an Agent version, or any
+ * other local guess until such a reported source exists.
+ */
+export const FORWARDX_V3_RUNTIME_CAPABILITY = "forwardx.v3";
+
+export function hostSupportsForwardXV3Runtime(capabilities: Iterable<unknown> | null | undefined) {
+  for (const capability of capabilities || []) {
+    if (String(capability || "").trim().toLowerCase() === FORWARDX_V3_RUNTIME_CAPABILITY) return true;
+  }
+  return false;
+}
+
+export type ForwardXV3CapabilityPlan = {
+  supported: boolean;
+  requiredHostIds: number[];
+  unsupportedHostIds: number[];
+};
+
+export function planForwardXV3Capability(input: {
+  requiredHostIds: readonly unknown[];
+  hostCapabilitiesById: ReadonlyMap<number, readonly string[]>;
+}): ForwardXV3CapabilityPlan {
+  const requiredHostIds = Array.from(new Set(input.requiredHostIds
+    .map((hostId) => Math.floor(Number(hostId)))
+    .filter((hostId) => Number.isInteger(hostId) && hostId > 0)))
+    .sort((left, right) => left - right);
+  const unsupportedHostIds = requiredHostIds.filter((hostId) => (
+    !hostSupportsForwardXV3Runtime(input.hostCapabilitiesById.get(hostId))
+  ));
+  return {
+    // An empty required-host list means support is unknown, not granted.
+    supported: requiredHostIds.length > 0 && unsupportedHostIds.length === 0,
+    requiredHostIds,
+    unsupportedHostIds,
+  };
+}

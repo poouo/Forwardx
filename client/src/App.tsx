@@ -19,6 +19,7 @@ import CustomSidebarPage from "@/pages/CustomSidebarPage";
 import EmailSettingsPage from "@/pages/EmailSettings";
 import ForwardGroupsPage from "@/pages/ForwardGroups";
 import HomePage from "@/pages/Home";
+import OperationsPage from "@/pages/Operations";
 import HomepagePreviewPage from "@/pages/HomepagePreview";
 import HostMonitorPage from "@/pages/HostMonitor";
 import HostsPage from "@/pages/Hosts";
@@ -123,6 +124,7 @@ function Router() {
       <Route path="/affiliates">{routeComponent(AffiliatesPage)}</Route>
       <Route path="/affiliate-management">{() => <AdminRoute component={() => <AffiliatesPage admin />} />}</Route>
       <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
+      <Route path="/operations">{() => <AdminRoute component={OperationsPage} />}</Route>
       <Route path="/custom-pages/:pageId">
         {(params) => <CustomSidebarPage pageId={params.pageId} />}
       </Route>

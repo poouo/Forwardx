@@ -4,13 +4,18 @@ const THEME_VAR_MAP = {
   primary: ["--primary", "--color-primary"],
   primaryForeground: ["--primary-foreground", "--color-primary-foreground"],
   ring: ["--ring", "--color-ring"],
+  accent: ["--accent", "--color-accent"],
+  accentForeground: ["--accent-foreground", "--color-accent-foreground"],
+  sidebarAccent: ["--sidebar-accent", "--color-sidebar-accent"],
+  sidebarAccentForeground: ["--sidebar-accent-foreground", "--color-sidebar-accent-foreground"],
+  sidebarPrimary: ["--sidebar-primary", "--color-sidebar-primary"],
+  sidebarPrimaryForeground: ["--sidebar-primary-foreground", "--color-sidebar-primary-foreground"],
+  sidebarRing: ["--sidebar-ring", "--color-sidebar-ring"],
+  glow: ["--theme-glow", "--pearl-glow"],
   chart1: ["--chart-1", "--color-chart-1"],
   chart2: ["--chart-2", "--color-chart-2"],
   chart3: ["--chart-3", "--color-chart-3"],
   chart4: ["--chart-4", "--color-chart-4"],
-  sidebarPrimary: ["--sidebar-primary", "--color-sidebar-primary"],
-  sidebarPrimaryForeground: ["--sidebar-primary-foreground", "--color-sidebar-primary-foreground"],
-  sidebarRing: ["--sidebar-ring", "--color-sidebar-ring"],
 } as const;
 
 export function applyPersonalizationTheme(value: unknown, root?: HTMLElement) {

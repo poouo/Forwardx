@@ -17,6 +17,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation, useSearch } from "wouter";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
+import { ForwardXLogo } from "@/components/ForwardXLogo";
 import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
@@ -910,7 +911,7 @@ export default function Login() {
             <div className="max-w-xl">
               <div className="pearl-spec-plate" aria-hidden="true">FORWARDX / NETWORK CONSOLE</div>
               <div className="flex items-center gap-3">
-                <img src={logoSrc} alt={siteTitle} className="h-11 w-11 object-contain" />
+                <ForwardXLogo size={44} alt={siteTitle} />
                 <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
               </div>
               <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">{translateText("管理多主机转发、隧道和流量。")}</p>
@@ -951,11 +952,7 @@ export default function Login() {
           <Card disableEnterAnimation className="auth-card-surface w-full max-w-[420px] px-5 py-6 sm:px-7">
             <CardHeader className="px-0 pb-7 text-left">
               <div className="mb-5 flex items-center gap-3 lg:hidden">
-                <img
-                  src={logoSrc}
-                  alt={siteTitle}
-                  className="h-10 w-10 object-contain"
-                />
+                <ForwardXLogo size={36} alt={siteTitle} />
                 <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
               </div>
               <CardTitle className="text-2xl font-bold tracking-tight">

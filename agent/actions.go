@@ -276,6 +276,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	seen := map[string]bool{}
 	pendingJobs := make([]actionJob, 0, len(state.Actions))
 	adoptedStatusReports := make([]action, 0)
+	retryQueued, retryDeferred, maxFailures := 0, 0, 0
 	for _, a := range state.Actions {
 		if a.IssuedAt <= 0 {
 			a.IssuedAt = state.IssuedAt
@@ -310,6 +311,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 					logf("desired state drift detected; reapply queued key=%s reason=%s %s", key, reason, actionLogSummary(a))
 				}
 			} else if !forceWireGuardReapply && time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
+				retryDeferred++
 				continue
 			}
 		}
@@ -339,6 +341,12 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 			desiredKey:       key,
 			desiredSignature: signature,
 		})
+		if hasRecord && !record.Success && record.Signature == signature {
+			retryQueued++
+			if record.Failures > maxFailures {
+				maxFailures = record.Failures
+			}
+		}
 		done = append(done, doneCh)
 	}
 	for key := range records {
@@ -348,6 +356,9 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	}
 	writeDesiredActionRecordsLocked(records)
 	desiredActionRecordMu.Unlock()
+	if (retryQueued > 0 || retryDeferred > 0) && shouldLogAgentReport("desired-action-retries", 5*time.Minute) {
+		logf("desired action retry summary queued=%d cooldownDeferred=%d maxConsecutiveFailures=%d minRetryInterval=%s; unchanged healthy actions retained", retryQueued, retryDeferred, maxFailures, desiredActionFailureRetryInterval)
+	}
 	pendingJobs = prepareDesiredActionJobs(pendingJobs)
 	if len(adoptedStatusReports) > 0 {
 		go reportAdoptedDesiredActions(cfg, adoptedStatusReports)
@@ -1039,9 +1050,24 @@ func startDesiredActionRecordsFlusher() {
 func rememberDesiredActionResult(key string, signature string, ok bool) {
 	desiredActionRecordMu.Lock()
 	ensureDesiredActionRecordsLoadedLocked()
-	desiredActionRecordsMem[key] = newDesiredActionRecord(signature, ok)
+	record := newDesiredActionRecord(signature, ok)
+	previous, exists := desiredActionRecordsMem[key]
+	recovered := ok && desiredActionRecordMatches(previous, exists, signature) && !previous.Success
+	if !ok {
+		record.Failures = 1
+		if desiredActionRecordMatches(previous, exists, signature) && !previous.Success {
+			record.Failures = previous.Failures + 1
+			if record.Failures > 1000000 {
+				record.Failures = 1000000
+			}
+		}
+	}
+	desiredActionRecordsMem[key] = record
 	markDesiredActionRecordsDirtyLocked()
 	desiredActionRecordMu.Unlock()
+	if recovered && shouldLogAgentReport("desired-action-recovered:"+key, 5*time.Minute) {
+		logf("desired action recovered key=%s previousConsecutiveFailures=%d; retry state cleared", key, previous.Failures)
+	}
 }
 
 func resetDesiredActionRecordsAfterAgentUpgrade() {

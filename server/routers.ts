@@ -9,6 +9,7 @@ import { authRouter } from "./routers/auth";
 import { googleRouter } from "./routers/google";
 import { billingRouter } from "./routers/billing";
 import { dashboardRouter } from "./routers/dashboard";
+import { operationsRouter } from "./routers/operations";
 import { forwardGroupsRouter } from "./routers/forwardGroups";
 import { hostsRouter } from "./routers/hosts";
 import { lookingGlassRouter } from "./routers/lookingGlass";
@@ -32,6 +33,7 @@ export const appRouter = router({
   auth: authRouter,
   google: googleRouter,
   dashboard: dashboardRouter,
+  operations: operationsRouter,
   users: usersRouter,
   hosts: hostsRouter,
   lookingGlass: lookingGlassRouter,

@@ -1,0 +1,5 @@
+China province geometry: Apache ECharts 4.9.0 map/json/china.json
+Source: https://github.com/apache/echarts/blob/4.9.0/map/json/china.json
+Copyright The Apache Software Foundation. Licensed under Apache License 2.0.
+License: https://www.apache.org/licenses/LICENSE-2.0
+Map is provided for approximate source-region visualization, not surveying.

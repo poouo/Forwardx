@@ -9,6 +9,7 @@ import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 import { normalizeForwardRuleProtocol, type ForwardRuleProtocol } from "../../shared/forwardTypes";
 import { normalizeExitGroupStrategy, type ExitGroupStrategy } from "../../shared/exitStrategy";
 import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
+import { portForwardToolPreflight, missingPortForwardToolMessage } from "../portForwardToolPreflight";
 
 export type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
@@ -67,8 +68,11 @@ export function normalizeForwardGroupMembers(
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
   const effectiveGroupType = groupMode === "port" || groupMode === "chain" || isCollectionGroup ? "host" : groupType;
   const minChainMembers = options.externalEntry ? 1 : 2;
-  if (groupMode === "port" && members.length !== 1) {
+  if (groupMode === "port" && !options.externalEntry && members.length !== 1) {
     throw new Error("端口转发需要配置 1 台所属主机");
+  }
+  if (groupMode === "port" && options.externalEntry && (members.length < 1 || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
+    throw new Error(`入口组需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
   }
   if (groupMode === "chain" && (members.length < minChainMembers || members.length > MAX_FORWARD_GROUP_MEMBERS)) {
     if (options.externalEntry) throw new Error(`转发链需要配置 1-${MAX_FORWARD_GROUP_MEMBERS} 台主机`);
@@ -95,7 +99,7 @@ export function normalizeForwardGroupMembers(
       tunnelId: effectiveGroupType === "tunnel" ? id : null,
       connectHost: groupMode === "chain" || groupMode === "exit" ? String(member.connectHost || "").trim() || null : null,
       priority: member.priority ?? index,
-      isEnabled: groupMode === "port" || groupMode === "chain" ? true : member.isEnabled ?? true,
+      isEnabled: (groupMode === "port" && !options.externalEntry) || groupMode === "chain" ? true : member.isEnabled ?? true,
     };
   });
 }
@@ -156,14 +160,19 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const groupMode: ForwardGroupMode = rawMode === "port" || rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
   const groupType: ForwardGroupType = groupMode === "port" || groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
-  const entryGroupId = groupMode === "chain" ? Number(input.entryGroupId || 0) || null : null;
-  await assertEntryGroupReference(entryGroupId, userId, input.isEnabled !== false);
+  const entryGroupId = groupMode === "chain" || groupMode === "port" ? Number(input.entryGroupId || 0) || null : null;
+  const entryGroup = await assertEntryGroupReference(entryGroupId, userId, input.isEnabled !== false);
   const domain = groupMode === "entry" || groupMode === "failover" ? input.domain?.trim() || null : null;
   if (groupMode === "entry" && !domain) throw new Error("入口组需要指定入口域名");
   const ddnsAutoResolveEnabled = groupMode === "entry" ? input.ddnsAutoResolveEnabled !== false : true;
   if (groupMode === "entry") await assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled);
-  const members = normalizeForwardGroupMembers(groupMode, groupType, input.members, {
-    externalEntry: groupMode === "chain" && !!entryGroupId,
+  // Materialize independent member identities on the resource. This keeps
+  // existing authorization, traffic and Agent rule identities unchanged.
+  const memberInput = groupMode === "port" && entryGroup
+    ? entryGroup.members.map((member: any) => ({ memberType: "host", hostId: member.hostId, priority: member.priority, isEnabled: !!member.isEnabled }))
+    : input.members;
+  const members = normalizeForwardGroupMembers(groupMode, groupType, memberInput, {
+    externalEntry: !!entryGroupId,
   });
   if (groupMode === "exit" && input.isEnabled !== false && !members.some((member) => member.isEnabled !== false)) {
     throw new Error("Enabled exit group must contain at least one enabled host");
@@ -181,6 +190,11 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const protocol = runtimeConfigSupported ? normalizeForwardRuleProtocol(input.protocol, "both") : "both";
   const runtimeTcpOptionsSupported = runtimeConfigSupported && protocol !== "udp";
   const forwardType = runtimeConfigSupported ? (input.forwardType || "iptables") : groupType === "tunnel" ? "gost" : "iptables";
+  if (groupMode === "port" && input.isEnabled !== false) {
+    const hosts = (await Promise.all(members.filter((member) => member.isEnabled !== false).map((member) => db.getHostById(Number(member.hostId))))).filter(Boolean);
+    const message = missingPortForwardToolMessage(portForwardToolPreflight(hosts, forwardType), forwardType);
+    if (message) throw new Error(message);
+  }
   const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (forwardType === "gost" || forwardType === "realm");
   const commonData = {
     name: input.name,
@@ -249,7 +263,7 @@ export async function createForwardGroupFromInput(input: ForwardGroupInput, user
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
   const existing = await db.getForwardGroupById(id) as any;
   if (!existing) throw new Error("转发资源不存在");
-  const normalized = await normalizeForwardGroupInput(input);
+  const normalized = await normalizeForwardGroupInput(input, Number(existing.userId));
   const desiredEnabled = !!normalized.data.isEnabled;
   const enabledChanged = !!existing.isEnabled !== desiredEnabled;
   const memberPriorityChanged = memberPrioritySignature((existing?.members || []) as ForwardGroupMemberRequest[])
@@ -281,12 +295,15 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
     }
     if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
   };
-  if (normalized.data.groupMode === "chain" && !enabledChanged) {
+  if ((normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") && !enabledChanged) {
     await db.withForwardGroupSyncTransaction(
       id,
       () => persistConfiguration({ deferRefresh: true, skipMemberSync: true }),
       { preserveRuntime: true },
     );
+    if (normalized.data.groupMode === "port" && rateLimitChanged) {
+      await db.refreshForwardGroupRuntime(id, "forward-group-rate-limit-updated");
+    }
     return db.getForwardGroupById(id);
   }
   await persistConfiguration();

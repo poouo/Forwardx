@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { ArrowRight, Gauge, Lock, Network, Server, ShieldCheck, WalletCards, Zap } from "lucide-react";
 import { toast } from "@/lib/localizedToast";
 import { Link } from "wouter";
+import { ForwardXLogo } from "@/components/ForwardXLogo";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
 
@@ -49,6 +50,7 @@ export default function PublicHome() {
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5">
         <Link href="/" className="flex items-center gap-3">
           <img src={logoSrc} alt={siteTitle} className="h-9 w-9 object-contain" />
+          <ForwardXLogo size={36} alt={siteTitle} src={info?.siteLogoDataUrl} />
           <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
         </Link>
         <div className="flex items-center gap-2">

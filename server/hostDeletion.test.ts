@@ -69,6 +69,7 @@ test("member removal synchronizes templates, preserves healthy siblings and safe
 
       // Removing the first chain node changes the next listener, not the unchanged tail.
       await group(16, [member(13), member(14, 1), member(15, 2)], "chain");
+      assert.equal((await deletion.getHostDeletionImpact(13)).groups.items.find(item => item.id === 16)?.groupMode, "chain");
       await template(500, 16, 13, 18100);
       const chainBefore = await runtime.queryRaw('SELECT "id", "hostId" FROM "forward_rules" WHERE "forwardGroupRuleId" = 500');
       const tail = chainBefore.find(r => r.hostId === 15);
@@ -101,6 +102,7 @@ test("member removal synchronizes templates, preserves healthy siblings and safe
       assert.deepEqual(await runtime.queryRaw('SELECT "id" FROM "hosts" WHERE "id" = 3'), [{ id: 3 }]);
       await group(12, [member(4)], "entry");
       assert.equal((await deletion.getHostDeletionImpact(4)).groups.count, 1);
+      assert.equal((await deletion.getHostDeletionImpact(4)).groups.items[0].groupMode, "entry");
       await assert.rejects(() => deletion.deleteHostWithImpact(4, true), /group-12/);
 
       // Primary, relay and extra exit references all block, even when disabled.
@@ -165,6 +167,25 @@ test("disabled topology changes and historical tombstones release only obsolete 
     const now = Math.floor(Date.now() / 1000);
     try {
       for (let id = 1; id <= 40; id++) await insert("hosts", { id, name: "host-" + id, ip: "198.51.100." + id, ipv4: "198.51.100." + id, userId: 1, isOnline: 1, lastHeartbeat: now });
+
+      // A truly deleted group cannot block deletion through orphan members.
+      await insert("forward_group_members", { groupId: 99999, memberType: "host", hostId: 39 });
+      assert.equal((await deletion.getHostDeletionImpact(39)).groups.count, 0);
+      assert.equal((await deletion.prepareHostDeletion(39)).blocked, false);
+
+      // Historical modes must be visible wherever runtime/impact normalize
+      // them to failover; an exact SQL enum filter used to hide these rows.
+      for (const [index, legacyMode] of ["", "legacy"].entries()) {
+        const id = 120 + index;
+        await group(id, [member(30 + index)], legacyMode);
+        const impact = await deletion.getHostDeletionImpact(30 + index);
+        assert.equal(impact.groups.items[0].groupMode, "failover");
+        const page = await groups.getForwardGroupsPage({ page: 1, pageSize: 12, groupMode: "failover", search: "group-" + id });
+        assert.equal(page.totalItems, 1);
+        assert.equal(page.items[0].id, id);
+        assert.equal(page.items[0].groupMode, "failover");
+        assert.equal((await groups.getForwardGroupsPage({ page: 1, pageSize: 12, groupMode: "chain", search: "group-" + id })).totalItems, 0);
+      }
 
       // All three early-return paths must clean old external-entry children.
       for (const [index, disabled] of ["chain", "template", "entry"].entries()) {
@@ -303,4 +324,7 @@ test("deletion preview and mutation enforce host ownership and UI cannot force-d
   assert.match(ui, /data.blocked \|\| waiting \|\| \(offlineCleanup && !confirmOfflineCleanup\)/);
   assert.match(ui, /prepareDelete\(\{ id: hostId \}\)/);
   assert.match(ui, /refetchIntervalInBackground: false/);
+  assert.match(ui, /utils\.hosts\.deleteImpact\.setData\(\{ id: data.hostId \}, data\)/);
+  assert.match(ui, /utils\.hosts\.deleteImpact\.invalidate\(\{ id: data.hostId \}\)/);
+  assert.doesNotMatch(ui, /href: "\/forward-groups"/);
 });
