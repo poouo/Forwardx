@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compareMobileVersions, extractMobilePackageVersion, latestMobilePackage } from "./mobileAppUpdate";
+import { APP_VERSION, ANDROID_APP_VERSION, IOS_APP_VERSION } from "../../../shared/versions";
 
 test("mobile updates only match the current platform's release package", () => {
   assert.equal(extractMobilePackageVersion("forwardx-ios-v1.0.0-unsigned.ipa", "ios"), "1.0.0");
@@ -47,5 +48,18 @@ test("the shared UI release is detected by both older Android and iOS clients", 
     const latest = latestMobilePackage(releases, platform);
     assert.equal(latest?.version, "2.4.1");
     assert.ok(compareMobileVersions(latest!.version, current) > 0);
+  }
+});
+
+test("current release package names expose updates to the previously published mobile apps", () => {
+  const releases = [{
+    html_url: `https://github.com/poouo/Forwardx/releases/tag/v${APP_VERSION}`,
+    assets: [{ name: `forwardx-android-v${ANDROID_APP_VERSION}.apk` }, { name: `forwardx-ios-v${IOS_APP_VERSION}-unsigned.ipa` }],
+  }];
+  for (const [platform, expected] of [["android", ANDROID_APP_VERSION], ["ios", IOS_APP_VERSION]] as const) {
+    const latest = latestMobilePackage(releases, platform);
+    assert.equal(latest?.version, expected);
+    assert.ok(compareMobileVersions(latest!.version, "2.4.2") > 0);
+    assert.equal(latest?.releaseUrl, releases[0].html_url);
   }
 });

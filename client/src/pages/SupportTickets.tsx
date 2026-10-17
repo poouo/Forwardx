@@ -1191,12 +1191,12 @@ function TicketSettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCha
       </DialogHeader>
       {query.isLoading && <DataSectionLoading />}
       {query.error && <div role="alert" className="space-y-2 text-sm text-destructive">
-        <p>{query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>{t("重试")}</Button>
+        <p>{query.error.data?.code === "NOT_FOUND" ? t("工单设置接口尚未加载，请更新并重启面板后重试。") : query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>{t("重试")}</Button>
       </div>}
-      <SupportTicketManagementSettings
+      {query.data && !query.error && <SupportTicketManagementSettings
         feature={{ enabled: query.data?.enabled ?? false, unavailable: !query.data || !!query.error || feature.isPending, onChange: enabled => feature.mutateAsync({ enabled }) }}
         notifications={{ enabled: query.data?.notificationsEnabled ?? true, unavailable: !query.data || !!query.error || notifications.isPending, onChange: notificationsEnabled => notifications.mutateAsync({ notificationsEnabled }) }}
-      />
+      />}
       <DialogFooter><Button variant="outline" disabled={feature.isPending || notifications.isPending} onClick={() => onOpenChange(false)}>{t("关闭")}</Button></DialogFooter>
     </DialogContent>
   </Dialog>;

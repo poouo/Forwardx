@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { MIGRATION_TABLES } from "./dbSchema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, withDatabaseTransaction } from "./dbRuntime";
-import { setSetting, setSettings } from "./repositories/settingsRepository";
+import { getSetting, setSetting, setSettings } from "./repositories/settingsRepository";
 import { getUserByUsername } from "./repositories/userRepository";
 import { hashPassword } from "./password";
 import { builtinAvatarForSeed } from "../shared/avatar";
@@ -2309,6 +2309,12 @@ export async function seedDevPanelData() {
   if (!isDevPanelMode()) return;
   const db = await getDb();
   if (!db) return;
+
+  // Watch-mode restarts must not wipe tickets, rules or settings being debugged.
+  if (await getSetting("devPanelSeededAt")) {
+    console.log("[DevPanel] Reusing existing local development data");
+    return;
+  }
 
   const adminId = await ensureDevAdmin();
   await clearDevData();

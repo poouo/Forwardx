@@ -4593,5 +4593,6 @@
   "支付币种": "Payment currency",
   "余额消费构成": "Balance spending breakdown",
   "仅统计余额支出，不含充值和管理员调整。": "Balance spending only; excludes top-ups and administrator adjustments.",
-  "按所选日期内创建的订单统计当前状态。": "Current status of orders created within the selected dates."
+  "按所选日期内创建的订单统计当前状态。": "Current status of orders created within the selected dates.",
+  "工单设置接口尚未加载，请更新并重启面板后重试。": "The ticket settings API is not loaded. Update and restart the panel, then try again."
 }

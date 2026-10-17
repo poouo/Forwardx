@@ -3,6 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { createLogger, createServer } from "vite";
+import { devBackendArguments, devBackendProxy, latestBackendPort } from "./dev-panel-runtime.mjs";
 
 const root = process.cwd();
 const devDir = path.join(root, ".dev");
@@ -104,11 +105,12 @@ const serverEnv = {
 
 // Run the server through the current Node process so Windows does not leave a
 // pnpm/cmd wrapper behind or deliver console signals to only part of the tree.
-const server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
+const server = spawn(process.execPath, devBackendArguments(), {
   cwd: root,
   env: serverEnv,
   stdio: ["ignore", "pipe", "pipe"],
   shell: false,
+  windowsHide: true,
 });
 
 let startupOutput = "";
@@ -125,13 +127,10 @@ server.stdout.on("data", (chunk) => {
   // Read the port from the child instead of assuming the preferred port. In
   // development mode the server may select the next available port.
   startupOutput = `${startupOutput}${output}`.slice(-8_192);
-  const match = startupOutput.match(/ForwardX panel started on \S+ port (\d+)/);
-  if (match && !backendPort) {
-    const port = Number.parseInt(match[1], 10);
-    if (Number.isInteger(port) && port > 0 && port < 65_536) {
-      backendPort = port;
-      backendReadyResolve(port);
-    }
+  const port = latestBackendPort(startupOutput);
+  if (port && port !== backendPort) {
+    backendPort = port;
+    backendReadyResolve(port);
   }
 });
 server.stderr.on("data", (chunk) => process.stderr.write(chunk));
@@ -179,7 +178,7 @@ try {
       strictPort: false,
       open: false,
       proxy: {
-        "/api": `http://127.0.0.1:${backendPort}`,
+        "/api": devBackendProxy(() => backendPort),
       },
     },
     define: {

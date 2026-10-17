@@ -17,7 +17,7 @@
     "test:latency-history": "node --import tsx --test server/latencyHistory.test.ts server/hostAvailability.test.ts client/src/components/hosts/HostAvailabilityHistory.test.tsx client/src/components/LatencyHistoryDays.test.tsx server/historyCleanupIndexes.test.ts server/latencySeries.test.ts server/probeCounter.test.ts client/src/lib/latencyChart.test.ts",
     "test:support": "node --import tsx --test server/supportTickets.test.ts server/supportTicketNotifications.test.ts client/src/components/SupportTicketMessage.test.tsx client/src/components/SupportTicketManagementSettings.test.tsx client/src/components/NotificationPreferencesCard.test.tsx",
     "test:agent-proxy": "node --import tsx --test server/managementProxy.test.ts server/agentInstallScripts.test.ts server/panelDockerInstaller.test.ts server/panelInstallerAccelerator.test.ts",
-    "test:deployment-docs": "node --import tsx --test server/deploymentDocs.test.ts",
+    "test:deployment-docs": "node --test scripts/dev-panel-runtime.test.mjs && node --import tsx --test server/deploymentDocs.test.ts",
     "test:ui": "node --import tsx --test client/src/lib/sidebarScroll.test.ts client/src/components/ui/pearl-ui.test.tsx client/src/components/ui/sliding-tabs.test.tsx client/src/components/ui/confirm-dialog.test.tsx client/src/components/ui/ui-copy.test.tsx client/src/components/ui/async-button.test.tsx",
     "test:release-notes": "node --test scripts/release-notes.test.mjs",
     "test:google-auth": "node --import tsx --test server/googleOAuth.test.ts",

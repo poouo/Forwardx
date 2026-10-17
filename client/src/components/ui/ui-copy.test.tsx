@@ -157,9 +157,14 @@ test("Google login settings precede the final contact card without duplication",
 test("financial status badges and positive balances adapt to dark mode", () => {
   const payments = readFileSync("client/src/pages/Payments.tsx", "utf8");
   assert.doesNotMatch(payments, /bg-emerald-50\b|bg-amber-50\b|bg-slate-50\b/);
-  assert.match(payments, /bg-emerald-500\/10 text-emerald-700 dark:text-emerald-300/);
-  assert.match(payments, /bg-amber-500\/10 text-amber-700 dark:text-amber-300/);
+  // Payment orders now live in the ledger, where status badges use semantic
+  // shared variants instead of the removed payment-page badge classes.
+  const badge = readFileSync("client/src/components/ui/badge.tsx", "utf8");
+  assert.match(badge, /bg-primary text-primary-foreground/);
+  assert.match(badge, /bg-secondary text-secondary-foreground/);
   for (const name of ['Wallet', 'Billing']) {
-    assert.match(readFileSync(`client/src/pages/${name}.tsx`, 'utf8'), /text-emerald-600 dark:text-emerald-400/);
+    const source = readFileSync(`client/src/pages/${name}.tsx`, 'utf8');
+    assert.match(source, /text-emerald-600 dark:text-emerald-400/);
+    assert.match(source, /<Badge variant=\{item\.status[^}]*\? "default" : "secondary"\}/);
   }
 });

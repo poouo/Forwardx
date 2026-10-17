@@ -119,6 +119,8 @@ test("local dev seed supplies 30 days of operations fixtures without network cal
         const counts = (await rt.queryRaw('SELECT COUNT(*) n FROM operations_source_daily'))[0].n;
         await seedDevPanelData();
         assert.equal((await rt.queryRaw('SELECT COUNT(*) n FROM operations_source_daily'))[0].n, counts);
+        assert.equal((await ops.getOperationsSources(today,today+86400,0,'',undefined,'recent')).ips[0].ip,'198.51.100.83');
+        assert.equal(Number((await rt.queryRaw('SELECT MAX(lastSeen) AS latest FROM operations_source_daily WHERE ip=?',['198.51.100.83']))[0].latest),now+1);
       } finally { await rt.closeDatabase(); }
     `], {cwd:process.cwd(),env:{...process.env,DATABASE_TYPE:"sqlite",FORWARDX_TEST_DB:path.join(directory,"dev.db"),FORWARDX_LOG_DIR:path.join(directory,"logs")},encoding:"utf8",timeout:60000,windowsHide:true});
     assert.equal(result.status,0,result.stdout+result.stderr);

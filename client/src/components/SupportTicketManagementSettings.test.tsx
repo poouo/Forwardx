@@ -53,6 +53,9 @@ test("administrators can reopen ticket settings after disabling the feature and 
   assert.match(page, /supportTickets\.status\.setData/);
   assert.match(page, /!feature\.isPending && !notifications\.isPending/);
   assert.match(page, /max-h-\[85dvh\] overflow-y-auto/);
+  assert.match(page, /query\.error\.data\?\.code === "NOT_FOUND"/);
+  assert.match(page, /工单设置接口尚未加载，请更新并重启面板后重试。/);
+  assert.match(page, /query\.data && !query\.error && <SupportTicketManagementSettings/);
   const old = readFileSync("client/src/components/NotificationSettingsCard.tsx", "utf8");
   assert.doesNotMatch(old, /supportTicketNotificationsEnabled|updateTickets/);
   const preferences = readFileSync("client/src/components/NotificationPreferencesCard.tsx", "utf8");

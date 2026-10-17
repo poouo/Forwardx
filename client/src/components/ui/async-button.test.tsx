@@ -97,7 +97,13 @@ test("pending buttons immediately block repeat submissions without replacing or 
     }
   }
   assert.match(renderToStaticMarkup(<AsyncButton pending={false} disabled>Save</AsyncButton>), /disabled=""/);
+});
+
+test("personalization save buttons keep their labels and block duplicate section submissions", () => {
   const settings = readFileSync("client/src/pages/Settings.tsx", "utf8");
-  assert.match(settings, /pending=\{isSavingPersonalization\("theme"\)\}/);
-  assert.doesNotMatch(settings, /isSavingSetting\([^)]*\) \? translateText\("保存中/);
+  const themeButton = settings.match(/<Button\s+type="button"\s+onClick=\{handleSaveThemePreset\}[\s\S]*?<\/Button>/)?.[0] || "";
+  assert.match(themeButton, /disabled=\{isSavingPersonalization\("theme"\) \|\| !themeDirty\}/);
+  assert.match(themeButton, /translateText\("保存配色"\)/);
+  assert.doesNotMatch(themeButton, /\? translateText|保存中/);
+  assert.match(settings, /if \(personalizationSaving\) return;/);
 });

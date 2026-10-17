@@ -2,9 +2,7 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [2.3.285] - Unreleased
-
-Not released to production. The publication date and downloadable artifacts will be confirmed by the official Release.
+## [2.3.285] - 2026-10-17
 
 - Support entry groups for direct port forwarding, with unified management and all entries running concurrently.
 - Simplify plan management: remove overview cards, move global switches into a settings dialog, and keep financial reporting in Billing and Operations.
@@ -13,6 +11,7 @@ Not released to production. The publication date and downloadable artifacts will
 - Color-code Operations and payment metrics and unify hover feedback on statistic and product cards, respecting touch devices and reduced-motion preferences.
 - Move affiliate settings and the feature switch into the top-right settings dialog; separate sidebar visibility and preserve the existing enabled state.
 - Add a ticket management settings dialog for feature and notification master switches; keep sidebar visibility independent and preserve history and personal notification preferences.
+- Reload the development backend after code changes while preserving debug data to prevent missing ticket-settings APIs; hide switch states when settings cannot be loaded.
 - Fix the sticky top navigation disappearing while dropdowns are open by unifying overlay scroll locking.
 - Align port-entry group cards and lists with forwarding-chain layouts; show node details in a dialog without stretching adjacent cards.
 - Keep panel upgrade polling and completion countdowns active in the background; preserve refresh deadlines across navigation and refresh each task only once.
