@@ -1,6 +1,6 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { AlertTriangle, RefreshCw, Database } from "lucide-react";
@@ -40,6 +40,7 @@ export function DatabaseUnavailableView({ health, checking, onRetry }: {
 export default function DatabaseHealthGate({ children }: { children: ReactNode }) {
   useLocation(); // Re-read the native panel URL when navigating after setup.
   const queryClient = useQueryClient();
+  const wasUnavailable = useRef(false);
   const panelUrl = mobileAuth.isNative ? mobileAuth.getPanelUrl() : "";
   const health = useQuery<DatabaseHealth | null>({
     queryKey: ["database-health", panelUrl],
@@ -56,13 +57,15 @@ export default function DatabaseHealthGate({ children }: { children: ReactNode }
     refetchInterval: (query) => query.state.data?.state === "unavailable" ? 5000 : 15_000,
   });
   useEffect(() => {
-    if (health.data?.state === "healthy") {
+    if (health.data?.state === "unavailable") wasUnavailable.current = true;
+    if (health.data?.state === "healthy" && wasUnavailable.current) {
+      wasUnavailable.current = false;
       // Fresh session/account checks are still performed after DB recovery.
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== "database-health" });
     }
   }, [health.data?.state, queryClient]);
 
-  if (health.isLoading) return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground" role="status">{translateText("正在检查面板状态…")}</div>;
+  // The health request runs alongside normal startup, never as a splash screen.
   if (health.data?.state === "unavailable") return <DatabaseUnavailableView health={health.data} checking={health.isFetching} onRetry={() => { void health.refetch(); }} />;
   return <>{children}</>;
 }

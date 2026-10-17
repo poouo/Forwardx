@@ -2,6 +2,10 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Run panel health checks in the background without a full-screen refresh interstitial; retain outage diagnostics and recovery checks while avoiding duplicate startup requests.
+
 ## [2.3.285] - 2026-10-17
 
 - Support entry groups for direct port forwarding, with unified management and all entries running concurrently.
