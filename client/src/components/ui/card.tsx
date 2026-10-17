@@ -7,6 +7,8 @@ type CardProps = React.HTMLAttributes<HTMLDivElement> & {
   variant?: "default" | "featured"
   /** Border/shadow feedback only: safe for sortable cards and nested controls. */
   interactive?: boolean
+  /** Gentle lift for standalone overview/product cards, not sortable/form containers. */
+  hoverable?: boolean
 }
 
 function isDialogMotionLocked() {
@@ -18,7 +20,7 @@ function isDialogMotionLocked() {
     || Date.now() < lockUntil
 }
 
-const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, enterIndex, disableEnterAnimation, variant = "default", interactive = false, ...props }, ref) => {
+const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, enterIndex, disableEnterAnimation, variant = "default", interactive = false, hoverable = false, ...props }, ref) => {
   const [animateEnter, setAnimateEnter] = React.useState(() => !disableEnterAnimation && !isDialogMotionLocked())
   const enterStyle = enterIndex === undefined
     ? style
@@ -42,6 +44,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
         "glass-panel pearl-card rounded-2xl transition-[border-color,box-shadow,transform] duration-300",
         variant === "featured" && "pearl-card-featured",
         interactive && "pearl-card-interactive",
+        hoverable && "pearl-hover-card duration-200",
         animateEnter && "stagger-card",
         className,
       )}

@@ -34,9 +34,7 @@ function syncRulePageRows(items: any[], ready = true) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   runInNewContext(program, {
-    scopedRulesReady: ready,
-    selectedScopeQueryEnabled: false,
-    selectedScopedRules: undefined,
+    ruleListDataReady: ready,
     baseScopedRules: items,
     ruleFilters: { searchQuery: "198.51.100.181", hostById: new Map(), tunnelById: new Map() },
     isForwardRuleVisibleByFilters: () => { throw new Error("server results must not be searched a second time"); },

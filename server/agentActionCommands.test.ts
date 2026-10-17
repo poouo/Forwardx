@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCountingChainCmds,
+  buildCountingCleanupCmds,
   buildIptablesTransitionCleanupCmds,
   buildKernelForwardTransitionCleanupCmds,
+  buildManagedPortCleanupCmds,
   buildNftCleanupCmds,
   buildNftForwardCmds,
   buildNftTransitionCleanupCmds,
@@ -52,6 +54,35 @@ test("process runtime actions leave counter reconciliation to the Agent", () => 
       `${forwardType} action unexpectedly rebuilt shared counters`,
     );
   }
+});
+
+test("port-only counter cleanup retains IPv4, IPv6 and historical chain cleanup", () => {
+  const commands = buildCountingCleanupCmds(22022).join("\n");
+  for (const binary of ["iptables", "ip6tables"]) {
+    assert.ok(commands.includes(`${binary} -t mangle -S`));
+    for (const direction of ["IN", "OUT"]) {
+      assert.ok(commands.includes(`${binary} -t mangle -F FWX_${direction}_22022`));
+      assert.ok(commands.includes(`${binary} -t mangle -X FWX_${direction}_22022`));
+    }
+  }
+  assert.match(commands, /fwx-stat-22022:/);
+  assert.match(commands, /for c in input output forward; do/);
+});
+
+test("managed port cleanup keeps protocol isolation after removing unused target arguments", () => {
+  for (const protocol of ["tcp", "udp"]) {
+    const commands = buildManagedPortCleanupCmds(22022, protocol).join("\n");
+    assert.ok(commands.includes(`forwardx-realm-${protocol}-22022`));
+    assert.ok(commands.includes(`forwardx-socat-${protocol}-22022`));
+    assert.match(commands, /fwx-stat-22022:/);
+    const other = protocol === "tcp" ? "udp" : "tcp";
+    assert.ok(!commands.includes(`forwardx-socat-${other}-22022`));
+    assert.doesNotMatch(commands, /forwardx-realm-22022/);
+  }
+  const commands = buildManagedPortCleanupCmds(22022).join("\n");
+  assert.match(commands, /forwardx-realm-22022/);
+  assert.match(commands, /forwardx-socat-tcp-22022/);
+  assert.match(commands, /forwardx-socat-udp-22022/);
 });
 
 test("iptables forwarding gets only conntrack-scoped DNAT counters", () => {

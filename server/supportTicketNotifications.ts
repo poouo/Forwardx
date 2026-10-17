@@ -1,5 +1,6 @@
 import {
   getSupportTicket,
+  supportTicketsEnabled,
   type TicketActor,
 } from "./repositories/supportTicketRepository";
 import {
@@ -21,7 +22,7 @@ export function notifySupportTicket(
 ) {
   return (async () => {
     const settings = await getNotificationSettings();
-    if (!settings.active || !settings.supportTicketNotificationsEnabled) return;
+    if (!settings.active || !settings.supportTicketNotificationsEnabled || !(await supportTicketsEnabled())) return;
     const ticket = await getSupportTicket(actor, id);
     const recipients =
       actor.role === "admin" && !created

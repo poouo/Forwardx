@@ -10,14 +10,16 @@ import { PersistentPagination, type PersistentPaginationState } from "../Persist
 import { RuleLimitsForm, newRuleLimitsForm } from "../rules/RuleLimitsForm";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
 
-test("sidebar menu toggles use a uniform label-only row without per-feature descriptions", () => {
+test("sidebar menu toggles retain display controls and distinguish independent business switches", () => {
   const settings = readFileSync("client/src/pages/Settings.tsx", "utf8");
   const rows = settings.slice(settings.indexOf("{SIDEBAR_MENU_KEYS.map((key) => ("));
   const menu = rows.slice(0, rows.indexOf("</Dialog>"));
-  assert.match(menu, /<span className="min-w-0 text-sm">\{translateText\(SIDEBAR_MENU_LABELS\[key\]\)\}<\/span>/);
+  assert.match(menu, /<span className="text-sm">\{translateText\(SIDEBAR_MENU_LABELS\[key\]\)\}<\/span>/);
   assert.match(menu, /checked=\{sidebarMenu\[key\]\}/);
   assert.match(menu, /setSidebarMenuEnabled\(key, checked\)/);
-  assert.doesNotMatch(menu, /<p\b|key === "tickets"|key === "affiliates"|默认关闭/);
+  assert.match(menu, /仅控制用户侧菜单显示，工单功能和推送开关请在工单管理的设置中调整/);
+  assert.match(menu, /仅控制菜单显示，返佣总开关请在推广管理的设置中调整/);
+  assert.doesNotMatch(menu, /supportTicketsEnabled|affiliateEnabled/);
 });
 
 test("ticket navigation belongs to management for both roles and keeps unread badges", () => {
@@ -26,7 +28,8 @@ test("ticket navigation belongs to management for both roles and keeps unread ba
   assert.doesNotMatch(primary, /ticketMenuItems|\/tickets|sidebarMenuSettings\.tickets/);
   const management = layout.slice(layout.indexOf("  const managementMenuItems:"), layout.indexOf("  const allMenuItems ="));
   assert.equal((management.match(/\.\.\.ticketMenuItems/g) || []).length, 2);
-  assert.match(layout, /const ticketMenuItems: SidebarNavItem\[\] = sidebarMenuSettings\.tickets/);
+  assert.match(layout, /const ticketMenuItems: SidebarNavItem\[\] = isAdmin \|\| sidebarMenuSettings\.tickets/);
+  assert.match(layout, /ticketStatus\?\.enabled === true/);
   assert.match(layout, /ticketSummary\.unread > 99/);
   assert.match(layout, /const allMenuItems = \[\.\.\.primaryMenuItems, \.\.\.managementMenuItems, \.\.\.otherMenuItems\]/);
 });
@@ -39,8 +42,8 @@ test("ticket actions distinguish administrator handling from user submission in 
       setLanguagePreference(language);
       await initializeLanguage();
       for (const admin of [true, false]) {
-        const html = renderToStaticMarkup(<TicketListActions admin={admin} onCreate={() => {}} onManageReplies={() => {}} />);
-        assert.equal((html.match(/<button/g) || []).length, 1);
+        const html = renderToStaticMarkup(<TicketListActions admin={admin} onCreate={() => {}} onManageReplies={() => {}} onSettings={() => {}} />);
+        assert.equal((html.match(/<button/g) || []).length, admin ? 2 : 1);
         const create = language === "en" ? "Submit a ticket" : "提交工单";
         const manage = language === "en" ? "Manage saved replies" : "管理快捷回复";
         assert.ok(html.includes(admin ? manage : create));

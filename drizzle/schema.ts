@@ -283,6 +283,7 @@ export const hosts = table("hosts", {
   trafficFailoverThresholdPercent: int("trafficFailoverThresholdPercent").notNull().default(100),
   // Derived from host_traffic_counters; never changes the configured membership.
   trafficFailoverExcluded: boolean("trafficFailoverExcluded").notNull().default(false),
+  hostStatusNotifyEnabled: boolean("hostStatusNotifyEnabled").notNull().default(true),
   telegramTrafficAlertEnabled: boolean("telegramTrafficAlertEnabled").notNull().default(false),
   trafficAlertThresholdPercent: int("trafficAlertThresholdPercent").notNull().default(20),
   telegramRenewalReminderEnabled: boolean("telegramRenewalReminderEnabled").notNull().default(false),
@@ -911,6 +912,9 @@ export const paymentOrders = table("payment_orders", {
   discountAmountCents: bigint("discountAmountCents", { mode: "number" }).notNull().default(0),
   clientIp: text("clientIp"),
   rawNotify: text("rawNotify"),
+  merchantIdentity: text("merchantIdentity"), // Non-secret merchant/app snapshot; never signing keys.
+  failureReason: text("failureReason"),
+  lastPaymentCheckAt: epoch("lastPaymentCheckAt"),
   expiresAt: epoch("expiresAt"),
   paidAt: epoch("paidAt"),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),

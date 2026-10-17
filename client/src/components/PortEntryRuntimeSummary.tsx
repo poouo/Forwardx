@@ -1,20 +1,17 @@
 import type { PortEntryRuntimeSummary as Summary } from "../../../shared/portEntryDiagnostics";
 import { t, getFormatLocale } from "../i18n";
+import { ChevronRight } from "lucide-react";
+import { Button } from "./ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 
 function time(value: number | null | undefined) {
   return value ? new Date(value).toLocaleString(getFormatLocale(), {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—";
 }
 
-export function PortEntryRuntimeSummary({summary}: {summary?: Summary}) {
-  if (!summary) return null;
+export function PortEntryRuntimeDetails({ summary }: { summary: Summary }) {
   const labels = {running:t("运行正常"),degraded:t("部分运行"),offline:t("离线"),excluded:t("流量达量已排除"),pending:t("等待下发"),idle:t("暂无启用规则"),disabled:t("停用")};
   return (
-    <details className="rounded-md border border-border/40 bg-background/35 text-xs">
-      <summary className="cursor-pointer select-none px-2.5 py-2 text-muted-foreground">
-        {t("入口节点 {0}/{1}", [summary.runningHostCount,summary.expectedHostCount])}
-        <span className="ml-2">{t("节点详情")}</span>
-      </summary>
-      <div className="max-h-72 space-y-2 overflow-y-auto border-t border-border/40 p-2.5">
+      <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain pr-1 text-xs [overflow-wrap:anywhere]">
         <p className="text-muted-foreground">{t("全部启用规则运行且主机在线才计为正常节点；不代表端到端业务探测。")}</p>
         {summary.nodes.map((node) => (
           <div key={node.memberId} className="space-y-1.5 rounded-md bg-muted/25 p-2">
@@ -38,6 +35,32 @@ export function PortEntryRuntimeSummary({summary}: {summary?: Summary}) {
         ))}
         <p className="text-muted-foreground">{t("重试时间为最早可重试时间，实际执行取决于调度及 Agent 连接。每节点同步与执行错误各最多三条。")}</p>
       </div>
-    </details>
+  );
+}
+
+export function PortEntryRuntimeSummary({ summary, resourceName }: { summary?: Summary; resourceName?: string }) {
+  if (!summary) return null;
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" className="h-auto w-full min-w-0 justify-between gap-2 bg-background/35 px-2.5 py-2 text-xs font-normal">
+          <span className="min-w-0 truncate text-muted-foreground">{t("入口节点 {0}/{1}", [summary.runningHostCount, summary.expectedHostCount])}</span>
+          <span className="inline-flex shrink-0 items-center gap-1">{t("节点详情")}<ChevronRight className="h-3.5 w-3.5" /></span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="flex max-h-[85svh] flex-col sm:max-w-xl">
+        <DialogHeader className="shrink-0 pr-8">
+          <DialogTitle>{t("节点详情")}</DialogTitle>
+          <DialogDescription className="break-words [overflow-wrap:anywhere]">
+            {resourceName && <span>{resourceName} · </span>}
+            {t("入口节点 {0}/{1}", [summary.runningHostCount, summary.expectedHostCount])}
+          </DialogDescription>
+        </DialogHeader>
+        <PortEntryRuntimeDetails summary={summary} />
+        <DialogFooter className="shrink-0">
+          <DialogClose asChild><Button variant="outline">{t("关闭")}</Button></DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

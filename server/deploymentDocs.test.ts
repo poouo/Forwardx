@@ -1,21 +1,22 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const read = (file: string) => readFileSync(file, "utf8");
-const pages = [
-  "README.md", "README.en.md", "docs/guide/index.md", "docs/guide/deploy-panel.md",
-  "docs/guide/deploy-docker.md", "docs/guide/deploy-local.md", "docs/guide/quick-start.md",
-  "docs/guide/first-setup.md", "docs/guide/agent.md", "docs/guide/agent-proxy-manager.md",
-  "docs/guide/agent-proxy-manager.en.md", "docs/guide/ssh-management.md",
-  "docs/guide/env-vars.md", "docs/guide/paths-logs.md", "docs/guide/upgrade-backup.md",
-  "docs/guide/account-recovery.md", "docs/guide/uninstall.md", "docs/guide/releases.md",
-];
+function markdownPages(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith(".")) return [];
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? markdownPages(path) : entry.name.endsWith(".md") ? [path] : [];
+  });
+}
+const pages = ["README.md", "README.en.md", ...markdownPages("docs")];
 
-test("deployment documentation and READMEs have resolvable local file links", () => {
+test("all source documentation and READMEs have resolvable local file and image links", () => {
   for (const file of pages) {
-    for (const match of read(file).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    const prose = read(file).replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "");
+    for (const match of prose.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
       const target = match[1].split("#")[0].split("?")[0];
       if (!target || /^[a-z]+:/i.test(target) || target.startsWith("/")) continue;
       const resolved = resolve(dirname(file), decodeURIComponent(target));
@@ -24,6 +25,21 @@ test("deployment documentation and READMEs have resolvable local file links", ()
       assert.ok(existsSync(resolved), `${file}: missing ${target}`);
     }
   }
+});
+
+test("account documentation has canonical payment and billing navigation", () => {
+  const navigation = read("docs/.vitepress/config.mts");
+  const index = read("docs/guide/index.md");
+  for (const page of ["payments", "billing"]) {
+    assert.ok(navigation.includes(`link: "/guide/${page}"`), page);
+    assert.ok(index.includes(`./${page}.md`), page);
+    assert.ok(read("docs/guide/users-billing.md").includes(`./${page}.md`), page);
+  }
+  const legacyEntry = read("docs/PAYMENT_CN.md");
+  assert.ok(legacyEntry.includes("./guide/payments.md"));
+  assert.ok(legacyEntry.split("\n").length < 15, "legacy payment entry should not duplicate the tutorial");
+  assert.ok(!existsSync("docs/guide/ui-review.md"));
+  for (const file of pages) assert.ok(!read(file).includes("ui-review.md"), file);
 });
 
 test("both READMEs document current deployment, proxy and recovery entry points", () => {

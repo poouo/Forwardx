@@ -1,6 +1,8 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +18,7 @@ import { PlanDetails } from "@/components/PlanDetails";
 import { trpc } from "@/lib/trpc";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import QRCode from "qrcode";
+import { useState } from "react";
 import { toast } from "@/lib/localizedToast";
 
 function money(cents?: number, currency = "CNY") {
@@ -113,7 +114,7 @@ export function StorePlanCard({
   const benefits = planBenefitItems(plan);
 
   return (
-    <div className="pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm transition-colors hover:border-primary/35">
+    <div className="pearl-hover-card pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm">
       <div className="h-1.5 bg-gradient-to-r from-primary/45 via-primary/20 to-emerald-500/25" />
 
       <div className="flex flex-1 flex-col gap-4 p-5">
@@ -209,46 +210,7 @@ export default function Store() {
     storageKey: STORE_TAB_STORAGE_KEY,
   });
 
-  // QR 扫码支付对话框（precreate / native 模式）
-  const [qrOrder, setQrOrder] = useState<{ outTradeNo: string; qrCode: string; subject: string } | null>(null);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const qrPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // 生成 QR 图片 DataURL
-  useEffect(() => {
-    if (!qrOrder?.qrCode) { setQrDataUrl(null); return; }
-    QRCode.toDataURL(qrOrder.qrCode, { width: 220, margin: 1, color: { dark: "#000", light: "#fff" } })
-      .then(setQrDataUrl)
-      .catch(() => setQrDataUrl(null));
-  }, [qrOrder?.qrCode]);
-
-  // 扫码等待期间轮询订单状态，完成后自动关闭对话框
-  const queryOrderUtils = utils;
-  useEffect(() => {
-    if (!qrOrder) {
-      if (qrPollingRef.current) clearInterval(qrPollingRef.current);
-      return;
-    }
-    const poll = async () => {
-      try {
-        const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: qrOrder.outTradeNo });
-        if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
-          setQrOrder(null);
-          toast.success(translateText("支付成功！"));
-          utils.plans.mySubscriptions.invalidate();
-          utils.billing.me.invalidate();
-          utils.billing.ledger.invalidate();
-        } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
-          setQrOrder(null);
-          toast.error(translateText("订单已失效，请重新下单"));
-        }
-      } catch {
-        // 轮询失败静默忽略，继续等待
-      }
-    };
-    qrPollingRef.current = setInterval(poll, 3000);
-    return () => { if (qrPollingRef.current) clearInterval(qrPollingRef.current); };
-  }, [qrOrder?.outTradeNo]);
+  const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
@@ -257,13 +219,9 @@ export default function Store() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
-      if (order?.qrCode) {
-        // 扫码支付（precreate / native）：在当前页渲染二维码，等待扫码
-        setQrOrder({ outTradeNo: order.outTradeNo, qrCode: order.qrCode, subject: order.subject || "" });
-      } else if (order?.payUrl) {
-        // 跳转支付（page / wap / redirect / stripe / h5）：新标签页打开
-        window.open(order.payUrl, "_blank", "noopener,noreferrer");
-      }
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
+      setCheckoutOrder(order || null);
     },
     onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
@@ -277,6 +235,8 @@ export default function Store() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("购买失败")),
   });
@@ -378,7 +338,7 @@ export default function Store() {
               ) : (
                 <AutoAnimateContainer className="standard-card-grid gap-4">
                   {(trafficBillingStore?.configs || []).map((config: any) => (
-                    <Card key={`${config.resourceType}-${config.resourceId}`} className="flex flex-col">
+                    <Card key={`${config.resourceType}-${config.resourceId}`} hoverable className="flex flex-col">
                       <CardHeader>
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -425,37 +385,7 @@ export default function Store() {
           </Tabs>
         )}
 
-        {/* 扫码支付对话框（precreate / native 模式） */}
-        <Dialog open={!!qrOrder} onOpenChange={(open) => !open && setQrOrder(null)}>
-          <DialogContent className="sm:max-w-sm">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <WalletCards className="h-5 w-5" />{translateText("扫码支付")}</DialogTitle>
-              <DialogDescription>
-                {qrOrder?.subject ? translateText("购买 {0}", [qrOrder.subject]) : translateText("请使用支付宝或微信扫码完成支付")}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex flex-col items-center gap-4 py-2">
-              {qrDataUrl ? (
-                <div className="rounded-lg border border-border/40 bg-white p-3 shadow-sm">
-                  <img src={qrDataUrl} alt={translateText("支付二维码")} width={220} height={220} />
-                </div>
-              ) : (
-                <div className="flex h-[220px] w-[220px] items-center justify-center rounded-lg border border-border/40">
-                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                </div>
-              )}
-              <p className="text-sm text-muted-foreground">{translateText("请使用支付宝 / 微信扫描二维码")}</p>
-              <div className="flex w-full items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
-                <span>{translateText("正在等待支付结果，付款后将自动跳转……")}</span>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setQrOrder(null)}>{translateText("取消")}</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <PaymentCheckoutDialog order={checkoutOrder} onClose={() => setCheckoutOrder(null)} />
 
         <Dialog open={!!selectedPlan} onOpenChange={(open) => !open && setSelectedPlan(null)}>
           <DialogContent className="sm:max-w-md">

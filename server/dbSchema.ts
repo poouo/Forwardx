@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type pg from "pg";
 import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { getDatabaseKind, getPool, getPostgresPool, getSqlite } from "./dbRuntime";
+import { normalizeSidebarMenuSettings } from "../shared/sidebarMenu";
 
 export type ColumnType = "id" | "text" | "longtext" | "varchar" | "int" | "bigint" | "bool" | "epoch";
 
@@ -281,6 +282,7 @@ const tables: TableDef[] = [
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficMeasureMode", "varchar", { length: 16, notNull: true, default: "both" }),
       c("trafficFailoverEnabled", "bool", { notNull: true, default: false }), c("trafficFailoverThresholdPercent", "int", { notNull: true, default: 100 }),
       c("trafficFailoverExcluded", "bool", { notNull: true, default: false }),
+      c("hostStatusNotifyEnabled", "bool", { notNull: true, default: true }),
       c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAlertThresholdPercent", "int", { notNull: true, default: 20 }),
       c("telegramRenewalReminderEnabled", "bool", { notNull: true, default: false }), c("renewalReminderDays", "int", { notNull: true, default: 3 }),
       c("trafficAutoReset", "bool", { notNull: true, default: false }), c("trafficResetDay", "int", { notNull: true, default: 1 }),
@@ -469,7 +471,7 @@ const tables: TableDef[] = [
   { name: "user_tunnel_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "tunnelId"]], indexes: [["tunnelId"]] },
   { name: "user_forward_group_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("forwardGroupId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "forwardGroupId"]], indexes: [["forwardGroupId"]] },
   { name: "system_settings", columns: [c("key", "varchar", { length: 191, notNull: true }), c("value", "longtext"), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["key"]] },
-  { name: "payment_orders", columns: [c("id", "id"), c("outTradeNo", "text", { notNull: true }), c("userId", "int", { notNull: true }), c("provider", "varchar", { length: 32, notNull: true }), c("paymentType", "varchar", { length: 32, notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "pending" }), c("subject", "text", { notNull: true }), c("amountCents", "bigint", { notNull: true }), c("currency", "varchar", { length: 16, notNull: true, default: "CNY" }), c("tradeNo", "text"), c("payUrl", "text"), c("qrCode", "text"), c("orderType", "varchar", { length: 32, notNull: true, default: "balance" }), c("planId", "int"), c("subscriptionId", "int"), c("discountCodeId", "int"), c("discountConsumed", "bool", { notNull: true, default: false }), c("discountAmountCents", "bigint", { notNull: true, default: 0 }), c("clientIp", "text"), c("rawNotify", "text"), c("expiresAt", "epoch"), c("paidAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["outTradeNo"]], indexes: [["userId", "createdAt"], ["status", "createdAt"]] },
+  { name: "payment_orders", columns: [c("id", "id"), c("outTradeNo", "text", { notNull: true }), c("userId", "int", { notNull: true }), c("provider", "varchar", { length: 32, notNull: true }), c("paymentType", "varchar", { length: 32, notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "pending" }), c("subject", "text", { notNull: true }), c("amountCents", "bigint", { notNull: true }), c("currency", "varchar", { length: 16, notNull: true, default: "CNY" }), c("tradeNo", "text"), c("payUrl", "text"), c("qrCode", "text"), c("orderType", "varchar", { length: 32, notNull: true, default: "balance" }), c("planId", "int"), c("subscriptionId", "int"), c("discountCodeId", "int"), c("discountConsumed", "bool", { notNull: true, default: false }), c("discountAmountCents", "bigint", { notNull: true, default: 0 }), c("clientIp", "text"), c("rawNotify", "text"), c("merchantIdentity", "text"), c("failureReason", "text"), c("lastPaymentCheckAt", "epoch"), c("expiresAt", "epoch"), c("paidAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["outTradeNo"]], indexes: [["userId", "createdAt"], ["status", "createdAt"], ["status", "lastPaymentCheckAt"]] },
   { name: "subscription_plans", columns: [c("id", "id"), c("name", "text", { notNull: true }), c("description", "text"), c("priceCents", "bigint", { notNull: true, default: 0 }), c("currency", "varchar", { length: 16, notNull: true, default: "CNY" }), c("durationDays", "int", { notNull: true, default: 30 }), c("portCount", "int", { notNull: true, default: 20 }), c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("rateLimitMbps", "int", { notNull: true, default: 0 }), c("maxRules", "int", { notNull: true, default: 20 }), c("maxConnections", "int", { notNull: true, default: 2000 }), c("maxIPs", "int", { notNull: true, default: 10 }), c("isActive", "bool", { notNull: true, default: true }), c("isStoreVisible", "bool", { notNull: true, default: true }), c("sortOrder", "int", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })] },
   { name: "subscription_plan_hosts", columns: [c("id", "id"), c("planId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["planId", "hostId"]] },
   { name: "subscription_plan_tunnels", columns: [c("id", "id"), c("planId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["planId", "tunnelId"]] },
@@ -593,6 +595,16 @@ function mysqlKey(table: string, prefix: string, cols: string[]) {
   return { name, expr };
 }
 
+function featureEnabledFromLegacySidebar(value: string | null | undefined, feature: "affiliates" | "tickets") {
+  try {
+    return String(normalizeSidebarMenuSettings(JSON.parse(value || "{}"))[feature]);
+  } catch {
+    return "false";
+  }
+}
+export const affiliateEnabledFromLegacySidebar = (value?: string | null) => featureEnabledFromLegacySidebar(value, "affiliates");
+export const supportTicketsEnabledFromLegacySidebar = (value?: string | null) => featureEnabledFromLegacySidebar(value, "tickets");
+
 async function ensureMysqlSchema(pool: Pool) {
   for (const table of tables) {
     const columns = table.columns.map((column) => columnSql("mysql", column)).filter(Boolean);
@@ -627,6 +639,16 @@ async function ensureMysqlSchema(pool: Pool) {
       [key, value],
     );
   }
+  // One-time separation of the business switch from sidebar visibility.
+  // Conflict handling preserves the independent switch on later startups.
+  const [sidebarRows] = await pool.execute<any[]>("SELECT value FROM system_settings WHERE `key` = ?", ["sidebarMenu"]);
+  for (const [key, value] of [
+    ["affiliateEnabled", affiliateEnabledFromLegacySidebar(sidebarRows[0]?.value)],
+    ["supportTicketsEnabled", supportTicketsEnabledFromLegacySidebar(sidebarRows[0]?.value)],
+  ]) await pool.execute(
+    "INSERT INTO system_settings (`key`, value, updatedAt) VALUES (?, ?, UNIX_TIMESTAMP()) ON DUPLICATE KEY UPDATE `key` = `key`",
+    [key, value],
+  );
   await backfillMysqlLastAutoTrafficReset(pool);
 }
 
@@ -660,6 +682,14 @@ async function ensurePostgresqlSchema(pool: pg.Pool) {
       [key, value],
     );
   }
+  const sidebarRows = await pool.query('SELECT value FROM system_settings WHERE "key" = $1', ["sidebarMenu"]);
+  for (const [key, value] of [
+    ["affiliateEnabled", affiliateEnabledFromLegacySidebar(sidebarRows.rows[0]?.value)],
+    ["supportTicketsEnabled", supportTicketsEnabledFromLegacySidebar(sidebarRows.rows[0]?.value)],
+  ]) await pool.query(
+    'INSERT INTO system_settings ("key", value, "updatedAt") VALUES ($1, $2, EXTRACT(EPOCH FROM NOW())::INT) ON CONFLICT ("key") DO NOTHING',
+    [key, value],
+  );
   await backfillPostgresqlLastAutoTrafficReset(pool);
 }
 
@@ -687,6 +717,12 @@ function ensureSqliteSchema(sqlite: Database.Database) {
       "INSERT OR IGNORE INTO system_settings (key, value, updatedAt) VALUES (?, ?, unixepoch())",
     ).run(key, value);
   }
+  const sidebarRow = sqlite.prepare("SELECT value FROM system_settings WHERE key = ?").get("sidebarMenu") as { value: string | null } | undefined;
+  const insertFeatureSetting = sqlite.prepare(
+    "INSERT OR IGNORE INTO system_settings (key, value, updatedAt) VALUES (?, ?, unixepoch())",
+  );
+  insertFeatureSetting.run("affiliateEnabled", affiliateEnabledFromLegacySidebar(sidebarRow?.value));
+  insertFeatureSetting.run("supportTicketsEnabled", supportTicketsEnabledFromLegacySidebar(sidebarRow?.value));
   backfillSqliteLastAutoTrafficReset(sqlite);
 }
 

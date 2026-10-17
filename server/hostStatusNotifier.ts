@@ -94,9 +94,13 @@ async function telegramHostStatusEnabled() {
 
 async function sendHostStatusTelegram(host: any, status: HostStatus) {
   if (!(await telegramHostStatusEnabled())) return;
+  // Read the saved preference at send time: delayed offline work may hold a
+  // snapshot from before the administrator disabled notifications.
+  const currentHost = await db.getHostById(Number(host?.id));
+  if (!currentHost || currentHost.hostStatusNotifyEnabled === false) return;
   const recipients = await getNotificationAdminRecipients();
   if (recipients.length === 0) return;
-  const text = hostStatusMessage(host, status);
+  const text = hostStatusMessage(currentHost, status);
   let sent = 0;
   let failed = 0;
   for (const user of recipients as any[]) {

@@ -40,6 +40,17 @@ export const usersRouter = router({
     options: adminProcedure.query(async () => {
       return db.getUserOptions();
     }),
+    optionsPage: adminProcedure
+      .input(z.object({
+        search: z.string().trim().max(128).default(""),
+        cursor: z.number().int().positive().optional(),
+        limit: z.number().int().min(1).max(50).default(20),
+        excludeUserId: z.number().int().positive().optional(),
+      }))
+      .query(({ input }) => db.getUserOptionsPage(input)),
+    optionsByIds: adminProcedure
+      .input(z.object({ ids: z.array(z.number().int().positive()).max(100) }))
+      .query(({ input }) => db.getUserOptionsByIds(input.ids)),
     listPage: adminProcedure
       .input(z.object({
         page: z.number().int().positive().default(1),

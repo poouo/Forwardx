@@ -1,8 +1,9 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import UserSelect from "@/components/UserSelect";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
-import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { PlanManagementSettings } from "@/components/PlanManagementSettings";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,22 +12,21 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import { OptimisticSwitch, Switch } from "@/components/ui/switch";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
-import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
 import { PlanDetails } from "@/components/PlanDetails";
+import { PlanDescriptionEditor } from "@/components/PlanDescriptionEditor";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
-import { planDescription } from "@/lib/planDisplay";
+import { planDescription, planDescriptionTemplate } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
-import { CheckCircle2, Coins, LayoutGrid, List, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
+import { CheckCircle2, Coins, LayoutGrid, List, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
@@ -239,15 +239,15 @@ function PlanCard({
   onToggleStoreVisible: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+    <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/40 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="break-words text-sm font-medium">{plan.name}</p>
           {!planDescription(plan) && <p className="mt-1 break-words text-xs text-muted-foreground">{translateText("无描述")}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={onEdit}>{translateText("编辑")}</Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={onEdit} title={translateText("编辑套餐")} aria-label={translateText("编辑套餐")}><Pencil className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete} title={translateText("删除")} aria-label={translateText("删除")}>
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
@@ -631,6 +631,7 @@ export default function Plans() {
   const [editing, setEditing] = useState(false);
   const [planDialogTab, setPlanDialogTab] = useState<PlanDialogTab>("settings");
   const [assignOpen, setAssignOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
   const [assignDurationDays, setAssignDurationDays] = useState("30");
@@ -651,15 +652,8 @@ export default function Plans() {
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
   });
-  const planSummaryQuery = trpc.plans.summary.useQuery(undefined, {
-    enabled: activeTab === "plans",
-    staleTime: 10_000,
-    refetchOnWindowFocus: false,
-    placeholderData: (previousData) => previousData,
-  });
   const plans = (planPageQuery.data?.items || []) as any[];
   const isLoading = planPageQuery.isLoading;
-  const planSummary = planSummaryQuery.data;
   const planPagination = useServerPagination(
     plans,
     Number(planPageQuery.data?.totalItems || 0),
@@ -667,7 +661,7 @@ export default function Plans() {
     { pageSize: 12, isReady: !isLoading && !!planPageQuery.data },
   );
 
-  const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
+  const storeStatusQuery = trpc.plans.storeStatus.useQuery(undefined, { enabled: settingsOpen });
   const needsPlanResourceOptions = editing && planDialogTab === "resources";
   const { data: hosts = [], isLoading: hostsLoading } = trpc.hosts.options.useQuery(undefined, {
     enabled: needsPlanResourceOptions,
@@ -681,20 +675,11 @@ export default function Plans() {
     enabled: needsPlanResourceOptions,
     staleTime: 30_000,
   });
-  const { data: users = [] } = trpc.users.options.useQuery(undefined, {
-    enabled: assignOpen,
-    staleTime: 30_000,
-  });
   const { data: planOptions = [] } = trpc.plans.options.useQuery(undefined, {
     enabled: assignOpen,
     staleTime: 30_000,
   });
-  const { data: trafficBillingData, isLoading: trafficBillingLoading } = trpc.trafficBilling.configs.useQuery(undefined, {
-    enabled: activeTab === "billing",
-  });
-  const { data: trafficBillingSummary, isLoading: trafficBillingSummaryLoading } = trpc.trafficBilling.status.useQuery(undefined, {
-    enabled: activeTab === "billing",
-  });
+  const trafficBillingQuery = trpc.trafficBilling.configs.useQuery(undefined, { enabled: settingsOpen });
 
   const createPlan = trpc.plans.create.useMutation({
     onSuccess: () => {
@@ -826,12 +811,6 @@ export default function Plans() {
     onError: (error) => toast.error(error.message || translateText("分配失败")),
   });
 
-  const activePlans = Number(planSummary?.activeItems ?? planPageQuery.data?.activeItems ?? 0);
-  const storeEnabled = !!storeStatus?.enabled;
-  const trafficBillingEnabled = !!trafficBillingData?.enabled;
-  const trafficBillingConfigs = trafficBillingData?.configs || [];
-  const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
-  const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
   const forwardGroupMap = useMemo<Map<number, any>>(() => {
     const map = new Map<number, any>();
     for (const plan of plans) {
@@ -843,20 +822,6 @@ export default function Plans() {
     for (const group of forwardGroups) map.set(Number(group.id), group);
     return map;
   }, [forwardGroups, plans]);
-  const planResourceSummary = planSummary?.resources || {
-    ports: 0,
-    tunnels: 0,
-    chains: 0,
-    groups: 0,
-    legacyHosts: 0,
-    otherForwardResources: 0,
-  };
-  const planResourceTotal = planResourceSummary.ports
-    + planResourceSummary.tunnels
-    + planResourceSummary.chains
-    + planResourceSummary.groups
-    + planResourceSummary.legacyHosts
-    + planResourceSummary.otherForwardResources;
   const selectedTunnelIds = useMemo(() => new Set(form.tunnelIds.map(Number)), [form.tunnelIds]);
   const selectedForwardGroupIds = useMemo(() => new Set(form.forwardGroupIds.map(Number)), [form.forwardGroupIds]);
   const portForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isPortForwardGroup(group)), [forwardGroups]);
@@ -923,7 +888,7 @@ export default function Plans() {
   );
 
   const openPlanCreate = () => {
-    setForm(emptyForm);
+    setForm({ ...emptyForm, description: planDescriptionTemplate() });
     setPlanDialogTab("settings");
     setEditing(true);
   };
@@ -1027,126 +992,20 @@ export default function Plans() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{translateText("套餐管理")}</h1>
+        <div className="pearl-page-header flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("套餐管理")}</h1>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="responsive-actions flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+            <Button variant="outline" onClick={() => setSettingsOpen(true)}>
+              <Settings2 className="mr-2 h-4 w-4" />{translateText("设置")}
+            </Button>
             <Button variant="outline" onClick={() => setAssignOpen(true)}>
               <Settings2 className="mr-2 h-4 w-4" />{translateText(" 手动分配")}</Button>
             <Button onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" /> {activeTab === "billing" ? translateText("新增计费资源") : translateText("新增套餐")}
             </Button>
           </div>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("按量计费")}</CardDescription>
-              <CardTitle className="flex items-center justify-between gap-3">
-                <span>{trafficBillingEnabled ? translateText("已开启") : translateText("已关闭")}</span>
-                {trafficBillingLoading ? (
-                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
-                ) : (
-                  <OptimisticSwitch
-                    checked={trafficBillingEnabled}
-                    onCheckedChangeAsync={(enabled) => setTrafficBillingEnabled.mutateAsync({ enabled })}
-                  />
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">{translateText("公开资源可在余额充足时直接使用。")}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("商店状态")}</CardDescription>
-              <CardTitle className="flex items-center justify-between">
-                <span>{storeEnabled ? translateText("已开启") : translateText("已关闭")}</span>
-                <OptimisticSwitch
-                  checked={storeEnabled}
-                  disabled={storeStatusLoading}
-                  onCheckedChangeAsync={(enabled) => setStoreEnabled.mutateAsync({ enabled })}
-                />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">{translateText("开启后用户可自助购买。")}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("套餐数量")}</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue value={Number(planSummary?.totalItems || 0)} loading={isLoading} cacheKey="plans.count" fallbackValue={0} />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              <AnimatedStatValue
-                value={translateText("{0} 个已启用", [activePlans])}
-                loading={isLoading}
-                cacheKey="plans.activeCount"
-                fallbackValue={translateText("0 个已启用")}
-              />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("套餐资源")}</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue
-                  value={planResourceTotal}
-                  loading={isLoading}
-                  cacheKey="plans.resourceTotal"
-                  fallbackValue={0}
-                />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              {planResourceSummary.ports}{translateText(" 个端口转发 · ")}{planResourceSummary.tunnels}{translateText(" 条隧道 · ")}{planResourceSummary.chains}{translateText(" 条转发链 · ")}{planResourceSummary.groups}{translateText(" 个转发组")}{planResourceSummary.legacyHosts > 0 ? translateText(" · {0} 个历史主机", [planResourceSummary.legacyHosts]) : ""}
-              {planResourceSummary.otherForwardResources > 0 ? translateText(" · {0} 个兼容资源", [planResourceSummary.otherForwardResources]) : ""}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("累计扣费")}</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue
-                  value={money(trafficBillingCharged)}
-                  loading={trafficBillingSummaryLoading}
-                  cacheKey="trafficBilling.totalCharged"
-                  fallbackValue={money(0)}
-                />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">{translateText("历史扣费合计。")}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("已计费流量")}</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue
-                  value={`${trafficBillingGb} GB`}
-                  loading={trafficBillingSummaryLoading}
-                  cacheKey="trafficBilling.totalGb"
-                  fallbackValue="0 GB"
-                />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">{translateText("扣费记录累计。")}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>{translateText("计费资源")}</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue
-                  value={trafficBillingConfigs.length}
-                  loading={trafficBillingLoading}
-                  cacheKey="trafficBilling.configsCount"
-                  fallbackValue={0}
-                />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">{translateText("已配置资源。")}</CardContent>
-          </Card>
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PlanManageTab)} className="space-y-4">
@@ -1252,8 +1111,8 @@ export default function Plans() {
                                   />
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  <Button variant="ghost" size="sm" onClick={() => openPlanEdit(plan)}>{translateText("编辑")}</Button>
-                                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => openPlanEdit(plan)} title={translateText("编辑套餐")} aria-label={translateText("编辑套餐")}><Pencil className="h-4 w-4" /></Button>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })} title={translateText("删除")} aria-label={translateText("删除")}>
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
                                 </TableCell>
@@ -1284,6 +1143,39 @@ export default function Plans() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{translateText("套餐管理设置")}</DialogTitle>
+            <DialogDescription>{translateText("管理商店和按量计费开关，修改后立即生效。")}</DialogDescription>
+          </DialogHeader>
+          <PlanManagementSettings
+            store={{
+              enabled: !!storeStatusQuery.data?.enabled,
+              unavailable: !storeStatusQuery.data || storeStatusQuery.isError || setStoreEnabled.isPending,
+              onChange: (enabled) => setStoreEnabled.mutateAsync({ enabled }),
+            }}
+            trafficBilling={{
+              enabled: !!trafficBillingQuery.data?.enabled,
+              unavailable: !trafficBillingQuery.data || trafficBillingQuery.isError || setTrafficBillingEnabled.isPending,
+              onChange: (enabled) => setTrafficBillingEnabled.mutateAsync({ enabled }),
+            }}
+          />
+          {(storeStatusQuery.isError || trafficBillingQuery.isError) && (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-sm text-destructive">
+              <span>{translateText("设置加载失败，请重试")}</span>
+              <Button variant="outline" size="sm" onClick={() => {
+                void storeStatusQuery.refetch();
+                void trafficBillingQuery.refetch();
+              }}>{translateText("重试")}</Button>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSettingsOpen(false)}>{translateText("关闭")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
@@ -1397,11 +1289,7 @@ export default function Plans() {
                   )}
                 </div>
 
-                <div className="space-y-2">
-                  <Label>{translateText("说明")}</Label>
-                  <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={translateText("展示给用户看的套餐说明")} />
-                  <p className="text-xs text-muted-foreground">{translateText("留空展示默认套餐信息；填写后用说明替换展示内容，不改变实际套餐权益和价格。")}</p>
-                </div>
+                <PlanDescriptionEditor value={form.description} onChange={(description) => setForm({ ...form, description })} />
               </TabsContent>
 
               <TabsContent value="resources" className="mt-3 space-y-3">
@@ -1649,13 +1537,8 @@ export default function Plans() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>{translateText("用户")}</Label>
-              <Select value={assignUserId} onValueChange={setAssignUserId}>
-                <SelectTrigger><SelectValue placeholder={translateText("选择用户")} /></SelectTrigger>
-                <SelectContent>
-                  {users.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.name || user.username}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="assign-plan-user">{translateText("用户")}</Label>
+              <UserSelect id="assign-plan-user" value={assignUserId} onValueChange={setAssignUserId} />
             </div>
             <div className="space-y-2">
               <Label>{translateText("套餐")}</Label>

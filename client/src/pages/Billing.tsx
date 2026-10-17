@@ -1,6 +1,7 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import UserSelect from "@/components/UserSelect";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -91,7 +92,7 @@ function BillingStatCard({
   fallbackValue?: string | number;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
@@ -141,7 +142,7 @@ function BillingToggleCard({
   loading?: boolean;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
@@ -227,6 +228,16 @@ function MobileInfoRow({
   );
 }
 
+function PaymentLedgerDetails({ item }: { item: any }) {
+  if (item.kind !== "payment") return null;
+  const providers: Record<string, string> = { easypay: "易支付", alipay: "支付宝官方", wxpay: "微信官方", stripe: "Stripe", gmpay: "GM Pay" };
+  const methods: Record<string, string> = { alipay: "支付宝", wxpay: "微信", stripe: "Stripe", usdt: "USDT" };
+  return <div className="mt-1 space-y-1 text-xs">
+    <p className="text-muted-foreground">{translateText(providers[item.provider] || item.provider || "-")} · {translateText(methods[item.paymentType] || item.paymentType || "-")}</p>
+    {item.failureReason && <p className="max-w-80 break-words text-destructive">{translateText(item.failureReason)}</p>}
+  </div>;
+}
+
 export default function Billing() {
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
@@ -237,6 +248,8 @@ export default function Billing() {
   });
   const [ledgerUserId, setLedgerUserId] = useState("all");
   const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
+  const ledgerPageRequest = usePersistentPageRequest("forwardx.billing.ledger.page");
+  const transactionPageRequest = usePersistentPageRequest("forwardx.billing.transactions.page");
   const subscriptionPageRequest = usePersistentPageRequest("forwardx.billing.subscriptions.page");
   const redemptionPageRequest = usePersistentPageRequest("forwardx.billing.redemption.page");
   const discountPageRequest = usePersistentPageRequest("forwardx.billing.discount.page");
@@ -245,12 +258,6 @@ export default function Billing() {
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
-  });
-  const { data: users = [], isLoading: usersLoading } = trpc.users.options.useQuery(undefined, {
-    enabled: activeTab === "ledger",
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-    placeholderData: (previousData: any) => previousData,
   });
   const { data: plans = [] } = trpc.plans.options.useQuery(undefined, {
     enabled: activeTab === "redeem" || activeTab === "discount",
@@ -268,13 +275,16 @@ export default function Billing() {
     placeholderData: (previousData) => previousData,
   });
   const subscriptions = (subscriptionPageQuery.data?.items || []) as any[];
-  const subscriptionsLoading = subscriptionPageQuery.isLoading;
-  const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery(
-    { limit: 100 },
+  const subscriptionsLoading = subscriptionPageQuery.isLoading || subscriptionPageQuery.isPlaceholderData;
+  const transactionPageQuery = trpc.billing.listTransactionsPage.useQuery(
+    { page: transactionPageRequest.page, pageSize: 20 },
     { enabled: activeTab === "balance", staleTime: 10_000, refetchOnWindowFocus: false, placeholderData: (previousData) => previousData },
   );
-  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
-    limit: 200,
+  const transactions = transactionPageQuery.data?.items || [];
+  const transactionsLoading = transactionPageQuery.isLoading || transactionPageQuery.isPlaceholderData;
+  const ledgerPageQuery = trpc.billing.ledgerPage.useQuery({
+    page: ledgerPageRequest.page,
+    pageSize: 20,
     userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
   }, {
     enabled: activeTab === "ledger",
@@ -282,6 +292,8 @@ export default function Billing() {
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
   });
+  const ledger = ledgerPageQuery.data?.items || [];
+  const ledgerLoading = ledgerPageQuery.isLoading || ledgerPageQuery.isPlaceholderData;
   const redemptionPageQuery = trpc.billing.listRedemptionCodesPage.useQuery({
     page: redemptionPageRequest.page,
     pageSize: 50,
@@ -293,7 +305,7 @@ export default function Billing() {
     placeholderData: (previousData) => previousData,
   });
   const redemptionCodes = (redemptionPageQuery.data?.items || []) as any[];
-  const redemptionCodesLoading = redemptionPageQuery.isLoading;
+  const redemptionCodesLoading = redemptionPageQuery.isLoading || redemptionPageQuery.isPlaceholderData;
   const discountPageQuery = trpc.billing.listDiscountCodesPage.useQuery({
     page: discountPageRequest.page,
     pageSize: 50,
@@ -304,9 +316,13 @@ export default function Billing() {
     placeholderData: (previousData) => previousData,
   });
   const discountCodes = (discountPageQuery.data?.items || []) as any[];
-  const discountCodesLoading = discountPageQuery.isLoading;
+  const discountCodesLoading = discountPageQuery.isLoading || discountPageQuery.isPlaceholderData;
   const { data: featureStatus, isLoading: featureStatusLoading } = trpc.billing.featureStatus.useQuery();
 
+  const ledgerPagination = useServerPagination(ledger, Number(ledgerPageQuery.data?.totalItems || 0), ledgerPageRequest,
+    { pageSize: 20, isReady: !ledgerLoading && !!ledgerPageQuery.data });
+  const transactionPagination = useServerPagination(transactions, Number(transactionPageQuery.data?.totalItems || 0), transactionPageRequest,
+    { pageSize: 20, isReady: !transactionsLoading && !!transactionPageQuery.data });
   const subscriptionPagination = useServerPagination(
     subscriptions,
     Number(subscriptionPageQuery.data?.totalItems || 0),
@@ -363,6 +379,7 @@ export default function Billing() {
     onSuccess: () => {
       toast.success(translateText("已取消的订阅记录已删除"));
       utils.billing.ledger.invalidate();
+      utils.billing.ledgerPage.invalidate();
       utils.plans.subscriptionsPage.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("删除订阅记录失败")),
@@ -634,26 +651,15 @@ export default function Billing() {
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as BillingTab)}>
           <SlidingTabsList items={BILLING_TAB_ITEMS} activeValue={activeTab} onValueChange={setActiveTab} ariaLabel={translateText("余额与营销")} minItemWidthRem={6.75} />
 
-          <TabsContent value="ledger" className="mt-4">
+          <TabsContent value="ledger" className="mt-4 space-y-4">
             <Card>
               <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" />{translateText(" 账单流水")}</CardTitle>
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
-                  <Select value={ledgerUserId} onValueChange={setLedgerUserId}>
-                    <SelectTrigger className="w-full sm:w-56">
-                      <SelectValue placeholder={translateText("筛选用户")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">{translateText("全部用户")}</SelectItem>
-                      {users.map((user: any) => (
-                        <SelectItem key={user.id} value={String(user.id)}>
-                          {user.name || user.username}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <UserSelect value={ledgerUserId} onValueChange={value => { setLedgerUserId(value); ledgerPageRequest.setPage(1); }} className="w-full sm:w-56"
+                    specialOptions={[{ value: "all", label: translateText("全部用户") }]} />
                 </div>
               </CardHeader>
               <CardContent>
@@ -675,6 +681,7 @@ export default function Billing() {
                             <div className="min-w-0">
                               <p className="break-words text-sm font-medium">{item.title}</p>
                               <p className="mt-0.5 break-words text-xs text-muted-foreground">{item.description || "-"}</p>
+                              <PaymentLedgerDetails item={item} />
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
@@ -704,7 +711,9 @@ export default function Billing() {
                             <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge>
                           </MobileInfoRow>
                           <MobileInfoRow label={translateText("关联")} valueClassName="font-mono text-xs text-muted-foreground">{relatedInfo}</MobileInfoRow>
+                          {item.kind === "payment" && item.tradeNo && <MobileInfoRow label={translateText("网关流水")} valueClassName="font-mono text-xs text-muted-foreground">{item.tradeNo}</MobileInfoRow>}
                           <MobileInfoRow label={translateText("时间")}>{dateText(item.createdAt)}</MobileInfoRow>
+                          {item.paidAt && <MobileInfoRow label={translateText("支付时间")}>{dateText(item.paidAt)}</MobileInfoRow>}
                         </div>
                       </div>
                     );
@@ -741,6 +750,7 @@ export default function Billing() {
                               <div className="min-w-0">
                                 <p className="truncate text-sm font-medium">{item.title}</p>
                                 <p className="truncate text-xs text-muted-foreground">{item.description || "-"}</p>
+                                <PaymentLedgerDetails item={item} />
                               </div>
                             </div>
                           </TableCell>
@@ -749,8 +759,14 @@ export default function Billing() {
                             {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
                           </TableCell>
                           <TableCell><Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge></TableCell>
-                          <TableCell className="font-mono text-xs text-muted-foreground">{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</TableCell>
-                          <TableCell>{dateText(item.createdAt)}</TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            <p>{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</p>
+                            {item.kind === "payment" && item.tradeNo && <p className="mt-1">{translateText("网关流水")}：{item.tradeNo}</p>}
+                          </TableCell>
+                          <TableCell>
+                            <p>{dateText(item.createdAt)}</p>
+                            {item.paidAt && <p className="mt-1 text-xs text-muted-foreground">{translateText("支付时间")}：{dateText(item.paidAt)}</p>}
+                          </TableCell>
                           <TableCell>
                             {item.kind === "subscription" && item.status === "cancelled" && (
                               <Button
@@ -782,6 +798,7 @@ export default function Billing() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={ledgerPagination} itemName={translateText("条记录")} />
           </TabsContent>
 
           <TabsContent value="subscriptions" className="mt-4">
@@ -850,7 +867,7 @@ export default function Billing() {
             <PersistentPagination pagination={subscriptionPagination} itemName={translateText("条订阅")} />
           </TabsContent>
 
-          <TabsContent value="balance" className="mt-4">
+          <TabsContent value="balance" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" />{translateText(" 余额流水")}</CardTitle>
@@ -902,6 +919,7 @@ export default function Billing() {
                 )}
               </CardContent>
             </Card>
+            <PersistentPagination pagination={transactionPagination} itemName={translateText("条记录")} />
           </TabsContent>
 
           <TabsContent value="redeem" className="mt-4 space-y-4">

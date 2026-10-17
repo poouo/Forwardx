@@ -8,6 +8,7 @@ import {
   Wallet,
   Percent,
   Clock,
+  Settings2,
 } from "lucide-react";
 import QRCode from "qrcode";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -100,25 +101,35 @@ function Pager({
     </div>
   );
 }
+const AFFILIATE_STAT_TONES = {
+  emerald: "bg-gradient-to-br from-emerald-500 to-emerald-600",
+  amber: "bg-gradient-to-br from-amber-500 to-amber-600",
+  sky: "bg-gradient-to-br from-sky-500 to-sky-600",
+  violet: "bg-gradient-to-br from-violet-500 to-violet-600",
+} as const;
+
 export function AffiliateStats({
   items,
 }: {
-  items: { label: string; value: string; help: string; icon: typeof Wallet }[];
+  items: { label: string; value: string; help: string; icon: typeof Wallet; tone?: keyof typeof AFFILIATE_STAT_TONES }[];
 }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {items.map(({ label, value, help, icon: Icon }) => (
-        <Card key={label}>
-          <CardHeader className="flex-row items-start justify-between space-y-0">
-            <div className="min-w-0">
+      {items.map(({ label, value, help, icon: Icon, tone = "emerald" }) => (
+        <Card key={label} hoverable className="relative overflow-hidden border-border/40 bg-card/60">
+          <div aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-[0.04] ${AFFILIATE_STAT_TONES[tone]}`} />
+          <CardHeader className="relative flex-row items-start justify-between gap-3 space-y-0">
+            <div className="min-w-0 flex-1">
               <CardDescription>{t(label)}</CardDescription>
               <div className="mt-2 break-words text-2xl font-semibold tabular-nums">
                 {value}
               </div>
             </div>
-            <Icon className="h-6 w-6 shrink-0 text-muted-foreground/60" />
+            <div aria-hidden="true" className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm ${AFFILIATE_STAT_TONES[tone]}`}>
+              <Icon className="h-5 w-5 text-white" />
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="relative">
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t(help)}
             </p>
@@ -574,6 +585,7 @@ function UserAffiliates() {
             value: money(data.availableCents),
             help: "佣金可申请提现或转入账户余额，负数表示冲正欠款。",
             icon: Wallet,
+            tone: "emerald",
           },
           {
             label: "返佣比例",
@@ -582,18 +594,21 @@ function UserAffiliates() {
               ? "仅受邀用户首笔在线支付的套餐订单返佣。"
               : "受邀用户在线支付的套餐订单持续返佣。",
             icon: Percent,
+            tone: "violet",
           },
           {
             label: "邀请人数",
             value: String(data.invitedCount),
             help: "通过邀请码成功注册的用户总数。",
             icon: Users,
+            tone: "sky",
           },
           {
             label: "待确认佣金",
             value: money(data.pendingCents),
             help: "确认期结束后自动转入可用佣金。",
             icon: Clock,
+            tone: "amber",
           },
         ]}
       />
@@ -838,7 +853,10 @@ function UserAffiliates() {
     </div>
   );
 }
-function AdminAffiliates() {
+function AdminAffiliates({ settingsOpen, onSettingsOpenChange }: {
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
+}) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -859,17 +877,27 @@ function AdminAffiliates() {
     ...AFFILIATE_DEFAULTS,
   });
   const [dirty, setDirty] = useState(false);
+  const [enabled, setEnabled] = useState(false);
   useEffect(() => {
-    if (data?.config && !dirty) setConfig(data.config);
-  }, [data?.config, dirty]);
+    if (data && (!settingsOpen || !dirty)) {
+      setConfig(data.config);
+      setEnabled(data.enabled);
+    }
+    if (!settingsOpen) setDirty(false);
+  }, [data, dirty, settingsOpen]);
   const [edit, setEdit] = useState<{
     userId: number;
     blocked: boolean;
     rate: string;
   } | null>(null);
   const save = trpc.affiliates.saveConfig.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, saved) => {
+      const { enabled: savedEnabled, ...savedConfig } = saved;
+      utils.affiliates.adminOverview.setData({ page, search: debounced }, (old) =>
+        old ? { ...old, config: savedConfig, enabled: savedEnabled } : old,
+      );
       setDirty(false);
+      onSettingsOpenChange(false);
       void utils.affiliates.invalidate();
       toast.success(t("已保存"));
     },
@@ -910,8 +938,8 @@ function AdminAffiliates() {
       <p className="rounded-md border bg-muted/25 p-4 text-sm text-muted-foreground">
         {t(
           data?.enabled
-            ? "推广返佣已开启。开关位于系统设置的侧边栏入口设置。"
-            : "推广返佣默认关闭，请在系统设置的侧边栏入口设置中开启。关闭后仍可处理历史佣金。",
+            ? "推广返佣已开启，可在右上角设置中调整。"
+            : "推广返佣默认关闭，可在右上角设置中开启。关闭后仍可处理历史佣金。",
         )}
       </p>
       <AffiliateStats
@@ -921,119 +949,139 @@ function AdminAffiliates() {
             value: money(data?.totals?.confirmedCents),
             help: "不含已取消的返佣。",
             icon: Wallet,
+            tone: "emerald",
           },
           {
             label: "待确认佣金",
             value: money(data?.totals?.pendingCents),
             help: "确认期结束后自动转入可用佣金。",
             icon: Clock,
+            tone: "amber",
           },
           {
             label: "邀请人数",
             value: String(data?.totals?.totalInvites || 0),
             help: "通过邀请码成功注册的用户总数。",
             icon: Users,
+            tone: "sky",
           },
           {
             label: "待审核提现",
             value: money(data?.totals?.pendingWithdrawals),
             help: "申请金额已从可用佣金扣留。",
             icon: Wallet,
+            tone: "violet",
           },
         ]}
       />
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("返佣设置")}</CardTitle>
-          <CardDescription>
-            {t(
-              "仅按 CNY 在线支付的套餐订单实付金额计佣；充值、余额消费、赠送及测试订单不计佣。设置调整不影响已生成佣金。",
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="affiliate-rate">{t("默认返佣比例（%）")}</Label>
-              <Input
-                id="affiliate-rate"
-                type="number"
-                min={0}
-                max={100}
-                step={0.01}
-                value={config.rateBps / 100}
-                onChange={(e) =>
-                  change("rateBps", Math.round(Number(e.target.value) * 100))
-                }
+      <Dialog open={settingsOpen} onOpenChange={(open) => {
+        if (!save.isPending) onSettingsOpenChange(open);
+      }}>
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{t("返佣设置")}</DialogTitle>
+            <DialogDescription>
+              {t(
+                "仅按 CNY 在线支付的套餐订单实付金额计佣；充值、余额消费、赠送及测试订单不计佣。设置调整不影响已生成佣金。",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <fieldset disabled={!data || save.isPending} className="min-w-0 space-y-4">
+            <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/25 p-4">
+              <div className="space-y-1">
+                <Label htmlFor="affiliate-enabled">{t("启用推广返佣")}</Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("控制新邀请和新订单返佣，关闭后仍可处理历史佣金。菜单显示在系统设置中单独控制。")}
+                </p>
+              </div>
+              <Switch id="affiliate-enabled" className="shrink-0" checked={enabled} onCheckedChange={(value) => {
+                setEnabled(value);
+                setDirty(true);
+              }} />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="affiliate-rate">{t("默认返佣比例（%）")}</Label>
+                <Input
+                  id="affiliate-rate"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.01}
+                  value={config.rateBps / 100}
+                  onChange={(e) =>
+                    change("rateBps", Math.round(Number(e.target.value) * 100))
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="affiliate-days">{t("确认期（天）")}</Label>
+                <Input
+                  id="affiliate-days"
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={config.confirmationDays}
+                  onChange={(e) =>
+                    change("confirmationDays", Number(e.target.value))
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="affiliate-minimum">
+                  {t("最低提现金额（元）")}
+                </Label>
+                <Input
+                  id="affiliate-minimum"
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={config.minimumWithdrawalCents / 100}
+                  onChange={(e) =>
+                    change(
+                      "minimumWithdrawalCents",
+                      Math.round(Number(e.target.value) * 100),
+                    )
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="affiliate-maxcodes">{t("每人邀请码上限")}</Label>
+                <Input
+                  id="affiliate-maxcodes"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={config.maxCodes}
+                  onChange={(e) => change("maxCodes", Number(e.target.value))}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="affiliate-first">{t("仅首单返佣")}</Label>
+              <Switch
+                id="affiliate-first"
+                checked={config.firstOrderOnly}
+                onCheckedChange={(v) => change("firstOrderOnly", v)}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="affiliate-days">{t("确认期（天）")}</Label>
-              <Input
-                id="affiliate-days"
-                type="number"
-                min={0}
-                max={365}
-                value={config.confirmationDays}
-                onChange={(e) =>
-                  change("confirmationDays", Number(e.target.value))
-                }
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="affiliate-transfer">{t("允许佣金转入余额")}</Label>
+              <Switch
+                id="affiliate-transfer"
+                checked={config.allowBalanceTransfer}
+                onCheckedChange={(v) => change("allowBalanceTransfer", v)}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="affiliate-minimum">
-                {t("最低提现金额（元）")}
-              </Label>
-              <Input
-                id="affiliate-minimum"
-                type="number"
-                min={0.01}
-                step={0.01}
-                value={config.minimumWithdrawalCents / 100}
-                onChange={(e) =>
-                  change(
-                    "minimumWithdrawalCents",
-                    Math.round(Number(e.target.value) * 100),
-                  )
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="affiliate-maxcodes">{t("每人邀请码上限")}</Label>
-              <Input
-                id="affiliate-maxcodes"
-                type="number"
-                min={1}
-                max={50}
-                value={config.maxCodes}
-                onChange={(e) => change("maxCodes", Number(e.target.value))}
-              />
-            </div>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="affiliate-first">{t("仅首单返佣")}</Label>
-            <Switch
-              id="affiliate-first"
-              checked={config.firstOrderOnly}
-              onCheckedChange={(v) => change("firstOrderOnly", v)}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="affiliate-transfer">{t("允许佣金转入余额")}</Label>
-            <Switch
-              id="affiliate-transfer"
-              checked={config.allowBalanceTransfer}
-              onCheckedChange={(v) => change("allowBalanceTransfer", v)}
-            />
-          </div>
-          <Button
-            disabled={!dirty || !valid || save.isPending}
-            onClick={() => save.mutate(config)}
-          >
-            {t("保存设置")}
-          </Button>
-        </CardContent>
-      </Card>
+          </fieldset>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" disabled={save.isPending} onClick={() => onSettingsOpenChange(false)}>{t("取消")}</Button>
+            <Button disabled={!data || !dirty || !valid || save.isPending} onClick={() => save.mutate({ ...config, enabled })}>
+              {t(save.isPending ? "保存中..." : "保存设置")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Card>
         <CardHeader>
           <CardTitle>{t("推广用户")}</CardTitle>
@@ -1167,24 +1215,32 @@ function AdminAffiliates() {
 }
 export default function AffiliatesPage({ admin = false }: { admin?: boolean }) {
   const { user } = useAuth();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <DashboardLayout>
       <div className="mx-auto w-full min-w-0 max-w-7xl space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {t(admin ? "推广管理" : "推广返佣")}
-          </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {t(
-              admin
-                ? "管理邀请关系、返佣结算和提现审核。"
-                : "邀请好友使用 ForwardX，获得套餐订单返佣。",
-            )}
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t(admin ? "推广管理" : "推广返佣")}
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {t(
+                admin
+                  ? "管理邀请关系、返佣结算和提现审核。"
+                  : "邀请好友使用 ForwardX，获得套餐订单返佣。",
+              )}
+            </p>
+          </div>
+          {admin && user?.role === "admin" && (
+            <Button variant="outline" className="shrink-0" onClick={() => setSettingsOpen(true)}>
+              <Settings2 className="mr-2 h-4 w-4" />{t("设置")}
+            </Button>
+          )}
         </div>
         {user &&
           (admin && user.role === "admin" ? (
-            <AdminAffiliates />
+            <AdminAffiliates settingsOpen={settingsOpen} onSettingsOpenChange={setSettingsOpen} />
           ) : (
             <UserAffiliates />
           ))}

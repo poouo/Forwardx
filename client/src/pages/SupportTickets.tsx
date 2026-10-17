@@ -8,6 +8,7 @@ import {
   Paperclip,
   RefreshCw,
   Search,
+  Settings2,
   Star,
   Trash2,
   X,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/supportTicketFiles";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { SupportTicketManagementSettings } from "@/components/SupportTicketManagementSettings";
 import {
   SupportTicketMessage,
   TicketStatusBadge,
@@ -1163,21 +1165,63 @@ function TicketDetail({
   );
 }
 
+function TicketSettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const utils = trpc.useUtils();
+  const query = trpc.supportTickets.settings.useQuery(undefined, { enabled: open });
+  const mutationOptions = {
+    onSuccess: (_: unknown, saved: { enabled?: boolean; notificationsEnabled?: boolean }) => {
+      utils.supportTickets.settings.setData(undefined, old => old ? { ...old, ...saved } : old);
+      if (saved.enabled !== undefined) utils.supportTickets.status.setData(undefined, { enabled: saved.enabled });
+      void utils.supportTickets.invalidate();
+      void utils.auth.notificationPreferences.invalidate();
+      void utils.system.getSettings.invalidate();
+      toast.success(t("工单设置已保存"));
+    },
+    onError: fail,
+  };
+  const feature = trpc.supportTickets.saveSettings.useMutation(mutationOptions);
+  const notifications = trpc.supportTickets.saveSettings.useMutation(mutationOptions);
+  return <Dialog open={open} onOpenChange={(next) => {
+    if (!feature.isPending && !notifications.isPending) onOpenChange(next);
+  }}>
+    <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle>{t("工单设置")}</DialogTitle>
+        <DialogDescription>{t("开关修改后立即保存。通知渠道与账号绑定沿用系统设置和个人资料配置。")}</DialogDescription>
+      </DialogHeader>
+      {query.isLoading && <DataSectionLoading />}
+      {query.error && <div role="alert" className="space-y-2 text-sm text-destructive">
+        <p>{query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>{t("重试")}</Button>
+      </div>}
+      <SupportTicketManagementSettings
+        feature={{ enabled: query.data?.enabled ?? false, unavailable: !query.data || !!query.error || feature.isPending, onChange: enabled => feature.mutateAsync({ enabled }) }}
+        notifications={{ enabled: query.data?.notificationsEnabled ?? true, unavailable: !query.data || !!query.error || notifications.isPending, onChange: notificationsEnabled => notifications.mutateAsync({ notificationsEnabled }) }}
+      />
+      <DialogFooter><Button variant="outline" disabled={feature.isPending || notifications.isPending} onClick={() => onOpenChange(false)}>{t("关闭")}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
 export function TicketListActions({
   admin,
   onCreate,
   onManageReplies,
+  onSettings,
 }: {
   admin: boolean;
   onCreate: () => void;
   onManageReplies: () => void;
+  onSettings: () => void;
 }) {
   return (
     <div className="flex flex-wrap gap-2">
       {admin ? (
+        <>
         <Button variant="outline" onClick={onManageReplies}>
           {t("管理快捷回复")}
         </Button>
+        <Button variant="outline" onClick={onSettings}><Settings2 className="mr-2 h-4 w-4" />{t("设置")}</Button>
+        </>
       ) : (
         <Button onClick={onCreate}>
           <MessageSquarePlus className="mr-2 h-4 w-4" />
@@ -1192,10 +1236,12 @@ function TicketList({
   admin,
   onOpen,
   onCreate,
+  onSettings,
 }: {
   admin: boolean;
   onOpen: (id: number) => void;
   onCreate: () => void;
+  onSettings: () => void;
 }) {
   const utils = trpc.useUtils();
   const [page, setPage] = useState(1);
@@ -1277,6 +1323,7 @@ function TicketList({
           admin={admin}
           onCreate={onCreate}
           onManageReplies={() => setCannedOpen(true)}
+          onSettings={onSettings}
         />
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
@@ -1284,7 +1331,7 @@ function TicketList({
           <button
             key={value}
             type="button"
-            className={`min-w-0 rounded-xl border p-3 text-left ${status === value ? "border-primary/40 bg-primary/5" : "border-border bg-card"}`}
+            className={`pearl-hover-card min-w-0 rounded-xl border p-3 text-left ${status === value ? "border-primary/40 bg-primary/5" : "border-border bg-card"}`}
             onClick={() => {
               setStatus((current) => (current === value ? "all" : value));
               setPage(1);
@@ -1300,7 +1347,7 @@ function TicketList({
         ))}
         <button
           type="button"
-          className={`rounded-xl border p-3 text-left ${unread ? "border-primary/40 bg-primary/5" : "border-border bg-card"}`}
+          className={`pearl-hover-card rounded-xl border p-3 text-left ${unread ? "border-primary/40 bg-primary/5" : "border-border bg-card"}`}
           onClick={() => {
             setUnread((v) => !v);
             setPage(1);
@@ -1560,6 +1607,7 @@ export default function SupportTickets() {
   });
   const utils = trpc.useUtils();
   const [creating, setCreating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const open = (id: number) => navigate(`/tickets?ticket=${id}`);
   return (
     <DashboardLayout>
@@ -1576,11 +1624,12 @@ export default function SupportTickets() {
         </Card>
       ) : !status.data?.enabled ? (
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle>{t("工单系统未开启")}</CardTitle>
+            {user?.role === "admin" && <Button variant="outline" onClick={() => setSettingsOpen(true)}><Settings2 className="mr-2 h-4 w-4" />{t("设置")}</Button>}
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
-            {t("管理员可在系统设置的侧边栏入口中开启工单支持。")}
+            {t("管理员可在工单管理右上角的设置中开启工单功能。")}
           </CardContent>
         </Card>
       ) : (
@@ -1597,6 +1646,7 @@ export default function SupportTickets() {
               admin={user?.role === "admin"}
               onOpen={open}
               onCreate={() => setCreating(true)}
+              onSettings={() => setSettingsOpen(true)}
             />
           )}
           {creating && user?.role === "user" && (
@@ -1611,6 +1661,7 @@ export default function SupportTickets() {
           )}
         </>
       )}
+      {user?.role === "admin" && <TicketSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />}
     </DashboardLayout>
   );
 }

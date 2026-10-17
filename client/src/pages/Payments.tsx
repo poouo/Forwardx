@@ -1,6 +1,7 @@
-import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,14 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,8 +33,7 @@ import {
   ShieldCheck,
   WalletCards,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import QRCode from "qrcode";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "@/lib/localizedToast";
 
 type PaymentConfigForm = {
@@ -176,53 +168,11 @@ function formatMoney(amountCents?: number | null, currency = "CNY") {
   return `${value.toFixed(2)} ${currency.toUpperCase()}`;
 }
 
-function formatDate(value: unknown) {
-  if (!value) return "-";
-  const date = value instanceof Date ? value : new Date(value as any);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString(getFormatLocale());
-}
-
-function paymentTypeLabel(value: string) {
-  if (value === "alipay") return translateText("支付宝");
-  if (value === "wxpay") return translateText("微信");
-  if (value === "stripe") return "Stripe";
-  if (value === "usdt") return "USDT";
-  return value;
-}
-
-function providerLabel(value: string) {
-  if (value === "easypay") return translateText("易支付");
-  if (value === "alipay") return translateText("支付宝官方");
-  if (value === "wxpay") return translateText("微信官方");
-  if (value === "stripe") return "Stripe";
-  if (value === "gmpay") return "GM Pay";
-  return value;
-}
-
-function statusBadge(status: string) {
-  const text: Record<string, string> = {
-    pending: translateText("待支付"),
-    paid: translateText("已支付"),
-    processing: translateText("处理中"),
-    completed: translateText("已完成"),
-    expired: translateText("已过期"),
-    cancelled: translateText("已取消"),
-    failed: translateText("失败"),
-  };
-  const tone = status === "paid" || status === "processing" || status === "completed"
-    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-    : status === "pending"
-      ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-      : "border-border bg-muted/50 text-muted-foreground";
-  return <Badge variant="outline" className={tone}>{text[status] || status}</Badge>;
-}
-
 function PaymentStatCard({
   label,
   value,
   icon: Icon,
-  tone = "text-primary",
+  tone = "text-sky-600 dark:text-sky-400",
   loading = false,
   cacheKey,
   fallbackValue,
@@ -236,7 +186,7 @@ function PaymentStatCard({
   fallbackValue?: string | number;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex min-h-[82px] items-center justify-between gap-4 p-4 sm:p-5">
         <div className="min-w-0">
@@ -284,70 +234,15 @@ function CallbackItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MobileOrderInfoRow({
-  label,
-  children,
-  valueClassName = "",
-}: {
-  label: string;
-  children: ReactNode;
-  valueClassName?: string;
-}) {
-  return (
-    <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
-    </div>
-  );
-}
-
 export default function Payments() {
   const utils = trpc.useUtils();
   const { data: config, isLoading } = trpc.payment.getConfig.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: stats, isLoading: statsLoading } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000, placeholderData: (previousData) => previousData });
-  const { data: orders, isLoading: ordersLoading } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000, placeholderData: (previousData: any) => previousData });
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
   const [amount, setAmount] = useState("10");
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("alipay");
-  const [createdPayUrl, setCreatedPayUrl] = useState<string | null>(null);
-
-  // 测试下单 QR 对话框
-  const [testQrOrder, setTestQrOrder] = useState<{ outTradeNo: string; qrCode: string } | null>(null);
-  const [testQrDataUrl, setTestQrDataUrl] = useState<string | null>(null);
-  const testQrPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const queryOrderUtils = utils;
-
-  useEffect(() => {
-    if (!testQrOrder?.qrCode) { setTestQrDataUrl(null); return; }
-    QRCode.toDataURL(testQrOrder.qrCode, { width: 220, margin: 1, color: { dark: "#000", light: "#fff" } })
-      .then(setTestQrDataUrl)
-      .catch(() => setTestQrDataUrl(null));
-  }, [testQrOrder?.qrCode]);
-
-  useEffect(() => {
-    if (!testQrOrder) {
-      if (testQrPollingRef.current) clearInterval(testQrPollingRef.current);
-      return;
-    }
-    const poll = async () => {
-      try {
-        const result = await queryOrderUtils.client.payment.queryOrder.query({ outTradeNo: testQrOrder.outTradeNo });
-        if (result?.status === "completed" || result?.status === "paid" || result?.status === "processing") {
-          setTestQrOrder(null);
-          toast.success(translateText("支付成功！"));
-          utils.payment.listOrders.invalidate();
-          utils.payment.stats.invalidate();
-        } else if (result?.status === "expired" || result?.status === "failed" || result?.status === "cancelled") {
-          setTestQrOrder(null);
-          toast.error(translateText("订单已失效"));
-          utils.payment.listOrders.invalidate();
-        }
-      } catch { /* 轮询失败静默忽略 */ }
-    };
-    testQrPollingRef.current = setInterval(poll, 3000);
-    return () => { if (testQrPollingRef.current) clearInterval(testQrPollingRef.current); };
-  }, [testQrOrder?.outTradeNo]);
+  const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
   const [activeTab, setActiveTab] = useUrlTab<PaymentTab>({
     values: PAYMENT_TABS,
     defaultValue: "basic",
@@ -443,14 +338,9 @@ export default function Payments() {
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
       toast.success(translateText("测试订单已创建"));
-      utils.payment.listOrders.invalidate();
+      utils.billing.ledgerPage.invalidate();
       utils.payment.stats.invalidate();
-      if (order?.qrCode) {
-        setCreatedPayUrl(null);
-        setTestQrOrder({ outTradeNo: order.outTradeNo, qrCode: order.qrCode });
-      } else {
-        setCreatedPayUrl(order?.payUrl || null);
-      }
+      setCheckoutOrder(order || null);
     },
     onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
@@ -485,7 +375,7 @@ export default function Payments() {
             label={translateText("支付状态")}
             value={form.enabled ? translateText("已启用") : translateText("未启用")}
             icon={ShieldCheck}
-            tone={form.enabled ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}
+            tone={form.enabled ? "text-emerald-600 dark:text-emerald-400" : "text-sky-600 dark:text-sky-400"}
             loading={isLoading}
             cacheKey="payments.enabled"
             fallbackValue={translateText("未启用")}
@@ -494,7 +384,7 @@ export default function Payments() {
             label={translateText("已支付金额")}
             value={formatMoney(stats?.paidAmountCents)}
             icon={WalletCards}
-            tone="text-primary"
+            tone="text-violet-600 dark:text-violet-400"
             loading={statsLoading}
             cacheKey="payments.paidAmount"
             fallbackValue={formatMoney(0)}
@@ -709,7 +599,7 @@ export default function Payments() {
                     <SelectContent>
                       <SelectItem value="native">{translateText("Native 扫码")}</SelectItem>
                       <SelectItem value="h5">{translateText("H5 支付")}</SelectItem>
-                      <SelectItem value="jsapi">JSAPI</SelectItem>
+                      <SelectItem value="jsapi" disabled>JSAPI ({translateText("暂不支持")})</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -859,124 +749,13 @@ export default function Payments() {
                   <Button className="w-full" onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, orderType: "test", returnPath: "/payments" })} disabled={createOrder.isPending}>
                     {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{translateText("创建订单")}</Button>
                 </div>
-                {createdPayUrl && (
-                  <div className="rounded-lg border bg-background/70 p-3 md:col-span-3">
-                    <div className="mb-2 text-sm text-muted-foreground">{translateText("支付链接")}</div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <code className="min-w-0 flex-1 truncate text-xs">{createdPayUrl}</code>
-                      <Button variant="outline" onClick={() => window.open(createdPayUrl, "_blank")}>{translateText("打开支付页")}</Button>
-                    </div>
-                  </div>
-                )}
-                {testQrOrder && (
-                  <div className="flex flex-col items-center gap-3 rounded-lg border bg-background/70 p-4 md:col-span-3">
-                    <div className="text-sm font-medium">{translateText("扫描二维码完成支付")}</div>
-                    {testQrDataUrl ? (
-                      <div className="rounded-lg border border-border/40 bg-white p-2">
-                        <img src={testQrDataUrl} alt={translateText("支付二维码")} width={180} height={180} />
-                      </div>
-                    ) : (
-                      <div className="flex h-[180px] w-[180px] items-center justify-center rounded-lg border">
-                        <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <RefreshCw className="h-3 w-3 animate-spin" />{translateText("正在等待支付结果……")}</div>
-                    <Button size="sm" variant="outline" onClick={() => setTestQrOrder(null)}>{translateText("取消")}</Button>
-                  </div>
-                )}
               </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
         )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{translateText("订单记录")}</CardTitle>
-            <CardDescription>{translateText("套餐订单和测试订单。")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {ordersLoading ? (
-              <DataSectionLoading label={translateText("正在加载支付订单")} />
-            ) : (
-              <>
-            <div className="grid gap-3 md:hidden">
-              {(orders || []).map((order: any) => (
-                <div key={order.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{order.name || order.username || `#${order.userId}`}</p>
-                      <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{order.outTradeNo}</p>
-                    </div>
-                    <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
-                      {formatMoney(order.amountCents, order.currency)}
-                    </div>
-                  </div>
-                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                    <MobileOrderInfoRow label={translateText("通道")}>
-                      <div className="flex flex-wrap justify-end gap-1">
-                        <Badge variant="secondary">{providerLabel(order.provider)}</Badge>
-                        <Badge variant="outline">{paymentTypeLabel(order.paymentType)}</Badge>
-                      </div>
-                    </MobileOrderInfoRow>
-                    <MobileOrderInfoRow label={translateText("状态")}>{statusBadge(order.status)}</MobileOrderInfoRow>
-                    <MobileOrderInfoRow label={translateText("网关流水")} valueClassName="font-mono text-xs text-muted-foreground">
-                      {order.tradeNo || "-"}
-                    </MobileOrderInfoRow>
-                    <MobileOrderInfoRow label={translateText("创建时间")}>{formatDate(order.createdAt)}</MobileOrderInfoRow>
-                    <MobileOrderInfoRow label={translateText("支付时间")}>{formatDate(order.paidAt)}</MobileOrderInfoRow>
-                  </div>
-                </div>
-              ))}
-              {(orders || []).length === 0 && (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无支付订单")}</div>
-              )}
-            </div>
-            <div className="hidden overflow-x-auto md:block">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{translateText("订单号")}</TableHead>
-                    <TableHead>{translateText("用户")}</TableHead>
-                    <TableHead>{translateText("通道")}</TableHead>
-                    <TableHead>{translateText("金额")}</TableHead>
-                    <TableHead>{translateText("状态")}</TableHead>
-                    <TableHead>{translateText("网关流水")}</TableHead>
-                    <TableHead>{translateText("创建时间")}</TableHead>
-                    <TableHead>{translateText("支付时间")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(orders || []).map((order: any) => (
-                    <TableRow key={order.id}>
-                      <TableCell className="font-mono text-xs">{order.outTradeNo}</TableCell>
-                      <TableCell>{order.name || order.username || `#${order.userId}`}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          <Badge variant="secondary">{providerLabel(order.provider)}</Badge>
-                          <Badge variant="outline">{paymentTypeLabel(order.paymentType)}</Badge>
-                        </div>
-                      </TableCell>
-                      <TableCell>{formatMoney(order.amountCents, order.currency)}</TableCell>
-                      <TableCell>{statusBadge(order.status)}</TableCell>
-                      <TableCell className="font-mono text-xs">{order.tradeNo || "-"}</TableCell>
-                      <TableCell>{formatDate(order.createdAt)}</TableCell>
-                      <TableCell>{formatDate(order.paidAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {(orders || []).length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">{translateText("暂无支付订单")}</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
+        <PaymentCheckoutDialog order={checkoutOrder} onClose={() => setCheckoutOrder(null)} />
       </div>
     </DashboardLayout>
   );

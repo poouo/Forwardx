@@ -3,6 +3,7 @@ import { manualProbeDeadline } from "@/lib/manualProbe";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -2490,9 +2491,7 @@ function TunnelsContent() {
       ? "forwardx"
       : (enabledGostTunnelModes[0] || enabledNginxTunnelModes[0] || "forwardx");
   };
-  const portGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "port"), [forwardGroups]);
   const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "chain"), [forwardGroups]);
-  const failoverGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "failover"), [forwardGroups]);
   const entryGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "entry"), [forwardGroups]);
   const exitGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "exit"), [forwardGroups]);
   const usableEntryGroups = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [entryGroups]);
@@ -2516,11 +2515,7 @@ function TunnelsContent() {
     () => (tunnels || []).filter((tunnel: any) => isAvailableState(tunnelAvailabilityById.get(Number(tunnel.id)))).length,
     [tunnelAvailabilityById, tunnels],
   );
-  const activePortCount = useMemo(() => portGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [groupAvailabilityById, portGroups]);
   const activeChainCount = useMemo(() => chainGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [chainGroups, groupAvailabilityById]);
-  const activeFailoverGroupCount = useMemo(() => failoverGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [failoverGroups, groupAvailabilityById]);
-  const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [entryGroups, groupAvailabilityById]);
-  const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => isAvailableState(groupAvailabilityById.get(Number(group.id)))).length, [exitGroups, groupAvailabilityById]);
   const entryMembersForGroup = (groupId: number | null | undefined) => {
     const group = groupId ? entryGroupById.get(Number(groupId)) : null;
     return enabledHostGroupMembers(group);
@@ -2659,26 +2654,10 @@ function TunnelsContent() {
     getId: (tunnel: any) => Number(tunnel.id),
   });
   const orderedTunnelItems = tunnelOrder.items;
-  const filteredPortGroups = useMemo(() => {
-    if (!normalizedLinkSearchQuery) return portGroups;
-    return portGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
-  }, [entryGroupById, hosts, normalizedLinkSearchQuery, portGroups, tunnels]);
   const filteredChainGroups = useMemo(() => {
     if (!normalizedLinkSearchQuery) return chainGroups;
     return chainGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
   }, [chainGroups, entryGroupById, hosts, normalizedLinkSearchQuery, tunnels]);
-  const filteredFailoverGroups = useMemo(() => {
-    if (!normalizedLinkSearchQuery) return failoverGroups;
-    return failoverGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
-  }, [entryGroupById, failoverGroups, hosts, normalizedLinkSearchQuery, tunnels]);
-  const filteredEntryGroups = useMemo(() => {
-    if (!normalizedLinkSearchQuery) return entryGroups;
-    return entryGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
-  }, [entryGroupById, entryGroups, hosts, normalizedLinkSearchQuery, tunnels]);
-  const filteredExitGroups = useMemo(() => {
-    if (!normalizedLinkSearchQuery) return exitGroups;
-    return exitGroups.filter((group: any) => linkForwardGroupMatchesSearch(group, normalizedLinkSearchQuery, hosts, tunnels, entryGroupById));
-  }, [entryGroupById, exitGroups, hosts, normalizedLinkSearchQuery, tunnels]);
   const tunnelPagination = useServerPagination(
     needsFullTunnelList || isTunnelGlobeView ? [] : orderedTunnelItems,
     Number(tunnelPageQuery.data?.totalItems || 0),
@@ -2689,10 +2668,6 @@ function TunnelsContent() {
     },
   );
   const pagedTunnels = tunnelPagination.items;
-  const editingTunnel = useMemo(
-    () => editingId ? (tunnels || []).find((tunnel: any) => Number(tunnel.id) === Number(editingId)) || null : null,
-    [editingId, tunnels]
-  );
   const renderTunnelStatusDot = (tunnel: any, supported = true) => {
     if (!supported) return <span title={translateText("当前转发协议未启用")} className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
     const state = tunnelAvailabilityById.get(Number(tunnel?.id || 0));
@@ -3992,19 +3967,6 @@ function TunnelsContent() {
       </Tooltip>
     </TooltipProvider>
   );
-  const renderTunnelLatencyLabel = (tunnel: any, compact = false) => {
-    const latencyValue = tunnelDisplayLatencyMs(tunnel);
-    const latency = typeof latencyValue === "number" && Number.isFinite(latencyValue)
-      ? latencyValue
-      : null;
-    if (latency !== null) {
-      return <LatencyRating latencyMs={latency} className={compact ? "text-xs" : undefined} />;
-    }
-    if (tunnelLatencyIsTimeout(tunnel)) {
-      return <LatencyRating isTimeout timeoutText={translateText("超时")} className={compact ? "text-xs" : undefined} />;
-    }
-    return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>{translateText("未测试")}</span>;
-  };
 
   const renderTunnelLatencyBreakdown = (tunnel: any, compact = false, maxItems?: number) => {
     const items = tunnelDisplayLatencyList(tunnel);
@@ -4169,6 +4131,7 @@ function TunnelsContent() {
                 {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                   <Card
                     {...itemProps}
+                    interactive={!isDragging}
                     className={cn(
                       "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
                       !supported && "opacity-70",
@@ -4219,6 +4182,8 @@ function TunnelsContent() {
                       <span className="text-muted-foreground">{translateText("延迟")}</span>
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
+
+                    <ResourceTrafficSummary summary={tunnel.trafficSummary} />
 
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
@@ -4264,6 +4229,7 @@ function TunnelsContent() {
                 {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                   <Card
                     {...itemProps}
+                    interactive={!isDragging}
                     className={cn(
                       "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
                       !supported && "opacity-70",
@@ -4315,6 +4281,8 @@ function TunnelsContent() {
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
+                    <ResourceTrafficSummary summary={tunnel.trafficSummary} />
+
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
@@ -4359,6 +4327,7 @@ function TunnelsContent() {
                     <TableHead>{translateText("链路")}</TableHead>
                     <TableHead className="hidden md:table-cell">{translateText("模式")}</TableHead>
                     <TableHead className="hidden md:table-cell">{translateText("延迟")}</TableHead>
+                    <TableHead>{translateText("引用规则与流量")}</TableHead>
                     <TableHead>{translateText("开关")}</TableHead>
                     <TableHead className="text-right">{translateText("操作")}</TableHead>
                   </TableRow>
@@ -4416,6 +4385,7 @@ function TunnelsContent() {
                       <TableCell className="hidden py-3 md:table-cell">
                         {renderTunnelLatencyBreakdown(tunnel, true, 2)}
                       </TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={tunnel.trafficSummary} compact /></TableCell>
                       <TableCell className="py-3">
                         {supported ? (
                           renderTunnelEnabledSwitch(tunnel)

@@ -50,7 +50,7 @@ after(async () => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 const enabled = (value: boolean) =>
-  settings.setSetting("sidebarMenu", JSON.stringify({ affiliates: value }));
+  settings.setSetting("affiliateEnabled", String(value));
 const config = (values = {}) =>
   repo.saveAffiliateConfig({ ...AFFILIATE_DEFAULTS, ...values });
 const key = () => crypto.randomUUID();
@@ -107,6 +107,55 @@ test("commission calculation uses cents, floors fractions and rejects unsafe val
   assert.throws(() => commissionCents(-1, 1000));
   assert.throws(() => commissionCents(100, 10001));
   assert.throws(() => commissionCents(Number.MAX_SAFE_INTEGER + 1, 100));
+});
+
+test("affiliate business switch is independent from sidebar visibility and only admins may save it", async () => {
+  await settings.setSetting("sidebarMenu", JSON.stringify({ affiliates: false }));
+  await enabled(true);
+  assert.equal((await caller(2).registrationStatus()).enabled, true);
+  await caller(1, "admin").saveConfig({ ...AFFILIATE_DEFAULTS, rateBps: 2000, enabled: false });
+  assert.equal(await repo.affiliatesEnabled(), false);
+  assert.equal((await repo.affiliateConfig()).rateBps, 2000);
+  await settings.setSetting("sidebarMenu", JSON.stringify({ affiliates: true }));
+  assert.equal((await caller(2).status()).enabled, false);
+  await assert.rejects(() => caller(2).saveConfig({ ...AFFILIATE_DEFAULTS, enabled: true }), { code: "FORBIDDEN" });
+  assert.equal(await repo.affiliatesEnabled(), false);
+  await assert.rejects(() => caller(1, "admin").saveConfig({ ...AFFILIATE_DEFAULTS, maxCodes: 0, enabled: true }), { code: "BAD_REQUEST" });
+  assert.equal(await repo.affiliatesEnabled(), false);
+  await caller(1, "admin").saveConfig({ ...AFFILIATE_DEFAULTS, enabled: true });
+  assert.equal(await settings.getSetting("sidebarMenu"), JSON.stringify({ affiliates: true }));
+});
+
+test("schema upgrade inherits the legacy affiliate state once and never re-couples the switches", async () => {
+  const { ensureDatabaseSchema } = await import("./dbSchema");
+  for (const [legacy, expected] of [
+    [JSON.stringify({ affiliates: true }), true],
+    [JSON.stringify({ affiliates: false }), false],
+    ["invalid-json", false],
+    [JSON.stringify({ affiliates: "true" }), false],
+  ] as const) {
+    await runtime.executeRaw("DELETE FROM system_settings WHERE key = ?", ["affiliateEnabled"]);
+    await settings.setSetting("sidebarMenu", legacy);
+    await ensureDatabaseSchema();
+    assert.equal(await repo.affiliatesEnabled(), expected);
+    await settings.setSetting("sidebarMenu", JSON.stringify({ affiliates: !expected }));
+    await ensureDatabaseSchema();
+    assert.equal(await repo.affiliatesEnabled(), expected);
+  }
+  await enabled(true);
+});
+
+test("affiliate parameters and business switch save atomically", async () => {
+  await config();
+  await enabled(true);
+  await runtime.executeRaw("CREATE TRIGGER reject_affiliate_settings BEFORE UPDATE ON system_settings WHEN NEW.key = 'affiliateEnabled' BEGIN SELECT RAISE(ABORT, 'test setting failure'); END");
+  try {
+    await assert.rejects(() => caller(1, "admin").saveConfig({ ...AFFILIATE_DEFAULTS, rateBps: 5000, enabled: false }));
+    assert.deepEqual(await repo.affiliateConfig(), AFFILIATE_DEFAULTS);
+    assert.equal(await repo.affiliatesEnabled(), true);
+  } finally {
+    await runtime.executeRaw("DROP TRIGGER reject_affiliate_settings");
+  }
 });
 test("registration binds once, rejects self/disabled/unknown codes and keeps old referrals when code is disabled", async () => {
   const code = await refer(2, 3);
@@ -271,7 +320,7 @@ test("user APIs ignore forged user filters and prohibit administrator actions", 
   await assert.rejects(() => caller(2).adminList({ kind: "withdrawals" }), {
     code: "FORBIDDEN",
   });
-  await assert.rejects(() => caller(2).saveConfig(AFFILIATE_DEFAULTS), {
+  await assert.rejects(() => caller(2).saveConfig({ ...AFFILIATE_DEFAULTS, enabled: true }), {
     code: "FORBIDDEN",
   });
   await assert.rejects(
@@ -713,5 +762,29 @@ test("MySQL and PostgreSQL generate all affiliate tables with monetary types and
         assert.match(create!, /orderNo/);
       }
     }
+  }
+});
+
+test("restoring legacy backups inherits the old affiliate switch while modern backups keep their independent state", async () => {
+  const { importMigrationSnapshot } = await import("./migration");
+  const cases = [
+    { menu: true, business: undefined, expected: true },
+    { menu: false, business: undefined, expected: false },
+    { menu: true, business: false, expected: false },
+    { menu: false, business: true, expected: true },
+  ];
+  for (const [index, item] of cases.entries()) {
+    await runtime.closeDatabase();
+    const target = { type: "sqlite" as const, sqlite: { path: path.join(directory, `restore-switch-${index}.sqlite`) } };
+    runtime.writeDatabaseConfig(target);
+    await runtime.connectDatabase(target);
+    await (await import("./dbSchema")).ensureDatabaseSchema();
+    await enabled(!item.expected);
+    const rows = [{ key: "sidebarMenu", value: JSON.stringify({ affiliates: item.menu }) }];
+    if (item.business !== undefined) rows.push({ key: "affiliateEnabled", value: String(item.business) });
+    const result = await importMigrationSnapshot({ version: 1, exportedAt: Date.now(), tables: { system_settings: rows } });
+    assert.equal(result.partial, false, JSON.stringify(result.warnings));
+    assert.equal(await repo.affiliatesEnabled(), item.expected);
+    assert.equal(await settings.getSetting("sidebarMenu"), JSON.stringify({ affiliates: item.menu }));
   }
 });

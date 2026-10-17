@@ -4,10 +4,11 @@ import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
-  description: z.string().max(500).nullable().optional(),
+  description: z.string().max(PLAN_DESCRIPTION_MAX_LENGTH).nullable().optional(),
   priceCents: z.number().int().min(0).max(100_000_000),
   currency: z.string().trim().min(3).max(8).default("CNY"),
   durationDays: z.union([

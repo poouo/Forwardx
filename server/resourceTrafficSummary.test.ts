@@ -51,6 +51,76 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         assert.equal(page.items[0].trafficSummary.totalBytes,0);
         const entryPage = await caller.listPage({page:1,pageSize:12,groupMode:"entry"});
         assert.equal(entryPage.items[0].trafficSummary.totalBytes,70);
+        assert.equal(entryPage.items[0].trafficSummary.ruleCount,1);
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5])).get(5),{bytesIn:30,bytesOut:40,totalBytes:70,ruleCount:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],1)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.equal((await metrics.getTunnelTrafficSummaries([])).size,0);
+        assert.equal((await metrics.getTunnelTrafficSummaries([5,5,-1,NaN])).size,1);
+        // A tunnel used through a failover template counts that logical rule
+        // once, and only includes its own children rather than other tunnels.
+        for (const id of [2,3]) await insert("hosts",{id,name:"host"+id,ip:"198.51.100."+id,userId:1,isOnline:1});
+        for (const [id,groupMode] of [[7,"failover"],[8,"entry"],[9,"exit"],[10,"chain"]]) {
+          await insert("forward_groups",{id,name:"resource"+id,groupMode,groupType:"host",targetIp:"127.0.0.1",userId:1,...(id===10?{entryGroupId:2}:{})});
+        }
+        await insert("tunnels",{id:6,name:"other tunnel",entryGroupId:8,exitGroupId:9,entryHostId:3,exitHostId:3,listenPort:12001,userId:1});
+        await insert("tunnels",{id:7,name:"unused tunnel",entryHostId:1,exitHostId:1,listenPort:12002,userId:1});
+        for (const [id,tunnelId] of [[701,5],[702,6]]) await insert("forward_group_members",{id,groupId:7,memberType:"tunnel",tunnelId});
+        await insert("forward_rules",{...rule,id:20,sourcePort:10100,userId:2,forwardGroupId:7,isForwardGroupTemplate:1});
+        for (const [id,hostId,tunnelId,memberId] of [[21,1,5,701],[22,2,5,701],[23,3,6,702]]) {
+          await insert("forward_rules",{...rule,id,sourcePort:10100,hostId,tunnelId,forwardGroupId:7,forwardGroupRuleId:20,forwardGroupMemberId:memberId,userId:id===21?1:2});
+        }
+        await report(21,10,20,2);
+        await report(22,3,7,2);
+        await report(23,100,200,2);
+        await insert("forward_rules",{...rule,id:24,tunnelId:5,forwardGroupId:7,forwardGroupRuleId:20,pendingDelete:1});
+        await insert("forward_rules",{...rule,id:26,forwardGroupId:7,isForwardGroupTemplate:1,pendingDelete:1});
+        await insert("forward_rules",{...rule,id:25,tunnelId:5,forwardGroupId:7,forwardGroupRuleId:26});
+        await insert("forward_rules",{...rule,id:27,tunnelId:5,forwardGroupId:7,forwardGroupRuleId:10});
+        for (const id of [24,25,27]) await report(id,9000,9000);
+        await insert("forward_rules",{...rule,id:30,userId:2,forwardGroupId:10,isForwardGroupTemplate:1});
+        await report(30,5,5,2);
+        const tunnelTotals = await metrics.getTunnelTrafficSummaries([5,6,7]);
+        assert.deepEqual(tunnelTotals.get(5),{bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2});
+        assert.deepEqual(tunnelTotals.get(6),{bytesIn:100,bytesOut:200,totalBytes:300,ruleCount:1});
+        assert.deepEqual(tunnelTotals.get(7),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        const indirectGroups = await metrics.getForwardGroupTrafficSummaries([2,3,7,8,9,10],2);
+        assert.equal(indirectGroups.get(2).ruleCount,3);
+        assert.equal(indirectGroups.get(2).totalBytes,120);
+        assert.equal(indirectGroups.get(3).ruleCount,2);
+        assert.equal(indirectGroups.get(3).totalBytes,110);
+        for (const id of [8,9]) {
+          assert.equal(indirectGroups.get(id).ruleCount,1);
+          assert.equal(indirectGroups.get(id).totalBytes,300);
+        }
+        assert.equal(indirectGroups.get(7).ruleCount,1);
+        assert.equal(indirectGroups.get(7).totalBytes,340);
+        assert.equal(indirectGroups.get(10).ruleCount,1);
+        // Shared tunnel endpoints attach only the caller's usage, not admin data.
+        await insert("forward_rules",{...rule,id:40,tunnelId:5});
+        await report(40,1000,2000);
+        await (await import("./server/repositories/permissionRepository.ts")).setUserTunnelPermissions(2,[5]);
+        const { tunnelsRouter } = await import("./server/routers/tunnels.ts");
+        const tunnelCaller = tunnelsRouter.createCaller({user:{id:2,role:"user"},req:{headers:{}},res:{}});
+        const sharedTunnels = await tunnelCaller.listPage({page:1,pageSize:12});
+        assert.equal(sharedTunnels.items.length,1);
+        assert.deepEqual(sharedTunnels.items[0].trafficSummary,{bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2});
+        const adminCaller = tunnelsRouter.createCaller({user:{id:1,role:"admin"},req:{headers:{}},res:{}});
+        const adminTunnels = await adminCaller.listPage({page:1,pageSize:12});
+        assert.deepEqual(adminTunnels.items.find(t=>t.id===5).trafficSummary,{bytesIn:1043,bytesOut:2067,totalBytes:3110,ruleCount:3});
+        await runtime.executeRaw('UPDATE "forward_rules" SET "pendingDelete" = 1 WHERE "id" = 11');
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:13,bytesOut:27,totalBytes:40,ruleCount:1});
+        await metrics.resetRuleTrafficStats([20]);
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([6],2)).get(6),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
+        // Saved references are counted even before a disabled rule has any
+        // runtime children. Stale children of a removed member are ignored.
+        await insert("forward_groups",{id:12,name:"unapplied tunnel group",groupMode:"failover",groupType:"tunnel",targetIp:"127.0.0.1",userId:1});
+        await insert("forward_group_members",{id:1201,groupId:12,memberType:"tunnel",tunnelId:7,isEnabled:0});
+        await insert("forward_rules",{...rule,id:50,userId:2,forwardGroupId:12,isForwardGroupTemplate:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([7],2)).get(7),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
+        await runtime.executeRaw('DELETE FROM "forward_group_members" WHERE "id" = 701');
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.equal((await metrics.getForwardGroupTrafficSummaries([2],2)).get(2).ruleCount,1);
         // More than one bounded batch, including many rules with no reports.
         for (let id=100;id<305;id++) await insert("forward_rules",{...rule,id,sourcePort:20000+id,forwardGroupId:4});
         await report(100,1,2);

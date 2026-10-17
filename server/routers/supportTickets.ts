@@ -5,6 +5,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { withDatabaseTransaction } from "../dbRuntime";
 import * as tickets from "../repositories/supportTicketRepository";
 import { notifySupportTicket } from "../supportTicketNotifications";
+import { getAllSettings, setSetting } from "../repositories/settingsRepository";
 import {
   TICKET_ATTACHMENT_MAX_BYTES,
   TICKET_ATTACHMENT_MAX_COUNT,
@@ -42,6 +43,24 @@ const message = z
   });
 
 export const supportTicketsRouter = router({
+  settings: adminProcedure.query(async () => {
+    const settings = await getAllSettings();
+    return {
+      enabled: settings.supportTicketsEnabled === "true",
+      notificationsEnabled: settings.supportTicketNotificationsEnabled !== "false",
+    };
+  }),
+  saveSettings: adminProcedure
+    .input(z.object({ enabled: z.boolean().optional(), notificationsEnabled: z.boolean().optional() })
+      .refine(input => input.enabled !== undefined || input.notificationsEnabled !== undefined))
+    .mutation(async ({ ctx, input }) => {
+      await withDatabaseTransaction(async () => {
+        if (input.enabled !== undefined) await setSetting("supportTicketsEnabled", String(input.enabled));
+        if (input.notificationsEnabled !== undefined) await setSetting("supportTicketNotificationsEnabled", String(input.notificationsEnabled));
+      });
+      appendPanelLog("info", `[Support] settings updated operator=${ctx.user.id} enabled=${input.enabled ?? "unchanged"} notificationsEnabled=${input.notificationsEnabled ?? "unchanged"}`);
+      return { success: true };
+    }),
   status: protectedProcedure.query(async () => ({
     enabled: await tickets.supportTicketsEnabled(),
   })),

@@ -16,7 +16,7 @@ Every enabled entry receives its own managed rule. Existing single-host resource
 - Destination, protocol, listening-port and enable-switch changes synchronize to all entries. Adding/removing members affects their corresponding listeners without resetting unchanged healthy rules.
 - A newly added entry with a port conflict or disallowed port does not stop other entries. The resource shows the rule ID, host ID and reason; configuration conflicts retry approximately every 60 seconds. Offline Agents and apply failures use the existing heartbeat/retry flow.
 - Resources show both healthy entry-node counts and listener counts. `4/6` listeners does not necessarily mean `2/3` healthy nodes: a healthy node must be online, not traffic-excluded, running every enabled logical rule, and free of sync errors. These counts do not guarantee end-to-end connectivity.
-- Expand **Node details** for each host's state, sync attempts, recent reasons and retry eligibility. Agent execution failures have separate consecutive-failure counts. Each node shows up to three representative sync errors and three execution errors.
+- Click **Node details** to open a separate dialog showing each host's state, sync attempts, recent reasons and retry eligibility. Agent execution failures have separate consecutive-failure counts. Each node shows up to three representative sync errors and three execution errors. Long content scrolls inside the dialog without stretching resource cards or table rows.
 - Configuration conflicts become eligible for retry after about 60 seconds; newer Agents use an execution-failure cooldown of about 30 seconds. These are earliest eligibility times, not completion deadlines; actual execution depends on scheduling, heartbeat and connectivity. Older Agents retain existing retries but do not report detailed counts/times.
 - Before saving an enabled port resource or adding a rule, recent Agent tool inventories reject known-missing executables. Offline/older Agents or reports over three minutes old are unconfirmed and do not block saving. Discovery checks executable presence only, not kernel modules, permissions, runtime health or connectivity. Upgrade the Agent to report these details.
 - Logical-rule traffic sums the independent entries once each. Removed entries retain their historical usage; resetting the logical rule clears that usage too.
@@ -24,6 +24,10 @@ Every enabled entry receives its own managed rule. Existing single-host resource
 - Disable the entry group to stop its dependent rules; re-enable it to restore rules disabled by that switch. Change/remove dependent port resources before deleting their entry group.
 
 [中文说明](./groups.md)
+
+![Entry-node details appear in a separate dialog](./images/port-entry-nodes.png)
+
+*Local development demo (Chinese UI). Neither entry has enabled rules, so healthy entries show `0/2` and running rules show `0/0`. This is an idle-state example, not evidence of failing active rules.*
 
 ## Resource traffic totals
 

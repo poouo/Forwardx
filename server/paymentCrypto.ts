@@ -3,6 +3,10 @@ import { PAYMENT_ERRORS, isPaymentCryptoError } from "../shared/paymentErrors";
 
 type SigningProvider = "alipay" | "wxpay";
 
+export class PaymentConfigurationError extends Error {
+  constructor(message: string) { super(message); this.name = "PaymentConfigurationError"; }
+}
+
 export class PaymentKeyConfigurationError extends Error {
   constructor(provider: SigningProvider, kind: "PrivateKey" | "PublicKey", cause?: unknown) {
     super(PAYMENT_ERRORS[`${provider}${kind}`], { cause });
@@ -73,6 +77,7 @@ export function importPaymentPublicKey(value: string, provider: SigningProvider)
 
 export function paymentOrderFailureMessage(error: unknown) {
   if (error instanceof PaymentKeyConfigurationError) return error.message;
+  if (error instanceof PaymentConfigurationError) return error.message;
   const failure = error as { message?: string; code?: string; name?: string; cause?: { code?: string } } | null;
   const message = String(failure?.message || "");
   if (isPaymentCryptoError(message)) return PAYMENT_ERRORS.keyConfiguration;

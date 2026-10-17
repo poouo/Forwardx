@@ -6,7 +6,7 @@ import {
   discountCodes, InsertDiscountCode,
   forwardGroups,
   forwardRules,
-  paymentOrders, InsertPaymentOrder,
+  paymentOrders, InsertPaymentOrder, type PaymentOrder,
   redemptionCodes, InsertRedemptionCode,
   subscriptionPlans, InsertSubscriptionPlan,
   subscriptionPlanForwardGroups,
@@ -2673,9 +2673,9 @@ export async function getBillingAdminSummary() {
   };
 }
 
-export async function listBalanceTransactions(userId?: number, limit = 100) {
+export async function listBalanceTransactions(userId?: number, limit = 100, selectedIds?: number[]) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db || selectedIds?.length === 0) return [];
   const base = db
     .select({
       id: balanceTransactions.id,
@@ -2693,13 +2693,27 @@ export async function listBalanceTransactions(userId?: number, limit = 100) {
     })
     .from(balanceTransactions)
     .leftJoin(users, eq(balanceTransactions.userId, users.id));
-  const rows = userId !== undefined
-    ? await base.where(eq(balanceTransactions.userId, userId)).orderBy(desc(balanceTransactions.createdAt)).limit(limit)
-    : await base.orderBy(desc(balanceTransactions.createdAt)).limit(limit);
+  const conditions = [];
+  if (userId !== undefined) conditions.push(eq(balanceTransactions.userId, userId));
+  if (selectedIds) conditions.push(inArray(balanceTransactions.id, selectedIds));
+  const rows = await base.where(and(...conditions)).orderBy(desc(balanceTransactions.createdAt), desc(balanceTransactions.id)).limit(limit);
   return (rows as any[]).map((row) => ({
     ...row,
     typeLabel: balanceTypeLabel(row.type),
   }));
+}
+
+export async function listBalanceTransactionsPage(input: PageRequest & { userId?: number }) {
+  const db = await getDb();
+  if (!db) return pageResult([], 0, input, 20);
+  const condition = input.userId === undefined ? undefined : eq(balanceTransactions.userId, input.userId);
+  const [count] = await db.select({ count: sql<number>`COUNT(*)` }).from(balanceTransactions).where(condition);
+  const total = Number(count?.count || 0);
+  const window = pageWindowForTotal(input, total, 20);
+  const selected = await db.select({ id: balanceTransactions.id }).from(balanceTransactions).where(condition)
+    .orderBy(desc(balanceTransactions.createdAt), desc(balanceTransactions.id)).limit(window.pageSize).offset(window.offset);
+  const items = await listBalanceTransactions(input.userId, window.pageSize, selected.map((row: any) => Number(row.id)));
+  return pageResult(items, total, window, 20);
 }
 
 function normalizeBillingLimit(limit = 100) {
@@ -2753,13 +2767,15 @@ async function listUserSubscriptionsForLedger(
   userId: number | undefined,
   limit: number,
   options: { isAdmin: boolean; includeCancelledSubscriptions: boolean },
+  selectedIds?: number[],
 ) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db || selectedIds?.length === 0) return [];
   const query = userSubscriptionsListQuery(db);
   const conditions = subscriptionVisibilityConditions(options.isAdmin ? "admin" : "user");
   if (userId !== undefined) conditions.push(eq(userSubscriptions.userId, userId));
   if (!options.includeCancelledSubscriptions) conditions.push(ne(userSubscriptions.status, "cancelled"));
+  if (selectedIds) conditions.push(inArray(userSubscriptions.id, selectedIds));
   return query
     .where(and(...conditions))
     .orderBy(desc(userSubscriptions.createdAt), desc(userSubscriptions.id))
@@ -2772,18 +2788,18 @@ export async function listBillingLedger(options?: {
   userId?: number;
   limit?: number;
   includeCancelledSubscriptions?: boolean;
-}) {
+}, selectedIds?: { balance: number[]; payment: number[]; subscription: number[] }) {
   const limit = normalizeBillingLimit(options?.limit);
   const targetUserId = options?.isAdmin ? options?.userId : options?.viewerUserId;
   if (!options?.isAdmin && !targetUserId) return [];
 
   const [transactions, orders, subscriptions] = await Promise.all([
-    listBalanceTransactions(targetUserId, limit),
-    listPaymentOrders(limit, targetUserId),
+    listBalanceTransactions(targetUserId, limit, selectedIds?.balance),
+    listPaymentOrders(limit, targetUserId, selectedIds?.payment),
     listUserSubscriptionsForLedger(targetUserId, limit, {
       isAdmin: !!options?.isAdmin,
       includeCancelledSubscriptions: options?.includeCancelledSubscriptions !== false,
-    }),
+    }, selectedIds?.subscription),
   ]);
 
   const items = [
@@ -2825,6 +2841,7 @@ export async function listBillingLedger(options?: {
       provider: order.provider,
       paymentOrderNo: order.outTradeNo,
       tradeNo: order.tradeNo,
+      failureReason: order.failureReason,
       planId: order.planId,
       subscriptionId: order.subscriptionId,
       discountAmountCents: Number(order.discountAmountCents || 0),
@@ -2859,6 +2876,42 @@ export async function listBillingLedger(options?: {
   return items
     .sort((a, b) => billingTime(b.createdAt) - billingTime(a.createdAt))
     .slice(0, limit);
+}
+
+export async function listBillingLedgerPage(input: NonNullable<Parameters<typeof listBillingLedger>[0]> & PageRequest) {
+  const targetUserId = input.isAdmin ? input.userId : input.viewerUserId;
+  if (!input.isAdmin && !targetUserId) return pageResult([], 0, input, 20);
+  const q = quoteDbIdentifier;
+  const parameters: unknown[] = [];
+  const parts = ([
+    ["balance", "balance_transactions"], ["payment", "payment_orders"], ["subscription", "user_subscriptions"],
+  ] as const).map(([kind, table]) => {
+    const conditions: string[] = [];
+    if (targetUserId !== undefined) { conditions.push(`${q("userId")} = ?`); parameters.push(targetUserId); }
+    if (kind === "subscription") {
+      conditions.push(`${q("adminDismissedAt")} IS NULL`);
+      if (!input.isAdmin) conditions.push(`${q("userDismissedAt")} IS NULL`);
+      if (input.includeCancelledSubscriptions === false) conditions.push(`${q("status")} <> 'cancelled'`);
+    }
+    return `SELECT '${kind}' AS ${q("kind")}, ${q("id")} AS ${q("sourceId")}, ${q("createdAt")} AS ${q("createdAt")}
+      FROM ${q(table)}${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`;
+  });
+  // Page IDs in SQL before hydrating details; do not load or cap the entire ledger.
+  // The three source types remain separate entries, even when they share an order.
+  const union = parts.join(" UNION ALL ");
+  const [count] = await queryRaw<{ totalItems: number }>(`SELECT COUNT(*) AS ${q("totalItems")} FROM (${union}) AS ${q("ledger")}`, parameters);
+  const total = Number(count?.totalItems || 0);
+  const window = pageWindowForTotal(input, total, 20);
+  const selected = await queryRaw<{ kind: "balance" | "payment" | "subscription"; sourceId: number }>(
+    `SELECT * FROM (${union}) AS ${q("ledger")} ORDER BY ${q("createdAt")} DESC, ${q("kind")} ASC, ${q("sourceId")} DESC
+     LIMIT ${window.pageSize} OFFSET ${window.offset}`, parameters,
+  );
+  const ids = { balance: [] as number[], payment: [] as number[], subscription: [] as number[] };
+  for (const row of selected) ids[row.kind].push(Number(row.sourceId));
+  const hydrated = await listBillingLedger({ ...input, limit: window.pageSize }, ids);
+  const byId = new Map(hydrated.map(item => [item.id, item]));
+  const items = selected.map(row => byId.get(`${row.kind}-${row.sourceId}`)).filter((item): item is NonNullable<typeof item> => !!item);
+  return pageResult(items, total, window, 20);
 }
 
 export async function addUserBalance(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
@@ -3100,13 +3153,6 @@ export async function listDiscountCodesPage(input: PageRequest) {
   return pageResult(await attachDiscountPlans(rows), totalItems, window, 50);
 }
 
-async function getDiscountPlanIds(discountCodeId: number): Promise<number[]> {
-  const db = await getDb();
-  if (!db) return [];
-  const rows = await db.select({ planId: discountCodePlans.planId }).from(discountCodePlans).where(eq(discountCodePlans.discountCodeId, discountCodeId));
-  return rows.map((row: any) => Number(row.planId)).filter(Boolean);
-}
-
 async function attachDiscountPlans<T extends { id: number }>(codes: T[]) {
   const db = await getDb();
   if (!db || codes.length === 0) return codes.map((code) => ({ ...code, planIds: [] as number[] }));
@@ -3241,9 +3287,9 @@ export async function releaseDiscountCode(id: number) {
   return rawAffectedRows(result) === 1;
 }
 
-export async function listPaymentOrders(limit = 100, userId?: number) {
+export async function listPaymentOrders(limit = 100, userId?: number, selectedIds?: number[]) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db || selectedIds?.length === 0) return [];
   const base = db
     .select({
       id: paymentOrders.id,
@@ -3260,6 +3306,7 @@ export async function listPaymentOrders(limit = 100, userId?: number) {
       tradeNo: paymentOrders.tradeNo,
       payUrl: paymentOrders.payUrl,
       qrCode: paymentOrders.qrCode,
+      failureReason: paymentOrders.failureReason,
       orderType: paymentOrders.orderType,
       planId: paymentOrders.planId,
       subscriptionId: paymentOrders.subscriptionId,
@@ -3273,10 +3320,10 @@ export async function listPaymentOrders(limit = 100, userId?: number) {
     })
     .from(paymentOrders)
     .leftJoin(users, eq(paymentOrders.userId, users.id));
-  if (userId !== undefined) {
-    return base.where(eq(paymentOrders.userId, userId)).orderBy(desc(paymentOrders.createdAt)).limit(limit);
-  }
-  return base.orderBy(desc(paymentOrders.createdAt)).limit(limit);
+  const conditions = [];
+  if (userId !== undefined) conditions.push(eq(paymentOrders.userId, userId));
+  if (selectedIds) conditions.push(inArray(paymentOrders.id, selectedIds));
+  return base.where(and(...conditions)).orderBy(desc(paymentOrders.createdAt), desc(paymentOrders.id)).limit(limit);
 }
 
 export async function updatePaymentOrder(outTradeNo: string, data: Partial<InsertPaymentOrder>) {
@@ -3287,6 +3334,45 @@ export async function updatePaymentOrder(outTradeNo: string, data: Partial<Inser
     .set({ ...data, updatedAt: nowDate() } as Partial<InsertPaymentOrder>)
     .where(eq(paymentOrders.outTradeNo, outTradeNo));
   return getPaymentOrderByOutTradeNo(outTradeNo);
+}
+
+export async function setPaymentOrderCheckout(outTradeNo: string, data: { tradeNo: string | null; payUrl: string | null; qrCode: string | null }) {
+  const db = await getDb();
+  if (!db) return undefined;
+  // A fast callback can fulfill the order before the create response arrives.
+  // Never overwrite its verified trade number with a precreate placeholder.
+  await db.update(paymentOrders).set({ ...data, updatedAt: nowDate() }).where(and(
+    eq(paymentOrders.outTradeNo, outTradeNo), eq(paymentOrders.status, "pending"),
+  ));
+  return getPaymentOrderByOutTradeNo(outTradeNo);
+}
+
+export async function recordPaymentOrderFailure(outTradeNo: string, failureReason: string, statuses = ["pending", "expired", "failed", "cancelled"]) {
+  const db = await getDb();
+  if (!db || statuses.length === 0) return;
+  await db.update(paymentOrders).set({ failureReason, updatedAt: nowDate() }).where(and(
+    eq(paymentOrders.outTradeNo, outTradeNo), inArray(paymentOrders.status, statuses),
+  ));
+}
+
+export async function clearPaymentOrderQueryFailure(outTradeNo: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(paymentOrders).set({ failureReason: null }).where(and(
+    eq(paymentOrders.outTradeNo, outTradeNo),
+    eq(paymentOrders.failureReason, "支付状态核对失败，请管理员按订单号查看支付日志"),
+  ));
+}
+
+export async function claimPaymentOrderCheck(outTradeNo: string, before: Date) {
+  const q = quoteDbIdentifier;
+  const result = await executeRaw(
+    `UPDATE ${q("payment_orders")} SET ${q("lastPaymentCheckAt")} = ?
+     WHERE ${q("outTradeNo")} = ? AND ${q("status")} IN (?, ?, ?, ?)
+       AND (${q("lastPaymentCheckAt")} IS NULL OR ${q("lastPaymentCheckAt")} <= ?)`,
+    [Math.floor(Date.now() / 1000), outTradeNo, "pending", "expired", "failed", "cancelled", Math.floor(before.getTime() / 1000)],
+  );
+  return affectedRows(result) > 0;
 }
 
 function affectedRows(result: any) {
@@ -3323,7 +3409,7 @@ export async function resetStaleProcessingPaymentOrder(outTradeNo: string, befor
   return affectedRows(result) > 0;
 }
 
-export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?: string | null; rawNotify?: string | null; amountCents?: number; currency?: string }) {
+export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?: string | null; rawNotify?: string | null; amountCents?: number; currency?: string }, verifiedRecovery = false) {
   const now = nowDate();
   const result = await executeRaw(
     `UPDATE ${quoteDbIdentifier("payment_orders")}
@@ -3334,7 +3420,7 @@ export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?:
          ${quoteDbIdentifier("paidAt")} = ?,
          ${quoteDbIdentifier("updatedAt")} = ?
      WHERE ${quoteDbIdentifier("outTradeNo")} = ?
-       AND ${quoteDbIdentifier("status")} = ?`,
+       AND ${quoteDbIdentifier("status")} IN (${verifiedRecovery ? "?, ?, ?, ?" : "?"})`,
     [
       "paid",
       data.tradeNo || null,
@@ -3344,12 +3430,12 @@ export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?:
       now,
       outTradeNo,
       "pending",
+      ...(verifiedRecovery ? ["expired", "failed", "cancelled"] : []),
     ],
   );
   if (affectedRows(result) > 0) return getPaymentOrderByOutTradeNo(outTradeNo);
 
-  // A duplicate callback for an already claimed/completed order is harmless,
-  // but terminal failed/expired/cancelled orders must never be reactivated.
+  // Closed orders require explicit, fully verified recovery by the payment service.
   const existing = await getPaymentOrderByOutTradeNo(outTradeNo);
   if (!existing) return undefined;
   if (existing.status === "paid" || existing.status === "processing" || existing.status === "completed") {
@@ -3369,8 +3455,20 @@ export async function listPaymentOrdersForMaintenance(statuses: string[], limit 
     .select()
     .from(paymentOrders)
     .where(inArray(paymentOrders.status, statuses as any))
-    .orderBy(asc(paymentOrders.updatedAt))
+    .orderBy(sql`COALESCE(${paymentOrders.lastPaymentCheckAt}, 0)`, asc(paymentOrders.updatedAt))
     .limit(Math.max(1, Math.min(10000, limit)));
+}
+
+/** Bounded, fair reconciliation; old/unsupported orders must not starve new payments. */
+export async function listPaymentOrdersForReconciliation(since: Date, limit = 20): Promise<PaymentOrder[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(paymentOrders).where(and(
+    inArray(paymentOrders.status, ["pending", "expired", "failed", "cancelled"]),
+    inArray(paymentOrders.provider, ["alipay", "wxpay", "easypay"]),
+    sql`COALESCE(${paymentOrders.expiresAt}, ${paymentOrders.createdAt}) >= ${Math.floor(since.getTime() / 1000)}`,
+    sql`(${paymentOrders.lastPaymentCheckAt} IS NULL OR ${paymentOrders.lastPaymentCheckAt} <= ${Math.floor((Date.now() - 30_000) / 1000)})`,
+  )).orderBy(sql`COALESCE(${paymentOrders.lastPaymentCheckAt}, 0)`, asc(paymentOrders.createdAt)).limit(limit);
 }
 
 export async function getBalanceTransactionByPaymentOrderNo(paymentOrderNo: string) {

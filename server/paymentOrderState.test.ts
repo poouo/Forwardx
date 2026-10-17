@@ -53,7 +53,9 @@ test("payment settings validate keys before saving and failed gateway orders ret
         const content = Object.keys(params).filter(key => key !== "sign" && params[key] !== "")
           .sort().map(key => key + "=" + params[key]).join("&");
         assert.equal(crypto.verify("RSA-SHA256", Buffer.from(content), pair.publicKey, Buffer.from(params.sign,"base64")), true);
-        return new Response(JSON.stringify({alipay_trade_precreate_response:{code:"10000",qr_code:"https://qr.example.test/pay"}}),
+        const payload = JSON.stringify({code:"10000",qr_code:"https://qr.example.test/pay"});
+        const sign = crypto.sign("RSA-SHA256", Buffer.from(payload), pair.privateKey).toString("base64");
+        return new Response('{"alipay_trade_precreate_response":' + payload + ',"sign":' + JSON.stringify(sign) + '}',
           {status:200,headers:{"Content-Type":"application/json"}});
       };
       const order = await admin.createOrder({amount:1,paymentType:"alipay"});
@@ -94,7 +96,7 @@ test("payment settings validate keys before saving and failed gateway orders ret
   }
 });
 
-test("payment callbacks cannot reactivate closed orders", () => {
+test("ordinary repository transitions cannot reactivate closed orders without verified recovery", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-payment-state-"));
   const databasePath = path.join(directory, "payment.db");
   const script = String.raw`

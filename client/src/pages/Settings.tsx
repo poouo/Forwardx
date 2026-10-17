@@ -4026,7 +4026,7 @@ function SystemInfoSection() {
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const { data: upgradeStatus, refetch: refetchUpgradeStatus } = trpc.system.upgradeStatus.useQuery(
     undefined,
-    { refetchInterval: pollingInterval("fast") }
+    { refetchInterval: pollingInterval("fast"), refetchIntervalInBackground: true, refetchOnReconnect: true }
   );
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [webPortInput, setWebPortInput] = useState("");
@@ -5530,7 +5530,11 @@ function SystemInfoSection() {
                 key={key}
                 className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
               >
-                <span className="min-w-0 text-sm">{translateText(SIDEBAR_MENU_LABELS[key])}</span>
+                <div className="min-w-0">
+                  <span className="text-sm">{translateText(SIDEBAR_MENU_LABELS[key])}</span>
+                  {key === "affiliates" && <p className="mt-1 text-xs text-muted-foreground">{translateText("仅控制菜单显示，返佣总开关请在推广管理的设置中调整。")}</p>}
+                  {key === "tickets" && <p className="mt-1 text-xs text-muted-foreground">{translateText("仅控制用户侧菜单显示，工单功能和推送开关请在工单管理的设置中调整。")}</p>}
+                </div>
                 <Switch className="shrink-0" aria-label={translateText(SIDEBAR_MENU_LABELS[key])} checked={sidebarMenu[key]} onCheckedChange={(checked) => setSidebarMenuEnabled(key, checked)} />
               </div>
             ))}
@@ -5715,7 +5719,7 @@ function SystemInfoSection() {
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {upgradeStatus.job.status === "success"
-                        ? translateText("已完成 {0} {1}，{2} 秒后自动刷新", [upgradeStatus.job.targetVersion || "", upgradeStatus.job.mode === "rollback" ? translateText("回退") : translateText("升级"), PANEL_UPGRADE_REFRESH_DELAY_SECONDS])
+                        ? translateText("已完成 {0} {1}", [upgradeStatus.job.targetVersion || "", upgradeStatus.job.mode === "rollback" ? translateText("回退") : translateText("升级")])
                         : upgradeStatus.job.status === "waiting_assets"
                           ? translateText("GitHub Actions 仍在生成面板安装包或镜像，请稍后重新检查更新")
                         : upgradeStatus.job.status === "error"

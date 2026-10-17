@@ -82,7 +82,7 @@ import { renderMixedHtml } from "@/lib/htmlContent";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { cn } from "@/lib/utils";
-import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_KEY, readPanelUpgradeRefresh, startPanelUpgradeRefresh, type PanelUpgradeRefresh } from "@/lib/panelUpgrade";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -458,8 +458,13 @@ function DashboardLayoutContent({
     () => normalizeSidebarMenuSettings(publicInfo?.sidebarMenu),
     [publicInfo?.sidebarMenu]
   );
+  const { data: ticketStatus } = trpc.supportTickets.status.useQuery(undefined, {
+    enabled: !!user && (isAdmin || sidebarMenuSettings.tickets),
+    refetchInterval: 60000,
+    refetchOnWindowFocus: true,
+  });
   const { data: ticketSummary } = trpc.supportTickets.summary.useQuery(undefined, {
-    enabled: !!user && sidebarMenuSettings.tickets,
+    enabled: !!user && (isAdmin || sidebarMenuSettings.tickets) && ticketStatus?.enabled === true,
     refetchInterval: 60000,
     refetchOnWindowFocus: true,
     retry: false,
@@ -496,10 +501,14 @@ function DashboardLayoutContent({
   const [checkingMobileUpdate, setCheckingMobileUpdate] = useState(false);
   const [mobileUpdateInfo, setMobileUpdateInfo] = useState<MobileAppUpdateResult | null>(null);
   const [showMobileUpdateDialog, setShowMobileUpdateDialog] = useState(false);
-  const upgradeRefreshTimerRef = useRef<number | null>(null);
-  const upgradeRefreshIntervalRef = useRef<number | null>(null);
   const displayedUpgradeAnnouncementKeyRef = useRef("");
-  const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
+  const [upgradeRefresh, setUpgradeRefresh] = useState<PanelUpgradeRefresh | null>(() => {
+    try {
+      const saved = readPanelUpgradeRefresh(window.sessionStorage);
+      return saved?.completed ? null : saved;
+    } catch { return null; }
+  });
+  const upgradeRefreshScheduled = upgradeRefresh !== null;
   const [upgradeRefreshCountdown, setUpgradeRefreshCountdown] = useState<number | null>(null);
   const [backgroundUpgrade, setBackgroundUpgrade] = useState<PanelUpgradeSession | null>(() => readPanelUpgradeSession());
   const [dismissedPanelUpgradeNoticeVersion, setDismissedPanelUpgradeNoticeVersion] = useState(() => readDismissedPanelUpgradeNoticeVersion());
@@ -518,6 +527,8 @@ function DashboardLayoutContent({
       return status === "running" || backgroundUpgrade ? 2000 : false;
     },
     refetchOnWindowFocus: false,
+    refetchIntervalInBackground: true,
+    refetchOnReconnect: true,
     retry: false,
   });
 
@@ -540,33 +551,54 @@ function DashboardLayoutContent({
     onError: (error) => toast.error(error.message || translateText("启动升级失败")),
   });
 
-  const scheduleUpgradeRefresh = useCallback(() => {
-    if (upgradeRefreshTimerRef.current !== null) return;
+  const scheduleUpgradeRefresh = useCallback((jobKey: string) => {
     clearPanelUpgradeSession();
-    setUpgradeRefreshScheduled(true);
-    setUpgradeRefreshCountdown(PANEL_UPGRADE_REFRESH_DELAY_SECONDS);
-    upgradeRefreshIntervalRef.current = window.setInterval(() => {
-      setUpgradeRefreshCountdown((value) => (value === null ? null : Math.max(0, value - 1)));
-    }, 1000);
-    upgradeRefreshTimerRef.current = window.setTimeout(() => {
-      if (upgradeRefreshIntervalRef.current !== null) {
-        window.clearInterval(upgradeRefreshIntervalRef.current);
-        upgradeRefreshIntervalRef.current = null;
-      }
-      window.location.reload();
-    }, PANEL_UPGRADE_REFRESH_DELAY_MS);
-  }, []);
+    if (upgradeRefresh) return;
+    const next = { jobKey, deadline: Date.now() + PANEL_UPGRADE_REFRESH_DELAY_MS };
+    try {
+      const saved = readPanelUpgradeRefresh(window.sessionStorage);
+      if (saved?.jobKey === jobKey && saved.completed) return;
+      window.sessionStorage.setItem(PANEL_UPGRADE_REFRESH_KEY, JSON.stringify(next));
+    } catch { /* Keep the countdown working when storage is unavailable. */ }
+    setUpgradeRefresh(next);
+  }, [upgradeRefresh]);
 
   useEffect(() => {
+    if (!isAdmin || !upgradeRefresh) return;
+    const refresh = startPanelUpgradeRefresh(upgradeRefresh.deadline, {
+      now: Date.now,
+      timers: window,
+      onCountdown: setUpgradeRefreshCountdown,
+      onRefresh: () => {
+        try {
+          window.sessionStorage.setItem(PANEL_UPGRADE_REFRESH_KEY, JSON.stringify({ ...upgradeRefresh, completed: true }));
+        } catch { /* Reload still works without storage. */ }
+        window.location.reload();
+      },
+    });
+    window.addEventListener("focus", refresh.check);
+    window.addEventListener("pageshow", refresh.check);
+    document.addEventListener("visibilitychange", refresh.check);
     return () => {
-      if (upgradeRefreshTimerRef.current !== null) {
-        window.clearTimeout(upgradeRefreshTimerRef.current);
-      }
-      if (upgradeRefreshIntervalRef.current !== null) {
-        window.clearInterval(upgradeRefreshIntervalRef.current);
-      }
+      refresh.dispose();
+      window.removeEventListener("focus", refresh.check);
+      window.removeEventListener("pageshow", refresh.check);
+      document.removeEventListener("visibilitychange", refresh.check);
     };
-  }, []);
+  }, [isAdmin, upgradeRefresh]);
+
+  useEffect(() => {
+    if (!isAdmin || !backgroundUpgrade || upgradeRefreshScheduled) return;
+    const resume = () => { void refetchUpgradeStatus(); };
+    window.addEventListener("focus", resume);
+    window.addEventListener("pageshow", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      window.removeEventListener("focus", resume);
+      window.removeEventListener("pageshow", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [isAdmin, backgroundUpgrade, upgradeRefreshScheduled, refetchUpgradeStatus]);
 
   useEffect(() => {
     if (!popupAnnouncement?.id || !user?.id) return;
@@ -689,8 +721,8 @@ function DashboardLayoutContent({
 
   useEffect(() => {
     if (upgradeStatus?.job?.status !== "success") return;
-    scheduleUpgradeRefresh();
-  }, [scheduleUpgradeRefresh, upgradeStatus?.job?.status]);
+    scheduleUpgradeRefresh(JSON.stringify([upgradeStatus.job.mode, upgradeStatus.job.targetVersion, upgradeStatus.job.startedAt]));
+  }, [scheduleUpgradeRefresh, upgradeStatus?.job]);
 
   useEffect(() => {
     if (!backgroundUpgrade?.targetVersion || !upgradeStatus?.currentVersion) return;
@@ -711,7 +743,9 @@ function DashboardLayoutContent({
 
     clearPanelUpgradeSession();
     setBackgroundUpgrade(null);
-    scheduleUpgradeRefresh();
+    scheduleUpgradeRefresh(JSON.stringify(upgradeStatus.job?.startedAt
+      ? [upgradeStatus.job.mode, upgradeStatus.job.targetVersion, upgradeStatus.job.startedAt]
+      : [backgroundUpgrade.mode, backgroundUpgrade.targetVersion, backgroundUpgrade.startedAt]));
   }, [
     backgroundUpgrade?.startedAt,
     backgroundUpgrade?.mode,
@@ -1104,8 +1138,8 @@ function DashboardLayoutContent({
         path: `/plugins/sidebar/${page.pluginId}`,
       }))
     : [];
-  const ticketMenuItems: SidebarNavItem[] = sidebarMenuSettings.tickets
-    ? [{ icon: LifeBuoy, label: `${translateText("工单支持")}${ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" }]
+  const ticketMenuItems: SidebarNavItem[] = isAdmin || sidebarMenuSettings.tickets
+    ? [{ icon: LifeBuoy, label: `${translateText("工单支持")}${ticketStatus?.enabled && ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" }]
     : [];
   const primaryMenuItems = [
     ...visibleMainMenuItems,
@@ -1391,7 +1425,7 @@ function DashboardLayoutContent({
           </div>
         </SidebarHeader>
 
-        <PearlSidebarContent activeKey={currentPath} className="gap-1 pb-2 mobile-sidebar-content">
+        <PearlSidebarContent activeKey={currentPath} scrollKey={`${user?.id}:${user?.role}`} className="gap-1 pb-2 mobile-sidebar-content">
           {primaryMenuItems.length > 0 && (
             <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
               <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>

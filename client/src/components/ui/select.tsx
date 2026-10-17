@@ -4,38 +4,7 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useOverlayContainer } from "@/components/ui/overlay-root"
 
-const SELECT_OPEN_ATTR = "forwardxSelectOpen"
-
-function markSelectOpen() {
-  if (typeof document === "undefined" || typeof window === "undefined") return () => {}
-  const count = Number(document.body.dataset[SELECT_OPEN_ATTR] || "0") + 1
-  document.body.dataset[SELECT_OPEN_ATTR] = String(count)
-  return () => {
-    const nextCount = Number(document.body.dataset[SELECT_OPEN_ATTR] || "1") - 1
-    if (nextCount > 0) {
-      document.body.dataset[SELECT_OPEN_ATTR] = String(nextCount)
-    } else {
-      delete document.body.dataset[SELECT_OPEN_ATTR]
-    }
-  }
-}
-
-const Select = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) => {
-  const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
-  const isOpen = open ?? internalOpen
-
-  React.useEffect(() => {
-    if (!isOpen) return
-    return markSelectOpen()
-  }, [isOpen])
-
-  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
-    setInternalOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-  }, [onOpenChange])
-
-  return <SelectPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
-}
+const Select = SelectPrimitive.Root
 Select.displayName = SelectPrimitive.Root.displayName
 const SelectGroup = SelectPrimitive.Group
 const SelectValue = SelectPrimitive.Value

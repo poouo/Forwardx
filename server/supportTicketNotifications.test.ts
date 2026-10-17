@@ -41,7 +41,7 @@ before(async () => {
       discordId: id === 5 ? null : `12345678901234567${id}`,
       supportTicketNotificationSubscribed: id !== 3 });
   }
-  await settings.setSettings({ sidebarMenu: JSON.stringify({ tickets: true }), notificationChannel: "telegram",
+  await settings.setSettings({ supportTicketsEnabled: "true", sidebarMenu: JSON.stringify({ tickets: true }), notificationChannel: "telegram",
     telegramBotEnabled: "true", telegramBotToken: "test-tg-token", discordBotEnabled: "true", discordBotToken: "test-dc-token" });
 });
 
@@ -85,6 +85,8 @@ test("both channels enforce master and recipient preferences while preserving ti
   }) as typeof fetch;
   try {
     const ticket = await support.createSupportTicket(customer, { title: "A <private> issue", category: "technical", priority: "normal", content: "Help", attachments: [] });
+    const supportRouter = (await import("./routers/supportTickets")).supportTicketsRouter;
+    const staff = supportRouter.createCaller(context(admin));
     for (const channel of ["telegram", "discord"] as const) {
       await settings.setSettings({ notificationChannel: channel, supportTicketNotificationsEnabled: "true" });
       requests.length = 0;
@@ -111,10 +113,14 @@ test("both channels enforce master and recipient preferences while preserving ti
       await notify(admin, ticket.id);
       assert.equal(requests.length, 0);
       await users.updateUserProfile(2, { supportTicketNotificationSubscribed: true });
-      await settings.setSetting("supportTicketNotificationsEnabled", "false");
+      await staff.saveSettings({ notificationsEnabled: false });
       await notify(customer, ticket.id, true);
       await notify(admin, ticket.id);
       assert.equal(requests.length, 0, "master switch suppresses both directions");
+      await staff.saveSettings({ notificationsEnabled: true, enabled: false });
+      await notify(customer, ticket.id, true);
+      assert.equal(requests.length, 0, "disabled ticket feature suppresses pushes even when the notification switch remains enabled");
+      await staff.saveSettings({ enabled: true, notificationsEnabled: false });
       const { sendUserNotification } = await import("./notifications");
       await sendUserNotification(await users.getUserById(2), "Unrelated notification");
       assert.ok(requests.length > 0, "ticket master switch must not disable other notification types");
@@ -129,7 +135,6 @@ test("both channels enforce master and recipient preferences while preserving ti
     await settings.setSetting("supportTicketNotificationsEnabled", "true");
     requests.length = 0;
     const noteVersion = (await support.getSupportTicket(admin, ticket.id)).version;
-    const supportRouter = (await import("./routers/supportTickets")).supportTicketsRouter;
     await supportRouter.createCaller(context(admin)).reply({ id: ticket.id, version: noteVersion, content: "Staff only", internal: true });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(requests.length, 0, "internal notes never notify anyone");

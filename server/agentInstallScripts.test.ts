@@ -72,6 +72,17 @@ test("Agent services avoid duplicate logs and disable core dumps", () => {
   assert.doesNotMatch(script, /output_log="\/var\/log\/forwardx-agent\/\$SERVICE_NAME\.log"/);
 });
 
+test("Agent installer uses one service-start function for all supported init systems", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  assert.doesNotMatch(script, /start_agent_service_systemd_unused/);
+  assert.equal((script.match(/^start_agent_service\(\) \{/gm) || []).length, 1);
+  const start = scriptSection(script, "start_agent_service() {", "remove_service_by_name() {");
+  assert.match(start, /systemctl restart/);
+  assert.match(start, /systemctl is-active --quiet/);
+  assert.match(start, /rc-service "\$SERVICE_NAME" restart/);
+  assert.match(start, /"\/etc\/init\.d\/\$SERVICE_NAME" restart/);
+});
+
 test("Agent install and upgrade do not install or modify host time synchronization", () => {
   const script = generateInstallScript("https://panel.example.com");
 
@@ -219,7 +230,7 @@ test("realm installer pins the compatible default and preserves an explicit over
 });
 
 test("GitHub Agent entry script forwards the Realm version override", () => {
-  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-agent.sh"), "utf8");
+  const script = fs.readFileSync(path.join(process.cwd(), "scripts/install-agent.sh"), "utf8").replace(/\r\n/g, "\n");
 
   assert.match(script, /FORWARDX_REALM_VERSION="\$\{FORWARDX_REALM_VERSION:-2\.9\.4\}"/);
   assert.match(script, /FORWARDX_REALM_VERSION_EXPLICIT="false"/);

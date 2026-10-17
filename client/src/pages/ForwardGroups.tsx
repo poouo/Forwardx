@@ -3,6 +3,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
 import { PortEntryRuntimeSummary } from "@/components/PortEntryRuntimeSummary";
+import { ForwardGroupMembers } from "@/components/ForwardGroupMembers";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -56,7 +57,6 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   Activity,
-  ArrowRightLeft,
   AlertCircle,
   CheckCircle2,
   ChevronRight,
@@ -94,7 +94,6 @@ import {
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
 import {
-  FORWARD_RULE_PROTOCOL_LABELS,
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
   TUNNEL_PROTOCOLS,
@@ -409,101 +408,6 @@ function entryGroupDisplayText(group: any, groupsByMode: Record<GroupMode, any[]
   const entryGroup = groupsByMode.entry.find((item: any) => Number(item.id) === entryGroupId);
   if (!entryGroup) return translateText("入口组 #{0}", [entryGroupId]);
   return String(entryGroup.domain || entryGroup.name || translateText("入口组 #{0}", [entryGroupId])).trim();
-}
-
-function normalizeForwardGroupSearchText(value: unknown) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function forwardGroupSearchMatches(parts: unknown[], query: string) {
-  const needle = normalizeForwardGroupSearchText(query);
-  if (!needle) return true;
-  return parts.some((part) => normalizeForwardGroupSearchText(part).includes(needle));
-}
-
-function forwardGroupHostSearchParts(host: any | null | undefined) {
-  if (!host) return [];
-  return [
-    host.id,
-    host.name,
-    host.hostname,
-    host.ip,
-    host.ipv4,
-    host.ipv6,
-    host.publicIp,
-    host.entryIp,
-    host.tunnelEntryIp,
-    host.ddnsDomain,
-    host.region,
-    host.country,
-    host.os,
-    host.system,
-    host.agentVersion,
-  ];
-}
-
-function forwardGroupMatchesSearchQuery(
-  group: any,
-  query: string,
-  hosts: any[] | undefined,
-  tunnels: any[] | undefined,
-  groupsByMode: Record<GroupMode, any[]>,
-) {
-  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
-  const tunnelById = new Map((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
-  const mode = normalizeGroupMode(group?.groupMode);
-  const entryGroupText = entryGroupDisplayText(group, groupsByMode);
-  const modeLabels: Record<GroupMode, string[]> = {
-    port: ["端口转发", "port"],
-    chain: ["转发链", "端口转发链", "chain"],
-    failover: ["转发组", "故障转移", "failover"],
-    entry: ["入口组", "entry"],
-    exit: ["出口组", "exit"],
-  };
-  const memberParts = (Array.isArray(group?.members) ? group.members : []).flatMap((member: any) => {
-    if (member?.memberType === "tunnel") {
-      const tunnel = tunnelById.get(Number(member.tunnelId || 0));
-      return [
-        member.id,
-        member.tunnelId,
-        member.entryAddress,
-        member.connectHost,
-        tunnel?.id,
-        tunnel?.name,
-        tunnel?.listenPort,
-        tunnel?.mode,
-        getTunnelRouteText(tunnel, hosts),
-      ];
-    }
-    const host = hostById.get(Number(member?.hostId || 0));
-    return [
-      member?.id,
-      member?.hostId,
-      member?.entryAddress,
-      member?.connectHost,
-      host?.name || (member?.hostId ? `host #${member.hostId}` : ""),
-      ...forwardGroupHostSearchParts(host),
-    ];
-  });
-  return forwardGroupSearchMatches([
-    group?.id,
-    group?.name,
-    group?.domain,
-    group?.recordType,
-    group?.lastDdnsValue,
-    group?.lastStatus,
-    group?.lastMessage,
-    group?.protocol,
-    FORWARD_RULE_PROTOCOL_LABELS[normalizeForwardRuleProtocol(group?.protocol, "both")],
-    group?.forwardType,
-    (FORWARD_TYPE_LABELS as Record<string, string>)[String(group?.forwardType || "")],
-    group?.groupType,
-    group?.failoverStrategy,
-    group?.trafficMultiplier,
-    entryGroupText,
-    ...(modeLabels[mode] || []),
-    ...memberParts,
-  ], query);
 }
 
 type GroupLatencyPoint = {
@@ -1668,9 +1572,9 @@ export function ForwardGroupsContent({
       <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{FORWARD_TYPE_LABELS[group.forwardType as ForwardType] || group.forwardType || "iptables"}</Badge>
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{translateText("倍率 ")}{formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
-        {mode === "port" && !!group.entryGroupId && (
+        {mode === "port" && !!group.entryGroupId && !group.entryRuntime && (
           <Badge variant="outline" className="h-5 rounded px-1.5 font-normal" title={group.lastMessage || undefined}>
-            {group.entryRuntime ? translateText("入口节点 {0}/{1}",[group.entryRuntime.runningHostCount,group.entryRuntime.expectedHostCount]) : translateText("运行规则 {0}/{1}", [Number(group.runtimeRunningRuleCount || 0), Number(group.runtimeExpectedRuleCount || 0)])}
+            {translateText("运行规则 {0}/{1}", [Number(group.runtimeRunningRuleCount || 0), Number(group.runtimeExpectedRuleCount || 0)])}
           </Badge>
         )}
       </div>
@@ -1688,10 +1592,10 @@ export function ForwardGroupsContent({
 
   const groupStatusMessage = (group: any) => {
     if (normalizeGroupMode(group.groupMode) === "port" && group.entryGroupId && group.lastMessage) return String(group.lastMessage);
-    const templateRuleCount = Number(group.templateRuleCount || 0);
+    const referenceRuleCount = Number(group.trafficSummary?.ruleCount || 0);
     const availabilityMessage = getGroupConfigState(group).message;
-    return templateRuleCount > 0
-      ? translateText("{0}；已被 {1} 条转发规则引用", [availabilityMessage, templateRuleCount])
+    return referenceRuleCount > 0
+      ? translateText("{0}；已被 {1} 条转发规则引用", [availabilityMessage, referenceRuleCount])
       : availabilityMessage;
   };
 
@@ -1714,10 +1618,7 @@ export function ForwardGroupsContent({
   };
 
   const portEntryText = (group: any) => {
-    if (group.entryGroupId) {
-      const entry = groupsByMode.entry.find((item: any) => Number(item.id) === Number(group.entryGroupId));
-      return `${entry?.name || translateText("入口组 #{0}", [group.entryGroupId])} · ${translateText("{0} 台主机", [(group.members || []).filter((member: any) => member.isEnabled !== false).length])}`;
-    }
+    if (group.entryGroupId) return entryGroupDisplayText(group, groupsByMode);
     return group.members?.length ? memberLabel(group.members[0]) : translateText("未选择");
   };
 
@@ -1733,39 +1634,29 @@ export function ForwardGroupsContent({
   const memberDecoratedLabel = (group: any, member: any, index: number) => {
     const prefix = normalizeGroupMode(group.groupMode) === "chain"
       ? `${chainRoleLabel(index, group.members?.length || 0, !!Number(group.entryGroupId || 0))} · `
-      : "";
+      : normalizeGroupMode(group.groupMode) === "port" && group.entryGroupId ? `${translateText("入口")} · ` : "";
     const connectLabel = normalizeGroupMode(group.groupMode) === "exit" ? memberConnectLabel(member) : "";
     const suffix = connectLabel ? ` · ${connectLabel}` : "";
     return `${index + 1}. ${prefix}${memberLabel(member)}${suffix}`;
   };
 
-  const renderTableMembersSummary = (group: any) => {
+  const renderGroupMembers = (group: any, compact = false) => {
     const members = Array.isArray(group.members) ? group.members : [];
-    if (members.length === 0) return <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>;
-    const visibleMembers = members.slice(0, 2);
-    const hiddenCount = Math.max(0, members.length - visibleMembers.length);
+    const hasEntryGroup = (group.groupMode === "port" || group.groupMode === "chain") && !!group.entryGroupId;
+    const entry = hasEntryGroup ? groupsByMode.entry.find((item: any) => Number(item.id) === Number(group.entryGroupId)) : null;
     return (
-      <div className="flex max-w-xs flex-wrap gap-1.5 overflow-hidden">
-        {visibleMembers.map((member: any, index: number) => (
-          <span
-            key={member.id}
-            className={`inline-flex max-w-[14rem] items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-              isGroupMemberActive(group, member)
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                : "border-border bg-muted/20 text-muted-foreground"
-            }`}
-            title={memberHealthTitle(group, member)}
-          >
-            {renderMemberConfigIcon(group, member)}
-            <span className="truncate">{memberDecoratedLabel(group, member, index)}</span>
-          </span>
-        ))}
-        {hiddenCount > 0 && (
-          <span className="inline-flex items-center rounded border border-border bg-muted/20 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-            +{hiddenCount}
-          </span>
-        )}
-      </div>
+      <ForwardGroupMembers
+        title={groupMemberTitle(group)}
+        entryGroupName={hasEntryGroup ? entry?.name || translateText("入口组 #{0}", [group.entryGroupId]) : undefined}
+        compact={compact}
+        members={members.map((member: any, index: number) => ({
+          id: member.id, label: memberDecoratedLabel(group, member, index),
+          title: memberHealthTitle(group, member), active: isGroupMemberActive(group, member),
+          icon: renderMemberConfigIcon(group, member),
+        }))}
+      >
+        {group.groupMode === "port" && hasEntryGroup && <PortEntryRuntimeSummary summary={group.entryRuntime} resourceName={group.name} />}
+      </ForwardGroupMembers>
     );
   };
 
@@ -1984,43 +1875,20 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
-                    <div className="text-xs text-muted-foreground">{groupMemberTitle(group)}</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(group.members || []).length > 0 ? (group.members || []).map((member: any, index: number) => (
-                        <span
-                          key={member.id}
-                          className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                            isGroupMemberActive(group, member)
-                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                              : "border-border bg-muted/20 text-muted-foreground"
-                          }`}
-                          title={memberHealthTitle(group, member)}
-                        >
-                          {renderMemberConfigIcon(group, member)}
-                          <span className="truncate">
-                            {memberDecoratedLabel(group, member, index)}
-                          </span>
-                        </span>
-                      )) : (
-                        <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>
-                      )}
-                    </div>
-                  </div>
+                  {renderGroupMembers(group)}
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText(group.entryGroupId ? "入口" : "所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
                       <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
-                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : group.trafficSummary?.ruleCount ?? "—"}</div>
                     </div>
                   </div>
 
-                  <ResourceTrafficSummary summary={group.trafficSummary} />
-                  {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <PortEntryRuntimeSummary summary={group.entryRuntime} />}
+                  <ResourceTrafficSummary summary={group.trafficSummary} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
@@ -2086,43 +1954,20 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
-                    <div className="text-xs text-muted-foreground">{groupMemberTitle(group)}</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(group.members || []).length > 0 ? (group.members || []).map((member: any, index: number) => (
-                        <span
-                          key={member.id}
-                          className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                            isGroupMemberActive(group, member)
-                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                              : "border-border bg-muted/20 text-muted-foreground"
-                          }`}
-                          title={memberHealthTitle(group, member)}
-                        >
-                          {renderMemberConfigIcon(group, member)}
-                          <span className="truncate">
-                            {memberDecoratedLabel(group, member, index)}
-                          </span>
-                        </span>
-                      )) : (
-                        <span className="text-xs text-muted-foreground">{translateText("暂无成员")}</span>
-                      )}
-                    </div>
-                  </div>
+                  {renderGroupMembers(group)}
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText(group.entryGroupId ? "入口" : "所属主机") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("入口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("出口") : "DDNS"}</p>
                       <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台主机", [(group.members || []).length]) : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? translateText("链路延迟") : isCollectionMode(normalizeGroupMode(group.groupMode)) ? translateText("用途") : translateText("引用规则")}</p>
-                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</div>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : group.trafficSummary?.ruleCount ?? "—"}</div>
                     </div>
                   </div>
 
-                  <ResourceTrafficSummary summary={group.trafficSummary} />
-                  {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <PortEntryRuntimeSummary summary={group.entryRuntime} />}
+                  <ResourceTrafficSummary summary={group.trafficSummary} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
@@ -2198,16 +2043,15 @@ export function ForwardGroupsContent({
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
                       </TableCell>
                       <TableCell className="py-3">
-                        {renderTableMembersSummary(group)}
-                        {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && <div className="mt-2 min-w-[14rem]"><PortEntryRuntimeSummary summary={group.entryRuntime} /></div>}
+                        {renderGroupMembers(group, true)}
                       </TableCell>
                       <TableCell className="hidden max-w-[16rem] py-3 md:table-cell">
                         <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? portEntryText(group) : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? translateText("{0} 台出口主机", [(group.members || []).length]) : group.domain || translateText("未配置域名")}</div>
                         {normalizeGroupMode(group.groupMode) === "port" && !!group.entryGroupId && groupRuntimeBadges(group)}
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("转发规则中直接选择") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("规则使用时监听入口端口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("隧道出口组") : group.lastDdnsValue || translateText("未切换")}</div>
                       </TableCell>
-                      <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : Number(group.templateRuleCount || 0)}</TableCell>
-                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact /></TableCell>
+                      <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : group.trafficSummary?.ruleCount ?? "—"}</TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} /></TableCell>
                       <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}

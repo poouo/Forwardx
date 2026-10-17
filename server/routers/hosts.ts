@@ -6,7 +6,7 @@ import * as db from "../db";
 import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
-import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets";
+import { getMissingBundledAgentAssets } from "../agentAssets";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "../agentRouteUtils";
@@ -19,7 +19,6 @@ import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
 import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
 import { getHostAvailability } from "../repositories/hostAvailabilityRepository";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
-import { ENV } from "../env";
 import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
 import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
 import { billingCalendarParts } from "@shared/billingTime";
@@ -410,57 +409,6 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
 function compactHostForList(host: any) {
   const { agentToken, ...rest } = host || {};
   return rest;
-}
-
-function hostMatchesListSearch(host: any, search: string) {
-  const tokens = String(search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
-  const text = [
-    host?.id,
-    host?.name,
-    host?.ip,
-    host?.ipv4,
-    host?.ipv6,
-    host?.entryIp,
-    host?.tunnelEntryIp,
-    host?.osInfo,
-    host?.cpuInfo,
-    host?.agentVersion,
-    host?.hostType,
-  ].map((value) => String(value || "").toLowerCase()).join(" ");
-  return tokens.every((token) => text.includes(token));
-}
-
-function orderHostsByGroups(hostRows: any[], groups: any[], selectedGroupId?: number | null) {
-  const hostById = new Map(hostRows.map((host) => [Number(host.id), host]));
-  const enabledGroups = [...groups]
-    .filter((group) => group?.isEnabled !== false)
-    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id || 0) - Number(b.id || 0));
-  if (selectedGroupId) {
-    const selected = enabledGroups.find((group) => Number(group.id) === Number(selectedGroupId));
-    return (selected?.hostIds || selected?.members?.map((member: any) => member.hostId) || [])
-      .map((hostId: unknown) => hostById.get(Number(hostId)))
-      .filter(Boolean);
-  }
-  if (enabledGroups.length === 0) return hostRows;
-
-  const ordered: any[] = [];
-  const used = new Set<number>();
-  for (const group of enabledGroups) {
-    const hostIds = group?.hostIds || group?.members?.map((member: any) => member.hostId) || [];
-    for (const value of hostIds) {
-      const hostId = Number(value || 0);
-      const host = hostById.get(hostId);
-      if (!host || used.has(hostId)) continue;
-      used.add(hostId);
-      ordered.push(host);
-    }
-  }
-  for (const host of hostRows) {
-    const hostId = Number(host.id || 0);
-    if (!used.has(hostId)) ordered.push(host);
-  }
-  return ordered;
 }
 
 function compactHostStatus(host: any) {
@@ -1057,6 +1005,7 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
         trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
+        hostStatusNotifyEnabled: z.boolean().optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
@@ -1101,6 +1050,7 @@ export const hostsRouter = router({
           ...input,
           ...trafficConfig,
           ...ddnsConfig,
+          hostStatusNotifyEnabled: ctx.user.role === "admin" ? (input.hostStatusNotifyEnabled ?? true) : true,
           agentToken,
           networkInterface: input.networkInterface || null,
           sortOrder: input.sortOrder ?? 0,
@@ -1149,6 +1099,7 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
         trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
+        hostStatusNotifyEnabled: z.boolean().optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         telegramRenewalReminderEnabled: z.boolean().optional(),
@@ -1191,6 +1142,7 @@ export const hostsRouter = router({
         } else {
           delete data.trafficFailoverEnabled;
           delete data.trafficFailoverThresholdPercent;
+          delete data.hostStatusNotifyEnabled;
         }
         let ddnsConfigChanged = false;
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;

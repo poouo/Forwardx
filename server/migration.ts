@@ -6,7 +6,7 @@ import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGzip } from "zlib";
 import Database from "better-sqlite3";
-import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs } from "./dbSchema";
+import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs, affiliateEnabledFromLegacySidebar, supportTicketsEnabledFromLegacySidebar } from "./dbSchema";
 import { AFFILIATE_TABLES, assertAffiliateImportSafe } from "./affiliateMigration";
 import {
   connectDatabase,
@@ -2072,6 +2072,14 @@ export async function importMigrationSnapshot(
 
   onProgress?.(95, "正在恢复系统标记");
   await runPostImportStep("系统标记恢复", async () => {
+    if (mode === "restore" && !snapshot.tables.system_settings?.some((row) => row.key === "supportTicketsEnabled")) {
+      const legacySidebar = snapshot.tables.system_settings?.find((row) => row.key === "sidebarMenu");
+      await setSetting("supportTicketsEnabled", supportTicketsEnabledFromLegacySidebar(legacySidebar?.value));
+    }
+    if (mode === "restore" && !snapshot.tables.system_settings?.some((row) => row.key === "affiliateEnabled")) {
+      const legacySidebar = snapshot.tables.system_settings?.find((row) => row.key === "sidebarMenu");
+      await setSetting("affiliateEnabled", affiliateEnabledFromLegacySidebar(legacySidebar?.value));
+    }
     if (!snapshot.tables.system_settings?.some((row) => row.key === "storeEnabled")) {
       await setSetting("storeEnabled", "false");
     }

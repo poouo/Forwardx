@@ -70,7 +70,7 @@ function TrafficBillingStatCard({
   fallbackValue?: string | number;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
@@ -372,7 +372,7 @@ export default function TrafficBillingConfigManager({
     refetchOnWindowFocus: false,
   });
   const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
-  const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
+  const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery(undefined, { enabled: showSummary });
 
   const portForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "port");
   const chainForwardGroups = forwardGroups.filter((group: any) => forwardGroupMode(group) === "chain");

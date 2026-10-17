@@ -148,7 +148,7 @@ export default function Announcements() {
               const type: AnnouncementType = item.type === "popup" ? "popup" : "normal";
               const isPopup = type === "popup";
               return (
-                <Card key={item.id}>
+                <Card key={item.id} hoverable>
                   <CardHeader>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>

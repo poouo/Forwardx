@@ -134,7 +134,7 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
   // unrelated DNS target change from rescanning and rebuilding every port's
   // counter rules.
   if (mode === "process") return [];
-  const cmds: string[] = [...buildCountingCleanupCmds(port, targetIp, targetPort, protocol)];
+  const cmds: string[] = [...buildCountingCleanupCmds(port)];
   if (mode === "none") return cmds;
   for (const proto of protos) {
     const target = cleanAddress(targetIp);
@@ -156,7 +156,7 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
   return cmds;
 }
 
-export function buildCountingCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
+export function buildCountingCleanupCmds(port: number): string[] {
   const cmds: string[] = [];
   for (const binary of iptablesBinaries) {
     cmds.push(
@@ -167,11 +167,6 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
       iptablesDeleteChain(binary, "mangle", `FWX_OUT_${port}`),
     );
   }
-  // Keep the legacy parameters in the public API so old action builders can
-  // call the cleanup helper while upgrading from target-specific layouts.
-  void targetIp;
-  void targetPort;
-  void protocol;
   cmds.push(nftProcessCountingCleanupCmd(port));
   return cmds;
 }
@@ -414,7 +409,7 @@ export function buildNftForwardCmds(rule: any): string[] {
   return cmds;
 }
 
-export function buildManagedPortCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
+export function buildManagedPortCleanupCmds(port: number, protocol?: string): string[] {
   const normalizedProtocol = normalizeForwardRuleProtocol(protocol, "both");
   const protocols = forwardRuleProtocols(protocol, "both");
   const legacyServiceCleanup = normalizedProtocol === "both"
@@ -432,7 +427,7 @@ export function buildManagedPortCleanupCmds(port: number, targetIp?: string, tar
     removeManagedServiceCmd(`forwardx-realm-${normalizedProtocol}-${port}`),
     `rm -f /etc/forwardx/realm/forwardx-realm-${normalizedProtocol}-${port}.toml /etc/forwardx/realm/forwardx-realm-${normalizedProtocol}-${port}.toml.sha256 2>/dev/null || true`,
     `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/port_${port}.tunnel /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
-    ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
+    ...buildCountingCleanupCmds(port),
   ];
 }
 

@@ -129,7 +129,7 @@ export function DashboardStatCard({
     <div
       className={className}
     >
-      <Card enterIndex={index} interactive className="pearl-stat group h-full border-border/40">
+      <Card enterIndex={index} interactive hoverable className="pearl-stat group h-full border-border/40">
         <div aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.07] ${tone}`} />
         <CardContent className="relative p-4">
           <div className="flex items-start justify-between gap-3">
@@ -690,7 +690,7 @@ function DashboardContent() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Activity className="h-3 w-3" />{translateText("我的已用流量")}</p>
                 <AnimatedStatValue
@@ -703,7 +703,7 @@ function DashboardContent() {
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">{translateText("按当前登录账号统计")}</p>
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Coins className="h-3 w-3" />{translateText("计费流量")}</p>
                 <AnimatedStatValue
@@ -723,7 +723,7 @@ function DashboardContent() {
                   className="mt-1 text-[11px] text-muted-foreground"
                 />
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <WalletCards className="h-3 w-3" />{translateText("计费消费")}</p>
                 <AnimatedStatValue
@@ -736,7 +736,7 @@ function DashboardContent() {
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">{translateText("仅统计当前账号")}</p>
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Shield className="h-3 w-3" />{translateText("权限状态")}</p>
                 <AnimatedStatValue
@@ -781,7 +781,7 @@ function DashboardContent() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
                 <p className="text-xs text-muted-foreground">{translateText("流量额度")}</p>
                 <AnimatedStatValue
                   as="p"
@@ -801,7 +801,7 @@ function DashboardContent() {
                   </div>
                 )}
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="text-xs text-muted-foreground">{translateText("到期时间")}</p>
                 <AnimatedStatValue
                   as="p"
@@ -812,7 +812,7 @@ function DashboardContent() {
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <WalletCards className="h-3 w-3" />{translateText("账户余额")}</p>
                 <AnimatedStatValue
@@ -824,7 +824,7 @@ function DashboardContent() {
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <WalletCards className="h-3 w-3" />{translateText("计费流量")}</p>
                 <AnimatedStatValue
@@ -844,7 +844,7 @@ function DashboardContent() {
                   className="mt-1 text-[11px] text-muted-foreground"
                 />
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <WalletCards className="h-3 w-3" />{translateText("计费消费")}</p>
                 <AnimatedStatValue
@@ -857,7 +857,7 @@ function DashboardContent() {
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">{translateText("仅统计流量计费资源")}</p>
               </div>
-              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+              <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Package className="h-3 w-3" />{translateText("当前套餐")}</p>
                 <AnimatedStatValue

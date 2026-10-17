@@ -185,7 +185,7 @@ function UserStatCard({
   className?: string;
 }) {
   return (
-    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`}>
+    <Card hoverable className={`group relative overflow-hidden border-border/40 bg-card/60 ${className || ""}`}>
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-3 sm:p-4">
         <div className="flex items-start justify-between gap-2 sm:gap-3">
@@ -614,6 +614,8 @@ function UsersContent() {
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
       toast.success(translateText("余额已充值"));
       setShowRecharge(false);
       setRechargeAmount("");
@@ -628,6 +630,8 @@ function UsersContent() {
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
       utils.billing.listTransactions.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
       toast.success(data.changed ? translateText("余额已修改") : translateText("余额未变化"));
       setShowSetBalance(false);
       setSetBalanceAmount("");

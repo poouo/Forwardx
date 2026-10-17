@@ -60,6 +60,10 @@ jobs:
           pnpm test:port-access-limits
           pnpm test:plan-display
           pnpm test:host-deletion
+          pnpm test:host-notifications
+          pnpm test:user-selection
+          pnpm test:operations
+          pnpm test:payments
           pnpm exec tsc --noEmit
           pnpm build
           node --import tsx --test server/agentCrypto.test.ts

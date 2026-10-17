@@ -6,13 +6,17 @@ import OperationsChinaMap, { operationsBytes as bytes, sourceUsage } from "@/com
 import OperationsDateFilter from "@/components/OperationsDateFilter";
 import OperationsSourceList from "@/components/OperationsSourceList";
 import OperationsFinanceSummary from "@/components/OperationsFinanceSummary";
+import OperationsRefreshSelect from "@/components/OperationsRefreshSelect";
+import { SummaryMetricCard } from "@/components/SummaryMetricCard";
+import { useOperationsRefresh } from "@/hooks/useOperationsRefresh";
+import { operationsRefreshOptions } from "@/lib/operationsRefresh";
+import UserSelect from "@/components/UserSelect";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { AlertCircle, ArrowDownToLine, ArrowUpFromLine, Globe2, RefreshCw, Server } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -34,8 +38,9 @@ const statusLabels: Record<string, string> = { sampled: "采样正常", unavaila
 
 export default function OperationsPage() {
   const { user } = useAuth();
-  const users = trpc.users.options.useQuery(undefined, { enabled: user?.role === "admin", refetchOnWindowFocus: false });
-  const userOptions: Array<{ id: number; name?: string | null; username: string; displayRemark?: string | null }> = users.data || [];
+  const autoRefresh = useOperationsRefresh(user?.id);
+  const refreshInterval = autoRefresh.interval;
+  const refreshOptions = operationsRefreshOptions(refreshInterval);
   const [userScope, setUserScope] = useState("self");
   const [sort, setSort] = useState<OperationsSourceSort>("traffic");
   const [activeProvince,setActiveProvince] = useState<string|null>(null), [province,setProvince] = useState<string|null>(null), [pinnedProvince,setPinnedProvince] = useState<string|null>(null);
@@ -48,15 +53,14 @@ export default function OperationsPage() {
   const [search, setSearch] = useState(""), [query, setQuery] = useState(""), [page, setPage] = useState(0);
   const [confirm, setConfirm] = useState<"collect" | "geo" | null>(null), [selectedIp, setSelectedIp] = useState("");
   useEffect(() => { const id = setTimeout(() => { setQuery(search.trim()); setPage(0); }, 350); return () => clearTimeout(id); }, [search]);
-  const refreshInterval = dates.to === today ? 60_000 : false;
   const scopeUserId: "self" | "all" | number = userScope === "self" || userScope === "all" ? userScope : Number(userScope);
   const scopedDates = { ...dates, userId: scopeUserId };
-  const provinceDetails = trpc.operations.provinceDetails.useQuery({...scopedDates,province:province || "",search:query},{enabled:!!province,refetchOnWindowFocus:false,staleTime:15000});
-  const pinnedDetails = trpc.operations.provinceDetails.useQuery({...scopedDates,province:pinnedProvince || "",search:query},{enabled:!!pinnedProvince,refetchOnWindowFocus:false,staleTime:15000});
+  const provinceDetails = trpc.operations.provinceDetails.useQuery({...scopedDates,province:province || "",search:query},{...refreshOptions,enabled:!!province,staleTime:15000});
+  const pinnedDetails = trpc.operations.provinceDetails.useQuery({...scopedDates,province:pinnedProvince || "",search:query},{...refreshOptions,enabled:!!pinnedProvince,staleTime:15000});
   useEffect(()=> {setActiveProvince(null);setProvince(null);setPinnedProvince(null);},[dates,userScope,query]);
-  const overview = trpc.operations.overview.useQuery(scopedDates, { refetchOnWindowFocus: false, refetchInterval: refreshInterval, refetchIntervalInBackground: false });
-  const sources = trpc.operations.sources.useQuery({ ...scopedDates, page, search: query, sort }, { refetchOnWindowFocus: false, refetchInterval: refreshInterval, refetchIntervalInBackground: false });
-  const details = trpc.operations.sourceDetails.useQuery({ ...scopedDates, ip: selectedIp }, { enabled: !!selectedIp, refetchOnWindowFocus: false });
+  const overview = trpc.operations.overview.useQuery(scopedDates, refreshOptions);
+  const sources = trpc.operations.sources.useQuery({ ...scopedDates, page, search: query, sort }, refreshOptions);
+  const details = trpc.operations.sourceDetails.useQuery({ ...scopedDates, ip: selectedIp }, { ...refreshOptions, enabled: !!selectedIp });
   useEffect(() => { setSelectedIp(""); }, [dates]);
   useEffect(() => {
     const lastPage = Math.max(0, Math.ceil(Number(sources.data?.totals?.ips || 0) / OPERATIONS_SOURCE_PAGE_SIZE) - 1);
@@ -72,14 +76,17 @@ export default function OperationsPage() {
   const hostCount = (overview.data?.current || []).reduce((sum, row) => sum + Number(row.count), 0);
   const enabled = sources.data?.enabled ?? false;
   const cards = [
-    { title: t("入向流量"), value: bytes(totalIn), icon: ArrowDownToLine },
-    { title: t("出向流量"), value: bytes(totalOut), icon: ArrowUpFromLine },
-    { title: t("来源 IP"), value: String(sources.data?.totals?.ips ?? "—"), icon: Globe2 },
-    { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server },
+    { title: t("入向流量"), value: bytes(totalIn), icon: ArrowDownToLine, tone: "sky" as const },
+    { title: t("出向流量"), value: bytes(totalOut), icon: ArrowUpFromLine, tone: "emerald" as const },
+    { title: t("来源 IP"), value: String(sources.data?.totals?.ips ?? "—"), icon: Globe2, tone: "violet" as const },
+    { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server, tone: "amber" as const },
   ];
   return <DashboardLayout><div className="mx-auto max-w-[1600px] space-y-6">
     <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p></div>
-      <Button variant="outline" onClick={refresh} disabled={overview.isFetching || sources.isFetching}><RefreshCw className="mr-2 size-4" />{t("刷新")}</Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <OperationsRefreshSelect seconds={autoRefresh.seconds} onChange={autoRefresh.onChange} />
+        <Button variant="outline" onClick={refresh} disabled={overview.isFetching || sources.isFetching}><RefreshCw className="mr-2 size-4" />{t("刷新")}</Button>
+      </div>
     </div>
     {(import.meta as any).env?.VITE_FORWARDX_DEV_PANEL === "1" && <p className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground">{t("本地演示数据，不代表真实流量或 IP 位置。")}</p>}
     <OperationsDateFilter from={from} to={to} minimum={minimum} today={today} onFromChange={setFrom} onToChange={setTo}
@@ -87,17 +94,14 @@ export default function OperationsPage() {
       onToday={() => { const value = operationsDate(); setFrom(value); setTo(value); setDates({ from: value, to: value }); setPage(0); }}
       onMonth={() => { setFrom(minimum); setTo(today); setDates({ from: minimum, to: today }); setPage(0); }}>
       <div className="min-w-0 space-y-2 lg:w-56"><Label htmlFor="operations-user" className="block leading-5">{t("用户")}</Label>
-        <Select value={userScope} onValueChange={value => { setUserScope(value); setPage(0); setSelectedIp(""); setConfirm(null); setGeoCursor(""); }}>
-          <SelectTrigger id="operations-user" className="h-8"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="self">{t("管理员")}</SelectItem><SelectItem value="all">{t("所有用户")}</SelectItem>
-            {userOptions.filter(item => item.id !== user?.id).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name || item.username}{item.displayRemark ? ` · ${item.displayRemark}` : ""}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        <UserSelect id="operations-user" className="h-8" value={userScope} excludeUserId={user?.id}
+          specialOptions={[{ value: "all", label: t("所有用户") }, { value: "self", label: t("管理员") }]}
+          onValueChange={value => { setUserScope(value); setPage(0); setSelectedIp(""); setConfirm(null); setGeoCursor(""); }} />
       </div>
     </OperationsDateFilter>
     {(overview.error || sources.error) && <div role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><AlertCircle className="size-4 shrink-0" />{overview.error?.message || sources.error?.message}</div>}
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(card => <Card key={card.title}><CardContent className="flex items-center justify-between gap-3 p-5"><div><p className="text-sm text-muted-foreground">{card.title}</p><p className="mt-2 text-2xl font-semibold tabular-nums">{overview.isLoading ? "—" : card.value}</p></div><card.icon className="size-8 text-primary/60" /></CardContent></Card>)}</div>
-    <OperationsFinanceSummary {...scopedDates} today={today} />
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(card => <SummaryMetricCard key={card.title} {...card} value={overview.isLoading ? "—" : card.value} />)}</div>
+    <OperationsFinanceSummary {...scopedDates} refreshInterval={refreshInterval} />
     <Card><CardHeader><CardTitle className="text-base">{t("流量趋势")}</CardTitle><p className="text-xs text-muted-foreground">{overview.data?.since ? t("数据自 {0} 起积累，升级前的历史不会补算。", [operationsDate(Number(overview.data.since))]) : t("数据将在新版本接收流量上报后开始积累。")}</p></CardHeader><CardContent>
       <div className="h-64 min-w-0 overflow-hidden">{trend.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={trend}><CartesianGrid strokeDasharray="3 3" stroke="var(--border)" /><XAxis dataKey="date" tick={{ fontSize: 11 }} /><YAxis tickFormatter={bytes} width={80} tick={{ fontSize: 11 }} /><Tooltip formatter={value => bytes(value)} contentStyle={{ background: "var(--card)", borderColor: "var(--border)", borderRadius: 12 }} /><Area type="monotone" dataKey="bytesIn" name={t("入向流量")} stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.15} /><Area type="monotone" dataKey="bytesOut" name={t("出向流量")} stroke="var(--chart-2)" fill="var(--chart-2)" fillOpacity={0.12} /></AreaChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("暂无数据")}</div>}</div>
     </CardContent></Card>

@@ -139,6 +139,11 @@
     -webkit-backdrop-filter: blur(12px);
   }
   .pearl-card { min-width: 0; }
+  .pearl-hover-card {
+    transition-property: transform, border-color, box-shadow;
+    transition-duration: 200ms;
+    transition-timing-function: ease-out;
+  }
   /* Component-layer defaults let page-specific utility padding still win. */
   .pearl-card-header { padding: 1.5rem; }
   .pearl-card-content, .pearl-card-footer { padding: 0 1.5rem 1.5rem; }
@@ -352,6 +357,15 @@
   }
 }
 
+/* Unlayered so the hover feedback also works on cards with border/shadow utilities. */
+@media (hover: hover) and (pointer: fine) {
+  .pearl-hover-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+    box-shadow: 0 4px 20px -4px var(--theme-glow, rgb(0 0 0 / 12%)), var(--pearl-overlay-shadow);
+  }
+}
+
 @keyframes pearl-content-reveal {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -361,10 +375,10 @@
 @media (prefers-reduced-motion: reduce) {
   [data-sidebar="spacer"], [data-sidebar="container"], [data-mobile-sidebar="true"],
   [data-sidebar="group-label"] { transition: none !important; }
-  .pearl-button, .pearl-field, .pearl-select-trigger, .pearl-card, .pearl-nav-indicator,
+  .pearl-button, .pearl-field, .pearl-select-trigger, .pearl-card, .pearl-hover-card, .pearl-nav-indicator,
   .pearl-disclosure-grid, .pearl-disclosure-chevron, .pearl-disclosure::details-content, .pearl-share-track > div,
   [data-sliding-tabs] > span, .pearl-switch, .pearl-switch > span, .pearl-progress > div { transition: none !important; }
-  .pearl-button:hover, .pearl-button:active, .pearl-stat:hover { transform: none !important; }
+  .pearl-button:hover, .pearl-button:active, .pearl-stat:hover, .pearl-hover-card:hover { transform: none !important; }
   .auth-route-enter, .auth-route-enter-left, .auth-route-enter-panel, .auth-mode-panel,
   .route-content-enter, .tab-content-enter, .stagger-card, .forwardx-stat-value-inner { animation: none !important; }
 }

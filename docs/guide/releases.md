@@ -4,16 +4,18 @@
 
 | 组件 | 源码标识 |
 | --- | --- |
-| 面板 | 2.3.284 |
-| Android / iOS | 2.4.2 |
-| Agent | 2.2.197 |
-| FXP 运行时 | 2.2.118 |
+| 面板 | 2.3.285 |
+| Android / iOS | 2.4.3 |
+| Agent | 2.2.198 |
+| FXP 运行时 | 2.2.119 |
 
-本次更新包含 Agent SOCKS / HTTP 代理、`fwxm` SSH 交互管理、30 天延迟与在线历史、可选推广返佣与工单、工单通知开关、本地头像及界面优化，并重新整理中英文 README 和部署文档。完整历史见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+截至 2026-10-17，`2.3.285` **尚未线上发布**，本轮修改统一归入该版本，等待正式发布；没有新增版本号。文档按当前待发布源码编写，旧版面板不一定具备下列功能。
+
+本次包括普通端口转发入口组、资源流量和节点运行诊断、ny 导入、运维看板与账务环形图、自动刷新、上下线通知开关、可搜索用户选择器、账单分页，以及支付验签、主动查单和延迟回调恢复。使用方法分别见 [组资源](./groups.md)、[规则导入](./rules.md#ny-nyanpass-导入-实验性)、[运维看板](./operations.md)、[主机通知](./hosts.md#上下线通知)、[账单与兑换](./billing.md) 和 [支付对接](./payments.md)。完整历史见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 该表反映仓库中的版本字段，不证明对应 Release 已构建完成。安装或升级时，以实际 Release 附件和构建任务结果为准；各平台安装包可能先后完成。
 
-Agent 代理功能需升级至 `2.2.197`；本次 FXP 运行时保持 `2.2.118`。从旧版本升级时，隧道增量新增与普通端口限制仍需配套 Agent / 运行时。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。升级前先 [备份](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
+Agent 代理功能自 `2.2.197` 起提供；当前源码 Agent 为 `2.2.198`，FXP 为 `2.2.119`。新节点诊断和工具库存信息需配套 Agent。V3 的入口与出口需同时升级，不兼容旧 V3，且暂未在面板开放；V1/V2 协议保持兼容。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。正式发布后再按需 [备份并升级](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
 
 Android 和 iOS 使用相同的应用版本号；面板、Agent 和 FXP 分别维护自己的版本。安装包按平台识别更新，不会把 APK 当作 IPA。iOS 包仍需 [自行签名](./mobile-app.md)。
 

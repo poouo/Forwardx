@@ -3,6 +3,34 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Shared, scoped formatting for plan descriptions and their editor preview. */
+.plan-description > :first-child { margin-top: 0; }
+.plan-description > :last-child { margin-bottom: 0; }
+.plan-description :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.9em 0 0.4em;
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.plan-description h1 { font-size: 1.25rem; }
+.plan-description h2 { font-size: 1.125rem; }
+.plan-description :is(h3, h4, h5, h6) { font-size: 1rem; }
+.plan-description p { margin: 0.5em 0; }
+.plan-description :is(ul, ol) { margin: 0.5em 0; padding-inline-start: 1.5em; }
+.plan-description ul { list-style-type: disc; }
+.plan-description ol { list-style-type: decimal; }
+.plan-description li { margin: 0.2em 0; }
+.plan-description strong { color: var(--foreground); font-weight: 600; }
+.plan-description a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.plan-description blockquote { margin: 0.75em 0; border-inline-start: 3px solid var(--border); padding-inline-start: 0.85em; }
+.plan-description code { border-radius: 0.25rem; background: var(--muted); padding: 0.15em 0.3em; font-size: 0.85em; }
+.plan-description pre { max-width: 100%; overflow-x: auto; margin: 0.75em 0; border-radius: 0.5rem; background: var(--muted); padding: 0.75em; }
+.plan-description pre code { padding: 0; white-space: pre; }
+.plan-description table { display: block; max-width: 100%; overflow-x: auto; margin: 0.75em 0; border-collapse: collapse; }
+.plan-description :is(th, td) { border: 1px solid var(--border); padding: 0.4em 0.75em; text-align: start; }
+.plan-description th { color: var(--foreground); background: var(--muted); font-weight: 600; }
+.plan-description hr { margin: 1em 0; border-color: var(--border); }
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -359,16 +387,21 @@
     margin-right: 0 !important;
   }
 
+  /* Lock the document scroller, not body. Giving body hidden/auto overflow
+     creates an intermediate scroll container and unsticks the top navigation.
+     CSS tracks the actual overlay locks, including nested overlays/exit motion. */
+  html:has(> body[data-scroll-locked]),
+  html:has(> body[data-dialog-scroll-lock]),
+  html:has(> body.with-scroll-bars-hidden) {
+    overflow-x: clip !important;
+    overflow-y: hidden !important;
+    scrollbar-gutter: stable;
+  }
+
   html body[data-scroll-locked],
   html body[data-dialog-scroll-lock],
   html body.with-scroll-bars-hidden {
-    overflow-x: hidden !important;
-    overflow-y: hidden !important;
-  }
-
-  html body[data-forwardx-select-open]:not([data-dialog-scroll-lock]) {
-    overflow-x: hidden !important;
-    overflow-y: auto !important;
+    overflow: visible !important;
   }
 
   .right-scroll-bar-position {

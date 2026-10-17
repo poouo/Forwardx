@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlanDetails } from "./PlanDetails";
 import { planDescription } from "../lib/planDisplay";
+import { planDescriptionTemplate } from "../lib/planDisplay";
+import { PlanDescriptionEditor } from "./PlanDescriptionEditor";
+import { PLAN_DESCRIPTION_MAX_LENGTH } from "@shared/planDescription";
 
 test("missing, empty and whitespace descriptions retain default plan information", () => {
   for (const description of [undefined, null, "", " \n\t ", 123]) {
@@ -12,13 +15,51 @@ test("missing, empty and whitespace descriptions retain default plan information
   assert.equal(planDescription(null), "");
 });
 
-test("custom descriptions replace defaults, preserve lines and render as safe text", () => {
-  const html = renderToStaticMarkup(<PlanDetails description={"  自定义套餐\n第二行 <script>alert(1)</script>  "}><div>默认套餐信息</div></PlanDetails>);
-  assert.match(html, /自定义套餐\n第二行/);
-  assert.match(html, /whitespace-pre-wrap/);
+test("custom plain descriptions replace defaults and preserve lines", () => {
+  const html = renderToStaticMarkup(<PlanDetails description={"  自定义套餐\n第二行  "}><div>默认套餐信息</div></PlanDetails>);
+  assert.match(html, /<p>自定义套餐<\/p>\n<p>第二行<\/p>/);
   assert.match(html, /overflow-wrap:anywhere/);
-  assert.match(html, /&lt;script&gt;/);
   assert.doesNotMatch(html, /默认套餐信息|<script|line-clamp|truncate/);
+});
+
+test("plan descriptions render Markdown headings, lists, emphasis, links, quotes and code", () => {
+  const description = "## 套餐介绍\n- **优势**：低延迟\n- [使用教程](https://example.com/guide)\n\n> 请确认权益\n\n```\n<script>not executed</script>\n```";
+  const html = renderToStaticMarkup(<PlanDetails description={description} />);
+  for (const fragment of ["<h2>套餐介绍</h2>", "<ul>", "<strong>优势</strong>", '<a href="https://example.com/guide"', "<blockquote>请确认权益</blockquote>", "<pre><code>&lt;script&gt;not executed&lt;/script&gt;</code></pre>"]) assert.ok(html.includes(fragment), fragment);
+  assert.doesNotMatch(html, /<script/);
+  assert.match(renderToStaticMarkup(<PlanDetails description="*斜体*与~~删除线~~" />), /<em>斜体<\/em>与<del>删除线<\/del>/);
+});
+
+test("H5 plan descriptions allow basic layout but filter scripts, events, embeds and unsafe links", () => {
+  const html = renderToStaticMarkup(<PlanDetails description={'<div style="position:fixed"><h3>套餐</h3><p onclick="alert(1)">介绍 <strong>亮点</strong></p><table><tr><th>额度</th><td>示例</td></tr></table><a href="javascript:alert(1)">联系</a><script>alert(1)</script><iframe src="https://evil.test"></iframe><img src=x onerror=alert(1)></div>'} />);
+  assert.match(html, /<h3>套餐<\/h3>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<strong>亮点<\/strong>/);
+  assert.doesNotMatch(html, /<script|<iframe|<img|onclick|onerror|javascript:|position:fixed|alert\(1\)/);
+});
+
+test("new-plan templates and editor use preview and the same character limit without replacing saved descriptions", () => {
+  assert.ok(planDescriptionTemplate().length < PLAN_DESCRIPTION_MAX_LENGTH);
+  const html = renderToStaticMarkup(<PlanDetails description={planDescriptionTemplate()} />);
+  assert.match(html, /<h2>/);
+  assert.match(html, /<ul>/);
+  const editor = renderToStaticMarkup(<PlanDescriptionEditor value="现有说明" onChange={() => {}} />);
+  assert.match(editor, /maxLength="10000"/);
+  assert.match(editor, /现有说明/);
+  assert.match(editor, /aria-expanded="false"/);
+  assert.match(editor, /aria-describedby="plan-description-help"/);
+  const source = readFileSync(new URL("../pages/Plans.tsx", import.meta.url), "utf8");
+  assert.match(source, /const openPlanCreate = \(\) => \{\s*setForm\(\{ \.\.\.emptyForm, description: planDescriptionTemplate\(\) \}\)/);
+  assert.match(source, /description: plan.description \|\| ""/);
+  const editorSource = readFileSync(new URL("./PlanDescriptionEditor.tsx", import.meta.url), "utf8");
+  assert.match(editorSource, /<PlanDetails description=\{value\}/);
+});
+
+test("card and table edit actions use labeled pencil icons", () => {
+  const source = readFileSync(new URL("../pages/Plans.tsx", import.meta.url), "utf8");
+  assert.equal((source.match(/aria-label=\{translateText\("编辑套餐"\)\}/g) || []).length, 2);
+  assert.equal((source.match(/<Pencil className="h-4 w-4" \/>/g) || []).length, 2);
+  assert.doesNotMatch(source, />\{translateText\("编辑"\)\}<\/Button>/);
 });
 
 test("plan management keeps status controls outside the replaceable card content and supports table view", () => {

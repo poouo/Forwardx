@@ -11,6 +11,7 @@ import DateTimePickerInput, {
 } from "@/components/DatePickerInput";
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
+import HostStatusNotificationSetting from "@/components/hosts/HostStatusNotificationSetting";
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
@@ -613,6 +614,7 @@ type HostFormData = {
   billingMonth: number;
   billingDay: number;
   expiryHandling: HostExpiryAction;
+  hostStatusNotifyEnabled: boolean;
   telegramTrafficAlertEnabled: boolean;
   trafficAlertThresholdPercent: number;
   telegramRenewalReminderEnabled: boolean;
@@ -647,6 +649,7 @@ const defaultFormData: HostFormData = {
   billingMonth: 1,
   billingDay: 1,
   expiryHandling: "none",
+  hostStatusNotifyEnabled: true,
   telegramTrafficAlertEnabled: false,
   trafficAlertThresholdPercent: 20,
   telegramRenewalReminderEnabled: false,
@@ -835,13 +838,6 @@ function hostRemainingClass(value: string) {
   return "text-emerald-500";
 }
 
-function compactHostOsInfo(value: unknown) {
-  return String(value || "")
-    .replace(/\s*\([^)]*\)\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim() || "-";
-}
-
 function HostListResourceRow({
   icon: Icon,
   label,
@@ -994,7 +990,7 @@ function HostSummaryCard({
   className?: string;
 }) {
   return (
-    <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+    <Card hoverable className={`group relative h-full overflow-hidden border-border/40 bg-card/60 ${className || ""}`.trim()}>
       <div className={`absolute inset-0 opacity-[0.035] transition-opacity group-hover:opacity-[0.07] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[112px] flex-col justify-center p-3.5 sm:min-h-[112px] sm:p-4">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
@@ -1104,7 +1100,7 @@ function HostTrafficSummaryCard({
   className?: string;
 }) {
   return (
-    <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+    <Card hoverable className={`group relative h-full overflow-hidden border-border/40 bg-card/60 ${className || ""}`.trim()}>
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full flex-col justify-start p-3.5 sm:p-4">
         <div className="flex min-h-0 items-start justify-between gap-3">
@@ -1827,6 +1823,7 @@ function HostsContent() {
       billingMonth: clampBillingMonth(host.billingMonth),
       billingDay: clampBillingDay(host.billingDay),
       expiryHandling: normalizeHostExpiryAction(host.expiryHandling),
+      hostStatusNotifyEnabled: host.hostStatusNotifyEnabled ?? true,
       telegramTrafficAlertEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramTrafficAlertEnabled,
       trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(host.trafficAlertThresholdPercent),
       telegramRenewalReminderEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramRenewalReminderEnabled,
@@ -1932,6 +1929,7 @@ function HostsContent() {
           billingMonth: clampBillingMonth(form.billingMonth),
           billingDay: clampBillingDay(form.billingDay),
           expiryHandling: normalizeHostExpiryAction(form.expiryHandling),
+          hostStatusNotifyEnabled: form.hostStatusNotifyEnabled,
           telegramTrafficAlertEnabled: canSaveTelegramReminder && form.telegramTrafficAlertEnabled,
           trafficAlertThresholdPercent,
           telegramRenewalReminderEnabled: canSaveTelegramReminder && form.telegramRenewalReminderEnabled,
@@ -3370,6 +3368,7 @@ function HostsContent() {
                           <Switch checked={form.trafficFailoverEnabled} onCheckedChange={(checked) => setForm({ ...form, trafficFailoverEnabled: checked })} />
                         </div>
                       </div>
+                      <HostStatusNotificationSetting checked={form.hostStatusNotifyEnabled} onChange={(checked) => setForm({ ...form, hostStatusNotifyEnabled: checked })} />
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
                           <Label className="text-sm font-medium">{translateText("流量耗尽提醒")}</Label>

@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { hashPassword, verifyPassword, verifyPasswordAgainstDummy } from "../password";
@@ -588,6 +588,42 @@ export async function getUserOptions() {
     })
     .from(users)
     .orderBy(desc(users.createdAt));
+}
+
+// Lightweight, admin-only selector data; never include password/session fields
+// or large avatars. Keyset pagination avoids COUNT and growing OFFSET costs.
+const userOptionFields = {
+  id: users.id, username: users.username, name: users.name,
+  email: users.email, displayRemark: users.displayRemark,
+};
+type UserSelectOption = Pick<typeof users.$inferSelect, "id" | "username" | "name" | "email" | "displayRemark">;
+
+export async function getUserOptionsByIds(ids: number[]): Promise<UserSelectOption[]> {
+  const db = await getDb();
+  const uniqueIds = [...new Set(ids)].slice(0, 100);
+  if (!db || !uniqueIds.length) return [];
+  return db.select(userOptionFields).from(users).where(inArray(users.id, uniqueIds));
+}
+
+export async function getUserOptionsPage(input: { search?: string; cursor?: number; limit?: number; excludeUserId?: number }): Promise<{ items: UserSelectOption[]; nextCursor?: number }> {
+  const db = await getDb();
+  if (!db) return { items: [], nextCursor: undefined as number | undefined };
+  const limit = Math.min(50, Math.max(1, Math.floor(input.limit || 20)));
+  const conditions = [];
+  if (input.cursor) conditions.push(lt(users.id, input.cursor));
+  if (input.excludeUserId) conditions.push(ne(users.id, input.excludeUserId));
+  const search = (input.search || "").trim().slice(0, 128).toLowerCase();
+  if (search) {
+    const pattern = `%${search.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_")}%`;
+    conditions.push(or(
+      ...[users.username, users.name, users.email, users.displayRemark].map(column => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`),
+      /^#?\d+$/.test(search) ? eq(users.id, Number(search.replace(/^#/, ""))) : undefined,
+    )!);
+  }
+  const rows = await db.select(userOptionFields).from(users)
+    .where(and(...conditions)).orderBy(desc(users.id)).limit(limit + 1);
+  const items = rows.slice(0, limit);
+  return { items, nextCursor: rows.length > limit ? items[items.length - 1].id : undefined };
 }
 
 

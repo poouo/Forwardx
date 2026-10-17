@@ -78,3 +78,47 @@ test("affiliate UI and errors have English translations and preserve narrow-scre
   assert.match(page, /flex flex-wrap gap-2/);
   assert.doesNotMatch(page, /crypto\.randomUUID/);
 });
+
+test("affiliate statistic icons use the shared colorful tile treatment in light and dark themes", () => {
+  const tones = ["emerald", "amber", "sky", "violet"] as const;
+  const html = renderToStaticMarkup(<AffiliateStats items={tones.map(tone => ({
+    label: tone, value: "0", help: "", icon: Wallet, tone,
+  }))} />);
+  for (const tone of tones) {
+    assert.match(html, new RegExp(`from-${tone}-500 to-${tone}-600`));
+  }
+  assert.equal((html.match(/h-10 w-10 shrink-0/g) || []).length, 4);
+  assert.equal((html.match(/h-5 w-5 text-white/g) || []).length, 4);
+  assert.equal((html.match(/rounded-xl shadow-sm/g) || []).length, 4);
+  assert.equal((html.match(/pearl-hover-card/g) || []).length, 4);
+  assert.equal((html.match(/opacity-\[0\.04\]/g) || []).length, 4);
+  assert.doesNotMatch(html, /text-muted-foreground\/60|dark:text-black|backdrop-blur/);
+  const source = fs.readFileSync("client/src/pages/Affiliates.tsx", "utf8");
+  // Both the user-facing and administrator overviews specify semantic colors.
+  for (const tone of tones) assert.equal((source.match(new RegExp(`tone: "${tone}"`, "g")) || []).length, 2);
+});
+
+test("affiliate settings live in the admin header dialog, including the independent business switch", () => {
+  const source = fs.readFileSync("client/src/pages/Affiliates.tsx", "utf8");
+  const dialogStart = source.indexOf('<Dialog open={settingsOpen}');
+  const dialogEnd = source.indexOf('</Dialog>', dialogStart);
+  assert.ok(dialogStart > 0 && dialogEnd > dialogStart);
+  const dialog = source.slice(dialogStart, dialogEnd);
+  for (const id of ["enabled", "rate", "days", "minimum", "maxcodes", "first", "transfer"]) {
+    assert.match(dialog, new RegExp(`id="affiliate-${id}"`));
+  }
+  assert.match(dialog, /max-h-\[85dvh\] overflow-y-auto/);
+  assert.match(dialog, /save\.mutate\(\{ \.\.\.config, enabled \}\)/);
+  assert.match(dialog, /disabled=\{!data \|\| !dirty \|\| !valid \|\| save\.isPending\}/);
+  assert.match(dialog, /if \(!save\.isPending\) onSettingsOpenChange\(open\)/);
+  assert.doesNotMatch(source, /<CardTitle>\{t\("返佣设置"\)\}/);
+  assert.doesNotMatch(source, /开关位于系统设置|请在系统设置的侧边栏入口设置中开启/);
+  const header = source.slice(source.indexOf("export default function AffiliatesPage"));
+  assert.match(header, /admin && user\?\.role === "admin"/);
+  assert.match(header, /onClick=\{\(\) => setSettingsOpen\(true\)\}/);
+  assert.match(source, /if \(!settingsOpen\) setDirty\(false\)/);
+  assert.match(source, /adminOverview\.setData/);
+  const settings = fs.readFileSync("client/src/pages/Settings.tsx", "utf8");
+  assert.match(settings, /仅控制菜单显示，返佣总开关请在推广管理的设置中调整/);
+  assert.doesNotMatch(settings, /affiliateEnabled/);
+});

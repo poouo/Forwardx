@@ -7,6 +7,11 @@ import { adjustUserBalanceCommand, setUserBalanceCommand } from "../services/use
 import { clearForwardxAiSettingsCache } from "../ai/settings";
 
 const dateInput = z.string().trim().optional().nullable();
+const billingPageInput = z.object({
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(100).default(20),
+  userId: z.number().int().positive().optional(),
+});
 
 function parseDate(value?: string | null) {
   if (!value) return null;
@@ -52,6 +57,17 @@ export const billingRouter = router({
   listTransactions: adminProcedure
     .input(z.object({ userId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(500).default(100) }).optional())
     .query(async ({ input }) => db.listBalanceTransactions(input?.userId, input?.limit || 100)),
+
+  listTransactionsPage: adminProcedure.input(billingPageInput)
+    .query(async ({ input }) => db.listBalanceTransactionsPage(input)),
+
+  ledgerPage: protectedProcedure.input(billingPageInput.extend({ includeCancelledSubscriptions: z.boolean().default(true) }))
+    .query(async ({ input, ctx }) => db.listBillingLedgerPage({
+      ...input,
+      viewerUserId: ctx.user.id,
+      isAdmin: ctx.user.role === "admin",
+      userId: ctx.user.role === "admin" ? input.userId : undefined,
+    })),
 
   ledger: protectedProcedure
     .input(z.object({

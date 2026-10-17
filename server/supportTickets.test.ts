@@ -91,9 +91,9 @@ test("tickets are opt-in and disabling blocks every data endpoint without destro
   await assert.rejects(() => caller(admin).list({ page: 1 }), {
     code: "FORBIDDEN",
   });
-  await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: true }));
+  await caller(admin).saveSettings({ enabled: true });
   const created = await caller(user).create(input());
-  await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: false }));
+  await caller(admin).saveSettings({ enabled: false });
   for (const call of [
     () => caller(user).detail(created),
     () => caller(user).messages(created),
@@ -103,8 +103,55 @@ test("tickets are opt-in and disabling blocks every data endpoint without destro
     () => caller(user).services({}),
   ])
     await assert.rejects(call, { code: "FORBIDDEN" });
-  await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: true }));
+  await caller(admin).saveSettings({ enabled: true });
   assert.equal((await caller(user).detail(created)).title, "Connection issue");
+});
+
+test("ticket settings are admin-only, always reachable, and independent from sidebar visibility and personal preferences", async () => {
+  await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: false }));
+  assert.equal((await caller(user).status()).enabled, true);
+  await caller(admin).saveSettings({ enabled: false, notificationsEnabled: false });
+  assert.deepEqual(await caller(admin).settings(), { enabled: false, notificationsEnabled: false });
+  await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: true }));
+  assert.equal((await caller(user).status()).enabled, false);
+  await assert.rejects(() => caller(user).settings(), { code: "FORBIDDEN" });
+  await assert.rejects(() => caller(user).saveSettings({ enabled: true }), { code: "FORBIDDEN" });
+  await assert.rejects(() => caller(null).settings(), { code: "UNAUTHORIZED" });
+  await assert.rejects(() => caller(admin).saveSettings({}), { code: "BAD_REQUEST" });
+  assert.deepEqual(await caller(admin).settings(), { enabled: false, notificationsEnabled: false });
+  await caller(admin).saveSettings({ enabled: true });
+  assert.deepEqual(await caller(admin).settings(), { enabled: true, notificationsEnabled: false });
+  assert.equal((await caller(user).list({ page: 1 })).total, 1);
+  await caller(admin).saveSettings({ notificationsEnabled: true });
+  assert.equal(await settings.getSetting("sidebarMenu"), JSON.stringify({ tickets: true }));
+  const [profile] = await runtime.queryRaw<{ supportTicketNotificationSubscribed: number }>('SELECT "supportTicketNotificationSubscribed" FROM users WHERE id = 2');
+  assert.equal(Number(profile.supportTicketNotificationSubscribed), 1);
+});
+
+test("legacy ticket enablement is migrated once without coupling subsequent menu edits", async () => {
+  const { ensureDatabaseSchema } = await import("./dbSchema");
+  for (const [legacy, expected] of [[JSON.stringify({ tickets: true }), true], [JSON.stringify({ tickets: false }), false], ["invalid-json", false]] as const) {
+    await runtime.executeRaw("DELETE FROM system_settings WHERE key = ?", ["supportTicketsEnabled"]);
+    await settings.setSetting("sidebarMenu", legacy);
+    await ensureDatabaseSchema();
+    assert.equal(await repo.supportTicketsEnabled(), expected);
+    await settings.setSetting("sidebarMenu", JSON.stringify({ tickets: !expected }));
+    await ensureDatabaseSchema();
+    settings.invalidateAllSettingsCache();
+    assert.equal(await repo.supportTicketsEnabled(), expected);
+  }
+  await caller(admin).saveSettings({ enabled: true });
+});
+
+test("saving both ticket switches is atomic", async () => {
+  await caller(admin).saveSettings({ enabled: true, notificationsEnabled: true });
+  await runtime.executeRaw("CREATE TRIGGER reject_ticket_settings BEFORE UPDATE ON system_settings WHEN NEW.key = 'supportTicketNotificationsEnabled' BEGIN SELECT RAISE(ABORT, 'test setting failure'); END");
+  try {
+    await assert.rejects(() => caller(admin).saveSettings({ enabled: false, notificationsEnabled: false }));
+    assert.deepEqual(await caller(admin).settings(), { enabled: true, notificationsEnabled: true });
+  } finally {
+    await runtime.executeRaw("DROP TRIGGER reject_ticket_settings");
+  }
 });
 
 test("optional service, plain text, attachments and strict owner isolation", async () => {
@@ -838,4 +885,30 @@ test("backup import remaps ticket, author, message and read IDs while preserving
   });
   assert.ok(snapshot.tables.support_tickets?.some((t) => t.id === ticket.id));
   assert.ok(snapshot.tables.support_ticket_attachments?.length);
+});
+
+test("legacy backups inherit ticket enablement while modern backups preserve their independent switch", async () => {
+  const { importMigrationSnapshot } = await import("./migration");
+  const cases = [
+    { menu: true, business: undefined, expected: true },
+    { menu: false, business: undefined, expected: false },
+    { menu: true, business: false, expected: false },
+    { menu: false, business: true, expected: true },
+  ];
+  for (const [index, item] of cases.entries()) {
+    await runtime.closeDatabase();
+    const target = { type: "sqlite" as const, sqlite: { path: path.join(directory, `restore-switch-${index}.sqlite`) } };
+    runtime.writeDatabaseConfig(target);
+    await runtime.connectDatabase(target);
+    await (await import("./dbSchema")).ensureDatabaseSchema();
+    const rows = [
+      { key: "sidebarMenu", value: JSON.stringify({ tickets: item.menu }) },
+      { key: "supportTicketNotificationsEnabled", value: "false" },
+    ];
+    if (item.business !== undefined) rows.push({ key: "supportTicketsEnabled", value: String(item.business) });
+    const result = await importMigrationSnapshot({ version: 1, exportedAt: Date.now(), tables: { system_settings: rows } });
+    assert.equal(result.partial, false, JSON.stringify(result.warnings));
+    assert.deepEqual(await caller(admin).settings(), { enabled: item.expected, notificationsEnabled: false });
+    assert.equal(await settings.getSetting("sidebarMenu"), JSON.stringify({ tickets: item.menu }));
+  }
 });

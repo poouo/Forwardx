@@ -973,10 +973,6 @@ async function getPanelAssetsPendingReason(targetVersion: string, operationLabel
   }
 }
 
-async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<string | null> {
-  return getPanelAssetsPendingReason(targetVersion, "升级");
-}
-
 function makeUpdateInfo(
   latestVersion: string | null | undefined,
   source: UpdateInfo["source"],

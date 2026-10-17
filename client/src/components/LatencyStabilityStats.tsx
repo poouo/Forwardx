@@ -19,7 +19,7 @@ function formatLatency(value: number | null) {
 
 function StatCard({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="latency-stat-card min-w-0 rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 sm:rounded-lg sm:px-3 sm:py-2">
+    <div className="pearl-hover-card latency-stat-card min-w-0 rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 sm:rounded-lg sm:px-3 sm:py-2">
       <p title={label} className="break-words text-[10px] leading-snug text-muted-foreground sm:text-[11px]">{label}</p>
       <div className="mt-0.5 min-w-0 sm:mt-1">{children}</div>
     </div>

@@ -19,6 +19,34 @@ import { getLanguagePreference, initializeLanguage, setLanguagePreference } from
 
 const css = readFileSync("client/src/styles/pearl.css", "utf8");
 
+test("overlay scroll locks preserve sticky navigation by locking the document rather than body", () => {
+  const baseCss = readFileSync("client/src/index.css", "utf8");
+  const rootLock = baseCss.match(/html:has\(> body\[data-scroll-locked\]\),\s*html:has\(> body\[data-dialog-scroll-lock\]\),\s*html:has\(> body\.with-scroll-bars-hidden\)\s*\{([^}]+)\}/)?.[1];
+  assert.ok(rootLock, "Select, dropdown, dialog and nested locks share the document scrolling element");
+  assert.match(rootLock, /overflow-y: hidden !important/);
+  assert.match(rootLock, /scrollbar-gutter: stable/);
+  const bodyLock = baseCss.match(/html body\[data-scroll-locked\],\s*html body\[data-dialog-scroll-lock\],\s*html body\.with-scroll-bars-hidden\s*\{([^}]+)\}/)?.[1];
+  assert.ok(bodyLock);
+  assert.match(bodyLock, /overflow: visible !important/);
+  assert.doesNotMatch(bodyLock, /overflow(?:-[xy])?:\s*(?:auto|hidden|scroll)/);
+  assert.doesNotMatch(baseCss, /data-forwardx-select-open/);
+  assert.match(css, /\.pearl-topbar\s*\{\s*position: sticky; top: 0/);
+  assert.match(baseCss, /--removed-body-scroll-bar-size: 0px !important/);
+});
+
+test("selects retain native Radix focus and open-state behavior without effect-based scroll overrides", async () => {
+  const { Select, SelectTrigger, SelectValue } = await import("./select");
+  for (const props of [{ open: false }, { defaultOpen: false }, { open: true }, { defaultOpen: true }]) {
+    const html = renderToStaticMarkup(<Select {...props} value="all"><SelectTrigger><SelectValue placeholder="All" /></SelectTrigger></Select>);
+    assert.match(html, /role="combobox"/);
+    assert.match(html, new RegExp(`aria-expanded="${Boolean(props.open ?? props.defaultOpen)}"`));
+  }
+  const source = readFileSync("client/src/components/ui/select.tsx", "utf8");
+  assert.match(source, /const Select = SelectPrimitive.Root/);
+  assert.match(source, /<SelectPortal>/);
+  assert.doesNotMatch(source, /markSelectOpen|forwardxSelectOpen|document\.body|preventDefault/);
+});
+
 test("animated stat values leave glyph bottoms visible at system-font and zoom boundaries", async () => {
   const { default: AnimatedStatValue } = await import("../AnimatedStatValue");
   const baseCss = readFileSync("client/src/index.css", "utf8");
@@ -400,6 +428,27 @@ test("Featured and interactive cards preserve nested controls and caller attribu
   assert.ok(hover);
   assert.match(hover, /box-shadow:/);
   assert.doesNotMatch(hover, /transform:|filter:|backdrop-filter:/);
+});
+
+test("standalone card hover is opt-in, pointer-only, reduced-motion safe and distinct from sortable feedback", () => {
+  const active = renderToStaticMarkup(<Card hoverable disableEnterAnimation><span>Statistics</span></Card>);
+  assert.match(active, /pearl-hover-card/);
+  assert.doesNotMatch(active, /hoverable=|role="button"|stagger-card/);
+  const form = renderToStaticMarkup(<Card disableEnterAnimation><input /></Card>);
+  assert.doesNotMatch(form, /pearl-hover-card/);
+  const sortable = renderToStaticMarkup(<Card interactive disableEnterAnimation />);
+  assert.match(sortable, /pearl-card-interactive/);
+  assert.doesNotMatch(sortable, /pearl-hover-card/);
+  assert.match(css, /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.pearl-hover-card:hover/);
+  const hover = css.match(/\.pearl-hover-card:hover \{([^}]+)\}/)?.[1];
+  assert.ok(hover);
+  assert.match(hover, /transform: translateY\(-2px\)/);
+  assert.match(hover, /border-color:/);
+  assert.match(hover, /box-shadow:/);
+  assert.doesNotMatch(hover, /will-change|filter:|backdrop-filter/);
+  const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+  assert.match(reduced, /\.pearl-hover-card[^}]*transition: none !important/);
+  assert.match(reduced, /\.pearl-hover-card:hover \{ transform: none !important; \}/);
 });
 
 test("Content switches render real content immediately without initial fade or layout scaling", () => {

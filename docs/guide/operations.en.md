@@ -4,6 +4,19 @@
 
 Administrators can open **Management → Operations** to view today or a date range within the last 30 days. Calendar days use **Beijing time (UTC+8)**.
 
+Select 5s, 10s, 30s or Off beside Refresh. The default is 30s, remembered per account in this browser. Traffic, source IPs, finance and open details share the selected interval. Refresh pauses when you leave the dashboard or hide the tab, and resumes when you return. Off still allows manual refresh and queries after changing filters.
+
+## Quick workflow
+
+1. Select the Beijing-time date range and user. **Admin** covers only the current administrator's account; choose all users for site-wide totals.
+2. Choose a refresh interval, or Off to inspect a stable snapshot and refresh manually when needed.
+3. Review traffic trends and rankings. For finance, select the payment currency and read payment composition, wallet spending and new-order statuses separately.
+4. An empty ring means no matching data, not a failed request. Check page errors and API responses for failures, and inspect original records in the [billing guide (Chinese)](./billing.md) before judging an order from a summary.
+
+![Date, user and refresh controls in the Chinese dashboard](./images/operations-filters.png)
+
+*Local development demo in Chinese: current administrator, today's date and a 30s refresh interval.*
+
 ## Traffic and history
 
 View incoming/outgoing rule traffic, daily trends, and rankings by user, host, logical rule and resource. Multi-entry members are combined under their logical rule. Existing accounting-host selection prevents relay hops from being counted twice.
@@ -23,11 +36,16 @@ Billing follows the same date and user filters, defaults to **Admin** (the curre
 - Online receipts include successful production top-up and plan payments, grouped by currency without conversion. Test, pending, cancelled and failed orders are excluded.
 - Receipts use the payment date, falling back to creation time for legacy orders without a payment timestamp. New-order statuses use creation time, so their counts may differ.
 - Wallet spending separates plan purchases, traffic add-ons and metered traffic. A payment and its wallet credit are not two revenues; traffic billing uses wallet deductions without recounting billing detail records.
+- Static donut charts show payment composition, wallet spending and new-order statuses, including amounts/counts and percentages. Switch currencies for multi-currency payments; empty data uses a neutral ring. Charts reuse the existing summary without extra requests or animation and follow date, user and auto-refresh settings.
 - Manual top-ups, redeemed credits and adjustments are separate from online receipts. Wallet records use the existing CNY ledger.
 - New subscriptions use creation time, not purchase or renewal counts. Active subscriptions reflect current status rather than a historical snapshot.
 - Payments and wallet entries are listed separately, newest first, 10 per page. Do not sum the raw ledger entries. Open the full billing ledger for management.
 
 Reports query existing financial records with time/user indexes and a short cache. They do not create a second accounting ledger, and 30-day operational-history cleanup never deletes financial records.
+
+![Payment composition, wallet spending and new-order status charts](./images/operations-finance.png)
+
+*Local development demo in Chinese, with CNY payments. Amounts and orders are demo data, not evidence of real payments or production verification.*
 
 ## Source IPs and the China map
 

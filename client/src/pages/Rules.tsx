@@ -9,6 +9,8 @@ import { isAdminManagedRule } from "../../../shared/ruleLimits";
 import { forwardGroupRouteMembers, forwardGroupSelfTestSource } from "../../../shared/forwardGroup";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
+import UserSelect from "@/components/UserSelect";
+import { ruleOwnerOptionIds } from "@/lib/userSelection";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
@@ -75,7 +77,6 @@ import {
   RULE_TRANSFER_FILE_VERSION,
   RULE_TRANSFER_MAX_FILE_SIZE,
   RULE_TRANSFER_MAX_IMPORT_COUNT,
-  type RuleTransferFile,
   type RuleTransferFileRule,
 } from "@/lib/ruleTransfer";
 import { createImportedRule, parseCompatibleRuleTransferText, validateNyanpassImportTarget, type CompatibleRuleFile } from "@/lib/nyanpassImport";
@@ -911,14 +912,6 @@ function getHostEntryAddress(host: any | null | undefined): string {
   return getHostEntryAddresses(host)[0]?.value || "";
 }
 
-function getHostEntryAddressText(host: any | null | undefined, port?: number | string): string {
-  const entries = getHostEntryAddresses(host);
-  if (entries.length === 0) return "";
-  return entries
-    .map((entry) => port === undefined ? entry.value : formatAddressWithPort(entry.value, port))
-    .join(" / ");
-}
-
 function formatAddressWithPort(address: string, port: number | string): string {
   const value = String(address || "").trim();
   if (!value) return "";
@@ -1367,7 +1360,6 @@ function createRuleGlobeSegmentCoords(
   const dLat = end.lat - start.lat;
   const dLng = longitudeDeltaDegrees(start.lng, end.lng);
   const midLat = (start.lat + end.lat) / 2;
-  const midLng = normalizeLongitude(start.lng + dLng / 2);
   const lngScale = Math.max(0.35, Math.cos((midLat * Math.PI) / 180));
   const projectedLng = dLng * lngScale;
   const distance = Math.sqrt(dLat * dLat + projectedLng * projectedLng);
@@ -1568,10 +1560,6 @@ function buildRuleGlobeData(
 
   (rules || []).forEach((rule: any) => {
     const chainGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
-    const chainEntryGroup = chainGroup && isForwardChainGroup(chainGroup) && Number(chainGroup.entryGroupId || 0) > 0
-      ? forwardGroupById.get(Number(chainGroup.entryGroupId))
-      : null;
-    const chainEntryMembers = chainEntryGroup && normalizeForwardGroupModeForRule(chainEntryGroup) === "entry" ? enabledHostMembers(chainEntryGroup) : [];
     const routeHostIds = ruleGlobeRouteHostIds(rule, tunnelById, forwardGroupById);
     const routePoints = routeHostIds.map((hostId: number) => pointForHostId(hostId)).filter(Boolean) as RuleGlobePoint[];
     if (routePoints.length === 0) {
@@ -2143,11 +2131,6 @@ function RulesContent() {
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
-  const { data: users } = trpc.users.options.useQuery(undefined, {
-    enabled: user?.role === "admin" && secondaryQueriesReady,
-    staleTime: 60000,
-    refetchOnWindowFocus: false,
-  });
   const { data: forwardGroups, isFetched: forwardGroupsFetched, isError: forwardGroupsError } = trpc.forwardGroups.options.useQuery(undefined, {
     refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
@@ -2231,7 +2214,6 @@ function RulesContent() {
   const createOwnerUserId = user?.role === "admin" && filterUser !== "self" && filterUser !== "all"
     ? Number(filterUser)
     : undefined;
-  const selectedScopeQueryEnabled = false as boolean;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
   const latestPortCheckRef = useRef(0);
@@ -2392,7 +2374,13 @@ function RulesContent() {
   const ruleListDataReady = isRuleGlobeView
     ? ruleMapQuery.data !== undefined && !ruleMapQuery.isPlaceholderData
     : rulePageQuery.data !== undefined && !rulePageQuery.isPlaceholderData;
-  const selectedScopeRules = undefined;
+
+  const ownerOptionIds = useMemo(() => ruleOwnerOptionIds(rules || [], createOwnerUserId), [rules, createOwnerUserId]);
+  const { data: users } = trpc.users.optionsByIds.useQuery({ ids: ownerOptionIds }, {
+    enabled: user?.role === "admin" && ownerOptionIds.length > 0,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
 
   const walletBalanceKnown = wallet?.balanceCents !== undefined && wallet?.balanceCents !== null;
   const manuallyPaused = (user as any)?.forwardAccessPauseReason === "manual";
@@ -3754,28 +3742,23 @@ function RulesContent() {
     getRuleEntryHostId: getRuleEntryHostIdForSort,
   }), [filterResource, forwardGroupById, getRuleEntryHostIdForSort, hostById, ruleCategory, ruleSearchQuery, filterUser, tunnelById, user?.id, user?.role, userById]);
   const baseScopedRules = useMemo(() => rules || [], [rules]);
-  const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
-  const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : ruleListDataReady;
   const [stableFilteredRules, setStableFilteredRules] = useState<any[]>([]);
   const [filteredRulesPrimed, setFilteredRulesPrimed] = useState(false);
   useEffect(() => {
-    if (!scopedRulesReady) return;
-    const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
+    if (!ruleListDataReady) return;
     // Page/map endpoints already apply ownership, route, category and search.
     // Local option lists are incomplete (especially shared tunnel hosts), so
     // re-filtering here can hide valid matches while server counts remain > 0.
     // Keep local filtering only for the separate full-list batch tools below.
-    setStableFilteredRules(sourceRules);
+    setStableFilteredRules(baseScopedRules);
     setFilteredRulesPrimed(true);
-  }, [baseScopedRules, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
+  }, [baseScopedRules, ruleListDataReady]);
   const filteredRules = stableFilteredRules;
   // Batch tools need all matching source rules, while the page itself stays
   // on its current server page.  Keep these two data sources separate.
-  const transferSourceRuleCandidates = selectedScopeQueryEnabled
-    ? selectedScopedRules || []
-    : needsFullRuleList
-      ? (fullRulesQuery.data as any[] | undefined) || []
-      : baseScopedRules;
+  const transferSourceRuleCandidates = needsFullRuleList
+    ? (fullRulesQuery.data as any[] | undefined) || []
+    : baseScopedRules;
   const transferSourceRules = useMemo(() => transferSourceRuleCandidates.filter((rule: any) => user?.role === "admin" || !isAdminManagedRule(rule)), [transferSourceRuleCandidates, user?.role]);
   const copyableSourceRules = useMemo(() => {
     const batchFilters: RuleFilterState = {
@@ -4042,9 +4025,9 @@ function RulesContent() {
   ), [filteredRules]);
   const selfTestRuleDetail = useMemo(() => {
     if (!selfTestRule) return null;
-    return [...(rules || []), ...(selectedScopedRules || [])]
+    return (rules || [])
       .find((rule: any) => Number(rule.id) === Number(selfTestRule.id)) || null;
-  }, [rules, selectedScopedRules, selfTestRule?.id]);
+  }, [rules, selfTestRule?.id]);
   const selfTestTargetAddress = useMemo(() => {
     const target = String(selfTestRuleDetail?.targetIp || "").trim();
     return target ? normalizeAddressKey(target) : "";
@@ -4309,7 +4292,7 @@ function RulesContent() {
     : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterResource !== "all" || ruleCategory !== "all" || ruleSearchQuery.trim().length > 0;
-  const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
+  const rulesHeaderLoading = isLoading || !rules || !ruleListDataReady || !filteredRulesPrimed;
   const totalTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
   const dailyTrafficTotalsLoading = rulesHeaderLoading || !secondaryQueriesReady || ruleListSummaryLoading;
   const [stableRulePageMeta, setStableRulePageMeta] = useState({ activeItems: 0, totalItems: 0, scopeTotalItems: 0 });
@@ -5298,47 +5281,6 @@ function RulesContent() {
     setImportNyanpassAcknowledged(false);
   };
 
-  const openExportDialog = () => {
-    const preferredType = ruleCategory === "all" ? "local" : ruleCategory;
-    setExportScopeType(preferredType as RuleTransferScopeType);
-    setShowExportDialog(true);
-  };
-
-  const openImportDialog = () => {
-    if (!canAdd) {
-      toast.error(translateText("当前没有添加规则权限"));
-      return;
-    }
-    const categoryAvailable = ruleCategory === "local"
-      ? canUseSavedLocalForward
-      : ruleCategory === "tunnel"
-        ? canUseGost
-        : ruleCategory === "chain"
-          ? canUseForwardChain
-          : ruleCategory === "group"
-            ? canUseFailoverGroup
-            : false;
-    const preferredType = ruleCategory !== "all" && categoryAvailable
-      ? ruleCategory
-      : canUseSavedLocalForward
-        ? "local"
-        : canUseGost
-          ? "tunnel"
-          : canUseForwardChain
-            ? "chain"
-            : canUseFailoverGroup
-              ? "group"
-              : null;
-    if (!preferredType) {
-      toast.error(translateText("请先创建可用端口转发、隧道、转发链或转发组后再导入规则。"));
-      return;
-    }
-    setImportScopeType(preferredType as RuleTransferScopeType);
-    setImportSourceMode("file");
-    resetImportDialog();
-    setShowImportDialog(true);
-  };
-
   const handleImportFileChange = async (event: any) => {
     const file = event.target.files?.[0];
     setImportFile(null);
@@ -5508,11 +5450,6 @@ function RulesContent() {
     }
     const tunnel = member.tunnelId ? tunnelById.get(Number(member.tunnelId)) : null;
     return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : member.tunnelId ? translateText("隧道 #{0}", [member.tunnelId]) : translateText("隧道成员");
-  };
-
-  const getHostEntry = (hostId: number): string => {
-    const h: any = hosts?.find((x: any) => x.id === hostId);
-    return getHostEntryAddress(h);
   };
 
   const entryDomainForForwardGroup = (group: any | null | undefined) => {
@@ -6047,26 +5984,9 @@ function RulesContent() {
     );
   };
 
-  const renderRuleTrafficValue = (rule: any, direction: "in" | "out") => (
-    renderTrafficBytesValue(trafficByRule.get(rule.id), direction)
-  );
-
   const renderRuleDailyTrafficValue = (rule: any, direction: "in" | "out") => (
     renderTrafficBytesValue(dailyTrafficByRule.get(rule.id), direction)
   );
-
-  const renderRuleTraffic = (rule: any) => {
-    const t = dailyTrafficByRule.get(rule.id);
-    if (!t || (t.bytesIn === 0 && t.bytesOut === 0)) {
-      return <span className="text-xs text-muted-foreground">—</span>;
-    }
-    return (
-      <div className="flex flex-col gap-0.5 text-xs leading-5">
-        {renderRuleDailyTrafficValue(rule, "in")}
-        {renderRuleDailyTrafficValue(rule, "out")}
-      </div>
-    );
-  };
 
   const renderMobileRuleTotalTraffic = (rule: any) => {
     const t = totalTrafficByRule.get(rule.id);
@@ -6100,17 +6020,6 @@ function RulesContent() {
       </span>
     );
   };
-
-  const renderRuleCombinedTraffic = (rule: any) => (
-    <div className="space-y-1 whitespace-nowrap">
-      {renderRuleTotalTraffic(rule)}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-        <span className="text-xs text-muted-foreground">24H</span>
-        {renderRuleTraffic(rule)}
-      </div>
-      {renderLatestLatency(rule)}
-    </div>
-  );
 
   const renderTableRuleTotalTraffic = (rule: any) => (
     <div className="min-w-0 whitespace-nowrap text-xs">
@@ -6727,21 +6636,9 @@ function RulesContent() {
               ) : null}
             </div>
             {user?.role === "admin" && (
-              <Select value={filterUser} onValueChange={handleFilterUserChange}>
-                <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
-                  <SelectValue placeholder={translateText("我的规则")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="self">{translateText("我的规则")}</SelectItem>
-                  <SelectItem value="all">{translateText("所有用户")}</SelectItem>
-                  {(users || []).map((item: any) => (
-                    <SelectItem key={item.id} value={String(item.id)}>
-                      {item.name || item.username}
-                      {item.displayRemark ? ` · ${item.displayRemark}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <UserSelect value={filterUser} onValueChange={handleFilterUserChange} excludeUserId={user?.id}
+                className="h-8 w-full text-xs sm:w-[180px]"
+                specialOptions={[{ value: "all", label: translateText("所有用户") }, { value: "self", label: translateText("我的规则") }]} />
             )}
             <DropdownMenu open={ruleResourceMenuOpen} onOpenChange={setRuleResourceMenuOpen} modal={false}>
               <DropdownMenuTrigger asChild>
@@ -6840,7 +6737,7 @@ function RulesContent() {
 
       {/* 转发流量汇总 */}
       <div className="grid grid-cols-3 gap-1.5 sm:gap-4">
-        <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
           <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-3 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
@@ -6880,7 +6777,7 @@ function RulesContent() {
             <ArrowDownToLine className="hidden h-6 w-6 shrink-0 text-chart-2 sm:block" />
           </CardContent>
         </Card>
-        <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
           <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
@@ -6920,7 +6817,7 @@ function RulesContent() {
             <ArrowUpFromLine className="hidden h-6 w-6 shrink-0 text-chart-4 sm:block" />
           </CardContent>
         </Card>
-        <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
           <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
@@ -8548,7 +8445,6 @@ function SelfTestDialog({
   const isTesting = startMutation.isPending || optimisticTesting || isServerTesting;
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
-  const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
   const testSource = forwardGroupSelfTestSource(latest);
   const testSegments: LinkTestPlannedSegment[] | undefined = testSource ? [{

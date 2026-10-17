@@ -1,6 +1,8 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -130,6 +132,8 @@ export default function Subscriptions() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
       utils.dashboard.userTraffic.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("购买附加流量失败")),
@@ -141,6 +145,7 @@ export default function Subscriptions() {
     setDiscountPreview(null);
   };
 
+  const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
       toast.success(translateText("续费订单已创建"));
@@ -149,7 +154,9 @@ export default function Subscriptions() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
-      if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
+      setCheckoutOrder(order || null);
     },
     onError: (error) => toast.error(error.message || translateText("创建续费订单失败")),
   });
@@ -161,6 +168,8 @@ export default function Subscriptions() {
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
       utils.dashboard.userTraffic.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("续费失败")),
@@ -283,7 +292,7 @@ export default function Subscriptions() {
               && (sub.source === "admin" || sub.source === "redeem");
 
             return (
-              <Card key={sub.id} className="flex flex-col">
+              <Card key={sub.id} hoverable className="flex flex-col">
                 <CardHeader>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
@@ -530,6 +539,7 @@ export default function Subscriptions() {
           </DialogContent>
         </Dialog>
       </div>
+      <PaymentCheckoutDialog order={checkoutOrder} onClose={() => setCheckoutOrder(null)} />
     </DashboardLayout>
   );
 }

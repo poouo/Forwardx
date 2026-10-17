@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { AFFILIATE_DEFAULTS, commissionCents } from "../../shared/affiliate";
-import { normalizeSidebarMenuSettings } from "../../shared/sidebarMenu";
 import { boolLiteral, boolValue, quoteIdentifier as q } from "../dbCompat";
 import {
   executeRaw,
@@ -25,6 +24,9 @@ export const affiliateConfigInput = z.object({
   minimumWithdrawalCents: z.number().int().min(1).max(100_000_000),
   allowBalanceTransfer: z.boolean(),
   maxCodes: z.number().int().min(1).max(50),
+});
+export const affiliateSettingsInput = affiliateConfigInput.extend({
+  enabled: z.boolean(),
 });
 type Account = {
   userId: number;
@@ -72,13 +74,7 @@ const lockedRead = () => (getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE");
 const fail = (message: string) =>
   new TRPCError({ code: "BAD_REQUEST", message });
 export async function affiliatesEnabled() {
-  try {
-    return normalizeSidebarMenuSettings(
-      JSON.parse((await getSetting("sidebarMenu")) || "{}"),
-    ).affiliates;
-  } catch {
-    return false;
-  }
+  return (await getSetting("affiliateEnabled")) === "true";
 }
 export async function affiliateConfig() {
   try {

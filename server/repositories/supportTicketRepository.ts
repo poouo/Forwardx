@@ -9,7 +9,6 @@ import {
 } from "../dbRuntime";
 import { boolLiteral, inList, quoteIdentifier as q } from "../dbCompat";
 import { getAllSettings } from "./settingsRepository";
-import { normalizeSidebarMenuSettings } from "../../shared/sidebarMenu";
 import {
   canChangeTicketStatus,
   isTicketFinished,
@@ -80,13 +79,7 @@ const bad = (message: string) =>
 
 export async function supportTicketsEnabled() {
   const settings = await getAllSettings();
-  try {
-    return normalizeSidebarMenuSettings(
-      JSON.parse(settings.sidebarMenu || "{}"),
-    ).tickets;
-  } catch {
-    return false;
-  }
+  return settings.supportTicketsEnabled === "true";
 }
 export async function requireSupportTicketsEnabled() {
   if (!(await supportTicketsEnabled()))

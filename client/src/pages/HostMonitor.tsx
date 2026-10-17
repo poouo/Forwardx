@@ -221,7 +221,7 @@ function HostMonitorStatCard({
   iconTone?: string;
 }) {
   return (
-    <Card className="group relative h-full overflow-hidden border-border/40 bg-card/70 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative h-full overflow-hidden border-border/40 bg-card/70">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[108px] flex-col justify-center p-4">
         <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
@@ -286,7 +286,7 @@ function HostMonitorTrafficStatCard({
   iconTone?: string;
 }) {
   return (
-    <Card className="group relative h-full overflow-hidden border-border/40 bg-card/70 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card hoverable className="group relative h-full overflow-hidden border-border/40 bg-card/70">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[108px] flex-col justify-center p-4">
         <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>

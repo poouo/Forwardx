@@ -29,7 +29,7 @@ import {
   startSelfTestSweepTimer,
 } from "./selfTestTiming";
 import { billingMonthlyBoundary, billingStartOfCalendarDay } from "@shared/billingTime";
-import { expireStalePendingOrders, recoverStaleProcessingPaymentOrders } from "./payment";
+import { expireStalePendingOrders, recoverStaleProcessingPaymentOrders, reconcilePendingPaymentOrders } from "./payment";
 import { settleAffiliateCommissions } from "./repositories/affiliateRepository";
 
 type TimedOutForwardTest = {
@@ -695,6 +695,7 @@ export function startScheduler() {
     await db.refreshDatabasePoolSettings();
   });
   const paymentMaintenance = createNonOverlappingScheduledTask("payment order maintenance", async () => {
+    await reconcilePendingPaymentOrders();
     await expireStalePendingOrders();
     await recoverStaleProcessingPaymentOrders();
     await settleAffiliateCommissions();

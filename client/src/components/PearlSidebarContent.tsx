@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef, type ComponentProps } from "react";
 import { SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+import { rememberSidebarScroll } from "@/lib/sidebarScroll";
 
 type Marker = { left: number; top: number; width: number; height: number; viewport: number; rail: number; mode: string };
 // The existing page architecture remounts the shell on navigation. Remember only
 // the last marker geometry (not a DOM node) to keep the sliding rail continuous.
 let lastMarker: Marker | null = null;
 
-export default function PearlSidebarContent({ activeKey, className, children, ...props }: ComponentProps<typeof SidebarContent> & { activeKey: string }) {
+export default function PearlSidebarContent({ activeKey, scrollKey, className, children, ...props }: ComponentProps<typeof SidebarContent> & { activeKey: string; scrollKey: string }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<HTMLSpanElement>(null);
   const { state, isMobile } = useSidebar();
@@ -16,6 +17,14 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
     const content = contentRef.current;
     const marker = markerRef.current;
     if (!content || !marker) return;
+    const scroll = rememberSidebarScroll(content, `${scrollKey}:${isMobile ? "mobile" : state}`);
+    const interruptScrollRestore = (event: Event) => {
+      if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+      scroll.interrupt();
+    };
+    content.addEventListener("scroll", scroll.save, { passive: true });
+    const scrollInputEvents = ["wheel", "touchstart", "pointerdown", "keydown"];
+    for (const name of scrollInputEvents) content.addEventListener(name, interruptScrollRestore, { passive: true });
     let frame = 0;
     let animation: Animation | undefined;
     let first = true;
@@ -26,6 +35,9 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
     const container = content.closest('[data-sidebar="container"]');
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const measure = () => {
+      // Restore before measuring the active marker and before the first paint.
+      // Mutation/resize observations retry if async menu items were missing.
+      scroll.restore();
       const active = content.querySelector<HTMLElement>('[data-sidebar="menu-button"][data-active="true"]');
       if (observedActive !== active) {
         if (observedActive) observer?.unobserve(observedActive);
@@ -113,6 +125,9 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
     document.addEventListener("visibilitychange", settle);
     reducedMotion.addEventListener("change", settle);
     return () => {
+      scroll.save();
+      content.removeEventListener("scroll", scroll.save);
+      for (const name of scrollInputEvents) content.removeEventListener(name, interruptScrollRestore);
       cancelAnimationFrame(frame);
       animation?.cancel();
       observer?.disconnect();
@@ -123,7 +138,7 @@ export default function PearlSidebarContent({ activeKey, className, children, ..
       document.removeEventListener("visibilitychange", settle);
       reducedMotion.removeEventListener("change", settle);
     };
-  }, [activeKey, state, isMobile]);
+  }, [activeKey, scrollKey, state, isMobile]);
 
   return <SidebarContent ref={contentRef} className={cn("pearl-nav-content", className)} {...props}>
     <span ref={markerRef} className="pearl-nav-indicator" aria-hidden="true" hidden />

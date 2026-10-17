@@ -9,6 +9,8 @@ import * as affiliates from "../repositories/affiliateRepository";
 import { refreshUserForwardEndpoints } from "./helpers";
 import { appendPanelLog } from "../_core/panelLogger";
 import { resolvePanelUrl } from "../agentPanelUrl";
+import { withDatabaseTransaction } from "../dbRuntime";
+import { setSetting } from "../repositories/settingsRepository";
 
 const id = z.number().int().positive();
 const money = z.number().int().min(1).max(100_000_000);
@@ -100,12 +102,15 @@ export const affiliatesRouter = router({
       affiliates.listAffiliateRows(tables[input.kind], input),
     ),
   saveConfig: adminProcedure
-    .input(affiliates.affiliateConfigInput)
+    .input(affiliates.affiliateSettingsInput)
     .mutation(async ({ ctx, input }) => {
-      await affiliates.saveAffiliateConfig(input);
+      await withDatabaseTransaction(async () => {
+        await affiliates.saveAffiliateConfig(input);
+        await setSetting("affiliateEnabled", String(input.enabled));
+      });
       appendPanelLog(
         "info",
-        `[Affiliate] settings updated operator=${ctx.user.id}`,
+        `[Affiliate] settings updated operator=${ctx.user.id} enabled=${input.enabled}`,
       );
       return { success: true };
     }),

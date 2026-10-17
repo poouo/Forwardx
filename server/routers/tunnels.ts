@@ -785,8 +785,16 @@ export const tunnelsRouter = router({
         const pageData = await db.getTunnelsPage({ ...input, ...scope });
         const hydratedItems = await attachTunnelEndpointHosts(pageData.items as any[]);
         const availabilityIndex = availabilityIndexForHydratedTunnels(hydratedItems);
-        const items = attachTunnelAvailability(hydratedItems, availabilityIndex)
+        const visibleItems = attachTunnelAvailability(hydratedItems, availabilityIndex)
           .map((tunnel) => tunnelForUser(tunnel, accessScope));
+        const trafficByTunnelId = await db.getTunnelTrafficSummaries(
+          visibleItems.map((tunnel: any) => Number(tunnel.id)),
+          ctx.user.role === "admin" ? undefined : ctx.user.id,
+        );
+        const items = visibleItems.map((tunnel: any) => ({
+          ...tunnel,
+          trafficSummary: trafficByTunnelId.get(Number(tunnel.id)),
+        }));
         const relatedGroupIds = Array.from(new Set(items.flatMap((tunnel: any) => [
           Number(tunnel.entryGroupId || 0),
           Number(tunnel.exitGroupId || 0),

@@ -4,6 +4,8 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,6 +78,7 @@ export default function Wallet() {
   const { data: paymentOrders = [], isLoading: paymentOrdersLoading } = trpc.payment.myOrders.useQuery({ limit: 50 }, { placeholderData: (previousData: any) => previousData });
   const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const [rechargeOpen, setRechargeOpen] = useState(false);
+  const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
   const [amount, setAmount] = useState("50");
   const [paymentType, setPaymentType] = useState<PaymentType>("stripe");
   const [redeemCode, setRedeemCode] = useState("");
@@ -86,7 +89,9 @@ export default function Wallet() {
       setRechargeOpen(false);
       utils.payment.myOrders.invalidate();
       utils.billing.ledger.invalidate();
-      if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
+      setCheckoutOrder(order || null);
     },
     onError: (error) => toast.error(error.message || translateText("创建订单失败")),
   });
@@ -97,6 +102,8 @@ export default function Wallet() {
       setRedeemCode("");
       utils.billing.me.invalidate();
       utils.billing.ledger.invalidate();
+      utils.billing.ledgerPage.invalidate();
+      utils.billing.listTransactionsPage.invalidate();
       utils.plans.mySubscriptions.invalidate();
     },
     onError: (error) => toast.error(error.message || translateText("兑换失败")),
@@ -120,7 +127,7 @@ export default function Wallet() {
         </div>
 
         <div className={`grid gap-4 ${billingFeatures?.redemptionEnabled ? "md:grid-cols-2" : ""}`}>
-          <Card>
+          <Card hoverable>
             <CardHeader>
               <CardDescription>{translateText("当前余额")}</CardDescription>
               <AnimatedStatValue
@@ -293,6 +300,9 @@ export default function Wallet() {
                       <Badge variant={order.status === "completed" || order.status === "paid" ? "default" : "secondary"}>
                         {order.status}
                       </Badge>
+                      {order.status === "pending" && (order.payUrl || order.qrCode) && (!order.expiresAt || new Date(order.expiresAt).getTime() > Date.now()) && (
+                        <Button size="sm" variant="link" onClick={() => setCheckoutOrder(order)}>{translateText("继续支付")}</Button>
+                      )}
                     </TableCell>
                     <TableCell>{dateText(order.createdAt)}</TableCell>
                   </TableRow>
@@ -308,6 +318,7 @@ export default function Wallet() {
           </CardContent>
         </Card>
 
+        <PaymentCheckoutDialog order={checkoutOrder} onClose={() => setCheckoutOrder(null)} />
         <Dialog open={rechargeOpen} onOpenChange={setRechargeOpen}>
           <DialogContent>
             <DialogHeader>

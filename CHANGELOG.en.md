@@ -2,19 +2,35 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.285] - Unreleased
 
-## [2.3.285] - 2026-10-16
+Not released to production. The publication date and downloadable artifacts will be confirmed by the official Release.
 
 - Support entry groups for direct port forwarding, with unified management and all entries running concurrently.
-- Add resource traffic totals and per-entry runtime status.
+- Simplify plan management: remove overview cards, move global switches into a settings dialog, and keep financial reporting in Billing and Operations.
+- Use icon-only plan edit actions; support safe HTML / Markdown descriptions, preview and a starter template, with a 10,000-character limit.
+- Use consistent colorful statistic icons in affiliate administration and user commission overviews.
+- Color-code Operations and payment metrics and unify hover feedback on statistic and product cards, respecting touch devices and reduced-motion preferences.
+- Move affiliate settings and the feature switch into the top-right settings dialog; separate sidebar visibility and preserve the existing enabled state.
+- Add a ticket management settings dialog for feature and notification master switches; keep sidebar visibility independent and preserve history and personal notification preferences.
+- Fix the sticky top navigation disappearing while dropdowns are open by unifying overlay scroll locking.
+- Align port-entry group cards and lists with forwarding-chain layouts; show node details in a dialog without stretching adjacent cards.
+- Keep panel upgrade polling and completion countdowns active in the background; preserve refresh deadlines across navigation and refresh each task only once.
+- Add resource traffic totals and per-entry runtime status; include tunnel traffic and unique rule-reference counts for tunnels, chains, entry groups and exit groups.
 - Add ny / Nyanpass rule import (Experimental).
-- Add an operations dashboard for billing, traffic history, source IP rankings and an offline location map, with date and user filters.
+- Add an operations dashboard for billing, traffic history, source IP rankings and an offline map; include static payment, wallet-spending and order-status donut charts with separate currencies.
+- Add 5s / 10s / 30s / off auto-refresh options; pause when off-page or hidden.
 - Fix scheduled history cleanup failures on some MySQL deployments.
-- Improve payment key compatibility and validation, with clearer localized payment errors.
+- Fix EasyPay signing, relative payment links and Alipay timestamps; improve key compatibility, WeChat settings, response verification and merchant identity checks.
+- Unify recharge/renewal checkout and fulfillment states; add active reconciliation, verified late-payment recovery and localized payment diagnostics.
+- Consolidate orders into Billing & Redemption with server-side ledger/balance pagination and preserved payment diagnostics.
+- Add per-host online/offline notification switches, enabled by default, without affecting monitoring or failover.
+- Preserve sidebar scroll position; use searchable, paginated user selectors with an initial list for quick selection.
 - Improve error messages, automatic retries and panel/Agent diagnostic logs.
 - Fix host-dependency navigation and rechecks so linked resources are not mistaken for missing ones.
 - Smooth settings save feedback to reduce flicker and layout shifts.
+- Remove disabled legacy filtering, unused components, duplicate installer code and Android sample tests; retain required data migration compatibility.
+- Consolidate documentation and navigation; document payments, billing/redemption, operations and new workflows with local demo screenshots.
 - Improve V3 tunnel stability, security and multi-exit failover; V3 is not yet available in the panel.
 - Versions: panel `2.3.285`, Android / iOS `2.4.3`, Agent `2.2.198`, ForwardX FXP runtime `2.2.119`.
 

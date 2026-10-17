@@ -16,13 +16,18 @@ function formatBytes(value: number) {
   return `${size.toFixed(unit === 0 || size >= 100 ? 0 : 2)} ${units[unit]}`;
 }
 
-export function ResourceTrafficSummary({ summary, compact = false }: {
+export function ResourceTrafficSummary({ summary, compact = false, showRuleCount = true }: {
   summary?: ResourceTrafficTotals;
   compact?: boolean;
+  showRuleCount?: boolean;
 }) {
   const title = t("汇总当前关联规则的累计实际流量，入向加出向，不按倍率折算；重置规则流量后同步更新。");
   return (
     <div className={compact ? "min-w-[10rem] space-y-1" : "space-y-2 rounded-md border border-border/40 bg-background/35 p-2.5"} title={title}>
+      {showRuleCount && <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs" title={t("引用规则按逻辑规则去重，包含停用规则，不含待删除规则；普通用户仅统计自己的规则。")}>
+        <span className="text-muted-foreground">{t("引用规则")}</span>
+        <span className="font-medium tabular-nums">{summary ? summary.ruleCount : "—"}</span>
+      </div>}
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         {!compact && <span className="text-xs text-muted-foreground">{t("累计流量")}</span>}
         <span className="text-sm font-medium tabular-nums">{summary ? formatBytes(summary.totalBytes) : "—"}</span>

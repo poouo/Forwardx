@@ -2033,9 +2033,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } else if (rule.forwardType === "nftables") {
         cmds.push(...buildNftCleanupCmds(cleanupRule));
       } else {
-        cmds.push(...buildManagedPortCleanupCmds(Number(port), targetIp, targetPort, rule.protocol));
+        cmds.push(...buildManagedPortCleanupCmds(Number(port), rule.protocol));
       }
-      if (rule.forwardType === "iptables") cmds.push(...buildCountingCleanupCmds(port, targetIp, targetPort, rule.protocol));
+      if (rule.forwardType === "iptables") cmds.push(...buildCountingCleanupCmds(port));
       return cmds;
     };
     const buildDnsChangeCleanup = (rule: any, oldIp: string): string[] => (
@@ -3991,7 +3991,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const buildNginxPortCleanupCmds = (rule: any) => [
       `rm -f /var/lib/forwardx-agent/traffic_${Number(rule.sourcePort) || 0}.prev /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.rule /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.fwtype /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.tunnel /var/lib/forwardx-agent/target_${Number(rule.sourcePort) || 0}.info 2>/dev/null || true`,
-      ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+      ...buildCountingCleanupCmds(rule.sourcePort),
       ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
     ];
     const nginxRuntimeActiveCmd = () => (
@@ -4306,7 +4306,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const cmds: string[] = [
           ...buildNftTransitionCleanupCmds(rule),
           ...buildIptablesForwardCleanupCmds(rule),
-          ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+          ...buildCountingCleanupCmds(rule.sourcePort),
           ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
         ];
         return {
@@ -4324,7 +4324,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const cmds = [
           ...buildIptablesTransitionCleanupCmds(rule),
           ...buildNftCleanupCmds(rule, { removeStateFiles: false, cleanupConntrack: true }),
-          ...buildManagedPortCleanupCmds(Number(rule.sourcePort), rule.targetIp, rule.targetPort, rule.protocol),
+          ...buildManagedPortCleanupCmds(Number(rule.sourcePort), rule.protocol),
         ];
         cmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
         return {
@@ -4359,7 +4359,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ...cleanupGuardBackendCmds(rule),
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
             `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`,
-            ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildCountingCleanupCmds(rule.sourcePort),
             ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
           ],
         };
@@ -4381,7 +4381,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         removeCmds.push(...cleanupGuardBackendCmds(rule));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
         removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
-        removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
+        removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort));
         removeCmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
         return {
           ruleId: rule.id,
@@ -4444,7 +4444,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           protocol: rule.protocol,
           commands: [
             ...buildKernelForwardTransitionCleanupCmds(rule),
-            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ],
           fxp: tunnel && isForwardXTunnel(tunnel) ? {
@@ -4625,7 +4625,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }),
         ]
         : [
-          ...buildManagedPortCleanupCmds(port, local.targetIp, local.targetPort, protocol),
+          ...buildManagedPortCleanupCmds(port, protocol),
           ...(fxp ? [] : [
             `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
             `rm -f /run/forwardx-agent/fxp-*-${port}.json 2>/dev/null || true`,
@@ -5069,7 +5069,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ...guardRateLimitForRule(rule),
           });
           const guardBaseCleanupCmds = [
-            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.protocol),
             ...buildIptablesForwardCleanupCmds(rule),
             ...buildNftCleanupCmds(rule),
           ];
@@ -5562,7 +5562,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               networkInterface: hostInterface,
               commands: (!runtimeBool(rule.isRunning) || shouldRefreshForwardXEntryRule || shouldRepairLocalRule) ? [
                 ...buildKernelForwardTransitionCleanupCmds(rule),
-                ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+                ...buildManagedPortCleanupCmds(rule.sourcePort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol, "forwardx"),
               ] : [],
               fxp: fxpSpec,
@@ -5601,7 +5601,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           cmds.push(
             ...buildNftTransitionCleanupCmds(rule),
             ...buildIptablesForwardCleanupCmds(rule),
-            ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildCountingCleanupCmds(rule.sourcePort),
             ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
           );
           actions.push({
@@ -5639,7 +5639,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
               `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`,
-              ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+              ...buildCountingCleanupCmds(rule.sourcePort),
               ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
             ],
           });
@@ -5661,7 +5661,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
-          removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
+          removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort));
           for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) removeCmds.push(c);
           actions.push({
             ruleId: rule.id,
@@ -5713,7 +5713,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             : "";
           const removeCmds: string[] = [
             ...buildKernelForwardTransitionCleanupCmds(rule),
-            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildManagedPortCleanupCmds(rule.sourcePort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ];
           actions.push({
