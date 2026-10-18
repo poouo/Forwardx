@@ -9,15 +9,15 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon, Server, ShieldCheck, Zap } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "@/lib/localizedToast";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation, useSearch } from "wouter";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
-import { ForwardXLogo } from "@/components/ForwardXLogo";
+import { LoginLayout } from "@/components/LoginLayout";
+import { loginContentMotion } from "@/lib/loginTransition";
 import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
@@ -106,6 +106,7 @@ function CapVerificationField(props: {
     widget.setAttribute("data-cap-i18n-solved-label", translateText("验证通过"));
     widget.setAttribute("data-cap-i18n-error-label", translateText("验证失败，请重试"));
     widget.setAttribute("data-cap-i18n-verify-aria-label", translateText("点击验证你是真人"));
+    widget.setAttribute("data-cap-i18n-group-aria-label", translateText("人机验证"));
     if (props.disabled) {
       widget.setAttribute("aria-disabled", "true");
       widget.style.pointerEvents = "none";
@@ -216,11 +217,6 @@ const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
 const DISPLAY_NAME_MAX_LENGTH = 24;
 const TELEGRAM_WEBAPP_INIT_WAIT_MS = 6000;
 const TELEGRAM_WEBAPP_INIT_POLL_MS = 250;
-const authHighlights = [
-  { title: translateText("多主机管理"), text: translateText("集中查看主机、规则和链路状态"), icon: Server },
-  { title: translateText("权限控制"), text: translateText("按用户分配转发资源和使用额度"), icon: ShieldCheck },
-  { title: translateText("故障转移"), text: translateText("按健康状态切换入口和出口"), icon: Zap },
-];
 
 function getWelcomeName(user: any) {
   return String(user?.name || user?.username || translateText("用户")).trim() || translateText("用户");
@@ -303,11 +299,14 @@ export default function Login() {
     retry: false,
     refetchOnWindowFocus: true,
   });
-  const registrationEnabled = emailConfig?.registrationEnabled !== false;
+  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: hasMobilePanelUrl, retry: false, staleTime: 60_000, refetchOnWindowFocus: false,
+  });
+  const registrationEnabled = (emailConfig?.registrationEnabled ?? publicInfo?.registrationEnabled) !== false;
   const referralStatus = trpc.affiliates.registrationStatus.useQuery(undefined, { enabled: hasMobilePanelUrl && mode === "register", staleTime: 30_000 });
   const registrationCaptchaEnabled = emailConfig?.authCaptchaEnabled !== false;
-  const siteTitle = "ForwardX";
-  const logoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
+  const siteTitle = publicInfo?.siteTitle?.trim() || "ForwardX";
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (mode === "register" && !registrationEnabled) {
@@ -874,9 +873,14 @@ export default function Login() {
     : translateText("刷新验证码");
 
   return (
-    <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
-      <div className="auth-grid-overlay pointer-events-none absolute inset-0 opacity-[0.14]" />
-      <div className="absolute right-4 top-4 z-20 flex items-center gap-2">
+    <>
+      <LoginLayout
+        siteTitle={siteTitle}
+        logo={publicInfo?.siteLogoDataUrl}
+        version={publicInfo?.version}
+        mode={mode}
+        subtitle={isTelegramPending ? translateText("正在通过 Telegram 登录") : mode === "login" ? translateText("登录账号以继续") : translateText("使用邮箱创建账户")}
+        toolbar={<>
         <LanguageSelector compact />
         {mobileAuth.isNative && (
           <button
@@ -903,74 +907,13 @@ export default function Login() {
             <Moon className="h-5 w-5 text-muted-foreground" />
           )}
         </button>
-      </div>
-
-      <div className="auth-route-enter relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1.05fr)_minmax(460px,.95fr)]">
-        <section className="pearl-auth-intro auth-route-enter-left relative hidden lg:flex">
-          <div className="relative flex min-h-screen w-full items-center px-10 py-14 xl:px-16">
-            <div className="max-w-xl">
-              <div className="pearl-spec-plate" aria-hidden="true">FORWARDX / NETWORK CONSOLE</div>
-              <div className="flex items-center gap-3">
-                <ForwardXLogo size={44} alt={siteTitle} />
-                <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
-              </div>
-              <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">{translateText("管理多主机转发、隧道和流量。")}</p>
-              <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
-                {["转发", "隧道", "流量"].map((label) => (
-                  <div key={label} className="rounded-lg border border-border/45 bg-background/35 px-3 py-2 text-center text-sm font-medium text-foreground/85 shadow-sm backdrop-blur">
-                    {translateText(label)}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-10 space-y-6">
-                {authHighlights.map((item, index) => {
-                  const Icon = item.icon;
-                  return (
-                    <motion.div
-                      key={item.title}
-                      className="flex gap-4"
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.32, delay: 0.12 + index * 0.06, ease: [0.22, 1, 0.36, 1] }}
-                    >
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-background/45 text-primary shadow-sm ring-1 ring-border/50 backdrop-blur">
-                        <Icon className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <h2 className="text-sm font-semibold text-foreground">{item.title}</h2>
-                          <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.text}</p>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <main className="auth-route-enter-panel flex min-h-screen items-center justify-center px-4 py-20 sm:px-6 lg:px-10">
-          <Card disableEnterAnimation className="auth-card-surface w-full max-w-[420px] px-5 py-6 sm:px-7">
-            <CardHeader className="px-0 pb-7 text-left">
-              <div className="mb-5 flex items-center gap-3 lg:hidden">
-                <ForwardXLogo size={36} alt={siteTitle} />
-                <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
-              </div>
-              <CardTitle className="text-2xl font-bold tracking-tight">
-                {mode === "login" ? translateText("欢迎回来") : translateText("创建账号")}
-              </CardTitle>
-              <CardDescription className="mt-1 text-sm text-muted-foreground">
-                {isTelegramPending ? translateText("正在通过 Telegram 登录") : mode === "login" ? translateText("登录账号以继续") : translateText("使用邮箱注册 ForwardX 账户")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="px-0">
-          <AnimatePresence mode="wait" initial={false}>
+        </>}
+      >
+          <AnimatePresence mode="popLayout" initial={false}>
           <motion.div
             key={mode}
-            className={`auth-mode-panel ${mode === "login" ? "min-h-[470px]" : "min-h-[660px]"}`}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="auth-mode-panel"
+            {...loginContentMotion(!!reduceMotion)}
           >
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
@@ -1018,8 +961,10 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                    tabIndex={-1}
+                    className="auth-password-toggle"
+                    aria-label={translateText(showPassword ? "隐藏密码" : "显示密码")}
+                    aria-pressed={showPassword}
+                    disabled={isPending}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -1042,7 +987,7 @@ export default function Login() {
 
               <Button
                 type="submit"
-                className="w-full"
+                className="auth-login-submit w-full"
                 size="lg"
                 disabled={isPending}
               >
@@ -1065,7 +1010,7 @@ export default function Login() {
                     <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
                     <span className="relative bg-card px-3 text-xs text-muted-foreground">{translateText("或")}</span>
                   </div>
-                  <div className="min-h-[132px] rounded-lg border border-border/50 bg-muted/20 p-3 transition-colors">
+                  <div className="rounded-xl border border-border/50 bg-muted/20 p-3 transition-colors">
                     <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
                       <Send className="h-4 w-4 text-primary" />{translateText("Telegram 快捷登录")}</div>
                     <div className="space-y-2">
@@ -1104,18 +1049,12 @@ export default function Login() {
               )}
 
               <div className="text-center">
-                <button
-                  type="button"
+                <button type="button" className="auth-login-switch-link" disabled={isPending || isTelegramPending}
                   onClick={() => {
-                    if (!registrationEnabled) {
-                      toast.info(REGISTRATION_CLOSED_MESSAGE);
-                      return;
-                    }
+                    if (!registrationEnabled) { toast.info(REGISTRATION_CLOSED_MESSAGE); return; }
                     setMode("register");
                     setCaptchaAnswer("");
-                  }}
-                  className="text-sm text-muted-foreground hover:text-primary transition-colors"
-                >{translateText("没有账号？点击注册")}</button>
+                  }}>{translateText("没有账号？点击注册")}</button>
               </div>
             </form>
           ) : (
@@ -1204,8 +1143,10 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                    tabIndex={-1}
+                    className="auth-password-toggle"
+                    aria-label={translateText(showPassword ? "隐藏密码" : "显示密码")}
+                    aria-pressed={showPassword}
+                    disabled={isPending}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -1239,7 +1180,7 @@ export default function Login() {
 
               <Button
                 type="submit"
-                className="w-full"
+                className="auth-login-submit w-full"
                 size="lg"
                 disabled={isPending}
               >
@@ -1253,22 +1194,17 @@ export default function Login() {
               </Button>
 
               <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => { setMode("login"); setCaptchaAnswer(""); }}
-                  className="text-sm text-muted-foreground hover:text-primary transition-colors"
-                >{translateText("已有账号？返回登录")}</button>
+                <button type="button" className="auth-login-switch-link" disabled={isPending}
+                  onClick={() => { setMode("login"); setCaptchaAnswer(""); }}>
+                  {translateText("已有账号？返回登录")}
+                </button>
               </div>
-
               <p className="text-xs text-muted-foreground text-center">{translateText("注册后需要管理员授权才能使用转发功能")}</p>
             </form>
           )}
           </motion.div>
           </AnimatePresence>
-            </CardContent>
-          </Card>
-        </main>
-      </div>
+      </LoginLayout>
 
       {mobileAuth.isNative && (
         <Dialog open={showPanelSettings} onOpenChange={setShowPanelSettings}>
@@ -1339,7 +1275,7 @@ export default function Login() {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 

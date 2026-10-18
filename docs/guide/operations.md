@@ -85,4 +85,6 @@ conntrack -L -o extended | head -n 5
 sysctl net.netfilter.nf_conntrack_acct
 ```
 
-Debian/Ubuntu 缺少命令时，可由管理员执行 `apt-get install conntrack`。如果连接记录没有 `bytes=`，且希望统计来源流量，可由管理员评估后执行 `sysctl -w net.netfilter.nf_conntrack_acct=1`；通常需要新建连接才出现字节计数，重启后的持久配置由管理员自行管理。面板不会自动调整这个内核选项。
+Agent 安装和脚本升级会检查并尝试安装 `conntrack`，加载连接跟踪模块，开启 `net.netfilter.nf_conntrack_acct=1` 并读回验证。启动配置保存在 `/etc/sysctl.d/99-forwardx-source-accounting.conf` 和 `/etc/modules-load.d/forwardx-source-accounting.conf`，不覆盖其他内核配置。依赖安装、内核权限或持久化失败会明确告警，但不阻断 Agent 安装和正常转发。仅替换 Agent 二进制不会执行这些脚本检查；旧部署可重新运行当前 Agent 升级脚本补齐。
+
+Debian/Ubuntu 也可手动执行 `apt-get install conntrack` 和 `sysctl -w net.netfilter.nf_conntrack_acct=1`。开启后通常只有新建立的连接才包含字节计数，不断开现有连接，不补算旧历史；已有未知样本在所选日期内仍标记为不完整。运行时采集只读取连接跟踪，不反复修改内核参数。受限容器、内核不支持或其他配置覆盖该选项时，需要主机管理员处理。

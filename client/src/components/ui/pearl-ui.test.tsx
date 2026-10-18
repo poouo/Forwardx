@@ -162,14 +162,17 @@ test("Language selectors expose only Chinese and English and select the effectiv
     await initializeLanguage();
     for (const setup of [false, true]) {
       const html = renderToStaticMarkup(<ConfirmDialogProvider><LanguageSelector setup={setup} /></ConfirmDialogProvider>);
-      assert.equal((html.match(/<option /g) || []).length, 2);
+      assert.match(html, /role="combobox"/);
+      assert.match(html, /pearl-select-trigger/);
       assert.doesNotMatch(html, /value="auto"/);
-      assert.match(html, /value="zh-CN" selected=""/);
+      assert.match(html, />简体中文<\/span>/);
     }
     setLanguagePreference("en");
     await initializeLanguage();
     const html = renderToStaticMarkup(<ConfirmDialogProvider><LanguageSelector /></ConfirmDialogProvider>);
-    assert.match(html, /value="en" selected=""/);
+    assert.match(html, />English<\/span>/);
+    const source = readFileSync("client/src/components/LanguageSelector.tsx", "utf8");
+    assert.equal((source.match(/<SelectItem value=/g) || []).length, 2);
   } finally {
     setLanguagePreference(previous);
     await initializeLanguage();
@@ -332,6 +335,11 @@ test("Progress exposes its real value and switches keep Radix checked/disabled s
   assert.match(html, /role="switch"/);
   assert.match(html, /aria-checked="true"/);
   assert.match(html, /disabled=""/);
+});
+
+test("switch track and thumb drop shadows stay centered without changing the decorative highlight", () => {
+  assert.match(css, /\.pearl-switch\s*\{\s*box-shadow: inset 0 0 3px rgb\(20 34 28 \/ 12%\);\s*\}/);
+  assert.match(css, /\.pearl-switch > span\s*\{\s*box-shadow: 0 0 3px rgb\(0 0 0 \/ 18%\), inset 0 1px 0 rgb\(255 255 255 \/ 75%\);\s*\}/);
 });
 
 test("Glass sliding tabs retain intrinsic long-label widths, selected semantics and readable text", () => {

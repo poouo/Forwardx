@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { t, getFormatLocale } from "@/i18n";
 import { X, Globe2, MapPin } from "lucide-react";
+import { mapTooltipPosition } from "@/lib/mapTooltipPosition";
 
 export type ProvinceUsage = { name: string; ips: number; bytesIn: number; bytesOut: number; unknownSamples: number; knownSamples: number };
 type SourceIp = {ip:string;bytesIn:number;bytesOut:number;knownSamples:number;unknownSamples:number;city?:string|null;isp?:string|null;countryCode?:string};
@@ -52,6 +53,33 @@ export default function OperationsChinaMap({ provinces, unmappedIps, foreignIps 
   const [hovered, setHovered] = useState<string | null>(null), [pinned,setPinned] = useState<string|null>(null);
   const [point,setPoint] = useState({x:12,y:54});
   const mapRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const activePathRef = useRef<SVGPathElement | null>(null);
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const placeTooltip = useCallback(() => {
+    const map = mapRef.current, tooltip = tooltipRef.current, path = activePathRef.current;
+    if (!map || !tooltip || !path) return;
+    const bounds = map.getBoundingClientRect(), region = path.getBoundingClientRect();
+    const pointer = pointerRef.current || { x: (region.left + region.right) / 2, y: (region.top + region.bottom) / 2 };
+    const next = mapTooltipPosition({
+      // Ignore the tooltip's entrance scale animation when measuring its size.
+      width: map.clientWidth, height: map.clientHeight, tooltipWidth: tooltip.offsetWidth, tooltipHeight: tooltip.offsetHeight,
+      region: { left: region.left - bounds.left - map.clientLeft, right: region.right - bounds.left - map.clientLeft,
+        top: region.top - bounds.top - map.clientTop, bottom: region.bottom - bounds.top - map.clientTop },
+      pointer: { x: pointer.x - bounds.left - map.clientLeft, y: pointer.y - bounds.top - map.clientTop },
+    });
+    setPoint(previous => previous.x === next.x && previous.y === next.y ? previous : next);
+  }, []);
+  useLayoutEffect(() => {
+    if (!hovered) return;
+    placeTooltip();
+    // Details arrive asynchronously, and font/viewport changes affect the real
+    // card size. Re-evaluate using measured dimensions rather than 288x280.
+    const observer = new ResizeObserver(placeTooltip);
+    if (mapRef.current) observer.observe(mapRef.current);
+    if (tooltipRef.current) observer.observe(tooltipRef.current);
+    return () => observer.disconnect();
+  }, [hovered, placeTooltip]);
   const active = hovered || pinned;
   useEffect(()=> {setHovered(null);setPinned(null);},[scopeKey]);
   useEffect(()=> {onProvinceChange?.(active);},[active,onProvinceChange]);
@@ -75,8 +103,9 @@ export default function OperationsChinaMap({ provinces, unmappedIps, foreignIps 
   </div>;
   const ipRanking = (rows:SourceIp[], compact=false) => <div className="space-y-2">{rows.map((row,index)=><div key={row.ip} className="flex items-start justify-between gap-3 text-xs"><div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><span className="text-muted-foreground">{index+1}</span><button className="truncate font-mono text-primary hover:underline" onClick={()=>onSelectIp?.(row.ip)}>{row.ip}</button></div>{!compact && (row.city || row.isp) && <p className="ml-4 mt-1 truncate text-muted-foreground">{row.city || ""}{row.city && row.isp ? " · " : ""}{row.isp || ""}</p>}</div><span className="shrink-0 tabular-nums">{sourceUsage(row)}</span></div>)}</div>;
   const position = (event:PointerEvent<SVGPathElement>) => {
-    const rect = mapRef.current?.getBoundingClientRect();
-    if (rect) setPoint({x:Math.max(8,Math.min(event.clientX-rect.left+16,rect.width-288-8)),y:Math.max(44,Math.min(event.clientY-rect.top+12,rect.height-280))});
+    activePathRef.current = event.currentTarget;
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    placeTooltip();
   };
   return <div className="space-y-3">
     <div ref={mapRef} className="relative overflow-hidden rounded-xl border bg-gradient-to-br from-sky-500/5 via-background to-emerald-500/5">
@@ -90,13 +119,13 @@ export default function OperationsChinaMap({ provinces, unmappedIps, foreignIps 
             className="cursor-pointer outline-none transition-all duration-300 ease-out motion-reduce:transform-none motion-reduce:transition-none" tabIndex={0} role="button"
             aria-label={`${t(name)}: ${row?.ips ?? 0} IP`} aria-pressed={pinned === name}
             onPointerEnter={event => {setHovered(name);position(event);}} onPointerMove={position} onPointerLeave={()=>setHovered(null)}
-            onFocus={()=> {setHovered(name);setPoint({x:12,y:54});}} onBlur={()=>setHovered(null)} onClick={()=>setPinned(name)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPinned(name); } if (event.key === "Escape") {setPinned(null);setHovered(null);} }}>
+            onFocus={event=> {activePathRef.current=event.currentTarget;pointerRef.current=null;setHovered(name);placeTooltip();}} onBlur={()=>setHovered(null)} onClick={()=>setPinned(name)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPinned(name); } if (event.key === "Escape") {setPinned(null);setHovered(null);} }}>
           </path>;
         })}
       </svg>}
       <div className="absolute bottom-3 left-3 hidden w-56 md:block">{foreignSummary}</div>
       <div className="absolute bottom-3 right-3 rounded-lg border bg-background/90 px-3 py-2 text-right text-xs backdrop-blur"><p className="text-muted-foreground">{t("未定位来源")}</p><p className="mt-1 font-semibold tabular-nums">{unknownIps} IP</p></div>
-      {hovered && <div role="status" style={{left:point.x,top:point.y}} className="pointer-events-none absolute z-20 hidden w-72 max-w-[calc(100%-1rem)] animate-in rounded-xl border bg-popover/95 p-4 text-popover-foreground shadow-xl backdrop-blur duration-200 fade-in zoom-in-95 motion-reduce:animate-none md:block">
+      {hovered && <div ref={tooltipRef} role="status" style={{left:point.x,top:point.y}} className="pointer-events-none absolute z-20 hidden max-h-[calc(100%-1rem)] w-72 max-w-[calc(100%-1rem)] overflow-y-auto animate-in rounded-xl border bg-popover/95 p-4 text-popover-foreground shadow-xl backdrop-blur duration-200 fade-in zoom-in-95 motion-reduce:animate-none md:block">
         <div className="mb-3 flex items-center justify-between gap-3"><span className="font-semibold">{t(hovered)}</span><span className="text-xs text-muted-foreground">{selected?.ips || 0} IP</span></div>
         <div className="mb-3 grid grid-cols-2 gap-3 text-xs"><div><p className="text-muted-foreground">{t("入向流量")}</p><p className="mt-1 tabular-nums">{selected?.unknownSamples && !selected.knownSamples ? t("不可用") : operationsBytes(selected?.bytesIn)}</p></div><div><p className="text-muted-foreground">{t("出向流量")}</p><p className="mt-1 tabular-nums">{selected?.unknownSamples && !selected.knownSamples ? t("不可用") : operationsBytes(selected?.bytesOut)}</p></div></div>
         <p className="mb-2 border-t pt-2 text-[11px] text-muted-foreground">{t("流量前 5 个 IP")}</p>

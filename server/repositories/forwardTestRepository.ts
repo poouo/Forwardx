@@ -3,6 +3,7 @@ import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizz
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
 import { quoteIdentifier } from "../dbCompat";
 import { selfTestSweepActivity, SELF_TEST_MAX_LIFETIME_SECONDS, selfTestTimeoutSeconds } from "../selfTestTiming";
+import { deleteExpiredHistoryRows } from "./historyRetention";
 
 // ==================== Forward Tests ====================
 
@@ -174,9 +175,6 @@ export async function getForwardTestById(id: number) {
 
 export async function cleanOldForwardTests(retainHours = 72) {
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("forward_tests")} WHERE ${quoteIdentifier("updatedAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("forward_tests", "updatedAt", cutoff);
 }
 

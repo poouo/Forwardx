@@ -26,6 +26,7 @@ import { authCapRouter } from "./authCaptcha";
 import { registerDatabaseHealthRoutes, databaseUnavailableApiGuard, databaseRequestErrorHandler } from "./databaseHealthRoutes";
 import { startDatabaseHealthMonitor } from "./databaseHealthMonitor";
 import { registerLocaleHintRoute } from "./localeHint";
+import { serveClient } from "./clientStatic";
 
 installPanelLogger();
 
@@ -52,10 +53,7 @@ async function findAvailablePort(startPort = 9810, host?: string): Promise<numbe
 
 function serveStatic(app: express.Express) {
   const clientDist = path.resolve(serverDir, "../client/dist");
-  app.use(express.static(clientDist));
-  app.get("*", (_req, res) => {
-    res.sendFile(path.join(clientDist, "index.html"));
-  });
+  serveClient(app, clientDist);
 }
 
 function installMobileCors(app: express.Express) {

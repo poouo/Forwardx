@@ -346,7 +346,7 @@ test("a result from a shorter topology cannot populate the retained first edge",
   assert.doesNotMatch(html, /Current A|Current B|Current C/);
 });
 
-test("an entry that has not reported remains visible after a partial multi-entry result", () => {
+test("an entry that has not reported is distinguished from an unstarted probe", () => {
   const parsed = parseLinkTestMessage(JSON.stringify({
     details: [
       { success: true, latencyMs: 9, routeLabel: "Entry 1 -> IX", fromHostId: 11, toHostId: 20, hopIndex: 0, hopCount: 2 },
@@ -371,7 +371,33 @@ test("an entry that has not reported remains visible after a partial multi-entry
   assert.match(html, /Entry 1/);
   assert.match(html, /Entry 2/);
   assert.match(html, /Exit/);
-  assert.match(html, /等待探测/);
+  assert.match(html, /未收到结果/);
+  assert.match(html, /可用路径最大延迟/);
+  assert.doesNotMatch(html, /等待探测/);
+});
+
+test("a failed entry without an error string is not dropped from a completed probe", () => {
+  const parsed = parseLinkTestMessage(JSON.stringify({
+    kind: "tunnel-entry-group-summary", totalLatencyMs: 7, details: [
+      { success: false, latencyMs: null, fromHostId: 11, toHostId: 20, hopIndex: 0, hopCount: 2, routeLabel: "Entry 1 -> IX" },
+      { success: true, latencyMs: 6, fromHostId: 12, toHostId: 20, hopIndex: 0, hopCount: 2, routeLabel: "Entry 2 -> IX" },
+      { success: true, latencyMs: 1, fromHostId: 20, toHostId: 30, hopIndex: 1, hopCount: 2, routeLabel: "IX -> Exit" },
+    ],
+  }));
+  const html = renderToStaticMarkup(<LinkTestProbeView parsed={parsed} isSuccess isTesting={false}
+    mobileStacked={false} plannedSegments={[
+      { from: "Entry 1", to: "IX", fromHostId: 11, toHostId: 20, hopIndex: 0, hopCount: 2 },
+      { from: "Entry 2", to: "IX", fromHostId: 12, toHostId: 20, hopIndex: 0, hopCount: 2 },
+      { from: "IX", to: "Exit", fromHostId: 20, toHostId: 30, hopIndex: 1, hopCount: 2 },
+    ]} />);
+  assert.match(html, /Entry 1/);
+  assert.match(html, /失败/);
+  assert.match(html, /6 ms/);
+  assert.match(html, /7 ms/);
+  assert.match(html, /可用路径最大延迟/);
+  assert.doesNotMatch(html, /等待探测|未收到结果/);
+  // Without an explicit total, do not sum just the surviving successful rows.
+  assert.equal(getLinkTestTotalLatency({ parsed: { ...parsed, totalLatencyMs: null }, isSuccess: true }), null);
 });
 
 test("current rule details discard an older planned tunnel latency fallback", () => {

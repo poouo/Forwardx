@@ -5532,8 +5532,6 @@ function SystemInfoSection() {
               >
                 <div className="min-w-0">
                   <span className="text-sm">{translateText(SIDEBAR_MENU_LABELS[key])}</span>
-                  {key === "affiliates" && <p className="mt-1 text-xs text-muted-foreground">{translateText("仅控制菜单显示，返佣总开关请在推广管理的设置中调整。")}</p>}
-                  {key === "tickets" && <p className="mt-1 text-xs text-muted-foreground">{translateText("仅控制用户侧菜单显示，工单功能和推送开关请在工单管理的设置中调整。")}</p>}
                 </div>
                 <Switch className="shrink-0" aria-label={translateText(SIDEBAR_MENU_LABELS[key])} checked={sidebarMenu[key]} onCheckedChange={(checked) => setSidebarMenuEnabled(key, checked)} />
               </div>

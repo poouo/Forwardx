@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { deleteExpiredHistoryRows } from "./historyRetention";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   forwardGroupEvents,
@@ -1203,10 +1204,7 @@ export async function getForwardGroupEvents(groupId: number, limit = 50) {
 
 export async function cleanOldForwardGroupEvents(retainHours = 72) {
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("forward_group_events")} WHERE ${quoteIdentifier("createdAt")} < ?`,
-    [cutoff],
-  );
+  await deleteExpiredHistoryRows("forward_group_events", "createdAt", cutoff);
 }
 
 async function withForwardChainTargetLabel(test: any, template: any) {

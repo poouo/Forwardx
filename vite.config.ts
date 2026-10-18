@@ -2,9 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { clientDeliveryPlugin } from "./scripts/client-delivery-plugin";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), clientDeliveryPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./client/src"),

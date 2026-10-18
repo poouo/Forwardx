@@ -1,6 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { clearTunnelMultiEntryLatencyState, getTunnelMultiEntryHopDetails, getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tunnelMultiEntryLatencyState";
+import { tunnelMultiEntryProbeMessage } from "./tunnelMultiEntryProbeMessage";
+
+test("live multi-entry diagrams replace missing entries as asynchronous reports arrive", () => {
+  const base = { tunnelId: 95001, expectedEntryHostIds: [11, 12], hopCount: 2, generation: "live-v1" };
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 12, toHostId: 20, hopIndex: 0, latencyMs: 6, isTimeout: false });
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 20, toHostId: 30, hopIndex: 1, latencyMs: 1, isTimeout: false });
+  const partial = tunnelMultiEntryProbeMessage({ ...base, totalLatencyMs: 7 });
+  assert.deepEqual(partial?.missingEntryHostIds, [11]);
+  const partialMessage = JSON.parse(partial!.message);
+  assert.equal(partialMessage.totalLatencyMs, 7);
+  assert.deepEqual(partialMessage.details.map((detail: any) => [detail.fromHostId, detail.toHostId]), [[11, 20], [12, 20], [20, 30]]);
+  assert.equal(partialMessage.details[0].message, "未收到探测结果");
+  assert.equal(partialMessage.details[0].isTimeout, false, "absent reports are not fabricated network timeouts");
+  // A later report must replace the old diagram, not leave it waiting forever.
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 11, toHostId: 20, hopIndex: 0, latencyMs: 9, isTimeout: false });
+  const complete = tunnelMultiEntryProbeMessage({ ...base, totalLatencyMs: 10 });
+  assert.deepEqual(complete?.missingEntryHostIds, []);
+  const completeMessage = JSON.parse(complete!.message);
+  assert.equal(completeMessage.details[0].latencyMs, 9);
+  assert.equal(completeMessage.totalLatencyMs, 10);
+  assert.equal(completeMessage.details.length, 3, "do not duplicate the shared downstream hop");
+  assert.equal(tunnelMultiEntryProbeMessage({ ...base, generation: "changed-topology", totalLatencyMs: 10 }), null);
+});
+
+test("live multi-entry diagrams keep direct exit branches isolated and report failures", () => {
+  const base = { tunnelId: 95002, expectedEntryHostIds: [11, 12], hopCount: 1, generation: "live-v1" };
+  for (const [pathKey, toHostId] of [["primary", 20], ["exit-2", 30]] as const) {
+    recordTunnelMultiEntryLatency({ ...base, pathKey, sourceHostId: 11, toHostId, hopIndex: 0, latencyMs: null, isTimeout: true });
+    recordTunnelMultiEntryLatency({ ...base, pathKey, sourceHostId: 12, toHostId, hopIndex: 0, latencyMs: 6, isTimeout: false });
+  }
+  const snapshot = tunnelMultiEntryProbeMessage({ ...base, pathKey: "exit-2", totalLatencyMs: 6 });
+  assert.deepEqual(snapshot?.missingEntryHostIds, []);
+  const message = JSON.parse(snapshot!.message);
+  assert.deepEqual(message.details.map((detail: any) => detail.toHostId), [30, 30]);
+  assert.equal(message.details[0].success, false);
+  assert.equal(message.details[0].message, "隧道跳探测超时");
+});
 
 test("multi-entry direct probe stays available when one entry succeeds", () => {
   const base = {

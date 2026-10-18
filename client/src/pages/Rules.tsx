@@ -11,6 +11,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
 import { ruleOwnerOptionIds } from "@/lib/userSelection";
+import { isCompleteRuleSortScope } from "@/lib/ruleSortScope";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
@@ -358,7 +359,6 @@ const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
 const RULE_PAGE_SIZE_STORAGE_KEY = "forwardx.rules.pageSize";
 const RULE_GROUP_COLLAPSED_STORAGE_KEY = "forwardx.rules.groupCollapsed";
 const RULE_CATEGORY_STORAGE_KEY = "forwardx.rules.category";
-const RULE_FILTER_USER_STORAGE_KEY = "forwardx.rules.filterUser";
 const RULE_FILTER_RESOURCE_STORAGE_KEY = "forwardx.rules.filterResource";
 const RULE_SORT_CATEGORY_ORDER: RuleTransferScopeType[] = ["local", "tunnel", "chain", "group"];
 const RULE_SORT_CATEGORY_RANK = new Map<RuleTransferScopeType, number>(
@@ -2164,7 +2164,6 @@ function RulesContent() {
     if (showDialog && !editingId) setForm(prev => ({ ...prev, limits: newRuleLimitsForm() }));
   }, [showDialog, editingId]);
   const filterResourceStorageKey = ruleFilterStorageKey(RULE_FILTER_RESOURCE_STORAGE_KEY, user);
-  const filterUserStorageKey = ruleFilterStorageKey(RULE_FILTER_USER_STORAGE_KEY, user);
   const ruleCategoryStorageKey = ruleFilterStorageKey(RULE_CATEGORY_STORAGE_KEY, user);
   const [filterResource, setFilterResource] = useState<RuleResourceFilter>(() => (
     normalizeRuleResourceFilter(getStoredString(filterResourceStorageKey, "all"))
@@ -2173,17 +2172,18 @@ function RulesContent() {
   const [ruleResourceMenuType, setRuleResourceMenuType] = useState<RuleTransferScopeType>(
     parseRuleResourceFilter(getStoredString(filterResourceStorageKey, "all")).type || "local",
   );
-  const [filterUser, setFilterUser] = useState<string>(() => getStoredString(filterUserStorageKey, "self"));
+  // Owner scope is deliberate for this visit only. Never restore "all" or a
+  // different user's scope from browser storage when opening the rule list.
+  const [filterUser, setFilterUser] = useState<string>("self");
   const previousFilterIdentity = useRef(filterResourceStorageKey);
   useEffect(() => {
     if (previousFilterIdentity.current === filterResourceStorageKey) return;
     previousFilterIdentity.current = filterResourceStorageKey;
     const nextResource = normalizeRuleResourceFilter(getStoredString(filterResourceStorageKey, "all"));
-    const nextUser = user?.role === "admin" ? getStoredString(filterUserStorageKey, "self") : "self";
     setFilterResource(nextResource);
     setRuleResourceMenuType(parseRuleResourceFilter(nextResource).type || "local");
-    setFilterUser(nextUser);
-  }, [filterResourceStorageKey, filterUserStorageKey, user?.role]);
+    setFilterUser("self");
+  }, [filterResourceStorageKey]);
   const [ruleSearchQuery, setRuleSearchQuery] = useState("");
   const [ruleCategory, setRuleCategory] = useUrlTab<RuleCategory>({
     values: RULE_CATEGORIES,
@@ -4313,10 +4313,9 @@ function RulesContent() {
     isReady: !isLoading && !!rulePageQuery.data,
   });
   const pagedRules = rulePagination.items;
-  const ruleSortingEnabled = ruleCategory !== "all"
+  const ruleSortingEnabled = isCompleteRuleSortScope(ruleCategory, filterResource)
     && (user?.role === "admin" || !pagedRules.some(isAdminManagedRule))
     && effectiveViewMode !== "globe"
-    && filterResource === "all"
     && ruleSearchQuery.trim().length === 0
     && (user?.role !== "admin" || filterUser !== "all");
   const ruleSortingReady = ruleSortingEnabled && !rulePageQuery.isPlaceholderData;
@@ -6181,7 +6180,6 @@ function RulesContent() {
     setShowDialog(false);
     setResetTrafficTarget(null);
     setFilterUser(value);
-    storeString(filterUserStorageKey, value);
   };
 
   const handleFilterResourceChange = (value: string) => {
@@ -6204,7 +6202,6 @@ function RulesContent() {
     handleFilterResourceChange("all");
     if (user?.role === "admin") {
       setFilterUser("self");
-      storeString(filterUserStorageKey, "self");
     }
   };
 
@@ -6638,7 +6635,7 @@ function RulesContent() {
             {user?.role === "admin" && (
               <UserSelect value={filterUser} onValueChange={handleFilterUserChange} excludeUserId={user?.id}
                 className="h-8 w-full text-xs sm:w-[180px]"
-                specialOptions={[{ value: "all", label: translateText("所有用户") }, { value: "self", label: translateText("我的规则") }]} />
+                specialOptions={[{ value: "self", label: translateText("我的规则") }, { value: "all", label: translateText("所有用户") }]} />
             )}
             <DropdownMenu open={ruleResourceMenuOpen} onOpenChange={setRuleResourceMenuOpen} modal={false}>
               <DropdownMenuTrigger asChild>

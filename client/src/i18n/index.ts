@@ -50,9 +50,12 @@ export async function initializeLanguage(panelBase = "") {
   let setupLanguage: Language | undefined;
   if (preference === "auto") {
     try {
-      const response = await fetch(`${panelBase}/api/locale`, { signal: AbortSignal.timeout(1500), credentials: "omit" });
-      if (response.ok) {
-        const hint = await response.json();
+      // Local/Docker HTML already carries these public hints. Avoid a serial
+      // round trip on first visits too; native apps still query their panel.
+      const inline = !panelBase && typeof document !== "undefined" ? document.getElementById?.("forwardx-locale")?.textContent : null;
+      const response = inline ? null : await fetch(`${panelBase}/api/locale`, { signal: AbortSignal.timeout(1500), credentials: "omit" });
+      if (inline || response?.ok) {
+        const hint = inline ? JSON.parse(inline) : await response!.json();
         if (typeof hint.country === "string") country = hint.country;
         if (hint.setupLanguage === "zh-CN" || hint.setupLanguage === "en") setupLanguage = hint.setupLanguage;
       }

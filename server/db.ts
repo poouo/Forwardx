@@ -16,7 +16,7 @@ import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomBuiltinAvatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { revokeUserAuthSessions } from "./repositories/sessionRepository";
-import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
+import { ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { ensureBundledDeveloperAnnouncements } from "./repositories/announcementRepository";
 import { backfillManualEntitlementsFromEffectiveUsers, repairSubscriptionBillingStateOnce } from "./repositories/billingRepository";
@@ -27,7 +27,7 @@ import { seedDevPanelData } from "./devPanel";
 import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
-import { databaseHealth } from "./databaseHealthState";
+import { databaseHealth, describeDatabaseError } from "./databaseHealthState";
 
 export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -343,9 +343,17 @@ export async function initDatabase() {
   const initializationStartedAt = Date.now();
   const runInitializationStep = async <T>(name: string, work: () => Promise<T> | T) => {
     const startedAt = Date.now();
+    const pendingWarning = setInterval(() => {
+      console.warn(`[Database] initialization step pending step=${name} durationMs=${Date.now() - startedAt}; check database load, locks and permissions`);
+    }, 30_000);
+    pendingWarning.unref();
     try {
       return await work();
+    } catch (error) {
+      console.error(`[Database] initialization step failed step=${name} code=${describeDatabaseError(error, true)?.code || "INITIALIZATION_FAILED"}`);
+      throw error;
     } finally {
+      clearInterval(pendingWarning);
       const durationMs = Date.now() - startedAt;
       // Startup maintenance is intentionally quiet when it is fast. A slow
       // step is actionable when a local panel appears stuck during boot.
@@ -443,12 +451,8 @@ export async function initDatabase() {
     await runInitializationStep("backfill-traffic-counters", () => ensureUserTrafficCountersBackfilled().catch((error) => {
       console.warn("[TrafficCounter] Startup cumulative counter backfill skipped:", error instanceof Error ? error.message : String(error));
     }));
-    await runInitializationStep("cleanup-traffic-stats", () => cleanOldTrafficStats(72).catch((error) => {
-      console.warn("[TrafficSummary] Startup traffic stats cleanup skipped:", error instanceof Error ? error.message : String(error));
-    }));
-    await runInitializationStep("cleanup-traffic-buckets", () => cleanOldTrafficStatBuckets(72).catch((error) => {
-      console.warn("[TrafficSummary] Startup traffic bucket cleanup skipped:", error instanceof Error ? error.message : String(error));
-    }));
+    // Retention is non-critical maintenance. The scheduler performs bounded
+    // cleanup after HTTP startup, never while Web diagnostics are unavailable.
     await runInitializationStep("backfill-manual-entitlements", () => backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
       console.warn("[Database] Manual entitlement backfill skipped:", error instanceof Error ? error.message : String(error));
     }));

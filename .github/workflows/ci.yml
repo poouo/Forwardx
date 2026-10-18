@@ -14,6 +14,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  mysql-upgrade:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: forwardx-ci-only
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pforwardx-ci-only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify MySQL legacy upgrades and paced retention
+        env:
+          FORWARDX_TEST_MYSQL_URL: mysql://root:forwardx-ci-only@127.0.0.1:3306
+          DATABASE_TYPE: mysql
+        run: pnpm test:database-upgrade
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -48,6 +78,8 @@ jobs:
           pnpm check:versions
           pnpm test:release-notes
           pnpm test:ui
+          pnpm test:login-ui
+          pnpm test:startup
           pnpm test:support
           pnpm test:affiliates
           pnpm test:avatars

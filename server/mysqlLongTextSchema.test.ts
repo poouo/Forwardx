@@ -10,6 +10,11 @@ function mysqlPool() {
     },
     async query(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
+      if (sql.startsWith("SHOW COLUMNS")) {
+        const table = sql.match(/`([^`]+)`/)![1];
+        // Existing deployments used TEXT for the fields widened to LONGTEXT.
+        return [getDatabaseTableDefs().find(def => def.name === table)!.columns.map(column => ({ Field: column.name, Type: column.type === "longtext" ? "text" : column.type })), []];
+      }
       return [[], []];
     },
     async execute() {

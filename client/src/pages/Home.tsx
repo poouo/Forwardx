@@ -1,9 +1,10 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
-import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AnimatedStatValue, { StatValuePersistenceContext } from "@/components/AnimatedStatValue";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import DashboardLayout from "@/components/DashboardLayout";
+import PanelStartView from "@/components/PanelStartView";
 import MobileAppSettings from "@/components/MobileAppSettings";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -499,8 +500,8 @@ function DashboardContent() {
   const motionEnabled = useMotionEnabled();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
-  const { data: trafficTotals, isLoading: trafficTotalsLoading } = trpc.dashboard.trafficTotals.useQuery(undefined, {
+  const { data: stats, isLoading, isError: statsError, isFetching: statsFetching, dataUpdatedAt: statsAt } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
+  const { data: trafficTotals, isLoading: trafficTotalsLoading, isError: totalsError, isFetching: totalsFetching, dataUpdatedAt: totalsAt } = trpc.dashboard.trafficTotals.useQuery(undefined, {
     refetchInterval: pollingInterval("normal"),
     staleTime: 5000,
     placeholderData: (previousData) => previousData,
@@ -509,11 +510,11 @@ function DashboardContent() {
   const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: pollingInterval("slow"), placeholderData: (previousData) => previousData });
-  const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
+  const { data: trafficBreakdown, isLoading: breakdownLoading, isError: breakdownError, isFetching: breakdownFetching, dataUpdatedAt: breakdownAt } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 24, limit: 30 },
     { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
-  const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
+  const { data: trafficSeries, isLoading: trendLoading, isError: trendError, isFetching: trendFetching, dataUpdatedAt: trendAt } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 24, bucketMinutes: 60 },
     { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
@@ -530,9 +531,10 @@ function DashboardContent() {
   );
 
   const currentUserTraffic = useMemo(() => {
-    if (!userTraffic.length) return null;
-    return userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || userTraffic[0];
-  }, [userTraffic, user?.id]);
+    // auth.me already returned these account fields from the server. Use them
+    // immediately, then replace with the separately refreshed usage response.
+    return userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || user;
+  }, [userTraffic, user]);
 
   const [cachedTrafficBreakdown, setCachedTrafficBreakdown] = useState<typeof trafficBreakdown | null>(null);
   useEffect(() => {
@@ -565,7 +567,11 @@ function DashboardContent() {
       ? accountTrafficLimit
       : quota.totalBytes;
   const trafficPercent = trafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / trafficLimit) * 100)) : 0;
-  const accountStatusLoading = userTrafficLoading || subscriptionsLoading || trafficBillingLoading || (!isAdmin && walletLoading);
+  const accountTrafficLoading = userTrafficLoading && !currentUserTraffic;
+  const accountStatusLoading = accountTrafficLoading || subscriptionsLoading;
+  const dashboardRefreshing = statsFetching || totalsFetching || breakdownFetching || trendFetching;
+  const dashboardRefreshFailed = statsError || totalsError || breakdownError || trendError;
+  const dashboardUpdatedAt = Math.min(...[statsAt, totalsAt, breakdownAt, trendAt].filter(at => at > 0));
   const accountCacheScope = user?.id ? String(user.id) : "current";
   const accountExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
   const expiry = quota.hasQuota ? getExpiryStatus(accountExpiresAt) : { label: "---", tone: "normal" as const };
@@ -614,8 +620,9 @@ function DashboardContent() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="pearl-spec-plate">{new Date().toLocaleDateString(getFormatLocale(), { year: "numeric", month: "short", day: "numeric" })}</div>
-          <Badge variant="outline" className="gap-1.5 border-emerald-500/30 px-3 py-1.5 text-emerald-700 dark:text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{translateText("系统在线")}</Badge>
+          <Badge variant="outline" title={Number.isFinite(dashboardUpdatedAt) ? translateText("上次更新：{0}", [new Date(dashboardUpdatedAt).toLocaleString(getFormatLocale())]) : undefined} className={`max-w-full gap-1.5 whitespace-normal px-3 py-1.5 ${dashboardRefreshFailed ? "border-amber-500/30 text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${dashboardRefreshFailed ? "bg-amber-500" : dashboardRefreshing ? "bg-primary" : "bg-emerald-500"}`} />
+            {translateText(dashboardRefreshFailed ? "部分数据更新失败，保留上次结果" : dashboardRefreshing ? "数据更新中" : "系统在线")}</Badge>
         </div>
       </div>
 
@@ -626,9 +633,9 @@ function DashboardContent() {
             value={stats?.totalHosts ?? 0}
             subtitle={translateText("{0} 台在线", [stats?.onlineHosts ?? 0])}
             icon={Server}
-            loading={isLoading}
+            loading={isLoading || !stats}
             cacheKey="home.stats.totalHosts"
-            fallbackValue={0}
+            fallbackValue="—"
             index={0}
           />
         )}
@@ -638,9 +645,9 @@ function DashboardContent() {
           value={stats?.totalRules ?? 0}
           subtitle={translateText("{0} 条已启用", [stats?.activeRules ?? 0])}
           icon={ArrowRightLeft}
-          loading={isLoading}
+          loading={isLoading || !stats}
           cacheKey="home.stats.totalRules"
-          fallbackValue={0}
+          fallbackValue="—"
           index={isAdmin ? 1 : 0}
         />
         <DashboardStatCard
@@ -649,9 +656,9 @@ function DashboardContent() {
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
           subtitle={translateText("累计入站")}
           icon={ArrowDownToLine}
-          loading={trafficTotalsLoading}
+          loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficIn"
-          fallbackValue="0 B"
+          fallbackValue="—"
           className="col-span-2 sm:col-span-1"
           index={isAdmin ? 2 : 1}
         />
@@ -661,9 +668,9 @@ function DashboardContent() {
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
           subtitle={translateText("累计出站")}
           icon={ArrowUpFromLine}
-          loading={trafficTotalsLoading}
+          loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficOut"
-          fallbackValue="0 B"
+          fallbackValue="—"
           className="col-span-2 sm:col-span-1"
           index={isAdmin ? 3 : 2}
         />
@@ -681,7 +688,7 @@ function DashboardContent() {
               <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">
                 <AnimatedStatValue
                   value={translateText("管理员权限")}
-                  loading={accountStatusLoading}
+                  loading={false}
                   cacheKey={`home.account.${accountCacheScope}.adminBadge`}
                   fallbackValue={translateText("管理员权限")}
                 />
@@ -696,7 +703,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={formatBytes(trafficUsed)}
-                  loading={accountStatusLoading}
+                  loading={accountTrafficLoading}
                   cacheKey={`home.account.${accountCacheScope}.trafficUsed`}
                   fallbackValue="0 B"
                   className="mt-1 text-xl font-semibold tabular-nums"
@@ -709,7 +716,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingBytesText}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.billingTraffic`}
                   fallbackValue={translateText("未开启")}
                   className="mt-1 text-xl font-semibold tabular-nums"
@@ -717,7 +724,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingAdminSubtitle}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.billingTrafficSubtitle`}
                   fallbackValue={translateText("流量计费功能未开启")}
                   className="mt-1 text-[11px] text-muted-foreground"
@@ -729,7 +736,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingAmountText}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.billingAmount`}
                   fallbackValue="-"
                   className="mt-1 text-xl font-semibold tabular-nums"
@@ -742,7 +749,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={translateText("管理员")}
-                  loading={accountStatusLoading}
+                  loading={false}
                   cacheKey={`home.account.${accountCacheScope}.permission`}
                   fallbackValue={translateText("管理员")}
                   className="mt-1 text-xl font-semibold"
@@ -763,7 +770,7 @@ function DashboardContent() {
                 <Badge variant={canForward ? "outline" : "destructive"} className={canForward ? "border-emerald-500/30 text-emerald-600" : ""}>
                   <AnimatedStatValue
                     value={canForwardText}
-                    loading={accountStatusLoading}
+                    loading={accountTrafficLoading}
                     cacheKey={`home.account.${accountCacheScope}.canForward`}
                     fallbackValue={translateText("转发已停用")}
                   />
@@ -818,9 +825,9 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={money(wallet?.balanceCents)}
-                  loading={accountStatusLoading}
+                  loading={walletLoading}
                   cacheKey={`home.account.${accountCacheScope}.wallet`}
-                  fallbackValue={money(0)}
+                  fallbackValue="—"
                   className="mt-1 text-xl font-semibold tabular-nums"
                 />
               </div>
@@ -830,7 +837,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingBytesText}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.userBillingTraffic`}
                   fallbackValue={translateText("未开启")}
                   className="mt-1 text-xl font-semibold tabular-nums"
@@ -838,7 +845,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingUserSubtitle}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.userBillingTrafficSubtitle`}
                   fallbackValue={translateText("管理员未开启")}
                   className="mt-1 text-[11px] text-muted-foreground"
@@ -850,7 +857,7 @@ function DashboardContent() {
                 <AnimatedStatValue
                   as="p"
                   value={trafficBillingAmountText}
-                  loading={accountStatusLoading}
+                  loading={trafficBillingLoading}
                   cacheKey={`home.account.${accountCacheScope}.userBillingAmount`}
                   fallbackValue="-"
                   className="mt-1 text-xl font-semibold tabular-nums"
@@ -865,7 +872,7 @@ function DashboardContent() {
                   value={activeSubscriptions.length > 1
                     ? translateText("{0} 等 {1} 个套餐", [activeSubscription?.planName || "---", activeSubscriptions.length])
                     : activeSubscription?.planName || "---"}
-                  loading={accountStatusLoading}
+                  loading={subscriptionsLoading}
                   cacheKey={`home.account.${accountCacheScope}.planName`}
                   fallbackValue="---"
                   className="mt-1 truncate text-xl font-semibold"
@@ -965,7 +972,7 @@ function DashboardContent() {
 export default function Home() {
   const { user, loading } = useAuth();
   const { data: settings } = trpc.system.getSettings.useQuery(undefined, {
-    enabled: !user && (!mobileAuth.isNative || mobileAuth.hasPanelUrl()),
+    enabled: !loading && !user && (!mobileAuth.isNative || mobileAuth.hasPanelUrl()),
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -978,7 +985,7 @@ export default function Home() {
     toast.success(translateText("欢迎回来！{0} 用户", [welcomeName]), { position: "top-right" });
   }, [user?.id]);
 
-  if (loading) return null;
+  if (loading) return <PanelStartView />;
 
   if (!user) {
     if (mobileAuth.isNative) {
@@ -997,7 +1004,7 @@ export default function Home() {
 
   return (
     <DashboardLayout>
-      <DashboardContent />
+      <StatValuePersistenceContext.Provider value={false}><DashboardContent /></StatValuePersistenceContext.Provider>
     </DashboardLayout>
   );
 }

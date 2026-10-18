@@ -2,6 +2,7 @@ import { Languages } from "lucide-react";
 import { getLanguage, getLanguagePreference, initializeLanguage, setLanguagePreference, t, type Language } from "@/i18n";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { toast } from "@/lib/localizedToast";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function LanguageSelector({ compact = false, setup = false, onLanguageChange }: { compact?: boolean; setup?: boolean; onLanguageChange?: () => void }) {
   const confirm = useConfirmDialog();
@@ -22,13 +23,18 @@ export default function LanguageSelector({ compact = false, setup = false, onLan
     }
   };
   return (
-    <label className={`flex items-center gap-2 ${compact ? "px-2.5 py-2 text-sm" : "text-sm"}`}>
+    <div data-language-selector className={`flex items-center gap-2 ${compact ? "px-2.5 py-2 text-sm" : "text-sm"}`}>
       <Languages className="h-4 w-4 shrink-0" aria-hidden="true" />
       <span className={compact ? "sr-only" : ""}>{t("语言")}</span>
-      <select aria-label={t("语言")} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-foreground" value={getLanguage()} onChange={event => void change(event.target.value)}>
-        <option value="zh-CN">简体中文</option>
-        <option value="en">English</option>
-      </select>
-    </label>
+      <Select value={getLanguage()} onValueChange={value => void change(value)}>
+        <SelectTrigger aria-label={t("语言")} className="h-9 w-auto min-w-[6.5rem] rounded-full px-3">
+          <SelectValue>{getLanguage() === "en" ? "English" : "简体中文"}</SelectValue>
+        </SelectTrigger>
+        <SelectContent align="end">
+          <SelectItem value="zh-CN">简体中文</SelectItem>
+          <SelectItem value="en">English</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
   );
 }

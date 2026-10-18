@@ -11,6 +11,8 @@ import "./styles/pearl.css";
 import { DATABASE_UNAVAILABLE_MESSAGE } from "@shared/databaseHealth";
 import { fetchPublicMonitor, PUBLIC_MONITOR_QUERY_PATHS } from "./lib/publicMonitor";
 import { fetchManualProbe, MANUAL_PROBE_QUERY_PATHS } from "./lib/manualProbe";
+import { createTRPCQueryUtils } from "@trpc/react-query";
+import { installDashboardCache } from "./lib/dashboardCache";
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
 
@@ -47,6 +49,7 @@ const queryClient = new QueryClient({
     },
   },
 });
+const dashboardCache = installDashboardCache(queryClient, () => mobileAuth.isNative ? mobileAuth.getPanelUrl() : window.location.origin);
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
@@ -58,6 +61,7 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
     error.message === SESSION_REPLACED_ERR_MSG;
 
   if (!isUnauthorized) return;
+  dashboardCache.clear();
   const notice = error.message === ACCOUNT_DISABLED_ERR_MSG || error.message === SESSION_REPLACED_ERR_MSG
     ? error.message
     : LOGIN_EXPIRED_NOTICE;
@@ -87,6 +91,8 @@ queryClient.getQueryCache().subscribe(event => {
 });
 
 queryClient.getMutationCache().subscribe(event => {
+  if (event.type === "updated" && event.action.type === "success" &&
+    JSON.stringify(event.mutation.options.mutationKey?.[0]) === JSON.stringify(["auth", "logout"])) dashboardCache.clear();
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
     if (error instanceof TRPCClientError && error.message === DATABASE_UNAVAILABLE_MESSAGE) {
@@ -101,11 +107,15 @@ queryClient.getMutationCache().subscribe(event => {
 const criticalQueryPaths = new Set([
   "auth.me",
   "setup.status",
+  "system.publicInfo",
   "dashboard.stats",
   "dashboard.trafficTotals",
   "dashboard.trafficSeries",
   "dashboard.trafficBreakdown",
   "dashboard.userTraffic",
+  "billing.me",
+  "trafficBilling.status",
+  "plans.mySubscriptions",
 ]);
 
 const trpcFetch = (input: RequestInfo | URL, init?: RequestInit) => {
@@ -168,6 +178,19 @@ const trpcClient = trpc.createClient({
 
 async function bootstrap() {
   await mobileAuth.hydrateNative();
+  // Start network work while locale detection and the eagerly preloaded App are
+  // being prepared. React observes the same queries, so it does not repeat them.
+  const api = createTRPCQueryUtils({ queryClient, client: trpcClient });
+  if (!mobileAuth.isNative || mobileAuth.hasPanelUrl()) {
+    if (!window.location.pathname.startsWith("/login")) void api.setup.status.prefetch();
+    void api.auth.me.fetch().then(user => {
+      if (!user || window.location.pathname !== "/") return;
+      void api.dashboard.stats.prefetch();
+      void api.dashboard.trafficTotals.prefetch();
+      void api.dashboard.trafficSeries.prefetch({ hours: 24, bucketMinutes: 60 });
+      void api.dashboard.trafficBreakdown.prefetch({ hours: 24, limit: 30 });
+    }).catch(() => { /* The normal auth/error boundary handles failures. */ });
+  }
   await initializeLanguage(mobileAuth.isNative ? mobileAuth.getPanelUrl() : "");
   // Initialize module-level presentation labels only after locale detection.
   const { default: App } = await import("./App");

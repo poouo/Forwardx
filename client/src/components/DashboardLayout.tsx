@@ -89,6 +89,7 @@ import { UserAvatar } from "@/components/UserAvatar";
 import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
+import PanelStartView from "./PanelStartView";
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
@@ -364,7 +365,7 @@ export default function DashboardLayout({
 }) {
   const { loading, user } = useAuth();
 
-  if (loading) return null;
+  if (loading) return <PanelStartView />;
 
   if (!user) {
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {

@@ -121,6 +121,16 @@ test("language initialization, persistence and network/storage failures are safe
     releaseHint({ ok: true, json: async () => ({ setupLanguage: "zh-CN" }) });
     await staleInitialization;
     assert.equal(getLanguage(), "en", "a delayed installation hint cannot revert a newer manual choice");
+    // Deployed HTML supplies the same safe hints without waiting for a request.
+    assert.equal(setLanguagePreference("auto"), true);
+    mock("document", { documentElement: root, getElementById: () => ({ textContent: JSON.stringify({ country: "US", setupLanguage: "en" }) }) });
+    mock("fetch", async () => { throw Error("inline hints must not fetch"); });
+    await initializeLanguage();
+    assert.equal(getLanguage(), "en");
+    // A native/remote panel must not accidentally use the local document hint.
+    mock("fetch", async () => ({ ok: true, json: async () => ({ setupLanguage: "zh-CN" }) }));
+    await initializeLanguage("https://native-panel.example");
+    assert.equal(getLanguage(), "zh-CN");
     const blocked = { getItem() { throw new Error("disabled"); }, setItem() { throw new Error("disabled"); }, removeItem() { throw new Error("disabled"); } };
     mock("localStorage", blocked);
     assert.equal(setLanguagePreference("en"), true);

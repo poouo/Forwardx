@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import test from "node:test";
 
 import { generateInstallScript } from "./agentInstallScripts";
@@ -13,6 +15,85 @@ function scriptSection(script: string, start: string, end: string) {
   assert.notEqual(endIndex, -1, `missing script section end: ${end}`);
   return script.slice(startIndex, endIndex);
 }
+
+test("install and upgrade provision optional conntrack and verify persistent source accounting", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const packages = scriptSection(script, "install_conntrack_optional() {", "persist_source_accounting_setting() {");
+  assert.match(packages, /apt-get install -y -qq conntrack/);
+  for (const manager of ["dnf", "yum", "zypper", "apk", "pacman"]) {
+    assert.match(packages, new RegExp(`${manager}[^\\n]*conntrack-tools`));
+  }
+  assert.match(packages, /APK SOCKS downloads are unsupported; not downloading conntrack directly/);
+  assert.match(packages, /Agent 将继续安装/);
+  const deps = scriptSection(script, "install_deps() {", "install_realm() {");
+  assert.match(deps, /\n  install_conntrack_optional\n/);
+  const install = scriptSection(script, "do_install() {", "do_upgrade() {");
+  const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");
+  assert.match(install, /\n  ensure_source_accounting\n/);
+  assert.match(upgrade, /\n    install_deps\n    ensure_source_accounting\n/);
+  assert.doesNotMatch(install, /sysctl -p|内核参数就绪/);
+  const verify = scriptSection(script, "ensure_source_accounting() {", "install_deps() {");
+  assert.match(verify, /modprobe nf_conntrack/);
+  assert.match(verify, /sysctl -w net.netfilter.nf_conntrack_acct=1/);
+  assert.equal((verify.match(/sysctl -n net.netfilter.nf_conntrack_acct/g) || []).length, 2);
+  assert.match(verify, /\/etc\/sysctl.d\/99-forwardx-source-accounting.conf/);
+  assert.match(verify, /\/etc\/modules-load.d\/forwardx-source-accounting.conf/);
+  assert.doesNotMatch(verify, /conntrack -(?:F|D)|systemctl restart|reboot/);
+});
+
+test("source accounting shell enables, reads back and persists, while restricted kernels only warn", t => {
+  const bash = ["bash", "C:/Program Files/Git/bin/bash.exe"].find(candidate =>
+    spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 5000 }).status === 0);
+  if (!bash) { t.skip("Bash unavailable for shell execution tests"); return; }
+  const generated = generateInstallScript("https://panel.example.com");
+  const syntax = spawnSync(bash, ["-n"], { input: generated, encoding: "utf8", timeout: 10000 });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-accounting-"));
+  try {
+    const shellDirectory = directory.replace(/\\/g, "/");
+    const script = generateInstallScript("https://panel.example.com");
+    const helpers = scriptSection(script, "persist_source_accounting_setting() {", "install_deps() {")
+      .replaceAll("/etc/sysctl.d", `${shellDirectory}/sysctl.d`)
+      .replaceAll("/etc/modules-load.d", `${shellDirectory}/modules-load.d`);
+    const harness = `
+      sysctl() {
+        if [ "$1" = "-n" ]; then cat "$TEST_DIR/state"; return 0; fi
+        printf 'write\\n' >> "$TEST_DIR/writes"
+        if [ "$TEST_MODE" = "denied" ]; then echo 'permission denied' >&2; return 1; fi
+        if [ "$TEST_MODE" != "ineffective" ]; then printf '1' > "$TEST_DIR/state"; fi
+      }
+      modprobe() { return 0; }
+      ${helpers}
+      ensure_source_accounting
+      ensure_source_accounting
+      echo 'INSTALL_CONTINUED'
+    `;
+    for (const mode of ["success", "denied", "ineffective"]) {
+      fs.writeFileSync(path.join(directory, "state"), "0");
+      fs.writeFileSync(path.join(directory, "writes"), "");
+      const result: SpawnSyncReturns<string> = spawnSync(bash, ["-e", "-s"], { input: harness, encoding: "utf8", timeout: 10000,
+        env: { ...process.env, TEST_DIR: shellDirectory, TEST_MODE: mode } });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /INSTALL_CONTINUED/);
+      if (mode === "success") {
+        assert.match(result.stdout, /已验证 nf_conntrack_acct=1/);
+        assert.equal(fs.readFileSync(path.join(directory, "sysctl.d/99-forwardx-source-accounting.conf"), "utf8"), "net.netfilter.nf_conntrack_acct=1\n");
+        assert.equal(fs.readFileSync(path.join(directory, "modules-load.d/forwardx-source-accounting.conf"), "utf8"), "nf_conntrack\n");
+        assert.equal(fs.readFileSync(path.join(directory, "writes"), "utf8"), "write\n", "already-enabled accounting is not repeatedly changed");
+      } else {
+        assert.match(result.stdout, /来源流量计数未开启/);
+        assert.doesNotMatch(result.stdout, /已验证 nf_conntrack_acct=1/);
+      }
+    }
+    // Persistence failure must not hide that the live setting succeeded.
+    fs.writeFileSync(path.join(directory, "state"), "1");
+    const failure = spawnSync(bash, ["-e", "-s"], { input: `${helpers}\nsysctl() { printf '1'; }\npersist_source_accounting_setting() { return 1; }\nensure_source_accounting\necho INSTALL_CONTINUED`,
+      encoding: "utf8", timeout: 10000, env: { ...process.env, TEST_DIR: shellDirectory } });
+    assert.equal(failure.status, 0, failure.stderr);
+    assert.match(failure.stdout, /启动配置保存失败/);
+    assert.match(failure.stdout, /INSTALL_CONTINUED/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("Agent uninstall removes pre-DNAT limit hooks with full selectors before deleting counter chains", () => {
   const script = generateInstallScript("https://panel.example.com");

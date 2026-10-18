@@ -48,7 +48,7 @@ export function startDatabaseHealthMonitor(options: {
       if (!initialized) {
         // Only connectivity failures are retried automatically. Re-running
         // migrations repeatedly cannot repair a schema/configuration failure.
-        if (databaseHealth.snapshot().reason?.code === "INITIALIZATION_FAILED") return;
+        if (!databaseHealth.canRetryInitialization()) return;
         const result = await options.initialize();
         if (!result.ready) return;
         initialized = true;

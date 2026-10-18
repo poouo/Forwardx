@@ -4,7 +4,19 @@
 
 ## [Unreleased]
 
+- Default the rule list to My Rules instead of restoring the previous user filter.
+- Fix rule drag sorting being disabled after selecting a category.
+- Reposition map hover details to keep the active region visible.
+- Speed up first and repeat visits; show cached dashboard data while sections refresh independently.
+- Refresh login and registration with smooth transitions, a themed language selector and a cleaner layout for mobile, both languages and light/dark themes.
+- Fix duplicate logos in the public homepage header.
+- Improve legacy database upgrades and history cleanup to avoid startup blocking and clearly report migration failures.
+- Clarify database errors with actionable access, permission and upgrade guidance.
+- Show rule names instead of bare IDs in Operations traffic rankings.
+- Center switch shadows to improve visual alignment.
+- Check source-traffic dependencies and enable verified connection accounting during Agent installation and script upgrades, with clear failure warnings.
 - Run panel health checks in the background without a full-screen refresh interstitial; retain outage diagnostics and recovery checks while avoiding duplicate startup requests.
+- Fix stale multi-entry tunnel latency results and failed entries showing as untested; improve per-hop diagnostics.
 
 ## [2.3.285] - 2026-10-17
 

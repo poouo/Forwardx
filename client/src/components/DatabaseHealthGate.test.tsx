@@ -6,6 +6,8 @@ import { Router } from "wouter";
 import { readFileSync } from "node:fs";
 import DatabaseHealthGate, { DatabaseUnavailableView } from "./DatabaseHealthGate";
 import type { DatabaseHealth } from "@shared/databaseHealth";
+import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
+import { DatabaseHealthTracker, describeDatabaseError } from "../../../server/databaseHealthState";
 
 const healthSnapshot = (state: DatabaseHealth["state"]): DatabaseHealth => ({ state, databaseType: "sqlite", checkedAt: null, unavailableSince: null, reason: null, restartRequired: false });
 
@@ -52,4 +54,27 @@ test("database diagnostic view shows safe reasons without exposing a setup or lo
   assert.match(html, /数据库连接被拒绝/);
   assert.match(html, /重新检查/);
   assert.doesNotMatch(html, /type="password"|创建管理员|href="\/setup"/);
+});
+
+test("known database reasons and recovery suggestions render fully in Chinese and English", async () => {
+  const previous = getLanguagePreference();
+  const codes = ["ECONNREFUSED","ENOTFOUND","ETIMEDOUT","PROTOCOL_CONNECTION_LOST","ER_HOST_NOT_PRIVILEGED","ER_HOST_IS_BLOCKED","ER_ACCESS_DENIED_ERROR","ER_DBACCESS_DENIED_ERROR","ER_TABLEACCESS_DENIED_ERROR","ER_NO_SUCH_TABLE","ER_PARSE_ERROR","ER_TOO_LONG_KEY","ER_DUP_ENTRY","ER_RECORD_FILE_FULL","ER_LOCK_WAIT_TIMEOUT","ER_BAD_DB_ERROR","ER_CON_COUNT_ERROR","SQLITE_FULL","CERT_HAS_EXPIRED"];
+  try {
+    for (const language of ["zh-CN","en"] as const) {
+      setLanguagePreference(language);await initializeLanguage();
+      for (const code of [...codes,"UNKNOWN_ERROR"]) {
+        const tracker = new DatabaseHealthTracker(() => {});
+        tracker.configure("mysql");
+        tracker.unavailable({code,message:"private-secret private-host SELECT private-query"},true);
+        const html = renderToStaticMarkup(<DatabaseUnavailableView health={tracker.snapshot()} checking={false} onRetry={() => {}} />);
+        assert.ok(html.includes(code === "UNKNOWN_ERROR" ? "INITIALIZATION_FAILED" : code));
+        assert.doesNotMatch(html,/private-secret|private-host|private-query/);
+        if (language === "en") assert.doesNotMatch(html,/\p{Script=Han}/u,`untranslated database error ${code}`);
+        else assert.match(html,/数据库|MySQL/);
+      }
+      const host = describeDatabaseError({errno:1130},true)!;
+      const html = renderToStaticMarkup(<DatabaseUnavailableView health={{...healthSnapshot("unavailable"),reason:host}} checking={false} onRetry={() => {}} />);
+      assert.ok(html.includes(language === "en" ? "MySQL does not allow connections from the panel host" : "MySQL 不允许面板所在主机连接"));
+    }
+  } finally {setLanguagePreference(previous);await initializeLanguage();}
 });

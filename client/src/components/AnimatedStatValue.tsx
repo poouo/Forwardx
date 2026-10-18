@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { getLanguage } from "@/i18n";
 
 const CACHE_PREFIX = "forwardx.stat.";
+// Pages with account-verified query snapshots do not need a second, unscoped
+// text cache (which could otherwise show numbers from another account).
+export const StatValuePersistenceContext = createContext(true);
 
 type AnimatedStatValueProps = {
   value: string | number | null | undefined;
@@ -59,6 +62,8 @@ export default function AnimatedStatValue({
   className,
   title,
 }: AnimatedStatValueProps) {
+  const persist = useContext(StatValuePersistenceContext);
+  if (!persist) { cacheKey = undefined; fallbackCacheKeys = []; mirrorCacheKeys = []; }
   const nextValue = textValue(value);
   const fallback = useMemo(() => textValue(fallbackValue ?? value), [fallbackValue, value]);
   const fallbackCacheKeySignature = fallbackCacheKeys.join("\u0000");

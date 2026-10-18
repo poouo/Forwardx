@@ -119,6 +119,6 @@ test("affiliate settings live in the admin header dialog, including the independ
   assert.match(source, /if \(!settingsOpen\) setDirty\(false\)/);
   assert.match(source, /adminOverview\.setData/);
   const settings = fs.readFileSync("client/src/pages/Settings.tsx", "utf8");
-  assert.match(settings, /仅控制菜单显示，返佣总开关请在推广管理的设置中调整/);
+  assert.doesNotMatch(settings, /仅控制菜单显示，返佣总开关请在推广管理的设置中调整/);
   assert.doesNotMatch(settings, /affiliateEnabled/);
 });

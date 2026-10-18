@@ -3,7 +3,6 @@ import GoogleLoginButton from "@/components/GoogleLoginButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useTheme } from "@/contexts/ThemeContext";
 import { createHomepageDocument } from "@/lib/homepageHtml";
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, Gauge, Lock, Network, Server, ShieldCheck, WalletCards, Zap } from "lucide-react";
@@ -33,11 +32,9 @@ export function CustomPublicHome({ html }: { html: string }) {
 }
 
 export default function PublicHome() {
-  const { resolvedTheme } = useTheme();
   const { data: info } = trpc.system.publicInfo.useQuery(undefined, { refetchOnWindowFocus: false });
   const registrationEnabled = info?.registrationEnabled !== false;
   const siteTitle = (info?.siteTitle || "ForwardX").trim() || "ForwardX";
-  const logoSrc = info?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
 
   const handleRegisterClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (registrationEnabled) return;
@@ -49,7 +46,6 @@ export default function PublicHome() {
     <div className="public-home-shell min-h-screen text-foreground">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5">
         <Link href="/" className="flex items-center gap-3">
-          <img src={logoSrc} alt={siteTitle} className="h-9 w-9 object-contain" />
           <ForwardXLogo size={36} alt={siteTitle} src={info?.siteLogoDataUrl} />
           <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
         </Link>

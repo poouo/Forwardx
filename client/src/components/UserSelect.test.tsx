@@ -25,6 +25,21 @@ test("visible rule owner lookup is bounded, deduplicated and includes the select
   assert.ok(ids.includes(2000));
 });
 
+test("rules open in the current user's scope instead of restoring a stored owner filter", () => {
+  const source = readFileSync("client/src/pages/Rules.tsx", "utf8");
+  assert.match(source, /const \[filterUser, setFilterUser\] = useState<string>\("self"\)/);
+  assert.doesNotMatch(source, /RULE_FILTER_USER_STORAGE_KEY|filterUserStorageKey|forwardx\.rules\.filterUser/);
+
+  const identityEffect = source.slice(source.indexOf("const previousFilterIdentity ="), source.indexOf("const [ruleSearchQuery,"));
+  assert.match(identityEffect, /if \(previousFilterIdentity\.current === filterResourceStorageKey\) return/);
+  assert.match(identityEffect, /setFilterUser\("self"\)/, "identity changes reset the owner scope");
+
+  const changeHandler = source.slice(source.indexOf("const handleFilterUserChange ="), source.indexOf("const handleFilterResourceChange ="));
+  assert.match(changeHandler, /setFilterUser\(value\)/, "manual user selection remains available during this visit");
+  assert.doesNotMatch(changeHandler, /storeString|localStorage/);
+  assert.match(source, /specialOptions=\{\[\{ value: "self", label: translateText\("我的规则"\) \}, \{ value: "all", label: translateText\("所有用户"\)/);
+});
+
 test("selector retains its selected label outside search results and has accessible bilingual triggers", async () => {
   const language = getLanguagePreference();
   try {

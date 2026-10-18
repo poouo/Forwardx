@@ -417,7 +417,8 @@ function buildProbeSegments(input: {
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
   plannedSegments?: LinkTestPlannedSegment[];
 }) {
-  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
+  // A negative result matters even if the Agent omitted its error message.
+  const visibleDetails = input.parsed.details || [];
 
   const detailSegments = (allowLabelAliases = true) => visibleDetails.map((detail, index): ProbeSegment => {
     const endpoints = parseRouteEndpoints(detail, index);
@@ -596,7 +597,10 @@ function buildProbeSegments(input: {
             : !input.isTesting && input.isSuccess && plannedSegments.length === 1 && hasUsableLatencyValue(input.fallbackLatencyMs)
               ? Number(input.fallbackLatencyMs)
               : null,
-        message: !pending && !success ? detailMessage || segment.message || (isLastSegment ? input.parsed.message || null : null) : null,
+        message: idle && visibleDetails.length > 0 && segment.hopIndex === 0
+          && plannedSegments.filter(planned => planned.hopIndex === 0).length > 1
+          ? "未收到探测结果"
+          : !pending && !success ? detailMessage || segment.message || (isLastSegment ? input.parsed.message || null : null) : null,
         method: detail?.method || segment.method || null,
         pending,
         idle,
@@ -666,7 +670,7 @@ export function getLinkTestTotalLatency(input: {
   if (hasUsableLatencyValue(input.parsed.totalLatencyMs)) return Number(input.parsed.totalLatencyMs);
   const adjustedMultiSourceTotal = getMultiSourceAdjustedDetailsTotalLatency(input.parsed.details || []);
   if (hasUsableLatencyValue(adjustedMultiSourceTotal)) return Number(adjustedMultiSourceTotal);
-  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
+  const visibleDetails = input.parsed.details || [];
   if (visibleDetails.length > 0) {
     const successfulLatencyDetails = visibleDetails.filter((detail) => detail.success && hasLatencyValue(detail));
     if (input.isSuccess && successfulLatencyDetails.length === visibleDetails.length) {
@@ -768,6 +772,8 @@ export function LinkTestProbeView({
     ? Math.max(...branchLatencyValues)
     : null;
   const totalLatency = effectiveTesting ? null : branchTotalLatency ?? getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
+  const partialPaths = (isBranchView || isConvergedEntryView)
+    && segments.some(segment => segment.idle || !segment.success || segment.message === "未收到探测结果");
   const hasSegments = segments.length > 0;
   const hasResult = effectiveTesting || segments.some((segment) => segmentHasConcreteResult(segment));
   const compactPath = segments.length >= compactFrom;
@@ -780,11 +786,14 @@ export function LinkTestProbeView({
     : [segments];
   const getSegmentState = (segment: ProbeSegment) => {
     const testing = effectiveTesting && !!segment.pending;
-    const idle = !testing && !!segment.idle;
+    const missingReport = segment.message === "未收到探测结果";
+    const idle = !testing && (!!segment.idle || missingReport);
     const ok = testing || segment.success;
     const timedOut = !testing && !idle && !ok && /(?:超时|timeout)/i.test(String(segment.message || ""));
     const label = testing
       ? "探测中"
+      : missingReport
+        ? "未收到结果"
       : idle
         ? "等待探测"
       : segment.pending
@@ -1041,7 +1050,7 @@ export function LinkTestProbeView({
                 "flex min-w-0 items-center justify-between gap-2 rounded-sm px-1 py-0.5 leading-tight",
                 textClass,
               )}
-              title={segment.message || segment.from}
+              title={segment.message ? translateText(segment.message) : segment.from}
             >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="flex h-3.5 w-5 shrink-0 items-center justify-center">{renderFlag(segment.fromMeta)}</span>
@@ -1247,7 +1256,9 @@ export function LinkTestProbeView({
       ) : null}
 
       <div className="flex items-center justify-between border-t border-border/70 pt-3 text-sm">
-        <span className="text-muted-foreground">{isBranchView ? translateText("最大延迟") : translateText("合计")}</span>
+        <span className="text-muted-foreground">{partialPaths && totalLatency !== null
+          ? translateText("可用路径最大延迟")
+          : isBranchView || isConvergedEntryView ? translateText("最大延迟") : translateText("合计")}</span>
         <span className={cn(
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",

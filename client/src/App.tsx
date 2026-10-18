@@ -40,6 +40,7 @@ import TunnelsPage from "@/pages/Tunnels";
 import UsersPage from "@/pages/Users";
 import WalletPage from "@/pages/Wallet";
 import DatabaseHealthGate from "./components/DatabaseHealthGate";
+import PanelStartView from "./components/PanelStartView";
 
 type RoutableComponent = ComponentType<any>;
 
@@ -55,7 +56,7 @@ const isLocalDevPanel = (import.meta as any).env?.VITE_FORWARDX_DEV_PANEL === "1
 
 function AdminRoute({ component: Component }: { component: RoutableComponent }) {
   const { user, loading } = useAuth();
-  if (loading) return null;
+  if (loading) return <PanelStartView />;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
@@ -69,7 +70,7 @@ function LookingGlassRoute() {
     refetchOnWindowFocus: false,
   });
 
-  if (loading) return null;
+  if (loading) return <PanelStartView />;
   if (user && publicInfo.isLoading && !publicInfo.data) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
@@ -84,7 +85,7 @@ function PluginsRoute({ sidebarPluginId }: { sidebarPluginId?: string }) {
     refetchOnWindowFocus: false,
   });
 
-  if (loading) return null;
+  if (loading) return <PanelStartView />;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   if (publicInfo.isLoading && !publicInfo.data) return <PluginsPage sidebarPluginId={sidebarPluginId} />;
@@ -170,7 +171,9 @@ function SetupGate() {
     return <Router />;
   }
 
-  if (setup.isLoading) return null;
+  // Setup writes and protected APIs remain guarded on the server. Do not hold
+  // the entire router (and therefore auth/data requests) behind a read check.
+  if (setup.isLoading) return <Router />;
 
   const ready = !!setup.data?.setupComplete;
   if (!ready && location !== "/setup") return <Redirect to="/setup" />;

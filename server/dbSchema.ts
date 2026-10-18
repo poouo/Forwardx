@@ -586,13 +586,14 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
 }
 
 function mysqlKey(table: string, prefix: string, cols: string[]) {
-  const name = quote("mysql", `${prefix}_${table}_${cols.join("_")}`.slice(0, 60));
+  const rawName = `${prefix}_${table}_${cols.join("_")}`.slice(0, 60);
+  const name = quote("mysql", rawName);
   const expr = cols.map((col) => {
     const def = tables.find((t) => t.name === table)?.columns.find((c) => c.name === col);
     const q = quote("mysql", col);
     return def?.type === "text" || def?.type === "longtext" ? `${q}(191)` : q;
   }).join(", ");
-  return { name, expr };
+  return { name, expr, rawName };
 }
 
 function featureEnabledFromLegacySidebar(value: string | null | undefined, feature: "affiliates" | "tickets") {
@@ -605,7 +606,24 @@ function featureEnabledFromLegacySidebar(value: string | null | undefined, featu
 export const affiliateEnabledFromLegacySidebar = (value?: string | null) => featureEnabledFromLegacySidebar(value, "affiliates");
 export const supportTicketsEnabledFromLegacySidebar = (value?: string | null) => featureEnabledFromLegacySidebar(value, "tickets");
 
+async function mysqlSchemaQuery(pool: Pool, sql: string, context: string, duplicateCode?: string) {
+  try {
+    return await pool.query(sql);
+  } catch (error) {
+    const code = String((error as { code?: unknown })?.code || "");
+    const errno = Number((error as { errno?: unknown })?.errno);
+    // Concurrent initializers may have already added this exact column/index.
+    // Permission, data, storage and lock errors must fail initialization.
+    if (duplicateCode && (code === duplicateCode || errno === (duplicateCode === "ER_DUP_FIELDNAME" ? 1060 : 1061))) return;
+    console.error(`[DatabaseSchema] MySQL migration failed ${context} code=${/^[A-Z0-9_]+$/.test(code) ? code : "UNKNOWN"}`);
+    throw error;
+  }
+}
+
 async function ensureMysqlSchema(pool: Pool) {
+  let addedColumns = 0;
+  let addedIndexes = 0;
+  let widenedColumns = 0;
   for (const table of tables) {
     const columns = table.columns.map((column) => columnSql("mysql", column)).filter(Boolean);
     const unique = (table.unique || []).map((cols) => {
@@ -616,22 +634,43 @@ async function ensureMysqlSchema(pool: Pool) {
       const key = mysqlKey(table.name, "idx", cols);
       return `KEY ${key.name} (${key.expr})`;
     });
-    await pool.query(
+    await mysqlSchemaQuery(pool,
       `CREATE TABLE IF NOT EXISTS ${quote("mysql", table.name)} (${[...columns, ...unique, ...indexes].join(", ")}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+      `operation=create-table table=${table.name}`,
     );
+    const columnResult = await mysqlSchemaQuery(pool, `SHOW COLUMNS FROM ${quote("mysql", table.name)}`, `operation=inspect-columns table=${table.name}`);
+    const existingColumns = new Map((columnResult![0] as Array<{ Field: string; Type: string }>).map(row => [row.Field, row.Type]));
+    const indexResult = await mysqlSchemaQuery(pool, `SHOW INDEX FROM ${quote("mysql", table.name)}`, `operation=inspect-indexes table=${table.name}`);
+    const existingIndexes = new Set((indexResult![0] as Array<{ Key_name: string }>).map(row => row.Key_name));
     for (const column of table.columns) {
       if (column.type === "id") continue;
-      await pool.query(`ALTER TABLE ${quote("mysql", table.name)} ADD COLUMN ${columnSql("mysql", column, true)}`).catch(() => undefined);
-      if (column.type === "longtext") {
+      if (!existingColumns.has(column.name)) {
+        await mysqlSchemaQuery(pool, `ALTER TABLE ${quote("mysql", table.name)} ADD COLUMN ${columnSql("mysql", column, true)}`,
+          `operation=add-column table=${table.name} column=${column.name}`, "ER_DUP_FIELDNAME");
+        addedColumns++;
+      }
+      // Existing LONGTEXT columns need no ALTER on every startup. In
+      // particular, avoid taking needless metadata locks on busy old tables.
+      if (column.type === "longtext" && existingColumns.has(column.name) && existingColumns.get(column.name)?.toLowerCase() !== "longtext") {
         const definition = columnSql("mysql", column, true);
-        await pool.query(`ALTER TABLE ${quote("mysql", table.name)} MODIFY COLUMN ${definition}${column.notNull ? "" : " NULL"}`);
+        await mysqlSchemaQuery(pool, `ALTER TABLE ${quote("mysql", table.name)} MODIFY COLUMN ${definition}${column.notNull ? "" : " NULL"}`,
+          `operation=widen-column table=${table.name} column=${column.name}`);
+        widenedColumns++;
       }
     }
     for (const cols of [...(table.indexes || []), ...(table.unique || [])]) {
       const uniquePrefix = (table.unique || []).some((u) => u.join("|") === cols.join("|")) ? "uniq" : "idx";
       const key = mysqlKey(table.name, uniquePrefix, cols);
-      await pool.query(`ALTER TABLE ${quote("mysql", table.name)} ADD ${uniquePrefix === "uniq" ? "UNIQUE " : ""}INDEX ${key.name} (${key.expr})`).catch(() => undefined);
+      if (!existingIndexes.has(key.rawName)) {
+        await mysqlSchemaQuery(pool, `ALTER TABLE ${quote("mysql", table.name)} ADD ${uniquePrefix === "uniq" ? "UNIQUE " : ""}INDEX ${key.name} (${key.expr})`,
+          `operation=add-index table=${table.name} index=${key.rawName}`, "ER_DUP_KEYNAME");
+        addedIndexes++;
+        existingIndexes.add(key.rawName);
+      }
     }
+  }
+  if (addedColumns || addedIndexes || widenedColumns) {
+    console.info(`[DatabaseSchema] MySQL schema updated columns=${addedColumns} indexes=${addedIndexes} widened=${widenedColumns}`);
   }
   for (const [key, value] of seedSettings) {
     await pool.execute(

@@ -18,6 +18,7 @@ import { clearRuleLatencyQueryCaches } from "./ruleLatencyQueryCache";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { cleanOldAddressGeoCache } from "./hostGeo";
 import { cleanOperationsHistory } from "./repositories/operationsRepository";
+import { runHistoryMaintenance } from "./historyMaintenance";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
@@ -350,23 +351,19 @@ async function recoverPendingSelfTestSweep() {
 }
 
 async function runTcpingCleanup() {
-  try {
-    await Promise.all([
-      db.cleanOldHostMetrics(72),
-      db.cleanOldTrafficStats(72),
-      db.cleanOldTrafficStatBuckets(72),
-      db.cleanOldTcpingStats(LATENCY_HISTORY_HOURS),
-      db.cleanOldTunnelLatencyStats(LATENCY_HISTORY_HOURS),
-      db.cleanOldForwardTests(72),
-      db.cleanOldForwardGroupEvents(72),
-      db.cleanOldHostProbeServiceStats(LATENCY_HISTORY_HOURS),
-      cleanOldHostAvailability(),
-      cleanOldAddressGeoCache(),
-      cleanOperationsHistory(),
-    ]);
-  } catch (error) {
-    console.error("[Scheduler] TCPing cleanup error:", error);
-  }
+  await runHistoryMaintenance([
+    ["host-metrics", () => db.cleanOldHostMetrics(72)],
+    ["traffic-stats", () => db.cleanOldTrafficStats(72)],
+    ["traffic-buckets", () => db.cleanOldTrafficStatBuckets(72)],
+    ["tcping", () => db.cleanOldTcpingStats(LATENCY_HISTORY_HOURS)],
+    ["tunnel-latency", () => db.cleanOldTunnelLatencyStats(LATENCY_HISTORY_HOURS)],
+    ["forward-tests", () => db.cleanOldForwardTests(72)],
+    ["forward-group-events", () => db.cleanOldForwardGroupEvents(72)],
+    ["host-probe-services", () => db.cleanOldHostProbeServiceStats(LATENCY_HISTORY_HOURS)],
+    ["host-availability", cleanOldHostAvailability],
+    ["address-geo", cleanOldAddressGeoCache],
+    ["operations", cleanOperationsHistory],
+  ], { shouldContinue: () => databaseHealth.snapshot().state !== "unavailable" });
 }
 
 function dayKey(prefix: string, userId: number) {
@@ -743,7 +740,8 @@ export function startScheduler() {
   repeatAfter(paymentMaintenance, 60 * 1000, 35_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
   repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
-  repeatAfter(historyCleanup, 60 * 60 * 1000, 2 * 60_000);
+  // Short, paced passes catch up old backlogs without a single hourly burst.
+  repeatAfter(historyCleanup, 5 * 60_000, 2 * 60_000);
 
   console.log("[Scheduler] Scheduled tasks started with overlap guards and staggered startup");
 }

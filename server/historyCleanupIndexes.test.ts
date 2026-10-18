@@ -59,6 +59,28 @@ for (const dialect of ["mysql", "postgresql", "sqlite"]) {
       assert.equal(await deleteExpiredHistoryRows("host_metrics", "recordedAt", 54321), 0);
       assert.equal(calls.length, 1);
       assert.deepEqual(calls[0].params, [54321]);
+      const warnings = [];
+      console.warn = message => warnings.push(message);
+      calls.length = 0;
+      counts = [2000, 2000, 9];
+      assert.equal(await deleteExpiredHistoryRows("traffic_stats", "recordedAt", 54321, { maxBatches: 2, batchPauseMs: 0 }), 4000);
+      assert.equal(calls.length, 2, "an expired backlog must not run indefinitely");
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /table=traffic_stats.*deleted=4000.*deferred/);
+      assert.equal(await deleteExpiredHistoryRows("traffic_stats", "recordedAt", 54321), 9,
+        "the next pass continues with the remaining rows");
+      counts = [2000];
+      await deleteExpiredHistoryRows("traffic_stats", "recordedAt", 54321, { maxBatches: 1 });
+      assert.equal(warnings.length, 1, "budget warnings are rate-limited per table");
+      calls.length = 0;
+      counts = [2000, 2000];
+      const originalNow = Date.now;
+      let clockCalls = 0;
+      Date.now = () => clockCalls++ === 0 ? 100 : 2200;
+      try {
+        assert.equal(await deleteExpiredHistoryRows("host_metrics", "recordedAt", 54321), 2000);
+        assert.equal(calls.length, 1, "time budget is checked after each SQL statement");
+      } finally { Date.now = originalNow; }
       failure = new Error("database unavailable");
       await assert.rejects(deleteExpiredHistoryRows("host_metrics", "recordedAt", 54321),
         (error) => error === failure);

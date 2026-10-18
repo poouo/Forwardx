@@ -3,6 +3,7 @@ import net from "node:net";
 import * as db from "./db";
 import { executeRaw, queryRaw } from "./dbRuntime";
 import { quoteIdentifier } from "./dbCompat";
+import { deleteExpiredHistoryRows } from "./repositories/historyRetention";
 
 const GEO_REQUEST_TIMEOUT_MS = 8000;
 const ADDRESS_GEO_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
@@ -305,10 +306,7 @@ async function writePersistentGeoCache(cacheKey: string, value: AddressGeoLookup
 
 export async function cleanOldAddressGeoCache() {
   const cutoff = epochSeconds(new Date(Date.now() - ADDRESS_GEO_STALE_MS));
-  await executeRaw(
-    `DELETE FROM ${quoteIdentifier("ip_geo_cache")} WHERE ${quoteIdentifier("expiresAt")} <= ?`,
-    [cutoff],
-  ).catch(() => undefined);
+  await deleteExpiredHistoryRows("ip_geo_cache", "expiresAt", cutoff + 1);
 }
 
 async function lookupAddressGeoUncached(normalized: string, cacheKey: string): Promise<AddressGeoLookupResult | null> {

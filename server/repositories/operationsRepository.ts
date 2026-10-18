@@ -20,7 +20,7 @@ export async function recordOperationsTraffic(items: any[], contexts: Map<number
     const logicalRuleId = Number(rule?.forwardGroupRuleId || stat.ruleId);
     const resourceKey = rule?.forwardGroupId ? `group:${rule.forwardGroupId}` : rule?.tunnelId ? `tunnel:${rule.tunnelId}` : `host:${host.id}`;
     return [dayStart, Number(stat.ruleId), Number(host.id), userId, logicalRuleId, resourceKey,
-      String(rule?.name || stat.ruleId).slice(0, 255), String(host.name || host.id).slice(0, 255),
+      String(context?.logicalRuleName || rule?.name || "").trim().slice(0, 255), String(host.name || host.id).slice(0, 255),
       String(context?.group?.name || context?.tunnel?.name || host.name || resourceKey).slice(0, 255),
       Number(stat.bytesIn) || 0, Number(stat.bytesOut) || 0, Number(stat.connections) || 0];
   });
@@ -117,13 +117,21 @@ export async function getOperationsOverview(start: number, end: number, userId?:
   const ranks = async (id: string, name: string) => queryRaw<any>(`SELECT ${q(id)} AS ${q("id")}, MAX(${q(name)}) AS ${q("name")}, ${sums} FROM ${q("operations_traffic_daily")} WHERE ${where} GROUP BY ${q(id)} ORDER BY SUM(${q("bytesIn")} + ${q("bytesOut")}) DESC LIMIT 20`, params);
   const [trend, rules, hosts, resources, users, current, coverage, events, availability] = await Promise.all([
     queryRaw<any>(`SELECT ${q("dayStart")}, ${sums} FROM ${q("operations_traffic_daily")} WHERE ${where} GROUP BY ${q("dayStart")} ORDER BY ${q("dayStart")}`, params),
-    ranks("logicalRuleId", "ruleName"), ranks("hostId", "hostName"), ranks("resourceKey", "resourceName"),
+    // Older traffic contexts omitted names, storing physical IDs as names.
+    queryRaw<any>(`SELECT ${q("logicalRuleId")} AS ${q("id")}, MAX(CASE WHEN TRIM(${q("ruleName")}) = CAST(${q("ruleId")} AS ${getDatabaseKind() === "mysql" ? "CHAR" : "TEXT"}) THEN '' ELSE ${q("ruleName")} END) AS ${q("name")}, ${sums} FROM ${q("operations_traffic_daily")} WHERE ${where} GROUP BY ${q("logicalRuleId")} ORDER BY SUM(${q("bytesIn")} + ${q("bytesOut")}) DESC LIMIT 20`, params), ranks("hostId", "hostName"), ranks("resourceKey", "resourceName"),
     queryRaw<any>(`SELECT d.${q("userId")} AS ${q("id")}, MAX(u.${q("username")}) AS ${q("name")}, SUM(d.${q("bytesIn")}) AS ${q("bytesIn")}, SUM(d.${q("bytesOut")}) AS ${q("bytesOut")} FROM ${q("operations_traffic_daily")} d LEFT JOIN ${q("users")} u ON u.${q("id")} = d.${q("userId")} WHERE d.${q("dayStart")} >= ? AND d.${q("dayStart")} < ?${userId === undefined ? "" : ` AND d.${q("userId")} = ?`} GROUP BY d.${q("userId")} ORDER BY SUM(d.${q("bytesIn")} + d.${q("bytesOut")} ) DESC LIMIT 20`, params),
     queryRaw<any>(`SELECT ${q("isOnline")}, COUNT(*) AS ${q("count")} FROM ${q("hosts")}${hostScope ? ` WHERE ${q("id")} IN (${hostScope.sql})` : ""} GROUP BY ${q("isOnline")}`, hostScope?.params || []),
     queryRaw<any>(`SELECT MIN(${q("dayStart")}) AS ${q("since")} FROM ${q("operations_traffic_daily")}${userId === undefined ? "" : ` WHERE ${q("userId")} = ?`}`, userId === undefined ? [] : [userId]),
     queryRaw<any>(`SELECT e.${q("id")}, e.${q("groupId")}, e.${q("type")}, e.${q("message")}, e.${q("createdAt")} FROM ${q("forward_group_events")} e WHERE e.${q("createdAt")} >= ? AND e.${q("createdAt")} < ?${eventScope} ORDER BY e.${q("createdAt")} DESC LIMIT 50`, userId === undefined ? [start, end] : [start, end, userId, userId, start, end]),
     queryRaw<any>(`SELECT a.${q("hostId")}, MAX(h.${q("name")}) AS ${q("name")}, SUM(CASE WHEN a.${q("offlineIncident")} = 1 AND a.${q("startAt")} >= ? THEN 1 ELSE 0 END) AS ${q("incidents")}, SUM(CASE WHEN a.${q("online")} = 0 THEN (CASE WHEN a.${q("endAt")} < ? THEN a.${q("endAt")} ELSE ? END) - (CASE WHEN a.${q("startAt")} > ? THEN a.${q("startAt")} ELSE ? END) ELSE 0 END) AS ${q("offlineSeconds")} FROM ${q("host_availability_intervals")} a LEFT JOIN ${q("hosts")} h ON h.${q("id")} = a.${q("hostId")} WHERE a.${q("endAt")} > ? AND a.${q("startAt")} < ?${hostScope ? ` AND a.${q("hostId")} IN (${hostScope.sql})` : ""} GROUP BY a.${q("hostId")} ORDER BY ${q("offlineSeconds")} DESC LIMIT 20`, [start, end, end, start, start, start, end, ...(hostScope?.params || [])]),
   ]);
+  // Resolve at most 20 logical rule names, not a join over the full history.
+  // Keep stored names for deleted rules and do not rewrite historical traffic.
+  if (rules.length) {
+    const names = await queryRaw<any>(`SELECT ${q("id")}, ${q("name")} FROM ${q("forward_rules")} WHERE ${q("id")} IN (${rules.map(() => "?").join(",")})${userId === undefined ? "" : ` AND ${q("userId")} = ?`}`, [...rules.map(row => row.id), ...(userId === undefined ? [] : [userId])]);
+    const byId = new Map(names.map(row => [Number(row.id), String(row.name || "").trim()]));
+    for (const rule of rules) rule.name = byId.get(Number(rule.id)) || rule.name || "";
+  }
   return { trend, rules, hosts, resources, users, current, since: coverage[0]?.since ?? null, events, availability };
 }
 

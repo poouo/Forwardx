@@ -37,6 +37,61 @@ test("database errors are classified through driver wrappers without disclosing 
   assert.deepEqual(describeDatabaseError(new AggregateError([refused])), describeDatabaseError(refused));
 });
 
+test("MySQL host authorization errors are explicit through codes, errno and message-only wrappers", () => {
+  const sensitive = "Host '172.27.0.2' is not allowed to connect to this MySQL server password=private-secret SQL=private-query";
+  const errors = [
+    Object.assign(new Error(sensitive), {code:"ER_HOST_NOT_PRIVILEGED"}),
+    {errno:1130,sqlMessage:sensitive},
+    new Error(sensitive),
+    new Error("Failed query: private-query", {cause:{errno:1130,message:sensitive}}),
+    new AggregateError([{code:"ER_HOST_NOT_PRIVILEGED",message:sensitive}]),
+  ];
+  for (const error of errors) {
+    const tracker = new DatabaseHealthTracker(() => {});
+    tracker.configure("mysql");
+    tracker.unavailable(error, true);
+    assert.equal(tracker.snapshot().reason?.code, "ER_HOST_NOT_PRIVILEGED");
+    assert.match(tracker.snapshot().reason!.message, /不允许.*主机连接/);
+    assert.match(tracker.snapshot().reason!.suggestion, /Host.*Docker/);
+    assert.equal(tracker.canRetryInitialization(), true);
+    assert.doesNotMatch(JSON.stringify(tracker.snapshot()), /172\.27|private-secret|private-query/);
+  }
+  assert.equal(describeDatabaseError({code:"ER_HOST_IS_BLOCKED"})?.code,"ER_HOST_IS_BLOCKED");
+  assert.match(describeDatabaseError({errno:1045})!.message,/认证失败/);
+  assert.match(describeDatabaseError({errno:1044})!.message,/无权访问/);
+  assert.equal(describeDatabaseError({code:"private-secret",message:"connection terminated unexpectedly"})?.code,"CONNECTION_LOST");
+});
+
+test("upgrade errors have actionable safe summaries only during initialization", () => {
+  const cases = [
+    ["ER_TABLEACCESS_DENIED_ERROR",/权限/], ["42501",/权限/],
+    ["ER_BAD_FIELD_ERROR",/缺失/], ["42P01",/缺失/],
+    ["ER_PARSE_ERROR",/SQL/], ["42601",/SQL/],
+    ["ER_TOO_LONG_KEY",/大小/], ["ER_TOO_BIG_ROWSIZE",/大小/],
+    ["ER_DUP_ENTRY",/重复/], ["23505",/重复/],
+    ["ER_RECORD_FILE_FULL",/空间/], ["53100",/空间/],
+    ["ER_LOCK_WAIT_TIMEOUT",/锁/], ["40P01",/锁/],
+  ] as const;
+  for (const [code, message] of cases) {
+    const error = new Error("SQL private-query password=private-secret", {cause:{code}});
+    assert.equal(describeDatabaseError(error),null,"ordinary business SQL errors must not take the panel offline");
+    const reason = describeDatabaseError(error,true);
+    assert.ok(reason);
+    assert.equal(reason.code,code);
+    assert.match(reason.message,message);
+    assert.match(reason.suggestion,/重启面板/);
+    assert.doesNotMatch(JSON.stringify(reason),/private-query|private-secret/);
+  }
+  const tracker = new DatabaseHealthTracker(() => {});
+  tracker.unavailable({errno:1142},true);
+  assert.equal(tracker.canRetryInitialization(),false);
+  const initialReason = tracker.snapshot().reason;
+  tracker.unavailable(refused,true);
+  assert.deepEqual(tracker.snapshot().reason,initialReason,"network probes retain the original migration failure");
+  tracker.healthy();
+  assert.equal(tracker.canRetryInitialization(),true);
+});
+
 test("health logs are bounded, startup is distinct from setup, and recovery clears errors", () => {
   const logs: string[] = [];
   const tracker = new DatabaseHealthTracker((message) => logs.push(message));
@@ -101,6 +156,39 @@ test("startup schema failures do not trigger recurring migration attempts", asyn
     assert.equal(initialized, 0);
     assert.equal(databaseHealth.snapshot().state, "unavailable");
   } finally { monitor.stop(); databaseHealth.healthy(); }
+});
+
+test("specific migration failures remain blocked across network loss and restored probes", async () => {
+  let initializations = 0;
+  let failProbe = true;
+  databaseHealth.healthy();
+  databaseHealth.unavailable({code:"ER_TABLEACCESS_DENIED_ERROR"},true);
+  const monitor = startDatabaseHealthMonitor({
+    initialized:false,readConfig:() => config,intervalMs:100_000,
+    probe:async () => {if (failProbe) throw refused;},
+    initialize:async () => {initializations++;return {ready:true};},onReady() {},
+  });
+  try {
+    await monitor.check();
+    failProbe = false;
+    await monitor.check();await monitor.check();
+    assert.equal(initializations,0);
+    assert.equal(databaseHealth.snapshot().reason?.code,"ER_TABLEACCESS_DENIED_ERROR");
+    assert.equal(databaseHealth.snapshot().restartRequired,true);
+  } finally {monitor.stop();databaseHealth.healthy();}
+});
+
+test("corrected MySQL host authorization initializes once after a successful connection probe", async () => {
+  let initializations = 0;
+  let ready = 0;
+  databaseHealth.healthy();
+  databaseHealth.unavailable({code:"ER_HOST_NOT_PRIVILEGED"},true);
+  const monitor = startDatabaseHealthMonitor({initialized:false,readConfig:() => config,intervalMs:100_000,probe:async () => {},initialize:async () => {initializations++;return {ready:true};},onReady:() => {ready++;}});
+  try {
+    await monitor.check();await monitor.check();
+    assert.equal(initializations,1);assert.equal(ready,1);
+    assert.equal(databaseHealth.snapshot().state,"healthy");
+  } finally {monitor.stop();databaseHealth.healthy();}
 });
 
 test("Web and diagnostic endpoints survive DB failure, business requests return 503", async () => {

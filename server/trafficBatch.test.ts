@@ -171,6 +171,8 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       assert.equal(contextQuery.count, 3);
       assert.equal(contexts.length, 2);
       const contextsById = new Map(contexts.map((context) => [Number(context.rule.id), context]));
+      assert.equal(contextsById.get(12).rule.name, "local-rule");
+      assert.equal(contextsById.get(12).logicalRuleName, "local-rule");
       assert.deepEqual(
         contextsById.get(11).group.members.map((member) => [Number(member.id), Number(member.hostId)]),
         [[312, 6], [311, 5]],
@@ -258,6 +260,8 @@ test("traffic reports batch raw samples and counters without losing totals", () 
       await runtime.executeRaw("INSERT INTO forward_group_members (id, groupId, memberType, hostId, priority) VALUES (321, 32, 'host', 5, 10)");
       await runtime.executeRaw("INSERT INTO forward_rules (id, hostId, name, forwardGroupId, forwardGroupRuleId, forwardGroupMemberId, isForwardGroupTemplate, sourcePort, targetIp, targetPort, userId, createdAt) VALUES (13, 5, 'ordinary-template', 32, NULL, NULL, 1, 12013, '127.0.0.1', 80, 7, ?), (14, 5, 'stale-admin-child', 32, 13, 321, 0, 12013, '127.0.0.1', 80, 1, ?), (15, 5, 'invalid-cross-group-parent', 33, 13, NULL, 0, 12015, '127.0.0.1', 80, 1, ?)", [Math.floor(trafficSince.getTime() / 1000), Math.floor(trafficSince.getTime() / 1000), Math.floor(trafficSince.getTime() / 1000)]);
       const ownershipContexts = await rules.getForwardRuleTrafficContextsByIds([14, 15]);
+      assert.equal(ownershipContexts.find(context => Number(context.rule.id) === 14).logicalRuleName, "ordinary-template");
+      assert.equal(ownershipContexts.find(context => Number(context.rule.id) === 15).logicalRuleName, "invalid-cross-group-parent");
       assert.deepEqual(
         ownershipContexts.map((context) => ({ id: Number(context.rule.id), userId: Number(context.rule.userId) })).sort((a, b) => a.id - b.id),
         [{ id: 14, userId: 7 }, { id: 15, userId: 1 }],

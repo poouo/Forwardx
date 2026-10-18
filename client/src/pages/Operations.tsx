@@ -7,6 +7,7 @@ import OperationsDateFilter from "@/components/OperationsDateFilter";
 import OperationsSourceList from "@/components/OperationsSourceList";
 import OperationsFinanceSummary from "@/components/OperationsFinanceSummary";
 import OperationsRefreshSelect from "@/components/OperationsRefreshSelect";
+import Ranking from "@/components/OperationsRanking";
 import { SummaryMetricCard } from "@/components/SummaryMetricCard";
 import { useOperationsRefresh } from "@/hooks/useOperationsRefresh";
 import { operationsRefreshOptions } from "@/lib/operationsRefresh";
@@ -24,16 +25,6 @@ import { operationsDate, OPERATIONS_SOURCE_PAGE_SIZE, type OperationsSourceSort 
 import { toast } from "@/lib/localizedToast";
 
 function time(value: unknown) { return new Date(Number(value) * 1000).toLocaleString(getFormatLocale(), { timeZone: "Asia/Shanghai" }); }
-function Ranking({ title, rows }: { title: string; rows: any[] }) {
-  const max = Math.max(1, ...rows.map(row => Number(row.bytesIn) + Number(row.bytesOut)));
-  return <Card><CardHeader><CardTitle className="text-base">{title}</CardTitle></CardHeader><CardContent className="space-y-4">
-    {!rows.length && <p className="text-sm text-muted-foreground">{t("暂无数据")}</p>}
-    {rows.slice(0, 10).map((row, index) => <div key={row.id} className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate" title={row.name || String(row.id)}><span className="mr-2 text-muted-foreground">{index + 1}</span>{row.name || `#${row.id}`}</span><span className="shrink-0 tabular-nums">{bytes(Number(row.bytesIn) + Number(row.bytesOut))}</span></div>
-      <div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary/65" style={{ width: `${100 * (Number(row.bytesIn) + Number(row.bytesOut)) / max}%` }} /></div>
-    </div>)}
-  </CardContent></Card>;
-}
 const statusLabels: Record<string, string> = { sampled: "采样正常", unavailable: "无法读取连接跟踪", limited: "已达到采样上限", disabled: "已关闭", no_rules: "无可采集的规则" };
 
 export default function OperationsPage() {
@@ -105,7 +96,7 @@ export default function OperationsPage() {
     <Card><CardHeader><CardTitle className="text-base">{t("流量趋势")}</CardTitle><p className="text-xs text-muted-foreground">{overview.data?.since ? t("数据自 {0} 起积累，升级前的历史不会补算。", [operationsDate(Number(overview.data.since))]) : t("数据将在新版本接收流量上报后开始积累。")}</p></CardHeader><CardContent>
       <div className="h-64 min-w-0 overflow-hidden">{trend.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={trend}><CartesianGrid strokeDasharray="3 3" stroke="var(--border)" /><XAxis dataKey="date" tick={{ fontSize: 11 }} /><YAxis tickFormatter={bytes} width={80} tick={{ fontSize: 11 }} /><Tooltip formatter={value => bytes(value)} contentStyle={{ background: "var(--card)", borderColor: "var(--border)", borderRadius: 12 }} /><Area type="monotone" dataKey="bytesIn" name={t("入向流量")} stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.15} /><Area type="monotone" dataKey="bytesOut" name={t("出向流量")} stroke="var(--chart-2)" fill="var(--chart-2)" fillOpacity={0.12} /></AreaChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("暂无数据")}</div>}</div>
     </CardContent></Card>
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><Ranking title={t("用户流量排行")} rows={overview.data?.users || []} /><Ranking title={t("主机流量排行")} rows={overview.data?.hosts || []} /><Ranking title={t("规则流量排行")} rows={overview.data?.rules || []} /><Ranking title={t("资源流量排行")} rows={overview.data?.resources || []} /></div>
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><Ranking title={t("用户流量排行")} rows={overview.data?.users || []} /><Ranking title={t("主机流量排行")} rows={overview.data?.hosts || []} /><Ranking title={t("规则流量排行")} rows={overview.data?.rules || []} ruleLabels /><Ranking title={t("资源流量排行")} rows={overview.data?.resources || []} /></div>
     <Card><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><CardTitle className="text-base">{t("中国来源分布")}</CardTitle><div className="flex items-center gap-2"><Switch id="source-collection" checked={enabled} disabled={sources.isLoading || collection.isPending} onCheckedChange={checked => checked ? setConfirm("collect") : collection.mutate({ enabled: false })} /><Label htmlFor="source-collection">{t("采集来源 IP")}</Label></div></div>
       <p className="text-xs leading-relaxed text-muted-foreground">{t("仅管理员可见。入口连接定期采样，短连接可能遗漏；NAT/代理后记录实际可见 IP。采样流量不是计费用量。")}</p>
     </CardHeader><CardContent className="grid items-start gap-6 xl:grid-cols-[1.2fr_1fr]">

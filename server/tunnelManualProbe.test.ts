@@ -89,8 +89,11 @@ test("durable batches recover after a real process restart and preserve timeout/
         const old = await manual.queueManualTunnelProbeBatch(tunnel, probes);
         assert.equal((await batchRows(old.batchId)).length, 2);
         assert.equal((await manual.queueManualTunnelProbeBatch(tunnel, probes)).batchId, old.batchId, "repeat click reuses the live batch");
-        await metrics.insertTunnelLatencyStat({ tunnelId: 1, latencyMs: 4, isTimeout: false }, { preserveMessage: true });
+        await metrics.insertTunnelLatencyStat({ tunnelId: 1, latencyMs: 4, isTimeout: false },
+          { preserveMessage: true, message: JSON.stringify({ kind: "tunnel-entry-group-summary", details: [] }) });
         assert.equal((await loadTunnel()).lastTestStatus, "pending", "periodic probes cannot finish a manual batch");
+        assert.equal(JSON.parse((await loadTunnel()).lastTestMessage).batchId, old.batchId,
+          "live automatic diagrams cannot overwrite an in-flight manual probe");
         const oldRows = await batchRows(old.batchId);
         await tests.completeForwardTestIfActive(oldRows[1].id, { status: "success", latencyMs: 11 });
         assert.equal(await manual.settleManualTunnelProbeBatch(old.batchId), false);
@@ -151,6 +154,12 @@ test("durable batches recover after a real process restart and preserve timeout/
         assert.equal(await manual.settleManualTunnelProbeBatch(partialBatch.batchId), true);
         assert.equal((await loadTunnel()).lastLatencyMs, 5, "a timed-out alternative does not invalidate a complete healthy path");
         assert.equal((await loadTunnel()).lastTestStatus, "success");
+        const automaticMessage = JSON.stringify({ kind: "tunnel-entry-group-summary", totalLatencyMs: 7,
+          details: [{ fromHostId: 1, toHostId: 2, success: true, latencyMs: 6 }, { fromHostId: 2, toHostId: 3, success: true, latencyMs: 1 }] });
+        await metrics.insertTunnelLatencyStat({ tunnelId: 1, latencyMs: 7, isTimeout: false },
+          { preserveMessage: true, message: automaticMessage });
+        assert.equal((await loadTunnel()).lastTestMessage, automaticMessage,
+          "a fresh automatic total publishes fresh segments rather than preserving an old manual diagram");
         assert.equal(await tests.completeForwardTestIfActive(partialRows[1].id, { status: "success", latencyMs: 7 }), false);
         // Repair the exact pre-upgrade success + pending-details contradiction.
         await runtime.executeRaw('UPDATE "tunnels" SET "lastTestStatus" = \'success\', "lastTestMessage" = ?, "lastTestAt" = ? WHERE "id" = 1',

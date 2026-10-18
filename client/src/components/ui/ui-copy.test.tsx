@@ -9,16 +9,30 @@ import LinkCreateTypeSelector from "../LinkCreateTypeSelector";
 import { PersistentPagination, type PersistentPaginationState } from "../PersistentPagination";
 import { RuleLimitsForm, newRuleLimitsForm } from "../rules/RuleLimitsForm";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
+import { ForwardXLogo } from "../ForwardXLogo";
 
-test("sidebar menu toggles retain display controls and distinguish independent business switches", () => {
+test("public homepage branding renders only one logo, including uploaded site logos", () => {
+  const page = readFileSync("client/src/pages/PublicHome.tsx", "utf8");
+  const header = page.slice(page.indexOf("<header"), page.indexOf("</header>"));
+  assert.equal((header.match(/<ForwardXLogo\b/g) || []).length, 1);
+  assert.doesNotMatch(header, /<img\b/);
+  assert.match(header, /src=\{info\?\.siteLogoDataUrl\}/);
+  for (const src of [undefined, "data:image/png;base64,dGVzdA=="]) {
+    const html = renderToStaticMarkup(<ForwardXLogo size={36} alt="Light-ZZ" src={src} />);
+    assert.equal((html.match(/<(?:img|svg)\b/g) || []).length, 1);
+    if (src) assert.ok(html.includes(src));
+    else assert.match(html, /<svg\b/);
+  }
+});
+
+test("sidebar menu toggles use consistent single-line rows without descriptions", () => {
   const settings = readFileSync("client/src/pages/Settings.tsx", "utf8");
   const rows = settings.slice(settings.indexOf("{SIDEBAR_MENU_KEYS.map((key) => ("));
   const menu = rows.slice(0, rows.indexOf("</Dialog>"));
   assert.match(menu, /<span className="text-sm">\{translateText\(SIDEBAR_MENU_LABELS\[key\]\)\}<\/span>/);
   assert.match(menu, /checked=\{sidebarMenu\[key\]\}/);
   assert.match(menu, /setSidebarMenuEnabled\(key, checked\)/);
-  assert.match(menu, /仅控制用户侧菜单显示，工单功能和推送开关请在工单管理的设置中调整/);
-  assert.match(menu, /仅控制菜单显示，返佣总开关请在推广管理的设置中调整/);
+  assert.doesNotMatch(menu, /<p\b|仅控制用户侧菜单显示|仅控制菜单显示/);
   assert.doesNotMatch(menu, /supportTicketsEnabled|affiliateEnabled/);
 });
 

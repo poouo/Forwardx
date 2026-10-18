@@ -608,6 +608,7 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
       .select({
         id: forwardRules.id,
         hostId: forwardRules.hostId,
+        name: forwardRules.name,
         tunnelId: forwardRules.tunnelId,
         forwardGroupId: forwardRules.forwardGroupId,
         forwardGroupRuleId: forwardRules.forwardGroupRuleId,
@@ -646,12 +647,13 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
   const parentRuleIds = Array.from(new Set(rows
     .map((row) => Number(row.forwardGroupRuleId || 0))
     .filter((id) => Number.isInteger(id) && id > 0)));
-  const parentByRuleId = new Map<number, { userId: number; groupId: number; isTemplate: boolean }>();
+  const parentByRuleId = new Map<number, { userId: number; groupId: number; isTemplate: boolean; name: string }>();
   for (let index = 0; index < parentRuleIds.length; index += 400) {
     const parents = await db
       .select({
         id: forwardRules.id,
         userId: forwardRules.userId,
+        name: forwardRules.name,
         groupId: forwardRules.forwardGroupId,
         isTemplate: forwardRules.isForwardGroupTemplate,
       })
@@ -660,6 +662,7 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
     for (const parent of parents as any[]) {
       parentByRuleId.set(Number(parent.id), {
         userId: Number(parent.userId),
+        name: String(parent.name || ""),
         groupId: Number(parent.groupId || 0),
         isTemplate: parent.isTemplate === true || parent.isTemplate === 1 || parent.isTemplate === "1",
       });
@@ -699,8 +702,11 @@ export async function getForwardRuleTrafficContextsByIds(ruleIds: number[]) {
       ? parent.userId
       : Number(row.userId);
     return {
+      logicalRuleName: parent?.isTemplate && parent.groupId > 0 && parent.groupId === Number(row.forwardGroupId || 0)
+        ? parent.name : row.name,
       rule: {
         id: row.id,
+        name: row.name,
         hostId: row.hostId,
         tunnelId: row.tunnelId,
         forwardGroupId: row.forwardGroupId,

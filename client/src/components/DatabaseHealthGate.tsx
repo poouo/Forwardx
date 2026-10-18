@@ -21,8 +21,8 @@ export function DatabaseUnavailableView({ health, checking, onRetry }: {
         </div>
         <div className="space-y-4 rounded-xl border bg-muted/30 p-5">
           <div className="flex items-center gap-2 text-sm font-medium"><Database className="h-4 w-4" />{health.databaseType === "postgresql" ? "PostgreSQL" : health.databaseType === "mysql" ? "MySQL" : health.databaseType === "sqlite" ? "SQLite" : translateText("数据库")}</div>
-          <div><p className="text-sm text-muted-foreground">{translateText("异常原因")}</p><p className="mt-1 break-words font-medium">{health.reason?.message || translateText("数据库服务暂时无法访问")}</p>{health.reason?.code && <code className="mt-2 inline-block rounded bg-muted px-2 py-1 text-xs">{health.reason.code}</code>}</div>
-          <p className="text-sm leading-6">{health.reason?.suggestion || translateText("请联系管理员检查数据库服务和面板日志。")}</p>
+          <div><p className="text-sm text-muted-foreground">{translateText("异常原因")}</p><p className="mt-1 break-words font-medium">{translateText(health.reason?.message || "数据库服务暂时无法访问")}</p>{health.reason?.code && <code className="mt-2 inline-block rounded bg-muted px-2 py-1 text-xs">{health.reason.code}</code>}</div>
+          <p className="text-sm leading-6">{translateText(health.reason?.suggestion || "请联系管理员检查数据库服务和面板日志。")}</p>
           {health.restartRequired && <p className="text-sm text-amber-700 dark:text-amber-400">{translateText("连接故障恢复后会自动重试初始化；若为结构、配置或存储错误，请检查日志，修正后重启面板。")}</p>}
           {health.unavailableSince && <p className="text-xs text-muted-foreground">{translateText("异常检测时间：")}{new Date(health.unavailableSince).toLocaleString(getFormatLocale())}</p>}
           {health.checkedAt && <p className="text-xs text-muted-foreground">{translateText("最近检查：")}{new Date(health.checkedAt).toLocaleString(getFormatLocale())}</p>}
