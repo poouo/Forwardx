@@ -4,6 +4,7 @@
 
 ## [2.3.286] - 2026-10-19
 
+- Fix Android build collisions from precompressed web assets; support repairing a missing release APK independently.
 - Sync Android/iOS launcher icons with preset themes and light/dark mode; unify the default logo.
 - Keep the browser-tab icon in sync with the panel theme and custom logo.
 - Use two-column CAPTCHA settings with administrator-selected click verification or obfuscated image challenges, enforced server-side.

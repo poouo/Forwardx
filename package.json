@@ -50,6 +50,7 @@
     "mobile:apk": "pnpm mobile:sync:android && cd android && ./gradlew assembleDebug",
     "mobile:ipa": "node scripts/build-ios-ipa.mjs",
     "test:ios": "node --test scripts/ios-build.test.mjs && node --import tsx --test client/src/lib/mobileAppUpdate.test.ts",
+    "test:android": "node --test scripts/android-build.test.mjs",
     "test:i18n": "node --import tsx --test client/src/i18n/language.test.ts client/src/i18n/runtime.test.ts client/src/i18n/ui-coverage.test.tsx client/src/components/ui/sliding-tabs.test.tsx server/localeHint.test.ts",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
